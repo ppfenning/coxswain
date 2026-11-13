@@ -1452,6 +1452,8 @@ Coxswain is in beta — versions may change between releases
       
         
       
+        
+      
     
     
     
@@ -1659,6 +1661,34 @@ Coxswain is in beta — versions may change between releases
     
   
     Plugins
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../customize/mcp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MCP server
   
 
     
@@ -3361,6 +3391,8 @@ Coxswain is in beta — versions may change between releases
       
         
       
+        
+      
     
     
     
@@ -3728,6 +3760,34 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
+      <a href="../mcp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    mcp
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../plan/" class="md-nav__link">
         
   
@@ -3953,6 +4013,28 @@ Coxswain is in beta — versions may change between releases
     <span class="md-ellipsis">
       
         groups
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cartridges" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        cartridges
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#export" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        export
       
     </span>
   </a>
@@ -6658,6 +6740,28 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#cartridges" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        cartridges
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#export" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        export
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#drift" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6883,12 +6987,12 @@ Coxswain is in beta — versions may change between releases
 
 <h1 id="route">route</h1>
 <div class="highlight"><pre><span></span><code>usage: cox route [-h]
-                 {context,status,file,priority,schedule,pull,lint,groups,drift,import,paths,store-fill,approve,decline,edit,epic,remove,hold,release,ready,draft,requeue,leader,chair,sync,launch} ...
+                 {context,status,file,priority,schedule,pull,lint,groups,cartridges,export,drift,import,paths,store-fill,approve,decline,edit,epic,remove,hold,release,ready,draft,requeue,leader,chair,sync,launch} ...
 
 File work for the harness, and see what is queued or running.
 
 positional arguments:
-  {context,status,file,priority,schedule,pull,lint,groups,drift,import,paths,store-fill,approve,decline,edit,epic,remove,hold,release,ready,draft,requeue,leader,chair,sync,launch}
+  {context,status,file,priority,schedule,pull,lint,groups,cartridges,export,drift,import,paths,store-fill,approve,decline,edit,epic,remove,hold,release,ready,draft,requeue,leader,chair,sync,launch}
     context             the routing profile's resolved context
     status              what is queued or running for this profile
     file                file a new ticket for the harness
@@ -6900,6 +7004,10 @@ positional arguments:
                         shape.md §3
     groups              print the newest plans/intake-groups/&lt;date&gt;.md file,
                         work-shape.md §5
+    cartridges          publish this machine's cartridges to the store, or
+                        write a published snapshot here
+    export              write this machine's work/ and intake/ files from the
+                        store; nothing is committed
     drift               items whose store state and file state differ
     import              load the current work item files into the store's
                         work_items table
@@ -7040,6 +7148,36 @@ options:
 </code></pre></div>
 <h2 id="groups">groups</h2>
 <div class="highlight"><pre><span></span><code>usage: cox route groups [-h] [--profile PROFILE]
+
+options:
+  -h, --help         show this help message and exit
+  --profile PROFILE
+</code></pre></div>
+<h2 id="cartridges">cartridges</h2>
+<div class="highlight"><pre><span></span><code>usage: cox route cartridges [-h] [--sha SHA] [--replace] [--into INTO]
+                            [--profile PROFILE]
+                            {publish,fetch}
+
+Cartridges are written and versioned where their owner keeps them. The store only carries a copy of the exact files a launch used, under the digest of those files, so a lane host can read them.
+publish prints the sha of the profile's cartridges_dir and stores its files once.
+fetch makes cartridges_dir hold exactly that snapshot. It refuses to write over files a person put there or edited, unless --replace is given.
+
+positional arguments:
+  {publish,fetch}
+
+options:
+  -h, --help         show this help message and exit
+  --sha SHA          the snapshot to fetch
+  --replace          fetch over cartridges that no fetch put there
+  --into INTO        the directory to publish from or fetch into; default the
+                     profile's cartridges_dir
+  --profile PROFILE
+</code></pre></div>
+<h2 id="export">export</h2>
+<div class="highlight"><pre><span></span><code>usage: cox route export [-h] [--profile PROFILE]
+
+The store holds the board. This writes it out as files under the workspace so they can be read, and removes files no row names.
+It first loads any ticket a decompose wrote as a file and the store has not seen. Under work_state files it does nothing.
 
 options:
   -h, --help         show this help message and exit

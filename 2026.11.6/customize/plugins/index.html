@@ -14,7 +14,7 @@
         <link rel="prev" href="../policy/">
       
       
-        <link rel="next" href="../write-a-skill/">
+        <link rel="next" href="../mcp/">
       
       
         
@@ -1452,6 +1452,8 @@ Coxswain is in beta — versions may change between releases
       
         
       
+        
+      
     
     
     
@@ -1733,6 +1735,23 @@ Coxswain is in beta — versions may change between releases
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Built-in sources">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#edits-at-the-source-after-a-pull" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Edits at the source after a pull
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1761,6 +1780,34 @@ Coxswain is in beta — versions may change between releases
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mcp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MCP server
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -3448,6 +3495,8 @@ Coxswain is in beta — versions may change between releases
       
         
       
+        
+      
     
     
     
@@ -3795,6 +3844,34 @@ Coxswain is in beta — versions may change between releases
     
   
     lander
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/cli/mcp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    mcp
   
 
     
@@ -6343,6 +6420,23 @@ Coxswain is in beta — versions may change between releases
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Built-in sources">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#edits-at-the-source-after-a-pull" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Edits at the source after a pull
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -6385,7 +6479,7 @@ Coxswain is in beta — versions may change between releases
   <a class="cox-page-nav__prev" href="../policy/">← Policy</a>
   
   
-  <a class="cox-page-nav__next" href="../write-a-skill/">Write a skill →</a>
+  <a class="cox-page-nav__next" href="../mcp/">MCP server →</a>
   
 </nav>
 
@@ -6471,6 +6565,22 @@ or folder to the repository its tickets target:</p>
 </ul>
 <p>The autonomous chair runs a bare <code>cox route pull</code> when it has free lanes
 and nothing else queued, so it reads every configured source.</p>
+<h3 id="edits-at-the-source-after-a-pull">Edits at the source after a pull</h3>
+<p>With <code>work_state: store</code>, a pull is also a one-way sync. Text flows from
+the source into the store and never back.</p>
+<ul>
+<li><strong>Still queued</strong> (draft, ready or held): the stored title and body are
+  replaced with the source's newer text. Nothing was built from the old
+  text.</li>
+<li><strong>Decomposed</strong>: the stored initiative is what the tasks were cut from,
+  so its text is kept. The edit is recorded on the initiative as
+  <code>changed_upstream</code> (when, the link, the new title) and the pull prints a
+  line. What happens next is the orchestrator's rule, not the sync's.</li>
+<li><strong>Landed or done</strong>: left alone.</li>
+</ul>
+<p>Each edit is acted on once. A source takes part when its adapter can list
+the tickets it already took (<code>taken_list_argv</code>); <code>github</code> does, by the
+<code>intake:taken</code> label. <code>--dry-run</code> prints what a sync would do.</p>
 <h2 id="installing">Installing</h2>
 <p><code>cox</code> loads sources, forges and trackers from its own environment. <code>cox</code> is
 installed editable from the coxswain checkout, so add the plugins to that
@@ -6573,13 +6683,13 @@ dependencies. <code>cox setup doctor</code> lists what each side can load in its
         
         
           
-          <a href="../write-a-skill/" class="md-footer__link md-footer__link--next" aria-label="Next: Write a skill">
+          <a href="../mcp/" class="md-footer__link md-footer__link--next" aria-label="Next: MCP server">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 Next
               </span>
               <div class="md-ellipsis">
-                Write a skill
+                MCP server
               </div>
             </div>
             <div class="md-footer__button md-icon">

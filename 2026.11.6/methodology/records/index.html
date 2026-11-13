@@ -1557,6 +1557,8 @@ Coxswain is in beta — versions may change between releases
       
         
       
+        
+      
     
     
     
@@ -1764,6 +1766,34 @@ Coxswain is in beta — versions may change between releases
     
   
     Plugins
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../customize/mcp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MCP server
   
 
     
@@ -3459,6 +3489,8 @@ Coxswain is in beta — versions may change between releases
       
         
       
+        
+      
     
     
     
@@ -3806,6 +3838,34 @@ Coxswain is in beta — versions may change between releases
     
   
     lander
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/cli/mcp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    mcp
   
 
     
@@ -6428,8 +6488,8 @@ what lets a human, or the next node, reconstruct what a given seat saw
 and returned, rather than trusting a paraphrase of it.</p>
 <p>A run on the edge channel is not reproducible from a version number
 alone, so its record names the commit the checkout was at.</p>
-<p>From 0.17.0 the record lives in the run store (<code>runs/cox.db</code>, or the
-Postgres store a provider profile names). The run's totals, its phases,
+<p>From 0.17.0 the record lives in the run store, the Postgres store a
+provider profile names. The run's totals, its phases,
 its gate decisions, its ledger rows and every model call are rows there.
 Each call's stream events are compacted into <code>runs/traces</code> when the run
 ends. The task records under <code>runs/&lt;run&gt;/tasks/</code> stay files, because

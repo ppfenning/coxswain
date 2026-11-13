@@ -1452,6 +1452,8 @@ Coxswain is in beta — versions may change between releases
       
         
       
+        
+      
     
     
     
@@ -1662,6 +1664,34 @@ Coxswain is in beta — versions may change between releases
     
   
     Plugins
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mcp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MCP server
   
 
     
@@ -3531,6 +3561,8 @@ Coxswain is in beta — versions may change between releases
       
         
       
+        
+      
     
     
     
@@ -3878,6 +3910,34 @@ Coxswain is in beta — versions may change between releases
     
   
     lander
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/cli/mcp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    mcp
   
 
     
@@ -6751,12 +6811,16 @@ bucket comes from the first run started after the change.</p>
 the groups. Core names no cloud vendor.</p>
 <p>Traces and the lake still stay local unless these are set.</p>
 <h2 id="land-from-any-machine">Land from any machine</h2>
-<p>By default the ticket files hold each task's state, which is
-<code>work_state: files</code>. When the provider profile's <code>storage_url</code> names a
-shared Postgres database that answers, the loop reads work items from the
-store instead; <code>cox route status</code> then prints <code>work state: store</code> first. A
-local SQLite store keeps the files as the board. Only the chair lands from
-the ticket files; any machine can land once the store is the board.</p>
+<p>The store holds each task's state, and the store is Postgres: the provider
+profile's <code>storage_url</code> names it. <code>cox route status</code> prints
+<code>work state: store</code> first. The ticket files are a copy written from the
+store, so any machine can land.</p>
+<p>The older <code>work_state: files</code>, in which the ticket files were the board, is
+retired, and so is the local SQLite store. A profile that still says
+<code>work_state: files</code> is told to remove the key. A profile whose store is not
+Postgres is refused by every command that touches the board; <code>cox setup
+store --store shared</code> configures one, and <code>cox setup store switch shared</code>
+carries an old local store's rows over.</p>
 <p>With the store as the board, a land on any machine checks that the task is
 approved in the store. It holds a lease named <code>land:&lt;task&gt;</code> while it
 merges. It moves the task to done with a compare-and-set. If another

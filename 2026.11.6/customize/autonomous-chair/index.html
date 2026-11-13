@@ -1452,6 +1452,8 @@ Coxswain is in beta — versions may change between releases
       
         
       
+        
+      
     
     
     
@@ -1662,6 +1664,34 @@ Coxswain is in beta — versions may change between releases
     
   
     Plugins
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mcp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MCP server
   
 
     
@@ -3680,6 +3710,8 @@ Coxswain is in beta — versions may change between releases
       
         
       
+        
+      
     
     
     
@@ -4027,6 +4059,34 @@ Coxswain is in beta — versions may change between releases
     
   
     lander
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/cli/mcp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    mcp
   
 
     
@@ -6893,12 +6953,14 @@ things in order. The default tick is 60 seconds.</p>
 <p>The status line looks like this:</p>
 <div class="highlight"><pre><span></span><code>chair 09-26 12:30 EDT | lanes 1/8 | lands 0 | limits 5h 20% weekly 75%/93% | needs chair: none
 </code></pre></div>
-<p>When the profile names a shared Postgres store, the loop also prints where
-it reads the board from. If the store is unreachable, that line reads:</p>
-<div class="highlight"><pre><span></span><code>work state: files (store unreachable)
+<p>The loop also prints where it reads the board from, which is always the
+store. If the store is unreachable, that line reads:</p>
+<div class="highlight"><pre><span></span><code>work state: store (unreachable)
 </code></pre></div>
-<p>A local SQLite store keeps the ticket files as the board and needs no shared
-store; local-first stays the default.</p>
+<p>Nothing stands in for the store. Commands that need it fail and say so
+until it answers, and no state is written to the ticket files in the
+meantime. The store is Postgres; a local SQLite store and the <code>files</code> work
+state are retired.</p>
 <h2 id="running-it">Running it</h2>
 <p>Start with a dry run. It plans one tick and changes nothing:</p>
 <div class="highlight"><pre><span></span><code>cox<span class="w"> </span>chair<span class="w"> </span>run<span class="w"> </span>--once<span class="w"> </span>--dry-run
@@ -7074,9 +7136,50 @@ rebases by construction. When a cherry-pick conflicts, the task goes back to
 conflicts per path in that log. A path that conflicts often belongs in
 <code>serial_files</code>, or under a lower limit.</p>
 <h2 id="the-workspace-checkout">The workspace checkout</h2>
-<p>The workspace (<code>work/</code>, <code>intake/</code>, <code>runs/</code>) is a git checkout. The loop
-keeps it in step with its upstream on every live tick. A dry run does
+<p>The workspace (<code>work/</code>, <code>intake/</code>, <code>runs/</code>) is a git checkout by default. The
+loop keeps it in step with its upstream on every live tick. A dry run does
 neither step.</p>
+<p>With a shared store the checkout is not needed. The store holds every intake,
+initiative and task, text and state, and <code>work/</code> and <code>intake/</code> are files
+written from it. Turn the git steps off in the profile:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">chair</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">workspace_git</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+</code></pre></div>
+<p>The loop then pulls nothing and commits and pushes nothing. It still writes
+the files, so everything that reads them keeps working, and they are this
+machine's own copy. Any machine refreshes its copy from the store with:</p>
+<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>route<span class="w"> </span><span class="nb">export</span>
+</code></pre></div>
+<p>With git off, the tick reads its work from the store's rows, rendered as the
+files would be, and opens no work file. A decompose writes its plan to the
+store as rows on whichever machine ran it, a lane host included: a detached
+launch runs the same command in the background, to completion. The export
+still loads any ticket file the store has not got before it writes, so a
+ticket written by hand as a file is not deleted.</p>
+<p>You rarely need to run that by hand. With git off, <code>cox route</code>, <code>runs</code>,
+<code>lander</code>, <code>epic</code>, <code>console</code> and <code>dash</code> check the store's version first and
+rewrite the files only when a row changed since the last write. A file that
+is an unchanged copy of a row the store has since dropped is deleted, so a
+machine that was behind never puts the row back. A store that cannot be
+reached leaves the files as they are and the command still runs.</p>
+<p><strong>Cartridges stay yours.</strong> They are written and versioned where you keep
+them; the store never becomes the place they are authored. With git off and
+a shared store, a launch to a lane host publishes the exact files of the
+chair's <code>cartridges/</code> directory to the store under the digest of those
+files, and the lane host writes that snapshot itself before the run. Nothing
+is copied from machine to machine, and a host that cannot produce the same
+digest stops the launch. A publish that fails falls back to the copy.</p>
+<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>route<span class="w"> </span>cartridges<span class="w"> </span>publish<span class="w">             </span><span class="c1"># prints the sha</span>
+cox<span class="w"> </span>route<span class="w"> </span>cartridges<span class="w"> </span>fetch<span class="w"> </span>--sha<span class="w"> </span>&lt;sha&gt;<span class="w">   </span><span class="c1"># writes it into cartridges_dir</span>
+</code></pre></div>
+<p>A fetch refuses to write over cartridges a person put there or edited. Only
+a directory that is empty, or still exactly what the last fetch left, is
+replaced without <code>--replace</code>.</p>
+<p>With a shared store the courier bus is the store's <code>courier_log</code> table, one
+bus for every machine, with git on or off. The first use loads what
+<code>courier.jsonl</code> already held. <code>cox courier send</code>, <code>inbox</code> and <code>ack</code> work as
+before.</p>
+<p>The rest of this section describes the default, with git on.</p>
 <p><strong>Pull.</strong> Right after the beat, the loop runs
 <code>git pull --ff-only --autostash</code> in the workspace. Uncommitted changes are
 carried across. If re-applying them conflicts, the loop puts the checkout
@@ -7174,7 +7277,33 @@ forgotten takeover cannot park the fleet.</p>
 <p>With a shared Postgres store, any machine on the network can take the
 chair. <a href="../several-machines/">Several machines</a> shows how to set that up.</p>
 <h3 id="starting-a-session-beside-the-chair">Starting a session beside the chair</h3>
-<p>A bare <code>cox</code> session decides whether to take the chair as it starts. The
+<p>A bare <code>cox</code> launch runs in one of two modes, and it picks the mode before it
+reads anything else about the chair.</p>
+<p>With a live chair service holding a fresh lease under another label, the
+launch attaches. It opens a Claude Code session with the chair's MCP server
+configured and resumes the operator's stored conversation with the chair. It
+works from any directory. It never reads the chair record to take it, never
+takes or steals the lease, and starts no beater. The <a href="../mcp/">MCP server</a>
+page lists what the attached session can read and change.</p>
+<p>With no live chair, the launch starts the workspace session that can act as
+the chair, so a one-machine setup works as it always did. The rest of this
+section describes that session.</p>
+<p>The reason for the split: since the chair became the <code>coxswain-chair</code>
+service, a session started in the workspace only converses, and a workspace
+session that resumed could take the service's lease. Attaching over MCP
+removes that risk, and lets any Claude client that has the server configured
+do the same.</p>
+<p>The <code>--workspace</code> flag forces the workspace session even when a chair is
+live. The <code>--print-argv</code> flag shows which mode would run, and its argv,
+without starting anything. <code>cox session</code> takes both flags too.</p>
+<p>The coxswain plugin's operator commands (intake, stage, approve, land and
+status) call the MCP tools when the server is reachable and use the command
+line otherwise. So a plain Claude Code session with the server configured
+behaves like the attached one.</p>
+<p>The attached session stores its conversation id in <code>mcp-conversation.json</code>
+under <code>coxswain</code> in the state directory (<code>$XDG_STATE_HOME</code>, else
+<code>~/.local/state</code>). Every entry it sends to the chair carries that id.</p>
+<p>A workspace session decides whether to take the chair as it starts. The
 <code>session_takes</code> key under <code>chair:</code> in the profile sets the policy. These are
 the lines to add, at the top level of the profile file:</p>
 <div class="highlight"><pre><span></span><code><span class="nt">chair</span><span class="p">:</span>
@@ -7196,8 +7325,10 @@ Enter opens a non-chair session.</p>
 <p>With <code>always</code>, a session takes or resumes a free or stale chair as <code>when_free</code>
 does. It also takes the chair from another session without showing the offer.</p>
 <p>None of the three values lets a session displace a live chair loop. The loop
-may be the systemd service or another running chair loop. A session started
-beside it opens as a non-chair session and prints one of these lines:</p>
+may be the systemd service or another running chair loop. A bare launch
+beside it attaches over MCP, as described above. A workspace session forced
+with <code>--workspace</code>, or started beside a loop that carries the session's own
+label, opens as a non-chair session and prints one of these lines:</p>
 <div class="highlight"><pre><span></span><code>chair held by &lt;label&gt; (service)
 chair held by &lt;label&gt; (chair loop)
 </code></pre></div>
