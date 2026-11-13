@@ -1,7 +1,7 @@
 """lint_tickets — the static checks from docs/design/work-shape.md §3, plus `cross_repo`.
 
 Pure: plain data in, plain data out, no file I/O, no network, no clock.
-`reach`, `coupling`, `contract` and `surface_missing` are refusals; `grant`, `size` and `cross_repo` are advisory
+`reach`, `coupling`, `contract` and `surface_missing` are refusals; `grant`, `size`, `cross_repo` and `references` are advisory
 (`Problem.severity`) — the caller in `initiative_decompose.py` routes on that.
 `tree` rows may carry an optional `"imports"` list (paths that file imports),
 computed once at the edge, so the coupling rule's import disjunct stays pure.
@@ -504,13 +504,18 @@ def lint_tickets(
     repo: str,
     *,
     reach_allow: Sequence[str] = (),
+    texts: Mapping[str, str] | None = None,
 ) -> list[Problem]:
+    # ticket_references imports Problem from this module, so it is imported here to avoid a cycle.
+    from graphs.delivery.ticket_references import references_problems
+
     fixed_tasks = list(tasks)
     return [
         *_reach_problems(fixed_tasks, tree, repo, reach_allow),
         *_coupling_problems(fixed_tasks, tree),
         *_grant_problems(fixed_tasks, grants),
         *_size_problems(fixed_tasks),
+        *references_problems(fixed_tasks, tree, texts or {}),
         *_cross_repo_problems(fixed_tasks, tree, repo),
         *_surface_missing_problems(fixed_tasks, tree, repo),
         *_contract_problems(fixed_tasks),

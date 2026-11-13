@@ -49,6 +49,7 @@ cox runs usage RUN_ID [--runs-dir RUNS_DIR] [--json]   usage stats and cost for 
 cox runs trace RUN_ID [--runs-dir RUNS_DIR] [--role ROLE] [-v]   the tool-call trace for one run
 cox runs clean RUN_ID --repo REPO [--worktree-root WORKTREE_ROOT] [--runs-dir RUNS_DIR] [--profile PROFILE] [--apply] [--force]   delete a run's worktree and branches locally
 cox runs land RUN_ID --repo REPO [--task TASK] [--phase PHASE] [--label LABEL] [--force] [--no-claim] [--behind-limit BEHIND_LIMIT] [--base BASE] [--worktree-root WORKTREE_ROOT] [--apply] [--no-merge] [--runs-dir RUNS_DIR] [--profile PROFILE] [--gate ticket|phase|epic|full]   merge a run's branch into the target repo
+cox runs land-batch --repo REPO [--label LABEL] [--source SOURCE] [--batch-size BATCH_SIZE] [--wait-s WAIT_S] [--force] [--no-claim] [--base BASE] [--worktree-root WORKTREE_ROOT] [--apply] [--runs-dir RUNS_DIR] [--profile PROFILE] [--gate ticket|phase|epic|full]   land disjoint approved phases together as one pull request (the merge queue)
 cox runs fetch [--runs-dir RUNS_DIR] [--profile PROFILE] [RUN_ID] [--all]   pull an ended remote lane's run directory, log and branches to this machine
 cox runs review --pr PR [--profile PROFILE]   review a contributor PR with the review graph and post the verdict
 cox runs recover RUN_ID TASK_ID --repo REPO [--runs-dir RUNS_DIR] [--profile PROFILE] [--dry-run]   merge an approved task's commit into its phase branch after an escalated merge
@@ -117,7 +118,7 @@ cox route paths [--profile PROFILE] [--workspace WORKSPACE] [--apply] [--move ('
 cox route store-fill [--profile PROFILE] [--workspace WORKSPACE]   fill the store's work_items from the workspace files
 cox route approve INITIATIVE [--task TASK] [--by BY] [--profile PROFILE]   approve a draft initiative's todo tickets: todo becomes ready
 cox route decline INITIATIVE --reason REASON [--by BY] [--profile PROFILE]   decline a draft initiative: its todo tickets become dropped
-cox route edit ID [--title TITLE] [--body BODY] [--body-file BODY_FILE] [--repo REPO] [--surfaces SURFACES] [--state STATE] [--pr PR] [--rebuild] [--force] [--link LINK] [--after AFTER] [--epic EPIC] [--dry-run] [--profile PROFILE]   change a queued intake, an initiative or a task ticket
+cox route edit ID [--title TITLE] [--body BODY] [--body-file BODY_FILE] [--note NOTE] [--repo REPO] [--surfaces SURFACES] [--state STATE] [--pr PR] [--rebuild] [--force] [--link LINK] [--after AFTER] [--epic EPIC] [--dry-run] [--profile PROFILE]   change a queued intake, an initiative or a task ticket
 cox route epic ACTION ID [--title TITLE] [--target-branch TARGET_BRANCH] [--dry-run] [--profile PROFILE]   create an epic definition file: `route epic new <id>`
 cox route remove [ID...] [--match GLOB] --reason REASON [--by BY] [--dry-run] [--profile PROFILE]   remove queued intakes or initiatives that have no live run
 cox route hold ID --reason REASON [--by BY] [--dry-run] [--profile PROFILE]   hold a queued intake or an initiative so the chair skips it until released; for an intake, an alias for draft with a reason

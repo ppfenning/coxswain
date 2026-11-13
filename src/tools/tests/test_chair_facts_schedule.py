@@ -210,3 +210,26 @@ def test_hosts_load_and_mode_come_from_the_dispatch_facts():
 
 def test_schedule_updated_is_an_action_kind():
     assert "schedule_updated" in get_args(ActionKind)
+
+
+def _running(**kw):
+    return _inputs(TWO_WAVES, **kw)["running"]
+
+
+def test_live_phases_on_local_and_a_remote_host_hold_distinct_lanes_of_their_hosts():
+    live = [("init-a", "p1"), ("init-b", "p9")]
+    assert _running(live_phases=live, newest_run_host={"init-a": "", "init-b": "host-a"}) == [
+        {"initiative": "init-a", "phase": "p1", "host": "chair", "lane": "chair-1"},
+        {"initiative": "init-b", "phase": "p9", "host": "host-a", "lane": "host-a-1"},
+    ]
+
+
+def test_live_phases_of_one_host_take_its_lanes_in_order_and_one_past_the_count_is_dropped():
+    live = [("a", "p"), ("b", "p"), ("c", "p")]
+    assert [(r["initiative"], r["lane"]) for r in _running(live_phases=live)] == [("a", "chair-1"), ("b", "chair-2")]
+
+
+def test_a_live_phase_on_an_unknown_host_is_dropped_and_no_mapping_means_local():
+    assert _running(live_phases=[("a", "p")], newest_run_host={"a": "ghost"}) == []
+    assert _running(live_phases=[("a", "p")], newest_run_host=None)[0]["host"] == "chair"
+    assert _running() == []

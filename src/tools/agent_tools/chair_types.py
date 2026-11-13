@@ -487,9 +487,16 @@ class ScheduleHost(TypedDict):
 DurationRecord = dict[str, str]  # the keys `chair_schedule_durations` reads: size, mix, build_start, approve_time
 
 
+class ScheduleRunning(TypedDict):
+    initiative: str
+    phase: str
+    host: str
+    lane: str  # a lane name of that host; the facts assign it, the run store does not record it
+
+
 class ScheduleInputs(TypedDict):
-    """The arguments of `chair_schedule.plan_schedule` minus the clock, as plain data. `running` is not carried:
-    the facts know which phases are live but not their host, lane or finish."""
+    """The arguments of `chair_schedule.plan_schedule` minus the clock, as plain data. `running` lists live phases
+    with the host and lane they hold; their finish is not carried, so the planner treats each as overdue."""
 
     initiatives: list[ScheduleInitiative]
     records: list[DurationRecord]
@@ -497,6 +504,7 @@ class ScheduleInputs(TypedDict):
     mode: str
     load: dict[str, int]  # host name to live runs
     target: str | None  # ISO release target a work item states; None when none does
+    running: NotRequired[list[ScheduleRunning]]
 
 
 class ScheduleUpdatedAction(TypedDict):
@@ -504,6 +512,16 @@ class ScheduleUpdatedAction(TypedDict):
 
     kind: Literal["schedule_updated"]
     schedule: dict[str, Any]
+
+
+class LandFailStreak(TypedDict):
+    """The newest failed land_phase or merge_level outcome of a phase, and the consecutive ticks it repeated."""
+
+    initiative: str
+    phase: str
+    kind: Literal["land_phase", "merge_level"]
+    reason: str
+    ticks: int
 
 
 class Facts(TypedDict):
@@ -589,6 +607,8 @@ class Facts(TypedDict):
     relaunch_loop_reported: NotRequired[list[str]]
     # Land refusals still counted: refused or failed land_phase rows since the key's last landed row. Absent means [].
     land_refusals: NotRequired[list[LandRefusal]]
+    land_fail_streaks: NotRequired[list[LandFailStreak]]  # per (initiative, phase), the run of identical failed-land reasons; absent means none
+    no_run_streaks: NotRequired[dict[str, int]]  # approved task id to its consecutive no_run needs_chair ticks; absent means {}
     # Squash conflicts a retry would repeat: the run's newest squash_phase stop, its branch and main unmoved. Absent means [].
     land_conflicts: NotRequired[list[LandConflict]]
     land_heads: NotRequired[dict[str, str]]  # `<initiative>/<phase>` to the phase branch tip, for refused phases only. Absent means {}.
@@ -648,6 +668,7 @@ ActionKind = Literal[
     "steward_event",
     "unlaunched",
     "schedule_updated",
+    "requeue_task",
 ]
 
 
@@ -682,7 +703,8 @@ class Action(TypedDict, total=False):
     top-level keys, never inside fields, so the reported-set key is unchanged. run_gate carries no more. steward_event also carries event, the name to publish.
     unlaunched carries initiative and reason and runs no command: why a ready initiative was not launched.
     The steward's relaunch is a relaunch carrying initiative, plus epic, topic and fields (the signature) so the executor
-    can record `relaunched`. A planner relaunch carries none of those three."""
+    can record `relaunched`. A planner relaunch carries none of those three.
+    requeue_task carries initiative, phase, task_id, reason and epoch; it is declared here and not yet planned or executed."""
 
     kind: ActionKind
     epoch: int
