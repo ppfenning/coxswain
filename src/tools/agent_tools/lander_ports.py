@@ -11,6 +11,7 @@ import json
 import os
 import socket
 import sqlite3
+import subprocess
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
@@ -140,6 +141,15 @@ class Forge:
 
     def pr_merged(self, repo: Path, branch: str) -> tuple[bool, str]:
         return pr_merged_verdict(self._module.find_branch_prs(repo, branch))
+
+    def has_ci(self, repo: Path, ref: str) -> bool:
+        """Whether `ref` carries a GitHub Actions workflow, the only CI this forge can report on. A read that fails
+        answers yes, so a land never skips checks it could not rule out."""
+        listed = subprocess.run(["git", "-C", str(repo), "ls-tree", "--name-only", ref, ".github/workflows/"],
+                                capture_output=True, text=True, timeout=30)
+        return listed.returncode != 0 or any(
+            name.endswith((".yml", ".yaml")) for name in listed.stdout.split()
+        )
 
     def retarget(self, repo: Path, branch: str, base: str) -> tuple[bool, str]:
         """Point the open pull request from `branch` at a new base: how a stack's layer moves down when the one below lands."""
