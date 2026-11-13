@@ -8,8 +8,8 @@ def _hold(task_id: str, ticks: int, initiative: str = "x", surfaces: list[str] |
     return {**hold, "surfaces": surfaces} if surfaces is not None else hold
 
 
-def _approved(task_id: str, initiative: str = "x", merged: bool = False) -> dict:
-    return {"id": task_id, "initiative": initiative, "merged": merged}
+def _approved(task_id: str, initiative: str = "x", merged: bool = False, **landing: object) -> dict:
+    return {"id": task_id, "initiative": initiative, "merged": merged, **landing}
 
 
 def test_five_ticks_releases_nothing():
@@ -22,7 +22,7 @@ def test_six_ticks_releases_with_a_plain_reason():
             "kind": "release_approvals",
             "initiative": "x",
             "task_ids": ["a"],
-            "reason": "approval unmerged for 6 ticks; rebuild on the current main",
+            "reason": "approval not merged to main or its phase branch for 6 ticks; rebuild on the current main",
         }
     ]
 
@@ -35,6 +35,31 @@ def test_two_stuck_tasks_of_one_initiative_give_one_action_in_facts_order():
 def test_a_merged_task_is_never_released():
     facts = {"approval_holds": [_hold("a", 9)], "approved": [_approved("a", merged=True)]}
     assert plan_release(facts) == []
+
+
+def test_a_ticket_landing_hold_merged_to_its_phase_branch_is_never_released():
+    facts = {"approval_holds": [_hold("a", 50)], "approved": [_approved("a", branch_merged=True, land_at="ticket")]}
+    assert plan_release(facts) == []
+
+
+def test_a_level_landing_hold_merged_to_its_phase_branch_is_never_released():
+    facts = {"approval_holds": [_hold("a", 50)], "approved": [_approved("a", branch_merged=True, land_at="level")]}
+    assert plan_release(facts) == []
+
+
+def test_a_phase_done_ticket_landing_row_is_never_released():
+    row = _approved("a", branch_merged=False, phase_done=True, land_at="ticket")
+    assert plan_release({"approval_holds": [_hold("a", 50)], "approved": [row]}) == []
+
+
+def test_a_task_landing_hold_not_on_a_branch_is_released_at_six_ticks():
+    facts = {"approval_holds": [_hold("a", 6)], "approved": [_approved("a", branch_merged=False, land_at="task")]}
+    assert [a["task_ids"] for a in plan_release(facts)] == [["a"]]
+
+
+def test_a_ticket_landing_row_not_on_a_branch_is_released_at_the_limit():
+    facts = {"approval_holds": [_hold("a", 6)], "approved": [_approved("a", branch_merged=False, land_at="ticket")]}
+    assert [a["task_ids"] for a in plan_release(facts)] == [["a"]]
 
 
 def test_the_limit_from_facts_beats_the_default():

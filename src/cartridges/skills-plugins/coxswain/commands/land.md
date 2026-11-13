@@ -5,6 +5,12 @@ argument-hint: <run id>
 
 Land an approved run.
 
+The command line is the route for landing: the chair's MCP server lists no
+landing tool today, and a merge must stay behind the dry run and the
+operator's word. Use an MCP tool for landing only if the server lists one in
+this session's tool list, and keep the same dry run first and the same rule
+about applying.
+
 Run `cox runs land $ARGUMENTS --repo <the run's repository>` as a dry run
 (fall back to `agent-tools runs land` if `cox` is not on PATH), and show
 the plan it prints. Stop there.

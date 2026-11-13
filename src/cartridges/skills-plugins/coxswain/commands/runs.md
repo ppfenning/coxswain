@@ -11,8 +11,13 @@ regardless. A LIVE result held by another session means the loop is owned
 by `<holder>`; message it or resume it, do not re-arm on its runs — then
 show the table anyway, since reading it takes no lock and arms no monitor.
 
-Run `cox route status` (fall back to `agent-tools route status`) for what
-is in flight and what has exited. Then run `cox runs events --runs-dir
+If both `release_status` and `queue_board` appear in this session's tool
+list, call them for what is queued and what is releasing. If either is
+absent, or a call fails because the server cannot be reached, run `cox route
+status` (fall back to `agent-tools route status`) instead. Those two tools
+report the queue and the release only, so if their answer does not show what
+is in flight and what has exited, run `cox route status` for that too. Say
+which route was used. Then run `cox runs events --runs-dir
 <runs dir> | tail -20` for the latest events, using the runs directory
 already established for this session from the docket or the profile; if
 none has been established, ask rather than guess at one.
