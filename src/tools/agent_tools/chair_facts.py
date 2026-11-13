@@ -251,6 +251,7 @@ class FactsDeps:
     drafts: Callable[[], int] | None = None
     missing_repos: Callable[[], list[str]] | None = None
     reported_repos: Callable[[], set[str]] | None = None
+    handled_keys: Callable[[], Sequence[str]] | None = None  # the sort's keys already acted on; None means none
     run_exited: Callable[[], Mapping[str, bool]] | None = None  # initiative to whether its newest run has an exit record; absent means {}
     remote_unfetched: Callable[[], Mapping[str, str]] | None = None  # a `RemoteUnfetched` also carries the decompose-only initiatives
     lost_runs: Callable[[], Mapping[str, str]] | None = None  # initiative to run id, for a lane whose host is stale and whose run has no exit record; absent means {}
@@ -484,10 +485,24 @@ def newest_cause(attempts: Sequence[Row], key: Key) -> str:
     return next((str(a.get("cause") or "") for a in reversed(attempts) if _key(a) == key), "")
 
 
+def _on_body(attempts: Sequence[Row], key: Key) -> list[Row]:
+    """The task's attempts on its current body, oldest first. A row with no `on_current_body` counts."""
+    return [a for a in attempts if _key(a) == key and a.get("on_current_body", True)]
+
+
 def _quarantine(
-    key: Key, cause: str, attempts: Sequence[Row], has_patch: Callable[[str, str], bool]
+    key: Key,
+    cause: str,
+    attempts: Sequence[Row],
+    has_patch: Callable[[str, str], bool],
+    row: Row | None = None,
 ) -> QuarantineFacts:
-    return {
+    """One quarantine. `row` is the open quarantine's own reader row: its newest run and reason, which the sort acts on.
+
+    A review or code quarantine holds its reason as `held_objection`, so the service annotates the ticket once and
+    rebuilds; a harness quarantine names its state by its newest run, so it is rebuilt once per run."""
+    on_body = _on_body(attempts, key)
+    fact: QuarantineFacts = {
         "task_id": key[2],
         "initiative": key[0],
         "cause": cause,
@@ -495,6 +510,21 @@ def _quarantine(
         "has_patch": has_patch(key[0], key[2]),
         "rescue_failed": rescue_failed(attempts, key),
     }
+    if row is None:
+        return fact
+    reason, run = str(row.get("reason") or ""), str(row.get("run") or "")
+    fact = {
+        **fact,
+        "causes": [str(a.get("cause") or "") for a in on_body],
+        "reasons": [str(a.get("reason") or "") for a in on_body],
+        "run": run,
+        "reason": reason,
+    }
+    if cause in ("review", "code") and reason.strip():
+        fact["held_objection"] = reason
+    if cause == HARNESS_CAUSE and run:
+        fact["task_state_key"] = run
+    return fact
 
 
 def quarantine_facts(
@@ -527,6 +557,7 @@ def quarantine_facts(
 
     An initiative with a live run contributes nothing: a retry in flight is never planned again."""
     opened = list(dict.fromkeys(_key(q) for q in quarantined))
+    by_key = {_key(q): q for q in quarantined}
     landed_now = {(t["initiative"], t["phase"], t["id"]) for t in landing if t["run"]}
     # A stranded task that is also an open quarantine keeps the quarantine's newest cause, so it is not sent to the chair as stranded.
     # Matched on initiative and task id, as `chair_plan_recover._recovery` does: a stranded record's phase can be missing or old.
@@ -539,7 +570,7 @@ def quarantine_facts(
         if k not in opened and k not in landed_now and (in_store is None or (k[0], k[2]) in in_store)
     ]
     return [
-        *(_quarantine(k, newest_cause(attempts, k) or QUARANTINED_CAUSE, attempts, has_patch) for k in opened if k[0] not in live),
+        *(_quarantine(k, newest_cause(attempts, k) or QUARANTINED_CAUSE, attempts, has_patch, by_key[k]) for k in opened if k[0] not in live),
         *(_stranded_entry(ks, rows, attempts, has_patch, waiting) for ks in _by_run(stuck, rows) if ks[0][0] not in live),
     ]
 
@@ -1855,6 +1886,7 @@ def gather_facts(
             deps.missing_repos() if deps.missing_repos is not None else [],
             deps.reported_repos() if deps.reported_repos is not None else set(),
         ),
+        "handled_keys": list(deps.handled_keys()) if deps.handled_keys is not None else [],
         "run_exited": dict(deps.run_exited()) if deps.run_exited is not None else {},
         "remote_unfetched": dict(unfetched),
         "remote_unfetched_decompose": list(unfetched.decompose) if isinstance(unfetched, RemoteUnfetched) else [],

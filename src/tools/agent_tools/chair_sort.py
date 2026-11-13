@@ -64,6 +64,11 @@ def _cut(text: str, limit: int) -> str:
     return text[: limit - 1].rsplit(" ", 1)[0].rstrip() + "…"
 
 
+def plain_instruction(objection: str) -> str:
+    """The rebuild instruction written when no model step is supplied: the failure itself is the brief."""
+    return "The last attempt was rejected for the reason above. Fix exactly that, run the project's own checks before you finish, and change nothing else."
+
+
 def rebuild_note(reason: str, cheap_model_text: str) -> str:
     """The note appended to a ticket body: NOTE_HEADING, the objection cut to 200, then the instruction in what is
     left of MAX_NOTE. The heading and the start of the instruction always survive."""
