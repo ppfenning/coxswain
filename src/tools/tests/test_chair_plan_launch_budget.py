@@ -50,7 +50,7 @@ def _loop_history(reason_old: str = "main red") -> dict:
 
 
 def _kinds(actions: list[dict], initiative: str) -> list[str]:
-    return [a["kind"] for a in actions if a.get("initiative") == initiative]
+    return [a["kind"] for a in actions if a.get("initiative") == initiative and a["kind"] != "unlaunched"]
 
 
 def test_a_third_launch_epic_in_the_hour_is_refused_and_an_initiative_under_the_limit_still_launches():

@@ -1068,22 +1068,97 @@ def test_dash_feed_and_once_together_is_rejected(tmp_path, capsys):
     assert out == "" and "mutually exclusive" in err
 
 
-def test_dash_feed_loops_printing_one_line_per_pass_until_stopped(monkeypatch, tmp_path, capsys):
-    feed = {"runs": [], "as_of": "x"}
-    monkeypatch.setattr(cli.dash_feed, "gather_feed", lambda runs_dir, work_dir, now, profile=None: feed)
+def _stop_after(monkeypatch, passes):
     sleeps = []
 
     def fake_sleep(seconds):
         sleeps.append(seconds)
-        if len(sleeps) >= 2:
+        if len(sleeps) >= passes:
+            raise StopIteration
+
+    monkeypatch.setattr(cli.time, "sleep", fake_sleep)
+    return sleeps
+
+
+def test_dash_feed_loops_printing_one_line_per_pass_until_stopped(monkeypatch, tmp_path, capsys):
+    feed = {"runs": [], "as_of": "x"}
+    caches = []
+
+    def fake_cached(runs_dir, work_dir, now, profile, cache):
+        caches.append(cache)
+        return feed, f"cache-{len(caches)}"
+
+    monkeypatch.setattr(cli.dash_feed, "gather_feed_cached", fake_cached)
+    sleeps = _stop_after(monkeypatch, 2)
+    with pytest.raises(StopIteration):
+        cli.main(["dash", "--feed", "--runs-dir", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert out == (json.dumps(feed) + "\n") * 2
+    assert sleeps == [5.0, 5.0]
+    assert caches == [cli.dash_feed.EMPTY_CACHE, "cache-1"]
+    assert (tmp_path / ".dash-feed" / "feed.snapshot").read_text() == json.dumps(feed)
+
+
+def test_dash_feed_releases_the_share_lock_when_stopped(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli.dash_feed, "gather_feed_cached", lambda *a: ({}, a[-1]))
+    _stop_after(monkeypatch, 1)
+    with pytest.raises(StopIteration):
+        cli.main(["dash", "--feed", "--runs-dir", str(tmp_path)])
+    handle = cli.dash_feed_share.try_own(tmp_path / ".dash-feed")
+    assert handle is not None
+    cli.dash_feed_share.release(handle)
+
+
+def test_dash_feed_follower_prints_the_published_line_and_never_gathers(monkeypatch, tmp_path, capsys):
+    share = tmp_path / ".dash-feed"
+    owner = cli.dash_feed_share.try_own(share)
+    assert owner is not None
+    cli.dash_feed_share.publish(share, '{"as_of": "shared"}')
+
+    def never(*args):
+        raise AssertionError("a follower must not gather")
+
+    monkeypatch.setattr(cli.dash_feed, "gather_feed_cached", never)
+    sleeps = _stop_after(monkeypatch, 2)
+    try:
+        with pytest.raises(StopIteration):
+            cli.main(["dash", "--feed", "--runs-dir", str(tmp_path)])
+    finally:
+        cli.dash_feed_share.release(owner)
+    assert capsys.readouterr().out == '{"as_of": "shared"}\n'
+    assert sleeps == [5.0, 5.0]
+
+
+def test_dash_feed_follower_takes_over_when_the_lock_frees(monkeypatch, tmp_path, capsys):
+    share = tmp_path / ".dash-feed"
+    owner = cli.dash_feed_share.try_own(share)
+    assert owner is not None
+    feed = {"as_of": "mine"}
+    monkeypatch.setattr(cli.dash_feed, "gather_feed_cached", lambda runs_dir, work_dir, now, profile, cache: (feed, cache))
+    sleeps = []
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) == 1:
+            cli.dash_feed_share.release(owner)
+        else:
             raise StopIteration
 
     monkeypatch.setattr(cli.time, "sleep", fake_sleep)
     with pytest.raises(StopIteration):
         cli.main(["dash", "--feed", "--runs-dir", str(tmp_path)])
-    out = capsys.readouterr().out
-    assert out == (json.dumps(feed) + "\n") * 2
-    assert sleeps == [2.0, 2.0]
+    assert capsys.readouterr().out == json.dumps(feed) + "\n"
+
+
+def test_dash_interval_defaults_to_five():
+    assert cli.build_parser().parse_args(["dash", "--feed"]).interval == 5.0
+
+
+def test_dash_once_and_detail_leave_no_share_files(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli.dash_feed, "gather_feed", lambda runs_dir, work_dir, now, profile=None: {})
+    assert cli.main(["dash", "--once", "--runs-dir", str(tmp_path)]) == 0
+    cli.main(["dash", "--detail", "run", "r1", "--runs-dir", str(tmp_path)])
+    assert not (tmp_path / ".dash-feed").exists()
 
 
 def test_dash_detail_dispatches_run_with_the_run_id_runs_dir_and_now(monkeypatch, tmp_path, capsys):

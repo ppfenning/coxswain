@@ -60,15 +60,17 @@ def test_one_tick_against_a_real_record_renews_heartbeat_at_on_disk(tmp_path):
     taken_at = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC).isoformat()
     chair.write(tmp_path, {"session": session, "pid": pid, "host": host, "taken_at": taken_at, "heartbeat_at": taken_at, "runs": []})
     outcomes = iter([True, False])
+    seen = []
 
     def fake_alive(pid: int, sig: int) -> None:
         if not next(outcomes):
+            seen.append(chair.read(tmp_path))
             raise ProcessLookupError()
 
     rc = chair.beat_loop(session, pid, runs_dir=tmp_path, interval=0, clock=_FakeClock(), alive=fake_alive)
 
     assert rc == 0
-    assert chair.read(tmp_path)["heartbeat_at"] != taken_at
+    assert seen[0]["heartbeat_at"] != taken_at
 
 
 def test_a_refusal_from_beat_is_printed_and_stops_the_loop_at_once(tmp_path, monkeypatch, capsys):
@@ -138,15 +140,65 @@ def test_beat_loop_writes_the_claude_session_from_environ_to_disk(tmp_path):
     record, _ = chair.take(None, session, pid, host, _NOW, 10, False)
     chair.write(tmp_path, record)
     outcomes = iter([True, False])
+    seen = []
 
     def fake_alive(pid: int, sig: int) -> None:
         if not next(outcomes):
+            seen.append(chair.read(tmp_path))
             raise ProcessLookupError()
 
     env = {"CLAUDE_SESSION_ID": "abc-123"}
     chair.beat_loop(session, pid, runs_dir=tmp_path, interval=0, clock=_FakeClock(), alive=fake_alive, environ=env)
 
-    assert chair.read(tmp_path)["claude_session"] == "abc-123"
+    assert seen[0]["claude_session"] == "abc-123"
+
+
+def _dies_at_once(pid: int, sig: int) -> None:
+    raise ProcessLookupError()
+
+
+def test_a_held_chair_whose_pid_disappears_is_released_with_its_lease(tmp_path, monkeypatch, capsys):
+    session, pid, host = "chair-test", 4321, socket.gethostname()
+    holder = chair.lease_holder(session, pid, host)
+    argvs = _harness(monkeypatch, 0, json.dumps({"ok": True, "epoch": 7, "holder": holder}))
+    record, _ = chair.take(None, session, pid, host, _NOW, 10, False)
+    chair.write(tmp_path, record)
+    assert chair.acquire_lease(tmp_path, session, pid, host) == ""
+    assert (tmp_path / chair.LEASE_FILENAME).exists()
+    outcomes = iter([True, False])
+
+    def fake_alive(pid: int, sig: int) -> None:
+        if not next(outcomes):
+            raise ProcessLookupError()
+
+    rc = chair.beat_loop(session, pid, runs_dir=tmp_path, interval=0, clock=_FakeClock(), alive=fake_alive)
+
+    assert rc == 0
+    assert chair.read(tmp_path) is None
+    assert not (tmp_path / chair.LEASE_FILENAME).exists()
+    assert any("release" in argv for argv in argvs)
+    assert f"chair: {session} released at session exit" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("other_session,other_pid", [("chair-test", 9999), ("someone-else", 4321)])
+def test_a_record_held_by_another_pid_or_label_is_left_as_it_was(tmp_path, capsys, other_session, other_pid):
+    host = socket.gethostname()
+    record, _ = chair.take(None, other_session, other_pid, host, _NOW, 10, False)
+    chair.write(tmp_path, record)
+
+    rc = chair.beat_loop("chair-test", 4321, runs_dir=tmp_path, interval=0, clock=_FakeClock(), alive=_dies_at_once)
+
+    assert rc == 0
+    assert chair.read(tmp_path) == record
+    assert "released at session exit" not in capsys.readouterr().out
+
+
+def test_pid_exit_with_no_record_returns_zero_without_error(tmp_path, capsys):
+    rc = chair.beat_loop("chair-test", 4321, runs_dir=tmp_path, interval=0, clock=_FakeClock(), alive=_dies_at_once)
+
+    assert rc == 0
+    assert chair.read(tmp_path) is None
+    assert "released at session exit" not in capsys.readouterr().out
 
 
 _HOLDER = "chair-test@h:1"

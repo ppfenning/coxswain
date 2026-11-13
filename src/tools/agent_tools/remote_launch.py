@@ -178,6 +178,7 @@ def launch_plan(
     intake: str | None = None,
     cartridges: str | None = None,
     chair_courier: str | None = None,
+    phase: str | None = None,
 ) -> list[list[str]]:
     """The argv that `launch_on_host` runs in order: the rsync push, then, when `cartridges` is given, a mirroring
     rsync push of that directory (a path relative to the chair's workspace) and an rsync check that it now matches,
@@ -216,7 +217,7 @@ def launch_plan(
         # The local work/<initiative> is the source: a ticket moved or dropped here must not linger on the lane host,
         # where a second copy of one id fails the run's DAG check.
         rsync_step = rsync_push_argv(src, place(remote_dir), mirror=True)
-        launch_step = ssh_argv(host.ssh, launch_argv(remote_dir, run_id, label, chair_courier=chair_courier))
+        launch_step = ssh_argv(host.ssh, launch_argv(remote_dir, run_id, label, phase, chair_courier=chair_courier))
     else:
         raise ValueError(f"unknown graph {graph!r}: a remote launch plan covers epic and decompose")
     cartridge_steps = (
@@ -300,6 +301,7 @@ def launch_on_host(
     intake: str | None = None,
     cartridges: str | None = None,
     profile: Mapping | None = None,
+    phase: str | None = None,
 ) -> dict | LaunchError:
     """`preflight` is a refusal line from a check made before anything is copied; None lets the launch go on.
     `tools` are the executables the repo's checks run: one `probe` of the host's lane PATH, before the copy, refuses
@@ -340,7 +342,7 @@ def launch_on_host(
         host, initiative, run_id, label, locate, repo, harness_dir, relaunch,
         home=home, host_checkouts=host_checkouts, harness_head=harness_head, repo_head=repo_head, base=base,
         harness_base=harness_base, graph=graph, intake=intake, cartridges=cartridges,
-        chair_courier=courier_ssh_of(profile),
+        chair_courier=courier_ssh_of(profile), phase=phase,
     )
     rsync_argv, ssh_cmd = plan[0], plan[-1]
     pushed = run(rsync_argv)

@@ -50,7 +50,7 @@ def test_a_kept_relaunch_claims_its_surfaces_so_an_overlapping_unstarted_initiat
     )
     plan = plan_tick(facts, _NOW)
     assert [a["kind"] for a in plan if a.get("initiative") == "x"] == ["clear_branches", "relaunch"]
-    assert [a for a in plan if a.get("initiative") == "y"] == [
+    assert [a for a in plan if a.get("initiative") == "y" and a["kind"] != "unlaunched"] == [
         {"kind": "steer_clear", "initiative": "y", "other": "x", "paths": ["a.py"], "epoch": 7}
     ]
     assert [a for a in plan if a["kind"] == "launch_epic"] == [{"kind": "launch_epic", "initiative": "z", "epoch": 7}]

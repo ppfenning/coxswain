@@ -49,6 +49,7 @@ cox runs usage RUN_ID [--runs-dir RUNS_DIR] [--json]   usage stats and cost for 
 cox runs trace RUN_ID [--runs-dir RUNS_DIR] [--role ROLE] [-v]   the tool-call trace for one run
 cox runs clean RUN_ID --repo REPO [--worktree-root WORKTREE_ROOT] [--runs-dir RUNS_DIR] [--profile PROFILE] [--apply] [--force]   delete a run's worktree and branches locally
 cox runs land RUN_ID --repo REPO [--task TASK] [--phase PHASE] [--label LABEL] [--force] [--no-claim] [--behind-limit BEHIND_LIMIT] [--base BASE] [--worktree-root WORKTREE_ROOT] [--apply] [--no-merge] [--runs-dir RUNS_DIR] [--profile PROFILE] [--gate ticket|phase|epic|full]   merge a run's branch into the target repo
+cox runs land-batch --repo REPO [--label LABEL] [--source SOURCE] [--batch-size BATCH_SIZE] [--wait-s WAIT_S] [--force] [--no-claim] [--base BASE] [--worktree-root WORKTREE_ROOT] [--apply] [--runs-dir RUNS_DIR] [--profile PROFILE] [--gate ticket|phase|epic|full]   land disjoint approved phases together as one pull request (the merge queue)
 cox runs fetch [--runs-dir RUNS_DIR] [--profile PROFILE] [RUN_ID] [--all]   pull an ended remote lane's run directory, log and branches to this machine
 cox runs review --pr PR [--profile PROFILE]   review a contributor PR with the review graph and post the verdict
 cox runs recover RUN_ID TASK_ID --repo REPO [--runs-dir RUNS_DIR] [--profile PROFILE] [--dry-run]   merge an approved task's commit into its phase branch after an escalated merge
@@ -105,8 +106,9 @@ cox plan serve DIR [--kind KIND] [--check] [--no-open]   serve a visual plan thr
 cox epic watch PIDFILE [--log LOG] [--max-seconds MAX_SECONDS] [--interval INTERVAL] [--json]   poll a detached run's pidfile until it exits
 cox route context [--profile PROFILE] [--json]   the routing profile's resolved context
 cox route status [--profile PROFILE] [--json] [--all]   what is queued or running for this profile
-cox route file [--profile PROFILE] [--repo REPO] [--title TITLE] [--body BODY] [--phase PHASE] [--intake] [--from-intake FROM_INTAKE] [--force] [--link LINK] [--after AFTER]   file a new ticket for the harness
+cox route file [--profile PROFILE] [--repo REPO] [--title TITLE] [--body BODY] [--phase PHASE] [--intake] [--from-intake FROM_INTAKE] [--force] [--link LINK] [--after AFTER] [--draft] [--ready]   file a new ticket for the harness
 cox route priority [INITIATIVE] [--profile PROFILE] [--set N] [--up] [--down] [--top] [--bottom]   move an initiative or a queued intake up or down the launch order
+cox route schedule [--profile PROFILE] [--explain INITIATIVE] [--should-jump INITIATIVE]   project the whole queue as one schedule
 cox route pull [--profile PROFILE] [--source SOURCE] [--dry-run]   file intake tickets from a source, once per link
 cox route lint INITIATIVE_DIR [--repo REPO]   static ticket lint over a filed initiative, work-shape.md §3
 cox route groups [--profile PROFILE]   print the newest plans/intake-groups/<date>.md file, work-shape.md §5
@@ -116,11 +118,13 @@ cox route paths [--profile PROFILE] [--workspace WORKSPACE] [--apply] [--move ('
 cox route store-fill [--profile PROFILE] [--workspace WORKSPACE]   fill the store's work_items from the workspace files
 cox route approve INITIATIVE [--task TASK] [--by BY] [--profile PROFILE]   approve a draft initiative's todo tickets: todo becomes ready
 cox route decline INITIATIVE --reason REASON [--by BY] [--profile PROFILE]   decline a draft initiative: its todo tickets become dropped
-cox route edit ID [--title TITLE] [--body BODY] [--body-file BODY_FILE] [--repo REPO] [--surfaces SURFACES] [--state STATE] [--pr PR] [--rebuild] [--force] [--link LINK] [--after AFTER] [--epic EPIC] [--dry-run] [--profile PROFILE]   change a queued intake, an initiative or a task ticket
+cox route edit ID [--title TITLE] [--body BODY] [--body-file BODY_FILE] [--note NOTE] [--repo REPO] [--surfaces SURFACES] [--state STATE] [--pr PR] [--rebuild] [--force] [--link LINK] [--after AFTER] [--epic EPIC] [--dry-run] [--profile PROFILE]   change a queued intake, an initiative or a task ticket
 cox route epic ACTION ID [--title TITLE] [--target-branch TARGET_BRANCH] [--dry-run] [--profile PROFILE]   create an epic definition file: `route epic new <id>`
 cox route remove [ID...] [--match GLOB] --reason REASON [--by BY] [--dry-run] [--profile PROFILE]   remove queued intakes or initiatives that have no live run
-cox route hold ID --reason REASON [--by BY] [--dry-run] [--profile PROFILE]   hold a queued intake or an initiative so the chair skips it until released
-cox route release ID [--dry-run] [--profile PROFILE]   release a held intake or initiative back to the queue
+cox route hold ID --reason REASON [--by BY] [--dry-run] [--profile PROFILE]   hold a queued intake or an initiative so the chair skips it until released; for an intake, an alias for draft with a reason
+cox route release ID [--dry-run] [--profile PROFILE]   release a held intake or initiative back to the queue; an intake moves to ready
+cox route ready ID [--dry-run] [--profile PROFILE]   move a queued intake to ready so the chair can pick it up
+cox route draft ID [--dry-run] [--profile PROFILE]   move a queued intake to draft so the chair skips it until it is ready
 cox route requeue ID [--dry-run] [--profile PROFILE]   requeue the intake of an initiative that has no live tasks
 cox route leader status [--profile PROFILE]   print one line: held by this session, taken over, or not the chair
 cox route chair take [--profile PROFILE] [--label LABEL] [--pid PID] [--steal] [--hours HOURS] [--model sonnet|opus|haiku]   take the chair lock; --steal overrides a live holder and names it
@@ -131,12 +135,12 @@ cox route chair status [--profile PROFILE] [--json]   the chair lock's holder an
 cox route chair clear [--profile PROFILE] [--force]   remove the chair lock file, refusing a live holder unless --force
 cox route chair chat [TEXT] [--profile PROFILE] [--read] [--since SINCE] [--json] [--as-leader]   append to or read the leader chat thread (runs/leader.chat.jsonl)
 cox route sync [--profile PROFILE] [--item ITEM] [--project PROJECT] [--workspace WORKSPACE] [--dry-run] [--prune-out-of-scope]   mirror the work store onto the profile's tracker
-cox route launch epic [--profile PROFILE] --initiative INITIATIVE [--repo REPO] [--fix-attempts FIX_ATTEMPTS] [--base BASE] [--dry-run] [--run-id RUN_ID] [--on ON] [--local] [--include-blocked] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the run of one filed initiative (the epic graph; epic is its historical name)
+cox route launch epic [--profile PROFILE] --initiative INITIATIVE [--repo REPO] [--fix-attempts FIX_ATTEMPTS] [--base BASE] [--dry-run] [--run-id RUN_ID] [--on ON] [--local] [--include-blocked] [--phase PHASE] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the run of one filed initiative (the epic graph; epic is its historical name)
 cox route launch decompose [--profile PROFILE] --idea PATH --initiative-id INITIATIVE_ID [--task-ids ordinal] [--local] [--detach] [--dry-run] [--run-id RUN_ID] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the decompose graph against an idea
 cox route launch rescue [--profile PROFILE] --initiative INITIATIVE --task TASK [--repo REPO] [--base BASE] [--dry-run] [--run-id RUN_ID] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the rescue graph against a task
 cox route launch cos [--profile PROFILE] [--dry-run] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the cos graph
 cox route launch sweep --idea IDEA --initiative-id INITIATIVE_ID [--label LABEL] [--dry-run]   launch the sweep graph against an idea
-cox chair run [--once] [--interval INTERVAL] [--dry-run] [--max-overruns MAX_OVERRUNS] [--label LABEL] [--profile PROFILE]   beat, gather, plan, perform and report every tick until interrupted
+cox chair run [--once] [--interval INTERVAL] [--dry-run] [--as-holder] [--max-overruns MAX_OVERRUNS] [--label LABEL] [--profile PROFILE]   beat, gather, plan, perform and report every tick until interrupted
 cox chair service [--install] [--status] [--label LABEL] [--interval INTERVAL] [--environment-file ENVIRONMENT_FILE] [--profile PROFILE] [--host HOST] [--apply]   write or show the systemd user unit that keeps `cox chair run` alive
 cox chair ask QUESTION [--option OPTION] [--context CONTEXT] [--label LABEL] [--profile PROFILE]   put a question with its options to the operator on the courier bus
 cox chair attach [--profile PROFILE] [--lend-routine] [--recall-routine]   say whether a live chair loop holds the lease; exit 0 if so, 1 if not

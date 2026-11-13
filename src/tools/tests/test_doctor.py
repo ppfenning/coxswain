@@ -14,6 +14,7 @@ _CHECK_ORDER = (
     "project overlay",
     "skills",
     "provider",
+    "claude token",
     "plugins",
     "store",
     "workspace",
@@ -21,6 +22,8 @@ _CHECK_ORDER = (
     "cast",
     "chair unit PATH",
 )
+
+_TOKEN_PATH = "/t/claude-token"
 
 
 def _good_facts():
@@ -39,6 +42,7 @@ def _good_facts():
         "provider_command": "claude",
         "provider_on_path": True,
         "provider_version": "claude 1.2.3",
+        "claude_token": {"path": _TOKEN_PATH, "present": True, "empty": False, "mode": 0o600},
         "store": {"kind": "sqlite", "reachable": True, "error": None, "runs": 593},
         "workspace_dirs": {"/w/work": True, "/w/runs": True, "/w/intake": True},
         "schema_versions": {"cartridges": "1.0", "graphs": "1.0", "tools": "1.0"},
@@ -268,6 +272,45 @@ def test_provider_version_string_appears_in_detail_when_ok():
     assert "claude 1.2.3" in rows["provider"]["detail"]
 
 
+def _token_row(**changes):
+    token = _good_facts()["claude_token"] | changes
+    return _rows_by_check(doctor.checks(_good_facts() | {"claude_token": token}))["claude token"]
+
+
+def test_a_token_fact_never_gathered_passes_as_not_checked():
+    facts = _good_facts()
+    del facts["claude_token"]
+    row = _rows_by_check(doctor.checks(facts))["claude token"]
+    assert row == {"check": "claude token", "ok": True, "detail": "not checked"}
+
+
+def test_an_absent_token_file_fails_naming_the_path_and_the_fix():
+    assert _token_row(present=False, mode=None) == {
+        "check": "claude token", "ok": False,
+        "detail": f"no token file at {_TOKEN_PATH}; run cox setup token"}
+
+
+def test_an_empty_token_file_fails_naming_the_path_and_the_fix():
+    assert _token_row(empty=True) == {
+        "check": "claude token", "ok": False,
+        "detail": f"token file at {_TOKEN_PATH} is empty; run cox setup token"}
+
+
+def test_a_token_file_readable_by_the_group_fails_with_its_octal_mode():
+    assert _token_row(mode=0o100640) == {
+        "check": "claude token", "ok": False,
+        "detail": f"token file at {_TOKEN_PATH} has mode 640; it must be 600"}
+
+
+def test_a_private_token_file_passes_naming_the_path():
+    assert _token_row(mode=0o600) == {"check": "claude token", "ok": True, "detail": f"token file at {_TOKEN_PATH}"}
+
+
+def test_the_token_row_is_not_skipped_by_the_profile_cascade():
+    facts = _good_facts() | {"profile_text": None}
+    assert _rows_by_check(doctor.checks(facts))["claude token"]["detail"] == f"token file at {_TOKEN_PATH}"
+
+
 def test_a_missing_workspace_dir_is_named():
     facts = _good_facts()
     facts["workspace_dirs"]["/w/runs"] = False
@@ -290,7 +333,7 @@ def test_render_lists_every_row_in_order_with_its_own_check_label():
     data_lines = lines[1 : 1 + len(rows)]
     labels = [re.split(r"\s{2,}", line.strip())[0] for line in data_lines]
     assert labels == list(_CHECK_ORDER)
-    assert lines[-1] == "doctor: 16 ok, 0 failing"
+    assert lines[-1] == "doctor: 17 ok, 0 failing"
 
 
 def test_render_marks_a_failing_row_as_fail_and_counts_it():
@@ -299,13 +342,14 @@ def test_render_marks_a_failing_row_as_fail_and_counts_it():
     rows = doctor.checks(facts)
     text = doctor.render(rows)
     assert "FAIL" in text
-    assert "doctor: 15 ok, 1 failing" in text
+    assert "doctor: 16 ok, 1 failing" in text
 
 
 def test_empty_facts_dict_yields_all_rows_not_checked_and_exit_one():
     rows = _rows_by_check(doctor.checks({}))
     assert all(r["ok"] is False and r["detail"] == "not checked"
-               for check, r in rows.items() if check not in ("cast", "schema", "plugins", "chair unit PATH"))
+               for check, r in rows.items() if check not in ("cast", "schema", "plugins", "chair unit PATH", "claude token"))
+    assert rows["claude token"] == {"check": "claude token", "ok": True, "detail": "not checked"}
     assert rows["cast"] == {"check": "cast", "ok": True, "detail": "not gathered"}
     assert rows["chair unit PATH"] == {"check": "chair unit PATH", "ok": True, "detail": "not gathered"}
     assert rows["schema"] == {"check": "schema", "ok": True, "detail": ""}
@@ -771,7 +815,7 @@ def test_render_shows_warn_and_counts_warnings_apart_from_ok_and_failing():
     rows = doctor.checks(_good_facts()) + doctor.freshness_rows(_PROFILE, _CATALOG, None, lambda p, c: [_STALE])
     text = doctor.render(rows)
     assert re.search(r"model freshness\s+warn\s+" + re.escape(_STALE), text)
-    assert text.splitlines()[-1] == "doctor: 16 ok, 0 failing, 1 warning"
+    assert text.splitlines()[-1] == "doctor: 17 ok, 0 failing, 1 warning"
 
 
 _LOCATIONS = home.resolve({}, "/u", "linux", flag="/h")

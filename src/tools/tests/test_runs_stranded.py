@@ -2,7 +2,7 @@ import argparse
 import json
 import subprocess
 
-from agent_tools import cli, runs_stranded
+from agent_tools import cli, land_manual, runs_stranded
 
 
 def _record(**over):
@@ -22,7 +22,22 @@ def _item(state, **over):
 def test_an_approved_unlanded_record_with_a_ready_item_is_listed_with_its_remedy():
     rows = runs_stranded.stranded([_record()], [_item("ready")])
     assert rows == [{"run": "r1", "task": "t1", "phase": "p1", "branch": "b1",
-                      "remedy": "cox runs land r1 --task t1 --repo /repo/acme"}]
+                      "remedy": "cox runs land r1 --task t1 --repo /repo/acme", "expected": False}]
+
+
+def test_a_row_in_a_land_manual_repo_is_expected_and_carries_the_manual_remedy():
+    rows = runs_stranded.stranded([_record()], [_item("ready")], manual_of=lambda repo: repo == "/repo/acme")
+    assert [(r["expected"], r["remedy"]) for r in rows] == [(True, land_manual.REMEDY)]
+
+
+def test_a_row_in_a_repo_the_predicate_calls_automatic_is_not_expected():
+    rows = runs_stranded.stranded([_record()], [_item("ready")], manual_of=lambda repo: False)
+    assert [r["expected"] for r in rows] == [False]
+
+
+def test_a_row_with_no_resolvable_repo_is_not_expected():
+    rows = runs_stranded.stranded([_record()], [_item("ready", repo=None)], manual_of=lambda repo: True)
+    assert [(r["expected"], r["remedy"]) for r in rows] == [(False, None)]
 
 
 def test_an_approved_record_a_code_or_ticket_quarantine_superseded_is_not_stranded():
@@ -99,7 +114,7 @@ def test_an_id_shared_across_initiatives_scopes_to_the_records_own_initiative():
              _item("ready", initiative="other", repo="/repo/other")]
     rows = runs_stranded.stranded([record], items)
     assert rows == [{"run": "r1", "task": "t1", "phase": "p1", "branch": "b1",
-                      "remedy": "cox runs land r1 --task t1 --repo /repo/other"}]
+                      "remedy": "cox runs land r1 --task t1 --repo /repo/other", "expected": False}]
 
 
 def test_an_id_shared_across_initiatives_with_no_initiative_on_the_record_is_reported_not_dropped():
@@ -135,7 +150,7 @@ def test_a_dropped_item_with_an_approved_record_is_not_stranded():
 def test_an_approved_item_is_still_stranded():
     rows = runs_stranded.stranded([_record()], [_item("approved")])
     assert rows == [{"run": "r1", "task": "t1", "phase": "p1", "branch": "b1",
-                      "remedy": "cox runs land r1 --task t1 --repo /repo/acme"}]
+                      "remedy": "cox runs land r1 --task t1 --repo /repo/acme", "expected": False}]
 
 
 def test_a_ready_item_a_land_conflict_sent_back_is_not_stranded_and_names_no_repo():
@@ -241,7 +256,7 @@ def test_cli_json_lists_the_stranded_row(tmp_path, capsys):
     assert rc == 0
     rows = json.loads(capsys.readouterr().out)
     assert rows == [{"run": "r1", "task": "t1", "phase": "p1", "branch": "b1",
-                      "remedy": "cox runs land r1 --task t1 --repo /repo/acme"}]
+                      "remedy": "cox runs land r1 --task t1 --repo /repo/acme", "expected": False}]
 
 
 def test_cli_prints_no_stranded_work_and_exits_zero_on_an_empty_workspace(tmp_path, capsys):
@@ -302,7 +317,7 @@ def test_cli_lists_the_row_once_the_phase_branch_is_deleted(tmp_path, capsys):
     assert rc == 0
     rows = json.loads(capsys.readouterr().out)
     assert rows == [{"run": "r1", "task": "t1", "phase": "p1", "branch": "epic/acme/p1",
-                      "remedy": f"cox runs land r1 --task t1 --repo {repo}"}]
+                      "remedy": f"cox runs land r1 --task t1 --repo {repo}", "expected": False}]
 
 
 def _line(task="t1", remedy="cox runs land r1 --task t1 --repo /repo/acme"):
@@ -312,7 +327,7 @@ def _line(task="t1", remedy="cox runs land r1 --task t1 --repo /repo/acme"):
 def test_a_log_line_for_a_ready_item_yields_one_row_with_the_items_phase():
     rows = runs_stranded.stranded_from_log("r1", [_line()], [_item("ready")], "/repo/acme")
     assert rows == [{"run": "r1", "task": "t1", "phase": "p1", "branch": None,
-                      "remedy": "cox runs land r1 --task t1 --repo /repo/acme"}]
+                      "remedy": "cox runs land r1 --task t1 --repo /repo/acme", "expected": False}]
 
 
 def test_a_log_line_for_an_approved_item_yields_one_row():

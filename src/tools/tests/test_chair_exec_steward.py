@@ -138,6 +138,16 @@ def test_a_tagged_relaunch_after_a_failed_merge_is_skipped(tmp_path):
     assert [e["event"] for e in _bus(tmp_path)] == ["merge_failed"]
 
 
+def test_a_tagged_relaunch_after_a_deferred_merge_is_skipped(tmp_path):
+    calls: list = []
+    sink = SimpleNamespace(pending=lambda repo: True, full=lambda repo: False, collect=lambda: [])
+    [result, relaunch] = perform([_level(), TAGGED], replace(_deps(tmp_path, calls), lands=sink), lambda: 1, False)
+    assert (result["status"], relaunch["status"]) == ("deferred", "recorded")
+    assert relaunch["reason"] == f"not relaunched, merge_level for {EPIC} deferred"
+    assert calls == []
+    assert _bus(tmp_path) == []
+
+
 def test_a_tagged_relaunch_after_a_failed_gate_is_skipped(tmp_path):
     calls: list = []
     [gate, relaunch] = perform([GATE, TAGGED], _deps(tmp_path, calls, "gate_failed"), lambda: 1, False)
@@ -349,12 +359,61 @@ def test_only_a_land_that_merged_something_is_level_merged():
     ] * 5
 
 
-def test_a_land_the_sink_still_holds_for_the_repo_ends_the_steward_land(tmp_path):
+def test_a_land_the_sink_still_holds_for_the_repo_defers_the_steward_land(tmp_path):
     calls: list = []
     sink = SimpleNamespace(pending=lambda repo: True, full=lambda repo: False, collect=lambda: [])
     [result] = perform([_level()], replace(_landing(tmp_path, calls), lands=sink), lambda: 1, False)
-    assert (result["status"], result["reason"]) == ("failed", f"a land is still running in {REPO}")
+    assert (result["status"], result["reason"]) == ("deferred", f"a land is still running in {REPO}")
     assert calls == []
+    assert _bus(tmp_path) == []
+
+
+class _BlockingSink:
+    """A land sink whose repo is held from the moment a land is handed to it, like a land waiting on checks."""
+
+    def __init__(self) -> None:
+        self.held = False
+        self.started: list[dict] = []
+
+    def pending(self, repo: str) -> bool:
+        return self.held
+
+    def full(self, repo: str) -> bool:
+        return False
+
+    def landing(self) -> list[dict[str, str]]:
+        return []
+
+    def collect(self) -> list:
+        return []
+
+    def submit(self, action, work):
+        self.held = True
+        self.started.append(action)
+        return {"action": action, "status": "in_progress", "reason": ""}
+
+
+def _land_phase_action() -> dict:
+    return {"kind": "land_phase", "epoch": 1, "initiative": EPIC, "repo": REPO, "phase": "p1", "run": "run-b"}
+
+
+def test_a_merge_planned_after_a_blocking_land_phase_defers_and_before_it_lands(tmp_path, monkeypatch):
+    _no_commit(monkeypatch)
+    after = _BlockingSink()
+    calls: list = []
+    [land, merge] = perform([_land_phase_action(), _level()], replace(_landing(tmp_path, calls), lands=after), lambda: 1, False)
+    assert (land["status"], merge["status"]) == ("in_progress", "deferred")
+    assert merge["reason"] == f"a land is still running in {REPO}"
+    assert _cox(calls) == []
+    assert _bus(tmp_path) == []
+
+    before = _BlockingSink()
+    calls = []
+    [merge, land] = perform([_level(), _land_phase_action()], replace(_landing(tmp_path, calls), lands=before), lambda: 1, False)
+    assert (merge["status"], land["status"]) == ("done", "in_progress")
+    assert _cox(calls) == ["fetch run-a", "fetch run-b", "land run-b --phase p1"]
+    assert [e["event"] for e in _bus(tmp_path)] == ["level_merged"]
+    assert len(before.started) == 1
 
 
 def test_a_task_merge_without_task_runs_is_merge_failed(tmp_path):

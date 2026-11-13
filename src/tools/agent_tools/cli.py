@@ -13,6 +13,7 @@ import getpass
 import importlib
 import importlib.metadata
 import importlib.util
+import inspect
 import io
 import json
 import math
@@ -146,6 +147,7 @@ dash_detail_release = _LazyModule("agent_tools.dash_detail_release")
 dash_detail_run = _LazyModule("agent_tools.dash_detail_run")
 dash_detail_spend = _LazyModule("agent_tools.dash_detail_spend")
 dash_feed = _LazyModule("agent_tools.dash_feed")
+dash_feed_share = _LazyModule("agent_tools.dash_feed_share")
 decisions = _LazyModule("agent_tools.decisions")
 doctor = _LazyModule("agent_tools.doctor")
 draft_apply = _LazyModule("agent_tools.draft_apply")
@@ -165,10 +167,16 @@ intake_state = _LazyModule("agent_tools.intake_state")
 lake_config = _LazyModule("agent_tools.lake_config")
 lake_lease = _LazyModule("agent_tools.lake_lease")
 land = _LazyModule("agent_tools.land")
+land_batch_effects = _LazyModule("agent_tools.land_batch_effects")
+land_batch_group = _LazyModule("agent_tools.land_batch_group")
+land_batch_run = _LazyModule("agent_tools.land_batch_run")
+land_batch_settings = _LazyModule("agent_tools.land_batch_settings")
+land_batch_squash = _LazyModule("agent_tools.land_batch_squash")
 land_lease = _LazyModule("agent_tools.land_lease")
 land_limit = _LazyModule("agent_tools.land_limit")
 land_merge_lock = _LazyModule("agent_tools.land_merge_lock")
 land_repo_lease = _LazyModule("agent_tools.land_repo_lease")
+lane_checkout_sync = _LazyModule("agent_tools.lane_checkout_sync")
 lane_hosts = _LazyModule("agent_tools.lane_hosts")
 lane_python = _LazyModule("agent_tools.lane_python")
 lane_toolchain = _LazyModule("agent_tools.lane_toolchain")
@@ -203,6 +211,7 @@ route_import = _LazyModule("agent_tools.route_import")
 route_reach = _LazyModule("agent_tools.route_reach")
 route_remove = _LazyModule("agent_tools.route_remove")
 route_requeue = _LazyModule("agent_tools.route_requeue")
+route_schedule = _LazyModule("agent_tools.route_schedule")
 route_sync = _LazyModule("agent_tools.route_sync")
 route_sync_gh = _LazyModule("agent_tools.route_sync_gh")
 router = _LazyModule("agent_tools.router")
@@ -1351,6 +1360,18 @@ def _steward_head(runner: Callable[[list[str]], tuple[int, str]], repo_for: Call
     return head
 
 
+def _steward_target_branch_of(profile: dict, ws: Path, repo_for: Callable[[dict], str]) -> Callable[[str], str]:
+    """`StewardPorts.target_branch_of`: the branch a land of the epic's repository targets, as `land` resolves it, no fetch.
+    "" when no repository is recorded or the target is refused, so the executor reports merge_failed."""
+    def target(epic: str) -> str:
+        root = repo_for({"initiative": epic})
+        if not root:
+            return ""
+        flag, refusal = _initiative_target_branch(profile, Path(root), ws, epic)
+        return "" if refusal else base_branch.base_name(root, flag)
+    return target
+
+
 def _steward_level_merged(runner: Callable[[list[str]], tuple[int, str]], repo_for: Callable[[dict], str]) -> Callable[[str, str], bool]:
     """`FactsDeps.level_merged`: whether the phase's level branch has landed on the initiative's ticket branch; False without a repository."""
     git = _steward_git(runner)
@@ -1394,7 +1415,7 @@ def _steward_gate_runner(
             if code != 0:
                 return False, f"worktree add: {out.strip()}"
             _link_venv(root, wt)
-            return _run_checks([(line, line) for line in checks], wt, capacity=capacity)
+            return _run_checks([(line, line) for line in checks], wt, os.cpu_count() or 1, capacity)
         finally:
             _remove_land_worktree(root, branch)
     return run_gate
@@ -2850,6 +2871,8 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
         return _phase_done_record(step)
     if kind == "wait_checks":
         return forge_module.wait_checks(repo, float(step.get("timeout_s", 180)), ref=step.get("branch", "HEAD"))
+    if kind == "batch_squash":
+        return land_batch_squash.squash_onto_batch(repo, step)
     if kind == "merge":
         return forge_module.merge(repo, step)
     if kind == "clean":
@@ -3397,9 +3420,18 @@ def _sync_default_branch(repo: Path, default_branch: str) -> tuple[str, str]:
     return decision, f"{default_branch} fast-forwarded to {remote_ref} ({behind} commits)"
 
 
+_RUN_FILE_SUFFIXES = re.compile(
+    r"\.(?:log|pid|json|jsonl|result\.json|remote\.json|launched\.json|fetched\.json|usage\.json|progress\.json"
+    r"|ceiling\.json|calls\.jsonl|jsonl\.zst|parquet|provider-profile\.yaml)$"
+)
+
+
 def _run_id_of(name: str) -> str:
-    """`<id>.log`, `<id>.remote.json`, `<id>:<task>.json` and `<id>-trace` all belong to `<id>`."""
-    return re.split(r"[.:]", name, maxsplit=1)[0].removesuffix("-trace")
+    """`<id>.log`, `<id>.remote.json`, `<id>:<task>.json` and `<id>-trace` all belong to `<id>`.
+
+    Wrong belief: "the id ends at the first dot". A phase run id is `<initiative>.<phase>-<N>`, so only a known
+    run-file suffix is cut, from the right; a name with none keeps its dots up to the first colon."""
+    return _RUN_FILE_SUFFIXES.sub("", name).split(":", 1)[0].removesuffix("-trace")
 
 
 def _taken_run_names(runs_dir: Path) -> list[str]:
@@ -4055,6 +4087,179 @@ def _runs_land(a: argparse.Namespace) -> int:
     return rc
 
 
+_BATCH_POLL_S = 30.0  # how often a queue pass re-reads the sources while it waits for a full batch
+
+
+class _BatchLease:
+    """Edge. The repo land lease for one queue pass, through the same acquire, renew and release calls `_runs_land` makes.
+
+    Taken on the first batch to open, never while sources are collected, so a normal land is not blocked meanwhile."""
+
+    def __init__(self, runs_dir: Path, repo: Path, holder: str):
+        self.runs_dir, self.repo, self.holder = runs_dir, repo, holder
+        self.slot, self.epoch, self.held, self.busy = 0, 0, False, None
+        self.lost: list[str] = []
+        self.limit = land_limit.repo_land_limit(str(repo))
+
+    def take(self) -> str | None:
+        """The refusal text when another land holds the repo, else None. A store outage lands without the lease."""
+        if self.busy is not None or self.held:
+            return self.busy
+        self.slot, got = land_repo_lease.acquire_in_slots(
+            self.runs_dir, str(self.repo), self.holder, _REPO_LEASE_TTL_SECONDS, socket.gethostname(), self.limit)
+        if isinstance(got, store_cli.LeaseRefused):
+            self.busy = land_repo_lease.refusal_message(str(self.repo), got.holder or "another land")
+        elif isinstance(got, store_cli.LeaseGranted):
+            self.held, self.epoch = True, got.epoch
+        return self.busy
+
+    def _reacquire(self) -> store_cli.LeaseResult:
+        again = land_repo_lease.acquire_slot(self.runs_dir, str(self.repo), self.slot, self.holder, _REPO_LEASE_TTL_SECONDS)
+        if isinstance(again, store_cli.LeaseGranted):
+            self.epoch = again.epoch
+        return again
+
+    def guard(self) -> _LeaseGuard | None:
+        if not self.held:
+            return None
+        return _repo_lease_guard(
+            str(self.repo),
+            lambda: land_repo_lease.renew_slot(self.runs_dir, str(self.repo), self.slot, self.holder, self.epoch, _REPO_LEASE_TTL_SECONDS),
+            time.monotonic, _REPO_LEASE_TTL_SECONDS, self.lost, self._reacquire)
+
+    def merge_lock(self) -> Callable[[], contextlib.AbstractContextManager] | None:
+        return _merge_lock_factory(self.runs_dir, str(self.repo), self.holder, self.limit, self.held)
+
+    def release(self) -> None:
+        if not self.held or self.lost:  # a refused renew means another land holds it now; releasing is not ours to do
+            return
+        name = land_repo_lease.slot_lease_name(str(self.repo), self.slot)
+        try:
+            freed = land_repo_lease.release_slot(self.runs_dir, str(self.repo), self.slot, self.holder, self.epoch)
+            why = freed.detail if isinstance(freed, store_cli.LeaseError) else (
+                "the store is not available" if isinstance(freed, store_cli.NotAvailable) else None)
+        except Exception as exc:
+            why = f"{type(exc).__name__}: {exc}"
+        if why is not None:
+            print(f"warning: repo lease {name} not released: {why}", file=sys.stderr)
+
+
+def _ready_phase_ids(runs_dir: Path, work_root: Path) -> list[tuple[str, str, str]]:
+    """Edge. `(initiative, phase, run)` for every phase directory under `runs/<run>/tasks/` that a work initiative owns."""
+    found = [(_initiative_of_phase(work_root, p.name, p.parent.parent.name), p.name, p.parent.parent.name)
+             for p in sorted(runs_dir.glob("*/tasks/*")) if p.is_dir()]
+    return [(i, ph, r) for i, ph, r in found if i]
+
+
+def _batch_sources(runs_dir: Path, repo: Path, land_mode: str, wanted: list[tuple[str, str, str]] | None) -> list[dict]:
+    """Edge. The source mappings of the ready phases among `wanted`, or among every phase when None.
+
+    Reads the records `_runs_land` reads for a phase. A phase with no tickets, no record, or a task still unapproved is skipped."""
+    work_root = runs_dir.parent / "work"
+    sources = []
+    for initiative, phase, run in wanted if wanted is not None else _ready_phase_ids(runs_dir, work_root):
+        items, _ = _phase_items(work_root, initiative, phase, runs_dir=runs_dir, land_mode=land_mode)
+        if not items or not land_batch_effects.phase_ready(items):
+            continue
+        if land_mode == "store":
+            _backfill_phase_task_files(runs_dir, run, phase)
+        record, task_records, task_paths, _ = _land_phase_record(runs_dir, run, phase)
+        if record is not None:
+            sources.append(land_batch_effects.build_source(initiative, phase, run, str(repo), items, task_records, task_paths))
+    return sources
+
+
+def _batch_effects(a: argparse.Namespace, repo: Path, runs_dir: Path, profile: dict, lease: _BatchLease,
+                   wanted: list[tuple[str, str, str]] | None):
+    """Edge. The queue's `Effects`, or the reason they cannot be built. Its steps run through `_land_execute`, as a land's do."""
+    try:
+        default_branch = base_branch.base_ref(str(repo), getattr(a, "base", None)).removeprefix("origin/")
+    except base_branch.BaseError as exc:
+        return f"land: refusing, {exc}"
+    forge_choice = forge.forge_name(profile)
+    forge_module = forge.forge_for(forge_choice)
+    if forge_module is None:
+        return f"land: no forge named {forge_choice} (built in: local, github, auto)"
+    stale = forge.missing_refs(forge_module)
+    if stale:
+        return f"land: refusing, forge {forge_choice} does not accept {', '.join(stale)}; see agent_tools/forge.py"
+    repo_facts = _land_repo_facts(repo, profile, default_branch, forge_module)
+    if repo_facts["cartridge_error"] and a.apply:
+        return f"land: refusing, cartridge checks unavailable ({repo_facts['cartridge_error']}); the land would run fewer checks than the build did"
+    land_mode = work_state.work_state_mode(_lake_provider(a)[0]) if a.apply else "files"
+    level = a.gate or _resolved_gate_level(runs_dir)
+    capacity = _check_capacity(runs_dir, profile, socket.gethostname())
+
+    def run_steps(steps: list[dict], batch: list[dict]) -> tuple[int, list[str], str]:
+        enriched = _with_check_cap(
+            _land_enrich(steps, path="", worktree_root=a.worktree_root, workspace=str(runs_dir.parent),
+                         profile=str(_profile_path(a)), runs_dir=str(runs_dir), umbrella=profile.get("umbrella_dir"),
+                         task_paths={t: p for s in batch for t, p in s["task_paths"].items()},
+                         task_items={t: f for s in batch for t, f in s["task_items"].items()}),
+            os.cpu_count() or 1, capacity)
+        repo_guard = lease.guard()
+        return _land_execute(repo, enriched, steps, None, None, level, False, forge_module, by=_holder_label(a), mode=land_mode,
+                             guard=_first_stop(repo_guard, None) if repo_guard else None, stops=[],
+                             keep=[repo_guard] if repo_guard else [], lock=lease.merge_lock())
+
+    return land_batch_effects.make_effects(
+        lambda: _batch_sources(runs_dir, repo, land_mode, wanted), run_steps, repo_facts, default_branch,
+        lambda: datetime.datetime.now(datetime.UTC).strftime("%Y%m%d%H%M%S"))
+
+
+def _runs_land_batch(a: argparse.Namespace) -> int:
+    """Edge. One merge-queue pass: collect, take the repo lease, open the first batch, print the result.
+
+    Exits 2 when the lease is refused, 1 when every opened source was returned, else 0. A returned source keeps its
+    tasks approved and its phase branch untouched."""
+    repo = Path(a.repo).expanduser()
+    wanted, bad = land_batch_effects.parse_source_ids(a.source or [])
+    if bad:
+        print(f"land-batch: {bad}")
+        return 2
+    runs_dir, reason = _runs_dir_for_land(a)
+    if runs_dir is None:
+        print(f"land-batch: {reason}")
+        return 2
+    if a.apply:
+        guard_rc = _leader_guard_or_refuse(runs_dir, _holder_label(a), a.force, claim=not a.no_claim, explicit_label=getattr(a, "label", None))
+        if guard_rc is not None:
+            return guard_rc
+    profile_text = _read_text_or_none(_profile_path(a))
+    try:
+        profile = route.parse_profile(profile_text) if profile_text is not None else {}
+    except route.ProfileError as exc:
+        print(f"land-batch: profile unreadable: {exc}")
+        return 2
+    configured = land_batch_settings.merge_queue_setting(profile)
+    settings = land_batch_settings.MergeQueue(a.batch_size or configured.batch_size, configured.wait_s if a.wait_s is None else a.wait_s)
+    lease = _BatchLease(runs_dir, repo, f"{_holder_label(a)}@{socket.gethostname()}:{os.getpid()}")
+    effects = _batch_effects(a, repo, runs_dir, profile, lease, wanted)
+    if isinstance(effects, str):
+        print(effects)
+        return 2
+    if not a.apply:
+        sources = effects.read_sources()
+        batch = land_batch_group.disjoint_batches(sources, settings.batch_size)[0] if sources else []
+        print(json.dumps({"would_batch": [f"{s['initiative']}/{s['phase']}" for s in batch],
+                          "ready": [f"{s['initiative']}/{s['phase']}" for s in sources]}, indent=2))
+        return 0
+
+    def land(group: list[dict]):
+        busy = lease.take()
+        return land_batch_run.Outcome(busy, None) if busy is not None else effects.land(group)
+
+    try:
+        result = land_batch_run.run_queue(settings, land_batch_run.Effects(effects.read_sources, land, effects.sleep, effects.now), _BATCH_POLL_S)
+    finally:
+        lease.release()
+    if lease.busy is not None:
+        print(lease.busy)
+        return 2
+    print(land_batch_run.render_lines(result), end="")
+    return 1 if result.returned and not result.landed else 0
+
+
 def _mark_land_conflict(runs_dir: Path, record: dict, item_path: str | None, reason: str, by: str, mode: str) -> None:
     """Edge. A land whose cherry-pick conflicted leaves the task `ready`, not `approved`, with `reason` as a `land_conflict`
     marker and a body note, on the store row and the item file. The row is written first, so a crash before the state
@@ -4223,7 +4428,7 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
             print("stopped; remaining: " + ", ".join(s["kind"] for s in steps[i:]))
             return 2, reached, pr
         reached.append(step["kind"])
-        if step["kind"] in ("cherry_pick", "squash_phase", "reuse_branch", "patch_apply", "pr_branch_cut", "merge_phase"):
+        if step["kind"] in ("cherry_pick", "squash_phase", "reuse_branch", "patch_apply", "pr_branch_cut", "merge_phase", "batch_squash"):
             built.append(step.get("onto") or step["branch"])
         if step["kind"] == "mark_merged":
             pr_branch = next((s["pr_branch"] for s in steps if s["kind"] == "phase_done"), "")
@@ -5017,6 +5222,7 @@ def _route_edit(a: argparse.Namespace) -> int:
         surfaces=a.surfaces, state=a.state, dry_run=a.dry_run, live_runs=on_target, now=now,
         rebuild=getattr(a, "rebuild", False), force=getattr(a, "force", False), pr=getattr(a, "pr", None),
         link=getattr(a, "link", None), after=_after_ids(getattr(a, "after", None)), epic=getattr(a, "epic", None),
+        note=getattr(a, "note", None),
     )
     if result.code != route_edit.DONE:
         print(f"edit: {'refused' if result.code == route_edit.REFUSED else 'failed'}: {result.text}")
@@ -5093,6 +5299,22 @@ def _route_release(a: argparse.Namespace) -> int:
     return route_hold.release(runs_dir.parent, runs_dir, a.id, run_store.read_queue(runs_dir), dry_run=a.dry_run)
 
 
+def _route_set_stage(a: argparse.Namespace, stage: str) -> int:
+    runs_dir, reason = _runs_dir_for_land(a)
+    if runs_dir is None:
+        print(f"route: {reason}")
+        return 2
+    return route_hold.set_stage(runs_dir.parent, runs_dir, a.id, stage, run_store.read_queue(runs_dir), dry_run=a.dry_run)
+
+
+def _route_stage_ready(a: argparse.Namespace) -> int:
+    return _route_set_stage(a, "ready")
+
+
+def _route_stage_draft(a: argparse.Namespace) -> int:
+    return _route_set_stage(a, "draft")
+
+
 def _route_requeue(a: argparse.Namespace) -> int:
     runs_dir, reason = _runs_dir_for_land(a)
     if runs_dir is None:
@@ -5123,6 +5345,19 @@ def _chair_machine_line(profile: Mapping, runs_dir: Path) -> str:
         return route.chair_machine_line(chair_orchestrate.mode_line(configured, rows, socket.gethostname(), _now_iso()))
     except Exception:
         return ""
+
+
+def _initiative_events(queue: Sequence[Mapping], run_ids: Sequence[str]) -> dict[str, list]:
+    """Run id to the `events` its initiative's own row carries. A run id is a slug with an optional
+    `-<digits>` suffix, so it is looked up whole, then by `_run_slug`. A run with no events, or with
+    anything but a list of them, is absent."""
+    found = {
+        str(r.get("initiative") or r.get("task_id") or ""): (r["extra"].get("events") if isinstance(r.get("extra"), Mapping) else None)
+        for r in queue
+        if r.get("kind") == "initiative"
+    }
+    by_run = {run_id: found.get(run_id) or found.get(_run_slug(run_id)) for run_id in run_ids}
+    return {run_id: list(evs) for run_id, evs in by_run.items() if isinstance(evs, list) and evs}
 
 
 def _route_status(a: argparse.Namespace) -> int:
@@ -5183,6 +5418,7 @@ def _route_status(a: argparse.Namespace) -> int:
                 short_ids=_run_short_ids([r["id"] for r in rows], short_ids),
                 waiting=_waiting_by_entry_id(queue, waiting), held=held, deferred=deferred,
                 chair_line=_chair_machine_line(profile, ws / "runs"),
+                events=_initiative_events(queue, [r["id"] for r in rows]),
             )
             drafts = route.render_drafts(
                 draft_list.read_drafts(ws / "work", datetime.datetime.now(datetime.UTC).isoformat()), draft_list.format_age
@@ -5277,22 +5513,42 @@ def _leader_guard_or_refuse(runs_dir: Path, holder: str, force: bool, claim: boo
         print(f"override: {line}" if force else line)
         return None if force else 2
     if claim and state != "live":
-        pid, host = _leader_identity()
+        pid, host = _leader_identity(None, os.environ)
         new_record, _ = chair.take(record, holder, pid, host, datetime.datetime.now(datetime.UTC), _leader_heartbeat_minutes(), _leader_pid_alive(record), steal=True, claude_session=chair.claude_session_from_env(os.environ))
         chair.write(runs_dir, new_record)
         print(f"taking the loop: {holder}" if record is None else f"taking the loop from {record.get('session')} ({state})")
     return None
 
 
-def _leader_identity(explicit_pid: int | None = None) -> tuple[int, str]:
+def _leader_pid_choice(explicit_pid: int | None, env: Mapping[str, str], ppid: int, alive: Callable[[int], bool]) -> tuple[int, bool]:
+    """Pure. The pid to record and whether it is the parent-pid fallback.
+    An explicit pid wins, then an all-digit, non-zero, live `CLAUDE_PID`, then `ppid`."""
+    if explicit_pid:
+        return explicit_pid, False
+    raw = env.get("CLAUDE_PID", "")
+    if raw.isascii() and raw.isdigit() and int(raw) > 0 and alive(int(raw)):
+        return int(raw), False
+    return ppid, True
+
+
+def _leader_identity(explicit_pid: int | None = None, env: Mapping[str, str] | None = None) -> tuple[int, str]:
     """The pid and host that name *this session* to the lock, for `take`/`beat`/`release`.
     `os.getpid()` names this one `cox` invocation, which exits the moment the command
-    returns. `os.getppid()` names the process that invoked `cox`, which is the right
-    answer only when a single long-running shell issues `take`, `beat` and `release` in
-    turn; a caller that runs each command in a fresh shell records a pid that is dead
-    before the next command, so its lock reads as stale the instant it is taken.
-    `--pid` lets such a caller name the durable process that actually owns the loop."""
-    return explicit_pid or os.getppid(), socket.gethostname()
+    returns. `os.getppid()` names the process that invoked `cox`, which is the invoking
+    shell and not the loop: a caller that runs each command in a fresh shell records a
+    pid that is dead before the next command, so its lock reads as stale at once.
+    `--pid`, or a live `CLAUDE_PID` in the passed `env`, names the durable process instead.
+    Every verb that writes or matches a lease passes `os.environ`, so they all name the same pid;
+    no `env` means no `CLAUDE_PID` lookup."""
+    return _leader_pid_choice(explicit_pid, env or {}, os.getppid(), chair.pid_alive)[0], socket.gethostname()
+
+
+def _leader_take_warning(pid: int, explicit_pid: int | None, env: Mapping[str, str], ppid: int, alive: Callable[[int], bool]) -> str | None:
+    """Pure. The warning for a take that records the invoking shell's pid, else None.
+    `pid` is the pid actually recorded, so a pid read back off a held lease counts as the shell's when it equals `ppid`."""
+    if explicit_pid or pid != ppid or _leader_pid_choice(None, env, ppid, alive) == (ppid, False):
+        return None
+    return f"warning: recorded pid {pid} is the invoking shell's; the lease goes stale when it exits. Pass --pid with a long-lived loop's pid."
 
 
 def _leader_pid_alive(record: dict | None) -> bool:
@@ -5377,7 +5633,8 @@ def _route_chair_take(a: argparse.Namespace) -> int:
         return refuse_rc
     held = _caller_holder(runs_dir, a.label)
     session = a.label or (held[0] if held else "chair")
-    pid, host = _leader_identity(a.pid or (held[1] if held else None))
+    pid, host = _leader_identity(a.pid or (held[1] if held else None), os.environ)
+    warning = _leader_take_warning(pid, a.pid, os.environ, os.getppid(), chair.pid_alive)
     refuse_rc = _leader_refuse_dead_pid(a.pid)
     if refuse_rc is not None:
         return refuse_rc
@@ -5403,6 +5660,8 @@ def _route_chair_take(a: argparse.Namespace) -> int:
                 return 2
             chair.write(runs_dir, retaken)
             print(line)
+            if warning:
+                print(warning)
             return 0
         if new_record is None:
             print(reason)
@@ -5416,6 +5675,8 @@ def _route_chair_take(a: argparse.Namespace) -> int:
     if displaced:
         print(chair.displaced_line(record))
     print(f"chair taken: {new_record['session']} (pid {new_record['pid']}) on {new_record['host']}")
+    if warning:
+        print(warning)
     return 0
 
 
@@ -5424,7 +5685,7 @@ def _route_chair_extend(a: argparse.Namespace) -> int:
     if refuse_rc is not None:
         return refuse_rc
     session = a.label or "chair"
-    pid, host = _leader_identity(a.pid)
+    pid, host = _leader_identity(a.pid, os.environ)
     refuse_rc = _leader_refuse_dead_pid(a.pid) or _leader_refuse_hours(a.hours)
     if refuse_rc is not None:
         return refuse_rc
@@ -5447,7 +5708,7 @@ def _route_chair_beat(a: argparse.Namespace) -> int:
         return refuse_rc
     held = _caller_holder(runs_dir, a.label)
     session = a.label or (held[0] if held else "chair")
-    pid, host = _leader_identity(a.pid or (held[1] if held else None))
+    pid, host = _leader_identity(a.pid or (held[1] if held else None), os.environ)
     refuse_rc = _leader_refuse_dead_pid(a.pid)
     if refuse_rc is not None:
         return refuse_rc
@@ -5475,7 +5736,7 @@ def _route_chair_release(a: argparse.Namespace) -> int:
         return refuse_rc
     held = _caller_holder(runs_dir, a.label)
     session = a.label or (held[0] if held else "chair")
-    pid, host = _leader_identity(a.pid or (held[1] if held else None))
+    pid, host = _leader_identity(a.pid or (held[1] if held else None), os.environ)
     refuse_rc = _leader_refuse_dead_pid(a.pid)
     if refuse_rc is not None:
         return refuse_rc
@@ -5525,6 +5786,10 @@ def _route_leader_status(a: argparse.Namespace) -> int:
     if read_rc is not None:
         return read_rc
     host = socket.gethostname()
+    live = _live_loop_holder(runs_dir)
+    if live is not None and not chair.is_caller_holder(record, os.environ, host):
+        print(chair_resolve.held_line(live.label or "?", live.is_service))  # a live chair loop holds the chair: read only, the lease is not touched
+        return 0
     state = chair.liveness(record, _leader_pid_alive(record), datetime.datetime.now(datetime.UTC), host, _leader_heartbeat_minutes())
     with chair.locked(runs_dir):  # re-read under the lock: a beat or a takeover's release request may have landed since the read above
         fresh = chair.read(runs_dir)
@@ -5580,7 +5845,7 @@ def _route_chair_chat(a: argparse.Namespace) -> int:
         record, read_rc = _leader_read_or_refuse(runs_dir)
         if read_rc is not None:
             return read_rc
-        pid, host = _leader_identity()
+        pid, host = _leader_identity(None, os.environ)
         now = datetime.datetime.now(datetime.UTC)
         state = chair.liveness(record, _leader_pid_alive(record), now, host, _leader_heartbeat_minutes())
         if state != "live":
@@ -5817,6 +6082,13 @@ def _body_refusal(value: str) -> str:
     return f"routing: cannot read body file {value}"
 
 
+def _filing_stage(a: argparse.Namespace, profile: Mapping) -> str:
+    """The stage a session files an intake at: the flag, else the profile's `intake_stage`, else draft."""
+    if a.ready:
+        return "ready"
+    return "draft" if a.draft else profile.get("intake_stage") or "draft"
+
+
 def _route_file(a: argparse.Namespace) -> int:
     profile, rc = _resolve_profile_or_refuse(a)
     if rc is not None:
@@ -5834,6 +6106,12 @@ def _route_file(a: argparse.Namespace) -> int:
     after = _after_ids(getattr(a, "after", None)) or []
     if after and not a.intake:
         print("routing: --after needs --intake, since only a queued intake waits")
+        return 2
+    if a.draft and a.ready:
+        print("routing: --draft and --ready are exclusive; give one")
+        return 2
+    if (a.draft or a.ready) and not a.intake:
+        print("routing: --draft and --ready need --intake, since only an intake has a stage")
         return 2
     # Repos are siblings of the workspace: a bare name is resolved there, so the row never holds a name launch cannot read.
     home = str(Path.home())
@@ -5870,7 +6148,8 @@ def _route_file(a: argparse.Namespace) -> int:
                 print(f"routing: refusing {a.title}: duplicate of issue {duplicate}; pass --force to file it anyway")
                 return 2
             date = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
-            mapping = route.intake_file(a.title, body, repo, date, link=link, ids=profile.get("ids", "slug"), after=after)
+            mapping = route.intake_file(a.title, body, repo, date, link=link, ids=profile.get("ids", "slug"), after=after,
+                                       stage=_filing_stage(a, profile))
         else:
             mapping = route.initiative_files(a.title, body, repo, phase=a.phase)
     except ValueError as exc:
@@ -5918,6 +6197,51 @@ def _route_priority(a: argparse.Namespace) -> int:
         intake = next(row for row in queue if row.get("kind") == "intake" and row["task_id"] == target.task_id)
         return route.set_intake_priority(runs_dir, ws, intake, flag)
     return route.set_initiative_priority(runs_dir, ws, _initiative_token(runs_dir, a.initiative), flag)
+
+
+def _schedule_inputs(profile: dict, mode: str, now: datetime.datetime):
+    """Edge. The scheduler's inputs from the same readers the chair uses. Not read here, so the projection is a
+    lower bound: live phases (a running phase reads waiting), remote hosts, and live lane load."""
+    ws = Path(profile["workspace_dir"]).expanduser()
+    runs_dir = ws / "runs"
+    home = str(Path.home())
+    files = chair_read_quarantined.initiative_files(ws, chair_read_quarantined.read_work_files(ws))
+    items = chair_facts.read_ticket_items(ws, mode)
+    ids = list(dict.fromkeys(str(r["initiative"]) for r in items))
+    dispatch = {"max_in_flight": _local_max_in_flight(runs_dir, profile, socket.gethostname()), "live_runs": 0, "hosts": []}
+    return chair_facts.schedule_inputs_from_rows(
+        items,
+        run_store.read_queue(runs_dir) if mode == "store" else [],
+        chair_read_stale.read_chair_actions(runs_dir, now),
+        dispatch,
+        local=socket.gethostname(),
+        repos=_initiative_repos(files, home),
+        land_at=chair_facts.land_at_facts(_team_cartridge(profile)[0], _initiative_land_at(files), ids),
+        live_phases=frozenset(),
+    )
+
+
+def _route_schedule(a: argparse.Namespace) -> int:
+    profile, rc = _resolve_profile_or_refuse(a)
+    if rc is not None:
+        return rc
+    now = datetime.datetime.now(datetime.UTC)
+    inputs = _schedule_inputs(profile, work_state.work_state_mode(_lake_provider(a)[0]), now)
+    schedule, context = route_schedule.plan_from_inputs(inputs, now)
+    named = a.explain or a.should_jump
+    lines = (
+        route_schedule.format_plain(schedule)
+        if not named
+        else route_schedule.explain_lines(schedule, context, a.explain)
+        if a.explain
+        # no model asker is wired: src/graphs/harness/invoke.py holds no single-shot helper, only invoke_graphs
+        else route_schedule.should_jump_lines(schedule, context, a.should_jump, None, now.isoformat())
+    )
+    if lines is None:
+        print(f"routing: unknown initiative: {named}")
+        return 2
+    print("\n".join(lines))
+    return 0
 
 
 def _run_argv(argv: list[str]) -> tuple[int, str, str]:
@@ -6449,6 +6773,21 @@ def lane_capacity_env(env: Mapping[str, str], capacity: int) -> dict[str, str]:
 
 
 def _route_launch(a: argparse.Namespace) -> int:
+    phases = list(dict.fromkeys(getattr(a, "phase", None) or []))
+    if phases and a.graph != "epic":
+        print("routing: --phase applies to the epic graph only")
+        return 2
+    if len(phases) > 1 and getattr(a, "run_id", None) is not None:
+        print("routing: --run-id names one run; it cannot go with more than one --phase")
+        return 2
+    if len(phases) > 1:
+        # One run per phase, each placing its own host from live load, so a later phase sees the earlier launches.
+        for phase in phases:
+            code = _route_launch(argparse.Namespace(**{**vars(a), "phase": [phase]}))
+            if code:
+                return code
+        return 0
+    phase = phases[0] if phases else None
     profile, rc = _resolve_profile_or_refuse(a)
     if rc is not None:
         return rc
@@ -6484,6 +6823,10 @@ def _route_launch(a: argparse.Namespace) -> int:
         # The merge result, not a reread: a refused merge never wrote its files.
         with _merging_into(runs_dir):
             merged = _merge_initiative_tickets(launch_dir)
+        known_phases = sorted({str(item["phase"]) for item in merged})
+        if phase is not None and phase not in known_phases:
+            print(f"routing: {initiative_id} has no phase {phase}; phases: {', '.join(known_phases) or 'none'}")
+            return 2
         # Only --include-blocked lifts this guard; --force never does.
         held = route.launch_blockers(merged)
         if held and not a.include_blocked:
@@ -6551,7 +6894,7 @@ def _route_launch(a: argparse.Namespace) -> int:
         if status.stdout.strip():
             print(f"routing: {repo} has uncommitted changes:\n{status.stdout}")
             return 2
-        prefix = initiative_dir.name
+        prefix = initiative_dir.name if phase is None else route.phase_run_prefix(initiative_dir.name, phase)
         already = _refuse_if_already_running(runs_dir, prefix)
         if already is not None:
             print(already)
@@ -6569,12 +6912,14 @@ def _route_launch(a: argparse.Namespace) -> int:
             needs["task"] = a.task
         elif a.fix_attempts is not None:
             needs["fix_attempts"] = a.fix_attempts
+        if phase is not None:
+            needs["phase"] = phase
         if host is None:
             # A remote lane runs the host's own `cox route launch` on the synced repo, which resolves the repo's `base:`
             # setting itself through this same branch; only an explicit `--base` is lost there, so `_dropped_ceilings` refuses it.
             base_flag = getattr(a, "base", None)
             if not base_flag:
-                base_flag, refusal = _initiative_target_branch(profile, Path(local_repo), runs_dir.parent, prefix)
+                base_flag, refusal = _initiative_target_branch(profile, Path(local_repo), runs_dir.parent, initiative_dir.name)
                 if refusal:
                     print(f"routing: {refusal}")
                     return 2
@@ -6606,6 +6951,9 @@ def _route_launch(a: argparse.Namespace) -> int:
             route.select_intake_row(run_store.read_queue(runs_dir, kind="intake"), idea_path.stem)
             if store_mode == "store" and not a.dry_run else None
         )
+        if intake_row is not None and intake_queue.stage(intake_row.get("extra") or {}) == "draft":
+            print(f"routing: intake {idea_path.stem} is a draft; ready it with `cox route ready {idea_path.stem}`")
+            return 2
         via_rows = _decompose_via_rows(store_mode, a.dry_run, host, intake_row, detach=bool(getattr(a, "detach", False)))
         if via_rows:
             pass  # the plan lands as rows after the run; the chair's export writes the files
@@ -6692,7 +7040,7 @@ def _route_launch(a: argparse.Namespace) -> int:
             (env_repo or None) if checkouts else None,
             launch_harness if checkouts else None, home=os.path.expanduser("~"), host_checkouts=checkouts,
             graph="decompose" if a.graph == "decompose" else "epic", intake=intake if a.graph == "decompose" else None,
-            cartridges=_workspace_cartridges(runs_dir),
+            cartridges=_workspace_cartridges(runs_dir), phase=phase,
         )
         for remote_argv in plan:
             print(f"dry-run: {shlex.join(remote_argv)}")
@@ -6714,6 +7062,7 @@ def _route_launch(a: argparse.Namespace) -> int:
             a, host, runs_dir, run_id, env_repo or None, launch_harness, home=os.path.expanduser("~"),
             tools=_repo_check_tools(env_repo).found if pinned else (),
             graph="decompose" if a.graph == "decompose" else "epic", intake=intake if a.graph == "decompose" else None,
+            phase=phase,
         )
 
     lane = _local_lane_python(socket.gethostname(), os.environ.get("PATH", ""))
@@ -7094,6 +7443,21 @@ def _pid_probe_ssh(argv: list[str]) -> tuple[int, str] | None:
     return done.returncode, done.stdout
 
 
+def _lane_sync_ssh(argv: list[str]) -> tuple[int, str]:
+    """Edge: (exit code, stdout and stderr) of one lane checkout sync call; ssh never prompts and no call outlasts 60s.
+
+    The sync runs in series on every live tick before the gather, so a host that hangs must cost a bounded wait.
+    A timeout or an ssh that cannot run is a nonzero code, which the sync reads as an unreachable host."""
+    batch = [argv[0], "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", *argv[1:]] if argv[:1] == ["ssh"] else argv
+    try:
+        done = subprocess.run(batch, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        return 124, f"{argv[0]}: no answer within 60s"
+    except OSError as exc:
+        return 127, f"{argv[0]}: {exc}"
+    return done.returncode, done.stdout
+
+
 def _host_checkouts(rows: Sequence[Mapping[str, object]], name: str) -> tuple[str, ...]:
     """The checkouts the named host's own beat recorded; () for a host with no row."""
     return next((tuple(host_cmd.recorded_repos(r)) for r in rows if r.get("name") == name), ())
@@ -7120,7 +7484,7 @@ def _workspace_probe(cwd: Path) -> Callable[[list[str]], tuple[int, str]]:
 def _route_launch_on_host(
     a: argparse.Namespace, host: lane_hosts.LaneHost, runs_dir: Path, run_id: str, repo: str | None = None,
     harness_dir: str | None = None, *, home: str | None = None, tools: Sequence[str] = (),
-    graph: str = "epic", intake: str | None = None,
+    graph: str = "epic", intake: str | None = None, phase: str | None = None,
 ) -> int:
     """Copies the initiative to `host`, and the workspace's cartridges directory with it when there is one, and
     starts the lane there; writes only `<run>.remote.json`, and only on success.
@@ -7143,7 +7507,7 @@ def _route_launch_on_host(
         host, initiative, run_id, _holder_label(a), launched_at, run, locate, repo, harness_dir,
         preflight=preflight, home=home, host_checkouts=_host_checkouts(run_store.hosts(runs_dir), host.name), tools=tools,
         graph=graph, intake=intake, cartridges=_workspace_cartridges(runs_dir), probe=_workspace_probe(runs_dir.parent),
-        profile=provider,
+        profile=provider, phase=phase,
     )
     if isinstance(result, remote_launch.LaunchError):
         print(f"routing: launch on {host.name} failed at {result.step}: {result.message}")
@@ -10191,6 +10555,37 @@ def _dash_dirs(runs_dir: str | None, work_dir: str | None, profile: dict | None)
     return runs, work
 
 
+_DASH_SHARE_DIR = ".dash-feed"
+
+
+def _dash_feed_loop(runs_dir: Path, work_dir: Path, profile: dict | None, interval: float) -> int:
+    """Edge. One process per runs dir owns the share lock and computes; the others print what it publishes.
+    A follower tries the lock every pass, so it takes over the pass after the owner exits. Only this loop
+    touches the share files; `--once` and `--detail` never do."""
+    share_dir = runs_dir / _DASH_SHARE_DIR
+    handle = dash_feed_share.try_own(share_dir)
+    cache = dash_feed.EMPTY_CACHE
+    last_stamp = None
+    try:
+        while True:
+            handle = handle or dash_feed_share.try_own(share_dir)
+            if handle is not None:
+                now = datetime.datetime.now(datetime.UTC).isoformat()
+                feed, cache = dash_feed.gather_feed_cached(runs_dir, work_dir, now, profile, cache)
+                line = json.dumps(feed)
+                dash_feed_share.publish(share_dir, line)
+                print(line)
+            else:
+                line, last_stamp = dash_feed_share.read_if_changed(share_dir, last_stamp)
+                if line is not None:
+                    print(line)
+            sys.stdout.flush()
+            time.sleep(interval)
+    finally:
+        if handle is not None:
+            dash_feed_share.release(handle)
+
+
 def _dash(a: argparse.Namespace) -> int:
     """Edge. `--once` prints one `dash_feed.gather_feed` snapshot; `--feed` prints one per pass forever,
     `interval` seconds apart; `--detail <kind> [id]` prints one `dash_detail_*.build` result. `--feed` and
@@ -10212,11 +10607,7 @@ def _dash(a: argparse.Namespace) -> int:
         print(json.dumps(dash_feed.gather_feed(runs_dir, work_dir, now, profile)))
         return 0
     if a.feed:
-        while True:
-            now = datetime.datetime.now(datetime.UTC).isoformat()
-            print(json.dumps(dash_feed.gather_feed(runs_dir, work_dir, now, profile)))
-            sys.stdout.flush()
-            time.sleep(a.interval)
+        return _dash_feed_loop(runs_dir, work_dir, profile, a.interval)
     print("cox dash: pass --feed, --once or --detail", file=sys.stderr)
     return 2
 
@@ -10532,6 +10923,22 @@ RUNS_COMMANDS = [
         "agent_tools.cli:_runs_land", False, (),
     ),
     commands.Command(
+        "land-batch", "runs", "land disjoint approved phases together as one pull request (the merge queue)",
+        (
+            commands.Arg(("--repo",), {"required": True}), commands.Arg(("--label",)),
+            commands.Arg(("--source",), {"action": "append", "help": "initiative/phase/run to queue, repeatable; default: every ready phase"}),
+            commands.Arg(("--batch-size",), {"type": int, "help": "sources per batch; default: the profile's merge_queue.batch_size"}),
+            commands.Arg(("--wait-s",), {"type": float, "help": "seconds to wait for a full batch; default: the profile's merge_queue.wait_s"}),
+            commands.Arg(("--force",), {"action": "store_true", "help": "land despite a foreign live leader"}),
+            commands.Arg(("--no-claim",), {"action": "store_true", "help": "land without taking an unheld or stale loop"}),
+            commands.Arg(("--base",), {"help": "branch to land onto; default: the repo's base: setting, then origin/HEAD, then main"}),
+            commands.Arg(("--worktree-root",), {"default": "~/worktrees"}), commands.Arg(("--apply",), {"action": "store_true"}),
+            commands.Arg(("--runs-dir",), {"help": "override: resolve task records here instead of the profile's workspace_dir"}), commands.Arg(("--profile",)),
+            commands.Arg(("--gate",), {"choices": ["ticket", "phase", "epic", "full"], "help": "override the resolved gate level for this invocation"}),
+        ),
+        "agent_tools.cli:_runs_land_batch", False, (),
+    ),
+    commands.Command(
         "fetch", "runs", "pull an ended remote lane's run directory, log and branches to this machine",
         (
             commands.Arg(("--runs-dir",), {"help": "override: resolve the run's records here instead of the profile's workspace_dir"}),
@@ -10695,7 +11102,7 @@ DASH_GROUP = commands.Group(
         commands.Arg(("--work-dir",), {"default": None}),
         commands.Arg(("--feed",), {"action": "store_true"}),
         commands.Arg(("--once",), {"action": "store_true"}),
-        commands.Arg(("--interval",), {"type": float, "default": 2}),
+        commands.Arg(("--interval",), {"type": float, "default": 5}),
         commands.Arg(("--detail",), {"nargs": "+", "metavar": "KIND"}),
     ),
     fn="agent_tools.cli:_dash",
@@ -11696,6 +12103,8 @@ ROUTE_COMMANDS = [
             commands.Arg(("--force",), {"action": "store_true", "help": "file an intake even when its title duplicates an open issue"}),
             commands.Arg(("--link",), {"default": None, "help": "with --intake: the issue url this intake is filed from, so a later pull skips it"}),
             commands.Arg(("--after",), {"action": "append", "default": None, "help": "with --intake: ids this intake waits on; repeat the flag or comma-separate"}),
+            commands.Arg(("--draft",), {"action": "store_true", "help": "with --intake: file it as a draft, which the chair skips until it is ready (the default)"}),
+            commands.Arg(("--ready",), {"action": "store_true", "help": "with --intake: file it ready for the chair to pick up"}),
         ),
         "agent_tools.cli:_route_file", False, (),
     ),
@@ -11712,6 +12121,16 @@ ROUTE_COMMANDS = [
         ),
         "agent_tools.cli:_route_priority", False, (),
         exclusive=("--set", "--up", "--down", "--top", "--bottom"),
+    ),
+    commands.Command(
+        "schedule", "route", "project the whole queue as one schedule",
+        (
+            commands.Arg(("--profile",)),
+            commands.Arg(("--explain",), {"metavar": "INITIATIVE", "default": None, "help": "why this initiative sits where it does"}),
+            commands.Arg(("--should-jump",), {"metavar": "INITIATIVE", "default": None, "help": "ask whether this initiative should move up the queue"}),
+        ),
+        "agent_tools.cli:_route_schedule", False, (),
+        exclusive=("--explain", "--should-jump"),
     ),
     commands.Command(
         "pull", "route", "file intake tickets from a source, once per link",
@@ -11776,7 +12195,9 @@ ROUTE_COMMANDS = [
         "edit", "route", "change a queued intake, an initiative or a task ticket",
         (
             commands.Arg(("id",), {"help": "a queued intake, an initiative or a task ticket"}), commands.Arg(("--title",)),
-            commands.Arg(("--body",)), commands.Arg(("--body-file",)), commands.Arg(("--repo",)),
+            commands.Arg(("--body",)), commands.Arg(("--body-file",)),
+            commands.Arg(("--note",), {"default": None, "help": "task ticket only: append this text to the body once, with or without --state; not with --body or --body-file"}),
+            commands.Arg(("--repo",)),
             commands.Arg(("--surfaces",), {"help": "task ticket only: comma-separated paths that replace the list"}),
             commands.Arg(("--state",), {"help": "task ticket only: ready, approved, done or dropped; never backward"}),
             commands.Arg(("--pr",), {"help": "with --state done: the merged PR url to record on the task, also on a task that is already done; without it the merged PR is looked up with gh"}),
@@ -11813,7 +12234,7 @@ ROUTE_COMMANDS = [
         "agent_tools.cli:_route_remove", False, (), defaults={"runs_dir": None},
     ),
     commands.Command(
-        "hold", "route", "hold a queued intake or an initiative so the chair skips it until released",
+        "hold", "route", "hold a queued intake or an initiative so the chair skips it until released; for an intake, an alias for draft with a reason",
         (
             commands.Arg(("id",), {"help": "a queued intake or an initiative"}),
             commands.Arg(("--reason",), {"required": True}),
@@ -11824,13 +12245,31 @@ ROUTE_COMMANDS = [
         "agent_tools.cli:_route_hold", False, (), defaults={"runs_dir": None},
     ),
     commands.Command(
-        "release", "route", "release a held intake or initiative back to the queue",
+        "release", "route", "release a held intake or initiative back to the queue; an intake moves to ready",
         (
             commands.Arg(("id",), {"help": "a held intake or initiative"}),
             commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the plan and write nothing"}),
             commands.Arg(("--profile",)),
         ),
         "agent_tools.cli:_route_release", False, (), defaults={"runs_dir": None},
+    ),
+    commands.Command(
+        "ready", "route", "move a queued intake to ready so the chair can pick it up",
+        (
+            commands.Arg(("id",), {"help": "a queued intake"}),
+            commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the plan and write nothing"}),
+            commands.Arg(("--profile",)),
+        ),
+        "agent_tools.cli:_route_stage_ready", False, (), defaults={"runs_dir": None},
+    ),
+    commands.Command(
+        "draft", "route", "move a queued intake to draft so the chair skips it until it is ready",
+        (
+            commands.Arg(("id",), {"help": "a queued intake"}),
+            commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the plan and write nothing"}),
+            commands.Arg(("--profile",)),
+        ),
+        "agent_tools.cli:_route_stage_draft", False, (), defaults={"runs_dir": None},
     ),
     commands.Command(
         "requeue", "route", "requeue the intake of an initiative that has no live tasks",
@@ -11936,6 +12375,7 @@ ROUTE_COMMANDS = [
                     commands.Arg(("--on",), {"help": "start the lane on this host from the hosts table; `local` is this machine. Without it the table places the lane"}),
                     commands.Arg(("--local",), {"action": "store_true", "help": "start the lane on this machine, not where the hosts table places it"}),
                     commands.Arg(("--include-blocked",), {"action": "store_true", "help": "launch despite a ready task behind a blocked item (--force does not)"}),
+                    commands.Arg(("--phase",), {"action": "append", "default": None, "help": "run only the named phases of the initiative; repeat to start one run per phase, each on its own lane"}),
                     *_LAUNCH_SHARED_ARGS,
                 ),
                 "agent_tools.cli:_route_launch", False, (), defaults={"graph": "epic"},
@@ -12672,6 +13112,21 @@ def _chair_cache_paths(runs_dir: Path) -> tuple[Path, Path, Path]:
 
 CHAIR_WAKE_POLL_SECONDS = 5.0  # how often the between-tick wait re-reads the bus for a run_exited entry
 
+# Bounds of the process-lifetime read caches, sized from the work they hold so a day of ticks cannot grow memory.
+CHAIR_FILES_CACHE_MAX = 4096  # one entry per work file: a few thousand
+CHAIR_STORE_CACHE_MAX = 8  # one entry per store read shape: the work rows and the queue rows
+CHAIR_DECOMPOSE_CACHE_MAX = 256  # one intake's exit rows, task count and run logs: a few hundred runs at most
+CHAIR_DECOMPOSE_INTAKES_MAX = 64  # intakes holding a decompose cache at once; the least recently used is dropped
+
+
+def _takes_cache(read: Callable[..., list[dict]], cache: object) -> Callable[..., list[dict]]:
+    """Edge. `read` with `cache=` bound when it has that parameter, else `read` itself, called as before."""
+    try:
+        takes = "cache" in inspect.signature(read).parameters
+    except (TypeError, ValueError):
+        takes = False
+    return (lambda *args, **kwargs: read(*args, cache=cache, **kwargs)) if takes else read
+
 
 def _chair_run_deps(
     runs_dir: Path, profile: dict, session: str, pid: int, host: str, dry_run: bool, echo: Callable[[str], None],
@@ -12710,6 +13165,9 @@ def _chair_run_deps(
     # edge state: `beat` empties it, so one tick's window, weekly and source readers share one meter read and verdict
     meter_snapshot: list[tuple[usage_meter.Meter | None, str]] = []
 
+    # edge state: `beat` empties it, so the orchestration fallback notice prints once per tick
+    fallback_noticed: list[bool] = []
+
     # edge state: `beat` empties it, so one tick reads each work file, the store's work rows, the attempts and the
     # stranded inputs once and every reader that needs one shares it
     tick_reads: dict[str, object] = {}
@@ -12730,27 +13188,31 @@ def _chair_run_deps(
 
     # Process-lifetime, unlike `tick_reads`; `load_cache` fills them from the previous chair's stop.
     files_path, store_path, decompose_path = _chair_cache_paths(runs_dir)
-    files_cache = chair_read_cache.StampCache(512)
-    store_cache = chair_read_cache.StampCache(8)
+    files_cache = chair_read_cache.StampCache(CHAIR_FILES_CACHE_MAX)
+    store_cache = chair_read_cache.StampCache(CHAIR_STORE_CACHE_MAX)
+    queue_cache = chair_read_cache.StampCache(CHAIR_STORE_CACHE_MAX)  # not saved: queue rows carry claims
     if not dry_run:
         chair_read_cache.load_cache(files_cache, files_path)
         chair_read_cache.load_cache(store_cache, store_path)
     # `read_decompose_runs` drops every entry its call did not touch, so each intake gets its own cache.
-    decompose_caches: dict[str, object] = {}
+    decompose_caches: collections.OrderedDict[str, object] = collections.OrderedDict()
 
     def decompose_cache_for(intake_id: str):
         if intake_id not in decompose_caches:
-            cache = chair_read_cache.StampCache(64)
+            cache = chair_read_cache.StampCache(CHAIR_DECOMPOSE_CACHE_MAX)
             if not dry_run:
                 chair_read_cache.load_cache(cache, decompose_path)  # the first call for this intake prunes what it does not use
             decompose_caches[intake_id] = cache
+            while len(decompose_caches) > CHAIR_DECOMPOSE_INTAKES_MAX:
+                decompose_caches.popitem(last=False)
+        decompose_caches.move_to_end(intake_id)
         return decompose_caches[intake_id]
 
     def save_caches() -> None:
         chair_read_cache.save_cache(files_cache, files_path)
         chair_read_cache.save_cache(store_cache, store_path)
         if decompose_caches:  # none read this run: leave the saved file for the next chair
-            merged = chair_read_cache.StampCache(64 * len(decompose_caches))
+            merged = chair_read_cache.StampCache(CHAIR_DECOMPOSE_CACHE_MAX * len(decompose_caches))
             for cache in decompose_caches.values():
                 chair_read_cache.load_entries(merged, chair_read_cache.dump_entries(cache))  # type: ignore[arg-type]
             chair_read_cache.save_cache(merged, decompose_path)
@@ -12769,7 +13231,7 @@ def _chair_run_deps(
 
     def work_rows() -> list[dict]:
         # `store_rows` (run_store.work_items) carries no `kind` column; the queue read does. Store mode only, once per tick.
-        return once("work_rows", lambda: run_store.read_queue(runs_dir) if mode == "store" else [])  # type: ignore[return-value]
+        return once("work_rows", lambda: _takes_cache(run_store.read_queue, queue_cache)(runs_dir) if mode == "store" else [])  # type: ignore[return-value]
 
     def ticket_items() -> list[dict]:
         return once("tickets", lambda: chair_read_docket._work_items(ws, mode, work_files(), store_rows()))  # type: ignore[return-value]
@@ -12827,6 +13289,7 @@ def _chair_run_deps(
         main_ci.cache.clear()
         green_since.cache.clear()
         meter_snapshot.clear()
+        fallback_noticed.clear()
         lost = "" if dry_run else chair.renew_lease(runs_dir, session, pid, host)
         if _record_beat_wanted(dry_run, lost):
             _beat_record(runs_dir, session, pid, host, now())
@@ -12905,10 +13368,15 @@ def _chair_run_deps(
         candidates = _lane_host_candidates(profile_text, host_rows, host)
         # a host with no workspace_dir is refused by `route launch --on`, so the loop must not plan launches onto it
         host_names = [] if isinstance(candidates, lane_hosts.LaneHostError) else host_cmd.dispatchable(candidates)[0]
+        configured = chair_capacity.chair_local_lanes(profile)
+        effective = chair_orchestrate.effective_local_lanes(configured, host_names)  # no usable host: build locally this tick
+        if configured == "decompose" and effective == "any" and not fallback_noticed:
+            fallback_noticed.append(True)
+            echo(f"chair run: {chair_orchestrate.FALLBACK_NOTICE}")
         return chair_facts.dispatch_facts(
             row, host_names, _dispatch_counts(lanes, host, host_names, pidfile_live), host_cmd.row_capacities(host_rows),
             weight=host_cmd.row_weights(host_rows), capabilities=host_cmd.row_capabilities(host_rows), local=host,
-            local_lanes=chair_capacity.chair_local_lanes(profile),
+            local_lanes=effective,
         )
 
     weekly_reset = usage_window.parse_weekly_reset(profile.get("weekly_reset"))
@@ -13025,6 +13493,8 @@ def _chair_run_deps(
         quarantined=lambda: chair_read_quarantined.read_quarantined(ws, mode, work_files(), store_rows()),
         held_files=lambda: queue_export.read_held_record(ws),
         stranded=lambda: chair_read_stranded.read_stranded(*stranded_inputs()),
+        queue=work_rows if mode == "store" else None,
+        stranded_records=(lambda: stranded_inputs()[0]) if mode == "store" else None,
         missing_repos=missing_repos,
         reported_repos=reported_repos,
         run_exited=lambda: chair_read_exits.exits(runs_dir),
@@ -13064,7 +13534,9 @@ def _chair_run_deps(
         history=lambda: chair_read_housekeeping.read_last_housekeeping(runs_dir),
         housekeeping_hours=lambda: (profile.get("chair") or {}).get("housekeeping_hours"),
         stale_days=lambda: (profile.get("chair") or {}).get("stale_days"),
+        approval_hold_ticks=lambda: (profile.get("chair") or {}).get("approval_hold_ticks"),
         max_launches_per_hour=lambda: (profile.get("chair") or {}).get("max_launches_per_hour"),
+        merge_queue=lambda: profile.get("merge_queue"),
         shared_file_limit=lambda: (profile.get("chair") or {}).get("max_shared_file_initiatives"),
         serial_files=lambda: profile.get("serial_files"),
         host_load_ceiling=lambda: (profile.get("chair") or {}).get("host_load_ceiling"),
@@ -13093,6 +13565,7 @@ def _chair_run_deps(
         ticket_branch_of=land.pr_branch_name,
         phase_of=_steward_phase_of(work_rows),
         run_gate_checks=_steward_gate_runner(runner, lane_capacity),
+        target_branch_of=_steward_target_branch_of(profile, ws, repo_for),
     )
     exec_deps = dataclasses.replace(
         exec_deps,
@@ -13168,6 +13641,13 @@ def _chair_run_deps(
                     with contextlib.suppress(Exception):
                         echo(f"chair run: checkout sync skipped: {exc}")
 
+    def sync_lane_checkouts_now() -> list[dict]:
+        """The needs_chair actions for lane host checkouts left alone; the repos are the initiatives' that exist here."""
+        repos = _initiative_repos(chair_read_quarantined.initiative_files(ws, work_files()), home).values()
+        return lane_checkout_sync.sync_lane_checkouts(parsed_hosts, [r for r in repos if Path(r).is_dir()], str(ws), _lane_sync_ssh)
+
+    has_lane_hosts = not isinstance(parsed_hosts, lane_hosts.LaneHostError) and bool(parsed_hosts)
+
     started_checkout = checkout_state()
     dev_install = started_checkout is not None and started_checkout.on_branch  # the condition that arms the restart rule
     towpath = shutil.which("towpath")
@@ -13200,6 +13680,7 @@ def _chair_run_deps(
         export_rows=(lambda ids: _chair_export_hook(runs_dir, ids)) if mode == "store" and not dry_run else None,
         notify_config=notify_core.config_from_profile(profile), workspace=ws,
         pull_workspace=None if dry_run else pull_and_sync,
+        lane_checkout_actions=sync_lane_checkouts_now if has_lane_hosts and not dry_run else None,
         changed_files=changed_files,
         restart_window_s=_chair_float(chair_table, "restart_window_s", 120.0),
         restart_max_defer_s=_chair_float(chair_table, "restart_max_defer_s", 600.0),
@@ -13211,6 +13692,10 @@ def _chair_run_deps(
 
 def _chair_run(a: argparse.Namespace) -> int:
     """Refuses before any beat while a fact source or recorder is unwired, so a chair that cannot act never holds the lease."""
+    as_holder = bool(getattr(a, "as_holder", False))
+    if as_holder and not a.dry_run:
+        print("chair run: refusing to start, no lease taken; --as-holder needs --dry-run")
+        return 2
     profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
     if refuse_rc is not None:
         return refuse_rc
@@ -13228,6 +13713,7 @@ def _chair_run(a: argparse.Namespace) -> int:
         runs_dir, profile, _holder_label(a), os.getpid(), socket.gethostname(), a.dry_run, echo,
         _profile_path(a), work_state.work_state_mode(provider),
     )
+    deps = dataclasses.replace(deps, force_holder=as_holder)
     missing = _chair_unwired_sources(deps)
     if missing:
         print(f"chair run: refusing to start, no lease taken; not wired: {', '.join(missing)}")
@@ -13567,6 +14053,19 @@ def _pid_command(pid: int) -> str:
     return done.stdout.strip() if done.returncode == 0 else ""
 
 
+def _is_service_cgroup(text: str) -> bool:
+    """Pure. True when the cgroup text of a process names the coxswain chair service unit."""
+    return chair_service.UNIT_NAME in text
+
+
+def _pid_cgroup(pid: int) -> str:
+    """Edge. The cgroup text of `pid` from proc; empty when it cannot be read (no proc on macOS, or the pid is gone)."""
+    try:
+        return Path(f"/proc/{pid}/cgroup").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
 def _chair_attach_lend(a: argparse.Namespace, on: bool, clock: Callable[[], datetime.datetime] | None = None) -> int:
     """Edge. Lend or recall the routine ticks on chair.json; only the live holder may, anyone else is refused with exit 1."""
     _profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
@@ -13719,6 +14218,7 @@ CHAIR_COMMANDS = [
             commands.Arg(("--once",), {"action": "store_true", "help": "run one tick, release the lease, exit 1 if the tick errored"}),
             commands.Arg(("--interval",), {"type": float, "default": _CHAIR_RUN_INTERVAL, "help": "seconds between ticks (default: 60)"}),
             commands.Arg(("--dry-run",), {"action": "store_true", "help": "plan and report each tick without taking the lease or performing any action"}),
+            commands.Arg(("--as-holder",), {"action": "store_true", "help": "with --dry-run, plan as the lease holder would while the loop holds the lease; takes no lease and performs nothing"}),
             commands.Arg(("--max-overruns",), {"type": int, "default": 3, "help": "exit 3 after this many facts-stage overruns in a row (default: 3; 0 disables)"}),
             commands.Arg(("--label",), {"help": "the chair's holder label (default: $COX_SESSION_LABEL, else unlabeled)"}),
             commands.Arg(("--profile",), {"help": "the routing profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
@@ -14313,7 +14813,8 @@ def _holder_from_row(row: Mapping[str, object] | None) -> tuple[object, datetime
     """The chair lease row as (HolderLease, last tick), or None when nobody holds it.
 
     Only a chair loop writes a `tick_at` into the row's `status` cell, so a holder with one is the loop and a Claude
-    session holder is not. An expiry that does not parse reads as already expired."""
+    session holder is not. A row with no `status` column cannot say, so it counts as a loop, as `_attach_inputs` reads it.
+    An expiry that does not parse reads as already expired."""
     holder = str((row or {}).get("holder") or "")
     label, _, rest = holder.partition("@")
     host, _, pid_text = rest.rpartition(":")
@@ -14322,7 +14823,7 @@ def _holder_from_row(row: Mapping[str, object] | None) -> tuple[object, datetime
     doc = run_store._json_cell(row.get("status")) if row.get("status") else None
     tick = _aware_or_none(doc.get("tick_at")) if isinstance(doc, dict) and doc.get("tick_at") else None
     expires = _aware_or_none(row.get("expires_at")) or datetime.datetime.fromtimestamp(0, datetime.UTC)
-    return chair_holder.HolderLease(label, int(pid_text), host, expires, tick is not None), tick
+    return chair_holder.HolderLease(label, int(pid_text), host, expires, "status" not in row or tick is not None), tick
 
 
 def _read_holder_inputs(runs_dir: Path):
@@ -14347,16 +14848,45 @@ def _read_holder_inputs(runs_dir: Path):
     return lease, tick, chair.pid_alive(lease.pid) if lease.host == socket.gethostname() else None
 
 
-def _live_holder_line(runs_dir: Path) -> str | None:
-    """The one-line description of a live chair loop that holds the lease, or None when the lease may be taken."""
+def _loop_holder(label: str, pid: int, host: str) -> chair_resolve.SessionHolder:
+    """Edge. A live chair loop holder; the service form when its cgroup names the chair service (readable only on this host)."""
+    return chair_resolve.SessionHolder("loop", label, host == socket.gethostname() and _is_service_cgroup(_pid_cgroup(pid)))
+
+
+def _live_loop_holder(runs_dir: Path) -> chair_resolve.SessionHolder | None:
+    """The live chair loop that holds the chair, or None when the chair may be taken.
+
+    The lease row names a loop by its tick. A service whose row has no tick yet, or one only the runs chair record names,
+    is still a loop when its pid is alive on this host and its command line is a chair run command."""
+    this_host = socket.gethostname()
     inputs = _read_holder_inputs(runs_dir)
-    if inputs is None:
+    if inputs is not None:
+        lease, tick, alive = inputs
+        if not lease.is_loop and alive and _is_chair_run_command(_pid_command(lease.pid)):
+            lease = dataclasses.replace(lease, is_loop=True)
+        verdict = chair_holder.chair_holder_verdict(
+            lease, this_host, datetime.datetime.now(datetime.UTC), tick, alive, float(chair.DEFAULT_LEASE_TTL_SECONDS)
+        )
+        if verdict.kind != "none":
+            return _loop_holder(lease.label, lease.pid, lease.host)
+    try:
+        record = chair.read(runs_dir)
+    except (OSError, ValueError):
         return None
-    lease, tick, alive = inputs
-    verdict = chair_holder.chair_holder_verdict(
-        lease, socket.gethostname(), datetime.datetime.now(datetime.UTC), tick, alive, float(chair.DEFAULT_LEASE_TTL_SECONDS)
-    )
-    return None if verdict.kind == "none" else chair_holder.format_holder_verdict(verdict)
+    pid = None if record is None else record.get("pid")
+    if isinstance(pid, int) and record is not None and record.get("host") == this_host and chair.pid_alive(pid) and _is_chair_run_command(_pid_command(pid)):
+        return _loop_holder(str(record.get("session") or "?"), pid, this_host)
+    return None
+
+
+def _launcher_session_takes(profile_arg: str | None) -> str:
+    """The profile's `chair: session_takes:` policy; when_free when the profile cannot be read or does not say."""
+    text = _read_text_or_none(_profile_path(argparse.Namespace(profile=profile_arg)))
+    try:
+        chair_keys = (route.parse_profile(text) if text is not None else {}).get("chair")
+    except route.ProfileError:
+        chair_keys = None
+    return chair_resolve.resolve_session_takes(chair_keys.get("session_takes") if isinstance(chair_keys, dict) else None)
 
 
 def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
@@ -14387,11 +14917,21 @@ def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
     plan = chair_resolve.resolve_bare(record, state, host, now, _transcript_exists)
     if plan.note:
         print(plan.note, file=sys.stderr if a.print_argv else sys.stdout)
-    live_line = _live_holder_line(runs_dir)
-    action = "observer" if live_line is not None else {"take": "take", "resume": "resume"}.get(plan.kind, plan.default)
+    live = _live_loop_holder(runs_dir)
+    policy = _launcher_session_takes(a.launcher_profile)
+    holder = live or chair_resolve.SessionHolder({"take": "free", "resume": "stale"}.get(plan.kind, "session"))
+    decision = chair_resolve.session_take_decision(policy, holder, False)
+    offered = plan.kind == "offer" and live is None  # a live non-loop holder: the offer flow, unless the policy decides
+    if live is not None or (decision.action == "observer" and not offered):
+        action, notice = "observer", decision.line
+    elif offered:
+        action = {"always": "takeover", "never": "observer"}.get(policy, plan.default)
+        notice = chair_resolve.holder_line(record) if policy == "never" else None
+    else:
+        action, notice = {"take": "take", "resume": "resume"}.get(plan.kind, plan.default), None
     sid = None  # a take learns its session id from the SessionStart status call; claude's argv stays as it was
     label = f"chair-{now:%Y-%m-%d}"
-    if plan.kind == "offer" and live_line is None:
+    if offered and policy == "when_free":
         print(chair_resolve.holder_line(record), file=sys.stderr if a.print_argv else sys.stdout)
         print(chair_resolve.offer_line(plan), file=sys.stderr if a.print_argv else sys.stdout)
         if not a.print_argv:
@@ -14408,8 +14948,8 @@ def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
         print(cwd)
         print(chair_resolve.describe(action, plan), file=sys.stderr)  # stdout stays the argv and cwd alone
         return 0
-    if live_line is not None:
-        print(live_line)  # a live chair loop holds the lease: this session takes, steals and releases nothing
+    if notice:
+        print(notice)  # a live chair loop holds the chair, or the policy never takes it: this session takes, steals and releases nothing
     if action in ("observer", "attach"):
         os.chdir(cwd)
         os.execvp(argv[0], argv)
@@ -14446,11 +14986,15 @@ def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
             beater = _spawn(beater_argv)
         except OSError as exc:
             print(f"chair: beater failed to start: {exc}")
+            chair.release_at_exit(runs_dir, chair_a.label, chair_a.pid, host)  # only what will keep the chair may hold it
+            print("chair: released; a non-chair session is starting")
+            took = False
         else:
             print(f"chair: beating from pid {beater.pid}")
         # chair_a.label is the label `_route_chair_take` just wrote as the holder above;
         # it is the holder, not a re-read of the file this same call just produced.
-        _print_inbox(_read_text_or_none(Path(workspace).expanduser() / "courier.jsonl") or "", chair_a.label, chair_a.label)
+        if took:
+            _print_inbox(_read_text_or_none(Path(workspace).expanduser() / "courier.jsonl") or "", chair_a.label, chair_a.label)
     os.chdir(cwd)
     os.execvp(argv[0], argv)
     return 0

@@ -25,6 +25,7 @@ from agent_tools import (
     base_branch,
     chair,
     chair_apply_fetch,
+    chair_apply_release,
     chair_apply_review,
     chair_apply_widen,
     chair_housekeeping,
@@ -58,9 +59,10 @@ from agent_tools.chair_rebase_exec import RebasePort, perform_rebase
 from agent_tools.chair_revert_exec import MERGED, RevertResult, perform_revert
 from agent_tools.chair_revert_exec import ForgePort as RevertForgePort
 from agent_tools.chair_revert_exec import GitPort as RevertGitPort
+from agent_tools.chair_schedule import SCHEDULE_FILE
 from agent_tools.chair_types import Action, LandTrigger, is_fenced
 from agent_tools.land import approve_to_done
-from agent_tools.remote_argv import LANE_HOST_TIMEOUT_S, ssh_argv, sync_argv
+from agent_tools.remote_argv import LANE_HOST_TIMEOUT_S, probe_argv, ssh_argv, sync_argv
 
 __all__ = [
     "LAUNCH_KINDS",
@@ -90,7 +92,7 @@ __all__ = [
 
 Status = Literal[
     "fenced", "dry_run", "skipped", "refused", "recorded", "done", "failed", "landed", "not_landed", "escalated", "busy",
-    "in_progress", "lease_held",
+    "in_progress", "lease_held", "deferred",
 ]
 
 Run = Callable[[list[str]], tuple[int, str]]
@@ -176,6 +178,7 @@ class Deps:
     # one session, so the generic label is used here.
     note_to: str = "chair"
     check_login: Callable[[str], dict] | None = None  # a check_login's host name -> the hosts row cox host beat prints
+    probe_host: Callable[[str], dict] | None = None  # a probe_host's host name -> the hosts row, or {}
     log_retention_days: int = 7  # the profile's log_retention_days: traces and run logs kept locally, in days
     launch_stagger_s: float = 20.0  # the profile's chair.launch_stagger_s: seconds between two launches on one host in a tick; 0 is none
     harness_python: str = "python"  # the interpreter the trace prune runs under; the harness venv's python when one is configured
@@ -250,7 +253,7 @@ def stagger_seconds(value: object) -> float:
     return seconds if math.isfinite(seconds) and seconds >= 0 else DEFAULT_LAUNCH_STAGGER_S
 
 
-_UNFENCED = ("standby", "take_lease", "steer_clear", "waiting", "deferred")  # not writes, so a stale or missing epoch does not stop them
+_UNFENCED = ("standby", "take_lease", "steer_clear", "waiting", "deferred", "unlaunched")  # not writes, so a stale or missing epoch does not stop them
 _LAND_KINDS = ("land", "land_phase", "partial_land")  # a partial_land is a run of task lands, blocked and escalated as one
 _REASON_CAP = 600
 LOCAL_ARGV_TIMEOUT_S = 900.0  # a local argv with no bound of its own; matches _CHECK_COMMAND_TIMEOUT_S
@@ -427,7 +430,7 @@ def argv_for(action: Action, initiative_id: str = "", ids_mode: str = "slug", la
         ] if initiative else None
     if kind == "pull":
         return ["cox", "route", "pull"]
-    if kind in ("steer_clear", "waiting", "deferred"):  # recorded only; no command runs
+    if kind in ("steer_clear", "waiting", "deferred", "unlaunched"):  # recorded only; no command runs
         return None
     return None
 
@@ -966,6 +969,18 @@ def _widen_ticket(action: Action, deps: Deps) -> Result:
     return _result(action, "done", reason if warning is None else f"{reason}; {warning}")
 
 
+def _release_approvals(action: Action, deps: Deps) -> Result:
+    """In-process, with no argv; each released ticket's `ready` is mirrored to the store, and the action's cause rides in the reason."""
+    initiative, task_ids, cause = action.get("initiative", ""), action.get("task_ids", []), action.get("reason", "")
+    if not initiative or not task_ids:
+        return _result(action, "refused", "release_approvals needs an initiative and task_ids")
+    ok, reason = chair_apply_release.apply_release(deps.work_dir, initiative, task_ids, cause, deps.now()[:10])
+    if not ok:
+        return _result(action, "failed", reason)
+    warnings = [w for t in dict.fromkeys(task_ids) if (w := store_cli.mirror_state(deps.runs_dir, initiative, t, "ready", "chair")) is not None]
+    return _result(action, "done", "; ".join([f"{reason}: {cause}" if cause else reason, *warnings]))
+
+
 _CLOSE_STATES = ("done", "dropped")
 
 
@@ -1130,6 +1145,16 @@ def _check_login(action: Action, deps: Deps) -> Result:
     return _result(action, "recorded", json.dumps(row, sort_keys=True))
 
 
+def _probe_host(action: Action, deps: Deps) -> Result:
+    """Runs the injected probe_host edge against the action's host; the row it returns becomes the reason.
+    Its outcome is always "recorded", and it sends no notice: the planner's host_back action does."""
+    host = action.get("host", "")
+    if not host or deps.probe_host is None:
+        return _result(action, "refused", "probe_host needs a host and a wired probe_host edge")
+    row = deps.probe_host(host)
+    return _result(action, "recorded", json.dumps(row, sort_keys=True))
+
+
 def _stalled(action: Action, deps: Deps, sig: int) -> Result:
     """Edge. One `sig` to the pid in `<run>.pid`; a missing pidfile or a failed send is a failed result, never a raise."""
     pidfile = Path(deps.runs_dir) / f'{action.get("run", "")}.pid'
@@ -1261,6 +1286,37 @@ def _steer_reason(action: Action) -> str:
     return f"steer clear of {action.get('other', '')}: {','.join(action.get('paths', []))}"[:200]
 
 
+def schedule_document(action: Action) -> str:
+    """The text of `SCHEDULE_FILE`: the action's schedule object alone, as JSON."""
+    return json.dumps(action["schedule"], indent=2, sort_keys=True) + "\n"
+
+
+def _write_replacing(path: Path, text: str) -> None:
+    """Edge. `text` lands in `path` in one step: written beside it, then renamed over it, so a reader never sees half a file.
+
+    mkstemp creates 0600, which the rename would carry onto `path`; the document is published for other readers, so it is 0644.
+    """
+    descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.chmod(name, 0o644)
+        os.replace(name, path)
+    except BaseException:
+        Path(name).unlink(missing_ok=True)
+        raise
+
+
+def _schedule_updated(action: Action, deps: Deps) -> Result:
+    if not isinstance(action.get("schedule"), Mapping):
+        return _result(action, "refused", "schedule_updated carries no schedule")
+    try:
+        _write_replacing(deps.runs_dir / SCHEDULE_FILE, schedule_document(action))
+    except OSError as err:
+        return _result(action, "failed", f"{SCHEDULE_FILE}: {err}")
+    return _result(action, "done", f"wrote {SCHEDULE_FILE}")
+
+
 def _deferred_reason(action: Action) -> str:
     """`deferred to the last phase (land_at <land_at>)`, naming the land_at the action carries."""
     return f"deferred to the last phase (land_at {action.get('land_at', '?')})"
@@ -1340,8 +1396,9 @@ def _steward_land(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> tu
 
     It obeys the gates a person's land does: a repo already in `blocked` and a live land freeze end it as merge_failed
     before any fetch. It only reads `blocked`; `perform` adds to it for land kinds alone, so a failure here blocks nothing.
-    The land runs in line, not through the land sink: a land the sink still holds for the repo ends it as merge_failed,
-    and `cox runs land` takes the repo lease itself, so a second process lands as busy."""
+    The land runs in line, not through the land sink: a land the sink still holds for the repo defers it, with the event
+    "deferred", for a later tick to plan again. That is not a failure. `cox runs land` takes the repo lease itself, so a
+    second process lands as busy."""
     land = _steward_land_action(action)
     if isinstance(land, str):
         return "merge_failed", land, None
@@ -1349,7 +1406,7 @@ def _steward_land(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> tu
     if repo in blocked:
         return "merge_failed", f"an earlier land in {repo} ({blocked[repo].label}) was not counted", None
     if deps.lands is not None and (deps.lands.pending(repo) or deps.lands.full(repo)):
-        return "merge_failed", f"a land is still running in {repo}", None
+        return "deferred", f"a land is still running in {repo}", None
     try:
         frozen = _frozen_reason(deps)
         if frozen is not None:
@@ -1371,6 +1428,8 @@ def _steward_command(action: Action, deps: Deps, blocked: dict[str, Blocker]) ->
     kind = action["kind"]
     if kind == "merge_level" and action.get("land_at") in ("level", "task"):
         event, reason, needs_chair = _steward_land(action, deps, blocked)
+        if event == "deferred":  # no bus event: the steward's reported-set key stays open and it plans this merge again
+            return _result(action, "deferred", reason)
         _publish(action, deps, event, action.get("fields", {}), "" if event == "level_merged" else reason)
         result = _result(action, "done" if event == "level_merged" else "failed", reason)
         return {**result, "needs_chair": needs_chair} if needs_chair else result  # perform records it as its own row
@@ -1418,6 +1477,8 @@ def _would(action: Action) -> str:
         return f"would run the gate of {epic} and publish its result event on {action.get('topic', '')}"
     if kind == "steward_event":
         return f"would publish {action.get('event', '')} on {action.get('topic', '')}"
+    if kind == "schedule_updated":
+        return f"would write {SCHEDULE_FILE}"
     if kind == "relaunch" and epic:
         return f"would relaunch {action.get('initiative', '')} and publish relaunched on {action.get('topic', '')}"
     return ""
@@ -1456,6 +1517,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
         return _lease(action, deps)
     if kind == "check_login":
         return _check_login(action, deps)
+    if kind == "probe_host":
+        return _probe_host(action, deps)
     if kind in ("standby", "mark_lost"):
         return _result(action, "recorded")
     if kind == "needs_chair":
@@ -1470,10 +1533,14 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
         )
     if kind == "deferred":
         return _result(action, "recorded", _deferred_reason(action))
+    if kind == "unlaunched":  # "skipped", not "recorded": CHANGED_STATUSES must not count it
+        return _result(action, "skipped", action.get("reason", ""))
     if kind == "fetch_exit":
         return _fetch_exit(action, deps)
     if kind == "widen_ticket":
         return _widen_ticket(action, deps)
+    if kind == "release_approvals":
+        return _release_approvals(action, deps)
     if kind == "close_initiative":
         return _close_initiative(action, deps)
     if kind == "finish_task":
@@ -1498,6 +1565,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
         return _stalled(action, deps, signal.SIGUSR1)
     if kind == "stalled_stop":
         return _stalled(action, deps, signal.SIGTERM)
+    if kind == "schedule_updated":
+        return _schedule_updated(action, deps)
     return _result(action, "refused", f"unsupported action kind {kind!r}")
 
 
@@ -1624,6 +1693,9 @@ def perform(
 
     The epoch is re-read per action. standby and take_lease are never fenced. A dry run touches and records nothing.
     A relaunch whose initiative had a clear_branches end other than done earlier this tick is skipped.
+    A relaunch tagged after_steward is skipped when its epic's merge_level ended failed or deferred this tick. A
+    merge_level at land_at level or task whose repo the land sink still holds is deferred: it publishes no event and
+    writes no needs_chair row, so the steward plans it again next tick.
     A land or land_phase whose command exits nonzero is refused, escalated with the cause `land_refusal` read
     from its output, and blocks its repo's later lands and land_phases this tick, except that a land_phase naming
     an initiative blocks only that initiative's later lands, clear_branches and relaunches. A land refused before
@@ -1655,6 +1727,9 @@ def perform(
             deps.record(_recorded(escalated))
             results.append(escalated)
     for action in actions:
+        if dry_run and action.get("kind") == "unlaunched":  # same result as live, and not a would item
+            results.append(_execute(action, deps, blocked))
+            continue
         if dry_run:
             results.append(_result(action, "dry_run", _would(action)))
             continue
@@ -1677,10 +1752,10 @@ def perform(
         elif (
             action.get("kind") == "relaunch"
             and action.get("after_steward")
-            and steward_ended.get(action.get("epic") or initiative, ("", ""))[1] == "failed"
+            and steward_ended.get(action.get("epic") or initiative, ("", ""))[1] in ("failed", "deferred")
         ):
-            steward_kind = steward_ended[action.get("epic") or initiative][0]
-            result = _result(action, "recorded", f"not relaunched, {steward_kind} for {action.get('epic') or initiative} failed")
+            steward_kind, steward_status = steward_ended[action.get("epic") or initiative]
+            result = _result(action, "recorded", f"not relaunched, {steward_kind} for {action.get('epic') or initiative} {steward_status}")
         else:
             if action.get("kind") in LAUNCH_KINDS:
                 launch_host = action.get("host", "")
@@ -1692,9 +1767,11 @@ def perform(
             _note_uncounted(action, result, blocked, blocked_initiatives)
         if action.get("kind") == "clear_branches" and result["status"] != "done":
             uncleared[initiative] = result["status"]
-        if action.get("kind") in _STEWARD_OUTCOMES and result["status"] in ("done", "failed", "refused"):
+        if action.get("kind") in _STEWARD_OUTCOMES and result["status"] in ("done", "failed", "refused", "deferred"):
             steward_ended[action.get("epic", "")] = (action["kind"], result["status"])
-        if result["status"] != "in_progress":  # the land's own result is recorded when it is collected
+        # The land's own result is recorded when it is collected. An unlaunched is never recorded: the chair
+        # repeats it every few minutes for every waiting initiative, so a row each tick would flood the store.
+        if result["status"] != "in_progress" and action.get("kind") != "unlaunched":
             deps.record(_recorded(result))
         results.append(result)
         if (
@@ -1979,6 +2056,21 @@ def _check_login_edge(runs_dir: Path, ssh_run: Callable[[list[str]], ArgvResult]
     )
 
 
+def _probe_host_edge(runs_dir: Path, ssh_run: Callable[[list[str]], ArgvResult], host: str) -> dict:
+    """Edge. One `probe_argv` ssh to `host`, its ssh read from the hosts table, "now" read at call time. Always
+    merges probe_checked_at through `cox host login`. Exit 0 also sets the host active and clears the unreachable
+    fields; any other exit changes nothing else. Never writes beat_at."""
+    ssh = str(_host_row(runs_dir, host).get("ssh", ""))
+    now = datetime.now(UTC).isoformat()
+    reachable = ssh_run(probe_argv(ssh)).returncode == 0
+    login = {"probe_checked_at": now}
+    if reachable:
+        login = {**login, "unreachable_failures": 0, "unreachable_since": None, "host_back_at": now}
+        _cli_run(runs_dir, host_cmd.set_state_argv(host, "active", "probe"))
+    _cli_run(runs_dir, ["host", "login", host, "--login-json", json.dumps(login, sort_keys=True)])
+    return _host_row(runs_dir, host)
+
+
 _CHECKS_TIMEOUT_S = 600.0
 _CHECK_COMMAND_TIMEOUT_S = 900.0
 
@@ -2244,7 +2336,7 @@ def edge_deps(
 
     `lane_capacity` is the lane cap the carry's `.agent-checks` run under; None leaves them uncapped.
 
-    A dry run drops every door to a lane host: `run` refuses an ssh or push argv unrun and `check_login` returns no row.
+    A dry run drops every door to a lane host: `run` refuses an ssh or push argv unrun and `check_login` and `probe_host` return no row.
 
     Every subprocess runs in `workspace`, because `cox route launch epic` reads `work/<id>/initiative.md` from its cwd.
     A take_lease action names no holder, so the lease is always taken as this loop's own session, pid and host.
@@ -2255,6 +2347,7 @@ def edge_deps(
     run = _local_only(workspace) if dry_run else _bounded_for_ssh(workspace)
     login_run = partial(run_argv_split, cwd=workspace, timeout=LANE_HOST_TIMEOUT_S)
     live_check = partial(_check_login_edge, runs_dir, login_run, provider_profile)
+    live_probe = partial(_probe_host_edge, runs_dir, login_run)
 
     def acquire(_holder: str, _host: str, steal: bool = False) -> str:
         refusal, takeover = _lease_state(runs_dir, session, pid, host)
@@ -2275,6 +2368,7 @@ def edge_deps(
         runs_dir=runs_dir,
         work_dir=workspace,
         check_login=(lambda name: {}) if dry_run else live_check,
+        probe_host=(lambda name: {}) if dry_run else live_probe,
         log_retention_days=log_retention_days,
         harness_python=harness_python,
         ids_mode=ids_mode,

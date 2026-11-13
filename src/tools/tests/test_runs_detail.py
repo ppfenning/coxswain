@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from agent_tools.events import Event, from_trace_names
 from agent_tools.progress_read import NodeProgress, Progress
+from agent_tools.route import FENCED_NOTE
 from agent_tools.runs_detail import Detail, NodeCall, detail, render
 
 
@@ -133,6 +134,32 @@ def test_a_dead_process_stays_exited_under_a_fenced_lease():
 def test_quarantined_still_wins_over_fenced():
     events = [Event("r1", "task_quarantined", 0, {"task": "t1", "reason": "x"})]
     assert detail("r1", True, events, [], {}, [], standing="fenced").status == "quarantined"
+
+
+def test_a_fenced_run_renders_the_fenced_note_and_no_other_run_does():
+    events = [Event("r1", "task_quarantined", 0, {"task": "t1", "reason": "x"})]
+    runs = {
+        "fenced": detail("r1", True, [], [], {}, [], standing="fenced"),
+        "running": detail("r1", True, [], [], {}, [], standing="held"),
+        "exited": detail("r1", False, [], [], {}, [], standing="fenced"),
+        "quarantined": detail("r1", True, events, [], {}, [], standing="fenced"),
+    }
+
+    assert {name: FENCED_NOTE in render(d, 1000) for name, d in runs.items()} == {
+        "fenced": True,
+        "running": False,
+        "exited": False,
+        "quarantined": False,
+    }
+
+
+def test_the_fenced_note_is_the_only_added_line_and_is_cut_to_width():
+    fenced = detail("r1", True, [], [], {}, [], standing="fenced")
+    running = detail("r1", True, [], [], {}, [], standing="held")
+
+    assert render(fenced, 1000)[1:] == [FENCED_NOTE]
+    assert render(running, 1000) == ["run r1 [running]"]
+    assert render(fenced, 20)[1:] == [FENCED_NOTE[:20]]
 
 
 NOW = datetime(2026, 10, 30, 12, 0, 30, tzinfo=UTC)

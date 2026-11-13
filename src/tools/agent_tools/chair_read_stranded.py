@@ -1,4 +1,4 @@
-"""Chair reader for `stranded`: the rows of `runs_stranded.stranded`, projected to five keys."""
+"""Chair reader for `stranded`: the rows of `runs_stranded.stranded`, projected to six keys."""
 
 from __future__ import annotations
 
@@ -10,17 +10,22 @@ from pathlib import Path
 
 from agent_tools import epic, land_manual, remote_lane, repo_path, runs_stranded
 
-KEYS = ("run", "task", "phase", "branch", "remedy")
+KEYS = ("run", "task", "phase", "branch", "remedy", "expected")
 
 
 def keep_stranded_keys(rows: list[dict]) -> list[dict]:
-    """Plain dicts holding only `KEYS`, in input order."""
+    """Plain dicts holding only `KEYS`, in input order. `expected` is what the producer set; `None` means it did not say."""
     return [{k: row.get(k) for k in KEYS} for row in rows]
 
 
 def _local_path(repo: str) -> str:
     """Edge. A recorded repo as an absolute path under this machine's home."""
     return repo_path.expand(repo, os.path.expanduser("~"))
+
+
+def _is_manual(repo: str) -> bool:
+    """Edge. Whether the recorded repo, expanded to this machine's home, is `land: manual`."""
+    return land_manual.is_manual(_local_path(repo))
 
 
 def _repo_exists(repo: str) -> bool:
@@ -63,7 +68,7 @@ def _log_rows(run: str, text: str, items: list[dict], recorded: set[tuple[str, s
              for row in runs_stranded.stranded_from_log(run, lines, items, repo)]
     per_task = Counter(row["task"] for _, row in found)
     return [
-        {**row, "remedy": land_manual.REMEDY if manual_of(repo) else row["remedy"]}
+        {**row, "remedy": land_manual.REMEDY if manual_of(repo) else row["remedy"], "expected": bool(manual_of(repo))}
         for repo, row in found
         if per_task[row["task"]] == 1 and (run, row["task"]) not in recorded and repo_exists(repo)
         and not _log_row_is_stale(run, next(i for i in items if i.get("repo") == repo and i.get("id") == row["task"]))
@@ -87,7 +92,7 @@ def read_stranded(records: list[dict], items: list[dict],
     runs. `runs_dir=None` reads no log, and no caller passes it yet: wiring it
     in cli.py is a separate task, so until then this reader changes nothing in
     the chair tick. A task with any record is decided by the record path alone."""
-    manual_of = lambda repo: land_manual.is_manual(_local_path(repo))  # noqa: E731
+    manual_of = _is_manual
     from_records = runs_stranded.stranded(records, items, repo_exists, branch_exists, manual_of=manual_of)
     texts = _read_log_texts(runs_dir) if log_texts is None else log_texts
     recorded = {(r.get("run"), r.get("task")) for r in records}
@@ -102,8 +107,11 @@ def read_missing_repos(records: list[dict], items: list[dict],
     return runs_stranded.missing_repos(records, items, repo_exists)
 
 
-def stranded_from_rows(rows: list[dict], records: list[dict]) -> list[dict]:
-    """The same rule as `read_stranded`, with each task's state taken from `rows` (kind "task") instead of files."""
+def stranded_from_rows(rows: list[dict], records: list[dict],
+                       manual_of: Callable[[str], bool] = _is_manual) -> list[dict]:
+    """The same rule as `read_stranded`, with each task's state taken from `rows` (kind "task") instead of files.
+
+    `manual_of` reads the record's own repo, as in `read_stranded`; the items built here carry none."""
     items = [
         {
             "id": row.get("task_id"), "initiative": row.get("initiative"), "phase": row.get("phase"), "state": row.get("state"),
@@ -113,4 +121,4 @@ def stranded_from_rows(rows: list[dict], records: list[dict]) -> list[dict]:
         for row in rows
         if row.get("kind") == "task"
     ]
-    return keep_stranded_keys(runs_stranded.stranded(records, items))
+    return keep_stranded_keys(runs_stranded.stranded(records, items, manual_of=manual_of))
