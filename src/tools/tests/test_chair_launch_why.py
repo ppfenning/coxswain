@@ -108,6 +108,31 @@ def test_orchestration_mode_claims_nothing_when_the_host_is_unknown_or_remote():
     assert [a["reason"] for a in _why([_ini(), _ini("b", host="h1")], orchestrating=True)] == [LEFT_OUT, LEFT_OUT]
 
 
+def test_no_host_key_claims_neither_orchestration_nor_zero_lane():
+    assert _reason(orchestrating=True) == LEFT_OUT
+    assert _reason(orchestrating=True, free_lanes=0) == LEFT_OUT
+
+
+def test_scheduled_later_is_returned_verbatim_ahead_of_orchestration():
+    text = "scheduled after x/p1 on h1"
+    assert _reason(initiatives=[_ini(host="", scheduled_later=text)], orchestrating=True) == text
+
+
+def test_steer_hold_beats_scheduled_later():
+    holds = [{"kind": "needs_chair", "initiative": "a", "other": "b"}]
+    assert _reason(initiatives=[_ini(scheduled_later="the schedule placed it later")], steer_holds=holds) == "steer hold: waiting on b"
+
+
+def test_dag_problem_wins_over_the_steward_hold():
+    ini = _ini(dag_problem="b needs x")
+    assert _reason(initiatives=[ini], withheld_by={"the steward holds it": ["a"]}) == "invalid DAG: b needs x"
+
+
+def test_steward_planned_nothing_is_an_ordinary_withheld_name():
+    name = "the steward planned nothing for it this tick"
+    assert _reason(withheld_by={name: ["a"]}) == name
+
+
 def test_pace_cap_zero_is_pacing():
     assert _reason(pace_cap=0) == "paced against the weekly target"
 

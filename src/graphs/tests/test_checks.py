@@ -21,12 +21,14 @@ import signal
 import subprocess
 import sys
 import textwrap
+import types
 from pathlib import Path
 
 import pytest
 
 from harness.cause_rule import classify_cause
 from harness.checks import (
+    _cpu_seconds,
     all_passed,
     check_feedback,
     check_outcome,
@@ -223,6 +225,57 @@ def test_run_checks_timeout_is_a_failure_not_an_absence(tmp_path) -> None:
     assert "timed out" in result["output_tail"]
 
 
+_BURN = "import time; end = time.process_time() + 0.15\nwhile time.process_time() < end: pass"
+
+
+def test_cpu_seconds_is_user_plus_system_rounded_to_milliseconds() -> None:
+    usage = types.SimpleNamespace(ru_utime=0.1234, ru_stime=0.0001)
+    assert _cpu_seconds(usage) == 0.123
+    assert _cpu_seconds(None) == 0.0
+
+
+def test_run_checks_cpu_seconds_of_a_busy_check_is_clearly_positive(tmp_path) -> None:
+    [result] = run_checks(tmp_path, [{"name": "busy", "cmd": _py(_BURN)}])
+    assert isinstance(result["cpu_seconds"], float)
+    assert result["cpu_seconds"] >= 0.1
+    assert result["cpu_seconds"] == round(result["cpu_seconds"], 3)
+
+
+def test_run_checks_cpu_seconds_of_a_sleeping_check_is_near_zero(tmp_path) -> None:
+    [result] = run_checks(tmp_path, [{"name": "idle", "cmd": _py("import time; time.sleep(0.3)")}])
+    assert 0.0 <= result["cpu_seconds"] < 0.15
+
+
+def test_run_checks_cpu_seconds_counts_the_descendants_the_shell_reaped(tmp_path) -> None:
+    cmd = f"{_py(_BURN)}; true"
+    [result] = run_checks(tmp_path, [{"name": "nested", "cmd": cmd}])
+    assert result["cpu_seconds"] >= 0.1
+
+
+def test_run_checks_failing_check_carries_cpu_seconds(tmp_path) -> None:
+    [result] = run_checks(tmp_path, [{"name": "fails", "cmd": _py(_BURN + "\nraise SystemExit(3)")}])
+    assert result["exit_code"] == 3
+    assert result["cpu_seconds"] >= 0.1
+
+
+def test_run_checks_timed_out_check_carries_cpu_seconds(tmp_path) -> None:
+    [result] = run_checks(tmp_path, [{"name": "spins", "cmd": _py("while True: pass")}], timeout=0.5)
+    assert result["outcome"] == "timed_out"
+    assert isinstance(result["cpu_seconds"], float)
+    assert result["cpu_seconds"] >= 0.0
+
+
+def test_run_checks_unlaunchable_check_reports_zero_cpu_seconds(tmp_path) -> None:
+    [result] = run_checks(tmp_path / "missing", [{"name": "nowhere", "cmd": "true"}])
+    assert result["exit_code"] is None
+    assert result["cpu_seconds"] == 0.0
+
+
+def test_checks_evidence_rows_do_not_mention_cpu_seconds(tmp_path) -> None:
+    results = run_checks(tmp_path, [{"name": "busy", "cmd": _py(_BURN)}])
+    assert "cpu_seconds" not in str(checks_evidence(results, always_tail=True))
+
+
 class _TimingOutPopen:
     """A Popen whose first communicate() times out with bytes output; the second returns nothing."""
 
@@ -304,6 +357,7 @@ def test_a_timed_out_check_keeps_its_bytes_output_and_is_a_harness_fault(tmp_pat
     assert result["output_tail"].startswith("3 passed\nhalf \N{REPLACEMENT CHARACTER}warn: slow")
     assert result["output_tail"].endswith("[timed out after 9s]")
     assert result["error"].startswith("harness fault:")
+    assert result["cpu_seconds"] == 0.0
     reason = quarantine_reason(results)
     assert is_harness_fault(reason)
     assert classify_cause("unverified", reason) == "harness"

@@ -69,7 +69,7 @@ from harness.store_graphs import derive_definition, register
 from harness.store_lease import acquire, release
 from harness.store_migrate import open_store
 from harness.store_read import calls as node_calls
-from harness.store_read import cost_by_model, run_summary
+from harness.store_read import cost_by_model, initiative_cost, run_summary
 from harness.store_write import Store
 from harness.termination import mark_terminating
 from harness.traces_url import have_pyarrow, redact_url, resolve_traces_root
@@ -235,6 +235,32 @@ def epic_summary_line(run_id: str, totals: Mapping[str, int]) -> str:
         f"{totals.get('tasks_quarantined', 0)} task(s) quarantined, "
         f"{totals.get('stacks_rebased', 0)} stack(s) rebased{integration}"
     )
+
+
+def initiative_cost_line(cost: Mapping[str, float] | None) -> str | None:
+    """The initiative's cumulative cost and retry share as one line; None without a read, no share on a zero total."""
+    if cost is None:
+        return None
+    total = cost["total_usd"]
+    share = f", {round(100 * cost['retry_usd'] / total)}% on retries" if total > 0 else ""
+    return f"  initiative cost: ${total:.2f} across its runs{share}"
+
+
+def initiative_of_run(run_id: str) -> str | None:
+    """The initiative of a run id of the form <initiative>-N; None for any other form."""
+    head, sep, tail = run_id.rpartition("-")
+    return head if sep and head and tail.isdigit() else None
+
+
+def _initiative_cost_read(store: Store, initiative: str | None) -> str | None:
+    """The cost line for an initiative; a store that fails here warns and gives None, never a changed exit."""
+    if not initiative:
+        return None
+    try:
+        return initiative_cost_line(initiative_cost(store.conn, initiative))
+    except Exception as exc:
+        print(f"store: could not read the cost of initiative {initiative}: {' '.join(str(exc).split())}", file=sys.stderr)
+        return None
 
 
 def _build_parser(specs: dict[str, GraphSpec]) -> argparse.ArgumentParser:
@@ -665,8 +691,11 @@ def _undercount_note(run_id: str, stored: int, seen: int) -> str | None:
     return f"store: holds {stored} of the {seen} call(s) {run_id} made; the usage totals undercount" if seen > stored else None
 
 
-def _print_usage(store: Store, run_id: str, runner: Any) -> None:
-    """Print the run's totals from the store. A store that fails here warns; it never changes the run's exit."""
+def _print_usage(store: Store, run_id: str, runner: Any, *, with_initiative: bool = True) -> None:
+    """Print the run's totals from the store. A store that fails here warns; it never changes the run's exit.
+
+    The initiative's cost line follows when the run id is <initiative>-N. The epic prints its own beside its summary.
+    """
     try:
         summary = run_summary(store.conn, run_id)
         models = cost_by_model(store.conn, run_id)
@@ -676,6 +705,9 @@ def _print_usage(store: Store, run_id: str, runner: Any) -> None:
     line = _usage_line(summary, models)
     if line is not None:
         print(line)
+    cost_line = _initiative_cost_read(store, initiative_of_run(run_id)) if with_initiative else None
+    if cost_line is not None:
+        print(cost_line)
     note = _undercount_note(run_id, summary["calls"] if summary else 0, len(getattr(runner, "calls", None) or []))
     if note is not None:
         print(note, file=sys.stderr)
@@ -1176,7 +1208,7 @@ def _launch(
         # `_finish_store_run`: a store fault warns and never skips what follows.
         # `close` runs AFTER, the order the single-graph path always had: the
         # runner's `calls` must still be readable for the undercount check.
-        _print_usage(store, run_id, runner)
+        _print_usage(store, run_id, runner, with_initiative=args.graph != "epic")
         close = getattr(runner, "close", None)
         if callable(close):
             close()
@@ -1744,6 +1776,9 @@ def _run_graph(
         )
         totals = result.get("totals") or {}
         print(epic_summary_line(run_id, totals))
+        cost_line = _initiative_cost_read(store, str(initiative.get("id") or ""))
+        if cost_line is not None:
+            print(cost_line)
         for entry in result.get("quarantined") or []:
             print(f"  quarantined {entry.get('grain')}: {entry.get('id')} — {entry.get('reason')}", file=sys.stderr)
         print(f"  phases   : recorded in the run store under {run_id}")

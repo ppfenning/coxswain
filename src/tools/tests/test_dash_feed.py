@@ -46,6 +46,8 @@ def _fixture_inputs() -> tuple[tuple, dict]:
     at = "2026-09-29T00:00:00Z"
     with open("tests/fixtures/dash_feed_board_v1.json") as board_file:
         board_fixture = json.load(board_file)
+    with open("tests/fixtures/dash_feed_v1.json") as feed_file:
+        health = json.load(feed_file)["health"]
     chair = {
         "holder": "chair",
         "host": "host-b",
@@ -233,7 +235,7 @@ def _fixture_inputs() -> tuple[tuple, dict]:
     args = (at, chair, spend, machines, runs, queue, 2, inbox, 2, watch, decisions, spend_series)
     with open("tests/fixtures/dash_budget_v1.json") as budget_file:
         budget = json.load(budget_file)["month"]
-    return args, {"history": history, "history_today": history_today, "budget": budget, "board": board_fixture["board"], "live": board_fixture["live"]}
+    return args, {"history": history, "history_today": history_today, "budget": budget, "board": board_fixture["board"], "live": board_fixture["live"], "health": health}
 
 
 def test_snapshot_matches_committed_fixture():
@@ -261,6 +263,7 @@ def test_snapshot_without_activity_carries_an_empty_list_and_the_all_zero_split(
 
     result = snapshot("2026-10-16T00:00:00Z", {}, {}, [], [], [], 0, [], 0, [])
 
+    assert result["health"] == {"skipped_total": 0, "logs": []}
     assert result["chair_agents"] == []
     with open("tests/fixtures/dash_feed_v1.json") as f:
         fixture = json.load(f)
