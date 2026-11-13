@@ -6449,6 +6449,23 @@ Coxswain is in beta — versions may change between releases
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Upgrade">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-edge-upgrade-channel" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The edge upgrade channel
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -6591,6 +6608,8 @@ tool already has. If your shell cannot find <code>cox</code> afterwards, run
 </tr>
 </tbody>
 </table>
+<p>To keep a machine on the newest commit of <code>main</code> that passed CI, use the
+<a href="#the-edge-upgrade-channel">edge upgrade channel</a> instead.</p>
 <h2 id="flags">Flags</h2>
 <p>Run <code>cox install --help</code> for the flags your version accepts. The ones this
 page uses:</p>
@@ -6706,7 +6725,45 @@ cox<span class="w"> </span>upgrade
 <p><code>cox upgrade</code> moves the checkout to the newest release tag (or <code>--to
 VERSION</code>), syncs its venv, reinstalls <code>cox</code> from it with the extras it had,
 relinks the crew, moves dash if you have it, and runs the doctor. It refuses
-a checkout with uncommitted changes.</p>
+a checkout with uncommitted changes. <code>--to</code> also takes a commit SHA.</p>
+<h3 id="the-edge-upgrade-channel">The edge upgrade channel</h3>
+<p>Each machine has an upgrade channel in its machine profile. <code>stable</code> is the
+default: <code>cox upgrade</code> moves to the newest release tag, as above. <code>edge</code>
+follows <code>main</code>, but only commits whose CI passed:</p>
+<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>settings<span class="w"> </span><span class="nb">set</span><span class="w"> </span>profile<span class="w"> </span>upgrade_channel<span class="w"> </span>edge
+cox<span class="w"> </span>upgrade<span class="w"> </span>--install-timer<span class="w">      </span><span class="c1"># writes coxswain-upgrade.service and .timer</span>
+systemctl<span class="w"> </span>--user<span class="w"> </span>daemon-reload
+systemctl<span class="w"> </span>--user<span class="w"> </span><span class="nb">enable</span><span class="w"> </span>--now<span class="w"> </span>coxswain-upgrade.timer
+</code></pre></div>
+<p>On an edge machine, <code>cox upgrade</code> with no <code>--to</code> does these steps:</p>
+<ol>
+<li>It finds the newest commit on <code>origin/main</code> whose <code>ci</code> workflow passed on
+   the push to <code>main</code>. It never takes the tip of <code>main</code> unless the tip passed.</li>
+<li>It moves the checkout to that commit by the same path as <code>cox upgrade --to</code>.</li>
+<li>If the commit changed, it restarts the chair and lander user units that
+   are running.</li>
+<li>It runs <code>cox setup doctor</code>.</li>
+<li>If the move, a restart or the doctor fails, it moves back to the previous
+   commit and restarts the units again.</li>
+</ol>
+<p>The timer runs <code>cox upgrade --scheduled</code> every 30 minutes by default
+(<code>--interval-minutes</code> changes this). On a stable machine the scheduled run does
+nothing. Apart from a rollback, an edge upgrade never moves to an older
+commit. It skips a commit it has already rolled back until a newer commit
+passes CI. To try that commit again, run <code>cox upgrade --to SHA</code>.</p>
+<p><code>cox versions</code> shows the last edge upgrade: when it ran, the previous commit,
+the chosen commit and the outcome.</p>
+<p>Store migrations go forward only. The restarted chair or lander applies a new
+commit's migrations when it opens the store. After that, an older commit
+refuses the store. So when the new commit adds a migration and the units
+restarted, a failing doctor is <strong>not</strong> rolled back. <code>cox versions</code> reports
+<code>not_rolled_back</code>, and the fix is a newer commit or a person. Every machine
+that shares a store must be on the same channel. Otherwise an edge machine
+can migrate the store past what a stable machine's release can open. Setting
+a machine back to <code>stable</code> moves it to the newest release on its next
+<code>cox upgrade</code>, which has the same limit.</p>
+<p><code>cox install --edge</code> is a different thing: it installs the tip of <code>main</code>
+once, whether or not CI passed.</p>
 <h2 id="moving-from-047-or-earlier">Moving from 0.47 or earlier</h2>
 <p>A machine installed with 0.47.0 or earlier has a checkout per component. Move
 it to the one-checkout layout with <code>cox setup migrate</code>; see

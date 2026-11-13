@@ -6388,6 +6388,12 @@ Coxswain is in beta — versions may change between releases
 <div class="highlight"><pre><span></span><code>usage: cox upgrade [-h] [--root ROOT] [--home HOME] [--manifest MANIFEST]
                    [--provider PROVIDER] [--with FLAG] [--team TEAM]
                    [--workspace WORKSPACE] [--to TO] [--dry-run]
+                   [--profile PROFILE] [--scheduled] [--install-timer]
+                   [--uninstall-timer] [--interval-minutes INTERVAL_MINUTES]
+
+On the stable channel (the default) the checkout moves to the newest release tag.
+On the edge channel (profile upgrade_channel: edge) it moves to the newest commit on main whose CI passed,
+restarts the running chair and lander units, runs the doctor, and moves back when any of that fails.
 
 options:
   -h, --help            show this help message and exit
@@ -6400,8 +6406,26 @@ options:
   --with FLAG
   --team TEAM
   --workspace WORKSPACE
-  --to TO
+  --to TO               a release version or a commit; skips the edge
+                        channel's CI lookup
   --dry-run
+  --profile PROFILE     the routing profile that holds upgrade_channel
+                        (default: ~/.config/agent-tools/profile.yaml or
+                        $AGENT_TOOLS_PROFILE)
+  --scheduled           what the upgrade timer runs: does nothing unless this
+                        machine's channel is edge
+  --install-timer       write the systemd user timer that runs the scheduled
+                        upgrade and print the lines that activate it; runs
+                        nothing itself
+  --uninstall-timer     remove the timer files --install-timer wrote
+  --interval-minutes INTERVAL_MINUTES
+                        minutes between scheduled upgrades in the installed
+                        timer (default: 30)
+
+examples:
+  cox upgrade
+  cox upgrade --to 2026.11.8
+  cox upgrade --install-timer
 </code></pre></div>
 
 
