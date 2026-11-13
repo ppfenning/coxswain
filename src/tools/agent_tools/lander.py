@@ -707,8 +707,15 @@ def run_once(ports: Ports, *, phase_cap: int = 2, land_cap: int = 1, land_batch_
             ports.log(line)
         return outcome
 
-    for item in [i for i in items if i["kind"] == ls.PHASE_MERGE][:max(phase_cap, 0)]:
-        do(item)
+    # A phase merge left waiting (its branch has diverged from origin, a parent phase is not merged) did no work, so it
+    # does not use the cap, as a waiting land does not: the oldest items would otherwise sit at the head of the queue
+    # every pass and no later phase would ever be reached.
+    worked = 0
+    for item in [i for i in items if i["kind"] == ls.PHASE_MERGE]:
+        if worked >= max(phase_cap, 0):
+            break
+        if do(item).status != "waiting":
+            worked += 1
     # Read again: a phase merged just now may have assembled its initiative, which then lands in this same pass.
     lands = [i for i in ls.claimable(ls.list_items(ports.conn), ports.now()) if i["kind"] == ls.INITIATIVE_LAND]
     worked = 0

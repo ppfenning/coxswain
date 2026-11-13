@@ -406,6 +406,32 @@ def test_the_caps_are_separate_a_full_land_cap_does_not_delay_a_phase_merge(worl
     assert world.forge.calls == [] and ls.get_item(world.conn, "initiative_land:i")["state"] == "queued"
 
 
+def test_phase_merges_left_waiting_do_not_use_the_cap_so_later_ones_still_get_their_turn(world: World, monkeypatch) -> None:
+    for name in ("stuck-1", "stuck-2", "free"):
+        world.start(name, [task(f"{name}-a", "p1")])
+        world.build(name, "p1")
+    real = lander.perform
+    monkeypatch.setattr(
+        lander, "perform",
+        lambda ports, item: lander.Outcome("waiting", str(item["id"]), "diverged from origin") if str(item["initiative"]).startswith("stuck")
+        else real(ports, item),
+    )
+    outcomes = lander.run_once(world.ports, phase_cap=2, land_cap=0)
+    done = [o.item for o in outcomes if o.status == "done"]
+    assert done == ["phase_merge:free:p1"], "the two waiting items ahead of it did not use the cap"
+    assert [o.status for o in outcomes].count("waiting") == 2
+    assert ls.get_item(world.conn, "phase_merge:stuck-1:p1")["state"] == "queued", "a waiting item stays queued"
+
+
+def test_the_phase_cap_still_bounds_the_merges_done_in_one_pass(world: World) -> None:
+    for name in ("i", "j", "k"):
+        world.start(name, [task(f"{name}-a", "p1")])
+        world.build(name, "p1")
+    outcomes = lander.run_once(world.ports, phase_cap=2, land_cap=0)
+    assert [o.status for o in outcomes] == ["done", "done"]
+    assert lander.run_once(world.ports, phase_cap=0, land_cap=0) == []
+
+
 # -- the work setup's contract, part two: what reaches the forge ----------------------------------------------------
 
 WORK = {"landing_areas": {"land_at": "ticket", "target_branch": "main",
