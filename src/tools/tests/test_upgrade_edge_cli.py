@@ -305,3 +305,26 @@ def test_install_timer_refuses_off_linux(unit_home: Path, monkeypatch, capsys):
     assert cli.main(["upgrade", "--install-timer", "--profile", str(unit_home / "profile.yaml")]) == 2
     assert not (unit_home / ".config" / "systemd").exists()
     assert "refusing" in capsys.readouterr().out
+
+
+def _export_garage(home: Path) -> None:
+    garage = home / ".config" / "agent-tools" / "garage.env"
+    garage.parent.mkdir(parents=True, exist_ok=True)
+    garage.write_text("export STORE_URL=postgresql://store.example/x\n", encoding="utf-8")
+
+
+def test_install_timer_refuses_an_export_style_garage_file_and_names_the_flag(unit_home: Path, capsys):
+    _export_garage(unit_home)
+    assert cli.main(["upgrade", "--install-timer", "--profile", str(unit_home / "profile.yaml")]) == 2
+    assert "--environment-file" in capsys.readouterr().out
+    assert not (unit_home / ".config" / "systemd").exists()
+
+
+def test_install_timer_takes_an_environment_file_in_name_value_form(unit_home: Path, capsys):
+    _export_garage(unit_home)
+    plain = unit_home / "garage.systemd.env"
+    plain.write_text("STORE_URL=postgresql://store.example/x\n", encoding="utf-8")
+    profile = str(unit_home / "profile.yaml")
+    assert cli.main(["upgrade", "--install-timer", "--profile", profile, "--environment-file", str(plain)]) == 0
+    service = unit_home / ".config" / "systemd" / "user" / upgrade_edge.SERVICE_NAME
+    assert f"EnvironmentFile=-{plain}" in service.read_text().splitlines()
