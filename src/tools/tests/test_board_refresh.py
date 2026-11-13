@@ -44,7 +44,6 @@ def out_of_git(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, l
     profile = tmp_path / "profile.yaml"
     profile.write_text(f"workspace_dir: {ws}\nchair:\n  workspace_git: false\n", encoding="utf-8")
     exports: list = []
-    monkeypatch.setattr(cli.work_state, "work_state_mode", lambda provider: "store")
     monkeypatch.setattr(cli, "_export_board", lambda runs_dir, workspace, prune_stale=False: exports.append((workspace, prune_stale)) or [])
     return profile, exports
 
@@ -85,3 +84,12 @@ def test_a_workspace_kept_in_git_is_never_refreshed(tmp_path: Path, out_of_git, 
     monkeypatch.setattr(run_store, "queue_stamp", lambda runs_dir: (1, 1))
     cli._refresh_board_files(argparse.Namespace(profile=str(profile)))
     assert exports == []
+
+
+def test_a_command_with_no_profile_flag_is_refreshed_from_the_profile_in_the_environment(out_of_git, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`route lint` and others declare no --profile; the refresh must not need the attribute."""
+    profile, exports = out_of_git
+    monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(profile))
+    monkeypatch.setattr(run_store, "queue_stamp", lambda runs_dir: (2, 7))
+    cli._refresh_board_files(argparse.Namespace(initiative_dir="work/demo"))
+    assert len(exports) == 1

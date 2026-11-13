@@ -5120,8 +5120,6 @@ def _refresh_board_files(a: argparse.Namespace) -> None:
         profile = route.parse_profile(text) if text else {}
         if not profile.get("workspace_dir") or workspace_git_on(profile):
             return
-        if work_state.work_state_mode(_lake_provider(a)[0]) != "store":
-            return
         workspace = Path(profile["workspace_dir"]).expanduser()
         runs_dir = workspace / "runs"
         stamp = run_store.queue_stamp(runs_dir)
