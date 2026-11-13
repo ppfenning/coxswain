@@ -15,6 +15,8 @@ from agent_tools import cli, epic, route
 from agent_tools.cli import main
 from agent_tools.remote_argv import launch_argv
 
+pytestmark = pytest.mark.usefixtures("board_store")  # the store is the board; these launches read its rows
+
 
 def _two_phases(ws):
     (ws / "work" / "demo" / "p2").mkdir()

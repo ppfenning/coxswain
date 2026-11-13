@@ -91,11 +91,13 @@ def test_a_phase_with_two_parents_is_cut_from_the_pr_branch_without_assembly(rep
     assert git("show", f"{JOIN}:t2-bench.txt", cwd=repo) == "t2-bench.txt"
 
 
-def test_without_a_pr_branch_the_first_phase_is_cut_from_the_default_ref(repo, cart, tmp_path) -> None:  # noqa: F811
+def test_without_a_pr_branch_every_phase_is_cut_from_the_initiative_branch(repo, cart, tmp_path) -> None:  # noqa: F811
+    main = git("rev-parse", "main", cwd=repo)
     result, _ = drive(repo, cart, tmp_path)
 
-    assert phase_record(result, "p1-foundations")["base"] == "main"
-    assert phase_record(result, "p2-rollout")["base"] == "epic/demo-initiative/p1-foundations"
+    assert phase_record(result, "p1-foundations")["base"] == "init/demo-initiative"
+    assert phase_record(result, "p2-rollout")["base"] == "init/demo-initiative"
+    assert is_ancestor(repo, main, "init/demo-initiative")
 
 
 def test_a_reused_branch_is_rebased_when_the_pr_branch_moves(repo, cart, tmp_path) -> None:  # noqa: F811

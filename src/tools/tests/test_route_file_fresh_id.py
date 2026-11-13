@@ -53,12 +53,6 @@ def test_filing_an_intake_with_no_dropped_match_prints_no_note(tmp_path, monkeyp
     assert "the next decompose uses" not in capsys.readouterr().out
 
 
-def test_files_mode_prints_no_note_even_with_a_dropped_row(tmp_path, monkeypatch, capsys):
-    rc, _ = _file_intake(tmp_path, monkeypatch, [_DROPPED], work_state="files")
-    assert rc == 0
-    assert "the next decompose uses" not in capsys.readouterr().out
-
-
 _FRESH = {"kind": "initiative", "task_id": f"{_SLUG}-2", "state": "todo"}
 _FRESH_DROPPED = {**_FRESH, "state": "dropped"}
 

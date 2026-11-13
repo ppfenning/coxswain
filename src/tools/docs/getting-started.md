@@ -155,12 +155,11 @@ is read-only: it checks profile, paths, harness venv, cartridge, skills,
 provider, run store, and workspace, prints a table, and exits 0 when the layer is
 ready to launch a run. `--profile PATH` and `--json` both work here too.
 
-On a fresh install the run store does not exist yet, because the first run
-creates it. The `store` row then reads `no store yet (it is created by the
-first run)` and fails, so doctor exits 1 until you have launched once in
-section 8. That is the one failure to expect at this step; fix any other
-failing row first, then rerun doctor after the first run and the `store` row
-reads `sqlite, N runs`. A store with no `runs` table yet reads the same way
+The store is Postgres, and it has to be configured before the first run:
+`cox setup store --store shared` (see [`shared-store.md`](shared-store.md) for
+what it asks and for a local Postgres recipe). Until then every command that
+touches the board refuses and says so. With the store configured the `store`
+row reads `postgresql, N runs`; a store with no `runs` table yet fails the row
 and clears on the first run.
 
 ## 8. A first run

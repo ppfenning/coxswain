@@ -289,8 +289,20 @@ def test_pg_connect_kwargs_do_not_mutate_the_extra_mapping():
 
 
 def test_an_unknown_scheme_is_refused():
-    with pytest.raises(ValueError, match="sqlite://"):
+    with pytest.raises(ValueError, match="the accepted scheme is postgresql://"):
         connect("mysql://h/db")
+
+
+def test_sqlite_opens_only_as_the_test_double(monkeypatch):
+    from harness import store_dialect
+
+    assert store_dialect.double_allowed({"COXSWAIN_STORE_DOUBLE": "sqlite"})
+    assert not store_dialect.double_allowed({}) and not store_dialect.double_allowed({"COXSWAIN_STORE_DOUBLE": "1"})
+    monkeypatch.delenv("COXSWAIN_STORE_DOUBLE")
+    with pytest.raises(ValueError, match="sqlite is not a supported store.*postgresql://"):
+        connect("sqlite:///:memory:")
+    monkeypatch.setenv("COXSWAIN_STORE_DOUBLE", "sqlite")
+    connect("sqlite:///:memory:").close()
 
 
 def test_a_refused_url_does_not_print_its_password():

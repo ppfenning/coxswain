@@ -8,10 +8,10 @@ A later line with a `status` and the same kind, initiative and phase closes it. 
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from agent_tools.chair_read_record import ACTION_LOG
+from agent_tools.jsonl_log import read_log
 
 Record = dict[str, object]
 
@@ -43,18 +43,9 @@ def current_action(records: list[Record]) -> dict[str, str] | None:
     }
 
 
-def _parsed(line: str) -> Record | None:
-    try:
-        value = json.loads(line)
-    except ValueError:
-        return None
-    return value if isinstance(value, dict) else None
-
-
 def read_current_action(runs_dir: Path) -> dict[str, str] | None:
-    """Edge. `current_action` over runs_dir / ACTION_LOG; None when the log is missing. Blank and malformed lines are skipped."""
+    """Edge. `current_action` over runs_dir / ACTION_LOG; None when the log is missing. NULs are stripped, damaged lines skipped."""
     path = runs_dir / ACTION_LOG
     if not path.exists():
         return None
-    parsed = (_parsed(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
-    return current_action([record for record in parsed if record is not None])
+    return current_action(list(read_log(path).rows))

@@ -1,6 +1,11 @@
+import os
+
 import pytest
 
 from devtools import cli
+
+# sqlite is the suites' stand-in for the one real store, Postgres. Outside the suites it does not open.
+os.environ.setdefault("COXSWAIN_STORE_DOUBLE", "sqlite")
 
 
 @pytest.fixture(autouse=True)

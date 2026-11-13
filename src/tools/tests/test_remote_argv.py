@@ -196,27 +196,27 @@ def test_rsync_argvs_carry_the_io_timeout_and_a_bounded_ssh_transport():
 
 
 def test_git_fetch_argv_maps_the_run_branches_onto_themselves():
-    assert git_fetch_argv("me@box:/srv/repo", "r9") == [
+    assert git_fetch_argv("me@box:/srv/repo", "r9", "box") == [
         "git", "fetch", "me@box:/srv/repo",
         "refs/heads/agents/r9/*:refs/heads/agents/r9/*",
-        "+refs/heads/epic/r9/*:refs/heads/epic/r9/*",
+        "+refs/heads/epic/r9/*:refs/coxswain/incoming/box/epic/r9/*",
     ]
 
 
 def test_git_fetch_argv_also_brings_back_the_initiative_phase_branch():
-    assert git_fetch_argv("host-a:/r", "init-a-2") == [
+    assert git_fetch_argv("host-a:/r", "init-a-2", "host-a") == [
         "git", "fetch", "host-a:/r",
         "refs/heads/agents/init-a-2/*:refs/heads/agents/init-a-2/*",
-        "+refs/heads/epic/init-a/*:refs/heads/epic/init-a/*",
+        "+refs/heads/epic/init-a/*:refs/coxswain/incoming/host-a/epic/init-a/*",
     ]
 
 
 def test_git_fetch_phase_argv_fetches_one_branch_whose_initiative_differs_from_the_run_prefix():
-    assert git_fetch_phase_argv("host-a:/r", "epic/other-init/phase-2") == [
+    assert git_fetch_phase_argv("host-a:/r", "epic/other-init/phase-2", "host-a") == [
         "git",
         "fetch",
         "host-a:/r",
-        "+refs/heads/epic/other-init/phase-2:refs/heads/epic/other-init/phase-2",
+        "+refs/heads/epic/other-init/phase-2:refs/coxswain/incoming/host-a/epic/other-init/phase-2",
     ]
 
 

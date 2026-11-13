@@ -29,7 +29,6 @@ def _facts(**extra: object) -> Facts:
         "stale_candidates": [],
         "stall_candidates": [],
         "home": {},
-        "approval_hold_ticks": 6,
     }
     return {**base, **extra}  # type: ignore[return-value]
 
@@ -72,7 +71,7 @@ def test_an_empty_wrongly_released_list_yields_no_restore():
     assert _of(plan_tick(_facts(wrongly_released=[]), _NOW), "restore_approvals") == []
 
 
-def test_a_task_the_same_tick_releases_is_not_restored():
+def test_a_long_held_task_is_not_released_and_every_wrongly_released_entry_is_restored():
     facts = _facts(
         approved=[_row()],
         running=[{"id": "A", "repo": "r", "surfaces": ["a.py"], "live": False}],
@@ -80,8 +79,8 @@ def test_a_task_the_same_tick_releases_is_not_restored():
         wrongly_released=[{"initiative": "A", "task_id": "A-t"}, {"initiative": "A", "task_id": "A-old"}],
     )
     plan = plan_tick(facts, _NOW)
-    assert [a["task_ids"] for a in _of(plan, "release_approvals")] == [["A-t"]]
-    assert [a["task_ids"] for a in _of(plan, "restore_approvals")] == [["A-old"]]
+    assert _of(plan, "release_approvals") == []
+    assert [a["task_ids"] for a in _of(plan, "restore_approvals")] == [["A-t", "A-old"]]
 
 
 def test_a_ticket_landing_hold_merged_to_its_phase_branch_is_still_not_released():

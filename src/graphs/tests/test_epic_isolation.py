@@ -9,6 +9,8 @@ import os
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 from harness import base_sync, epic
 from tests.test_epic_base_check import DEPENDENT, NEED, _side_commit, _work
 from tests.test_epic_driver import (  # noqa: F401 -- cart and repo are fixtures
@@ -72,6 +74,7 @@ def _drive_two_parent(repo: Path, cart: dict, base: Path) -> dict:
     return result
 
 
+@pytest.mark.usefixtures("at_task")
 def test_driving_the_base_check_and_two_parent_scenarios_leaves_process_state_unchanged(repo, cart, tmp_path) -> None:
     before_env, before_cwd, before_modules = process_state()
 
@@ -88,6 +91,7 @@ def test_driving_the_base_check_and_two_parent_scenarios_leaves_process_state_un
     assert after_modules == before_modules
 
 
+@pytest.mark.usefixtures("at_task")
 def test_the_same_scenario_driven_twice_in_two_directories_gives_the_same_result(cart, tmp_path) -> None:
     seen = []
     reasons = []

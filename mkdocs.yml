@@ -79,6 +79,7 @@ nav:
       - Providers: customize/providers.md
       - Policy: customize/policy.md
       - Plugins: customize/plugins.md
+      - MCP server: customize/mcp.md
       - Write a skill: customize/write-a-skill.md
       - Write a graph: customize/write-a-graph.md
       - Dashboards: customize/dashboards.md
@@ -99,6 +100,7 @@ nav:
   - Releases:
       - Releases: releases/index.md
       - From 0.47 to the monorepo: monorepo.md
+      - 2026.11.7: releases/2026.11.7.md
       - 2026.11.6: releases/2026.11.6.md
       - 2026.11.5: releases/2026.11.5.md
       - 2026.11.4: releases/2026.11.4.md

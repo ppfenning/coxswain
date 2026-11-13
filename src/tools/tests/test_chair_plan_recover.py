@@ -247,8 +247,8 @@ _PAIRS = [
 ]
 
 
-def test_an_initiative_whose_repo_is_landing_gets_no_relaunch_pair():
-    landing: list[LandingFact] = [{"initiative": "x", "phase": "p", "repo": "r1"}]
+def test_an_initiative_being_landed_gets_no_relaunch_pair():
+    landing: list[LandingFact] = [{"initiative": "a", "phase": "p", "repo": "r1"}]
     facts = _facts([_in_repo("a", "r1"), _in_repo("b", "r2")], [], landing=landing)
     assert plan_recover(facts) == _PAIRS[2:]
 

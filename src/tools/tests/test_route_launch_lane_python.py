@@ -1,8 +1,11 @@
 import os
 
+import pytest
 from test_cli_repo_home_edges import _live_launch
 
 from agent_tools import cli
+
+pytestmark = pytest.mark.usefixtures("board_store")  # the store is the board; these launches read its rows
 
 
 def _stage(tmp_path, monkeypatch, *, venv_python):

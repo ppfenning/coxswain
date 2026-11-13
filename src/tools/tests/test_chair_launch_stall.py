@@ -97,8 +97,8 @@ def test_a_land_backoff_holds_its_unstarted_initiative_and_the_four_lanes_still_
     refusal = {"initiative": "i05", "phase": "p", "run": "i05-1", "attempts": 1, "last_refused_at": (_NOW - timedelta(minutes=5)).isoformat()}
     task = {**_CARRIED, "id": "t5", "initiative": "i05", "run": "i05-1", "needs_fetch": True}
     facts = _symptom(approved=[task], land_refusals=[refusal])
-    # land_at level: an incomplete ticket epic plans no land, so there would be no backoff to hold i05.
-    facts["initiatives"] = [{**i, "land_at": "level"} if i["id"] == "i05" else i for i in facts["initiatives"]]
+    # land_at task: an incomplete initiative-grain epic plans no land, so there would be no backoff to hold i05.
+    facts["initiatives"] = [{**i, "land_at": "task"} if i["id"] == "i05" else i for i in facts["initiatives"]]
     unlaunched = _four_launch_and_none_overlap(facts, "i05")
     assert "backoff" in unlaunched["i05"]
 
@@ -121,8 +121,13 @@ def test_a_land_in_flight_on_another_repo_does_not_hold_the_ready_initiatives():
     assert _outcome(_symptom(landing=other)) == _outcome(_symptom())
 
 
-def test_a_land_in_flight_on_their_repo_holds_all_of_them_and_names_the_hold():
+def test_a_land_of_another_initiative_in_their_repo_holds_none_of_them():
     same = [{"initiative": "zz", "phase": "p", "repo": "repo-a"}]
+    assert _outcome(_symptom(landing=same)) == _outcome(_symptom())
+
+
+def test_a_land_naming_no_initiative_on_their_repo_holds_all_of_them_and_names_the_hold():
+    same = [{"initiative": "", "phase": "", "repo": "repo-a"}]
     launched, unlaunched, _ = _outcome(_symptom(landing=same))
     assert launched == set()
     assert set(unlaunched) == set(_IDS)

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_tools import cli
+from agent_tools import cli, store_fill
 from agent_tools.cli import main
 
 
@@ -26,9 +26,11 @@ def _change_lines(out: str) -> list[str]:
     return [line for line in out.splitlines() if " -> " in line]
 
 
+@pytest.mark.usefixtures("board_store")
 def test_dry_run_prints_two_changes_and_writes_nothing(tmp_path: Path, home: Path, capsys) -> None:
     repo = str(home / "repos" / "demo")
     ws = _workspace(tmp_path, repo)
+    store_fill.fill_workspace(ws)  # the store is the board: the files' rows are what the command reads
     before = {p: p.read_bytes() for p in ws.rglob("*.md")}
     assert main(["route", "paths", "--workspace", str(ws)]) == 0
     out = capsys.readouterr().out
@@ -38,8 +40,10 @@ def test_dry_run_prints_two_changes_and_writes_nothing(tmp_path: Path, home: Pat
     assert {p: p.read_bytes() for p in ws.rglob("*.md")} == before
 
 
+@pytest.mark.usefixtures("board_store")
 def test_apply_rewrites_both_files_and_a_second_run_finds_nothing(tmp_path: Path, home: Path, capsys) -> None:
     ws = _workspace(tmp_path, str(home / "repos" / "demo"))
+    store_fill.fill_workspace(ws)  # the store is the board: the files' rows are what the command reads
     assert main(["route", "paths", "--workspace", str(ws), "--apply"]) == 0
     capsys.readouterr()
     for rel in ("work/demo/initiative.md", "work/demo/1-build/task.md"):
@@ -110,15 +114,6 @@ def test_a_failed_export_after_the_upserts_is_reported_and_exits_non_zero(
     assert "file export failed: store unreadable" in capsys.readouterr().out
 
 
-def test_a_held_intake_file_is_migrated_in_file_mode(tmp_path: Path, home: Path, capsys) -> None:
-    ws = _workspace(tmp_path, "~/repos/demo")
-    (ws / "intake" / "held").mkdir(parents=True)
-    held = ws / "intake" / "held" / "idea.md"
-    held.write_text(f"---\ntitle: Idea\nrepo: {home / 'repos' / 'idea'}\n---\n\nBody\n")
-    assert main(["route", "paths", "--workspace", str(ws), "--apply"]) == 0
-    assert "repo: ~/repos/idea\n" in held.read_text()
-
-
 def test_store_dry_run_writes_nothing(tmp_path: Path, home: Path, monkeypatch, capsys) -> None:
     ws = _workspace(tmp_path, "~/repos/demo")
     upserted: list[dict] = []
@@ -141,8 +136,10 @@ def test_a_refused_row_is_reported_the_rest_are_tried_and_the_exit_is_non_zero(
     assert len(exports) == 1
 
 
+@pytest.mark.usefixtures("board_store")
 def test_move_dry_run_lists_the_swaps_and_writes_nothing(tmp_path: Path, home: Path, capsys) -> None:
     ws = _workspace(tmp_path, "~/repos/old/demo")
+    store_fill.fill_workspace(ws)  # the store is the board: the files' rows are what the command reads
     before = {p: p.read_bytes() for p in ws.rglob("*.md")}
     assert main(["route", "paths", "--workspace", str(ws), "--move", str(home / "repos" / "old"), "~/repos/new"]) == 0
     out = capsys.readouterr().out
@@ -152,8 +149,10 @@ def test_move_dry_run_lists_the_swaps_and_writes_nothing(tmp_path: Path, home: P
     assert {p: p.read_bytes() for p in ws.rglob("*.md")} == before
 
 
+@pytest.mark.usefixtures("board_store")
 def test_move_apply_rewrites_the_files_and_reports_no_residue(tmp_path: Path, home: Path, capsys) -> None:
     ws = _workspace(tmp_path, "~/repos/old/demo")
+    store_fill.fill_workspace(ws)  # the store is the board: the files' rows are what the command reads
     argv = ["route", "paths", "--workspace", str(ws), "--apply", "--move", "~/repos/old", "~/repos/new"]
     assert main(argv) == 0
     out = capsys.readouterr().out
@@ -188,8 +187,10 @@ def test_a_value_left_under_old_after_apply_prints_the_count_and_exits_one(
     assert capsys.readouterr().out.splitlines()[-1] == "route paths: 2 value(s) still under ~/repos/old"
 
 
+@pytest.mark.usefixtures("board_store")
 def test_apply_without_move_prints_no_residue_line(tmp_path: Path, home: Path, capsys) -> None:
     ws = _workspace(tmp_path, str(home / "repos" / "demo"))
+    store_fill.fill_workspace(ws)  # the store is the board: the files' rows are what the command reads
     assert main(["route", "paths", "--workspace", str(ws), "--apply"]) == 0
     assert "still under" not in capsys.readouterr().out
 
@@ -213,8 +214,10 @@ def _snapshot(ws: Path, name: str) -> dict[Path, bytes]:
     return {p: p.read_bytes() for p in (ws / "work" / name).rglob("*.md")}
 
 
+@pytest.mark.usefixtures("board_store")
 def test_move_dry_run_lists_only_the_open_initiative_and_writes_nothing(tmp_path: Path, home: Path, capsys) -> None:
     ws = _two_initiatives(tmp_path, "~/repos/old")
+    store_fill.fill_workspace(ws)  # the store is the board: the files' rows are what the command reads
     before = {p: p.read_bytes() for p in ws.rglob("*.md")}
     assert main(["route", "paths", "--workspace", str(ws), "--move", "~/repos/old", "~/repos/new"]) == 0
     out = capsys.readouterr().out
@@ -225,10 +228,12 @@ def test_move_dry_run_lists_only_the_open_initiative_and_writes_nothing(tmp_path
     assert {p: p.read_bytes() for p in ws.rglob("*.md")} == before
 
 
+@pytest.mark.usefixtures("board_store")
 def test_move_apply_rewrites_the_open_initiative_and_leaves_the_done_one_untouched(
     tmp_path: Path, home: Path, capsys
 ) -> None:
     ws = _two_initiatives(tmp_path, "~/repos/old")
+    store_fill.fill_workspace(ws)  # the store is the board: the files' rows are what the command reads
     done_before = _snapshot(ws, "shipped")
     assert main(["route", "paths", "--workspace", str(ws), "--apply", "--move", "~/repos/old", "~/repos/new"]) == 0
     out = capsys.readouterr().out
@@ -238,8 +243,10 @@ def test_move_apply_rewrites_the_open_initiative_and_leaves_the_done_one_untouch
     assert out.splitlines()[-1] == "route paths: 0 value(s) still under ~/repos/old"
 
 
+@pytest.mark.usefixtures("board_store")
 def test_a_run_without_move_still_lists_both_initiatives(tmp_path: Path, home: Path, capsys) -> None:
     ws = _two_initiatives(tmp_path, str(home / "repos"))
+    store_fill.fill_workspace(ws)  # the store is the board: the files' rows are what the command reads
     assert main(["route", "paths", "--workspace", str(ws)]) == 0
     out = capsys.readouterr().out
     assert len(_change_lines(out)) == 4

@@ -294,3 +294,25 @@ def test_the_schedule_file_name_is_schedule_json():
 
 def test_equal_arguments_give_an_equal_schedule():
     assert _plan(WAVE, WAVE_HOURS, TWO_HOSTS) == _plan(WAVE, WAVE_HOURS, TWO_HOSTS)
+
+
+def test_a_ready_phase_behind_a_waiting_parent_does_not_hold_back_an_overlapping_initiative():
+    # x/p2 cannot place until x/p1 lands, so y, which shares its surface, launches now instead of waiting for good.
+    initiatives = [
+        Initiative("x", 5, "r", (_ph("p1", "waiting"), _ph("p2", parents=("p1",), surfaces=("src/shared.py",)))),
+        Initiative("y", 1, "r", (_ph("q", surfaces=("src/shared.py",)),)),
+    ]
+    schedule = _plan(initiatives, {("x", "p1"): 1, ("x", "p2"): 1, ("y", "q"): 1}, TWO_HOSTS)
+    assert [p.key for p in schedule.launches] == [("y", "q")]
+    assert schedule.unplaced == (("x", "p1"), ("x", "p2"))
+
+
+def test_an_overlapping_initiative_stays_behind_a_placeable_phase():
+    initiatives = [
+        Initiative("x", 5, "r", (_ph("p1"), _ph("p2", parents=("p1",), surfaces=("src/shared.py",)))),
+        Initiative("y", 1, "r", (_ph("q", surfaces=("src/shared.py",)),)),
+    ]
+    schedule = _plan(initiatives, {("x", "p1"): 1, ("x", "p2"): 1, ("y", "q"): 1}, TWO_HOSTS)
+    placed = _by_key(schedule)
+    assert [p.key for p in schedule.launches] == [("x", "p1")]
+    assert placed[("y", "q")].start == placed[("x", "p2")].finish

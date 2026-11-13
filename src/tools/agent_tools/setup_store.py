@@ -15,7 +15,7 @@ _CHOICES = frozenset({"files", "shared"})
 
 
 def default_store_choice() -> str:
-    return "files"
+    return "shared"  # the one store; `files` is still parsed so it can be refused by name
 
 
 def parse_store_choice(value: str | None) -> str | None:

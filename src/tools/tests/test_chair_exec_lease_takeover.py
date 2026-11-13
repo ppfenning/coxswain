@@ -113,3 +113,35 @@ def test_a_stale_session_record_over_a_live_store_row_is_taken_end_to_end(tmp_pa
     chair.write(tmp_path, _fresh())
     assert deps.acquire_lease("h", "host-a") == ""
     assert store.steals == [True]
+
+
+def _take(reason: str = "") -> dict:
+    return {"kind": "take_lease", "holder": "h", "host": "host-a", "reason": reason}
+
+
+class _FakeLease:
+    def __init__(self, line: str = "") -> None:
+        self.line, self.calls = line, []
+
+    def acquire(self, holder, host, **kwargs) -> str:
+        self.calls.append(kwargs)
+        return self.line
+
+
+def _exec_deps(fake: _FakeLease):
+    return chair_exec.Deps(run=lambda *a, **k: (0, ""), delete_branches=lambda r, p: ([], ""), acquire_lease=fake.acquire,
+                           record=lambda a: None, run_id=lambda a: "", repo_for=lambda a: "")
+
+
+def test_a_takeback_reason_acquires_with_steal_and_a_plain_take_does_not() -> None:
+    takeback, plain = _FakeLease(), _FakeLease()
+    result = chair_exec._lease(_take("takeback from other@host-a:7"), _exec_deps(takeback))
+    chair_exec._lease(_take(), _exec_deps(plain))
+    assert takeback.calls[0]["steal"] is True
+    assert "steal" not in plain.calls[0]
+    assert result["status"] == "done" and result["action"]["reason"] == "takeback from other@host-a:7"
+
+
+def test_a_refused_takeback_stays_refused_with_the_refusal_line() -> None:
+    result = chair_exec._lease(_take("takeback from other@host-a:7"), _exec_deps(_FakeLease(REFUSAL)))
+    assert (result["status"], result["reason"]) == ("refused", REFUSAL)

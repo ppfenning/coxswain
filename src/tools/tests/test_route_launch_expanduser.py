@@ -4,6 +4,8 @@ from test_route_cli import _init_repo, _unmeasured_window, _write_harness, _writ
 from agent_tools import usage_window
 from agent_tools.cli import main
 
+pytestmark = pytest.mark.usefixtures("board_store")  # the store is the board; these launches read its rows
+
 
 @pytest.fixture(autouse=True)
 def _no_usage_gather(monkeypatch):

@@ -1,6 +1,9 @@
+import pytest
 from test_cli_repo_home_edges import _live_launch
 
 from agent_tools import cli
+
+pytestmark = pytest.mark.usefixtures("board_store")  # the store is the board; these launches read its rows
 
 
 def test_capacity_is_exported_as_a_string_and_the_rest_is_kept():

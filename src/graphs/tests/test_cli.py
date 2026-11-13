@@ -2309,3 +2309,55 @@ assert before == after, (before, after)
     dumped = log_path.read_text()
     assert "test_target_marker" in dumped
     assert "Current thread" in dumped or "Thread" in dumped
+
+
+def _record_run_checks(monkeypatch: pytest.MonkeyPatch, scratch: Path, raises: bool) -> dict:
+    seen: dict = {}
+
+    def fake(worktree, checks_config, *, log_dir, log_prefix, env):
+        seen["env"] = env
+        seen["existed"] = scratch.is_dir()
+        if raises:
+            raise RuntimeError("check blew up")
+        return []
+
+    monkeypatch.setattr(cli, "run_checks", fake)
+    return seen
+
+
+def test_worktree_checks_env_carries_the_basetemp_and_the_dir_is_removed_after_a_pass(tmp_path, monkeypatch):
+    monkeypatch.delenv("COX_LANE_CAPACITY", raising=False)
+    monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
+    monkeypatch.setenv("COX_TEST_MARKER", "kept")
+    scratch = tmp_path / "run" / "pytest-tmp" / "checks--wt"
+    seen = _record_run_checks(monkeypatch, scratch, raises=False)
+
+    cli._run_worktree_checks(tmp_path / "wt", [], tmp_path / "run" / "checks")
+
+    assert seen["env"]["TMPDIR"] == str(scratch)
+    assert seen["env"]["PYTEST_ADDOPTS"] == f"--basetemp={scratch}"
+    assert seen["env"]["COX_TEST_MARKER"] == "kept"
+    assert seen["existed"] is True
+    assert not scratch.exists()
+
+
+def test_worktree_checks_remove_the_scratch_dir_when_a_check_raises(tmp_path, monkeypatch):
+    scratch = tmp_path / "run" / "pytest-tmp" / "checks--wt"
+    seen = _record_run_checks(monkeypatch, scratch, raises=True)
+
+    with pytest.raises(RuntimeError, match="check blew up"):
+        cli._run_worktree_checks(tmp_path / "wt", [], tmp_path / "run" / "checks")
+
+    assert seen["existed"] is True
+    assert not scratch.exists()
+
+
+def test_worktree_checks_with_a_stated_capacity_keep_the_worker_cap_and_the_basetemp(tmp_path, monkeypatch):
+    monkeypatch.setenv("COX_LANE_CAPACITY", "2")
+    scratch = tmp_path / "run" / "pytest-tmp" / "checks--wt"
+    seen = _record_run_checks(monkeypatch, scratch, raises=False)
+
+    cli._run_worktree_checks(tmp_path / "wt", [], tmp_path / "run" / "checks")
+
+    assert f"--basetemp={scratch}" in seen["env"]["PYTEST_ADDOPTS"]
+    assert "PYTEST_XDIST_AUTO_NUM_WORKERS" in seen["env"]
