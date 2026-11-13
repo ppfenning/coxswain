@@ -41,3 +41,9 @@ def test_a_machine_with_no_profile_yet_is_not_refused_and_one_with_a_sqlite_stor
     profile.write_text(f"workspace_dir: {tmp_path / 'ws'}\nprovider_profile: {provider}\n")
     assert cli.main(["route", "status", "--profile", str(profile)]) == 2
     assert "not Postgres" in capsys.readouterr().err
+
+
+def test_lint_reads_only_the_files_it_is_given_and_runs_without_a_store() -> None:
+    assert cli.store_refusal(["route", "lint", "work/demo"], None, {}) is None
+    assert cli.store_refusal(["route", "lint", "work/demo"], "sqlite:///runs/cox.db", {}) is None
+    assert cli.store_refusal(["route", "status"], None, {}) is not None
