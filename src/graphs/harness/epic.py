@@ -4425,6 +4425,9 @@ def _run_phase(
         with ctx.items_lock:
             shared = {str(item["id"]): item for item in items}
             context_items = [dict(item) for item in items]
+        # Under work_state store no work file holds an attempt: a flagged task's attempts are its runs' task records.
+        for task_id in capped_ids:
+            attempts_by_id[task_id] = attempts_by_id[task_id] or _build_attempts(_record_attempts(ctx, phase, task_id))
         _wait_if_paused(ctx)
         triaged, _, triage_failures = invoke_graphs(
             [
@@ -6119,6 +6122,71 @@ def _stored_causes(ctx: _Ctx, task: str) -> list[dict[str, Any]]:
     mark = ctx.store.conn.dialect.placeholder
     sql = f"SELECT {', '.join(cols)} FROM attempts WHERE task_id = {mark}"
     return [dict(zip(cols, row, strict=True)) for row in ctx.store.conn.query_all(sql, (task,))]
+
+
+def _run_number(run: str) -> int:
+    """The number a run id ends in, `x-3` is 3; -1 for a run id that ends in none."""
+    tail = run.rsplit("-", 1)[-1]
+    return int(tail) if "-" in run and tail.isdigit() else -1
+
+
+def _record_initiative(run: str, record: Mapping[str, Any]) -> str:
+    """The initiative a record belongs to: its own `initiative`, else its run id less the run number."""
+    return str(record.get("initiative") or "") or (run.rsplit("-", 1)[0] if _run_number(run) >= 0 else run)
+
+
+def _triage_attempt(run: str, phase: str, record: Mapping[str, Any], ts: str) -> dict[str, Any] | None:
+    """One attempt for triage from one run task record that names a cause, None for a record that names none.
+
+    The cause, reason and kind are `core.run_record`'s; the record's own verdicts ride beside them, which is what triage
+    reads from "the task records of its attempts" (docs/design/triage.md §1). `ts` is the record's `date`, else `ts`."""
+    # Not module level: importing the driver loads no more of core than it did, so a process that imports it alone
+    # (the import-cost tests run one) resolves the same core modules it always has.
+    from core import run_record
+
+    attempt = run_record.record_attempt(record)
+    if attempt is None:
+        return None
+    build = record.get("build") if isinstance(record.get("build"), Mapping) else {}
+    evidence = record.get("evidence") or build.get("evidence")
+    verdicts = {key: record[key] for key in ("review", "adversary", "arbitration", "fix_loop") if isinstance(record.get(key), Mapping)}
+    return {
+        "run": run, "phase": phase, **attempt, "ts": str(record.get("date") or "") or ts, **verdicts,
+        **({"evidence": list(evidence)} if isinstance(evidence, list) else {}),
+    }
+
+
+def _record_attempts(ctx: _Ctx, phase: str, task: str) -> list[dict[str, Any]]:
+    """The task's attempts as its runs' task records hold them, oldest first, for triage of an item with no attempt.
+
+    Under work_state store nothing writes an attempt into the work file, so a task the chair flagged would reach triage
+    with nothing to cite. This machine's record files under the runs directory are read first; the store's copy
+    (`task_records`) adds the runs another lane recorded. Only this initiative's records count. A read that fails is
+    logged and gives what was read before it."""
+    found: dict[str, tuple[Mapping[str, Any], str]] = {}
+    for path in sorted(Path(ctx.runs_dir).glob(f"*/tasks/{phase}/{task}.json")):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+            stamp = datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat()
+        except (OSError, ValueError):
+            continue
+        if isinstance(record, Mapping):
+            found[path.parts[-4]] = (record, stamp)
+    if ctx.store is not None:
+        try:
+            from harness import store_read  # not module level: see `_mirror_read`
+
+            for row in store_read.task_records_of(ctx.store.conn, phase, task):
+                if isinstance(row["record_json"], Mapping):
+                    found.setdefault(str(row["run_id"]), (row["record_json"], str(row.get("updated_at") or "")))
+        except Exception as exc:
+            _log.warning("task records of %s/%s not read from the store: %s: %s", phase, task, type(exc).__name__, exc)
+    attempts = [
+        (attempt, _run_number(run), stamp)
+        for run, (record, stamp) in found.items()
+        if _record_initiative(run, record) == ctx.initiative_id and (attempt := _triage_attempt(run, phase, record, stamp)) is not None
+    ]
+    return [a for a, _, _ in sorted(attempts, key=lambda t: (t[0]["ts"], t[1], t[2]))]
 
 
 def _record_rescue_gate(ctx: _Ctx, phase: str, move: Mapping[str, Any], diff: Mapping[str, Any], minutes: float) -> None:

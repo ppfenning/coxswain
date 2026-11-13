@@ -76,6 +76,12 @@ unknown) gets `extra.triage_requested` on its store row and goes back to `ready`
 flagged task before any rebuild, whatever its attempt count, and takes the flag off once triage answered.
 A triage that could not run quarantines the task as before.
 
+Under `work_state: store` no work file holds an attempt, so both sides read the attempts from the run task
+records (`runs/<run>/tasks/<phase>/<task>.json`, and the store's `task_records` copy): each record that
+names a `cause` is one attempt (`core/run_record.py`). The chair takes a quarantine's cause, run, reason and
+failure count from them; the epic hands a flagged task's records to triage as its `attempts`, with the
+record's review, adversary and arbitration verdicts, `fix_loop` and evidence beside each.
+
 ## 2. `ticket_amend`: specify, never relax  (cartridges, graphs)
 
 - `cartridges/base/cartridge.yaml` write kinds: `ticket_amend: {risk: low, ramp: eligible}`.

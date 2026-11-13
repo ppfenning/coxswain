@@ -53,6 +53,7 @@ __all__ = [
     "summary_row",
     "task_record",
     "task_records",
+    "task_records_of",
     "work_items",
 ]
 
@@ -330,6 +331,15 @@ def task_records(conn: Connection, run_id: str) -> dict[tuple[str, str], Row]:
     sql = f"{_select(_TASK_RECORD_COLS, 'task_records')} WHERE run_id = {p} ORDER BY phase_id, task_id"
     rows = (_dict(_TASK_RECORD_COLS, r) for r in conn.query_all(sql, (run_id,)))
     return {(r["phase_id"], r["task_id"]): r["record_json"] for r in rows}
+
+
+def task_records_of(conn: Connection, phase_id: str, task_id: str) -> list[Row]:
+    """Every run's record of one task in one phase, by run_id: run_id, phase_id, task_id, record_json decoded, updated_at.
+
+    A task id repeats across initiatives, so the caller tells its own runs apart."""
+    p = conn.dialect.placeholder
+    sql = f"{_select(_TASK_RECORD_COLS, 'task_records')} WHERE phase_id = {p} AND task_id = {p} ORDER BY run_id"
+    return [_dict(_TASK_RECORD_COLS, r) for r in conn.query_all(sql, (phase_id, task_id))]
 
 
 def _scoped_to(record: dict[str, Any], repo: str) -> bool:
