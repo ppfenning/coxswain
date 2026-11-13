@@ -92,6 +92,7 @@ chair_exec = _LazyModule("agent_tools.chair_exec")
 chair_facts = _LazyModule("agent_tools.chair_facts")
 chair_holder = _LazyModule("agent_tools.chair_holder")
 chair_resolve = _LazyModule("agent_tools.chair_resolve")
+chair_attach = _LazyModule("agent_tools.chair_attach")
 chair_land_freeze = _LazyModule("agent_tools.chair_land_freeze")
 chair_load_warn = _LazyModule("agent_tools.chair_load_warn")
 chair_login_check = _LazyModule("agent_tools.chair_login_check")
@@ -11154,7 +11155,8 @@ def _home(a: argparse.Namespace) -> int:
 def _session(a: argparse.Namespace) -> int:
     """`cox session`: the coxswain Claude session, with the argv bare `cox` uses."""
     return _launcher(
-        argparse.Namespace(launcher_profile=a.profile, no_plugin=a.session_no_plugin, print_argv=a.session_print_argv),
+        argparse.Namespace(launcher_profile=a.profile, no_plugin=a.session_no_plugin, print_argv=a.session_print_argv,
+                           workspace_session=getattr(a, "session_workspace", False)),
         a.session_extra,
     )
 
@@ -11723,6 +11725,7 @@ SESSION_GROUP = commands.Group(
         # distinct dests: the top-level parser owns no_plugin and print_argv, and argparse copies a matched subparser's namespace over it
         commands.Arg(("--no-plugin",), {"action": "store_true", "dest": "session_no_plugin", "help": "start claude without --plugin-dir"}),
         commands.Arg(("--print-argv",), {"action": "store_true", "dest": "session_print_argv", "help": "print the claude argv and cwd instead of exec'ing it"}),
+        commands.Arg(("--workspace",), {"action": "store_true", "dest": "session_workspace", "help": "force the workspace session that can act as the chair"}),
         commands.Arg(("session_extra",), {"nargs": "*", "metavar": "CLAUDE_ARG", "help": "after --: passed to claude verbatim, as bare cox does"}),
     ),
     fn="agent_tools.cli:_session",
@@ -12331,7 +12334,9 @@ def build_parser() -> argparse.ArgumentParser:
         description=__doc__,
         epilog=(
             "examples:\n"
-            "  bare cox opens the coxswain Claude session\n"
+            "  bare cox opens the coxswain Claude session: attached over MCP to a live chair service, from any\n"
+            "    directory and without touching its lease; with no live chair, the workspace session that can act\n"
+            "    as the chair. cox --workspace forces the workspace session; cox --print-argv shows which would run\n"
             "  cox home opens the towpath dashboard\n"
             "  cox session opens the coxswain Claude session, with the same argv\n"
             "  cox setup doctor checks this machine\n"
@@ -12347,6 +12352,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--profile", dest="launcher_profile", help="bare cox: the profile to launch claude against")
     p.add_argument("--no-plugin", action="store_true", help="bare cox: start claude without --plugin-dir")
     p.add_argument("--print-argv", action="store_true", help="bare cox: print the claude argv and cwd instead of exec'ing it")
+    p.add_argument("--workspace", action="store_true", dest="workspace_session", help="bare cox: force the workspace session that can act as the chair")
     p.add_argument("--version", "-V", action=_VersionAction, help="print the cox version and exit")
     sub = p.add_subparsers(dest="group", required=False)
 
@@ -12574,7 +12580,9 @@ def _mcp_serve(a: argparse.Namespace) -> int:
             sys.stdout.write(text)
             sys.stdout.flush()
 
-        return mcp_server.serve_stdio(sys.stdin, write, mcp_server.make_handler(ports, a.label))
+        # The attached session's config carries its conversation id here, so its entries stay in one conversation.
+        caller = a.label or os.environ.get(chair_attach.CONVERSATION_ENV) or "mcp"
+        return mcp_server.serve_stdio(sys.stdin, write, mcp_server.make_handler(ports, caller))
     host, _, port = a.http.rpartition(":")
     if not host or not port.isdigit() or not a.tokens_file:
         print("mcp: --http takes HOST:PORT with a literal address, and needs --tokens-file", file=sys.stderr)
@@ -12587,27 +12595,27 @@ def _mcp_serve(a: argparse.Namespace) -> int:
     return mcp_http.serve(host.strip("[]"), int(port), lambda label: mcp_server.make_handler(ports, label), tokens)
 
 
-MCP_GROUP = commands.Group(name="mcp", help="serve the chair's tools to MCP clients", description="", epilog="")
-MCP_COMMANDS = [
-    commands.Command(
-        "serve", "mcp", "serve the board, the queue and the cartridge settings to an MCP client",
-        (
-            commands.Arg(("--http",), {"metavar": "HOST:PORT", "help": "serve over HTTP on this literal private address instead of stdin and stdout"}),
-            commands.Arg(("--tokens-file",), {"metavar": "PATH", "help": "with --http: lines of 'label token'; a token is at least 24 characters"}),
-            commands.Arg(("--label",), {"default": "mcp", "help": "who the stdio client is, on every entry it sends; over HTTP the token's label is used"}),
-            commands.Arg(("--profile",)),
-        ),
-        "agent_tools.cli:_mcp_serve", False, (),
-        description=(
-            "Run it on the machine that runs the chair and holds the cartridge.\n"
-            "Reads answer from the board as it is now. Plain writes (file an intake, set a stage or a priority, hold, "
-            "release, change a cartridge setting) run the cox command a person would type and return its outcome.\n"
-            "A release cut, a scope change and a feature switch are sent to the chair as requests.\n"
-            "With no --http it speaks MCP on stdin and stdout, which is what a local client launches. "
-            "--http binds only a loopback, private, tailnet or link-local address and has no TLS."
-        ),
+MCP_GROUP = commands.Group(
+    name="mcp", help="serve the chair's tools to MCP clients",
+    description=(
+        "Serve the board, the queue and the cartridge settings to an MCP client. `cox mcp` and `cox mcp serve` are the same.\n"
+        "Run it on the machine that runs the chair and holds the cartridge.\n"
+        "Reads answer from the board as it is now. Plain writes (file an intake, set a stage or a priority, hold, "
+        "release, change a cartridge setting) run the cox command a person would type and return its outcome.\n"
+        "A release cut, a scope change and a feature switch are sent to the chair as requests.\n"
+        "With no --http it speaks MCP on stdin and stdout, which is what a local client launches. "
+        "--http binds only a loopback, private, tailnet or link-local address and has no TLS."
     ),
-]
+    epilog="examples:\n  cox mcp\n  cox mcp serve --http 127.0.0.1:8765 --tokens-file tokens",
+    args=(
+        commands.Arg(("mode",), {"nargs": "?", "choices": ("serve",), "help": "optional; serving is all this command does"}),
+        commands.Arg(("--http",), {"metavar": "HOST:PORT", "help": "serve over HTTP on this literal private address instead of stdin and stdout"}),
+        commands.Arg(("--tokens-file",), {"metavar": "PATH", "help": "with --http: lines of 'label token'; a token is at least 24 characters"}),
+        commands.Arg(("--label",), {"help": "who the stdio client is, on every entry it sends; default $COXSWAIN_MCP_CONVERSATION, else mcp. Over HTTP the token's label is used"}),
+        commands.Arg(("--profile",)),
+    ),
+    fn="agent_tools.cli:_mcp_serve",
+)
 
 
 COURIER_GROUP = commands.Group(name="courier", help="the courier bus: hand a reference to another label", description="", epilog="")
@@ -15568,7 +15576,7 @@ def _dispatch_table(
 COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = _dispatch_table([
     (RUNS_GROUP, RUNS_COMMANDS),
     (COURIER_GROUP, COURIER_COMMANDS),
-    (MCP_GROUP, MCP_COMMANDS),
+    (MCP_GROUP, []),
     (VERSIONS_GROUP, []),
     (CONSOLE_GROUP, []),
     (DASH_GROUP, []),
@@ -15722,10 +15730,43 @@ def _launcher_session_takes(profile_arg: str | None) -> str:
     return chair_resolve.resolve_session_takes(chair_keys.get("session_takes") if isinstance(chair_keys, dict) else None)
 
 
-def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
+def _conversation_file() -> Path:
+    """Edge. Where the attached session's conversation id is stored on this machine."""
+    return chair_attach.conversation_path(os.environ.get("XDG_STATE_HOME"), Path.home())
+
+
+def _attach_over_mcp(a: argparse.Namespace, argv: list[str], extra_args: list[str], mint: Callable[[], str]) -> int:
+    """Edge. Start (or print) the session attached to the live chair over MCP: the chair's MCP server configured, the
+    operator's stored conversation id resumed, the current directory kept. Reads and writes no lease, takes nothing,
+    starts no beater and prints no inbox. `argv` is the workspace session's, read only for the plugin directory."""
+    path = _conversation_file()
+    conversation = chair_attach.read_conversation(_read_text_or_none(path))
+    if conversation is None:
+        conversation = mint()
+        with contextlib.suppress(OSError):  # an id that cannot be stored still names this session's conversation
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(chair_attach.conversation_text(conversation), encoding="utf-8")
+    plugin_root = argv[argv.index("--plugin-dir") + 1] if "--plugin-dir" in argv else None
+    attached = chair_attach.attach_argv(plugin_root, chair_attach.mcp_config("cox", conversation), extra_args)
+    if a.print_argv:
+        print(attached)
+        print(Path.cwd())
+        print("chair: a live chair service holds the chair; this session is attached to it over MCP", file=sys.stderr)
+        return 0
+    if a.launcher_profile:  # the server the session starts reads the same profile this launch did
+        os.environ["AGENT_TOOLS_PROFILE"] = str(Path(a.launcher_profile).expanduser())
+    print("chair: a live chair service holds the chair; attaching to it over MCP (cox --workspace forces the workspace session)")
+    os.execvp(attached[0], attached)
+    return 0
+
+
+def _launcher(a: argparse.Namespace, extra_args: list[str], mint: Callable[[], str] | None = None) -> int:
     """Bare `cox` (spec §7) and `cox session`: a real Claude Code session with
     the coxswain plugin loaded and the profile's workspace as cwd, off the
-    dedicated `launcher_profile` dest. The argv comes from `_session_launch`."""
+    dedicated `launcher_profile` dest. The argv comes from `_session_launch`.
+
+    With a live chair loop under another label the session attaches to it over MCP instead (`_attach_over_mcp`),
+    unless `--workspace` forces the workspace session. `mint` makes a new conversation id; a test fixes it."""
     launch = _session_launch(a.launcher_profile, a.no_plugin, extra_args)
     if isinstance(launch, int):
         return launch
@@ -15736,6 +15777,10 @@ def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
     runs_dir = Path(workspace).expanduser() / "runs"
     host = socket.gethostname()
     now = datetime.datetime.now(datetime.UTC)
+    # Before anything that reads the chair record to take, offer or resume: a live chair loop is attached to, not joined.
+    live = _live_loop_holder(runs_dir)
+    if chair_attach.attach_mode(live, f"chair-{now:%Y-%m-%d}", bool(getattr(a, "workspace_session", False))) == "mcp":
+        return _attach_over_mcp(a, argv, extra_args, mint or (lambda: uuid.uuid4().hex))
     try:
         record = chair.read(runs_dir)
     except (OSError, ValueError):
@@ -15750,7 +15795,6 @@ def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
     plan = chair_resolve.resolve_bare(record, state, host, now, _transcript_exists)
     if plan.note:
         print(plan.note, file=sys.stderr if a.print_argv else sys.stdout)
-    live = _live_loop_holder(runs_dir)
     policy = _launcher_session_takes(a.launcher_profile)
     holder = live or chair_resolve.SessionHolder({"take": "free", "resume": "stale"}.get(plan.kind, "session"))
     decision = chair_resolve.session_take_decision(policy, holder, False)

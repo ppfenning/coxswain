@@ -15,8 +15,16 @@ launches a server. A client entry looks like this:
 {"mcpServers": {"coxswain": {"command": "cox", "args": ["mcp", "serve"]}}}
 ```
 
-`--label NAME` names the client on every entry it sends. The default is
-`mcp`.
+`cox mcp` alone does the same as `cox mcp serve`.
+
+`--label NAME` names the client on every entry it sends. Without it the
+server uses `$COXSWAIN_MCP_CONVERSATION`, which a bare `cox` launch sets
+when it attaches to a live chair, and otherwise `mcp`.
+
+You rarely need to configure the client by hand on the chair's machine: a
+bare `cox` launch beside a live chair service opens a session with this
+server already configured. See
+[Starting a session beside the chair](autonomous-chair.md#starting-a-session-beside-the-chair).
 
 ## Tools that read
 

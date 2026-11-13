@@ -509,7 +509,40 @@ chair. [Several machines](several-machines.md) shows how to set that up.
 
 ### Starting a session beside the chair
 
-A bare `cox` session decides whether to take the chair as it starts. The
+A bare `cox` launch runs in one of two modes, and it picks the mode before it
+reads anything else about the chair.
+
+With a live chair service holding a fresh lease under another label, the
+launch attaches. It opens a Claude Code session with the chair's MCP server
+configured and resumes the operator's stored conversation with the chair. It
+works from any directory. It never reads the chair record to take it, never
+takes or steals the lease, and starts no beater. The [MCP server](mcp.md)
+page lists what the attached session can read and change.
+
+With no live chair, the launch starts the workspace session that can act as
+the chair, so a one-machine setup works as it always did. The rest of this
+section describes that session.
+
+The reason for the split: since the chair became the `coxswain-chair`
+service, a session started in the workspace only converses, and a workspace
+session that resumed could take the service's lease. Attaching over MCP
+removes that risk, and lets any Claude client that has the server configured
+do the same.
+
+The `--workspace` flag forces the workspace session even when a chair is
+live. The `--print-argv` flag shows which mode would run, and its argv,
+without starting anything. `cox session` takes both flags too.
+
+The coxswain plugin's operator commands (intake, stage, approve, land and
+status) call the MCP tools when the server is reachable and use the command
+line otherwise. So a plain Claude Code session with the server configured
+behaves like the attached one.
+
+The attached session stores its conversation id in `mcp-conversation.json`
+under `coxswain` in the state directory (`$XDG_STATE_HOME`, else
+`~/.local/state`). Every entry it sends to the chair carries that id.
+
+A workspace session decides whether to take the chair as it starts. The
 `session_takes` key under `chair:` in the profile sets the policy. These are
 the lines to add, at the top level of the profile file:
 
@@ -538,8 +571,10 @@ With `always`, a session takes or resumes a free or stale chair as `when_free`
 does. It also takes the chair from another session without showing the offer.
 
 None of the three values lets a session displace a live chair loop. The loop
-may be the systemd service or another running chair loop. A session started
-beside it opens as a non-chair session and prints one of these lines:
+may be the systemd service or another running chair loop. A bare launch
+beside it attaches over MCP, as described above. A workspace session forced
+with `--workspace`, or started beside a loop that carries the session's own
+label, opens as a non-chair session and prints one of these lines:
 
 ```text
 chair held by <label> (service)

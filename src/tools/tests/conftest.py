@@ -132,3 +132,14 @@ def board_store(monkeypatch):
     monkeypatch.setattr(run_store, "_harness_python", lambda: Path(sys.executable))
     monkeypatch.setattr(run_store, "_queue_run", run)
     monkeypatch.setattr(run_store, "connect_readonly", readonly)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_conversation_file(monkeypatch, tmp_path_factory):
+    """A bare launch that attaches over MCP stores a conversation id in the state directory. No test writes the
+    machine's real one: the launcher's own lookup is pointed at a directory of the test session's."""
+    from agent_tools import cli
+
+    home = tmp_path_factory.getbasetemp() / "no-state-home"
+    real = cli.chair_attach.conversation_path
+    monkeypatch.setattr(cli, "_conversation_file", lambda: real(os.environ.get("XDG_STATE_HOME") or str(home), home))

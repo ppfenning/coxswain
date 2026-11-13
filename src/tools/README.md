@@ -71,7 +71,7 @@ cox runs triage TASK_ID [--json] [--profile PROFILE] [--repo PATH]   print a qua
 cox courier send REF --to TO --note NOTE [--profile PROFILE] [--event EVENT] [--topic TOPIC] [--field FIELD]   append a bus entry naming a courier reference
 cox courier inbox [--label LABEL] [--profile PROFILE] [--topic TOPIC] [--event EVENT] [--consumer CONSUMER] [--wake]   list this label's unacknowledged bus entries
 cox courier ack ID [--profile PROFILE] [--consumer CONSUMER]   acknowledge one bus entry by id
-cox mcp serve [--http HOST:PORT] [--tokens-file PATH] [--label LABEL] [--profile PROFILE]   serve the board, the queue and the cartridge settings to an MCP client
+cox mcp [serve] [--http HOST:PORT] [--tokens-file PATH] [--label LABEL] [--profile PROFILE]   serve the chair's tools to MCP clients
 cox versions [--root ROOT] [--home HOME] [--manifest MANIFEST]   component versions against the manifest
 cox console [--runs-dir RUNS_DIR] [--work-dir WORK_DIR] [--interval INTERVAL] [--once] [--profile PROFILE]   one screen of hosts, drafts, lanes and the chair; keys run cox commands after a y/n
 cox dash [--runs-dir RUNS_DIR] [--work-dir WORK_DIR] [--feed] [--once] [--interval INTERVAL] [--detail KIND]   a versioned JSON snapshot of the workspace: --feed streams it, --once prints one, --detail drills into one kind
@@ -80,7 +80,7 @@ cox settings set cartridge|profile|host KEY VALUE [--dry-run] [--commit] [--prof
 cox install [--root ROOT] [--home HOME] [--manifest MANIFEST] [--provider PROVIDER] [--with FLAG] [--team TEAM] [--workspace WORKSPACE] [--edge] [--dry-run]   clone/update coxswain components against the manifest
 cox upgrade [--root ROOT] [--home HOME] [--manifest MANIFEST] [--provider PROVIDER] [--with FLAG] [--team TEAM] [--workspace WORKSPACE] [--to TO] [--dry-run]   fetch and check out newer pinned versions; refuses dirty checkouts
 cox home [--profile PROFILE]   the live dashboard: runs, leader, backlog
-cox session [--profile PROFILE] [--no-plugin] [--print-argv] [CLAUDE_ARG...]   open the coxswain Claude session
+cox session [--profile PROFILE] [--no-plugin] [--print-argv] [--workspace] [CLAUDE_ARG...]   open the coxswain Claude session
 cox stats ingest [RUNS_DIR] [--db DB] [--work-store-root WORK_STORE_ROOT] [--cartridges-repo CARTRIDGES_REPO]   load usage, task, node and launch records into stats.db
 cox stats roles [--db DB] [--runs-dir RUNS_DIR] [--json] [--cartridge-sha CARTRIDGE_SHA] [--provider-profile PROVIDER_PROFILE]   landed rate, attempts-to-land and $/landed per role and model
 cox stats tiers [--db DB] [--since SINCE] [--min-samples MIN_SAMPLES] [--json]   per-role model summaries, a cost-aware pick and the spend it would save
