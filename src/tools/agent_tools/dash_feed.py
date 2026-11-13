@@ -675,7 +675,7 @@ def _task_state(
         return _landed_word(task, land_at)
     if state in ("dropped", "quarantined"):
         return state
-    if state == "approved" and route.is_merged(task):
+    if state == "approved" and (route.is_merged(task) or _merged_in_phase(task)):
         return "merged"
     if state == "approved" or stranded:
         return "approved"
@@ -702,7 +702,7 @@ def _task_states(
     phase covering the whole initiative (a lane that has not written a phase yet). `stranded` holds
     `(initiative, phase, task)` per task `runs stranded` lists."""
     own = _own_tasks(rows, initiative)
-    landed = {row.get("task_id") for row in own if row.get("state") in route.TERMINAL}
+    landed = {row.get("task_id") for row in own if row.get("state") in route.TERMINAL or _merged_in_phase(row)}
     lane_phases = {phase for lane_initiative, phase in live_phases if lane_initiative == initiative}
     land_at = _configured_land_at(rows, initiative)
     return [
@@ -859,6 +859,10 @@ def _phase_status(
     if tasks and all(_task_settled(task) for task in tasks):
         merged = any(task.get("state") == "approved" and route.is_merged(task) for task in tasks)
         return ("merged" if merged else "complete"), None
+    if tasks and any(_merged_in_phase(task) for task in tasks) and all(
+        _task_settled(task) or _merged_in_phase(task) for task in tasks
+    ):
+        return "approved", "built; waiting for the lander to merge it into the initiative"
     if blocked_parent is not None:
         return "blocked", f"parent {blocked_parent} is blocked"
     return "waiting", (f"waiting on {', '.join(unfinished)}" if unfinished else None)
@@ -936,12 +940,26 @@ def _with_merged_phases(rows: Sequence[dict], records: Sequence[Mapping]) -> lis
         for phase, entry in (record.get("phases") or {}).items()
         if isinstance(entry, Mapping) and entry.get("state") == "merged"
     }
+    tracked = {str(record.get("initiative") or "") for record in records}
+
+    def flags(row: Mapping) -> dict:
+        # `merged_in_phase`: the task is merged into its phase tip, which an approved task is wherever the lander tracks
+        # the initiative. `merged`: its phase is merged into the initiative branch, which only the record says.
+        key = (row.get("initiative"), row.get("phase"))
+        return {"merged_in_phase": row.get("initiative") in tracked, **({"merged": True} if key in merged else {})}
+
     return [
-        {**row, "extra": {**(row.get("extra") if isinstance(row.get("extra"), Mapping) else {}), "merged": True}}
-        if row.get("kind") == "task" and row.get("state") == "approved" and (row.get("initiative"), row.get("phase")) in merged
+        {**row, "extra": {**(row.get("extra") if isinstance(row.get("extra"), Mapping) else {}), **flags(row)}}
+        if row.get("kind") == "task" and row.get("state") == "approved" and row.get("initiative") in tracked
         else row
         for row in rows
     ]
+
+
+def _merged_in_phase(row: Mapping) -> bool:
+    """An approved task merged into its phase tip (`_with_merged_phases`): complete at its own level."""
+    extra = row.get("extra")
+    return row.get("state") == "approved" and isinstance(extra, Mapping) and bool(extra.get("merged_in_phase"))
 
 
 def _queue(runs_dir: Path, live_phases: Collection[tuple[str, str]] = ()) -> tuple[list[dict], int]:
