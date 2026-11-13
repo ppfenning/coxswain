@@ -7,6 +7,7 @@ way when the chair fetches it. These tests write those records as literal JSON a
 """
 
 import json
+import os
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,8 +15,17 @@ from pathlib import Path
 from agent_tools import chair_sort, cli, run_store
 from agent_tools.chair_facts import gather_facts
 from agent_tools.chair_plan_recover import plan_recover
+from agent_tools.chair_read_cache import StampCache, dump_entries
 from agent_tools.chair_read_quarantined import body_sha
-from agent_tools.chair_read_run_records import merged_attempts, read_run_records, read_store_attempts, record_rows
+from agent_tools.chair_read_run_records import (
+    RECORD_SOURCE,
+    merged_attempts,
+    read_run_records,
+    read_store_attempts,
+    record_rows,
+    stale_attempts,
+)
+from agent_tools.chair_report import format_status
 from agent_tools.chair_types import QUARANTINED_CAUSE, RemoteUnfetched
 from tests.test_chair_facts import NOW, _deps
 
@@ -81,10 +91,13 @@ def _row(task: str, state: str = "quarantined", body: str = BODY) -> dict:
     }
 
 
-def _facts(ws: Path, rows: list[dict], hold_after: object = None):
+def _facts(
+    ws: Path, rows: list[dict], hold_after: object = None, *, remote_unfetched=None, handled=(), has_patch: bool = False,
+):
     deps = replace(
-        _deps(), queue=lambda: rows, quarantined=lambda: (), stranded=lambda: (),
+        _deps(has_patch=has_patch), queue=lambda: rows, quarantined=lambda: (), stranded=lambda: (),
         attempts=lambda: read_store_attempts(ws, {}, rows), quarantine_hold_after=lambda: hold_after,
+        remote_unfetched=None if remote_unfetched is None else (lambda: remote_unfetched), handled_keys=lambda: list(handled),
     )
     return gather_facts(deps, NOW)
 
@@ -169,12 +182,129 @@ def test_a_quarantine_waits_for_the_fetch_of_its_initiative_newest_remote_run(tm
     facts = gather_facts(deps, NOW)
     assert not [q for q in facts["quarantines"] if q["task_id"] == "t1"]
     assert not [a for a in plan_recover(facts) if a.get("task_id") == "t1"]
+    # It is not hidden: the facts name it, and the status line says what it waits for.
+    assert facts["awaiting_fetch"] == [{"initiative": "demo", "task_id": "t1", "run": "demo-4"}]
+    assert "awaiting fetch: demo:t1 (run demo-4)" in format_status(facts, [], [], NOW).split(" | ")
     # A decompose-only unfetched run brings home no task record, so it holds nothing back.
     decompose = RemoteUnfetched({"demo": "demo-4"}, ["demo"])
     facts = gather_facts(replace(deps, remote_unfetched=lambda: decompose), NOW)
     assert [(a["kind"], a["key"]) for a in plan_recover(facts) if a.get("task_id") == "t1"] == [
         ("hold_task", chair_sort.hold_key("t1", "demo-3")),
     ]
+    assert facts["awaiting_fetch"] == []
+
+
+def test_an_older_unfetched_remote_run_never_holds_back_a_newer_quarantine(tmp_path):
+    # demo-4 ran on a lane host that is gone and is never fetched; demo-5 ran here and quarantined the task since.
+    _record(tmp_path / "runs", "demo-5", "t1", CODE_RECORD)
+    facts = _facts(tmp_path, [_row("t1")], remote_unfetched=RemoteUnfetched({"demo": "demo-4"}, []))
+    assert (_quarantine(facts, "t1")["run"], facts["awaiting_fetch"]) == ("demo-5", [])
+    assert [(a["kind"], a["key"]) for a in plan_recover(facts) if a.get("task_id") == "t1"] == [
+        ("request_triage", chair_sort.triage_key("t1", "demo-5")),
+    ]
+
+
+def test_a_quarantine_with_no_record_waits_for_an_unfetched_run_and_says_so(tmp_path):
+    # The unfetched run may be the one that quarantined it: its record is the only one there will be.
+    facts = _facts(tmp_path, [_row("t1")], remote_unfetched=RemoteUnfetched({"demo": "demo-4"}, []))
+    assert not [q for q in facts["quarantines"] if q["task_id"] == "t1"]
+    assert facts["awaiting_fetch"] == [{"initiative": "demo", "task_id": "t1", "run": "demo-4"}]
+
+
+def test_the_files_path_reports_no_quarantine_awaiting_a_fetch():
+    facts = gather_facts(replace(_deps(), remote_unfetched=lambda: {"i": "i-9"}), NOW)
+    assert facts["awaiting_fetch"] == [] and "a" in [q["task_id"] for q in facts["quarantines"]]
+
+
+# ── the newest run ─────────────────────────────────────────────────────────
+
+
+def test_the_newest_run_wins_whatever_its_record_is_dated(tmp_path):
+    runs = tmp_path / "runs"
+    # demo-9 failed on an invoke, so the driver wrote the minimal record, which has no date: its file times it, later in
+    # the day than demo-10's dated record. One initiative's runs never overlap, so the run number decides.
+    minimal = runs / "demo-9" / "tasks" / "p1" / "t1.json"
+    minimal.parent.mkdir(parents=True)
+    minimal.write_text(json.dumps({"ticket": "t1", "initiative": "demo", "phase": "p1", "cause": "harness", "cause_why": "rule: kind infra"}))
+    late = datetime(2026, 11, 12, 23, 0, tzinfo=UTC).timestamp()
+    os.utime(minimal, (late, late))
+    _record(runs, "demo-10", "t1", CODE_RECORD, date="2026-11-12")
+    facts = _facts(tmp_path, [_row("t1")])
+    assert (_quarantine(facts, "t1")["run"], _quarantine(facts, "t1")["cause"]) == ("demo-10", "code")
+    assert [(a["kind"], a["key"]) for a in plan_recover(facts) if a.get("task_id") == "t1"] == [
+        ("request_triage", chair_sort.triage_key("t1", "demo-10")),
+    ]
+
+
+def test_merged_attempts_are_ordered_by_run_then_time():
+    file_rows = [{"initiative": "demo", "phase": "p1", "task": "t1", "run": "demo-4", "cause": "code", "ts": "2026-11-13T01:00:00Z"}]
+    records = [{"initiative": "demo", "phase": "p1", "task": "t1", "run": "demo-5", "cause": "review", "ts": "2026-11-13"}]
+    assert [r["run"] for r in merged_attempts(file_rows, records)] == ["demo-4", "demo-5"]
+
+
+# ── a rescue ───────────────────────────────────────────────────────────────
+
+
+def test_a_kept_patch_is_rescued_once_for_the_run_that_quarantined_it(tmp_path):
+    _record(tmp_path / "runs", "demo-3", "t1", CODE_RECORD, cause="harness", cause_why="rule: kind infra")
+    plan = [a for a in plan_recover(_facts(tmp_path, [_row("t1")], has_patch=True)) if a.get("task_id") == "t1"]
+    assert [(a["kind"], a.get("key")) for a in plan] == [("rescue", chair_sort.rescue_key("t1", "demo-3"))]
+    handled = [chair_sort.rescue_key("t1", "demo-3")]
+    plan = [a for a in plan_recover(_facts(tmp_path, [_row("t1")], has_patch=True, handled=handled)) if a.get("task_id") == "t1"]
+    assert [a["kind"] for a in plan] == ["needs_chair"]
+
+
+# ── the stale count ────────────────────────────────────────────────────────
+
+
+def _stale(tmp_path: Path, monkeypatch, body: str) -> dict:
+    monkeypatch.setattr(run_store, "read_queue", lambda runs_dir: [_row("t1", body=body)])
+    monkeypatch.setattr(run_store, "work_items", lambda runs_dir, initiative=None, cache=None: [])
+    # The workspace is out of git, as on the machine this was found on: the board's files are the store's rows rendered.
+    profile = {"chair": {"workspace_git": False}}
+    deps = cli._chair_run_deps(tmp_path / "runs", profile, "chair", 1, "h", True, print, tmp_path / "profile.yaml", "store")
+    (candidate,) = deps.facts_deps.stale_candidates(NOW)  # type: ignore[misc]
+    return candidate
+
+
+def test_a_record_that_names_no_body_is_left_out_of_the_stale_count(tmp_path, monkeypatch):
+    # Two failures, triage amended the ticket in between: the count is of the current body, which no record can name.
+    _record(tmp_path / "runs", "demo-3", "t1", CODE_RECORD, date="2026-11-10")
+    _record(tmp_path / "runs", "demo-4", "t1", CODE_RECORD, date="2026-11-12")
+    amended = BODY + "\nTriage: add a test for the short row.\n"
+    assert _stale(tmp_path, monkeypatch, amended)["quarantine_non_harness_count"] == 0
+
+
+def test_a_record_stamped_with_its_body_counts_only_on_that_body(tmp_path, monkeypatch):
+    _record(tmp_path / "runs", "demo-3", "t1", CODE_RECORD, date="2026-11-10", body_sha=body_sha(BODY))
+    _record(tmp_path / "runs", "demo-4", "t1", CODE_RECORD, date="2026-11-12", body_sha=body_sha(BODY))
+    assert _stale(tmp_path, monkeypatch, BODY)["quarantine_non_harness_count"] == 2
+    amended = BODY + "\nTriage: add a test for the short row.\n"
+    assert _stale(tmp_path, monkeypatch, amended)["quarantine_non_harness_count"] == 0
+    rows = read_store_attempts(tmp_path, {}, [_row("t1", body=amended)])
+    assert [r["on_current_body"] for r in rows] == [False, False]
+
+
+def test_the_stale_count_keeps_work_file_attempts_and_stamped_records():
+    rows = [
+        {"run": "demo-1", "path": "work/demo/p1/t1.md"},
+        {"run": "demo-2", "source": RECORD_SOURCE, "body_sha": "abcdef012345"},
+        {"run": "demo-3", "source": RECORD_SOURCE},
+    ]
+    assert [r["run"] for r in stale_attempts(rows)] == ["demo-1", "demo-2"]
+
+
+# ── the cache ──────────────────────────────────────────────────────────────
+
+
+def test_the_cache_keeps_what_the_chair_reads_of_a_record_not_the_record(tmp_path):
+    _record(tmp_path / "runs", "demo-3", "t1", CODE_RECORD)
+    cache = StampCache(8)
+    ((_, _, _, kept, _),) = read_run_records(tmp_path / "runs", {("p1", "t1")}, cache)
+    (entry,) = dump_entries(cache)["entries"]
+    assert entry["value"]["attempt"] == kept
+    assert set(kept) == {"cause", "cause_why", "reason", "kind", "initiative", "date"}
+    assert read_run_records(tmp_path / "runs", {("p1", "t1")}, cache)[0][3] == kept and cache.reads == (1, 1)
 
 
 # ── the reader ─────────────────────────────────────────────────────────────

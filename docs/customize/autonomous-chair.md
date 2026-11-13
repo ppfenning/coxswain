@@ -714,11 +714,18 @@ instead. A run writes one record for each task, at
 on it. The newest record names the run and the reason. A record with no
 cause is not an attempt.
 
+A run writes the ticket's body hash on the record too. An attempt on an
+earlier version of the ticket then does not count against the amended
+one. A record without the hash still counts toward triage and the hold,
+but not toward the stale check.
+
 A run on a lane host keeps its records on that host until the chair
 fetches the run. The fetch copies the whole run directory, records
-included, and the next tick reads them. Until then, the chair acts on no
-quarantine of that initiative, so it never judges a task by an older
-record.
+included, and the next tick reads them. Until then, a quarantine from an
+earlier run of that initiative waits, so the chair never judges a task by
+an older record. The status line shows each one, as
+`awaiting fetch: <initiative>:<task> (run <run>)`. A quarantine from a
+later run does not wait.
 
 A quarantine with no record at all shows the cause `quarantined` and goes
 to `needs chair`.

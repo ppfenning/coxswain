@@ -550,6 +550,14 @@ class WronglyReleased(TypedDict):
     task_id: str
 
 
+class AwaitingFetch(TypedDict):
+    """A store quarantine that waits for its initiative's later remote run to be fetched, which may hold a newer attempt."""
+
+    initiative: str
+    task_id: str
+    run: str  # the unfetched remote run
+
+
 class RemoteUnfetched(dict[str, str]):
     """The `remote_unfetched` map, plus the initiatives among it whose newest unfetched run is a decompose."""
 
@@ -579,6 +587,9 @@ class Facts(TypedDict):
     # that run id. Absent when the newest run is local, is a fetched remote run, or there is no run.
     remote_unfetched: dict[str, str]
     remote_unfetched_decompose: NotRequired[list[str]]  # sorted initiatives whose newest unfetched run is a decompose; absent means []
+    # Store quarantines held back until a later remote run of their initiative is fetched (`chair_facts.awaiting_fetch`);
+    # the status line names each one. Absent means none.
+    awaiting_fetch: NotRequired[list[AwaitingFetch]]
     missing_repos: NotRequired[list[str]]  # sorted repository paths newly seen missing this tick
     last_housekeeping_at: str | None  # ISO UTC of the newest recorded housekeeping action; None when the store has none
     housekeeping_hours: float  # period in hours; the edge fills it from profile chair.housekeeping_hours, default 24

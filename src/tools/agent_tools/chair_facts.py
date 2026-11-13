@@ -43,6 +43,7 @@ from agent_tools.chair_types import (
     STALE_CHECKOUT_CAUSE,
     ApprovalHold,
     ApprovedTask,
+    AwaitingFetch,
     CarryTask,
     DispatchFacts,
     EmptyDecomposeFacts,
@@ -569,10 +570,21 @@ def with_attempt_runs(quarantined: Sequence[Row], attempts: Sequence[Row]) -> li
     ]
 
 
-def fetching(unfetched: Mapping[str, str]) -> frozenset[str]:
-    """The initiatives whose newest run is a remote epic run not fetched yet: its task records are still on the lane host.
-    A decompose-only one writes no task record, so it is not one."""
-    return frozenset(unfetched) - frozenset(getattr(unfetched, "decompose", ()))
+def awaiting_fetch(quarantined: Sequence[Row], unfetched: Mapping[str, str]) -> list[AwaitingFetch]:
+    """The quarantines that wait for a remote run's fetch: their initiative's unfetched epic run (`remote_unfetched`) is
+    later than the run that names the quarantine, so its task records, still on the lane host, may hold a newer attempt.
+
+    One initiative's runs never overlap (its `runs:<initiative>` lease), so a later run number is a later run. A
+    quarantine that names no run waits for any: the unfetched run may be the one that quarantined it. An older unfetched
+    run never holds back a later quarantine. A decompose-only unfetched run writes no task record, so nothing waits on it.
+    Each entry names the run it waits for; the status line shows it, so a waiting quarantine is never hidden."""
+    decompose = frozenset(getattr(unfetched, "decompose", ()))
+    return [
+        {"initiative": str(q["initiative"]), "task_id": str(q["task"]), "run": unfetched[q["initiative"]]}
+        for q in quarantined
+        if q["initiative"] in unfetched and q["initiative"] not in decompose
+        and _run_number(unfetched[q["initiative"]]) > _run_number(str(q.get("run") or ""))
+    ]
 
 
 def quarantine_facts(
@@ -1919,12 +1931,12 @@ def gather_facts(
     attempts = list(deps.attempts())
     unfetched = deps.remote_unfetched() if deps.remote_unfetched is not None else {}
     # A queue row names no attempt under work_state store: its run and reason come from the attempts the reader found,
-    # which are the runs' task records. A remote run's records come home with its fetch, so an initiative whose newest
-    # run is not fetched yet has its quarantines wait for that fetch rather than act on an older record.
-    quarantined = (
-        [q for q in with_attempt_runs(quarantined_from_rows(rows), attempts) if q["initiative"] not in fetching(unfetched)]
-        if rows else list(deps.quarantined())
-    )
+    # which are the runs' task records. A remote run's records come home with its fetch, so a quarantine older than its
+    # initiative's unfetched run waits for that fetch rather than act on an older record, and says so on the status line.
+    queued = with_attempt_runs(quarantined_from_rows(rows), attempts) if rows else []
+    waiting = awaiting_fetch(queued, unfetched)
+    held_back = {(w["initiative"], w["task_id"]) for w in waiting}
+    quarantined = [q for q in queued if (q["initiative"], q["task"]) not in held_back] if rows else list(deps.quarantined())
     stranded_records = deps.stranded_records() if deps.stranded_records is not None else None
     stranded = stranded_from_rows(rows, list(stranded_records)) if rows and stranded_records is not None else list(deps.stranded())
     current = deps.current_version() if rows else None  # file mode carries no gate rows, so it reads no version
@@ -1968,6 +1980,7 @@ def gather_facts(
         "handled_keys": list(deps.handled_keys()) if deps.handled_keys is not None else [],
         "run_exited": dict(deps.run_exited()) if deps.run_exited is not None else {},
         "remote_unfetched": dict(unfetched),
+        "awaiting_fetch": waiting,
         "remote_unfetched_decompose": list(unfetched.decompose) if isinstance(unfetched, RemoteUnfetched) else [],
         "schema_deaths": {i: list(r) for i, r in deps.schema_deaths().items()},
         "lost_runs": dict(deps.lost_runs()) if deps.lost_runs is not None else {},

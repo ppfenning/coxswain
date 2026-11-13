@@ -1,6 +1,7 @@
 import copy
 from datetime import UTC, datetime
 
+from agent_tools import chair_sort
 from agent_tools.chair_plan import plan_tick
 from agent_tools.chair_plan_recover import plan_recover, refused_launches, refused_relaunches
 from agent_tools.chair_read_quarantined import RUNAWAY_CAUSE
@@ -91,8 +92,20 @@ def test_a_harness_quarantine_with_one_failure_gets_one_retry():
 
 def test_a_harness_quarantine_with_a_patch_gets_one_rescue():
     assert plan_recover(_facts([], [_quarantine(has_patch=True)])) == [
-        {"kind": "rescue", "initiative": "i", "task_id": "q1"}
+        {"kind": "rescue", "initiative": "i", "task_id": "q1", "key": chair_sort.rescue_key("q1", "")}
     ]
+
+
+def test_a_rescue_already_launched_for_the_task_state_goes_to_the_chair_not_out_again():
+    # A rescue that answered not_eligible writes nothing, so without its key the same rescue would launch every tick.
+    q = {**_quarantine(has_patch=True), "run": "i-3", "reason": "apply arm raised"}
+    assert chair_sort.rescue_key("q1", "i-3") == "rescue:q1:i-3"
+    assert [a["kind"] for a in plan_recover(_facts([], [q]))] == ["rescue"]
+    plan = plan_recover({**_facts([], [q]), "handled_keys": [chair_sort.rescue_key("q1", "i-3")]})
+    assert [(a["kind"], a["task_id"], a["cause"]) for a in plan] == [("needs_chair", "q1", "harness")]
+    # A later run that quarantines the task again is a new state, rescued once more.
+    later = plan_recover({**_facts([], [{**q, "run": "i-4"}]), "handled_keys": [chair_sort.rescue_key("q1", "i-3")]})
+    assert [(a["kind"], a.get("key")) for a in later] == [("rescue", "rescue:q1:i-4")]
 
 
 def test_a_failed_rescue_needs_the_chair_and_gets_no_rescue_or_retry():
@@ -117,7 +130,7 @@ def test_a_runaway_cause_always_needs_the_chair_even_with_zero_failures():
 
 def test_a_rescued_initiative_is_not_relaunched_this_tick():
     facts = _facts([_initiative()], [_quarantine(has_patch=True)])
-    assert plan_recover(facts) == [{"kind": "rescue", "initiative": "i", "task_id": "q1"}]
+    assert plan_recover(facts) == [{"kind": "rescue", "initiative": "i", "task_id": "q1", "key": chair_sort.rescue_key("q1", "")}]
 
 
 def test_a_non_harness_cause_needs_the_chair_and_blocks_relaunch():

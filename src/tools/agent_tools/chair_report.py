@@ -20,7 +20,7 @@ from agent_tools.notify import Notification
 from agent_tools.queue_export import is_ahead_of_store
 
 __all__ = [
-    "EASTERN", "REASON_LINE_CAP", "Deps", "echo_line", "failed_items", "fetched_items", "file_ahead_items", "format_status",
+    "EASTERN", "REASON_LINE_CAP", "Deps", "awaiting_fetch_items", "echo_line", "failed_items", "fetched_items", "file_ahead_items", "format_status",
     "housekeeping_fragment",
     "landing_fragment", "lands_this_tick", "launched_items", "mode_of", "needs_chair_items",
     "partial_land_text", "reason_tail", "steer_head_items", "steered_items", "waiting_item", "would_items", "write_status",
@@ -204,6 +204,11 @@ def deferred_items(results: Sequence[Result]) -> list[str]:
     ]
 
 
+def awaiting_fetch_items(waiting: Sequence[Mapping[str, Any]]) -> list[str]:
+    """`awaiting fetch: <initiative>:<task> (run <run>)` per quarantine held back until that remote run is fetched."""
+    return [f"awaiting fetch: {w.get('initiative', '?')}:{w.get('task_id', '?')} (run {w.get('run', '?')})" for w in waiting]
+
+
 def landing_fragment(landing: Sequence[Mapping[str, Any]]) -> str:
     """Empty when none; else `landing N (2 coxswain, 1 dash)`, names being repo basenames (`?` for a land with no repo)."""
     if not landing:
@@ -352,6 +357,7 @@ def format_status(
         *([f"steered: {', '.join(steered)}"] if steered else []),
         *([f"steer heads: {', '.join(heads)}"] if heads else []),
         *waiting,
+        *awaiting_fetch_items(facts.get("awaiting_fetch", [])),
         *deferred_items(results),
         *([review] if review else []),
         *([epics] if epics else []),

@@ -14561,7 +14561,10 @@ def _chair_run_deps(
         shared_file_limit=lambda: (profile.get("chair") or {}).get("max_shared_file_initiatives"),
         serial_files=lambda: profile.get("serial_files"),
         host_load_ceiling=lambda: (profile.get("chair") or {}).get("host_load_ceiling"),
-        stale_candidates=lambda n: chair_read_stale.read_stale_candidates(ws, n, work_files(), attempts(), actions()),
+        # A run task record that names no body cannot be told apart from the current body, so the stale count leaves it out.
+        stale_candidates=lambda n: chair_read_stale.read_stale_candidates(
+            ws, n, work_files(), chair_read_run_records.stale_attempts(attempts()) if mode == "store" else attempts(), actions()
+        ),
         stall_candidates=lambda n: chair_read_stall.read_stall_candidates(runs_dir, startup_hosts, n),
         idle_stall=idle_stall,
         hosts=lambda: run_store.hosts(runs_dir),

@@ -76,7 +76,9 @@ Under `work_state: store` no work file holds an attempt, so both sides read the 
 records (`runs/<run>/tasks/<phase>/<task>.json`, and the store's `task_records` copy): each record that
 names a `cause` is one attempt (`core/run_record.py`). The chair takes a quarantine's cause, run, reason and
 failure count from them; the epic hands a flagged task's records to triage as its `attempts`, with the
-record's review, adversary and arbitration verdicts, `fix_loop` and evidence beside each.
+record's review, adversary and arbitration verdicts, `fix_loop` and evidence beside each. A record names
+the body it was built on (`body_sha`), so an attempt on an earlier body is not one on the current body, and
+records are ordered by run number. A rescue reads its attempts and the kept patch from them too.
 
 ## 2. `ticket_amend`: specify, never relax  (cartridges, graphs)
 

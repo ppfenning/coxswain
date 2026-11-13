@@ -9,6 +9,8 @@ record, so each one that names a cause is handed to triage as an attempt.
 from __future__ import annotations
 
 import json
+import os
+from datetime import UTC, datetime
 from pathlib import Path
 
 from core.workstore import HOLD_MARK, HOLD_REASON, TRIAGE_FLAG, TRIAGE_RECORDS
@@ -99,6 +101,18 @@ def test_a_record_another_lane_wrote_reaches_triage_through_the_store(repo, cart
     prompt = _answered(store, runner)
     # Oldest first: the store's record of the other lane's run, then this machine's file; the run held in both is read once.
     assert "'attempt-1|kind': 'unverified'" in prompt and "'attempt-2|kind': None" in prompt and "attempt-3|" not in prompt
+
+
+def test_the_records_reach_triage_in_run_order_whatever_they_are_dated(repo, cart, tmp_path) -> None:  # noqa: F811
+    # demo-initiative-9 failed on an invoke: the driver's minimal record has no date, and its file is timed later in the
+    # day than demo-initiative-10's dated record. One initiative's runs never overlap, so the run number orders them.
+    minimal = {"ticket": "t1-probe", "initiative": "demo-initiative", "phase": PHASE, "cause": "code", "cause_why": "rule: kind unverified"}
+    _write(tmp_path / "runs", "demo-initiative-9", minimal)
+    late = datetime(2026, 8, 30, 23, 0, tzinfo=UTC).timestamp()
+    os.utime(tmp_path / "runs" / "demo-initiative-9" / "tasks" / PHASE / "t1-probe.json", (late, late))
+    _, runner, store = _drive_records(repo, cart, tmp_path, files=[("demo-initiative-10", RECORD)])
+    prompt = _answered(store, runner)
+    assert "'attempt-1|kind': 'unverified'" in prompt and "'attempt-2|kind': None" in prompt
 
 
 def test_only_the_records_of_this_initiative_that_name_a_cause_are_attempts(repo, cart, tmp_path) -> None:  # noqa: F811
