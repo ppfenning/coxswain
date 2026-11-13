@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from core import workstore
 from core.manifest import gate_diff
 from runner.protocol import Capability, ProviderProfile, RunnerError, resolve_profile
@@ -41,8 +43,27 @@ _FALLBACK_ROLE = {
 }
 
 
+def stamp_frontmatter(text: str, fields: Mapping[str, Any]) -> str:
+    """Set each key of `fields` in the YAML frontmatter of `text`; the body is returned byte for byte.
+
+    Raises ValueError when `text` has no frontmatter block or the block is not a mapping.
+    """
+    parts = text.split("\n")
+    end = next((i for i in range(1, len(parts)) if parts[i].rstrip("\r") == "---"), None)
+    if parts[0].rstrip("\r") != "---" or end is None:
+        raise ValueError("no frontmatter block")
+    try:
+        meta = yaml.safe_load("\n".join(parts[1:end])) or {}
+    except yaml.YAMLError as error:
+        raise ValueError(f"unreadable frontmatter: {error}") from error
+    if not isinstance(meta, dict):
+        raise ValueError("frontmatter is not a mapping")
+    front = yaml.safe_dump({**meta, **fields}, sort_keys=False, default_flow_style=False).rstrip("\n")
+    return f"---\n{front}\n---\n" + "\n".join(parts[end + 1 :])
+
+
 def workstore_route(kind: str, apply: object) -> tuple[str, dict[str, Any]]:
-    """Choose `state_move`, `item_create`, `item_update` or `fallback` from a kind and its `apply` payload.
+    """Choose `state_move`, `retire`, `item_create`, `item_update` or `fallback` from a kind and its `apply` payload.
 
     A missing or wrong-typed field is never repaired: the route is `fallback`.
     """
@@ -51,6 +72,8 @@ def workstore_route(kind: str, apply: object) -> tuple[str, dict[str, Any]]:
     path = apply["path"]
     if kind == "state_move" and isinstance(apply.get("state"), str):
         return kind, {"path": path, "state": apply["state"]}
+    if kind == "state_move" and isinstance(apply.get("retire_to"), str) and isinstance(apply.get("fields"), dict):
+        return "retire", {"path": path, "retire_to": apply["retire_to"], "fields": apply["fields"]}
     if kind in ("item_create", "item_update") and isinstance(apply.get("item"), dict):
         return kind, {"path": path, "item": apply["item"]}
     return "fallback", {}
@@ -60,6 +83,18 @@ def _apply_workstore(route: str, fields: dict[str, Any]) -> tuple[bool, str]:
     """The edge: perform the workstore write a route chose. Errors come back as values."""
     path = fields["path"]
     try:
+        if route == "retire":
+            source, target = Path(path), Path(fields["retire_to"])
+            if not source.exists():
+                return False, f"refused: {path} does not exist"
+            if target.exists():
+                return False, f"refused: {target} already exists"
+            # Bytes, not text: a CRLF body must survive the move unchanged.
+            stamped = stamp_frontmatter(source.read_bytes().decode("utf-8"), fields["fields"])
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(stamped.encode("utf-8"))
+            source.unlink()
+            return True, f"{path} retired to {target}"
         if route == "state_move":
             workstore.set_state(path, fields["state"])
             return True, f"{path} moved to state '{fields['state']}'"

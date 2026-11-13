@@ -21,6 +21,7 @@ _KINDS = ("run", "task", "pr", "intake", "proposal", "finding", "initiative")
 EVENTS = (
     "needs_attention", "level_merged", "merge_failed", "relaunched", "stuck", "gate_passed", "gate_failed",
     "epic_complete", "run_exited",
+    "chat_directive", "chat_question", "chat_answer", "directive_applied", "directive_refused",
 )
 EXCEPTION_EVENTS = ("needs_attention", "merge_failed", "stuck", "gate_failed")
 _PATTERN = re.compile(r"^coxswain://([a-z]+)/(.+)$")
