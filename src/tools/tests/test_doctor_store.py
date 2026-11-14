@@ -7,10 +7,11 @@ SQLITE_URL = "sqlite:////home/user/.cox/runs/cox.db"
 OK_PROBES = [ProbeResult(POSTGRES, True, "reachable"), ProbeResult(OBJECT_STORE, True, "reachable")]
 
 
-def test_files_mode_is_one_ok_row_about_local_files():
+def test_files_mode_is_one_warning_row_saying_it_is_retired():
     rows = doctor.store_rows("files", SQLITE_URL, "/home/user/.cox/runs/traces", [])
     assert rows == [
-        {"check": "shared store", "ok": True, "detail": "the run store and traces are local files, which is the default"}
+        {"check": "shared store", "ok": True, "warn": True,
+         "detail": "the setting says files, which is retired; run cox setup store --store shared"}
     ]
     assert doctor.exit_code(rows) == 0
 

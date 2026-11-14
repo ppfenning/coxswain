@@ -16,13 +16,27 @@ See [Dashboards](dashboards.md) to run it.
 
 - **Cost per turn by model.**
 - **Cache-read share.**
-- **Cost per landed task.**
+- **Cost per completion.**
 - **Landed per day.**
 - **First-try build rate.**
 - **Lead time.**
 - **Spend by task outcome.**
 
 Quarantines by cause is also a chart.
+
+## Cost per completion
+
+A task counts as a completion when it is done, or approved and merged
+into its phase or PR branch, or landed on main. It counts once, however
+it later lands.
+
+Cost per completion is spend divided by completions in the same window.
+The status line and the feed report it for today, the five-hour window
+and the week.
+
+The feed keeps the old keys for one release as deprecated aliases:
+`per_landed` under `spend.today`, and `cost_per_landed_task` under each
+`spend_split` window. Towpath reads `cost_per_completion` first.
 
 ## `cox stats gates`
 
@@ -34,7 +48,7 @@ on small tasks.
 ## `cox stats tiers`
 
 For each role and model, `cox stats tiers` shows the landed rate, the
-first-try rate, and the cost per landed task.
+first-try rate, and the cost per completion.
 
 It picks the cheapest model within 5 points of the best landed rate. Each
 model needs at least 20 tasks to count. It then shows what the pick would

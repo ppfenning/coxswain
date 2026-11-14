@@ -1,22 +1,20 @@
-# Choosing a store: files or shared
+# The store
 
-The default store is files, meaning a sqlite run store and local trace files.
-It is the default so that brew and CI installs stay light and non-interactive.
-The choice is recorded in settings, not in the brew formula, so changing it never means reinstalling.
-
-The other choice is shared. It keeps run records in Postgres and traces in an S3-compatible object store, which is Garage in the recipe below.
-You pick one with `cox setup store --store files` or `cox setup store --store shared`.
-You move between them later with `cox setup store switch files` or `cox setup store switch shared`.
+There is one store, and it is Postgres. It keeps the run records and the board: every intake, initiative and task, text and state.
+Traces go to an S3-compatible object store, which is Garage in the recipe below.
+You configure it with `cox setup store --store shared`.
 A Postgres store needs the `postgres` extra on `cox`: `uv tool install --python 3.14 'coxswain[postgres]'`. Name every extra the machine uses, since a reinstall replaces them.
 
-## Why choose shared on one machine
+The older `files` store, a local sqlite file with the ticket files as the board, is retired.
+`cox setup store --store files` and `cox setup store switch files` are refused by name.
+Every command that touches the board refuses a profile whose store is not Postgres and says how to fix it.
+A machine that still has an old sqlite store carries its rows over with `cox setup store switch shared`.
 
-A shared store gives a single machine the same dashboards and the same backups as a fleet.
+## Why one store
+
+A single machine gets the same dashboards and the same backups as a fleet.
 Nothing about the setup is specific to one box, so the tools behave the same on one machine as on ten.
 When you add a second machine later, it points at the same store and no migration is needed.
-
-Stay on files if you only want the tools to work and have no use for dashboards or backups yet.
-Files needs no services, no credentials and no network.
 
 ## What shared sets up
 
@@ -37,39 +35,32 @@ Export the S3 key pair under those two names in every shell that runs cox agains
 What the tools print is limited too. The setup summary names the store scheme, host, port and bucket, and never the user, password or keys.
 The doctor row shows neither the URL nor its credentials.
 
-## Switching in each direction
-
-Run the switch verb with the store you want to end up on:
+## Carrying an old local store over
 
 ```bash
 cox setup store switch shared
-cox setup store switch files
 ```
 
-The switch copies the existing sqlite store and the local trace files into the target store.
-It leaves the source in place. Nothing is deleted or truncated in the store you came from, so you can switch back or inspect it.
+The switch copies an existing sqlite store and the local trace files into the shared store.
+It leaves the source in place. Nothing is deleted or truncated in the store you came from, so you can inspect it afterwards.
 A repeated switch is safe. The copy never drops anything, so running a switch again after an interrupted one is safe, and a second complete run reports zero newly copied.
-If the store is already on the backend you name, the switch prints that there is nothing to do.
+If the store is already shared, the switch prints that there is nothing to do.
 
-The same choice is available when you first set up, through `cox setup store --store files` and `cox setup store --store shared`.
+This copy is the only place outside the test suites where a sqlite store is opened.
 
-## Checking the choice with the setup doctor
+## Checking the store with the setup doctor
 
-`cox setup doctor` verifies the store you chose. It does this in its `store` row.
-The row shows the kind of store and the number of runs in it, for example `sqlite, 12 runs` or `postgresql, 12 runs`.
+`cox setup doctor` verifies the store in its `store` row.
+The row shows the kind of store and the number of runs in it, for example `postgresql, 12 runs`.
 When the store does not answer, the row fails and gives the reason. An unreachable host fails after at most five seconds.
 The row never shows the URL or its credentials.
-
-On a fresh files install the sqlite store does not exist yet, because the first run creates it.
-The row then reads `no store yet (it is created by the first run)` and fails, so doctor exits 1 until you have launched once.
-`docs/getting-started.md` walks through that first run.
 
 ## What brew and the installer do not do
 
 Brew and the installer never start Postgres or Garage.
-They install the tools and record your store choice. Running the services is your job, and running them for you is out of scope for this project.
+They install the tools. Running the services is your job, and running them for you is out of scope for this project.
 
-If you want a local Postgres and Garage to try shared on one machine, the recipe below is an example you run yourself.
+If you want a local Postgres and Garage on one machine, the recipe below is an example you run yourself.
 Both services are published on the loopback address only, so they are reachable only from this machine.
 Credentials come from environment variables in your shell, and none are written into the files. Export them first and keep the values, because Postgres and Garage need the same ones on every start:
 

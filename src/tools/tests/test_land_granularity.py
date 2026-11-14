@@ -28,9 +28,10 @@ def _marked(steps):
     return [s["task"] for s in steps if s["kind"] == "mark_done"]
 
 
-def test_granularity_defaults_to_ticket():
-    assert [land.granularity({"land_at": v}) for v in ("ticket", "level", "task", "bogus")] == ["ticket", "level", "task", "ticket"]
-    assert land.granularity({}) == "ticket"
+def test_granularity_defaults_to_initiative():
+    values = ("initiative", "ticket", "level", "task", "bogus")
+    assert [land.granularity({"land_at": v}) for v in values] == ["initiative", "initiative", "initiative", "task", "initiative"]
+    assert land.granularity({}) == "initiative"
 
 
 def test_ticket_plans_one_pr_and_marks_every_ticket_task_after_the_merge():
@@ -63,12 +64,6 @@ def test_ticket_without_a_card_branch_plans_one_pr_for_the_ticket_not_the_phase(
     assert _kinds(early).count("pr_create") == 1 and "merge" not in _kinds(early) and _marked(early) == []
 
 
-def test_level_opens_one_pr_per_phase_and_marks_only_its_tasks():
-    steps = _plan(_phase(land_at="level", last_phase=False), "ab")
-    assert _kinds(steps).count("pr_create") == 1
-    assert _marked(steps) == ["a", "b"]
-
-
 def test_task_keeps_the_per_task_path():
     steps = _plan(_phase(land_at="task", last_phase=False), "ab")
     assert "pr_create" not in _kinds(steps)
@@ -91,12 +86,10 @@ def test_gate_stops_at_the_one_pull_request_for_ticket():
     assert _kinds(land.gate_steps(steps, "full", "ticket")) == _kinds(steps)
 
 
-def test_gate_stop_for_level_sits_at_the_pr_and_task_keeps_the_configured_level():
+def test_gate_stop_for_task_keeps_the_configured_level():
     rec = {**_task("a"), "arbitration": {"verdict": "approve"}}
-    level = _plan(_phase(card_branch="", land_at="level"), "a", [rec])
     task = _plan(_phase(card_branch="", land_at="task"), "a", [rec])
-    assert _kinds(level) == _kinds(task) and _kinds(level).count("pr_create") == 1
-    assert _kinds(land.gate_steps(level, "epic", "level"))[-1] == "wait_checks"
+    assert _kinds(task).count("pr_create") == 1
     assert land.gate_steps(task, "phase", "task") == land.gate_steps(task, "phase")
     assert land.gate_steps(task, "epic", "task") == land.gate_steps(task, "epic")
 
@@ -193,21 +186,21 @@ def _initiative(tmp_path, land_at=None):
 
 
 def test_phase_land_at_keeps_the_value_its_run_recorded(tmp_path, monkeypatch):
-    monkeypatch.setattr(cli, "_team_cartridge", lambda profile, repo=None: ({"landing_areas": {"land_at": "level"}}, None))
+    monkeypatch.setattr(cli, "_team_cartridge", lambda profile, repo=None: ({"landing_areas": {"land_at": "initiative"}}, None))
     assert cli._phase_land_at({"land_at": "task"}, {}, _initiative(tmp_path), "x") == "task"
 
 
 def test_phase_land_at_without_a_recorded_value_reads_the_cartridge_as_the_chair_does(tmp_path, monkeypatch):
-    """A run-store phase manifest carries no land_at: the land must not fall back to ticket when the chair plans at level."""
-    monkeypatch.setattr(cli, "_team_cartridge", lambda profile, repo=None: ({"landing_areas": {"land_at": "level"}}, None))
-    assert cli._phase_land_at({}, {}, _initiative(tmp_path), "x") == "level"
+    """A run-store phase manifest carries no land_at: the land must not fall back to initiative when the chair plans at task."""
+    monkeypatch.setattr(cli, "_team_cartridge", lambda profile, repo=None: ({"landing_areas": {"land_at": "task"}}, None))
+    assert cli._phase_land_at({}, {}, _initiative(tmp_path), "x") == "task"
 
 
 def test_phase_land_at_prefers_the_initiative_value_over_the_cartridge(tmp_path, monkeypatch):
-    monkeypatch.setattr(cli, "_team_cartridge", lambda profile, repo=None: ({"landing_areas": {"land_at": "level"}}, None))
-    assert cli._phase_land_at({}, {}, _initiative(tmp_path, "ticket"), "x") == "ticket"
+    monkeypatch.setattr(cli, "_team_cartridge", lambda profile, repo=None: ({"landing_areas": {"land_at": "task"}}, None))
+    assert cli._phase_land_at({}, {}, _initiative(tmp_path, "ticket"), "x") == "initiative"
 
 
-def test_phase_land_at_with_no_cartridge_and_no_initiative_value_is_ticket(tmp_path, monkeypatch):
+def test_phase_land_at_with_no_cartridge_and_no_initiative_value_is_initiative(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_team_cartridge", lambda profile, repo=None: ({}, None))
-    assert cli._phase_land_at({}, {}, tmp_path / "work", "x") == "ticket"
+    assert cli._phase_land_at({}, {}, tmp_path / "work", "x") == "initiative"

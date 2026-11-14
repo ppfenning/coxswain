@@ -37,7 +37,7 @@ def _held_task(i: Row, own: Sequence[Row]) -> dict[str, Any]:
 
 def _land_at_of(land_at: Mapping[str, str] | None, initiative: str) -> str:
     """No mapping keeps the strict `route.DEFAULT_LAND_AT`; a mapping that omits `initiative` reads as ticket."""
-    return route.DEFAULT_LAND_AT if land_at is None else land_at.get(initiative, "ticket")
+    return route.DEFAULT_LAND_AT if land_at is None else land_at.get(initiative, "initiative")
 
 
 def _initiative_row(summary: Row, items: Sequence[Row], land_at: str = route.DEFAULT_LAND_AT) -> dict[str, Any]:

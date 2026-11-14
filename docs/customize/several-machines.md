@@ -272,12 +272,17 @@ Traces and the lake still stay local unless these are set.
 
 ## Land from any machine
 
-By default the ticket files hold each task's state, which is
-`work_state: files`. When the provider profile's `storage_url` names a
-shared Postgres database that answers, the loop reads work items from the
-store instead; `cox route status` then prints `work state: store` first. A
-local SQLite store keeps the files as the board. Only the chair lands from
-the ticket files; any machine can land once the store is the board.
+The store holds each task's state, and the store is Postgres: the provider
+profile's `storage_url` names it. `cox route status` prints
+`work state: store` first. The ticket files are a copy written from the
+store, so any machine can land.
+
+The older `work_state: files`, in which the ticket files were the board, is
+retired, and so is the local SQLite store. A profile that still says
+`work_state: files` is told to remove the key. A profile whose store is not
+Postgres is refused by every command that touches the board; `cox setup
+store --store shared` configures one, and `cox setup store switch shared`
+carries an old local store's rows over.
 
 With the store as the board, a land on any machine checks that the task is
 approved in the store. It holds a lease named `land:<task>` while it

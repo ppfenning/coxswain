@@ -9,6 +9,8 @@ from test_route_cli import _init_repo, _unmeasured_window, _write_harness, _writ
 
 from agent_tools import base_branch, chair_facts, cli, usage_window
 
+pytestmark = pytest.mark.usefixtures("board_store")  # the store is the board; these launches read its rows
+
 _REAL_TEAM_CARTRIDGE = cli._team_cartridge
 
 

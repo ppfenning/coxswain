@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_tools import cli
+from agent_tools import cli, store_fill
 from agent_tools.chair_plan_land import plan_lands
 
 
@@ -1395,6 +1395,8 @@ def _commit(root: Path, text: str, message: str) -> str:
 def _apply_land(repo: Path, runs_dir: Path, monkeypatch) -> int:
     monkeypatch.setattr(cli, "_open_prs_for", lambda *a, **k: [])
     monkeypatch.setattr(cli, "_sync_default_branch", lambda repo, branch: ("up_to_date", ""))
+    monkeypatch.setattr(cli.store_cli, "_harness_python", lambda: Path(sys.executable))  # the land's leases, in the test store
+    store_fill.fill_workspace(runs_dir.parent)  # the store is the board: the land reads each task's state from its row
     return cli._runs_land(_land_ns(repo=str(repo), runs_dir=str(runs_dir), apply=True, phase="seams", no_claim=True))
 
 
@@ -1411,6 +1413,7 @@ def _phase_branch_repo(tmp_path: Path) -> Path:
     return repo
 
 
+@pytest.mark.usefixtures("board_store")
 def test_a_squash_conflict_is_logged_with_its_paths_and_both_commit_ids(phase_runs_dir, tmp_path, monkeypatch, capsys):
     repo = _phase_branch_repo(tmp_path)
     branch_sha = sp.run(["git", "-C", str(repo), "rev-parse", "epic/x/seams"], check=True, capture_output=True, text=True).stdout.strip()
@@ -1423,6 +1426,7 @@ def test_a_squash_conflict_is_logged_with_its_paths_and_both_commit_ids(phase_ru
     assert capsys.readouterr().out.splitlines()[-1] == "land: stopped at squash_phase: squash of epic/x/seams conflicts in: f.txt"
 
 
+@pytest.mark.usefixtures("board_store")
 def test_a_stop_at_another_step_logs_the_step_and_its_text_only(phase_runs_dir, tmp_path, monkeypatch, capsys):
     repo = _phase_branch_repo(tmp_path)
     real = cli._execute_land_step
@@ -1436,6 +1440,7 @@ def test_a_stop_at_another_step_logs_the_step_and_its_text_only(phase_runs_dir, 
     assert capsys.readouterr().out.splitlines()[-1] == "land: stopped at checks: checks failed"
 
 
+@pytest.mark.usefixtures("board_store")
 def test_a_land_that_completes_logs_none_of_the_stop_keys(phase_runs_dir, tmp_path, monkeypatch, capsys):
     repo = _phase_branch_repo(tmp_path)
     monkeypatch.setattr(cli, "_execute_land_step", lambda r, step, f=None: (True, "ok"))

@@ -1,6 +1,7 @@
 import pytest
 from test_doctor_cli import _fresh_core, _freshness_rows, _real_probe_setup, _rows
 
+from agent_tools import claude_token
 from agent_tools.cli import _run_core_probe, main
 
 # The stub loader calls `.read_text()` on its first argument, as the real one does, so a str reproduces the crash.
@@ -11,6 +12,8 @@ _READS_THE_FILE = "return {'text': provider_profile.read_text()}"
 def _home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.delenv("AGENT_TOOLS_PROVIDER_PROFILE", raising=False)
+    monkeypatch.delenv(claude_token.TOKEN_ENV, raising=False)
+    claude_token.write_token(claude_token.token_path(str(tmp_path / "home")), "sk-ant-oat01-test")
 
 
 def _probe(tmp_path, monkeypatch, provider_profile, **core_kwargs):

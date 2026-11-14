@@ -116,7 +116,7 @@ _OUT_OF_QUARANTINED = frozenset({"ready"})
 DEFAULT_PRIORITY = 3
 ATTEMPT_KINDS = ("refused", "no_work", "unverified", "infra")
 TIERS = ("cheap", "standard", "deep")
-LAND_AT = ("ticket", "level", "task")
+LAND_AT = ("initiative", "task", "ticket", "level")  # `ticket` is the alias of `initiative`; `level` is retired and reads as it
 
 _FRONTMATTER = "---"
 _NEW_SUFFIX = " (new)"
@@ -238,6 +238,24 @@ def _coerce_epic(raw: Any, path: Path | str) -> str | None:
         return valid_epic_id(raw)
     except ValueError as err:
         raise WorkStoreError(f"{path}: epic: {err}") from err
+
+
+# What an initiative may say about its own landing, beside `land_at` and `target_branch`: the issue or ticket its one
+# pull request closes, its branch (or just the branch kind), and what a blocked phase does. Each is optional.
+LANDING_FIELDS = ("issue", "ticket", "branch", "branch_kind", "on_blocked")
+
+
+def _landing_fields(meta: Mapping[str, Any], path: Path | str) -> dict[str, str]:
+    """The initiative's own landing fields that are set, as text. A set `branch` must be a valid branch name."""
+    found = {key: str(meta[key]).strip() for key in LANDING_FIELDS if meta.get(key) not in (None, "")}
+    if "branch" in found:
+        try:
+            valid_branch(found["branch"], str(path))
+        except ValueError as err:
+            raise WorkStoreError(f"{path}: branch must be a valid branch name, got {found['branch']!r}") from err
+    if "on_blocked" in found and found["on_blocked"] not in ("hold", "split"):
+        raise WorkStoreError(f"{path}: on_blocked must be 'hold' or 'split', got {found['on_blocked']!r}")
+    return found
 
 
 def _coerce_target_branch(raw: Any, path: Path | str) -> str | None:
@@ -419,6 +437,7 @@ def read_initiative(root: Path | str) -> dict[str, Any]:
     land_at = _coerce_land_at(meta.get("land_at"), overview)
     epic = _coerce_epic(meta.get("epic"), overview)
     target_branch = _coerce_target_branch(meta.get("target_branch"), overview)
+    landing = _landing_fields(meta, overview)
 
     items = [read_item(p) for p in sorted(root.glob("*/*.md")) if p.name != "initiative.md"]
     own = {str(item["id"]) for item in items}
@@ -433,6 +452,7 @@ def read_initiative(root: Path | str) -> dict[str, Any]:
         "land_at": land_at,
         "epic": epic,
         "target_branch": target_branch,
+        **landing,
         "root": str(root),
         "phases": phases(items),
         "items": items,

@@ -147,11 +147,35 @@ def test_refused_merge_returns_the_forge_reason_and_marks_nothing() -> None:
     assert (fakes.merges, fakes.marked) == ([7], [])
 
 
-def test_body_with_no_task_merges_and_reports_zero_marked() -> None:
+def test_open_pr_naming_no_tasks_is_refused_before_merging() -> None:
     fakes = Fakes(pr=_pr(body="no marker here"), rows=[{"name": "test", "state": "success"}])
     result = _land(fakes)
-    assert (result.event, result.tasks_marked, fakes.marked) == (LEVEL_MERGED, (), [])
-    assert result.text == f"merged {URL}; marked 0 task(s) done"
+    assert result.event == MERGE_FAILED
+    assert "names no tasks" in (result.reason or "")
+    assert (fakes.merges, fakes.marked, fakes.sleeps) == ([], [], [])
+
+
+def test_open_pr_naming_no_tasks_is_refused_before_required_checks_are_read() -> None:
+    result = _land(Fakes(pr=_pr(body="x"), required=None))
+    assert "names no tasks" in (result.reason or "")
+
+
+def test_merged_batch_pr_marks_each_task_with_the_pr_url() -> None:
+    fakes = Fakes(pr=_pr("MERGED", body="Batch\n- src\n  Tasks: t-a, t-b"), required=None)
+    result = _land(fakes)
+    assert (result.event, result.tasks_marked) == (LEVEL_MERGED, ("t-a", "t-b"))
+    assert (fakes.merges, fakes.marked) == ([], [("t-a", URL), ("t-b", URL)])
+
+
+def test_merged_pr_naming_no_tasks_is_not_refused() -> None:
+    result = _land(Fakes(pr=_pr("MERGED", body="no marker here"), required=None))
+    assert (result.event, result.tasks_marked) == (LEVEL_MERGED, ())
+
+
+def test_open_pr_whose_only_tasks_line_is_prose_is_refused() -> None:
+    fakes = Fakes(pr=_pr(body="Tasks: three approved"), rows=[{"name": "test", "state": "success"}])
+    result = _land(fakes)
+    assert (result.event, fakes.merges) == (MERGE_FAILED, [])
 
 
 def test_task_that_cannot_be_marked_is_named_and_not_counted() -> None:
@@ -179,6 +203,25 @@ def test_carried_tasks_keeps_order_and_drops_repeats() -> None:
 
 def test_carried_tasks_ignores_bullets_outside_a_phase_body() -> None:
     assert carried_tasks("Task: t-one\n\nsummary\n- note: not a task") == ("t-one",)
+
+
+def test_carried_tasks_reads_indented_tasks_lines_of_a_batch_body_in_order() -> None:
+    body = "Batch\n\n- src-1\n  Tasks: t-a, t-b\n\n- src-2\n  Tasks: t-c"
+    assert carried_tasks(body) == ("t-a", "t-b", "t-c")
+
+
+def test_carried_tasks_reads_unindented_tasks_line_and_drops_repeats() -> None:
+    assert carried_tasks("Tasks: t-x,t-y\nTasks: t-y, t-z") == ("t-x", "t-y", "t-z")
+
+
+def test_carried_tasks_keeps_order_and_uniqueness_across_all_forms() -> None:
+    body = "Task: t-b\nTasks: t-a, t-b\n\nPhase: p1\n\n- t-c: C\n- t-a: A"
+    assert carried_tasks(body) == ("t-b", "t-a", "t-c")
+
+
+def test_carried_tasks_ignores_tasks_lines_below_dropped_and_prose_tokens() -> None:
+    body = "Phase: p1\n\nTasks: t-a, three approved\n\nDropped:\n- t-c: too big\n  Tasks: t-d"
+    assert carried_tasks(body) == ("t-a",)
 
 
 def test_carried_tasks_of_a_body_with_no_marker_is_empty() -> None:

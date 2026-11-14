@@ -188,8 +188,17 @@ def test_context_prints_todays_spend_lands_and_first_try_rate_after_lanes(tmp_pa
     assert main(["route", "context", "--profile", str(profile)]) == 0
     out = capsys.readouterr().out.splitlines()
     assert out[out.index(next(l for l in out if l.startswith("lanes:"))) + 1] == (
-        "efficiency: today $6.00 for 3 landed ($2.00 per landed task), first-try 50% of 2 measured"
+        "efficiency: today $6.00 for 3 completions ($2.00 per completion), first-try 50% of 2 measured"
     )
+
+
+def test_efficiency_figures_keep_per_landed_as_an_alias_of_cost_per_completion(tmp_path):
+    ts, calls = _today_and_calls({"cost_usd": 3.0, "role": "build", "task_id": "epic-x-5:seams:seams-t"})
+    store(tmp_path, *calls)
+    (tmp_path / "land.jsonl").write_text(_landed(ts, "epic-x-5", "seams-task") + "\n")
+    figures = cli._efficiency_figures(tmp_path, ts)
+    assert figures["cost_per_completion"] == 3.0 and figures["per_landed"] == figures["cost_per_completion"]
+    assert figures["completions"] == figures["landed"] == 1
 
 
 def test_context_does_not_hand_a_ticket_the_builds_of_a_ticket_whose_name_it_extends(tmp_path, capsys):
@@ -203,14 +212,14 @@ def test_context_does_not_hand_a_ticket_the_builds_of_a_ticket_whose_name_it_ext
     store(runs, *calls)
     (runs / "land.jsonl").write_text("\n".join([_landed(ts, "epic-x-5", "seams-task"), _landed(ts, "epic-x-5", "seams-task-two")]) + "\n")
     assert main(["route", "context", "--profile", str(profile)]) == 0
-    assert _efficiency_line(capsys) == "efficiency: today $3.00 for 2 landed ($1.50 per landed task), first-try 0% of 1 measured"
+    assert _efficiency_line(capsys) == "efficiency: today $3.00 for 2 completions ($1.50 per completion), first-try 0% of 1 measured"
 
 
-def test_context_says_nothing_landed_yet_when_the_store_has_spend_and_no_lands(tmp_path, capsys):
+def test_context_says_nothing_completed_yet_when_the_store_has_spend_and_no_lands(tmp_path, capsys):
     profile = _write_workspace(tmp_path)
     store(tmp_path / "workspace" / "runs", *_today_and_calls({"cost_usd": 0.5})[1])
     assert main(["route", "context", "--profile", str(profile)]) == 0
-    assert _efficiency_line(capsys) == "efficiency: today $0.50, nothing landed yet"
+    assert _efficiency_line(capsys) == "efficiency: today $0.50, nothing completed yet"
 
 
 def test_context_prints_no_efficiency_line_with_no_store(tmp_path, capsys):
@@ -860,6 +869,7 @@ def _init_repo(repo):
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
 
 
+@pytest.mark.usefixtures("board_store")
 def test_launch_epic_starts_the_harness_detached_with_the_recorded_argv(tmp_path, capsys):
     harness_dir = _write_harness(tmp_path)
     ws = tmp_path / "workspace"
@@ -895,6 +905,7 @@ def test_launch_epic_starts_the_harness_detached_with_the_recorded_argv(tmp_path
     assert "--fix-attempts" in argv and "3" in argv
 
 
+@pytest.mark.usefixtures("board_store")
 def test_launch_epic_passes_the_repos_base_setting_to_the_harness_as_an_origin_ref(tmp_path):
     harness_dir = _write_harness(tmp_path)
     ws = tmp_path / "workspace"
@@ -953,6 +964,7 @@ def test_launch_rescue_passes_an_explicit_base_to_the_harness(tmp_path):
     assert argv[argv.index("--base") + 1] == "origin/release"
 
 
+@pytest.mark.usefixtures("board_store")
 def test_launch_epic_passes_a_chosen_base_for_a_repo_with_no_origin_and_nothing_otherwise(tmp_path):
     harness_dir = _write_harness(tmp_path)
     ws = tmp_path / "workspace"
@@ -986,6 +998,7 @@ def test_a_remote_launch_refuses_an_explicit_base_the_host_command_would_drop():
     assert cli._dropped_ceilings(argparse.Namespace(base=None)) == []
 
 
+@pytest.mark.usefixtures("board_store")
 def test_launch_epic_merges_same_phase_ready_tickets_before_dispatch(tmp_path, capsys):
     # same-phase-tickets-that-share-a-file-are-merged-wire-merge-into-lint-and-launch:
     # the merge (and its file writes) must land before the detached harness
@@ -1029,6 +1042,7 @@ def test_launch_epic_merges_same_phase_ready_tickets_before_dispatch(tmp_path, c
     assert dropped_fields["merged_into"] == "t1"
 
 
+@pytest.mark.usefixtures("board_store")
 def test_launch_threads_the_profiles_spend_window_ceiling_into_the_usage_gate(tmp_path, monkeypatch, capsys):
     harness_dir = _write_harness(tmp_path)
     ws = tmp_path / "workspace"
@@ -1058,6 +1072,7 @@ def test_launch_threads_the_profiles_spend_window_ceiling_into_the_usage_gate(tm
     assert captured["ceiling_usd"] == 42.0
 
 
+@pytest.mark.usefixtures("board_store")
 def test_launch_refuses_on_a_weekly_breach_even_though_the_window_is_not_close(tmp_path, monkeypatch, capsys):
     harness_dir = _write_harness(tmp_path)
     ws = tmp_path / "workspace"
@@ -1092,6 +1107,7 @@ def test_launch_refuses_on_a_weekly_breach_even_though_the_window_is_not_close(t
     assert "weekly" in out
 
 
+@pytest.mark.usefixtures("board_store")
 def test_launch_epic_passes_node_cap_usd_from_the_profile_into_the_recorded_argv(tmp_path, capsys):
     harness_dir = _write_harness(tmp_path)
     ws = tmp_path / "workspace"
@@ -1577,19 +1593,27 @@ def test_launch_refuses_when_the_harness_venv_is_missing(tmp_path, capsys):
     assert "harness venv missing" in out
 
 
-def test_launch_epic_refuses_when_initiative_md_is_missing(tmp_path, capsys):
+@pytest.mark.usefixtures("board_store")
+def test_launch_epic_refuses_when_initiative_md_is_missing(tmp_path, capsys, monkeypatch):
     harness_dir = _write_harness(tmp_path)
     ws = tmp_path / "workspace"
     (ws / "runs").mkdir(parents=True)
     initiative_dir = ws / "work" / "demo"
     initiative_dir.mkdir(parents=True)
     profile = _write_launch_profile(tmp_path, harness_dir, ws)
+    # The store is the board, so the initiative has its row; only its file is missing. The chair lease names another
+    # machine, so this one is a lane host: it reads the rows and never exports the files.
+    monkeypatch.setattr(cli.chair_read_lease, "read_lease", lambda *_a, **_k: {**cli.chair_read_lease.ABSENT, "host": "chair-host"})
+    assert run_store.upsert_row(ws / "runs", {"kind": "initiative", "initiative": "demo", "task_id": "demo", "phase": "",
+                                              "state": "todo", "needs": [], "surfaces": [], "title": "Demo", "body": "",
+                                              "extra": {"repo": str(tmp_path / "repo")}})
     rc = main(["route", "launch", "epic", "--profile", str(profile), "--initiative", str(initiative_dir)])
     out = capsys.readouterr().out
     assert rc == 2
     assert "no initiative.md" in out
 
 
+@pytest.mark.usefixtures("board_store")
 def test_launch_epic_refuses_when_the_repo_is_unresolvable(tmp_path, capsys):
     harness_dir = _write_harness(tmp_path)
     ws = tmp_path / "workspace"
@@ -1604,6 +1628,7 @@ def test_launch_epic_refuses_when_the_repo_is_unresolvable(tmp_path, capsys):
     assert "no --repo" in out
 
 
+@pytest.mark.usefixtures("board_store")
 def test_launch_epic_refuses_when_the_repo_is_dirty(tmp_path, capsys):
     harness_dir = _write_harness(tmp_path)
     ws = tmp_path / "workspace"
@@ -1622,6 +1647,7 @@ def test_launch_epic_refuses_when_the_repo_is_dirty(tmp_path, capsys):
     assert "uncommitted changes" in out
 
 
+@pytest.mark.usefixtures("board_store")
 def test_launch_epic_refuses_when_the_initiative_already_has_a_live_run(tmp_path, capsys):
     harness_dir = _write_harness(tmp_path)
     ws = tmp_path / "workspace"
@@ -1753,6 +1779,7 @@ def test_a_launch_whose_backend_exits_at_once_is_reported_failed_not_started(tmp
     assert not (ws / "runs" / "fix-thing-1.launched.json").exists()
 
 
+@pytest.mark.usefixtures("board_store")
 def test_launch_epic_whose_backend_exits_at_once_is_reported_failed_not_started(tmp_path, capsys):
     harness_dir = _write_harness(tmp_path)
     (harness_dir / "shell.py").write_text("import sys\nprint('boom', file=sys.stderr)\nsys.exit(2)\n")
@@ -1833,6 +1860,7 @@ def test_the_chair_sequence_argv_is_parsed_by_the_real_harness_parser(tmp_path, 
     assert json.loads(parsed.read_text()) == {"task_ids": "ordinal"}
 
 
+@pytest.mark.usefixtures("board_store")
 def test_a_dead_epic_launch_removes_its_ceiling_files_and_names_the_loop_claim_it_took(tmp_path, capsys):
     harness_dir = _write_harness(tmp_path)
     (harness_dir / "shell.py").write_text("import sys\nprint('boom', file=sys.stderr)\nsys.exit(2)\n")
@@ -1906,6 +1934,7 @@ def test_launch_refuses_a_tier_ceiling_above_the_profiles_own_ceiling(tmp_path, 
     assert not list((ws / "runs").glob("*.ceiling.json"))
 
 
+@pytest.mark.usefixtures("board_store")
 def test_launch_epic_with_a_tightening_ceiling_writes_the_overlaid_profile_and_ceiling_record(tmp_path, capsys):
     harness_dir = _write_harness(tmp_path)
     ws = tmp_path / "workspace"
@@ -2116,6 +2145,7 @@ def _held_initiative(tmp_path):
     return ws, argv
 
 
+@pytest.mark.usefixtures("board_store")
 def test_launch_epic_refuses_a_blocked_item_and_force_alone_does_not_lift_it(tmp_path, capsys):
     ws, argv = _held_initiative(tmp_path)
     rc = main([*argv, "--force"])
@@ -2126,6 +2156,7 @@ def test_launch_epic_refuses_a_blocked_item_and_force_alone_does_not_lift_it(tmp
     assert not (ws / "runs" / "demo-1.pid").exists()
 
 
+@pytest.mark.usefixtures("board_store")
 def test_launch_epic_include_blocked_alone_launches_with_the_override_line(tmp_path, capsys):
     ws, argv = _held_initiative(tmp_path)
     rc = main([*argv, "--include-blocked"])
@@ -2135,6 +2166,7 @@ def test_launch_epic_include_blocked_alone_launches_with_the_override_line(tmp_p
     assert _wait_for(ws / "runs" / "demo-1.pid")
 
 
+@pytest.mark.usefixtures("board_store")
 def test_launch_epic_both_flags_lift_the_blocked_guard_and_the_usage_stop(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(usage_window, "gather", _stopped_window)
     ws, argv = _held_initiative(tmp_path)
@@ -2146,6 +2178,7 @@ def test_launch_epic_both_flags_lift_the_blocked_guard_and_the_usage_stop(tmp_pa
     assert _wait_for(ws / "runs" / "demo-1.pid")
 
 
+@pytest.mark.usefixtures("board_store")
 def test_launch_epic_include_blocked_alone_does_not_lift_a_usage_stop(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(usage_window, "gather", _stopped_window)
     ws, argv = _held_initiative(tmp_path)
@@ -2176,6 +2209,7 @@ def _waiting_initiative(tmp_path, dep_state, approved_record):
     return ws, ["route", "launch", "epic", "--profile", str(profile), "--initiative", str(initiative_dir), "--repo", str(repo)], repo
 
 
+@pytest.mark.usefixtures("board_store")
 def test_relaunch_blocked_on_an_approved_task_prints_the_wait_line_and_the_stranded_remedy(tmp_path, capsys):
     ws, argv, repo = _waiting_initiative(tmp_path, "approved", approved_record=True)
     rc = main(argv)
@@ -2186,6 +2220,7 @@ def test_relaunch_blocked_on_an_approved_task_prints_the_wait_line_and_the_stran
     assert _wait_for(ws / "runs" / "demo-1.pid")
 
 
+@pytest.mark.usefixtures("board_store")
 def test_relaunch_blocked_on_a_quarantined_task_prints_the_wait_line_with_that_state(tmp_path, capsys):
     ws, argv, _repo = _waiting_initiative(tmp_path, "quarantined", approved_record=False)
     rc = main(argv)
@@ -2386,6 +2421,7 @@ def test_pull_marks_each_written_file_and_a_failed_mark_exits_2_naming_the_link(
     assert "marking https://x/9 failed (exit 3)" in capsys.readouterr().out
 
 
+@pytest.mark.usefixtures("board_store")
 def test_one_pull_files_an_intake_issue_and_reviews_then_marks_a_review_pr_under_the_pull_profile(tmp_path, monkeypatch):
     from pathlib import Path
 
@@ -2411,7 +2447,10 @@ def test_one_pull_files_an_intake_issue_and_reviews_then_marks_a_review_pr_under
     [written] = (ws / "intake").glob("*.md")
     assert 'link: "https://github.com/acme/widgets/issues/1"' in written.read_text(encoding="utf-8")
     pr = "https://github.com/acme/widgets/pull/21"
-    assert ran[-2:] == [
+    # The store is the board, so the pull ends by listing the source's taken tickets for its sync; the review and
+    # its mark are the two calls before that.
+    assert ran[-1][:7] == ["gh", "issue", "list", "--repo", "acme/widgets", "--label", "intake:taken"]
+    assert ran[-3:-1] == [
         ["cox", "runs", "review", "--pr", pr, "--profile", str(profile)],
         ["gh", "pr", "edit", "21", "--repo", "acme/widgets", "--remove-label", "review", "--add-label", "review:taken"],
     ]
@@ -3027,6 +3066,7 @@ def test_a_refused_event_rolls_the_accepted_rows_back_and_writes_no_file(tmp_pat
     assert [(rows[("task", name)]["title"], rows[("task", name)]["state"]) for name in ("t1", "t2")] == [("T1", "ready"), ("T2", "ready")]
 
 
+@pytest.mark.usefixtures("board_store")
 def test_launch_takes_its_blockers_from_the_merge_result(tmp_path, monkeypatch, capsys):
     ws = tmp_path / "workspace"
     (ws / "runs").mkdir(parents=True)

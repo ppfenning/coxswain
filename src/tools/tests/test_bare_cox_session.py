@@ -63,10 +63,11 @@ def _holder(monkeypatch, *, host: str, is_loop: bool = True, alive: bool | None 
 
 
 def test_a_live_same_host_loop_is_attached_to_and_the_lease_is_left_alone(tmp_path: Path, monkeypatch, capsys):
+    # --workspace: the workspace session beside a live loop. Without it the launch attaches over MCP (test_cli_attach.py).
     calls = _terminal(monkeypatch, tmp_path, {"claude"})
     held = _holder(monkeypatch, host="alpha")
     with pytest.raises(_Execd):
-        main([])
+        main(["--workspace"])
     assert calls == [("claude", ["claude"])]
     assert (held["take"], held["lease"], held["spawn"]) == ([], [], [])
     assert capsys.readouterr().out.splitlines() == ["chair held by chair-2026-10-14 (chair loop)"]
@@ -76,10 +77,21 @@ def test_a_live_other_host_loop_is_attached_to_and_the_lease_is_left_alone(tmp_p
     calls = _terminal(monkeypatch, tmp_path, {"claude"})
     held = _holder(monkeypatch, host="beta", alive=None)
     with pytest.raises(_Execd):
-        main([])
+        main(["--workspace"])
     assert calls == [("claude", ["claude"])]
     assert (held["take"], held["lease"], held["spawn"]) == ([], [], [])
     assert capsys.readouterr().out.splitlines() == ["chair held by chair-2026-10-14 (chair loop)"]
+
+
+def test_beside_a_live_loop_a_bare_launch_attaches_over_mcp_and_the_lease_is_left_alone(tmp_path: Path, monkeypatch, capsys):
+    calls = _terminal(monkeypatch, tmp_path, {"claude"})
+    held = _holder(monkeypatch, host="alpha")
+    with pytest.raises(_Execd):
+        main([])
+    ((name, argv),) = calls
+    assert name == "claude" and "--mcp-config" in argv
+    assert (held["take"], held["lease"], held["spawn"]) == ([], [], [])
+    assert "attaching to it over MCP" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(

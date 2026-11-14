@@ -120,11 +120,14 @@ def default_copy_store(source_url: str, target_url: str) -> dict[str, int]:
 
     That copy is idempotent and refuses to drop anything, so re-running a half-finished switch is safe.
     This function keeps that property: it only calls it, and never drops, deletes or truncates."""
+    # The one place outside the test suites that may open a sqlite store: reading an old one, once, to carry its
+    # rows into Postgres. The harness refuses sqlite everywhere else.
     done = subprocess.run(
         [sys.executable, "-m", "harness.store_copy", "--json", source_url, target_url],
         capture_output=True,
         text=True,
         check=False,
+        env={**os.environ, "COXSWAIN_STORE_DOUBLE": "sqlite"},
     )
     if done.returncode != 0:
         tail = (done.stderr or done.stdout).strip().splitlines()[-1:] or ["no output"]

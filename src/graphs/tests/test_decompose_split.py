@@ -160,3 +160,32 @@ def test_inputs_are_not_mutated():
     before = copy.deepcopy((tasks, OWN, TREES))
     run(tasks)
     assert (tasks, OWN, TREES) == before
+
+
+def test_classify_falls_back_to_the_path_layout_when_no_listing_places_the_surface():
+    assert classify("src/ui/regatta.rs", OWN, {}, "coxswain") == ("foreign", "~/repos/coxswain-dash")
+    assert classify("src/tools/agent_tools/dash_feed.py", OWN, {}, "coxswain-dash") == ("foreign", "~/repos/coxswain")
+    assert classify("src/ui/new.rs (new)", OWN, {}, "coxswain") == ("foreign", "~/repos/coxswain-dash")
+
+
+def test_classify_layout_fallback_never_beats_a_listing_or_a_layout_miss():
+    assert classify("src/ui/x.rs", {"src/ui/x.rs"}, {}, "coxswain") == ("own", None)
+    assert classify("t/x.py", OWN, TREES, "coxswain") == ("foreign", "/r/tools")
+    assert classify("src/ui/regatta.rs", OWN, {}, "coxswain-dash") == ("neither", None)
+    assert classify("nowhere.py", OWN, {}, "coxswain") == ("neither", None)
+    assert classify("src/ui/regatta.rs", OWN, {}) == ("neither", None)
+
+
+def test_a_layout_placed_task_becomes_a_follow_up_for_the_layout_repository():
+    tasks = [task("a", ["src/a.py"]), task("b", ["src/ui/regatta.rs", "Cargo.toml"])]
+    out = split_foreign(tasks, OWN, {}, title="Init", own_key="coxswain")
+    assert [t["id"] for t in out.kept] == ["a"]
+    assert [(f["repo"], f["tasks"]) for f in out.follow_ups] == [("~/repos/coxswain-dash", ["b"])]
+    assert out.dropped == []
+
+
+def test_without_an_own_key_the_layout_places_nothing():
+    tasks = [task("a", ["src/a.py"]), task("b", ["src/ui/regatta.rs"])]
+    out = split_foreign(tasks, OWN, {}, title="Init")
+    assert out.follow_ups == []
+    assert [d["task"]["id"] for d in out.dropped] == ["b"]

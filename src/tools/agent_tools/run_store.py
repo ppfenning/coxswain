@@ -28,6 +28,7 @@ from typing import Any
 
 from agent_tools import analytics_snapshot, epic, install_root
 from agent_tools.chair_read_cache import Stamp, StampCache
+from agent_tools.jsonl_log import parse_log
 from agent_tools.lake_config import _LITERAL_SECRETS, _from_env
 from agent_tools.store_dialect import connect_readonly_url, is_postgres, placeholder
 from agent_tools.store_url import TracesRoot, profile_traces_root, read_provider_profile, resolve_store_url
@@ -1320,13 +1321,9 @@ def _done_work_item_lands(conn: Any, token: str, since: str, until: str) -> list
     return [{"run_id": r["initiative"], "task_id": r["task_id"], "ts": r["updated_at"]} for r in rows if r["updated_at"]]
 
 
-def _land_record_row(line: str, since: str, until: str) -> dict[str, str] | None:
-    """Pure: a `land.jsonl` line as run_id, task_id and ts when it merged (exit 0, `mark_done` reached, a task) inside the window."""
-    try:
-        row = json.loads(line)
-    except ValueError:
-        return None
-    if not isinstance(row, dict) or row.get("exit") != 0 or "mark_done" not in (row.get("steps_reached") or []):
+def _land_record_row(row: dict, since: str, until: str) -> dict[str, str] | None:
+    """Pure: a parsed `land.jsonl` row as run_id, task_id and ts when it merged (exit 0, `mark_done` reached, a task) inside the window."""
+    if row.get("exit") != 0 or "mark_done" not in (row.get("steps_reached") or []):
         return None
     run, task, ts = row.get("run"), row.get("task"), row.get("ts")
     if not (task and isinstance(run, str) and isinstance(ts, str) and since <= ts < until):
@@ -1337,10 +1334,10 @@ def _land_record_row(line: str, since: str, until: str) -> dict[str, str] | None
 def _land_record_lands(runs_dir: Path, since: str, until: str) -> list[dict[str, str]]:
     """Edge. Merged lands in `runs_dir/land.jsonl` inside the window; empty when the file is absent."""
     try:
-        lines = (Path(runs_dir) / "land.jsonl").read_text(encoding="utf-8").splitlines()
+        text = (Path(runs_dir) / "land.jsonl").read_bytes().decode("utf-8", errors="replace")
     except OSError:
         return []
-    return [row for row in (_land_record_row(line, since, until) for line in lines) if row is not None]
+    return [row for row in (_land_record_row(r, since, until) for r in parse_log(text).rows) if row is not None]
 
 
 def landed_tasks(runs_dir: Path, since: str, until: str) -> Landed:
@@ -1444,6 +1441,12 @@ def read_queue(runs_dir: Path, initiative: str | None = None, kind: str | None =
         return read_rows() or []
     probe = _queue_run(runs_dir, lambda python, url: _queue_stamp_argv(python, url, initiative, kind))
     return _versioned(cache, ("queue", str(runs_dir), initiative, kind), probe, read_rows)
+
+
+def queue_stamp(runs_dir: Path) -> Stamp | None:
+    """Edge: the version of the whole queue (row count and a digest of every row), None when the store cannot say.
+    Two equal stamps mean no row changed in between."""
+    return _stamp_of(_queue_run(runs_dir, lambda python, url: _queue_stamp_argv(python, url, None, None)))
 
 
 def upsert_row(runs_dir: Path, row: Mapping[str, Any]) -> bool:

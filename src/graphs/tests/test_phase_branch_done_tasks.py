@@ -7,6 +7,7 @@ landed; the commit subject names the task.
 
 from __future__ import annotations
 
+import pytest
 from test_epic_driver import cart, drive, git, initiative, is_ancestor, repo  # noqa: F401
 
 from harness.epic import unlanded
@@ -59,6 +60,7 @@ def _branch_whose_t1_main_holds_as_a_different_patch(repo, cart, tmp_path) -> st
     return git("rev-parse", BRANCH, cwd=repo)
 
 
+@pytest.mark.usefixtures("at_task")
 def test_a_done_task_whose_landed_patch_differs_is_recreated_and_builds(repo, cart, tmp_path) -> None:  # noqa: F811
     before = _branch_whose_t1_main_holds_as_a_different_patch(repo, cart, tmp_path)
 
@@ -73,6 +75,7 @@ def test_a_done_task_whose_landed_patch_differs_is_recreated_and_builds(repo, ca
     assert [p for p in result["proposals"] if p["kind"] == "stack_rebase"] == []
 
 
+@pytest.mark.usefixtures("at_task")
 def test_a_task_not_done_still_blocks_the_phase(repo, cart, tmp_path) -> None:  # noqa: F811
     before = _branch_whose_t1_main_holds_as_a_different_patch(repo, cart, tmp_path)
 

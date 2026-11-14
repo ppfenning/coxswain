@@ -8,6 +8,8 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from agent_tools.jsonl_log import append_line
+
 ACTION_LOG = "chair.actions.jsonl"  # in the runs directory
 
 
@@ -35,8 +37,7 @@ def recorder(
 
     def record(action: Mapping[str, Any]) -> None:
         line = action_line(action, epoch(), now())
-        with (runs_dir / ACTION_LOG).open("a", encoding="utf-8") as log:
-            log.write(line + "\n")
+        append_line(runs_dir / ACTION_LOG, json.loads(line), sync=False)  # the log is not a record of truth: no fsync
         if store is None:
             return
         code, output = store(record_action_argv(holder, line))

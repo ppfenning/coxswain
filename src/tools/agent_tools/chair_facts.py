@@ -32,11 +32,9 @@ from agent_tools.chair_read_intake import intake_from_rows
 from agent_tools.chair_read_land_conflicts import _rev_parse, read_land_conflicts
 from agent_tools.chair_read_land_heads import read_land_heads
 from agent_tools.chair_read_quarantined import quarantined_from_rows
-from agent_tools.chair_read_steward import reported_keys, task_signature
 from agent_tools.chair_read_stranded import stranded_from_rows
 from agent_tools.chair_read_tuning import current_lanes, tuning_facts
 from agent_tools.chair_schedule_durations import END_KEY, MIX_KEY, SIZE_KEY, START_KEY
-from agent_tools.chair_steward import StewardFacts, StewardTask
 from agent_tools.chair_types import (
     EASTERN,
     HELD_FILE_CAUSE,
@@ -70,6 +68,7 @@ from agent_tools.chair_types import (
     PidProbeFact,
     QuarantineFacts,
     QueueFile,
+    RemoteUnfetched,
     ReviewPr,
     RunningInitiative,
     RunRecord,
@@ -78,7 +77,6 @@ from agent_tools.chair_types import (
     ScheduleInputs,
     SchedulePhase,
     ScheduleRunning,
-    StewardPlanFacts,
     StrandedPhase,
     TodoInitiative,
     WronglyReleased,
@@ -166,8 +164,6 @@ class FactsDeps:
         Optional, and absent means no ceiling.
     merge_queue: the raw profile value at the top-level `merge_queue`, resolved by `merge_queue_fact`. Optional, and
         absent means the queue is off.
-    approval_hold_ticks: the raw profile value for the approval hold limit, resolved by `resolve_approval_hold_ticks`.
-        Optional, and absent means 6 ticks.
     stale_days: the raw profile value at `chair.stale_days`, resolved by `resolve_stale_days`. Optional, and
         absent means 7 days.
     stale_candidates: `stale_candidates(now) -> list[dict]`, bound in production to
@@ -224,15 +220,6 @@ class FactsDeps:
         infra or smoke-failed land. Defaults to a callable returning False.
     land_hold: the smoke hold, `chair_smoke.read_hold`'s result. Defaults to a callable returning None.
     land_outcomes: initiative to its resolved land outcomes, oldest first. Defaults to a callable returning {}.
-    steward_enabled: the raw profile value that turns the epic steward on, resolved by `resolve_steward_enabled`.
-        Defaults to a callable returning None, meaning off: `gather_facts` adds no `steward` key and calls no other steward source.
-    steward_scope: the raw profile value of chair `steward_scope`, resolved by `resolve_steward_scope`: "all" plans every
-        open initiative, "epics" only unlanded epic members. Defaults to a callable returning None, meaning "all".
-    steward_entries: every bus entry (`chair_read_steward.read_bus_entries`); `reported_keys` turns the typed ones
-        into the steward's reported set. Defaults to a callable returning [].
-    ticket_head: initiative to its ticket branch head commit. Defaults to a callable returning "".
-    level_merged: (initiative, phase) to whether that level branch has landed on the ticket branch, bound in
-        production to `chair_read_steward.level_is_merged`. Defaults to a callable returning False.
     approved_branch_merged: an approved row to whether its commit is already on its phase or pr branch, bound in
         production to `chair_read_branch_merged.branch_merged`. Not consulted under task landing. Defaults to a
         callable returning False.
@@ -265,7 +252,7 @@ class FactsDeps:
     missing_repos: Callable[[], list[str]] | None = None
     reported_repos: Callable[[], set[str]] | None = None
     run_exited: Callable[[], Mapping[str, bool]] | None = None  # initiative to whether its newest run has an exit record; absent means {}
-    remote_unfetched: Callable[[], Mapping[str, str]] | None = None
+    remote_unfetched: Callable[[], Mapping[str, str]] | None = None  # a `RemoteUnfetched` also carries the decompose-only initiatives
     lost_runs: Callable[[], Mapping[str, str]] | None = None  # initiative to run id, for a lane whose host is stale and whose run has no exit record; absent means {}
     decomposed_intake: Callable[[], Mapping[str, str]] | None = None  # initiative to its newest decompose run id, for a decomposed intake; absent means {}
     item_counts: Callable[[], Mapping[str, int]] | None = None  # initiative to its stored task-item count; absent means every initiative counts as non-empty
@@ -277,7 +264,6 @@ class FactsDeps:
     history: Callable[[], str | None] | None = None  # chair_read_housekeeping.read_last_housekeeping; absent means no history
     housekeeping_hours: Callable[[], object] | None = None  # raw profile chair.housekeeping_hours; absent means 24 hours
     stale_days: Callable[[], object] | None = None  # raw profile chair.stale_days; absent means 7 days
-    approval_hold_ticks: Callable[[], object] | None = None  # raw approval hold limit setting; absent means 6 ticks
     max_launches_per_hour: Callable[[], object] | None = None  # raw profile chair.max_launches_per_hour; absent means the default
     shared_file_limit: Callable[[], object] | None = None  # raw profile chair.max_shared_file_initiatives; absent means 2
     serial_files: Callable[[], object] | None = None  # raw profile top-level serial_files; absent means none
@@ -293,6 +279,10 @@ class FactsDeps:
     review_prs: Callable[[], list[ReviewPr]] = lambda: []  # forge_review_prs bound to the profile's forge; absent means []
     pid_probe: Callable[[], Mapping[str, PidProbeFact]] = lambda: {}  # initiative to its remote pid probe; absent means {}
     tickets: Callable[[], Sequence[Row]] | None = None  # `read_ticket_items` rows; absent means no surfaces and no running initiatives
+    # The store's landing records (`harness.landing_store.list_records`). With it, an approved task of an initiative
+    # that lands at `initiative` carries the merged flag exactly when the record says its phase merged. Absent means
+    # the flag is left as each reader found it.
+    landing_records: Callable[[], Sequence[Mapping[str, Any]]] | None = None
     live_phases: Callable[[], Sequence[tuple[str, str]]] | None = None  # live (initiative, phase) runs; absent means no phase runs live
     repos: Callable[[], Mapping[str, str]] | None = None  # initiative to its initiative.md `repo:`; absent means no repo is known
     actions: Callable[[], Sequence[Row]] | None = None  # windowed chair_actions rows, read once per gather (`windowed_actions`); absent means no steer streaks
@@ -318,11 +308,6 @@ class FactsDeps:
     rev_parse: Callable[[str, str], str | None] = _rev_parse  # (repo, ref) to the commit sha or None; read by `read_land_heads` for refused phases only
     cartridge: Callable[[], Mapping[str, Any]] = lambda: {}  # the resolved team cartridge; {} when unreadable, so land_at reads the default
     land_at_values: Callable[[], Mapping[str, str | None]] = lambda: {}  # initiative to its initiative.md `land_at:`; absent means {}
-    steward_enabled: Callable[[], object] = lambda: None  # raw profile value that turns the steward on; absent means off
-    steward_scope: Callable[[], object] = lambda: None  # raw profile value of steward_scope; absent means "all"
-    steward_entries: Callable[[], Sequence[Row]] = lambda: []  # every bus entry; absent means []
-    ticket_head: Callable[[str], str] = lambda initiative: ""  # initiative to its ticket branch head; absent means ""
-    level_merged: Callable[[str, str], bool] = lambda initiative, phase: False  # (initiative, phase) to whether the level landed
     approved_branch_merged: Callable[[Row], bool] = lambda row: False  # approved row to whether its commit is on a phase or pr branch
     wrongly_released: Callable[[], Sequence[WronglyReleased]] = lambda: []  # ready tasks released while merged on a branch; absent means []
 
@@ -388,6 +373,7 @@ def lease_facts(record: Row, session: str, pid: int, host: str) -> LeaseFacts:
         "expired": bool(record.get("expired", False)),
         "until": str(record.get("until") or ""),
         "lent": bool(record.get("lent", False)),
+        **({"session_held": bool(record["session_held"])} if "session_held" in record else {}),
     }
 
 
@@ -417,13 +403,20 @@ def scaled_cap(max_in_flight: int, lane_fraction: float) -> int:
     return max(1, int(max_in_flight * lane_fraction))
 
 
+def fleet_lanes(dispatch: DispatchFacts) -> int:
+    """The chair machine's `max_in_flight` plus each lane host's `capacity`, a host naming none counting
+    `max_in_flight` as `host_free_slots` does. The launch cap is scaled from this: it bounds the whole fleet's launches."""
+    own = int(dispatch["max_in_flight"])
+    return own + sum(int(h.get("capacity", own)) for h in dispatch.get("hosts", []))
+
+
 def limits_facts(
     assessment: pacing.Assessment, policy: pacing.Policy, weekly: pacing.Window | None, max_in_flight: int,
     window_source: str = "est", weekly_source: str = "est", runs_dir: str = "", now: datetime | None = None,
     month: MonthBudget | None = None,
 ) -> LimitsFacts:
     """`launch_cap` is the smaller of the 5-hour and weekly verdicts: none on a 5-hour `hold` or `stop`, otherwise
-    `max_in_flight` scaled by the weekly lane fraction. The weekly verdict never raises the cap.
+    `max_in_flight` (the fleet's lanes, `fleet_lanes`, at the edge) scaled by the weekly lane fraction. The weekly verdict never raises the cap.
     With no `now` the weekly pace is not judged and the lane fraction is 1.0.
 
     `smoke_hold` comes from `chair_smoke.read_hold(runs_dir)`, so a caller such as `chair_plan._launch_cap`
@@ -630,6 +623,35 @@ def phase_facts(rows: Sequence[Row], land_at: str, claimed: Collection[str] = fr
     ]
 
 
+def with_landing_merged(items: Sequence[Row], records: Sequence[Mapping[str, Any]], land_at: Mapping[str, str]) -> list[Row]:
+    """Pure. `items` with the merged flag of each approved task set from the landing record, for initiatives at `initiative`.
+
+    `merged` has one meaning there: the task's phase is merged into the initiative branch. A merged task holds no
+    files and its phase's children may start. An initiative with no record yet has nothing merged. Items of an
+    initiative that lands at `task`, and items in any other state, are returned as they came."""
+    from core import landing_record as lr  # lazy: core sits beside agent_tools in one venv
+    from core.landing import is_initiative
+
+    by_initiative = {str(r.get("initiative")): r for r in records}
+    own: dict[str, list[Row]] = {}
+    for item in items:
+        own.setdefault(str(item["initiative"]), []).append(item)
+    merged = {
+        initiative: set(lr.merged_tasks(by_initiative.get(initiative), [
+            {"id": str(r["id"]), "phase": str(r.get("phase") or ""), "state": r.get("state"), "needs": list(r.get("needs") or [])}
+            for r in rows
+        ]))
+        for initiative, rows in own.items()
+        if is_initiative(land_at.get(initiative, "initiative"))
+    }
+    return [
+        {**item, "merged": str(item["id"]) in merged[initiative]}
+        if (initiative := str(item["initiative"])) in merged and item.get("state") == "approved"
+        else item
+        for item in items
+    ]
+
+
 PHASE_RUN_STATES = frozenset({"in_progress", "ready"})  # what a live phase run holds files for
 
 
@@ -645,7 +667,8 @@ def running_initiatives(
 
     An approved item whose merged flag is true holds nothing, live or not. An initiative with only ready tasks and no
     live run has no entry. `live` trusts an unexpired `runs:` lease or a live pid, so a finished run holds files until its lease expires.
-    Each `live_phases` pair adds an entry with `phase` set, holding the surfaces of that phase's in-progress and ready items only."""
+    Each `live_phases` pair adds an entry with `phase` set, holding the surfaces of that phase's in-progress and ready items only.
+    `state` is `running` for a live initiative or phase and `awaiting_land` for a non-live entry held by approved unmerged items."""
 
     def held(initiative: str) -> list[Row]:
         states = STEER_STATES if initiative in live else frozenset({"approved"})
@@ -661,6 +684,7 @@ def running_initiatives(
             "repo": repos.get(initiative, ""),
             "surfaces": sorted({s for i in held(initiative) for s in _surfaces_of(i)}),
             "live": initiative in live,
+            "state": "running" if initiative in live else "awaiting_land",
         }
         for initiative in sorted(set(live) | set(unlanded))
         if initiative in live or held(initiative)
@@ -677,6 +701,7 @@ def running_initiatives(
             ),
             "phase": phase,
             "live": True,
+            "state": "running",
         }
         for initiative, phase in sorted(set(live_phases))
     ]
@@ -870,7 +895,7 @@ def schedule_inputs_from_rows(
     initiatives: list[ScheduleInitiative] = [
         {"id": i, "priority": priority.get(i, 0), "repo": repos.get(i, ""), "phases": phases}
         for i in ids
-        if (phases := schedule_phases(i, own[i], land_at.get(i, "ticket"), live_phases))
+        if (phases := schedule_phases(i, own[i], land_at.get(i, "initiative"), live_phases))
     ]
     shapes = {
         (i, p): (_phase_size(rs), _phase_mix(rs))
@@ -1435,10 +1460,10 @@ def approved_facts(
 
     `branch_merged` is asked only for land_at ticket or level, and is given the row with that `land_at` set."""
     def at(r: Row) -> str:
-        return (land_at or {}).get(str(r["initiative"]), "ticket")
+        return (land_at or {}).get(str(r["initiative"]), "initiative")
 
     def on_branch(r: Row) -> bool:
-        return branch_merged is not None and at(r) in ("ticket", "level") and bool(branch_merged({**r, "land_at": at(r)}))
+        return branch_merged is not None and at(r) != "task" and bool(branch_merged({**r, "land_at": at(r)}))
 
     return [
         {
@@ -1459,7 +1484,7 @@ def approved_facts(
 
 
 RELEASE_NOTE = "Released from approval on"
-# The cause `apply_release` carries in its note: the ticket's wording, and `chair_approval_hold.plan_release`'s reason text.
+# The cause `apply_release` carries in its note: the ticket's wording, and the reason text the retired hold timer wrote.
 RELEASE_CAUSES = ("approval unmerged for", "approval not merged to main or its phase branch for")
 
 
@@ -1481,7 +1506,7 @@ def wrongly_released_facts(
         for i in items
         if i.get("state") == "ready"
         and _release_note(i.get("body", ""))
-        and land_at.get(str(i["initiative"]), "ticket") in ("ticket", "level")
+        and land_at.get(str(i["initiative"]), "initiative") != "task"
         and branch_merged(i)
     ]
 
@@ -1592,7 +1617,6 @@ def intake_paths_from_rows(rows: Sequence[Row], current: str | None = None) -> l
 
 DEFAULT_HOUSEKEEPING_HOURS = 24.0
 DEFAULT_STALE_DAYS = 7  # chair.stale_days profile default
-DEFAULT_APPROVAL_HOLD_TICKS = 6  # ticks an unmerged approval may be held before the planner releases it
 DEFAULT_SHARED_FILE_LIMIT = 2  # chair.max_shared_file_initiatives profile default
 
 
@@ -1611,15 +1635,6 @@ def resolve_stale_days(value: object) -> int:
         return int(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return DEFAULT_STALE_DAYS
-
-
-def resolve_approval_hold_ticks(value: object) -> int:
-    """The raw approval hold limit, or 6 when it is missing, non-numeric, or not positive."""
-    try:
-        ticks = int(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return DEFAULT_APPROVAL_HOLD_TICKS
-    return ticks if ticks > 0 else DEFAULT_APPROVAL_HOLD_TICKS
 
 
 def resolve_max_launches_per_hour(value: object) -> int:
@@ -1652,92 +1667,43 @@ def resolve_idle_stall_minutes(value: object) -> int:
     return minutes if minutes > 0 else IDLE_STALL_MINUTES
 
 
-def resolve_steward_enabled(value: object) -> bool:
-    """The profile's raw steward setting: on only for boolean True or the string "true", else off."""
+def steward_asked_for(value: object) -> bool:
+    """Whether the profile still sets `chair.steward` on: boolean True or the string "true". It turns nothing on: the
+    epic steward is gone, and the lander merges built phases and lands initiatives (`cox lander run`). The doctor
+    says so when the key is still set."""
     if isinstance(value, bool):
         return value
     return isinstance(value, str) and value.strip().lower() == "true"
 
 
-def resolve_steward_scope(value: object) -> str:
-    """The profile's raw steward_scope: "epics" only for that string, case and space ignored, else "all"."""
-    return "epics" if isinstance(value, str) and value.strip().lower() == "epics" else "all"
+_VIEW_STATES = ("ready", "approved", "done", "quarantined", "dropped", "building")
 
 
-def steward_initiative_ids(scope: str, epics: Sequence[EpicFacts], rows: Sequence[Row]) -> list[str]:
-    """Sorted ids the steward manages. "epics": unlanded epic members. Otherwise every initiative row not landed.
+def chat_epics(rows: Sequence[Row], run_exited: Mapping[str, bool]) -> list[dict[str, Any]]:
+    """Pure. One view per initiative with a task that is not done or dropped, for the chair's answers to a session.
 
-    Landed is `route.initiative_states`: at least one task row and every one done or dropped."""
-    if scope == "epics":
-        return sorted({i["id"] for e in epics for i in e["initiatives"] if not i["landed"]})
-    ids = sorted({str(r["initiative"]) for r in rows if r.get("kind") == "initiative"})
-    tasks = [r for r in rows if r.get("kind") == "task"]
-    landed = {i for i, done in route.initiative_states(ids, tasks).items() if done}
-    return [i for i in ids if i not in landed]
-
-
-_STEWARD_STATES = ("ready", "approved", "done", "quarantined", "dropped", "building")
-
-
-def _steward_task(row: Row) -> StewardTask:
-    """A store state the steward does not know (todo, blocked) is open work it must not relaunch, so building."""
-    state = str(row["state"])
-    return {"id": str(row["task_id"]), "state": state if state in _STEWARD_STATES else "building"}  # type: ignore[typeddict-item]
-
-
-def _natural(phase: str) -> list[object]:
-    return [int(p) if p.isdigit() else p for p in re.split(r"(\d+)", phase)]
-
-
-def steward_plan_facts(
-    initiatives: Sequence[str],
-    rows: Sequence[Row],
-    run_exited: Mapping[str, bool],
-    heads: Callable[[str], str],
-    level_merged: Callable[[str, str], bool],
-    entries: Sequence[Row],
-    land_at: Mapping[str, str] | None = None,
-    landed: Mapping[str, Collection[str]] | None = None,
-) -> StewardPlanFacts:
-    """One StewardFacts per initiative. A level is a phase of its task rows, in natural phase order.
-
-    `land_at` is `land_at_facts` output; an id missing from it reads ticket. At ticket a level is merged by
-    `level_merged` (ancestry). At level and task it is merged when every non-dropped task is landed and done or merged."""
-    from core.landing import DEFAULT_LAND_AT  # lazy: core sits beside agent_tools in one venv
-
+    A level is a phase of its task rows, in natural phase order. A store state outside the view's words (todo,
+    blocked, in_progress) is open work, so it reads `building`."""
     tasks = [r for r in rows if r.get("kind") == "task"]
 
-    def build(initiative: str) -> StewardFacts:
+    def natural(phase: str) -> list[object]:
+        return [int(p) if p.isdigit() else p for p in re.split(r"(\d+)", phase)]
+
+    def view(row: Row) -> dict[str, str]:
+        state = str(row["state"])
+        return {"id": str(row["task_id"]), "state": state if state in _VIEW_STATES else "building"}
+
+    def build(initiative: str) -> dict[str, Any]:
         own = [r for r in tasks if r["initiative"] == initiative]
-        phases = sorted({str(r["phase"]) for r in own}, key=_natural)
-        mode = (land_at or {}).get(initiative, DEFAULT_LAND_AT)
-        done = set((landed or {}).get(initiative, ()))
-
-        def merged(p: str) -> bool:
-            if mode == DEFAULT_LAND_AT:
-                return level_merged(initiative, p)
-            # `landed` counts an approved task as met at level whether or not it merged, so merged-ness is checked on the row.
-            return all(
-                r["task_id"] in done and (r["state"] == "done" or route.is_merged(r))
-                for r in own
-                if str(r["phase"]) == p and r["state"] != "dropped"
-            )
-
-        levels = [
-            {"tasks": [_steward_task(r) for r in own if str(r["phase"]) == p], "merged": merged(p), "phase": p}
-            for p in phases
-        ]
+        phases = sorted({str(r["phase"]) for r in own}, key=natural)
         return {
             "epic_id": initiative,
-            "branch_head": heads(initiative),
-            "levels": levels,
+            "levels": [{"phase": p, "tasks": [view(r) for r in own if str(r["phase"]) == p]} for p in phases],
             "exited": bool(run_exited.get(initiative, False)),
-            "signature": task_signature([_steward_task(r) for r in own]),
-            "reported": reported_keys(entries, initiative),
-            "land_at": mode,
         }
 
-    return {"enabled": True, "epics": [build(i) for i in initiatives]}
+    open_ids = sorted({str(r["initiative"]) for r in tasks if r["state"] not in ("done", "dropped")})
+    return [build(i) for i in open_ids]
 
 
 def idle_stall_inputs(
@@ -1805,6 +1771,10 @@ def gather_facts(
     rows = list(deps.queue()) if deps.queue is not None else []
     now_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     items = list(deps.tickets()) if deps.tickets is not None else []
+    if deps.landing_records is not None and items:
+        # The one place the merged flag takes its landing-model meaning for the tick: everything below reads `items`.
+        item_land_at = land_at_facts(deps.cartridge(), deps.land_at_values(), sorted({str(i["initiative"]) for i in items}))
+        items = with_landing_merged(items, list(deps.landing_records()), item_land_at)
     # `items` carry the store's `updated_at`, which the queue rows lack, so the docket's age tie-break holds here too.
     # Each initiative is judged by its own land_at, as `docket_by_land_at` does for the file docket.
     ready = (
@@ -1859,20 +1829,16 @@ def gather_facts(
     login_hosts = deps.hosts()
     decomposed = dict(deps.decomposed_intake()) if deps.decomposed_intake is not None else {}
     probe = dict(deps.pid_probe())
+    unfetched = deps.remote_unfetched() if deps.remote_unfetched is not None else {}
     from agent_tools.chair_decompose_runs import decompose_refusals  # lazy: chair_decompose_runs imports this module
 
     refusals = land_refusals_from_actions(action_rows, now)
     work = list(deps.work_rows()) if deps.work_rows is not None else []
     epics = epic_facts(work, epic_definitions or {}) if deps.work_rows is not None else []
-    steward_ids = (
-        steward_initiative_ids(resolve_steward_scope(deps.steward_scope()), epics, work)
-        if resolve_steward_enabled(deps.steward_enabled())
-        else None
-    )
     return {
         "lease": lease_facts(deps.lease(), deps.session, deps.pid, deps.host),
         "limits": limits_facts(
-            assessment, policy, weekly, dispatch["max_in_flight"], deps.window_source(), deps.weekly_source(),
+            assessment, policy, weekly, fleet_lanes(dispatch), deps.window_source(), deps.weekly_source(),
             deps.runs_dir(), now=now, month=month,
         ),
         "dispatch": dispatch,
@@ -1890,7 +1856,8 @@ def gather_facts(
             deps.reported_repos() if deps.reported_repos is not None else set(),
         ),
         "run_exited": dict(deps.run_exited()) if deps.run_exited is not None else {},
-        "remote_unfetched": dict(deps.remote_unfetched()) if deps.remote_unfetched is not None else {},
+        "remote_unfetched": dict(unfetched),
+        "remote_unfetched_decompose": list(unfetched.decompose) if isinstance(unfetched, RemoteUnfetched) else [],
         "schema_deaths": {i: list(r) for i, r in deps.schema_deaths().items()},
         "lost_runs": dict(deps.lost_runs()) if deps.lost_runs is not None else {},
         "pid_probe": probe,
@@ -1974,9 +1941,6 @@ def gather_facts(
         "no_run_streaks": no_run_streaks_from_actions(approved, action_rows),
         "approval_holds": approval_holds_from_actions(approved, action_rows),
         "wrongly_released": list(deps.wrongly_released()),
-        "approval_hold_ticks": resolve_approval_hold_ticks(deps.approval_hold_ticks())
-        if deps.approval_hold_ticks is not None
-        else DEFAULT_APPROVAL_HOLD_TICKS,
         "steer_policy": {
             "limit": resolve_shared_file_limit(deps.shared_file_limit() if deps.shared_file_limit is not None else None),
             "serial": resolve_serial_files(deps.serial_files() if deps.serial_files is not None else None),
@@ -1999,20 +1963,8 @@ def gather_facts(
         "queue_files": deps.queue_files(),
         "epics": epics,
         **(
-            {
-                "steward": steward_plan_facts(
-                    steward_ids,
-                    work,
-                    dict(deps.run_exited()) if deps.run_exited is not None else {},
-                    deps.ticket_head,
-                    deps.level_merged,
-                    list(deps.steward_entries()),
-                    land_at_facts(deps.cartridge(), deps.land_at_values(), steward_ids),
-                    # An initiative missing from `initiatives` (a live run) has no landed set and reads not merged.
-                    {i["id"]: i["landed"] for i in initiatives},
-                )
-            }
-            if steward_ids is not None
+            {"chat_epics": chat_epics(work, dict(deps.run_exited()) if deps.run_exited is not None else {})}
+            if deps.work_rows is not None
             else {}
         ),
     }

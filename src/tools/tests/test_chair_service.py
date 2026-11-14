@@ -92,6 +92,36 @@ def test_watchdog_plist_text_escapes_xml_special_characters() -> None:
     assert plistlib.loads(text.encode())["EnvironmentVariables"] == {"PATH": "/a&b:/c<d"}
 
 
+def test_chair_plist_text_runs_at_load_and_keeps_the_chair_alive() -> None:
+    text = chair_service.chair_plist_text("/usr/local/bin/cox", "/ws", "chair", 60, "/a:/b", "/p.yaml")
+    assert "<key>RunAtLoad</key>\n  <true/>" in text
+    assert "<key>KeepAlive</key>\n  <true/>" in text
+    assert plistlib.loads(text.encode()) == {
+        "Label": "coxswain-chair",
+        "ProgramArguments": [
+            "/usr/local/bin/cox", "chair", "run", "--label", "chair", "--interval", "60", "--profile", "/p.yaml",
+        ],
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "WorkingDirectory": "/ws",
+        "EnvironmentVariables": {"PATH": "/a:/b"},
+    }
+
+
+def test_chair_plist_text_escapes_xml_special_characters() -> None:
+    text = chair_service.chair_plist_text("/bin/cox", "/w&s", "a<b", 5, "/a&b:/c<d", "/p.yaml")
+    assert "<string>/a&amp;b:/c&lt;d</string>" in text
+    parsed = plistlib.loads(text.encode())
+    assert (parsed["WorkingDirectory"], parsed["EnvironmentVariables"]) == ("/w&s", {"PATH": "/a&b:/c<d"})
+    assert "a<b" in parsed["ProgramArguments"]
+
+
+def test_chair_plist_names_and_path_are_the_launch_agents_file() -> None:
+    assert chair_service.CHAIR_PLIST_LABEL == "coxswain-chair"
+    assert chair_service.CHAIR_PLIST_NAME == "coxswain-chair.plist"
+    assert chair_service.chair_plist_path(Path("/home/user")) == Path("/home/user/Library/LaunchAgents/coxswain-chair.plist")
+
+
 def test_unit_args_round_trips_unit_text() -> None:
     full = chair_service.unit_text("/usr/local/bin/cox", "/ws", "chair", 60, "/h/garage.env", profile="/p.yaml", path="/a:/b")
     assert chair_service.unit_args(full) == {"label": "chair", "interval": "60", "profile": "/p.yaml", "env_file": "/h/garage.env"}

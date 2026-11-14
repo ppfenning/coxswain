@@ -4,11 +4,15 @@ lease and without touching the remote, and refuses one carrying commits not on m
 import json
 import os
 import subprocess as sp
+import sys
+from pathlib import Path
 
 import pytest
 from test_land import _PRESYNCED, _record
 
-from agent_tools import cli, land_repo_lease, store_cli
+from agent_tools import cli, land_repo_lease, run_store, store_cli
+
+pytestmark = pytest.mark.usefixtures("board_store")
 
 _ENV = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e"}
 _TASK = "agents/epic-x-5/seams-task"
@@ -68,6 +72,11 @@ def _land(repo, tmp_path, monkeypatch, lease):
     task_dir.mkdir(parents=True)
     (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
     (tmp_path / "runs/policy.tracker.json").write_text('{"tracker": "github-projects"}', encoding="utf-8")
+    # The store is the board: the land reads the task's state from its row, so the row says approved.
+    assert run_store.upsert_row(tmp_path / "runs", {"kind": "task", "initiative": "x", "task_id": "seams-task", "phase": "seams",
+                                                    "state": "approved", "needs": [], "surfaces": [], "title": "Add seams",
+                                                    "body": "", "extra": {}})
+    monkeypatch.setattr(store_cli, "_harness_python", lambda: Path(sys.executable))  # the land's task lease, in the test store
     ran = []
     monkeypatch.setattr(cli, "_execute_land_step", lambda _repo, step, _forge=None: (ran.append(step["kind"]) or True, "https://x/pull/7"))
     monkeypatch.setattr(land_repo_lease, "acquire", lambda *_args: lease)

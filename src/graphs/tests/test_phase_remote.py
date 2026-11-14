@@ -11,9 +11,11 @@ from harness.phase_remote import (
     FetchOutcome,
     Kind,
     fetch_branch,
+    fetched_ref,
     materialise_local,
     missing_branch_cause,
     push_branch,
+    refresh_verdict,
 )
 
 PHASE = "epic/demo-initiative/p1-foundations"
@@ -74,10 +76,13 @@ def test_a_second_machine_fetches_and_materialises_the_branch(tmp_path: Path) ->
     assert git("rev-parse", f"refs/heads/{PHASE}", cwd=other) == git("rev-parse", PHASE, cwd=repo)
 
 
-def test_a_local_branch_is_present_without_touching_origin(tmp_path: Path) -> None:
+def test_a_local_branch_is_kept_as_it_is_when_origin_cannot_be_asked(tmp_path: Path) -> None:
     repo, _ = with_origin(tmp_path)
+    tip = git("rev-parse", PHASE, cwd=repo)
     break_origin(repo, tmp_path)
-    assert fetch_branch(repo, PHASE) == FetchOutcome(Kind.PRESENT_LOCALLY)
+    outcome = fetch_branch(repo, PHASE)
+    assert outcome.kind == Kind.PRESENT_LOCALLY and outcome.detail.startswith("not refreshed from origin")
+    assert git("rev-parse", PHASE, cwd=repo) == tip
 
 
 def test_a_branch_absent_from_both_is_missing_everywhere(tmp_path: Path) -> None:
@@ -172,3 +177,100 @@ def test_missing_branch_cause_names_the_branch() -> None:
         == f"phase branch {PHASE} exists neither locally nor on origin"
     )
     assert PHASE in missing_branch_cause(PHASE, FetchOutcome(Kind.FETCH_FAILED, "fatal: unreachable\nmore"))
+
+
+def commit(repo: Path, name: str) -> str:
+    (repo / name).write_text(name)
+    git("add", name, cwd=repo)
+    git("commit", "-q", "-m", name, cwd=repo)
+    return git("rev-parse", "HEAD", cwd=repo)
+
+
+def second_machine(tmp_path: Path, origin: Path) -> Path:
+    """A clone of origin with the phase branch local, as a lane host holds it after an earlier build."""
+    git("clone", "-q", str(origin), "host", cwd=tmp_path)
+    host = tmp_path / "host"
+    git("config", "user.name", "fixture", cwd=host)
+    git("config", "user.email", "fixture@invalid", cwd=host)
+    git("branch", PHASE, f"origin/{PHASE}", cwd=host)
+    return host
+
+
+def advance_origin(repo: Path, name: str) -> str:
+    """A commit on the phase branch pushed to origin from `repo`, like a repaired merge from another machine."""
+    git("checkout", "-q", PHASE, cwd=repo)
+    tip = commit(repo, name)
+    git("checkout", "-q", "main", cwd=repo)
+    assert push_branch(repo, PHASE)[0] is True
+    return tip
+
+
+@pytest.mark.parametrize(("local_in_origin", "origin_in_local", "kind"), [
+    (True, False, Kind.FAST_FORWARDED),
+    (False, True, Kind.PRESENT_LOCALLY),
+    (True, True, Kind.PRESENT_LOCALLY),
+    (False, False, Kind.DIVERGED),
+])
+def test_refresh_verdict_only_ever_moves_a_local_phase_branch_forward(local_in_origin, origin_in_local, kind) -> None:
+    assert refresh_verdict(local_in_origin, origin_in_local) == kind
+
+
+def test_a_phase_branch_missing_locally_is_created_from_origin(tmp_path: Path) -> None:
+    repo, origin = with_origin(tmp_path)
+    push_branch(repo, PHASE)
+    git("clone", "-q", str(origin), "host", cwd=tmp_path)
+    host = tmp_path / "host"
+    assert fetch_branch(host, PHASE) == FetchOutcome(Kind.FETCHED)
+    assert materialise_local(host, PHASE)[0] is True
+    assert git("rev-parse", f"refs/heads/{PHASE}", cwd=host) == git("rev-parse", PHASE, cwd=repo)
+
+
+def test_a_stale_local_phase_branch_is_fast_forwarded_to_origin(tmp_path: Path) -> None:
+    repo, origin = with_origin(tmp_path)
+    push_branch(repo, PHASE)
+    host = second_machine(tmp_path, origin)
+    repaired = advance_origin(repo, "repaired.txt")
+    outcome = fetch_branch(host, PHASE)
+    assert outcome.kind == Kind.FAST_FORWARDED
+    assert git("rev-parse", f"refs/heads/{PHASE}", cwd=host) == repaired
+    assert not has_ref(host, fetched_ref(PHASE))
+
+
+def test_a_checked_out_stale_phase_branch_fast_forwards_with_its_files(tmp_path: Path) -> None:
+    repo, origin = with_origin(tmp_path)
+    push_branch(repo, PHASE)
+    host = second_machine(tmp_path, origin)
+    git("worktree", "add", "-q", str(tmp_path / "phase-wt"), PHASE, cwd=host)
+    repaired = advance_origin(repo, "repaired.txt")
+    assert fetch_branch(host, PHASE).kind == Kind.FAST_FORWARDED
+    assert git("rev-parse", "HEAD", cwd=tmp_path / "phase-wt") == repaired
+    assert (tmp_path / "phase-wt" / "repaired.txt").is_file()
+    assert git("status", "--porcelain", cwd=tmp_path / "phase-wt") == ""
+
+
+def test_a_local_phase_branch_ahead_of_origin_is_kept(tmp_path: Path) -> None:
+    repo, origin = with_origin(tmp_path)
+    push_branch(repo, PHASE)
+    host = second_machine(tmp_path, origin)
+    git("checkout", "-q", PHASE, cwd=host)
+    merged = commit(host, "merged.txt")
+    git("checkout", "-q", "--detach", cwd=host)
+    assert fetch_branch(host, PHASE) == FetchOutcome(Kind.PRESENT_LOCALLY)
+    assert git("rev-parse", f"refs/heads/{PHASE}", cwd=host) == merged
+    assert not has_ref(host, fetched_ref(PHASE))
+
+
+def test_a_diverged_phase_branch_keeps_local_and_saves_origins_tip(tmp_path: Path) -> None:
+    repo, origin = with_origin(tmp_path)
+    push_branch(repo, PHASE)
+    host = second_machine(tmp_path, origin)
+    git("checkout", "-q", PHASE, cwd=host)
+    merged = commit(host, "merged.txt")
+    git("checkout", "-q", "--detach", cwd=host)
+    repaired = advance_origin(repo, "repaired.txt")
+    outcome = fetch_branch(host, PHASE)
+    assert outcome.kind == Kind.DIVERGED
+    assert git("rev-parse", f"refs/heads/{PHASE}", cwd=host) == merged
+    assert git("rev-parse", fetched_ref(PHASE), cwd=host) == repaired
+    assert fetched_ref(PHASE) == f"refs/coxswain/fetched/origin/{PHASE}"
+    assert PHASE in outcome.detail and fetched_ref(PHASE) in outcome.detail

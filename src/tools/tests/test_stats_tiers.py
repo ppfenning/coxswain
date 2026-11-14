@@ -59,10 +59,10 @@ def test_first_try_rate_is_set_only_for_build():
     assert [(s.model, s.first_try_rate) for s in handoff] == [("a", 0.0), ("b", 0.0)]
 
 
-def test_cost_per_landed_is_total_cost_over_landed_tasks_and_none_at_zero():
+def test_cost_per_completion_is_total_cost_over_landed_tasks_and_none_at_zero():
     rows = [row("build", "m", "a", cost=1.0), row("build", "m", "b", cost=3.0, landed=False)]
-    assert only(rows).cost_per_landed == 4.0
-    assert only([row("build", "m", "a", landed=False)]).cost_per_landed is None
+    assert only(rows).cost_per_completion == 4.0
+    assert only([row("build", "m", "a", landed=False)]).cost_per_completion is None
 
 
 def test_eligibility_cuts_at_min_samples():
@@ -117,12 +117,12 @@ def fixture() -> tuple[tuple[ModelSummary, ...], tuple[Recommendation, ...], dic
 def test_render_lines_lists_models_verdict_and_savings():
     assert render_lines(*fixture()) == [
         "build",
-        "  big: calls 2, tasks 2, $2.0000/call, turns 1.0, landed 100%, first-try 100%, $2.0000/landed",
-        "  small: calls 2, tasks 2, $1.0000/call, turns 1.0, landed 100%, first-try 100%, $1.0000/landed",
+        "  big: calls 2, tasks 2, $2.0000/call, turns 1.0, landed 100%, first-try 100%, $2.0000/completion",
+        "  small: calls 2, tasks 2, $1.0000/call, turns 1.0, landed 100%, first-try 100%, $1.0000/completion",
         "  pick: small (best landed rate: big)",
         "  savings: +2.0000 USD",
         "plan",
-        "  big: calls 1, tasks 1, $1.0000/call, turns 1.0, landed 100%, first-try -, $1.0000/landed",
+        "  big: calls 1, tasks 1, $1.0000/call, turns 1.0, landed 100%, first-try -, $1.0000/completion",
         "  not enough evidence (big: 1 tasks)",
         "  savings: +0.0000 USD",
     ]

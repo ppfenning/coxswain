@@ -75,6 +75,11 @@ def list_argv(config: SourceConfig, repo: str) -> list[str]:
     ]
 
 
+def taken_list_argv(config: SourceConfig, repo: str) -> list[str]:
+    """The open issues a pull already took, which the intake listing no longer returns: the sync reads them for edits."""
+    return ["gh", "issue", "list", "--repo", repo, "--label", TAKEN_LABEL, "--json", "number,title,body,labels,milestone,url"]
+
+
 def pr_list_argv(config: SourceConfig, repo: str) -> list[str]:
     return ["gh", "pr", "list", "--repo", repo, "--state", "open", "--label", REVIEW_LABEL, "--json", "number,title,body,labels,url"]
 

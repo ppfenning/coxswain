@@ -85,12 +85,14 @@ class _LazyHandler:
 card_keys = _LazyModule("agent_tools.card_keys")
 chair = _LazyModule("agent_tools.chair")
 chair_capacity = _LazyModule("agent_tools.chair_capacity")
+chair_chat = _LazyModule("agent_tools.chair_chat")
 chair_dash_sync = _LazyModule("agent_tools.chair_dash_sync")
 chair_decompose_runs = _LazyModule("agent_tools.chair_decompose_runs")
 chair_exec = _LazyModule("agent_tools.chair_exec")
 chair_facts = _LazyModule("agent_tools.chair_facts")
 chair_holder = _LazyModule("agent_tools.chair_holder")
 chair_resolve = _LazyModule("agent_tools.chair_resolve")
+chair_attach = _LazyModule("agent_tools.chair_attach")
 chair_land_freeze = _LazyModule("agent_tools.chair_land_freeze")
 chair_load_warn = _LazyModule("agent_tools.chair_load_warn")
 chair_login_check = _LazyModule("agent_tools.chair_login_check")
@@ -120,7 +122,6 @@ chair_read_run_id = _LazyModule("agent_tools.chair_read_run_id")
 chair_read_stale = _LazyModule("agent_tools.chair_read_stale")
 chair_read_stall = _LazyModule("agent_tools.chair_read_stall")
 chair_read_stranded = _LazyModule("agent_tools.chair_read_stranded")
-chair_read_steward = _LazyModule("agent_tools.chair_read_steward")
 chair_report = _LazyModule("agent_tools.chair_report")
 chair_restart = _LazyModule("agent_tools.chair_restart")
 chair_restart_log = _LazyModule("agent_tools.chair_restart_log")
@@ -131,7 +132,6 @@ chair_run = _LazyModule("agent_tools.chair_run")
 chair_service = _LazyModule("agent_tools.chair_service")
 chair_service_host = _LazyModule("agent_tools.chair_service_host")
 chair_smoke = _LazyModule("agent_tools.chair_smoke")
-chair_steward_exec = _LazyModule("agent_tools.chair_steward_exec")
 chair_unit = _LazyModule("agent_tools.chair_unit")
 chair_wake = _LazyModule("agent_tools.chair_wake")
 chair_watchdog = _LazyModule("agent_tools.chair_watchdog")
@@ -163,8 +163,10 @@ host_load = _LazyModule("agent_tools.host_load")
 install = _LazyModule("agent_tools.install")
 install_exec = _LazyModule("agent_tools.install_exec")
 install_root = _LazyModule("agent_tools.install_root")
+intake_fields = _LazyModule("agent_tools.intake_fields")
 intake_queue = _LazyModule("agent_tools.intake_queue")
 intake_state = _LazyModule("agent_tools.intake_state")
+jsonl_log = _LazyModule("agent_tools.jsonl_log")
 lake_config = _LazyModule("agent_tools.lake_config")
 lake_lease = _LazyModule("agent_tools.lake_lease")
 land = _LazyModule("agent_tools.land")
@@ -243,6 +245,8 @@ setup_migrate_hosts = _LazyModule("agent_tools.setup_migrate_hosts")
 setup_receipts = _LazyModule("agent_tools.setup_receipts")
 setup_store = _LazyModule("agent_tools.setup_store")
 setup_store_io = _LazyModule("agent_tools.setup_store_io")
+setup_token = _LazyModule("agent_tools.setup_token")
+claude_token = _LazyModule("agent_tools.claude_token")
 sources = _LazyModule("agent_tools.sources")
 stats_causes = _LazyModule("agent_tools.stats_causes")
 stats_chair = _LazyModule("agent_tools.stats_chair")
@@ -310,7 +314,7 @@ def _runs_usage(a: argparse.Namespace) -> int:
 
 
 _SERIES_COLUMNS = ["run", "date", "cartridge_sha", "provider_profile", "calls", "turns", "cost_usd",
-                   "cache_share", "tasks_landed", "quarantined", "review_rounds", "cost_per_landed",
+                   "cache_share", "completions", "quarantined", "review_rounds", "cost_per_completion",
                    "tier_ceiling", "effort_ceiling", "launched_by"]
 
 
@@ -327,8 +331,8 @@ def _runs_series(a: argparse.Namespace) -> int:
         print(json.dumps({"rows": rows, "totals": totals}, indent=2))
     else:
         print(records.format_table(rows, _SERIES_COLUMNS))
-        print(f"totals: {totals['runs']} runs, ${totals['cost_usd']:.2f}, {totals['tasks_landed']} landed, "
-              f"{totals['quarantined']} quarantined, cost/landed {totals['cost_per_landed']}, "
+        print(f"totals: {totals['runs']} runs, ${totals['cost_usd']:.2f}, {totals['completions']} completions, "
+              f"{totals['quarantined']} quarantined, cost/completion {totals['cost_per_completion']}, "
               f"{totals['runs_landing_nothing']} landed nothing")
     if a.append:
         p = Path(a.append)
@@ -606,7 +610,7 @@ def _stats_chair(a: argparse.Namespace) -> int:
         for run_id, u in run_store.usages(runs_dir).items() if _run_in_window(runs_dir, run_id, a.since)
         for call in (u.get("calls") or [])
     ]
-    land_rows = [r for line in (_read_text_or_none(runs_dir / "land.jsonl") or "").splitlines() if isinstance(r := _json_or(line, None), dict)]
+    land_rows = list(jsonl_log.read_log(runs_dir / "land.jsonl").rows)
     prices = _chair_catalog_prices(a)
     sessions = stats_chair.session_ids(chair.read(runs_dir) if (runs_dir / chair.CHAIR_FILENAME).exists() else None, a.session or [])
     lines = [line for s in sessions for line in _chair_transcript_lines(Path(a.projects_dir).expanduser(), s)]
@@ -1337,31 +1341,6 @@ def _repo_for(ws: Path, home: str) -> Callable[[dict], str]:
     return repo_for
 
 
-def _steward_git(runner: Callable[[list[str]], tuple[int, str]]) -> Callable[[list[str]], tuple[int, str]]:
-    """The steward's `GitRun`: its argv starts at `-C`, so the loop's runner gets `git` put in front."""
-    return lambda args: runner(["git", *args])
-
-
-def _steward_phase_of(work_rows: Callable[[], list[dict]]) -> Callable[[str, int], str]:
-    """`StewardPorts.phase_of`: the epic's phases in natural order, as `chair_facts.steward_plan_facts` indexes its levels.
-    An index past the last phase raises IndexError, which the executor reports as the kind's failure event."""
-    def phase_of(epic: str, level: int) -> str:
-        phases = {str(r["phase"]) for r in work_rows() if r.get("kind") == "task" and r.get("initiative") == epic}
-        return sorted(phases, key=_natural_key)[level]
-    return phase_of
-
-
-def _steward_head(runner: Callable[[list[str]], tuple[int, str]], repo_for: Callable[[dict], str]) -> Callable[[str], str]:
-    """`FactsDeps.ticket_head`: the commit the initiative's ticket branch points at in its repository; "" when either is missing."""
-    def head(initiative: str) -> str:
-        root = repo_for({"initiative": initiative})
-        if not root:
-            return ""
-        code, out = runner(["git", "-C", root, "rev-parse", "--verify", "--quiet", f"{land.pr_branch_name(initiative)}^{{commit}}"])
-        return out.strip() if code == 0 else ""
-    return head
-
-
 def _approved_branch_merged(
     runner: Callable[[list[str]], tuple[int, str]],
     repo_for: Callable[[dict], str],
@@ -1374,7 +1353,7 @@ def _approved_branch_merged(
     resolved, so it reads False and the hold stays."""
     def merged(row: Mapping) -> bool:
         initiative = str(row["initiative"])
-        if row.get("land_at", "ticket") not in ("ticket", "level"):
+        if row.get("land_at", "initiative") == "task":
             return False
         root = repo_for({"initiative": initiative})
         branch = land_manual.record_branch(runs_dir, str(row.get("run") or ""), str(row["id"]))
@@ -1382,8 +1361,8 @@ def _approved_branch_merged(
             return False
         code, out = runner(["git", "-C", root, "rev-parse", "--verify", "--quiet", f"{branch}^{{commit}}"])
         return code == 0 and chair_read_branch_merged.branch_merged(
-            _steward_git(runner), root, out.strip(),
-            [chair_read_steward.level_branch(initiative, str(row["phase"])), land.pr_branch_name(initiative)],
+            lambda args: runner(["git", *args]), root, out.strip(),
+            [f"epic/{initiative}/{row['phase']}", land.pr_branch_name(initiative)],
         )
     return merged
 
@@ -1405,70 +1384,9 @@ def _wrongly_released_merged(
             if chair_facts.run_initiative(run := p.parent.parent.parent.name) == initiative
         }
         return bool(runs) and not runs & set(live()) and approved_merged(
-            {**item, "run": max(runs, key=chair_facts._run_number), "land_at": land_at.get(initiative, "ticket")}
+            {**item, "run": max(runs, key=chair_facts._run_number), "land_at": land_at.get(initiative, "initiative")}
         )
     return merged
-
-
-def _steward_target_branch_of(profile: dict, ws: Path, repo_for: Callable[[dict], str]) -> Callable[[str], str]:
-    """`StewardPorts.target_branch_of`: the branch a land of the epic's repository targets, as `land` resolves it, no fetch.
-    "" when no repository is recorded or the target is refused, so the executor reports merge_failed."""
-    def target(epic: str) -> str:
-        root = repo_for({"initiative": epic})
-        if not root:
-            return ""
-        flag, refusal = _initiative_target_branch(profile, Path(root), ws, epic)
-        return "" if refusal else base_branch.base_name(root, flag)
-    return target
-
-
-def _steward_level_merged(runner: Callable[[list[str]], tuple[int, str]], repo_for: Callable[[dict], str]) -> Callable[[str, str], bool]:
-    """`FactsDeps.level_merged`: whether the phase's level branch has landed on the initiative's ticket branch; False without a repository."""
-    git = _steward_git(runner)
-
-    def merged(initiative: str, phase: str) -> bool:
-        root = repo_for({"initiative": initiative})
-        return bool(root) and chair_read_steward.level_is_merged(
-            root, land.pr_branch_name(initiative), chair_read_steward.level_branch(initiative, phase), git
-        )
-    return merged
-
-
-def _steward_checks_for(profile: dict, repo_for: Callable[[dict], str]) -> Callable[[Mapping], list[str]]:
-    """`Deps.steward_checks`: the shell lines a land resolves for the epic's repository (`_land_repo_facts` then
-    `land.checks_argv`), cartridge checks first. A run_gate whose cartridge cannot be resolved raises rather than
-    pass on checks that are short; the executor's caller reports that as a refusal."""
-    def checks(action: Mapping) -> list[str]:
-        root = repo_for({"initiative": action.get("epic", "")})
-        if not root:
-            return []
-        facts = _land_repo_facts(Path(root), profile)
-        if action.get("kind") == "run_gate" and facts["cartridge_error"]:
-            raise RuntimeError(f"cartridge unresolved: {facts['cartridge_error']}")
-        return [line for _name, line in land.checks_argv(facts)]
-    return checks
-
-
-def _steward_gate_runner(
-    runner: Callable[[list[str]], tuple[int, str]], capacity: int | None
-) -> Callable[[str, str, Sequence[str]], tuple[bool, str]]:
-    """`StewardPorts.run_gate_checks`: the lines run in a throwaway worktree of the branch, as a land runs them.
-    A check is named by its own line, since the steward carries lines and not names."""
-    def run_gate(repo: str, branch: str, checks: Sequence[str]) -> tuple[bool, str]:
-        if not repo:
-            return False, "no repository recorded for the epic"
-        root = Path(repo)
-        wt = _land_worktree(root, branch)
-        _remove_land_worktree(root, branch)
-        try:
-            code, out = runner(["git", "-C", str(root), "worktree", "add", "--detach", str(wt), branch])
-            if code != 0:
-                return False, f"worktree add: {out.strip()}"
-            _link_venv(root, wt)
-            return _run_checks([(line, line) for line in checks], wt, os.cpu_count() or 1, capacity)
-        finally:
-            _remove_land_worktree(root, branch)
-    return run_gate
 
 
 def _runs_move_repo_for(ws: Path, home: str) -> Callable[[dict], str]:
@@ -1643,13 +1561,17 @@ def _runs_dir_for_land(a: argparse.Namespace) -> tuple[Path | None, str | None]:
 
 
 def _land_record(runs_dir: Path, run_id: str, task: str | None) -> tuple[dict | None, str, int]:
+    """The one record file for `task` (any task when None). A named task with no file under the land's own run takes the
+    newest earlier run's, the order `_land_phase_record` uses; several files in one run stay ambiguous."""
     tasks_root = runs_dir / run_id / "tasks"
     matches = sorted(tasks_root.glob(f"*/{task}.json" if task else "*/*.json"))
+    if not matches and task:
+        matches = next((m for r in _earlier_runs(run_id) if (m := sorted((runs_dir / r / "tasks").glob(f"*/{task}.json")))), [])
     if len(matches) != 1:
         return None, str(tasks_root.resolve()), len(matches)
     path = matches[0]
     record = json.loads(path.read_text(encoding="utf-8"))
-    record.setdefault("run", run_id)
+    record.setdefault("run", path.parents[2].name)
     record.setdefault("task", path.stem)
     record.setdefault("phase", path.parent.name)
     return record, str(path), 1
@@ -1680,9 +1602,10 @@ def _land_load(runs_dir: Path, run_id: str, task: str | None) -> tuple[dict | No
             return {"run": run_id, "task": task, "phase": phases[0], **held}, str(path), 1, "store"
         return None, where, count, None
     path = Path(where)
-    stored = run_store.task_record(runs_dir, run_id, path.parent.name, path.stem) if count == 1 else None
+    filed_run = path.parents[2].name if count == 1 else run_id  # an earlier run's record is read from that run
+    stored = run_store.task_record(runs_dir, filed_run, path.parent.name, path.stem) if count == 1 else None
     if stored is not None:
-        stored = {"run": run_id, "task": path.stem, "phase": path.parent.name, **stored}
+        stored = {"run": filed_run, "task": path.stem, "phase": path.parent.name, **stored}
     record, source = _choose_record(stored, filed)
     return record, where, count, source
 
@@ -2359,6 +2282,13 @@ def _phase_needing_land(runs_dir: Path, run_id: str) -> str | None:
     return candidates[0] if len(candidates) == 1 else None
 
 
+def _last_phase_with_manifest(runs_dir: Path, run_id: str) -> str | None:
+    """Edge. The last phase, by name, that holds task records under `run_id` and has a phase record; None when none does."""
+    tasks_root = runs_dir / run_id / "tasks"
+    held = sorted(d.name for d in tasks_root.iterdir() if d.is_dir() and any(d.glob("*.json"))) if tasks_root.is_dir() else []
+    return next((p for p in reversed(held) if _land_phase_record(runs_dir, run_id, p)[0] is not None), None)
+
+
 def _checks_env(cwd: Path, cores: int = 1, capacity: int | None = None) -> dict[str, str] | None:
     """Edge. The environment a check runs in: `cwd/.venv/bin` first on PATH when the worktree has one (the venv
     `_link_venv` links), so a bare `pytest` is the project's, not a standalone tool's. With a `capacity` of 1 or more
@@ -2371,12 +2301,24 @@ def _checks_env(cwd: Path, cores: int = 1, capacity: int | None = None) -> dict[
     return capped if capped is not None else base
 
 
+def _git_common_dir(cwd: Path) -> Path | None:
+    """Edge. The repository's git common directory, shared by every worktree, or None when git cannot say."""
+    try:
+        out = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--git-common-dir"], capture_output=True, text=True,
+                             check=True, timeout=30).stdout.strip()
+    except subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError:
+        return None
+    return (Path(cwd) / out).resolve() if out else None
+
+
 def _run_checks(checks: list[tuple[str, str]], cwd: Path, cores: int = 1, capacity: int | None = None) -> tuple[bool, str]:
     """Each `(name, shell line)` pair in order, run by a shell in `cwd` as the builders run it (`harness.checks`),
     stopping at the first launch error or failure and naming it by `name`, never by its command.
 
-    `cores` and `capacity` are the land's, read by the caller. With a `capacity` the passing detail names the xdist
-    worker count the checks ran with."""
+    A check that already passed on this exact tree and command is not run again (`harness.check_reuse`); the detail
+    names it. `cores` and `capacity` are the land's, read by the caller. With a `capacity` the passing detail names
+    the xdist worker count the checks ran with."""
+    from harness.check_reuse import run_checks_reusing
     from harness.checks import run_checks
     from harness.lane_workers import XDIST_VAR
     if not checks:
@@ -2384,10 +2326,16 @@ def _run_checks(checks: list[tuple[str, str]], cwd: Path, cores: int = 1, capaci
     env = _checks_env(cwd, cores, capacity)
     workers = env.get(XDIST_VAR) if env is not None and capacity is not None and capacity >= 1 else None
     note = f" (xdist workers: {workers})" if workers else ""
+    common = _git_common_dir(Path(cwd))
     skipped: list[str] = []
+    reused: list[str] = []
     flaky: list[str] = []
     for name, line in checks:
-        [result] = run_checks(Path(cwd), [{"name": name, "cmd": line}], env=env)
+        one = [{"name": name, "cmd": line}]
+        [result] = (run_checks_reusing(Path(cwd), one, ledger_dir=common, env=env) if common is not None
+                    else run_checks(Path(cwd), one, env=env))
+        if result.get("reused"):
+            reused.append(name)
         if result.get("note"):
             flaky.append(result["note"])
         if result["outcome"] == "unrunnable":
@@ -2399,7 +2347,7 @@ def _run_checks(checks: list[tuple[str, str]], cwd: Path, cores: int = 1, capaci
             return False, land.checks_detail(f"{name}: {result['output_tail'].strip()}", skipped, flaky)
         if verdict == "skip":
             skipped.append(name)
-    return True, land.checks_detail(f"{len(checks)} checks passed{note}", skipped, flaky)
+    return True, land.checks_detail(f"{len(checks)} checks passed{note}", skipped, flaky, reused)
 
 
 def _land_worktree(repo: Path, branch: str) -> Path:
@@ -3103,6 +3051,33 @@ def _mark_done_unrecorded(step: dict) -> tuple[bool, str]:
     if result is None:
         return True, f"{task} marked done with {step.get('pr') or 'no PR'}"
     return result.code == route_edit.DONE, result.text
+
+
+def _mark_remaining_done(steps: list[dict], pr: str, at: str, mark: Callable[[dict], tuple[bool, str]]) -> list[tuple[str, str]]:
+    """Edge. Mark done with `pr` every task of the `mark_done` steps in `steps`; returns `(task, reason)` for each it could
+    not. A task whose record file is missing, or that never had one, goes by its store item as `_mark_done_unrecorded` does.
+    A record `mark` fails on (False or an exception) falls back to the store item. Never raises."""
+    unmarked: list[tuple[str, str]] = []
+    for step in {s["task"]: s for s in steps if s["kind"] == "mark_done"}.values():
+        path = step.get("path")
+        has_record = step.get("recorded") is not False and path is not None and Path(path).is_file()
+        reason = ""
+        if has_record:
+            try:
+                ok, detail = mark(_mark_done_facts(step, pr, at))
+            except Exception as exc:
+                ok, detail = False, f"{type(exc).__name__}: {exc}"
+            if ok:
+                continue
+            reason = detail
+        try:
+            runs_dir = step.get("runs_dir") or (str(Path(path).resolve().parents[3]) if path else None)
+            ok, detail = _mark_done_unrecorded({**step, "runs_dir": runs_dir, "pr": pr, "at": at})
+        except Exception as exc:
+            ok, detail = False, f"{type(exc).__name__}: {exc}"
+        if not ok:
+            unmarked.append((step["task"], f"{reason}; then {detail}" if reason else detail))
+    return unmarked
 
 
 def _mark_done_facts(step: dict, pr: str, at: str) -> dict:
@@ -3903,6 +3878,10 @@ def _runs_land(a: argparse.Namespace) -> int:
             return 2
         print(f"land: {shortfall}; the list below is short", file=sys.stderr)
     phase = getattr(a, "phase", None) or (None if a.task else _phase_needing_land(runs_dir, run_id))
+    # No phase named and records in several phases: the ticket's last phase, but only to finish an already merged PR (checked below).
+    inferred = phase is None and not a.task and _land_record(runs_dir, run_id, None)[2] > 1
+    phase = _last_phase_with_manifest(runs_dir, run_id) if inferred else phase
+    inferred = inferred and phase is not None
     land_mode = work_state.work_state_mode(_lake_provider(a)[0]) if a.apply else "files"
     record, item_path, lease_task = None, None, None
     land_at, ticket_tasks = None, []
@@ -3938,8 +3917,12 @@ def _runs_land(a: argparse.Namespace) -> int:
                                       _parent_phase(runs_dir.parent / "work", initiative, phase))
                      if read_forge is not None else None)
         already_merged = merged_pr is not None
+        if inferred and not already_merged:
+            _, searched, count = _land_record(runs_dir, run_id, None)
+            print(f"land: looked in {searched}, found {count} task records, expected 1")
+            return 2
         land_at = _phase_land_at(phase_record, profile, runs_dir.parent / "work", initiative)
-        ticket_items, phases = _ticket_items(runs_dir.parent / "work", initiative, runs_dir, land_mode, (phase, items)) if land_at == "ticket" else ({}, [])
+        ticket_items, phases = _ticket_items(runs_dir.parent / "work", initiative, runs_dir, land_mode, (phase, items)) if land.is_initiative(land_at) else ({}, [])
         ticket_tasks = list(ticket_items)
         # An already merged phase puts nothing new on the target branch; a ticket land carries the earlier phases in its one PR.
         parent_wait = (None if already_merged else _parent_land_refusal(
@@ -3954,7 +3937,7 @@ def _runs_land(a: argparse.Namespace) -> int:
         ticket_present = _ticket_present(repo, phase_record.get("card_branch") or f"epic/{initiative}/{phase}", earlier)
         # Approved in the store with no task record in any phase, even after the earlier-run fallback: built elsewhere.
         recorded = {r["task"] for p in phases for r in _land_phase_record(runs_dir, run_id, p)[1]} | {r["task"] for r in task_records}
-        ticket_unrecorded = sorted(t for t in (ticket_items if land_at == "ticket" else _phase_task_items(items)) if t not in recorded)
+        ticket_unrecorded = sorted(t for t in (ticket_items if land.is_initiative(land_at) else _phase_task_items(items)) if t not in recorded)
         from core.landing import phase_land_deferred  # lazy: core sits beside agent_tools in one venv
         plan_steps = land.land_plan(
             {**phase_record, "initiative": initiative, "initiative_title": initiative_title,
@@ -3965,6 +3948,9 @@ def _runs_land(a: argparse.Namespace) -> int:
             already_merged=already_merged, ticket_tasks=ticket_tasks, ticket_present=ticket_present,
             ticket_records=[r for r in earlier if r["task"] in ticket_present], ticket_unrecorded=ticket_unrecorded,
         )
+        if inferred:  # a re-run named by no phase, after the PR merged, leaves a task already done (by hand or by a first run) alone
+            finished = {i["id"] for i in items if i["status"] == "done"}
+            plan_steps = [s for s in plan_steps if not (s["kind"] == "mark_done" and s["task"] in finished)]
         earlier_paths = {t: p for ph in phases if ph != phase for t, p in _land_phase_record(runs_dir, run_id, ph)[2].items()}
         steps = _land_enrich(plan_steps, path=searched, worktree_root=a.worktree_root, task_paths={**earlier_paths, **task_paths},
                               umbrella=profile.get("umbrella_dir"), store_runs_dir=str(runs_dir),
@@ -4373,8 +4359,7 @@ def _mark_stopped_land(repo: Path, runs_dir: Path, rc: int, record: dict | None,
 
 
 def _append_land_log(runs_dir: Path, row: dict) -> None:
-    with (runs_dir / "land.jsonl").open("a", encoding="utf-8") as f:
-        f.write(json.dumps(row) + "\n")
+    jsonl_log.append_line(runs_dir / "land.jsonl", row, sync=True)
 
 
 def should_sync_lake(rc: int, reached: Sequence[str], extra_imports: bool, config_resolved: bool,
@@ -4467,6 +4452,7 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
     looped = False
     pr = pr or _open_pr_ref(repo, steps, forge_module)
     pr_failed: tuple[dict, str] | None = None  # the pr step that failed after the push, and why
+    merge_ran = False  # once a merge step succeeded, a later step's exception is a failed result with the tasks marked, not a traceback
     into_pr_branch = any(s["kind"] == "phase_done" for s in steps)  # only such a plan reports a pr failure instead of stopping
     i = 0
     while i < len(steps):
@@ -4523,7 +4509,16 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
                 Path(step["path"]).parent.mkdir(parents=True, exist_ok=True)
                 Path(step["path"]).write_text(json.dumps(record, indent=2), encoding="utf-8")
             step = {**_mark_done_facts(step, pr, datetime.datetime.now(datetime.UTC).isoformat()), "by": by, "mode": mode}
-        ok, detail = (merged, merge_detail) if step["kind"] == "merge" else _execute_land_step(repo, step, forge_module)
+        raised = False  # the step raised after the merge; a returned failure keeps today's stop
+        if step["kind"] == "merge":
+            ok, detail = merged, merge_detail
+        elif not merge_ran:
+            ok, detail = _execute_land_step(repo, step, forge_module)
+        else:
+            try:
+                ok, detail = _execute_land_step(repo, step, forge_module)
+            except Exception as exc:
+                ok, detail, raised = False, f"{type(exc).__name__}: {exc}", True
         if step.get("before") == "pr_create":
             # The sync may have just written `issue:`; the PR opened next must carry its `Closes`.
             steps = land.with_issue(steps, record, _land_item_facts(item_path)[1])
@@ -4543,6 +4538,7 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
             return 2, reached, pr
         print(f"{step['kind']}: {detail}")
         if ok and step["kind"] == "merge":
+            merge_ran = True
             landing = _landing_ref(detail, pr, _pr_number(steps, i, pr), step.get("default_branch", "main"))
         if ok and step["kind"] == "mark_done":
             initiative = _step_initiative(step, record)
@@ -4565,6 +4561,13 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
                 print("land: merge refused for an expected required check; waiting for checks once more")
                 i = waits[-1]
                 continue
+        if raised or (not ok and step["kind"] == "mark_done" and pr):
+            # The PR is merged: record it and mark every task whose mark_done has not run, so none keeps holding its files.
+            number = _pr_number(steps, i, pr)
+            pr = pr or (f"#{number}" if number is not None else "")
+            at = datetime.datetime.now(datetime.UTC).isoformat()
+            for task, why in _mark_remaining_done(steps[i:], pr, at, lambda s: _execute_land_step(repo, {**s, "by": by, "mode": mode}, forge_module)):
+                print(f"{task} not marked done: {why}")
         if not ok:
             remaining = [s["kind"] for s in steps[i + 1:]]
             print("stopped; remaining: " + ", ".join(remaining))
@@ -4847,7 +4850,9 @@ def _efficiency_figures(runs_dir: Path, now: str) -> dict | None:
         "date": today,
         "cost": spend,
         "landed": len(landed),
-        "per_landed": spend / len(landed) if landed else None,
+        "per_landed": spend / len(landed) if landed else None,  # deprecated alias of cost_per_completion
+        "completions": len(landed),
+        "cost_per_completion": spend / len(landed) if landed else None,
         "first_try_rate": rate,
         "measured": measured,
     }
@@ -4858,7 +4863,7 @@ def _efficiency(runs_dir: Path, now: str) -> str | None:
     figures = _efficiency_figures(runs_dir, now)
     if figures is None:
         return None
-    return route.efficiency_line(figures["cost"], figures["landed"], figures["first_try_rate"], figures["measured"])
+    return route.efficiency_line(figures["cost"], figures["completions"], figures["first_try_rate"], figures["measured"])
 
 
 def _gather_context(profile_path: Path, mode: str = "files"):
@@ -5002,6 +5007,133 @@ def _status_rows_for(runs_dir: Path, short_ids: Mapping[str, str] | None = None)
     entries = route.status_entries(runs, summaries)
     by_run = _run_short_ids([e["id"] for e in entries], short_ids or {})
     return _with_lane_fields(route.status_rows(entries, by_run), runs, _now_iso())
+
+
+def _route_export(a: argparse.Namespace) -> int:
+    """Edge. Refresh this machine's copy of the board from the store. No git, no lease."""
+    profile = _courier_profile(a)
+    if profile is None:
+        return 2
+    workspace = Path(profile["workspace_dir"]).expanduser()
+    try:
+        skipped = _export_board(workspace / "runs", workspace, prune_stale=not workspace_git_on(profile))
+        _note_export_stamp(workspace / "runs", run_store.queue_stamp(workspace / "runs"))
+    except Exception as exc:
+        print(f"export: {type(exc).__name__}: {exc}")
+        return 1
+    print(f"export: {workspace} matches the store" + (f"; skipped {len(skipped)} contentless row(s)" if skipped else ""))
+    return 0
+
+
+# Commands that run before a store is configured, or configure it. Every other command needs the one store.
+_STORE_FREE = frozenset({"setup", "install", "upgrade", "versions", "settings", "dev", "release", "home", "plan"})
+# Commands in a board group that read only the files they are pointed at, so a machine with no store can run them.
+_STORE_FREE_COMMANDS = frozenset({("route", "lint")})
+STORE_DOUBLE_ENV = "COXSWAIN_STORE_DOUBLE"  # the suites' sqlite stand-in; the harness reads the same name
+
+
+def store_refusal(head: Sequence[str], storage: object, environ: Mapping[str, str]) -> str | None:
+    """Pure. Why the command line `head` may not run against the store URL `storage`; None when it may.
+    The one store is Postgres. No URL, or any other kind, is refused for every command that touches the board."""
+    words = [w for w in head if not w.startswith("-")]
+    if not words or words[0] in _STORE_FREE or tuple(words[:2]) in _STORE_FREE_COMMANDS or environ.get(STORE_DOUBLE_ENV) == "sqlite":
+        return None
+    if not isinstance(storage, str) or not storage:
+        return "no store is configured: the provider profile needs a storage_url naming a postgresql:// store. Run `cox setup store --store shared`."
+    try:
+        shared = store_dialect.is_postgres(storage)
+    except ValueError:
+        shared = False
+    return None if shared else (
+        "the configured store is not Postgres: sqlite and file-only work state are retired. "
+        "Run `cox setup store --store shared`, then `cox setup store switch shared` to carry the old rows over."
+    )
+
+
+def _store_refusal(a: argparse.Namespace, head: Sequence[str]) -> str | None:
+    """Edge. `store_refusal` for the profile in use. A machine with no routing profile yet is not refused: it has
+    nothing configured to be wrong, and `cox setup` is how it gets one."""
+    text = _read_text_or_none(_profile_path(a))
+    if text is None:
+        return None
+    try:
+        named = route.parse_profile(text).get("provider_profile")
+    except route.ProfileError:
+        return None  # the command reports the unreadable profile itself
+    provider = store_url.read_provider_profile(named) if named else {}
+    return store_refusal(head, provider.get("storage_url"), os.environ)
+
+
+def _route_cartridges(a: argparse.Namespace) -> int:
+    """Edge. `publish` stores the profile's cartridges directory under its sha; `fetch` writes a stored snapshot there."""
+    from agent_tools import cartridge_snapshot  # imported here: cli loads a command module only when it runs
+
+    profile = _courier_profile(a)
+    if profile is None:
+        return 2
+    folder = a.into or profile.get("cartridges_dir")
+    if not folder:
+        print("cartridges: the profile names no cartridges_dir; pass --into")
+        return 2
+    root, runs_dir = Path(folder).expanduser(), Path(profile["workspace_dir"]).expanduser() / "runs"
+    try:
+        if a.action == "publish":
+            print(cartridge_snapshot.publish(runs_dir, root))
+            return 0
+        if not a.sha:
+            print("cartridges: fetch needs --sha")
+            return 2
+        wrote, deleted = cartridge_snapshot.fetch(runs_dir, a.sha, root, replace=a.replace)
+    except Exception as exc:
+        print(f"cartridges: {type(exc).__name__}: {exc}")
+        return 1
+    print(f"cartridges: {root} holds {a.sha[:12]} ({wrote} written, {deleted} removed)")
+    return 0
+
+
+_EXPORT_STAMP = ".export-stamp"
+# Commands that read the board from this machine's files. `chair` is not here: its tick exports for itself.
+_BOARD_READERS = frozenset({"route", "runs", "lander", "epic", "console", "dash"})
+_BOARD_WRITERS = frozenset({("route", "export"), ("route", "import"), ("route", "store-fill")})
+
+
+def _note_export_stamp(runs_dir: Path, stamp: object) -> None:
+    """Edge: remember the store version this machine's files were last written from. A failure only costs a re-export."""
+    if stamp is None:
+        return
+    with contextlib.suppress(OSError):
+        (runs_dir / _EXPORT_STAMP).write_text(json.dumps(stamp) + "\n", encoding="utf-8")
+
+
+def reads_board(head: Sequence[str]) -> bool:
+    """Pure: whether the command line `head` runs a command that reads the board files and does not write them itself."""
+    words = [w for w in head if not w.startswith("-")]
+    return bool(words) and words[0] in _BOARD_READERS and tuple(words[:2]) not in _BOARD_WRITERS
+
+
+def _refresh_board_files(a: argparse.Namespace) -> None:
+    """Edge. With the workspace out of git, bring this machine's work/ and intake/ files up to the store before a
+    command reads them: one cheap version probe, and an export only when the store changed since the last one.
+    Never raises and never prints on success: a store that cannot be reached leaves the files as they are."""
+    try:
+        text = _read_text_or_none(_profile_path(a))
+        profile = route.parse_profile(text) if text else {}
+        if not profile.get("workspace_dir") or workspace_git_on(profile):
+            return
+        if work_state.work_state_mode(_lake_provider(a)[0]) != "store":
+            return
+        workspace = Path(profile["workspace_dir"]).expanduser()
+        runs_dir = workspace / "runs"
+        stamp = run_store.queue_stamp(runs_dir)
+        if stamp is None:
+            return
+        last = _read_text_or_none(runs_dir / _EXPORT_STAMP)
+        if last is not None and last.strip() == json.dumps(stamp):
+            return
+        _export_board(runs_dir, workspace, prune_stale=True)
+        _note_export_stamp(runs_dir, stamp)
+    except Exception as exc:  # a refresh is a convenience; the command still runs on the files it has
+        print(f"export: could not refresh this machine's board files from the store: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
 def _route_drift(a: argparse.Namespace) -> int:
@@ -5942,6 +6074,115 @@ def _route_chair_chat(a: argparse.Namespace) -> int:
     return 0
 
 
+def _chat_state_path(workspace: Path) -> Path:
+    return workspace / "chair_chat_state.json"
+
+
+def _read_chat_doc(path: Path) -> tuple[dict, list[dict]]:
+    """Edge. The directive state and the epics the chair last saw; a missing or torn file reads as empty."""
+    try:
+        loaded = json.loads(_read_text_or_none(path) or "{}")
+    except json.JSONDecodeError:
+        loaded = {}
+    doc = loaded if isinstance(loaded, dict) else {}
+    base = chair_chat.empty_state()
+    saved = doc.get("state") if isinstance(doc.get("state"), dict) else {}
+    epics = doc.get("epics") if isinstance(doc.get("epics"), list) else []
+    return {**base, **{k: v for k, v in saved.items() if k in base}}, epics
+
+
+def _write_chat_doc(path: Path, state: dict, epics: list[dict]) -> None:
+    """Edge. Replace the file atomically; an unchanged document is not rewritten."""
+    text = json.dumps({"state": state, "epics": epics}, default=sorted, sort_keys=True)
+    if _read_text_or_none(path) == text:
+        return
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _chat_deps(ws: Path) -> chair_run.ChatDeps:
+    """Edge. The chat edges over the workspace's `courier.jsonl` and `chair_chat_state.json`; neither is the lease."""
+    courier_path, chat_path = ws / "courier.jsonl", _chat_state_path(ws)
+    return chair_run.ChatDeps(
+        read=lambda: courier.entries(courier.read_text(courier_path)),  # no bus yet is an empty bus
+        load=lambda: _read_chat_doc(chat_path)[0],
+        save=lambda state, epics: _write_chat_doc(chat_path, state, epics),
+        append=lambda entry: courier.append_file(courier_path, entry),
+        ack=lambda message_id: courier.ack_file(courier_path, message_id, chair_run.CHAT_CONSUMER),
+    )
+
+
+def _converse_append(a: argparse.Namespace, body_kind: str, payload: dict[str, str]) -> tuple[Path, str] | None:
+    """Edge. Append one chat entry to the workspace courier; the lease record is never opened. None after printing why."""
+    workspace = _courier_workspace(a)
+    if workspace is None:
+        return None
+    message_id = uuid.uuid4().hex
+    entry = chair_chat.build_message(a.sender, body_kind, payload, message_id, chair_run.CHAT_REF)
+    courier.append_file(workspace / "courier.jsonl", entry)
+    return workspace, message_id
+
+
+def _route_chair_converse_send(a: argparse.Namespace) -> int:
+    fields = _parse_fields(a.args or [])
+    if fields is None:
+        print(f"converse: bad argument in {a.args}; expected key=value")
+        return 2
+    payload = {**fields, "kind": a.kind}
+    reason = chair_chat.validate_directive(a.kind, payload)
+    if reason is not None:
+        print(f"converse: {reason}")
+        return 2
+    sent = _converse_append(a, "directive", payload)
+    if sent is None:
+        return 2
+    print(f"converse: sent {a.kind} directive {sent[1]}; the chair applies it on its next tick")
+    return 0
+
+
+def _find_chat_answer(blob: str, question_id: str) -> dict | None:
+    return next((e for e in courier.entries(blob) if e.get("event") == "chat_answer" and (e.get("fields") or {}).get("question") == question_id), None)
+
+
+def _await_chat_answer(
+    path: Path, question_id: str, wait: float, poll: float = 1.0,
+    sleep: Callable[[float], None] = time.sleep, monotonic: Callable[[], float] = time.monotonic,
+) -> dict | None:
+    """Edge. The answer entry for `question_id`, polled until `wait` seconds pass; None when none came."""
+    deadline = monotonic() + wait
+    while True:
+        found = _find_chat_answer(courier.read_text(path), question_id)
+        left = deadline - monotonic()
+        if found is not None or left <= 0:
+            return found
+        sleep(min(poll, left))
+
+
+def _route_chair_converse_ask(a: argparse.Namespace) -> int:
+    if a.kind not in chair_chat.QUESTION_KINDS:
+        print(f"converse: unknown question {a.kind!r}; expected one of {', '.join(chair_chat.QUESTION_KINDS)}")
+        return 2
+    sent = _converse_append(a, "question", {"kind": a.kind, "subject": a.subject})
+    if sent is None:
+        return 2
+    answer = _await_chat_answer(sent[0] / "courier.jsonl", sent[1], a.wait)
+    print(answer["note"] if answer else f"converse: the chair has not answered within {a.wait:g}s; the question stays queued for its next tick")
+    return 0
+
+
+def _route_chair_converse_state(a: argparse.Namespace) -> int:
+    workspace = _courier_workspace(a)
+    if workspace is None:
+        return 2
+    state, epics = _read_chat_doc(_chat_state_path(workspace))
+    sent = courier.entries(courier.read_text(workspace / "courier.jsonl"))
+    recent = [{"event": e["event"]} for e in sent if e.get("topic") == chair_chat.LABEL and e.get("event") in ("directive_applied", "directive_refused")][-5:]
+    print(chair_chat.state_summary(state, epics, recent))
+    print("Epics are as of the chair's last acting tick; a standby or dry-run tick does not refresh them.")
+    return 0
+
+
 _PROFILE_KEYS_FOR_LAUNCH = ("workspace_dir", "harness_dir", "team", "cartridges_dir", "provider_profile")
 
 
@@ -6169,6 +6410,21 @@ def _filing_stage(a: argparse.Namespace, profile: Mapping) -> str:
     return "draft" if a.draft else profile.get("intake_stage") or "draft"
 
 
+def _known_epic_ids(rows: Sequence[Mapping]) -> set[str]:
+    """The epic ids the store's initiative rows name, which are the ids the dash feed rolls up."""
+    return {epic for row in rows if (epic := queue_rows.epic_of_row(row)) is not None}
+
+
+def _known_repo_names(profile: Mapping, rows: Sequence[Mapping], resolved: str = "") -> set[str]:
+    """The profile's `repo_map` names, the repos the store rows already hold, and this filing's resolved repo."""
+    held = {str(row["repo"]) for row in rows if row.get("repo")}
+    return {*profile.get("repo_map", {}), *held, *([resolved] if resolved else [])}
+
+
+def _repo_refusal_with_names(message: str, known: Collection[str]) -> str:
+    return f"{message}; valid repos: {', '.join(sorted(known)) or 'none known'}"
+
+
 def _route_file(a: argparse.Namespace) -> int:
     profile, rc = _resolve_profile_or_refuse(a)
     if rc is not None:
@@ -6187,6 +6443,10 @@ def _route_file(a: argparse.Namespace) -> int:
     if after and not a.intake:
         print("routing: --after needs --intake, since only a queued intake waits")
         return 2
+    for flag, noun in (("epic", "an epic"), ("priority", "a priority"), ("target_release", "a target release")):
+        if getattr(a, flag, None) is not None and not a.intake:
+            print(f"routing: --{flag.replace('_', '-')} needs --intake, since only an intake carries {noun}")
+            return 2
     if a.draft and a.ready:
         print("routing: --draft and --ready are exclusive; give one")
         return 2
@@ -6196,8 +6456,9 @@ def _route_file(a: argparse.Namespace) -> int:
     # Repos are siblings of the workspace: a bare name is resolved there, so the row never holds a name launch cannot read.
     home = str(Path.home())
     repo = route.resolve_repo(a.repo, ws.absolute().parent, route.is_git_checkout, home)
+    rows = run_store.read_queue(ws / "runs")
     if isinstance(repo, route.RepoRefused):
-        print(repo.message)
+        print(_repo_refusal_with_names(repo.message, _known_repo_names(profile, rows)))
         return 2
     resolved = repo
     repo, refusal = _filing_repo_or_refusal(resolved, profile)
@@ -6219,6 +6480,13 @@ def _route_file(a: argparse.Namespace) -> int:
         body = ""
     try:
         if a.intake:
+            refusals = intake_fields.validate(
+                repo, a.epic, a.priority, a.target_release, _known_repo_names(profile, rows, repo), _known_epic_ids(rows)
+            )
+            if refusals:
+                print("\n".join(f"routing: {line}" for line in refusals))
+                return 2
+            fields = intake_fields.normalise(repo, a.epic, a.priority, a.target_release)
             # `route.intake_file` writes the title when there is no body, and the launch reads what was written.
             heal = route_reach.launch_reach_heal(body or a.title, {})
             if _reach_refused(heal.refusal, heal.notes):
@@ -6229,7 +6497,8 @@ def _route_file(a: argparse.Namespace) -> int:
                 return 2
             date = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
             mapping = route.intake_file(a.title, body, repo, date, link=link, ids=profile.get("ids", "slug"), after=after,
-                                       stage=_filing_stage(a, profile))
+                                       stage=_filing_stage(a, profile), epic=fields.get("epic", ""),
+                                       priority=fields.get("priority", ""), target_release=fields.get("target_release", ""))
         else:
             mapping = route.initiative_files(a.title, body, repo, phase=a.phase)
     except ValueError as exc:
@@ -6453,6 +6722,53 @@ def _route_pull(a: argparse.Namespace) -> int:
     return max([_pull_source(a, profile, name, named=len(names) > 1) for name in names])
 
 
+def _taken_tickets(adapter, config) -> list | None:
+    """Edge. The tickets a source's earlier pulls took, as candidates; [] for an adapter that cannot list them, None
+    after printing when a listing fails."""
+    build = getattr(adapter, "taken_list_argv", None)
+    if build is None:
+        return []
+    unwrap = getattr(adapter, "unwrap", None) or (lambda payload, _repo: payload)
+    tickets: list = []
+    for repo in config.repos:
+        rc, out, err = _run_argv(build(config, repo))
+        try:
+            tickets.extend(adapter.read(raw) for raw in (unwrap(json.loads(out or "[]"), repo) if rc == 0 else ()))
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            rc, err = 1, f"{type(exc).__name__}: {exc}"
+        if rc != 0:
+            print(f"sync: listing the taken tickets of {repo} failed: {err}")
+            return None
+    return tickets
+
+
+def _sync_source(adapter, config, ws: Path, fresh: Sequence, dry_run: bool) -> bool:
+    """Edge. One-way sync of a source's tickets into the store's intake rows (`intake_sync`); True when it failed.
+    `fresh` are the candidates the pull just read, so a queued ticket still on the intake listing is covered too."""
+    from agent_tools import intake_sync  # imported here: cli loads a command module only when it runs
+
+    taken = _taken_tickets(adapter, config)
+    if taken is None:
+        return True
+    tickets = [*fresh, *taken]
+    if not tickets:
+        return False
+    at = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
+    failed = False
+    for step in intake_sync.plan_sync(tickets, run_store.read_queue(ws / "runs"), at):
+        if dry_run:
+            if step.line:
+                print(f"would {step.line}")
+            continue
+        refusals = [why for why in (run_store.upsert_row_detail(ws / "runs", row) for row in step.writes) if why]
+        if refusals:
+            failed = True
+            print(f"sync: the store refused the change for {step.link}: {refusals[0]}")
+        elif step.line:
+            print(step.line)
+    return failed
+
+
 def _held_issues(ws: Path, repo_map: dict) -> dict[tuple[str, str], str]:
     """(repository, number) to `initiative/task_id` for the store rows that name both; empty when the store is unreadable."""
     keyed = ((route.row_issue_key(row, repo_map), row) for row in run_store.read_queue(ws / "runs"))
@@ -6499,6 +6815,9 @@ def _pull_source(a: argparse.Namespace, profile: dict, source: str, *, named: bo
         print(f"routing: pull wrote nothing{f' from {source}' if named else ''}: no eligible candidates")
     failed = [_pull_one(adapter, config, mapping, found, ws, a.dry_run) for mapping in plan]
     failed += [_review_one(adapter, found[link], str(_profile_path(a)), a.dry_run) for link in reviews]
+    if work_state.work_state_mode(_lake_provider(a)[0]) == "store":
+        # The store is the board, so an edit at the source reaches it here; with the files as the board there is no row to sync.
+        failed.append(_sync_source(adapter, config, ws, [c for c in found.values() if c.kind != "pr"], a.dry_run))
     return 2 if problems or any(failed) else 0
 
 
@@ -6887,6 +7206,7 @@ def _route_launch(a: argparse.Namespace) -> int:
     launch_dir = _initiative_path(runs_dir, a.initiative) if a.graph in ("epic", "rescue") else None
     stub_written = None  # the initiative.md a decompose launch created, named in the report if the launch then dies
     via_rows = False  # a decompose that runs to completion here and writes its plan as store rows
+    rows_when_detached = False  # the same decompose asked for with --detach: it is run in the background, rows and all
     if a.graph == "epic":
         initiative_id = launch_dir.name
         launch_land_at = _phase_land_at({}, profile, runs_dir.parent / "work", initiative_id)  # initiative.md, else cartridge, else ticket
@@ -6982,7 +7302,10 @@ def _route_launch(a: argparse.Namespace) -> int:
         if getattr(a, "run_id", None) is None:
             run_id = route.next_run_id(_taken_run_names(runs_dir), prefix)
         else:
-            taken = remote_lane.refuse_taken_run_id(a.run_id, set(_taken_run_names(runs_dir)))
+            # The background rerun of a detached decompose is handed its run id by the launch that named it and
+            # already opened its log, so that one id is its own and not "taken".
+            own = os.environ.get(_OWN_RUN_ID_ENV) == a.run_id
+            taken = None if own else remote_lane.refuse_taken_run_id(a.run_id, set(_taken_run_names(runs_dir)))
             if taken is not None:
                 print(taken)
                 return 2
@@ -7035,6 +7358,7 @@ def _route_launch(a: argparse.Namespace) -> int:
             print(f"routing: intake {idea_path.stem} is a draft; ready it with `cox route ready {idea_path.stem}`")
             return 2
         via_rows = _decompose_via_rows(store_mode, a.dry_run, host, intake_row, detach=bool(getattr(a, "detach", False)))
+        rows_when_detached = not via_rows and _decompose_via_rows(store_mode, a.dry_run, host, intake_row)
         if via_rows:
             pass  # the plan lands as rows after the run; the chair's export writes the files
         elif initiative_md.exists() and any(initiative_dir.glob("*/*.md")):
@@ -7068,7 +7392,10 @@ def _route_launch(a: argparse.Namespace) -> int:
         if getattr(a, "run_id", None) is None:
             run_id = route.next_run_id(_taken_run_names(runs_dir), a.initiative_id)
         else:
-            taken = remote_lane.refuse_taken_run_id(a.run_id, set(_taken_run_names(runs_dir)))
+            # The background rerun of a detached decompose is handed its run id by the launch that named it and
+            # already opened its log, so that one id is its own and not "taken".
+            own = os.environ.get(_OWN_RUN_ID_ENV) == a.run_id
+            taken = None if own else remote_lane.refuse_taken_run_id(a.run_id, set(_taken_run_names(runs_dir)))
             if taken is not None:
                 print(taken)
                 return 2
@@ -7193,6 +7520,22 @@ def _route_launch(a: argparse.Namespace) -> int:
             print(line)
         return rows_code
 
+    background = detached_rows_argv(sys.argv, run_id) if rows_when_detached else None
+    if background is not None:
+        # A detached decompose writes its plan as store rows too. This command runs again in the background without
+        # --detach, to completion: the store gets the rows from whichever machine ran it, and no ticket file has to be
+        # carried back to the chair and loaded.
+        with open(log_path, "ab") as log:
+            proc = subprocess.Popen(
+                background, env={**os.environ, _OWN_RUN_ID_ENV: run_id}, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                start_new_session=True,
+            )
+        pid_path.write_text(str(proc.pid))
+        print(f"run {run_id}")
+        print(f"pid {pid_path}")
+        print(f"log {log_path}")
+        return 0
+
     launch_env = (
         lane_capacity_env(env, _local_max_in_flight(runs_dir, dict(profile), socket.gethostname()))
         if a.graph == "epic" else env
@@ -7230,6 +7573,24 @@ def _route_launch(a: argparse.Namespace) -> int:
     print(f"pid {pid_path}")
     print(f"log {log_path}")
     return 0
+
+
+_OWN_RUN_ID_ENV = "COXSWAIN_OWN_RUN_ID"  # set for the background rerun of a detached decompose: the run id it was given
+
+
+def detached_rows_argv(argv: Sequence[str], run_id: str) -> list[str] | None:
+    """Pure. This `cox route launch decompose --detach ...` command line as the one to run in the background: the same
+    arguments without `--detach`, with the run id pinned so both processes name one run. None when `argv` is not such
+    a command line (the handler was called some other way), so the caller falls back to launching the harness itself."""
+    if "--detach" not in argv or "decompose" not in argv:
+        return None
+    kept = [arg for arg in argv if arg != "--detach"]
+    if "--run-id" in kept:
+        at = kept.index("--run-id")
+        kept[at + 1:at + 2] = [run_id]
+    elif not any(arg.startswith("--run-id=") for arg in kept):
+        kept += ["--run-id", run_id]
+    return kept
 
 
 def _decompose_via_rows(mode: str, dry_run: bool, host: object, intake_row: Mapping | None, *, detach: bool = False) -> bool:
@@ -7548,6 +7909,31 @@ def _workspace_cartridges(runs_dir: Path) -> str | None:
     return "cartridges" if (runs_dir.parent / "cartridges").is_dir() else None
 
 
+def _routing_profile_or_empty(a: argparse.Namespace) -> dict:
+    """Edge. The parsed routing profile; {} when it is missing or unreadable, which reads as every default."""
+    text = _read_text_or_none(_profile_path(a))
+    try:
+        return route.parse_profile(text) if text else {}
+    except route.ProfileError:
+        return {}
+
+
+def _published_cartridges(runs_dir: Path, profile: Mapping) -> str | None:
+    """Edge. The sha of the chair's cartridges, published to the store, when lanes read them from there: the
+    workspace is out of git, the store is shared, and the workspace holds a cartridges directory. None keeps the copy
+    by rsync (`profile` is the routing profile). A publish that fails also returns None, after saying so: the launch then copies them as before."""
+    from agent_tools import cartridge_snapshot, courier_bus
+
+    folder = _workspace_cartridges(runs_dir)  # the same directory the rsync copies
+    if workspace_git_on(profile) or folder is None or not courier_bus.uses_store(runs_dir.parent / "courier.jsonl"):
+        return None
+    try:
+        return cartridge_snapshot.publish(runs_dir, runs_dir.parent / folder)
+    except Exception as exc:
+        print(f"cartridges: could not publish to the store, copying them instead: {type(exc).__name__}: {exc}")
+        return None
+
+
 def _workspace_probe(cwd: Path) -> Callable[[list[str]], tuple[int, str]]:
     """Edge. `remote_launch`'s probe (exit code, stdout then stderr) run from `cwd`: the cartridges check names its source relative to the workspace."""
 
@@ -7587,7 +7973,7 @@ def _route_launch_on_host(
         host, initiative, run_id, _holder_label(a), launched_at, run, locate, repo, harness_dir,
         preflight=preflight, home=home, host_checkouts=_host_checkouts(run_store.hosts(runs_dir), host.name), tools=tools,
         graph=graph, intake=intake, cartridges=_workspace_cartridges(runs_dir), probe=_workspace_probe(runs_dir.parent),
-        profile=provider, phase=phase,
+        profile=provider, phase=phase, cartridge_sha=_published_cartridges(runs_dir, _routing_profile_or_empty(a)),
     )
     if isinstance(result, remote_launch.LaunchError):
         print(f"routing: launch on {host.name} failed at {result.step}: {result.message}")
@@ -7793,14 +8179,21 @@ def _fetch_one(runs_dir: Path, hosts, run_id: str, mode: str = "files", by: str 
     def repo_paths(run_dir: Path) -> list[str]:
         return (remote_fetch.task_repos(run_dir) or recorded) if only is None else only
 
+    diverged: list[str] = []
     result = remote_fetch.fetch_run(host, run_id, runs_dir, repo_paths, run, locate,
-                                    lease_released=lease_released, ended_at=ended_at, home=os.path.expanduser("~"))
+                                    lease_released=lease_released, ended_at=ended_at, home=os.path.expanduser("~"),
+                                    diverged=diverged)
     if isinstance(result, remote_fetch.FetchError):
         detail = f"{run_id} is still live on {host.name}: {result.message}" if result.step == "refuse" else result.message
         return ("live" if result.step == "refuse" else "failed"), [f"fetch: {result.step}: {detail}"], host.name
     wanted = remote_fetch.phase_branches(run_store.phase_manifests(runs_dir, run_id))
-    brought = (remote_fetch.fetch_phase_branches(host, run_id, runs_dir, list(result), wanted, run, locate, home=os.path.expanduser("~"))
+    brought = (remote_fetch.fetch_phase_branches(host, run_id, runs_dir, list(result), wanted, run, locate,
+                                                 home=os.path.expanduser("~"), diverged=diverged)
                if wanted else ())
+    # A diverged phase branch kept its local tip; the line names the side ref holding the lane's, so nothing is lost
+    # silently. Printed here because `--all` drops a fetched run's lines, and the chair reads this output.
+    for line in dict.fromkeys(diverged):
+        print(f"{run_id}: {line}")
     marker = {"fetched_at": _now_iso(), "repos": list(result), "tasks": remote_fetch.task_record_ids(runs_dir / run_id),
               "phase_branches": list(brought)}
     remote_lane.fetched_record_path(runs_dir, run_id).write_text(json.dumps(marker))
@@ -7963,16 +8356,17 @@ def _runs_fetch(a: argparse.Namespace) -> int:
     return 0 if outcome == "fetched" else 2
 
 
-def _export_board(runs_dir: Path, workspace: Path) -> list[str]:
+def _export_board(runs_dir: Path, workspace: Path, prune_stale: bool = False) -> list[str]:
     """Edge. Write the whole store board under `workspace` and return the ids of the contentless rows skipped.
 
     The whole board, never one initiative: `export_files` deletes every intake/ and work/ file its rows do not name.
     So it fills the store from the files first: a decompose writes its tickets as files, and an export with no fill
     deleted them, on the chair's tick and on an epic launch alike (2026-10-06). A fill that cannot read the store
-    raises before anything is written or deleted."""
+    raises before anything is written or deleted. `prune_stale` is for a workspace out of git: see `fill_workspace`."""
     from agent_tools import store_fill  # imported here: cli loads a command module only when it runs
 
-    store_fill.fill_workspace(workspace)
+    # The argument is passed only when set, so a caller's stand-in for the plain fill keeps working.
+    store_fill.fill_workspace(workspace, prune_stale=True) if prune_stale else store_fill.fill_workspace(workspace)
     # A file with no row is not necessarily orphaned: it may be a live decompose's, whose rows are not written yet.
     live = chair_decompose_runs.live_decompose_initiatives(runs_dir)
     return queue_export.export_files(workspace, run_store.read_queue(runs_dir), hashes=queue_export.store_hashes(runs_dir), protected=live).skipped
@@ -8009,14 +8403,30 @@ def export_commit_excludes(held: Sequence[Mapping[str, str]]) -> list[str]:
     return [f":(exclude){row['path']}" for row in held if row.get("path")]
 
 
-def _chair_export_hook(runs_dir: Path, ids: tuple[str, ...]) -> str:
+def workspace_git_on(profile: Mapping) -> bool:
+    """Whether the chair keeps the workspace in git: `chair.workspace_git`, on unless the profile says false.
+
+    Off, the store is the only shared copy of the board. The work/ and intake/ trees are then this machine's own
+    files, written from the store so everything that reads them still can: the chair neither pulls the workspace
+    nor commits and pushes what it exports, and any machine refreshes its copy with `cox route export`."""
+    chair = profile.get("chair")
+    return not (isinstance(chair, Mapping) and chair.get("workspace_git") is False)
+
+
+def _chair_export_hook(runs_dir: Path, ids: tuple[str, ...], commit: bool = True) -> str:
     """Edge. Export the board, then commit the work/ and intake/ files; returns a tick-line note, "" when nothing is worth saying.
+
+    With `commit` False (`chair.workspace_git: false`) the files are written and nothing is committed or pushed.
 
     The files the export held are left out of the commit: committing one would make the hand edit this workspace's HEAD
     baseline, and the next export would overwrite it. A git failure raises, so the tick reports it as an export failure.
     A failed push is a note, never a raise."""
     workspace = runs_dir.parent
-    skipped = _export_board(runs_dir, workspace)  # fills the store from the files first; see _export_board
+    # Fills the store from the files first; see _export_board. Out of git, a stale copy of a dropped row goes first.
+    skipped = _export_board(runs_dir, workspace) if commit else _export_board(runs_dir, workspace, prune_stale=True)
+    if not commit:
+        wrote = f"export: wrote the files for {len(ids)} changed row(s); the workspace is not in git"
+        return f"{wrote}; skipped {len(skipped)} contentless row(s): {', '.join(skipped)}" if skipped else wrote
     git = ["git", "-C", str(workspace)]
     names = [name for name in ("work", "intake") if (workspace / name).exists()]  # git add refuses a path that matches nothing
     if not names:  # `git add -A --` with no path stages the whole tree
@@ -8618,6 +9028,7 @@ def _gather_doctor_facts(profile_path: Path, repo: Path) -> dict:
     facts.update(_git_and_forge_facts(profile or {}))
     facts["plugins_tools"] = _tools_plugin_facts()
     facts.update(_chair_unit_facts())
+    facts["claude_token"] = setup_token.token_fact(claude_token.token_path(str(Path.home())))
     if profile is None:
         return facts
     singles = [profile.get(k, "") for k in ("cartridges_dir", "provider_profile", "harness_dir", "workspace_dir", "umbrella_dir")]
@@ -8787,7 +9198,7 @@ def _doctor_steward_rows(profile: dict | None) -> list[dict]:
         return [doctor._skip("steward")]
     chair = profile.get("chair")
     raw = chair.get("steward") if isinstance(chair, Mapping) else None
-    return [doctor.steward_row(chair_facts.resolve_steward_enabled(raw))]
+    return [doctor.steward_row(chair_facts.steward_asked_for(raw))]
 
 
 def _setup_doctor(a: argparse.Namespace) -> int:
@@ -8880,7 +9291,9 @@ def _install_home_refusal(home: str, record: str | None, named: bool) -> str | N
 def _install_facts(a: argparse.Namespace) -> dict:
     """Gathers exactly what `install_plan` needs and nothing it decides:
     PATH lookups, the coxswain tool's receipt extras, the profile's existence, and the
-    config/settings paths expanded once, here. Without `--root` the checkouts,
+    config/settings paths expanded once, here, and the platform, home, cox path and
+    whether the chair service file exists, and the default garage.env and its `export` lines.
+    A `--root` install passes no home and no env file. Without `--root` the checkouts,
     profile and workspace come from the resolved coxswain home; a refusal
     raises ValueError for the caller to print."""
     config_dir = str(Path("~/.config").expanduser())
@@ -8904,6 +9317,11 @@ def _install_facts(a: argparse.Namespace) -> dict:
         registered = (listing or {}).get(setup_install.MARKETPLACE)
     tool_dir = setup_receipts.default_tool_dir(os.environ, str(Path.home()))
     paths = setup_install.layout(root)
+    # A `--root` install is a sandbox: it never writes into the real user's service folders.
+    service_home = "" if a.root else str(Path.home())
+    service_file = chair_service.service_file(sys.platform, Path(service_home)) if service_home else None
+    chair_env_file = None if a.root else _chair_default_environment_file()
+    chair_env_text = _read_text_or_none(Path(chair_env_file)) if chair_env_file else None
     return {
         "tool_extras": setup_receipts.read_tool_extras(tool_dir, setup_install.TOOL),
         "root": root,
@@ -8925,6 +9343,12 @@ def _install_facts(a: argparse.Namespace) -> dict:
         "assume": a.assume,
         "window_ceiling_usd": a.window_ceiling_usd,
         "weekly_ceiling_usd": a.weekly_ceiling_usd,
+        "platform": sys.platform,
+        "home": service_home,
+        "cox_path": shutil.which("cox"),
+        "chair_service_exists": service_file is not None and service_file.exists(),
+        "chair_env_file": chair_env_file,
+        "chair_env_exports": tuple(chair_service.export_lines(chair_env_text or "")),
     }
 
 
@@ -9527,7 +9951,18 @@ def _migrate_needs_preflight(plan, host_plan, hosts: bool) -> bool:
 
 
 def _migrate_acquire(runs_dir: Path, paths, holder: str) -> list:
-    """Edge. One repo lease per checkout path as (LeaseOutcome, epoch or None); an exception is an error outcome."""
+    """Edge. One repo lease per checkout path as (LeaseOutcome, epoch or None); an exception is an error outcome.
+
+    A machine with no Postgres store has nothing to lease in: no chair or lane can be coordinating through a store
+    that is not there. Its migration goes ahead unleased, and says so. This is the upgrade from a release whose
+    default store was a local sqlite file."""
+    try:
+        shared = store_dialect.is_postgres(run_store._store_url(runs_dir))
+    except Exception:
+        shared = False
+    if not shared and os.environ.get(STORE_DOUBLE_ENV) != "sqlite":
+        print("migrate: no Postgres store is configured, so there is no lease to take; migrating this machine unleased", file=sys.stderr)
+        return [(setup_migrate.LeaseOutcome(path, True, holder), None) for path in paths]
     taken = []
     for path in paths:
         try:
@@ -9902,6 +10337,12 @@ def _store_choice(a: argparse.Namespace, ask: Callable[[str], str], interactive:
     return setup_store.parse_store_choice(answer) if answer.strip() else default
 
 
+_FILES_STORE_RETIRED = (
+    "the files store is retired: the one store is Postgres. Use `cox setup store --store shared` "
+    "(and `cox setup store switch shared` to carry an old local store's rows over)."
+)
+
+
 def _store_files(a: argparse.Namespace, settings_path: Path) -> int:
     if a.dry_run:
         print("dry run: would record store.mode files; nothing was written")
@@ -9989,8 +10430,30 @@ def _setup_store(a: argparse.Namespace, *, env: Mapping[str, str] | None = None,
         return 2
     settings_path = _profile_path(a)
     if choice == "files":
-        return _store_files(a, settings_path)
+        print(f"error: {_FILES_STORE_RETIRED}", file=sys.stderr)
+        return 2
     return _store_shared(a, settings_path, os.environ if env is None else env, ask, tty, probes, exclude_file)
+
+
+def _setup_token(a: argparse.Namespace) -> int:
+    """Edge. Store the long-lived Claude token: getpass for the prompt, a prompt only when both ends are terminals."""
+    return setup_token.store(
+        a.token, a.from_file,
+        path=claude_token.token_path(str(Path.home())),
+        interactive=sys.stdin.isatty() and sys.stdout.isatty(),
+        ask_secret=setup_token.prompt_secret,
+        read_text=setup_token.read_file_text,
+    )
+
+
+def _setup_token_status(a: argparse.Namespace) -> int:
+    """Edge. Report the stored token's state; `--probe` spends one small claude request to prove it works."""
+    return setup_token.status(
+        a.probe,
+        path=claude_token.token_path(str(Path.home())),
+        read_token=claude_token.read_token,
+        run=setup_token.run_command,
+    )
 
 
 def _store_mode_and_runs(settings_path: Path) -> tuple[str, Path | None]:
@@ -10013,6 +10476,9 @@ def _setup_store_switch(a: argparse.Namespace, *, env: Mapping[str, str] | None 
     """Edge. Copy the run store and traces to the other backend, then record store.mode. Deletes nothing from the source."""
     env = os.environ if env is None else env
     settings_path = settings_path or _profile_path(a)
+    if a.target != "shared":
+        print(f"error: {_FILES_STORE_RETIRED}", file=sys.stderr)
+        return 2
     mode, runs_dir = _store_mode_and_runs(settings_path)
     if mode == a.target:
         print(f"store is already {mode}; nothing to do")
@@ -10021,7 +10487,7 @@ def _setup_store_switch(a: argparse.Namespace, *, env: Mapping[str, str] | None 
         print("error: the profile names no workspace_dir, so there is no runs directory to switch", file=sys.stderr)
         return 2
     profile_file = setup_store_io.default_profile_path(settings_path)
-    to_shared = a.target == "shared"
+    to_shared = True
     conn = None
     source_file = profile_file
     if to_shared:
@@ -10702,7 +11168,8 @@ def _home(a: argparse.Namespace) -> int:
 def _session(a: argparse.Namespace) -> int:
     """`cox session`: the coxswain Claude session, with the argv bare `cox` uses."""
     return _launcher(
-        argparse.Namespace(launcher_profile=a.profile, no_plugin=a.session_no_plugin, print_argv=a.session_print_argv),
+        argparse.Namespace(launcher_profile=a.profile, no_plugin=a.session_no_plugin, print_argv=a.session_print_argv,
+                           workspace_session=getattr(a, "session_workspace", False)),
         a.session_extra,
     )
 
@@ -11271,6 +11738,7 @@ SESSION_GROUP = commands.Group(
         # distinct dests: the top-level parser owns no_plugin and print_argv, and argparse copies a matched subparser's namespace over it
         commands.Arg(("--no-plugin",), {"action": "store_true", "dest": "session_no_plugin", "help": "start claude without --plugin-dir"}),
         commands.Arg(("--print-argv",), {"action": "store_true", "dest": "session_print_argv", "help": "print the claude argv and cwd instead of exec'ing it"}),
+        commands.Arg(("--workspace",), {"action": "store_true", "dest": "session_workspace", "help": "force the workspace session that can act as the chair"}),
         commands.Arg(("session_extra",), {"nargs": "*", "metavar": "CLAUDE_ARG", "help": "after --: passed to claude verbatim, as bare cox does"}),
     ),
     fn="agent_tools.cli:_session",
@@ -11354,7 +11822,7 @@ STATS_COMMANDS = [
         "agent_tools.cli:_stats_causes", False, (),
     ),
     commands.Command(
-        "efficiency", "stats", "cost per turn, cost per landed task, first-try rate, waste share, per day",
+        "efficiency", "stats", "cost per turn, cost per completion, first-try rate, waste share, per day",
         (
             commands.Arg(("--runs-dir",), {"default": "runs"}),
             commands.Arg(("--days",), {"type": int, "default": 7, "help": "UTC days to report, today included (default 7)"}),
@@ -11879,7 +12347,9 @@ def build_parser() -> argparse.ArgumentParser:
         description=__doc__,
         epilog=(
             "examples:\n"
-            "  bare cox opens the coxswain Claude session\n"
+            "  bare cox opens the coxswain Claude session: attached over MCP to a live chair service, from any\n"
+            "    directory and without touching its lease; with no live chair, the workspace session that can act\n"
+            "    as the chair. cox --workspace forces the workspace session; cox --print-argv shows which would run\n"
             "  cox home opens the towpath dashboard\n"
             "  cox session opens the coxswain Claude session, with the same argv\n"
             "  cox setup doctor checks this machine\n"
@@ -11895,6 +12365,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--profile", dest="launcher_profile", help="bare cox: the profile to launch claude against")
     p.add_argument("--no-plugin", action="store_true", help="bare cox: start claude without --plugin-dir")
     p.add_argument("--print-argv", action="store_true", help="bare cox: print the claude argv and cwd instead of exec'ing it")
+    p.add_argument("--workspace", action="store_true", dest="workspace_session", help="bare cox: force the workspace session that can act as the chair")
     p.add_argument("--version", "-V", action=_VersionAction, help="print the cox version and exit")
     sub = p.add_subparsers(dest="group", required=False)
 
@@ -11931,10 +12402,16 @@ def build_parser() -> argparse.ArgumentParser:
     group, rows = _table_entry("chair")
     commands.build_parser(rows, [group], sub)
 
+    group, rows = _table_entry("lander")
+    commands.build_parser(rows, [group], sub)
+
     group, rows = _table_entry("host")
     commands.build_parser(rows, [group], sub)
 
     group, rows = _table_entry("courier")
+    commands.build_parser(rows, [group], sub)
+
+    group, rows = _table_entry("mcp")
     commands.build_parser(rows, [group], sub)
 
     group, rows = _table_entry("install")
@@ -12052,7 +12529,7 @@ def _courier_send(a: argparse.Namespace) -> int:
         )
     except ValueError as exc:
         print(f"courier: {exc}"); return 2
-    path.write_text(courier.append_line(_read_text_or_none(path) or "", entry), encoding="utf-8")
+    courier.append_file(path, entry)
     return 0
 
 
@@ -12084,7 +12561,7 @@ def _courier_inbox(a: argparse.Namespace) -> int:
     if workspace is None: return 2
     holder = _lock_holder_or_none(workspace / "runs")
     _print_inbox(
-        _read_text_or_none(workspace / "courier.jsonl") or "", a.label, holder,
+        courier.read_text(workspace / "courier.jsonl"), a.label, holder,
         topic=getattr(a, "topic", None), event=getattr(a, "event", None),
         consumer=getattr(a, "consumer", None), wake=getattr(a, "wake", False),
     )
@@ -12097,6 +12574,61 @@ def _courier_ack(a: argparse.Namespace) -> int:
     path = workspace / "courier.jsonl"
     if not courier.ack_file(path, a.id, getattr(a, "consumer", None)): print(f"courier: no entry {a.id}"); return 2
     return 0
+
+
+def _mcp_serve(a: argparse.Namespace) -> int:
+    """Edge. Serve the chair's MCP tools for the profile's workspace: on stdin and stdout, or over HTTP with
+    --http and a tokens file. Only protocol messages are written to stdout; everything else goes to stderr."""
+    # Imported here: cli loads a command module only when it runs.
+    from agent_tools import mcp_http, mcp_ports, mcp_server
+
+    with contextlib.redirect_stdout(sys.stderr):  # a profile problem is said on stderr, never on the protocol stream
+        profile = _courier_profile(a)
+    if profile is None:
+        return 2
+    workspace = Path(profile["workspace_dir"]).expanduser()
+    ports = mcp_ports.build(profile, _profile_path(a), lambda: sorted(_read_epics(workspace)[0]))
+    if a.http is None:
+        def write(text: str) -> None:
+            sys.stdout.write(text)
+            sys.stdout.flush()
+
+        # The attached session's config carries its conversation id here, so its entries stay in one conversation.
+        caller = a.label or os.environ.get(chair_attach.CONVERSATION_ENV) or f"stdio:{getpass.getuser()}"
+        return mcp_server.serve_stdio(sys.stdin, write, mcp_server.make_handler(ports, caller))
+    host, _, port = a.http.rpartition(":")
+    if not host or not port.isdigit() or not a.tokens_file:
+        print("mcp: --http takes HOST:PORT with a literal address, and needs --token-file", file=sys.stderr)
+        return 2
+    try:
+        tokens = mcp_http.parse_tokens(Path(a.tokens_file).expanduser().read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"mcp: the tokens file cannot be used: {exc}", file=sys.stderr)
+        return 2
+    return mcp_http.serve(host.strip("[]"), int(port), lambda label: mcp_server.make_handler(ports, label), tokens)
+
+
+MCP_GROUP = commands.Group(
+    name="mcp", help="serve the chair's tools to MCP clients",
+    description=(
+        "Serve the board, the queue and the cartridge settings to an MCP client. `cox mcp` and `cox mcp serve` are the same.\n"
+        "Run it on the machine that runs the chair and holds the cartridge.\n"
+        "Reads answer from the board as it is now. Plain writes (file an intake, set a stage or a priority, hold, "
+        "release, change a cartridge setting) run the cox command a person would type and return its outcome.\n"
+        "A release cut, a scope change and a feature switch are sent to the chair as requests.\n"
+        "With no --http it speaks MCP on stdin and stdout, which is what a local client launches. "
+        "--http binds only a loopback, private, tailnet or link-local address and has no TLS."
+    ),
+    epilog="examples:\n  cox mcp\n  cox mcp serve --http 127.0.0.1:8765 --token-file tokens",
+    args=(
+        commands.Arg(("mode",), {"nargs": "?", "choices": ("serve",), "help": "optional; serving is all this command does"}),
+        commands.Arg(("--http",), {"metavar": "HOST:PORT", "help": "serve over HTTP on this literal private address instead of stdin and stdout"}),
+        commands.Arg(("--token-file", "--tokens-file"), {"metavar": "PATH", "dest": "tokens_file", "help": "with --http: lines of 'label token'; a token is at least 24 characters"}),
+        commands.Arg(("--label",), {"help": "who the stdio client is, on every entry it sends; default $COXSWAIN_MCP_CONVERSATION, else stdio:<user>. Over HTTP the token's label is used"}),
+        commands.Arg(("--profile",)),
+    ),
+    fn="agent_tools.cli:_mcp_serve",
+)
 
 
 COURIER_GROUP = commands.Group(name="courier", help="the courier bus: hand a reference to another label", description="", epilog="")
@@ -12206,6 +12738,9 @@ ROUTE_COMMANDS = [
             commands.Arg(("--after",), {"action": "append", "default": None, "help": "with --intake: ids this intake waits on; repeat the flag or comma-separate"}),
             commands.Arg(("--draft",), {"action": "store_true", "help": "with --intake: file it as a draft, which the chair skips until it is ready (the default)"}),
             commands.Arg(("--ready",), {"action": "store_true", "help": "with --intake: file it ready for the chair to pick up"}),
+            commands.Arg(("--epic",), {"default": None, "help": "with --intake: the epic id this intake belongs to; it must already exist"}),
+            commands.Arg(("--priority",), {"default": None, "help": "with --intake: a whole number; higher runs first"}),
+            commands.Arg(("--target-release",), {"default": None, "help": "with --intake: the release it ships in, a dotted version such as 2026.11.6"}),
         ),
         "agent_tools.cli:_route_file", False, (),
     ),
@@ -12251,6 +12786,34 @@ ROUTE_COMMANDS = [
         "groups", "route", "print the newest plans/intake-groups/<date>.md file, work-shape.md §5",
         (commands.Arg(("--profile",)),),
         "agent_tools.cli:_route_groups", False, (),
+    ),
+    commands.Command(
+        "cartridges", "route", "publish this machine's cartridges to the store, or write a published snapshot here",
+        (
+            commands.Arg(("action",), {"choices": ("publish", "fetch")}),
+            commands.Arg(("--sha",), {"help": "the snapshot to fetch"}),
+            commands.Arg(("--replace",), {"action": "store_true", "help": "fetch over cartridges that no fetch put there"}),
+            commands.Arg(("--into",), {"help": "the directory to publish from or fetch into; default the profile's cartridges_dir"}),
+            commands.Arg(("--profile",)),
+        ),
+        "agent_tools.cli:_route_cartridges", False, (),
+        description=(
+            "Cartridges are written and versioned where their owner keeps them. The store only carries a copy of "
+            "the exact files a launch used, under the digest of those files, so a lane host can read them.\n"
+            "publish prints the sha of the profile's cartridges_dir and stores its files once.\n"
+            "fetch makes cartridges_dir hold exactly that snapshot. It refuses to write over files a person put "
+            "there or edited, unless --replace is given."
+        ),
+    ),
+    commands.Command(
+        "export", "route", "write this machine's work/ and intake/ files from the store; nothing is committed",
+        (commands.Arg(("--profile",)),),
+        "agent_tools.cli:_route_export", False, (),
+        description=(
+            "The store holds the board. This writes it out as files under the workspace so they can be read, and "
+            "removes files no row names.\nIt first loads any ticket a decompose wrote as a file and the store has "
+            "not seen. Under work_state files it does nothing."
+        ),
     ),
     commands.Command(
         "drift", "route", "items whose store state and file state differ",
@@ -12449,6 +13012,38 @@ ROUTE_COMMANDS = [
                 ),
                 "agent_tools.cli:_route_chair_chat", False, (),
             ),
+            commands.Command(
+                "converse", "route", "talk to the running chair through the courier, without the lease (`chat` is the leader thread)", (), None, False, (),
+                subcommands=(
+                    commands.Command(
+                        "send", "route", "send the chair a directive; it applies on the chair's next tick",
+                        (
+                            commands.Arg(("kind",), {"help": "one of: priority, hold, release, scope, feature, cut_release"}),
+                            commands.Arg(("args",), {"nargs": "*", "help": "key=value pairs, e.g. target_kind=task target=t1 rank=1"}),
+                            commands.Arg(("--profile",)),
+                            commands.Arg(("--sender",), {"default": "session"}),
+                        ),
+                        "agent_tools.cli:_route_chair_converse_send", False, (),
+                    ),
+                    commands.Command(
+                        "ask", "route", "ask the chair a question and wait a bounded time for its answer",
+                        (
+                            commands.Arg(("kind",), {"help": "one of: left_on_release, why_not_launched, what_failed"}),
+                            commands.Arg(("subject",), {"nargs": "?", "default": ""}),
+                            commands.Arg(("--profile",)),
+                            commands.Arg(("--sender",), {"default": "session"}),
+                            commands.Arg(("--wait",), {"type": float, "default": 30.0, "help": "seconds to wait for the answer (default 30)"}),
+                        ),
+                        "agent_tools.cli:_route_chair_converse_ask", False, (),
+                    ),
+                    commands.Command(
+                        "state", "route", "print the directives in force, the epics the chair last saw, and recent events",
+                        (commands.Arg(("--profile",)),),
+                        "agent_tools.cli:_route_chair_converse_state", False, (),
+                    ),
+                ),
+                sub_dest="converse_cmd", sub_required=False,
+            ),
         ),
         sub_dest="chair_cmd", sub_required=False,
     ),
@@ -12611,21 +13206,42 @@ SETUP_COMMANDS = [
         "agent_tools.cli:_setup_migrate", False, (),
     ),
     commands.Command(
-        "store", "setup", "choose files or a shared store for run records",
+        "store", "setup", "configure the shared Postgres store for run records",
         (
-            commands.Arg(("--store",), {"help": "files or shared; asked in a terminal when omitted, else files"}),
+            commands.Arg(("--store",), {"help": "shared; the files store is retired and is refused by name"}),
             *_STORE_FLAGS,
             commands.Arg(("--allow-unreachable",), {"action": "store_true", "help": "exit 0 even when a probe fails"}),
         ),
         "agent_tools.cli:_setup_store", False, (),
         subcommands=(
             commands.Command(
-                "switch", "setup", "copy the run store and traces to the other backend, then record store.mode",
+                "switch", "setup", "copy an old local run store and its traces into the shared store, then record store.mode",
                 (commands.Arg(("target",), {"choices": ("files", "shared")}), *_suppressed(_STORE_FLAGS)),
                 "agent_tools.cli:_setup_store_switch", False, (),
             ),
         ),
         sub_dest="store_cmd", sub_required=False,
+    ),
+    commands.Command(
+        "token", "setup", "store the long-lived Claude token that coxswain's own claude runs use",
+        (
+            commands.Arg(("--token",), {"help": "the token printed by `claude setup-token`; prefer --from-file, a flag lands in shell history"}),
+            commands.Arg(("--from-file",), {"metavar": "PATH", "help": "read the token from this file; else asked with hidden input in a terminal"}),
+        ),
+        "agent_tools.cli:_setup_token", False, (),
+        subcommands=(
+            commands.Command(
+                "status", "setup", "report whether the stored token file exists and claude accepts it",
+                (commands.Arg(("--probe",), {"action": "store_true", "help": "also send one small claude request; exits 1 when it fails"}),),
+                "agent_tools.cli:_setup_token_status", False, (),
+            ),
+        ),
+        sub_dest="token_cmd", sub_required=False,
+        description=(
+            "The token comes from `claude setup-token`.\n"
+            "It is stored mode 600 in coxswain's config folder.\n"
+            "Interactive claude sessions are untouched: only coxswain's own runs read the file."
+        ),
     ),
 ]
 
@@ -12804,7 +13420,7 @@ def _initiative_target_branch(profile: dict, repo: Path | None, ws: Path, initia
     else the cartridge's `landing_areas.target_branch`), None when none is set. `refusal` is the message when the
     cartridge does not resolve or a set target branch is invalid; every other gap falls back to None with a `note:`."""
     from core.cartridge import OVERLAY_ALLOWED_KEYS  # lazy: core sits beside agent_tools in one venv
-    from core.landing import resolve_target_branch
+    from core.landing import resolve_epic_stack, resolve_target_branch
 
     cartridge, error = _team_cartridge(profile, repo, OVERLAY_ALLOWED_KEYS)
     if error:
@@ -12824,7 +13440,14 @@ def _initiative_target_branch(profile: dict, repo: Path | None, ws: Path, initia
         epic = definitions.get(epic_id) if epic_id else None
         if epic_id and epic is None and epic_id not in unread:
             print(f"note: epic {epic_id} has no file under epics/; using the repo default", file=sys.stderr)
-        return resolve_target_branch(cartridge, epic["target_branch"] if epic else None, fields.get("target_branch")), None
+        resolved = resolve_target_branch(cartridge, epic["target_branch"] if epic else None, fields.get("target_branch"))
+        if epic and initiative and not fields.get("target_branch") and resolve_epic_stack(cartridge, epic.get("epic_stack")):
+            # A stacked epic: an initiative that needs an unlanded initiative of the same epic forks from its branch.
+            from agent_tools import lander_ports
+            resolved = lander_ports.stack_base(
+                ws, initiative, str(epic_id), epic["target_branch"], lander_ports.read_records(ws / "runs")
+            ) or resolved
+        return resolved, None
     except ValueError as exc:
         return None, str(exc)
 
@@ -12854,7 +13477,7 @@ def _phase_land_at(phase_record: Mapping, profile: dict, work_dir: Path, initiat
     `land_at`, so reading the record alone gave ticket while the chair planned at level: the chair asked for a
     phase land, the land deferred it as ticket and exited 0 with nothing done, and the chair backed off."""
     if phase_record.get("land_at") in land.LAND_AT:
-        return str(phase_record["land_at"])
+        return land.granularity(phase_record)
     from core.landing import resolve_land_at  # lazy: core sits beside agent_tools in one venv
 
     path = work_dir / initiative / "initiative.md"
@@ -13318,7 +13941,13 @@ def _chair_run_deps(
                 chair_read_cache.load_entries(merged, chair_read_cache.dump_entries(cache))  # type: ignore[arg-type]
             chair_read_cache.save_cache(merged, decompose_path)
 
+    # With the workspace out of git the store is the board, and the tick reads its work from the store's rows,
+    # rendered as the files would be. It opens no work file, so it needs none to be there.
+    rows_are_the_board = mode == "store" and not workspace_git_on(profile)
+
     def work_files() -> Mapping[Path, str]:
+        if rows_are_the_board:
+            return once("files", lambda: chair_read_quarantined.store_work_files(ws, run_store.read_queue(runs_dir)))  # type: ignore[return-value]
         return once("files", lambda: chair_read_quarantined.read_work_files(ws, files_cache))  # type: ignore[return-value]
 
     def store_rows() -> list:
@@ -13589,9 +14218,6 @@ def _chair_run_deps(
         return chair_facts.wrongly_released_facts(bodies, merged, at)
 
     facts_deps = chair_facts.FactsDeps(
-        steward_entries=lambda: chair_read_steward.read_bus_entries(ws / "courier.jsonl"),
-        ticket_head=_steward_head(runner, repo_for),
-        level_merged=_steward_level_merged(runner, repo_for),
         approved_branch_merged=_approved_branch_merged(runner, repo_for, runs_dir),
         wrongly_released=wrongly_released,
         lease=lambda: chair_read_lease.read_lease(runs_dir, now()),
@@ -13620,8 +14246,6 @@ def _chair_run_deps(
         work_store_ready=lambda: chair_read_docket.work_store_ready(docket()),
         sources_configured=sources_configured,
         profile_stale=profile_stale,
-        steward_enabled=lambda: (profile.get("chair") or {}).get("steward"),
-        steward_scope=lambda: (profile.get("chair") or {}).get("steward_scope"),
         session=session, pid=pid, host=host, dispatch=dispatch,
         drafts=lambda: draft_list.count_drafts(
             draft_list.read_drafts(ws / "work", now_text(), chair_read_quarantined.initiative_files(ws, work_files()))
@@ -13631,6 +14255,7 @@ def _chair_run_deps(
         ),
         lost_runs=lambda: chair_read_lost.read_lost_runs(runs_dir, now_text()),
         tickets=ticket_items,
+        landing_records=lambda: _landing_records(runs_dir),
         decomposed_intake=decomposed_intake,
         item_counts=item_counts,
         initiative_states=initiative_states,
@@ -13649,7 +14274,6 @@ def _chair_run_deps(
         history=lambda: chair_read_housekeeping.read_last_housekeeping(runs_dir),
         housekeeping_hours=lambda: (profile.get("chair") or {}).get("housekeeping_hours"),
         stale_days=lambda: (profile.get("chair") or {}).get("stale_days"),
-        approval_hold_ticks=lambda: (profile.get("chair") or {}).get("approval_hold_ticks"),
         max_launches_per_hour=lambda: (profile.get("chair") or {}).get("max_launches_per_hour"),
         merge_queue=lambda: profile.get("merge_queue"),
         shared_file_limit=lambda: (profile.get("chair") or {}).get("max_shared_file_initiatives"),
@@ -13674,14 +14298,6 @@ def _chair_run_deps(
         dry_run=dry_run,
         lane_capacity=lane_capacity,
     )
-    steward_ports = chair_steward_exec.StewardPorts(
-        git=_steward_git(runner),
-        repo_of=lambda epic: repo_for({"initiative": epic}),
-        ticket_branch_of=land.pr_branch_name,
-        phase_of=_steward_phase_of(work_rows),
-        run_gate_checks=_steward_gate_runner(runner, lane_capacity),
-        target_branch_of=_steward_target_branch_of(profile, ws, repo_for),
-    )
     exec_deps = dataclasses.replace(
         exec_deps,
         label=session,
@@ -13694,8 +14310,6 @@ def _chair_run_deps(
         resolve_land=_resolve_land_with(actions, record),
         rerun_main=lambda repo, commit: chair_revert_ports.rerun_infra(runner, _gh_repo(repo), commit),
         launch_stagger_s=chair_exec.stagger_seconds((profile.get("chair") or {}).get("launch_stagger_s")),
-        steward_exec=lambda action, checks: chair_steward_exec.chair_steward_exec(action, checks, steward_ports),
-        steward_checks=_steward_checks_for(profile, repo_for),
     )
     def held() -> None:
         """Resolves each pending watch the smoke hold does not name, when its commit is green on main or main went green after it."""
@@ -13743,10 +14357,13 @@ def _chair_run_deps(
 
     restart_note = "" if dry_run else chair_restart_log.restart_note(chair_restart_log.read_record(restart_path), now())
 
+    git_workspace = workspace_git_on(profile)
+
     def pull_and_sync() -> str:
-        """The live tick's pull, then the checkout sync of each repo the initiatives name; the sync never raises."""
+        """The live tick's pull (when the workspace is in git), then the checkout sync of each repo the initiatives
+        name; the sync never raises."""
         try:
-            return workspace_sync.pull_workspace(ws)
+            return workspace_sync.pull_workspace(ws) if git_workspace else ""
         finally:
             try:
                 repos = _initiative_repos(chair_read_quarantined.initiative_files(ws, work_files()), home).values()
@@ -13773,12 +14390,15 @@ def _chair_run_deps(
     } if dev_install else {}
 
     def read_bus() -> list[dict]:
-        return courier.entries(_read_text_or_none(ws / "courier.jsonl") or "")  # a missing file is an empty bus
+        return courier.entries(courier.read_text(ws / "courier.jsonl"))  # a missing file is an empty bus
 
     # A dry run and a missing workspace keep the plain sleep, so polling is unchanged there.
     wake = None if dry_run or not ws.is_dir() else chair_wake.wait_for_run_exit(read_bus, time.sleep, time.monotonic, CHAIR_WAKE_POLL_SECONDS)
 
+    chat = None if dry_run or not ws.is_dir() else _chat_deps(ws)
+
     return chair_run.RunDeps(
+        chat=chat,
         wait=wake,
         checkout_state=checkout_state, started_checkout=started_checkout, lands_in_flight=lands_in_flight,
         stop_lands=stop_lands, facts_deps=facts_deps, gather=_chair_gather(ws), exec_deps=exec_deps, report_deps=chair_report.Deps(echo=echo),
@@ -13792,7 +14412,7 @@ def _chair_run_deps(
             watch=lambda w: chair_revert_watch.record_watch(record, w), held=held,
             tickets=lambda: chair_facts.read_ticket_items(ws, mode), echo=echo, **dash_wiring,
         ),
-        export_rows=(lambda ids: _chair_export_hook(runs_dir, ids)) if mode == "store" and not dry_run else None,
+        export_rows=(lambda ids: _chair_export_hook(runs_dir, ids, git_workspace)) if mode == "store" and not dry_run else None,
         notify_config=notify_core.config_from_profile(profile), workspace=ws,
         pull_workspace=None if dry_run else pull_and_sync,
         lane_checkout_actions=sync_lane_checkouts_now if has_lane_hosts and not dry_run else None,
@@ -13931,6 +14551,19 @@ def _chair_unit_text(label: str, interval: int | str, env_file: str | None, prof
     )
 
 
+def _lander_unit_text(a: argparse.Namespace, ws: Path) -> str | None:
+    """Edge-light. The lander's unit text, built from the same resolved cox, PATH and profile as the chair's; None after
+    printing why when systemd would read one of them differently from this shell."""
+    from agent_tools import lander_cli
+
+    env_file = _chair_service_environment_file(a)
+    resolved = _chair_unit_inputs("lander", env_file, _profile_path(a))
+    if isinstance(resolved, _ChairUnitRefusal):
+        print(resolved.message)
+        return None
+    return lander_cli.unit_text(resolved.cox, str(ws), int(a.interval), resolved.profile, resolved.path, env_file)
+
+
 def _chair_service_install(a: argparse.Namespace, path: Path) -> int:
     """Refuses before any write when systemd would read a value differently from the shell that ran the install."""
     text = _chair_unit_text(_holder_label(a), a.interval, _chair_service_environment_file(a), _profile_path(a))
@@ -14051,7 +14684,7 @@ def _decision_bus(a: argparse.Namespace) -> tuple[Path, str, list[dict], str] | 
     profile = _courier_profile(a)
     if profile is None: return None
     path = Path(profile["workspace_dir"]).expanduser() / "courier.jsonl"
-    blob = _read_text_or_none(path) or ""
+    blob = courier.read_text(path)
     return path, blob, courier.entries(blob), settings_model.operator_name(profile)
 
 
@@ -14076,7 +14709,7 @@ def _chair_ask(a: argparse.Namespace) -> int:
     entry = decisions.make_ask_entry(
         a.question, a.option, a.context, _holder_label(a), decision_id, _decision_now(), operator=operator
     )
-    path.write_text(courier.append_line(blob, entry), encoding="utf-8")
+    courier.append_file(path, entry)
     print(decision_id)
     return 0
 
@@ -14092,7 +14725,8 @@ def _chair_answer(a: argparse.Namespace) -> int:
     answer = decisions.make_answer_entry(
         ask_entry, a.option, answered_at=_decision_now(), message_id=uuid.uuid4().hex, operator=operator
     )
-    path.write_text(courier.ack(courier.append_line(blob, answer), ask_entry["id"]), encoding="utf-8")
+    courier.append_file(path, answer)
+    courier.ack_file(path, ask_entry["id"])
     return 0
 
 
@@ -14320,6 +14954,108 @@ def _chair_freeze_lands(a: argparse.Namespace) -> int:
     print(text)
     return 1 if text.endswith(chair_land_freeze.USAGE) else 0
 
+
+def _landing_records(runs_dir: Path) -> list[dict]:
+    """Edge. The store's landing records for the chair's facts; empty, with a note, when they cannot be read."""
+    from agent_tools import lander_ports
+    return lander_ports.read_records(runs_dir, lambda line: print(line, file=sys.stderr))
+
+
+def _lander_once(a: argparse.Namespace) -> int:
+    from agent_tools import lander_cli
+    return lander_cli._once(a)
+
+
+def _lander_run(a: argparse.Namespace) -> int:
+    from agent_tools import lander_cli
+    return lander_cli._run(a)
+
+
+def _lander_status(a: argparse.Namespace) -> int:
+    from agent_tools import lander_cli
+    return lander_cli._status(a)
+
+
+def _lander_adopt(a: argparse.Namespace) -> int:
+    from agent_tools import lander_cli
+    return lander_cli._adopt(a)
+
+
+def _lander_backlog(a: argparse.Namespace) -> int:
+    from agent_tools import lander_cli
+    return lander_cli._backlog(a)
+
+
+def _lander_service(a: argparse.Namespace) -> int:
+    from agent_tools import lander_cli
+    return lander_cli._service(a)
+
+
+_PROFILE_ARG = commands.Arg(("--profile",), {"help": "the routing profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"})
+LANDER_GROUP = commands.Group(
+    name="lander", help="the landing worker: merges built phases and lands whole initiatives",
+    description=(
+        "The landing worker. It runs beside the chair and owns the land queue: a built phase is merged into its "
+        "initiative branch, and a whole initiative goes to its parent as one pull request."
+    ),
+    epilog="examples:\n  cox lander status\n  cox lander adopt\n  cox lander adopt --apply\n  cox lander once\n  cox lander run --interval 30\n  cox lander service --install",
+)
+LANDER_COMMANDS = [
+    commands.Command(
+        "once", "lander", "one pass: queue what is ready, then merge and land within the caps",
+        (_PROFILE_ARG,), "agent_tools.cli:_lander_once", False, (), defaults={"profile": None},
+    ),
+    commands.Command(
+        "run", "lander", "pass after pass until interrupted",
+        (commands.Arg(("--interval",), {"type": float, "default": 30.0, "help": "seconds between passes (default: 30)"}), _PROFILE_ARG),
+        "agent_tools.cli:_lander_run", False, (), defaults={"profile": None},
+    ),
+    commands.Command(
+        "status", "lander", "every initiative in flight with its phases, and the land queue with how long each item has waited",
+        (commands.Arg(("--json",), {"action": "store_true", "help": "print the status as JSON"}), _PROFILE_ARG),
+        "agent_tools.cli:_lander_status", False, (), defaults={"profile": None},
+    ),
+    commands.Command(
+        "adopt", "lander", "bring initiatives that were in flight before the landing record under it; a dry run unless --apply",
+        (
+            commands.Arg(("initiative",), {"nargs": "*", "help": "initiative ids (default: every initiative with no landing record)"}),
+            commands.Arg(("--apply",), {"action": "store_true", "help": "do it; without this flag only the report is printed"}),
+            _PROFILE_ARG,
+        ),
+        "agent_tools.cli:_lander_adopt", False, (), defaults={"profile": None},
+        description=(
+            "For each initiative with no landing record: work already on the parent is marked done, an approval off "
+            "its phase branch is carried onto it, one that cannot be found goes back to ready, the initiative branch "
+            "is kept or cut, and every built phase is merged into it.\nNothing is deleted, reset or rebased, and an "
+            "initiative that has a record is skipped, so it is safe to run twice."
+        ),
+    ),
+    commands.Command(
+        "backlog", "lander", "mark the tasks a hand-folded pull request carried as done, once it has merged; a dry run unless --apply",
+        (
+            commands.Arg(("--manifest",), {"required": True, "help": "the backlog manifest (prereq-backlog-manifest.json)"}),
+            commands.Arg(("--pr",), {"required": True, "help": "the pull request that carried the manifest's tasks (URL)"}),
+            commands.Arg(("--apply",), {"action": "store_true", "help": "do it; refused until the forge says the pull request merged"}),
+            _PROFILE_ARG,
+        ),
+        "agent_tools.cli:_lander_backlog", False, (), defaults={"profile": None},
+        description=(
+            "Each task the manifest lists as applied moves from approved to done.\nA task already done, or in any other "
+            "state, is skipped, so it is safe to run twice."
+        ),
+    ),
+    commands.Command(
+        "service", "lander", "write or show the systemd user unit; never runs systemctl",
+        (
+            commands.Arg(("--install",), {"action": "store_true", "help": "write the unit and print the systemctl lines to run"}),
+            commands.Arg(("--status",), {"action": "store_true", "help": "print the unit as it is on disk"}),
+            commands.Arg(("--interval",), {"type": int, "default": 30, "help": "seconds between passes (default: 30)"}),
+            commands.Arg(("--environment-file",), {"help": "an EnvironmentFile for the unit (default: the chair's)"}),
+            _PROFILE_ARG,
+        ),
+        "agent_tools.cli:_lander_service", False, (), defaults={"profile": None},
+    ),
+]
 
 CHAIR_GROUP = commands.Group(
     name="chair", help="the chair loop that runs the landing and launch ticks itself",
@@ -14853,6 +15589,7 @@ def _dispatch_table(
 COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = _dispatch_table([
     (RUNS_GROUP, RUNS_COMMANDS),
     (COURIER_GROUP, COURIER_COMMANDS),
+    (MCP_GROUP, []),
     (VERSIONS_GROUP, []),
     (CONSOLE_GROUP, []),
     (DASH_GROUP, []),
@@ -14869,6 +15606,7 @@ COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = _dispatch_t
     (PR_GROUP, PR_COMMANDS),
     (ROUTE_GROUP, ROUTE_COMMANDS),
     (CHAIR_GROUP, CHAIR_COMMANDS),
+    (LANDER_GROUP, LANDER_COMMANDS),
     (HOST_GROUP, HOST_COMMANDS),
     (ROUTER_GROUP, ROUTER_COMMANDS),
     (STEWARD_GROUP, STEWARD_COMMANDS),
@@ -15005,10 +15743,43 @@ def _launcher_session_takes(profile_arg: str | None) -> str:
     return chair_resolve.resolve_session_takes(chair_keys.get("session_takes") if isinstance(chair_keys, dict) else None)
 
 
-def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
+def _conversation_file() -> Path:
+    """Edge. Where the attached session's conversation id is stored on this machine."""
+    return chair_attach.conversation_path(os.environ.get("XDG_STATE_HOME"), Path.home())
+
+
+def _attach_over_mcp(a: argparse.Namespace, argv: list[str], extra_args: list[str], mint: Callable[[], str]) -> int:
+    """Edge. Start (or print) the session attached to the live chair over MCP: the chair's MCP server configured, the
+    operator's stored conversation id resumed, the current directory kept. Reads and writes no lease, takes nothing,
+    starts no beater and prints no inbox. `argv` is the workspace session's, read only for the plugin directory."""
+    path = _conversation_file()
+    conversation = chair_attach.read_conversation(_read_text_or_none(path))
+    if conversation is None:
+        conversation = mint()
+        with contextlib.suppress(OSError):  # an id that cannot be stored still names this session's conversation
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(chair_attach.conversation_text(conversation), encoding="utf-8")
+    plugin_root = argv[argv.index("--plugin-dir") + 1] if "--plugin-dir" in argv else None
+    attached = chair_attach.attach_argv(plugin_root, chair_attach.mcp_config("cox", conversation), extra_args)
+    if a.print_argv:
+        print(attached)
+        print(Path.cwd())
+        print("chair: a live chair service holds the chair; this session is attached to it over MCP", file=sys.stderr)
+        return 0
+    if a.launcher_profile:  # the server the session starts reads the same profile this launch did
+        os.environ["AGENT_TOOLS_PROFILE"] = str(Path(a.launcher_profile).expanduser())
+    print("chair: a live chair service holds the chair; attaching to it over MCP (cox --workspace forces the workspace session)")
+    os.execvp(attached[0], attached)
+    return 0
+
+
+def _launcher(a: argparse.Namespace, extra_args: list[str], mint: Callable[[], str] | None = None) -> int:
     """Bare `cox` (spec §7) and `cox session`: a real Claude Code session with
     the coxswain plugin loaded and the profile's workspace as cwd, off the
-    dedicated `launcher_profile` dest. The argv comes from `_session_launch`."""
+    dedicated `launcher_profile` dest. The argv comes from `_session_launch`.
+
+    With a live chair loop under another label the session attaches to it over MCP instead (`_attach_over_mcp`),
+    unless `--workspace` forces the workspace session. `mint` makes a new conversation id; a test fixes it."""
     launch = _session_launch(a.launcher_profile, a.no_plugin, extra_args)
     if isinstance(launch, int):
         return launch
@@ -15019,6 +15790,10 @@ def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
     runs_dir = Path(workspace).expanduser() / "runs"
     host = socket.gethostname()
     now = datetime.datetime.now(datetime.UTC)
+    # Before anything that reads the chair record to take, offer or resume: a live chair loop is attached to, not joined.
+    live = _live_loop_holder(runs_dir)
+    if chair_attach.attach_mode(live, f"chair-{now:%Y-%m-%d}", bool(getattr(a, "workspace_session", False))) == "mcp":
+        return _attach_over_mcp(a, argv, extra_args, mint or (lambda: uuid.uuid4().hex))
     try:
         record = chair.read(runs_dir)
     except (OSError, ValueError):
@@ -15033,7 +15808,6 @@ def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
     plan = chair_resolve.resolve_bare(record, state, host, now, _transcript_exists)
     if plan.note:
         print(plan.note, file=sys.stderr if a.print_argv else sys.stdout)
-    live = _live_loop_holder(runs_dir)
     policy = _launcher_session_takes(a.launcher_profile)
     holder = live or chair_resolve.SessionHolder({"take": "free", "resume": "stale"}.get(plan.kind, "session"))
     decision = chair_resolve.session_take_decision(policy, holder, False)
@@ -15110,7 +15884,7 @@ def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
         # chair_a.label is the label `_route_chair_take` just wrote as the holder above;
         # it is the holder, not a re-read of the file this same call just produced.
         if took:
-            _print_inbox(_read_text_or_none(Path(workspace).expanduser() / "courier.jsonl") or "", chair_a.label, chair_a.label)
+            _print_inbox(courier.read_text(Path(workspace).expanduser() / "courier.jsonl"), chair_a.label, chair_a.label)
     os.chdir(cwd)
     os.execvp(argv[0], argv)
     return 0
@@ -15154,6 +15928,12 @@ def main(argv: list[str] | None = None) -> int:
     a = build_parser().parse_args(head)
     if not hasattr(a, "fn"):
         return _launcher(a, tail)
+    refused = _store_refusal(a, head)
+    if refused is not None:
+        print(f"cox: {refused}", file=sys.stderr)
+        return 2
+    if reads_board(head):
+        _refresh_board_files(a)
     return a.fn(a)
 
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from harness.epic import ASSEMBLY_FAILED, _needs_missing, _open_phase_worktree, _required_refs, _run_phase
 from tests.test_epic_driver import (  # noqa: F401 -- cart and repo are fixtures
     cart,
@@ -51,6 +53,7 @@ def phase_record(result: dict, phase: str) -> dict:
     return next(p for p in result["phases"] if p["phase"] == phase)
 
 
+@pytest.mark.usefixtures("at_task")
 def test_a_level_with_two_parents_builds_on_a_merge_of_both(repo, cart, tmp_path) -> None:  # noqa: F811
     result, _ = drive(repo, cart, tmp_path, work=two_parent_work())
 
@@ -76,6 +79,7 @@ def test_a_level_with_two_parents_waits_until_both_are_complete(repo, cart, tmp_
     assert JOIN not in git("branch", "--format=%(refname:short)", cwd=repo).splitlines()
 
 
+@pytest.mark.usefixtures("at_task")
 def test_a_conflicting_pair_is_blocked_with_the_assembly_cause(repo, cart, tmp_path) -> None:  # noqa: F811
     patches = {
         "t1-probe": readme_patch("# one"),
@@ -96,6 +100,7 @@ def test_a_conflicting_pair_is_blocked_with_the_assembly_cause(repo, cart, tmp_p
     assert JOIN not in git("branch", "--format=%(refname:short)", cwd=repo).splitlines()
 
 
+@pytest.mark.usefixtures("at_task")
 def test_a_one_parent_chain_is_unchanged(repo, cart, tmp_path) -> None:  # noqa: F811
     result, _ = drive(repo, cart, tmp_path)
 

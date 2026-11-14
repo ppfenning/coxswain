@@ -15,6 +15,7 @@ from agent_tools.remote_argv import (
     agent_refspec,
     base_sync_argv,
     branch_push_argv,
+    cartridges_fetch_argv,
     decompose_launch_argv,
     epic_refspec,
     launch_argv,
@@ -179,6 +180,7 @@ def launch_plan(
     cartridges: str | None = None,
     chair_courier: str | None = None,
     phase: str | None = None,
+    cartridge_sha: str | None = None,
 ) -> list[list[str]]:
     """The argv that `launch_on_host` runs in order: the rsync push, then, when `cartridges` is given, a mirroring
     rsync push of that directory (a path relative to the chair's workspace) and an rsync check that it now matches,
@@ -198,7 +200,10 @@ def launch_plan(
     (`sync_argvs`); with no `base` the repo follows `repo_head` only when detached (see `_sync_argvs`).
     With `graph="decompose"` the first step copies the one file `intake` (a path relative to the chair's work store)
     to the same relative path under the host workspace, and the last starts `route launch decompose` on it.
-    A `chair_courier` destination is set as COX_CHAIR_COURIER in the environment of that last command."""
+    A `chair_courier` destination is set as COX_CHAIR_COURIER in the environment of that last command.
+    With a `cartridge_sha` (the chair published its cartridges to the store) nothing is copied for them: the two
+    rsync steps give way to one ssh step, after the harness sync so the host's `cox` knows the command, in which
+    the host writes that snapshot itself."""
     place = locate if locate is not None else (lambda path: f"{host.ssh}:{path}")
     workspace = host.workspace_dir.rstrip("/")
     src = f"work/{initiative}"
@@ -220,9 +225,14 @@ def launch_plan(
         launch_step = ssh_argv(host.ssh, launch_argv(remote_dir, run_id, label, phase, chair_courier=chair_courier))
     else:
         raise ValueError(f"unknown graph {graph!r}: a remote launch plan covers epic and decompose")
+    fetch_steps = (
+        []
+        if cartridge_sha is None
+        else [ssh_argv(host.ssh, cartridges_fetch_argv(cartridge_sha, f"{workspace}/{cartridges or 'cartridges'}"))]
+    )
     cartridge_steps = (
         []
-        if cartridges is None
+        if cartridges is None or cartridge_sha is not None
         else [
             rsync_push_argv(cartridges, place(f"{workspace}/{cartridges}"), mirror=True),
             rsync_check_argv(cartridges, place(f"{workspace}/{cartridges}")),
@@ -258,7 +268,7 @@ def launch_plan(
             for _, refspec in _relaunch_branches(initiative, relaunch)
         ]
     )
-    return [rsync_step, *cartridge_steps, *harness_steps, *repo_steps, *push_steps, launch_step]
+    return [rsync_step, *cartridge_steps, *harness_steps, *fetch_steps, *repo_steps, *push_steps, launch_step]
 
 
 def courier_ssh_of(profile: Mapping | None) -> str | None:
@@ -302,6 +312,7 @@ def launch_on_host(
     cartridges: str | None = None,
     profile: Mapping | None = None,
     phase: str | None = None,
+    cartridge_sha: str | None = None,
 ) -> dict | LaunchError:
     """`preflight` is a refusal line from a check made before anything is copied; None lets the launch go on.
     `tools` are the executables the repo's checks run: one `probe` of the host's lane PATH, before the copy, refuses
@@ -342,7 +353,7 @@ def launch_on_host(
         host, initiative, run_id, label, locate, repo, harness_dir, relaunch,
         home=home, host_checkouts=host_checkouts, harness_head=harness_head, repo_head=repo_head, base=base,
         harness_base=harness_base, graph=graph, intake=intake, cartridges=cartridges,
-        chair_courier=courier_ssh_of(profile), phase=phase,
+        chair_courier=courier_ssh_of(profile), phase=phase, cartridge_sha=cartridge_sha,
     )
     rsync_argv, ssh_cmd = plan[0], plan[-1]
     pushed = run(rsync_argv)
@@ -350,7 +361,7 @@ def launch_on_host(
         copied = f"work/{initiative}" if graph == "epic" else f"{intake}"
         return LaunchError("rsync", f"rsync of {copied} to {host.name} exited {pushed}")
     next_step = 1
-    if cartridges is not None:
+    if cartridges is not None and cartridge_sha is None:
         other = "the lane would run a cartridge other than the chair's"
         cartridges_pushed = run(plan[next_step])
         if cartridges_pushed != 0:
@@ -375,6 +386,16 @@ def launch_on_host(
                 "harness",
                 f"updating the harness at {_sync_path(harness_dir, host_checkouts, home)} on {host.name} exited {updated}: "
                 "the lane would run an older harness than the store",
+            )
+    if cartridge_sha is not None:
+        code, said = probe(plan[next_step])
+        next_step += 1
+        if code != 0:
+            why = said.strip().splitlines()[-1] if said.strip() else f"exit {code}"
+            return LaunchError(
+                "cartridges",
+                f"{host.name} could not write cartridge snapshot {cartridge_sha[:12]} from the store ({why}): "
+                "the lane would run a cartridge other than the chair's",
             )
     if repo is not None and base is not None:
         refused = base_refusal(host.name, base.sha, *probe(plan[next_step]))

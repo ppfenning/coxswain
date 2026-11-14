@@ -37,13 +37,21 @@ than cautious.
 ## Test data
 
 In any repository that ships a `.github/check_clean.py`, tests and fixtures use
-only neutral stand-ins. The one neutral home directory is `/home/user`, the
-home folder of a user named `user`. Hosts are example names with no `.lan`
-suffix. Ssh users and operator or team settings are a neutral word such as
-`dev` or `acme`. No private-network or tailnet address appears.
+only neutral stand-ins. Tests build their paths from pytest's `tmp_path` or
+from a neutral constant such as a lane checkout. A path that starts with a
+slash, then `home` or `Users`, then a name, such as `/home/<name>` or
+`/Users/<name>`, or that starts with a tilde and a slash, such as `~/`, never
+appears in a test or fixture, even a made-up one. `tmp_path` is preferred. The
+one neutral home directory is `/home/user`, the home folder of a user named
+`user`, and it is only for data that must look like a home folder. Hosts are
+example names with no `.lan` suffix. Ssh users and operator or team settings
+are a neutral word such as `dev` or `acme`. No private-network or tailnet
+address appears.
 
 CI's clean check rejects anything else, and the names rule reads a pattern you
-cannot see, so the safe move is never to use a real name or path.
+cannot see, so the safe move is never to use a real name or path. The harness
+runs the clean check on your patch before review, so a hit costs a fix round
+inside the same attempt.
 
 ## What good looks like
 

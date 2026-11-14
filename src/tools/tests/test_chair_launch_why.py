@@ -137,6 +137,49 @@ def test_pace_cap_zero_is_pacing():
     assert _reason(pace_cap=0) == "paced against the weekly target"
 
 
+def test_cap_spent_names_the_spent_cap_for_a_remote_initiative_with_a_free_lane():
+    assert _reason(initiatives=[_ini(host="h1")], cap_spent=True, free_lanes=2) == "launch cap reached this tick"
+
+
+def test_cap_spent_with_pace_cap_zero_stays_paced():
+    assert _reason(cap_spent=True, pace_cap=0) == "paced against the weekly target"
+
+
+def test_cap_spent_loses_to_a_withheld_name():
+    assert _reason(cap_spent=True, withheld_by={"quarantined": frozenset({"a"})}) == "quarantined"
+
+
+def test_cap_spent_beats_the_no_lane_reason():
+    assert _reason(cap_spent=True, no_host=True) == "launch cap reached this tick"
+
+
+def test_cap_spent_beats_a_release_hold_and_a_target_release_above_current():
+    held = _why([_ini(hold="waiting for design")], cap_spent=True)
+    above = _why([_ini(target_release="0.48.0", current_version="0.47.0")], cap_spent=True)
+    assert [a["reason"] for a in held + above] == ["launch cap reached this tick"] * 2
+
+
+def test_cap_spent_does_not_depend_on_the_host_field():
+    for ini in (_ini(host=""), _ini(host="h1"), _ini()):
+        assert _reason(initiatives=[ini], cap_spent=True, free_lanes=0) == "launch cap reached this tick"
+
+
+def test_cap_spent_loses_to_every_reason_ahead_of_it():
+    holds = [{"kind": "needs_chair", "initiative": "a", "other": "b"}]
+    assert _reason(initiatives=[_ini(dag_problem="b needs x")], cap_spent=True) == "invalid DAG: b needs x"
+    assert _reason(skips={"a": "too many"}, cap_spent=True) == "launch budget: too many"
+    assert _reason(steer_holds=holds, cap_spent=True) == "steer hold: waiting on b"
+    assert _reason(initiatives=[_ini(scheduled_later="after x")], cap_spent=True) == "after x"
+    assert _reason(initiatives=[_ini(host="")], orchestrating=True, cap_spent=True) == (
+        "orchestration mode: it would build on the chair machine"
+    )
+
+
+def test_cap_spent_defaults_to_false():
+    assert _reason() == LEFT_OUT
+    assert _reason(no_host=True) == "no lane free on an eligible host"
+
+
 def test_hold_is_named():
     assert _reason(initiatives=[_ini(hold="waiting for design")]) == "on hold: waiting for design"
 

@@ -24,6 +24,10 @@ EXPECTED_ORDER = (
     "chair_actions",
     "hosts",
     "id_sequence",
+    "landing_records",
+    "land_queue",
+    "courier_log",
+    "cartridge_snapshots",
 )
 
 SEED = {
@@ -57,6 +61,21 @@ SEED = {
          "updated_at": "2026-09-25T00:00:00Z", "updated_by": "chair"},
     ],
     "id_sequence": [{"scope": "initiative", "next": 1}],
+    "landing_records": [
+        {"initiative": "i1", "repo": "r", "state": "building", "record_json": '{"initiative": "i1"}',
+         "created_at": "2026-09-25T00:00:00Z", "updated_at": "2026-09-25T00:00:00Z"},
+    ],
+    "land_queue": [
+        {"id": "phase_merge:i1:p1", "kind": "phase_merge", "initiative": "i1", "phase": "p1", "repo": "r", "parent": "",
+         "state": "queued", "reason": "phase built", "queued_at": "2026-09-25T00:00:00Z", "claimed_by": "",
+         "claimed_at": "", "lease_until": "", "attempts": 0, "last_error": "", "updated_at": "2026-09-25T00:00:00Z"},
+    ],
+    "courier_log": [
+        {"line_id": "l1", "at": "2026-09-25T00:00:00.000000Z", "line": '{"id": "m1", "to": "chair", "ack": false}'},
+    ],
+    "cartridge_snapshots": [
+        {"sha": "a" * 64, "at": "2026-09-25T00:00:00Z", "by": "chair-host", "files_json": '{"team/cartridge.yaml": {"text": "k: v"}}'},
+    ],
 }
 
 

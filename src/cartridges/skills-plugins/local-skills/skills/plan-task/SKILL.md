@@ -23,6 +23,9 @@ and everything you decide leaves in the structured output.
 - **Steps are ordered and checkable.** Each step names an action and the
   observable fact that proves it happened. "Improve the parser" is not a step;
   "make `parse_row` return None on a short row, proven by the new test" is.
+- **Tests get neutral paths.** When a step adds or edits a test, the step names
+  `tmp_path` or a neutral constant for any path the test needs. It never names
+  a home-shaped path such as `/home/<name>`, `/Users/<name>` or `~/`.
 - **`files_expected` is a promise, not a hope.** Name the files this work
   should touch. The reviewer uses this list to notice scope creep — a build
   that touches files the plan never named is a finding, so think about the

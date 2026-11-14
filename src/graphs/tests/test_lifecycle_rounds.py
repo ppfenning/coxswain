@@ -55,3 +55,103 @@ def test_a_run_revised_once_then_approved_records_two_rounds_in_order(
         (1, "review", "revise"),
         (2, "review", "approve"),
     ]
+
+
+# Assembled at runtime so this file passes the clean check it exercises.
+HOME_LITERAL = "/ho" + "me/" + "someone"
+HIT_LINE = f"tests/test_a.py:1: home-path: '{HOME_LITERAL}'"
+
+
+def _test_patch(line: str) -> str:
+    return f"--- a/tests/test_a.py\n+++ b/tests/test_a.py\n-old line\n+{line}\n+assert True\n"
+
+
+def _stub_gate(monkeypatch, outcomes=None):
+    """A gate edge that flags a patch carrying the literal and records every patch it sees."""
+    seen: list[str] = []
+
+    def gate(patch, checks, repo_dir):
+        seen.append(patch)
+        if outcomes is not None:
+            return outcomes
+        if HOME_LITERAL in patch:
+            return f"The clean check found a personal reference in the patch:\n  {HIT_LINE}", "ran"
+        return None, "ran"
+
+    monkeypatch.setattr(lifecycle_propose, "clean_gate_outcome", gate)
+    return seen
+
+
+def _build(build_response: dict, line: str) -> dict:
+    return {**build_response, "patch": _test_patch(line), "files_touched": ["tests/test_a.py"]}
+
+
+def _run(cartridge, scripted):
+    return lifecycle_propose.run(
+        {"run_id": "run-1", "date": "2026-11-11", "ticket": "TICKET-1", "cartridge": cartridge}, scripted
+    )
+
+
+def test_a_clean_critique_is_a_revise_with_one_clean_check_finding() -> None:
+    assert lifecycle_propose._clean_critique(HIT_LINE) == {
+        "verdict": "revise",
+        "findings": [{"charter_principle": "clean check", "detail": HIT_LINE, "file": ""}],
+        "rationale": "clean_check",
+    }
+
+
+def test_a_home_literal_is_flagged_before_review_and_fixed_on_the_retry(
+    monkeypatch, cartridge, plan_response, build_response
+) -> None:
+    seen = _stub_gate(monkeypatch)
+    first = _build(build_response, f'path = "{HOME_LITERAL}"')
+    second = _build(build_response, "path = tmp_path")
+    scripted = ScriptedRunner({"plan": plan_response, "build": [first, second], "review_charter": [APPROVE]})
+    result = _run(cartridge, scripted)
+
+    assert [(r["attempt"], r["source"], r["verdict"]) for r in result["fix_loop"]["rounds"]] == [
+        (1, "clean check", "revise"),
+        (2, "review", "approve"),
+    ]
+    roles = [c["role"] for c in scripted.calls if c["role"] in ("build", "review_charter")]
+    assert roles == ["build", "build", "review_charter"]
+    retry_prompt = next(c["prompt"] for c in scripted.calls if c["role"] == "build" and "Standing critique" in c["prompt"])
+    assert "(clean check)" in retry_prompt
+    assert HIT_LINE in retry_prompt
+    assert seen == [first["patch"], second["patch"]]
+    evidence = {e["check"]: e["output"] for e in result["proposals"][0]["evidence"]}
+    assert evidence["fix loop"] == "approved on attempt 2 of 3"
+    assert evidence["clean gate"] == "ran on attempt 2: no hits"
+
+
+def test_a_retry_that_still_carries_the_literal_is_flagged_again(
+    monkeypatch, cartridge, plan_response, build_response
+) -> None:
+    _stub_gate(monkeypatch)
+    builds = [
+        _build(build_response, f'path = "{HOME_LITERAL}"'),
+        # Moves enough text that the no-progress check sees a real second attempt.
+        _build(build_response, f'def home_dir():\n+    return "{HOME_LITERAL}"\n+\n+path = home_dir()'),
+        _build(build_response, "path = tmp_path"),
+    ]
+    scripted = ScriptedRunner({"plan": plan_response, "build": builds, "review_charter": [APPROVE]})
+    result = _run(cartridge, scripted)
+
+    assert [(r["attempt"], r["source"]) for r in result["fix_loop"]["rounds"]] == [
+        (1, "clean check"),
+        (2, "clean check"),
+        (3, "review"),
+    ]
+    assert len([c for c in scripted.calls if c["role"] == "review_charter"]) == 1
+
+
+def test_a_gate_that_exited_two_is_a_skipped_row_and_never_blocks(
+    monkeypatch, cartridge, plan_response, build_response
+) -> None:
+    _stub_gate(monkeypatch, outcomes=(None, "skipped"))
+    scripted = ScriptedRunner({"plan": plan_response, "build": build_response, "review_charter": [APPROVE]})
+    result = _run(cartridge, scripted)
+
+    assert [(r["attempt"], r["source"], r["verdict"]) for r in result["fix_loop"]["rounds"]] == [(1, "review", "approve")]
+    evidence = {e["check"]: e["output"] for e in result["proposals"][0]["evidence"]}
+    assert evidence["clean gate"] == "skipped on attempt 1: names pattern not exported (exit 2)"

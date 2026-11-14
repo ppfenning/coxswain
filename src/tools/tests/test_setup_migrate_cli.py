@@ -927,9 +927,11 @@ def host(where="installs/coxswain"):
 
 
 @pytest.fixture
-def migrated(layout, monkeypatch):
+def migrated(layout, monkeypatch, board_store):
     """The layout with the pre-home compatibility links at repos/ and their marker, after a plain apply: the links
-    now name retired checkouts, and one task file names an old path."""
+    now name retired checkouts, and one task row in the store (and its file) names an old path."""
+    from agent_tools import store_fill
+
     repos = layout.user / "repos"
     repos.mkdir()
     for name in NAMES:
@@ -941,6 +943,7 @@ def migrated(layout, monkeypatch):
     marker.parent.mkdir(parents=True)
     marker.write_text(json.dumps({"old_root": str(repos), "new_root": str(layout.installs)}))
     assert run(apply=True) == 0
+    store_fill.fill_workspace(layout.user / "ws")  # the store is the board: the task is a row before finish reads it
     monkeypatch.setattr(cli, "_migrate_observe_hosts", lambda locs: [host()])
     layout.task, layout.marker, layout.repos = task, marker, repos
     return layout

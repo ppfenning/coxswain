@@ -90,6 +90,27 @@ def can_start(node: Node, withheld: frozenset[str]) -> bool:
     return node.status == "running" or (node.status == "ready" and node.initiative not in withheld)
 
 
+def placeable(
+    initiatives: Sequence[Initiative], nodes: Mapping[Key, Node], withheld: frozenset[str] = frozenset()
+) -> frozenset[Key]:
+    """The node keys that can start once their own initiative's parents finish.
+
+    A node is placeable when it can start and every parent that is still a node is placeable too, so a ready
+    phase behind a waiting, blocked or withheld one is not: the planner never places it.
+    """
+    parents = {(i.id, p.id): tuple((i.id, q) for q in p.parents if (i.id, q) in nodes) for i in initiatives for p in i.phases}
+    memo: dict[Key, bool] = {}
+
+    def ok(key: Key, seen: frozenset[Key]) -> bool:
+        if key not in memo:
+            memo[key] = key not in seen and can_start(nodes[key], withheld) and all(
+                ok(q, seen | {key}) for q in parents.get(key, ())
+            )
+        return memo[key]
+
+    return frozenset(k for k in nodes if ok(k, frozenset()))
+
+
 def conflict_edges(
     initiatives: Sequence[Initiative],
     nodes: Mapping[Key, Node],
@@ -98,15 +119,17 @@ def conflict_edges(
 ) -> frozenset[Edge]:
     """One edge per pair of nodes in different initiatives of one repo whose surfaces overlap strictly.
 
-    The first node of the pair, the one the other waits behind, must be able to start.
+    The first node of the pair, the one the other waits behind, must be placeable: one behind a waiting, blocked or
+    withheld phase of its own initiative never places, so an edge from it would leave the second unplaced for good.
     """
     ranks = _ranks(initiatives)
+    starts = placeable(initiatives, nodes, withheld)
     ordered = (
         _ordered(a, b, ranks)
         for a, b in combinations(nodes.values(), 2)
         if a.initiative != b.initiative and a.repo == b.repo and shared_paths(a.surfaces, b.surfaces)
     )
-    return frozenset((first.key, second.key) for first, second in ordered if can_start(first, withheld))
+    return frozenset((first.key, second.key) for first, second in ordered if first.key in starts)
 
 
 def build_graph(
