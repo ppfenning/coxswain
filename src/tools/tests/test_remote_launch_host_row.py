@@ -7,6 +7,8 @@ from test_route_cli import _unmeasured_window
 from agent_tools import run_store, usage_window
 from agent_tools.cli import _host_checkouts, main
 
+pytestmark = pytest.mark.usefixtures("board_store")  # the store is the board; these launches read its rows
+
 
 @pytest.fixture(autouse=True)
 def _no_ccusage(monkeypatch):

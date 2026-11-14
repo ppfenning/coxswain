@@ -90,18 +90,24 @@ def test_a_non_last_phase_at_ticket_plans_no_land_and_the_initiative_still_launc
     assert [a["initiative"] for a in _kinds(actions, _LAUNCH)] == ["a"]
 
 
-def test_a_ticket_phase_inside_a_refusal_backoff_holds_the_initiative_from_launches() -> None:
+def test_a_refusal_an_old_phase_land_left_behind_holds_nothing_at_initiative() -> None:
+    """The chair plans no land there, so no backoff applies, whatever the steward once reported: the initiative launches."""
     refusal = {"initiative": "a", "phase": "p1", "run": "run-1", "attempts": 1, "last_refused_at": _NOW.isoformat()}
     facts = _complete(_p1_facts(land_refusals=[refusal]))
-    assert backoff_held(facts, _NOW) == frozenset({"a"})
-    assert _kinds(plan_tick(facts, _NOW), _LANDS | _LAUNCH) == []
+    assert backoff_held(facts, _NOW) == frozenset()
+    actions = plan_tick(facts, _NOW)
+    assert _kinds(actions, _LANDS) == []
+    assert [a["initiative"] for a in _kinds(actions, _LAUNCH)] == ["a"]
 
 
-def test_level_and_task_still_land_a_non_last_phase() -> None:
-    for land_at in ("level", "task"):
-        actions = plan_tick(_p1_facts(land_at), _NOW)
-        assert [a["phase"] for a in _kinds(actions, {"land_phase"})] == ["p1"]
-        assert _kinds(actions, {"deferred"}) == []
+def test_task_still_lands_a_non_last_phase() -> None:
+    actions = plan_tick(_p1_facts("task"), _NOW)
+    assert [a["phase"] for a in _kinds(actions, {"land_phase"})] == ["p1"]
+    assert _kinds(actions, {"deferred"}) == []
+
+
+def test_the_retired_level_plans_no_land_for_a_non_last_phase_as_initiative_does() -> None:
+    assert _kinds(plan_tick(_p1_facts("level"), _NOW), {"land_phase"}) == []
 
 
 def test_a_quarantined_sibling_at_ticket_plans_no_land() -> None:

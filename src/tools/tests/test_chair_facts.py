@@ -25,6 +25,7 @@ from agent_tools.chair_facts import (
     repo_dir_name,
     resolve_idle_stall_minutes,
     stale_checkout_keys,
+    steward_asked_for,
     todo_initiative_facts,
     waiting_reported_from_actions,
     windowed_actions,
@@ -157,6 +158,26 @@ def test_a_work_rows_callables_rows_appear_under_todo_initiatives():
     rows = [_work_row("initiative", "i", "i", "todo"), _work_row("task", "i", "a", "ready"), _work_row("task", "i", "b", "todo")]
     deps = replace(_deps(), work_rows=lambda: rows)
     assert gather_facts(deps, NOW)["todo_initiatives"] == [{"id": "i", "task_states": ["ready", "todo"]}]
+
+
+def test_a_work_rows_callables_rows_appear_under_chat_epics_and_none_gathers_no_such_key():
+    rows = [_work_row("initiative", "i", "i", "todo"), _work_row("task", "i", "a", "ready"), _work_row("task", "i", "b", "todo")]
+    facts = gather_facts(replace(_deps(), work_rows=lambda: rows, run_exited=lambda: {"i": True}), NOW)
+    [epic] = facts["chat_epics"]
+    assert (epic["epic_id"], epic["exited"]) == ("i", True)
+    assert [t for level in epic["levels"] for t in level["tasks"]] == [{"id": "a", "state": "ready"}, {"id": "b", "state": "building"}]
+    assert "chat_epics" not in gather_facts(replace(_deps(), work_rows=None), NOW)
+    assert "steward" not in facts
+
+
+@pytest.mark.parametrize("value", [True, "true", " True "])
+def test_an_explicit_true_steward_setting_is_asked_for(value):
+    assert steward_asked_for(value) is True
+
+
+@pytest.mark.parametrize("value", [None, "banana", 0, 1, [], "", "yes", "false", False])
+def test_an_absent_or_malformed_steward_setting_is_not_asked_for(value):
+    assert steward_asked_for(value) is False
 
 
 def test_a_remote_unfetched_callables_mapping_appears_under_remote_unfetched():
@@ -632,6 +653,11 @@ def test_lease_is_mine_only_for_this_holder_on_a_live_lease():
     assert mine(holder=MINE, stale=True) is False
 
 
+def test_lease_facts_carries_session_held_only_when_the_record_has_it():
+    assert lease_facts({"epoch": 4, "holder": MINE, "session_held": True}, "s", 7, "h")["session_held"] is True
+    assert "session_held" not in lease_facts({"epoch": 4, "holder": MINE}, "s", 7, "h")
+
+
 def test_gather_facts_fills_every_key_from_the_fakes():
     # merge_queue and host_load_ceiling are gathered only when configured, so these fakes configure them.
     queue = {"batch_size": 3, "wait_s": 90}
@@ -639,11 +665,12 @@ def test_gather_facts_fills_every_key_from_the_fakes():
     facts = gather_facts(deps, NOW)
     # login_hosts is not yet declared on Facts: a later task adds it there once the login watch reads it.
     # tuning, landed_main and land_outcomes are all filled in gather_facts now.
-    # steward is declared on Facts and read by the planner; the next task gathers it, until then it is absent.
+    # chat_epics is gathered only when the deps supply work_rows, and these fakes do not.
     # live_phases is gathered only when the deps supply it, and these fakes do not.
     # previous_schedule_feed is read by the planner; no task gathers it yet.
+    # merged_prs is read by plan_missed_closes and handled_keys by plan_recover; the facts edge gathers neither yet.
     declared = set(Facts.__annotations__) - {
-        "steward", "live_phases", "schedule_inputs", "previous_schedule_feed",
+        "chat_epics", "live_phases", "schedule_inputs", "previous_schedule_feed", "merged_prs", "handled_keys",
     }
     assert set(facts) == declared | {"login_hosts"}
     assert facts["dispatch"] == {"max_in_flight": 2, "live_runs": 1, "hosts": []}
@@ -783,7 +810,7 @@ def test_rows_drive_ready_intake_quarantined_and_stranded_facts_with_files_ignor
     initiative_i = next(i for i in facts["initiatives"] if i["id"] == "i")
     assert initiative_i == {
         "id": "i", "started": True, "ready_tasks": [{"id": "a", "phase": "p1", "needs": [], "requires": []}], "waiting_tasks": [],
-        "landed": {"c"}, "land_at": "ticket",  # c is approved, which a ticket initiative counts as landed
+        "landed": {"c"}, "land_at": "initiative",  # c is approved, which an initiative-grain epic counts as landed
     }
     assert facts["intake"] == ["intake/q1.md"]
     assert facts["quarantines"] == [
@@ -970,8 +997,8 @@ def _store_with_recorder(tmp_path, monkeypatch, at: datetime):
 def _planned_kinds(tmp_path, now: datetime) -> list[str]:
     """Facts through the planner's own read path, `read_chair_actions` under `windowed_actions`, then `plan_lands`."""
     actions = windowed_actions(lambda n: read_chair_actions(tmp_path, n), now)
-    # land_at level: an incomplete ticket epic plans no land, so it would leave the back-off nothing to hold off.
-    facts = gather_facts(replace(_deps(), actions=actions, land_at_values=lambda: {"i": "level"}), now)
+    # land_at task: an incomplete initiative-grain epic plans no land, so it would leave the back-off nothing to hold off.
+    facts = gather_facts(replace(_deps(), actions=actions, land_at_values=lambda: {"i": "task"}), now)
     return [a["kind"] for a in plan_lands(facts, now)]
 
 

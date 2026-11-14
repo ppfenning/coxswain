@@ -96,7 +96,7 @@ def test_a_live_phase_entry_holds_only_that_phases_in_progress_and_ready_surface
         _row("b", "p2", "ready", ["b.rs"]),
     ]
     assert running_initiatives(set(), rows, {"x": "/r"}, live_phases=[("x", "p1")]) == [
-        {"id": "x", "repo": "/r", "surfaces": ["a.rs", "a2.rs"], "phase": "p1", "live": True}
+        {"id": "x", "repo": "/r", "surfaces": ["a.rs", "a2.rs"], "phase": "p1", "live": True, "state": "running"}
     ]
 
 
@@ -104,8 +104,8 @@ def test_an_approved_unlanded_task_of_a_live_phase_stays_held_by_the_whole_initi
     rows = [_row("a", "p1", "in_progress", ["a.rs"]), _row("a3", "p1", "approved", ["a3.rs"])]
     got = running_initiatives(set(), rows, {"x": "/r"}, unlanded={"x"}, live_phases=[("x", "p1")])
     assert got == [
-        {"id": "x", "repo": "/r", "surfaces": ["a3.rs"], "live": False},
-        {"id": "x", "repo": "/r", "surfaces": ["a.rs"], "phase": "p1", "live": True},
+        {"id": "x", "repo": "/r", "surfaces": ["a3.rs"], "live": False, "state": "awaiting_land"},
+        {"id": "x", "repo": "/r", "surfaces": ["a.rs"], "phase": "p1", "live": True, "state": "running"},
     ]
 
 
@@ -114,14 +114,16 @@ def test_a_whole_live_initiative_keeps_its_entry_without_phase_beside_a_live_pha
     rows = rows + [{**_row("c", "p1", "ready", ["c.rs"]), "initiative": "y"}]
     got = running_initiatives({"y"}, rows, {"x": "/r", "y": "/s"}, live_phases=[("x", "p2")])
     assert got == [
-        {"id": "y", "repo": "/s", "surfaces": ["c.rs"], "live": True},
-        {"id": "x", "repo": "/r", "surfaces": ["b.rs"], "phase": "p2", "live": True},
+        {"id": "y", "repo": "/s", "surfaces": ["c.rs"], "live": True, "state": "running"},
+        {"id": "x", "repo": "/r", "surfaces": ["b.rs"], "phase": "p2", "live": True, "state": "running"},
     ]
 
 
 def test_running_initiatives_without_live_phases_is_unchanged():
     rows = [_row("a", "p1", "approved", ["a.rs"]), _row("b", "p2", "ready", ["b.rs"])]
-    assert running_initiatives({"x"}, rows, {"x": "/r"}) == [{"id": "x", "repo": "/r", "surfaces": ["a.rs", "b.rs"], "live": True}]
+    assert running_initiatives({"x"}, rows, {"x": "/r"}) == [
+        {"id": "x", "repo": "/r", "surfaces": ["a.rs", "b.rs"], "live": True, "state": "running"}
+    ]
 
 
 def _write(path: Path, text: str) -> None:
@@ -180,7 +182,7 @@ def test_gather_facts_shows_a_live_phase_run_and_lists_only_the_other_phase_as_l
     (entry,) = facts["initiatives"]
     assert [(p["phase"], p["surfaces"]) for p in entry["phases"]] == [("p2", ["src/b.rs"])]
     assert facts["live_phases"] == [{"initiative": "x", "phase": "p1"}]
-    assert facts["running"] == [{"id": "x", "repo": "/r", "surfaces": ["src/a.rs"], "phase": "p1", "live": True}]
+    assert facts["running"] == [{"id": "x", "repo": "/r", "surfaces": ["src/a.rs"], "phase": "p1", "live": True, "state": "running"}]
 
 
 def test_gather_facts_with_no_phase_rows_gives_initiatives_without_a_phases_key(tmp_path):

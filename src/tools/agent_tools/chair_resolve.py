@@ -38,6 +38,7 @@ class SessionHolder:
     kind: Literal["free", "stale", "loop", "session"]
     label: str | None = None
     is_service: bool = False
+    host: str | None = None
 
 
 @dataclass(frozen=True)
@@ -128,6 +129,24 @@ def session_take_decision(policy: object, holder: SessionHolder, explicit_take: 
             return TakeDecision("take", "chair: held by another session; the policy always takes it over")
         return TakeDecision("observer", "chair: held by another session; the offer flow decides")
     return TakeDecision("observer", "chair: holder not recognised; a non-chair session is starting")
+
+
+def session_start_decision(
+    policy: object, record: Mapping[str, Any] | None, live: SessionHolder | None, caller_holds_record: bool, *, caller_label: str | None = None,
+) -> TakeDecision:
+    """Pure. The SessionStart hook's decision. The hook source (startup, resume, compact, clear) cannot change the outcome, so it is not an argument.
+
+    The caller is the live holder only when `caller_label`, its own label, equals the live holder's. The record's label cannot stand in: the live holder wrote the record, so a resumed session that matches it by session id would pass as the holder.
+    """
+    if live is None:
+        return session_take_decision(policy, SessionHolder("free"), False)
+    is_live_holder = caller_holds_record and record is not None and bool(caller_label) and caller_label == live.label == record.get("session")
+    if is_live_holder:
+        return TakeDecision("take", "chair: held by this session")
+    line = f"chair: held by {live.label or '?'} on {live.host or '?'}"
+    if resolve_session_takes(policy) == "always":
+        return TakeDecision("take", f"{line}; the policy always takes it over")
+    return TakeDecision("observer", f"{line}; not the chair")
 
 
 def with_session(argv: list[str], flag: str, value: str, extra_args: list[str]) -> list[str]:

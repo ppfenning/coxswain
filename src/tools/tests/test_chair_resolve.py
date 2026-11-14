@@ -390,3 +390,55 @@ def test_a_live_non_loop_session_is_taken_over_only_under_always():
 def test_held_line_names_the_service_and_another_chair_loop():
     assert chair_resolve.held_line("coxswain-service", True) == "chair held by coxswain-service (service)"
     assert chair_resolve.held_line("chair-2", False) == "chair held by chair-2 (chair loop)"
+
+
+_SERVICE = chair_resolve.SessionHolder("loop", "coxswain-service", True, "box-1")
+_SERVICE_RECORD = {"session": "coxswain-service", "host": "box-1", "session_id": "s-1"}
+_OBSERVER = chair_resolve.TakeDecision("observer", "chair: held by coxswain-service on box-1; not the chair")
+
+
+def test_a_resumed_session_matching_the_services_own_record_by_session_id_is_observer_and_names_holder_and_host():
+    assert chair_resolve.session_start_decision("when_free", _SERVICE_RECORD, _SERVICE, True, caller_label="chair-2") == _OBSERVER
+
+
+def test_a_caller_that_holds_the_record_but_gives_no_label_is_not_taken_for_the_live_service():
+    assert chair_resolve.session_start_decision("when_free", _SERVICE_RECORD, _SERVICE, True) == _OBSERVER
+
+
+def test_a_live_service_holder_is_observer_under_never():
+    assert chair_resolve.session_start_decision("never", _SERVICE_RECORD, _SERVICE, True, caller_label="chair-2") == _OBSERVER
+
+
+def test_a_live_service_holder_is_observer_when_the_caller_does_not_hold_the_record():
+    assert chair_resolve.session_start_decision("when_free", _SERVICE_RECORD, _SERVICE, False, caller_label="chair-2") == _OBSERVER
+
+
+def test_a_live_service_holder_is_taken_over_under_always():
+    assert chair_resolve.session_start_decision("always", _SERVICE_RECORD, _SERVICE, True, caller_label="chair-2").action == "take"
+
+
+def test_a_live_holder_that_is_the_caller_keeps_held_by_this_session():
+    holder = chair_resolve.SessionHolder("loop", "chair-2", False, "box-1")
+    record = {"session": "chair-2", "host": "box-1", "session_id": "s-1"}
+    assert chair_resolve.session_start_decision("never", record, holder, True, caller_label="chair-2") == chair_resolve.TakeDecision("take", "chair: held by this session")
+
+
+def test_an_unlabelled_live_holder_is_never_the_caller_even_when_the_record_has_no_session():
+    holder = chair_resolve.SessionHolder("loop", None, False, "box-1")
+    assert chair_resolve.session_start_decision("when_free", {"host": "box-1"}, holder, True) == chair_resolve.TakeDecision("observer", "chair: held by ? on box-1; not the chair")
+
+
+def test_no_live_holder_is_take_under_when_free_and_always():
+    assert [chair_resolve.session_start_decision(policy, _SERVICE_RECORD, None, True).action for policy in ("when_free", "always")] == ["take", "take"]
+
+
+def test_no_live_holder_is_observer_under_never():
+    assert chair_resolve.session_start_decision("never", None, None, False) == chair_resolve.session_take_decision("never", chair_resolve.SessionHolder("free"), False)
+
+
+def test_a_holder_without_a_host_is_named_with_a_question_mark():
+    assert chair_resolve.session_start_decision("never", None, chair_resolve.SessionHolder("loop", "chair-3"), False).line == "chair: held by chair-3 on ?; not the chair"
+
+
+def test_host_is_the_last_session_holder_field_so_positional_calls_are_unchanged():
+    assert chair_resolve.SessionHolder("loop", "a", True, "h") == chair_resolve.SessionHolder(kind="loop", label="a", is_service=True, host="h")

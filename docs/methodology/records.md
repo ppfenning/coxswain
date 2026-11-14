@@ -16,8 +16,8 @@ and returned, rather than trusting a paraphrase of it.
 A run on the edge channel is not reproducible from a version number
 alone, so its record names the commit the checkout was at.
 
-From 0.17.0 the record lives in the run store (`runs/cox.db`, or the
-Postgres store a provider profile names). The run's totals, its phases,
+From 0.17.0 the record lives in the run store, the Postgres store a
+provider profile names. The run's totals, its phases,
 its gate decisions, its ledger rows and every model call are rows there.
 Each call's stream events are compacted into `runs/traces` when the run
 ends. The task records under `runs/<run>/tasks/` stay files, because

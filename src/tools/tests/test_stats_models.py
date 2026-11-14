@@ -29,19 +29,19 @@ def test_median_and_p90():
     assert (row.median_cost.count, row.p90_cost.count) == (10, 10)
 
 
-def test_cost_per_landed_with_zero_landed():
+def test_cost_per_completion_with_zero_landed():
     rows = [call(task="a", landed=False), call(task="b", landed=False)]
-    figure = summarise(rows)["build"]["m1"].cost_per_landed
+    figure = summarise(rows)["build"]["m1"].cost_per_completion
     assert (figure.value, figure.count) == (None, 0)
 
 
-def test_cost_per_landed_counts_distinct_tasks():
+def test_cost_per_completion_counts_distinct_tasks():
     rows = [
         call(task="a", cost=1.0, attempt=1, landed=True),
         call(task="a", cost=3.0, attempt=2, landed=True),
         call(task="b", cost=5.0, landed=False),
     ]
-    figure = summarise(rows)["build"]["m1"].cost_per_landed
+    figure = summarise(rows)["build"]["m1"].cost_per_completion
     assert (figure.value, figure.count) == (4.0, 1)
 
 

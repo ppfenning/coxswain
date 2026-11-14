@@ -9,6 +9,7 @@ import pytest
 
 from runner import anthropic_runner
 from runner.anthropic_runner import AnthropicRunner, AnthropicToolLoopAdapter, _to_anthropic
+from runner.claude_code_runner import _DIFF_CMD
 from runner.protocol import LimitStop, RunnerError
 from runner.tool_loop import ToolCall, run_tool_loop
 
@@ -52,7 +53,7 @@ def _repo(path: Path) -> Path:
 
 
 def _staged_diff(path: Path) -> str:
-    return subprocess.run("git add -A && git diff --cached", shell=True, cwd=path, capture_output=True, text=True).stdout
+    return subprocess.run(_DIFF_CMD, shell=True, cwd=path, capture_output=True, text=True).stdout
 
 
 def test_a_tool_use_block_becomes_a_tool_call_the_loop_executes(tmp_path):

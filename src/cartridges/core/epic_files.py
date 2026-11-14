@@ -17,7 +17,10 @@ def _title(raw: Any) -> str | None:
 
 
 def parse_epic(text: str, name: str) -> dict[str, Any]:
-    """{id, title, target_branch} from one epic file's frontmatter; absent keys are None. Every failure is a ValueError."""
+    """{id, title, target_branch} from one epic file's frontmatter; absent keys are None. Every failure is a ValueError.
+
+    `issue` (the epic's tracker issue, which an initiative's pull request names as `Part of #n`) and `epic_stack`
+    (its initiatives land as a stack on the epic branch) are added only when the file sets them."""
     stem = Path(name).stem
     try:
         meta, _ = _split_frontmatter(text, Path(name))
@@ -31,6 +34,8 @@ def parse_epic(text: str, name: str) -> dict[str, Any]:
         "id": epic_id,
         "title": _title(meta.get("title")),
         "target_branch": None if branch is None else valid_branch(branch, "epic"),
+        **({"issue": meta["issue"]} if meta.get("issue") is not None else {}),
+        **({"epic_stack": meta["epic_stack"]} if isinstance(meta.get("epic_stack"), bool) else {}),
     }
 
 

@@ -1,5 +1,6 @@
 import shlex
 
+import pytest
 from test_cli_launch_on import _fake_edge, _no_local_process, _setup
 from test_route_cli import _unmeasured_window
 
@@ -8,6 +9,8 @@ from agent_tools.cli import main
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_argv import chair_courier_env, decompose_launch_argv, launch_argv, ssh_argv
 from agent_tools.remote_launch import courier_ssh_of, launch_on_host, launch_plan
+
+pytestmark = pytest.mark.usefixtures("board_store")  # the store is the board; these launches read its rows
 
 HOST = LaneHost("box", "me@box", "/srv/ws")
 COURIER = "pat@chair.example"

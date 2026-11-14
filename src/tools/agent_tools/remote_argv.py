@@ -134,6 +134,13 @@ def rsync_file_argv(src_file: str, dest_dir_location: str) -> list[str]:
     return ["rsync", *_RSYNC_BOUND_OPTIONS, "--relative", src_file, dest_dir_location.rstrip("/") + "/"]
 
 
+def cartridges_fetch_argv(sha: str, into: str) -> list[str]:
+    """The lane host writes the chair's published cartridges itself, from the store, into the directory the rsync
+    used to fill. `--replace`: the launch names this host as a lane, whose copy is the chair's, as the mirroring
+    rsync treated it."""
+    return ["cox", "route", "cartridges", "fetch", "--sha", sha, "--into", into, "--replace"]
+
+
 def rsync_push_argv(src_dir: str, dest_location: str, *, mirror: bool = False) -> list[str]:
     """Trailing slashes on both ends copy directory contents; deletes at the destination only when `mirror`."""
     return ["rsync", *_RSYNC_BOUND_OPTIONS, *(["--delete"] if mirror else []), src_dir.rstrip("/") + "/", dest_location.rstrip("/") + "/"]
@@ -149,17 +156,37 @@ def rsync_pull_argv(src_location: str, dest: str) -> list[str]:
     return ["rsync", *_RSYNC_BOUND_OPTIONS, src_location, dest]
 
 
-def git_fetch_argv(repo_location: str, run: str) -> list[str]:
-    """The initiative is `run` without a trailing `-<digits>` phase/attempt suffix."""
+INCOMING_PREFIX = "refs/coxswain/incoming"
+FETCHED_PREFIX = "refs/coxswain/fetched"
+
+
+def incoming_ref(host: str, branch: str) -> str:
+    """Where a fetched phase branch lands before `remote_fetch.settle_phase_refs` decides what the local branch does."""
+    return f"{INCOMING_PREFIX}/{host}/{branch}"
+
+
+def fetched_ref(host: str, branch: str) -> str:
+    """The side ref that keeps a fetched phase tip which diverged from the local branch."""
+    return f"{FETCHED_PREFIX}/{host}/{branch}"
+
+
+# Wrong belief (2026-11-10): "a forced refspec onto refs/heads/epic/... just brings the lane's phase back". A lane whose
+# phase branch started fresh from main reset the chair's phase branch, and the approved merges it held were left on no
+# branch. Phase branches now land under refs/coxswain/incoming/<host>/ and only ever move forward from there.
+def git_fetch_argv(repo_location: str, run: str, host: str) -> list[str]:
+    """The initiative is `run` without a trailing `-<digits>` phase/attempt suffix.
+
+    Task branches map onto themselves without `+`, so git refuses a non-fast-forward; phase branches go to the
+    incoming namespace for `host`, forced, because that namespace is scratch."""
     initiative = re.sub(r"-\d+$", "", run)
     run_refspec = f"refs/heads/agents/{run}/*:refs/heads/agents/{run}/*"
-    phase_refspec = f"+refs/heads/epic/{initiative}/*:refs/heads/epic/{initiative}/*"
+    phase_refspec = f"+refs/heads/epic/{initiative}/*:{incoming_ref(host, f'epic/{initiative}')}/*"
     return ["git", "fetch", repo_location, run_refspec, phase_refspec]
 
 
-def git_fetch_phase_argv(repo_location: str, branch: str) -> list[str]:
+def git_fetch_phase_argv(repo_location: str, branch: str, host: str) -> list[str]:
     """`branch` is the full name, e.g. epic/<initiative>/<phase>; this reaches a phase outside the run id's prefix."""
-    return ["git", "fetch", repo_location, f"+refs/heads/{branch}:refs/heads/{branch}"]
+    return ["git", "fetch", repo_location, f"+refs/heads/{branch}:{incoming_ref(host, branch)}"]
 
 
 # Wrong belief (2026-10-30): "this fast-forwards the lane's repo to main". It only follows origin's default branch

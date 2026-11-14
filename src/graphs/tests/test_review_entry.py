@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
 from graphs.delivery import review_entry
+from harness import check_reuse
 from harness.cli import _build_parser
 from harness.registry import discover
 from runner import ScriptedRunner
@@ -110,6 +112,57 @@ def test_verify_evidence_applies_the_diff_and_runs_the_repos_own_checks_in_a_fre
 
     assert passed, evidence
     assert evidence == [{"check": "checks:exists", "output": "pass — (exit 0)"}]
+
+
+def _ledger_row(cmd: str, *, outcome: str) -> dict:
+    return {
+        "tree": "T",
+        "name": "exists",
+        "cmd": cmd,
+        "passed": outcome == "passed",
+        "outcome": outcome,
+        "exit_code": 0 if outcome == "passed" else 1,
+        "counts": {},
+        "cpu_seconds": 1.0,
+    }
+
+
+def _review_with_ledger(tmp_path: Path, monkeypatch, cmd: str, rows: list[dict]) -> tuple[bool, list[dict[str, str]]]:
+    _seed_repo(tmp_path)
+    diff = _diff_adding(tmp_path, "new.txt", "hello\n")
+    monkeypatch.setattr(check_reuse, "tree_of", lambda worktree: "T")
+    (tmp_path / ".git" / check_reuse.LEDGER_NAME).write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return review_entry._verify_evidence(str(tmp_path), "HEAD", diff, [{"name": "exists", "cmd": cmd}])
+
+
+def test_verify_evidence_serves_a_passed_ledger_row_without_running_the_check(tmp_path: Path, monkeypatch) -> None:
+    cmd = "test -f missing.txt"
+    passed, evidence = _review_with_ledger(tmp_path, monkeypatch, cmd, [_ledger_row(cmd, outcome="passed")])
+
+    assert passed, evidence
+    assert evidence == [{"check": "checks:exists", "output": f"pass — (exit 0)\n{check_reuse.REUSED_EXCERPT}"}]
+
+
+def test_verify_evidence_runs_the_check_when_the_ledger_has_no_row(tmp_path: Path, monkeypatch) -> None:
+    passed, evidence = _review_with_ledger(tmp_path, monkeypatch, "test -f new.txt", [])
+
+    assert passed, evidence
+    assert evidence == [{"check": "checks:exists", "output": "pass — (exit 0)"}]
+
+
+def test_verify_evidence_runs_the_check_when_the_ledger_row_failed(tmp_path: Path, monkeypatch) -> None:
+    cmd = "test -f new.txt"
+    passed, evidence = _review_with_ledger(tmp_path, monkeypatch, cmd, [_ledger_row(cmd, outcome="failed")])
+
+    assert passed, evidence
+    assert "reused" not in evidence[0]["output"]
+
+
+def test_verify_evidence_still_fails_a_failing_check_with_no_ledger_row(tmp_path: Path, monkeypatch) -> None:
+    passed, evidence = _review_with_ledger(tmp_path, monkeypatch, "test -f missing.txt", [])
+
+    assert not passed
+    assert evidence[0]["output"].startswith("FAIL")
 
 
 def test_shell_registers_review_diff_with_no_flag_collision() -> None:

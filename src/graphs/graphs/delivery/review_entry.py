@@ -31,7 +31,9 @@ from graphs.delivery.lifecycle_propose import (
     _abstained_review,
     _reviewer_answer,
 )
-from harness.checks import all_passed, checks_evidence, run_checks
+from harness.check_gate import _common_dir
+from harness.check_reuse import run_checks_reusing
+from harness.checks import all_passed, checks_evidence
 from harness.worktree import apply_patch, create_worktree
 from runner.protocol import NodeRunner
 
@@ -72,7 +74,7 @@ def _verify_evidence(
         applied, detail = apply_patch(diff, worktree)
         if not applied:
             return False, [{"check": "checks:apply", "output": f"FAIL — {detail}"}]
-        results = run_checks(worktree, checks_config)
+        results = run_checks_reusing(worktree, checks_config, ledger_dir=_common_dir(Path(repo)))
         return all_passed(results), checks_evidence(results)
 
 

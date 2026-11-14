@@ -20,7 +20,7 @@ _FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 @pytest.fixture(autouse=True)
 def _no_real_claude(monkeypatch):
-    """`gather_feed` asks `claude auth status`; no test here may start that process."""
+    """`gather_feed` asks the token verb; no test here may start that process."""
     monkeypatch.setattr(dash_feed, "_local_login", lambda local_name: None)
     monkeypatch.setattr(dash_feed.run_store, "initiative_short_ids", lambda runs_dir: {})
 
@@ -1001,14 +1001,27 @@ def test_a_check_that_says_not_logged_in_reads_false():
     assert _local_machine(False)["login_ok"] is False
 
 
-def test_local_login_is_true_false_or_unknown_by_what_claude_auth_status_said(monkeypatch):
+def test_local_login_is_true_false_or_unknown_by_what_the_token_verb_said(monkeypatch):
+    seen: list = []
+    monkeypatch.setattr(dash_feed.chair_login_check.socket, "gethostname", lambda: "m")
+
     def says(code, output):
-        monkeypatch.setattr(dash_feed, "_run_capturing", lambda argv: (code, output))
+        def run(argv):
+            seen.append(argv)
+            return code, output
+
+        monkeypatch.setattr(dash_feed, "_run_capturing", run)
         return dash_feed.chair_login_check._login_ok("m", "", dash_feed._run_capturing)
 
-    assert [says(0, '{"loggedIn": true}'), says(0, '{"loggedIn": false}'), says(1, ""), says(0, "x")] == [
-        True, False, None, None,
+    replies = [
+        says(0, '{"loggedIn": true, "tokenFile": true}'),
+        says(1, '{"loggedIn": false, "tokenFile": false}'),
+        says(1, ""),
+        says(0, "x"),
     ]
+
+    assert replies == [True, False, None, None]
+    assert seen == [["cox", "setup", "token", "status"]] * 4
 
 
 def test_gather_feed_seats_the_local_login_check_on_the_local_row(monkeypatch, tmp_path):

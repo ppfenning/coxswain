@@ -11,12 +11,16 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with: { python-version: "3.14" }
       - run: uv sync --group dev
-      - run: uv run pytest -q -n auto
-      - run: uv run pytest -q -n auto
+      - name: pytest root
+        run: uv run pytest -q -n auto
+      - name: pytest tools
+        run: uv run pytest -q -n auto
         working-directory: src/tools
-      - run: uv run pytest -q -n auto
+      - name: pytest graphs
+        run: uv run pytest -q -n auto
         working-directory: src/graphs
-      - run: uv run pytest -q -n auto
+      - name: pytest cartridges
+        run: uv run pytest -q -n auto
         working-directory: src/cartridges
       - name: ruff (rules in pyproject.toml, tools adds src/tools/ruff.toml)
         run: uv run ruff check .
@@ -37,12 +41,16 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with: { python-version: "3.15" }
       - run: uv sync --group dev --python 3.15
-      - run: uv run pytest -q -n auto
-      - run: uv run pytest -q -n auto
+      - name: pytest root
+        run: uv run pytest -q -n auto
+      - name: pytest tools
+        run: uv run pytest -q -n auto
         working-directory: src/tools
-      - run: uv run pytest -q -n auto
+      - name: pytest graphs
+        run: uv run pytest -q -n auto
         working-directory: src/graphs
-      - run: uv run pytest -q -n auto
+      - name: pytest cartridges
+        run: uv run pytest -q -n auto
         working-directory: src/cartridges
 
   extras:

@@ -5,6 +5,7 @@ import shutil
 import socket
 import sqlite3
 import subprocess
+import sys
 
 import pytest
 from test_route_cli import _init_repo, _unmeasured_window, _wait_for, _write_harness
@@ -16,6 +17,9 @@ from agent_tools.remote_argv import auth_status_argv, ssh_argv
 needs_rsync = pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync is not installed")
 SSH_BOUND = ["ssh", "-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3"]
 RSYNC_BOUND = ["rsync", "-a", "--timeout=30", "-e", "ssh -o ConnectTimeout=30"]
+
+
+pytestmark = pytest.mark.usefixtures("board_store")
 
 
 @pytest.fixture(autouse=True)
@@ -60,7 +64,10 @@ def _setup(tmp_path):
 
 def _run_files(ws):
     """Names in runs/, without chair.json: the leader guard claims the loop before any launch."""
-    return sorted(p.name for p in (ws / "runs").iterdir() if p.name != "chair.json")
+    # The store is the board and lives in runs/: its own files and the export's dotfiles are not run files.
+    store_files = ("cox.db", "cox.db-wal", "cox.db-shm")
+    return sorted(p.name for p in (ws / "runs").iterdir()
+                  if p.name != "chair.json" and p.name not in store_files and not p.name.startswith("."))
 
 
 def _fake_edge(monkeypatch, calls, codes=None, real_rsync=False):
@@ -339,8 +346,11 @@ def test_the_production_edge_pushes_to_the_ssh_location_from_the_workspace(tmp_p
     """No `_remote_edge` fake: subprocess.run is the fake ssh, so the real `host.ssh:path` form is what gets checked."""
     ws, remote, argv = _setup(tmp_path)
     seen = []
+    real_run = subprocess.run
 
     def fake_run(cmd, **kwargs):
+        if cmd[0] == sys.executable:  # the store's own queue commands: the board is read for real, only ssh is faked
+            return real_run(cmd, **kwargs)
         seen.append((cmd, kwargs.get("cwd")))
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 

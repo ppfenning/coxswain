@@ -148,36 +148,3 @@ def test_a_target_release_above_the_current_version_defers_the_launch_until_the_
     reached = plan_tick(_facts(initiatives=initiatives, deferred_initiatives=deferred_initiatives(rows, "2.0.0")))
     assert (_for(below, "d"), _for(below, "u")) == ([], ["launch_epic"])
     assert sorted(a["initiative"] for a in reached if a["kind"] == "launch_epic") == ["d", "u"]
-
-
-def _steward_epic(id: str, land_at: str, *tasks: tuple[str, str], merged: bool = False) -> dict:
-    levels = [{"tasks": [{"id": i, "state": s} for i, s in tasks], "merged": merged, "phase": "p"}]
-    return {
-        "epic_id": id, "branch_head": f"{id}-head", "levels": levels, "exited": False, "signature": "s", "reported": (),
-        "land_at": land_at,
-    }
-
-
-def test_a_held_epic_the_steward_would_merge_at_task_level_is_landed_by_nobody():
-    epics = [_steward_epic("h", "task", ("h-t", "approved")), _steward_epic("o", "task", ("o-t", "approved"))]
-    facts = {"approved": [_approved("h"), _approved("o")], "steward": {"enabled": True, "epics": epics}}
-    released = plan_tick(_facts(**facts))
-    held = plan_tick(_facts(**facts, held_initiatives=["h"]))
-    assert _for(released, "h") == ["merge_level"]
-    assert _for(held, "h") == []
-    assert _for(held, "o") == ["merge_level"]
-
-
-def test_a_held_epic_the_steward_would_gate_takes_no_gate_run_and_leaves_the_slot_to_the_next_epic():
-    epics = [_steward_epic("h", "ticket", ("h-t", "done"), merged=True), _steward_epic("o", "ticket", ("o-t", "done"), merged=True)]
-    facts = {"steward": {"enabled": True, "epics": epics}}
-    assert [a["epic"] for a in plan_tick(_facts(**facts)) if a["kind"] == "run_gate"] == ["h"]
-    assert [a["epic"] for a in plan_tick(_facts(**facts, held_initiatives=["h"])) if a["kind"] == "run_gate"] == ["o"]
-
-
-def test_a_held_epic_plans_no_steward_event_under_a_hard_stop_either():
-    limits = {"hard_stop": True, "weekly_fraction": 0.95, "hard_stop_fraction": 0.9, "launch_cap": 5, "go_degraded": False}
-    quarantined = _steward_epic("h", "ticket", ("h-q", "quarantined"))
-    facts = {"limits": limits, "steward": {"enabled": True, "epics": [quarantined]}}
-    assert [a["kind"] for a in plan_tick(_facts(**facts))] == ["steward_event"]
-    assert plan_tick(_facts(**facts, held_initiatives=["h"])) == []

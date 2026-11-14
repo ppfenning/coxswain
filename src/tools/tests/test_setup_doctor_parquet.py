@@ -4,7 +4,7 @@ import subprocess
 import pytest
 from test_doctor_cli import _good_setup
 
-from agent_tools import cli, doctor, run_store
+from agent_tools import claude_token, cli, doctor, run_store
 from agent_tools.cli import main
 
 
@@ -12,6 +12,8 @@ from agent_tools.cli import main
 def _home(tmp_path, monkeypatch):
     """A chair unit installed on the test machine must not reach the doctor's `chair unit PATH` row."""
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv(claude_token.TOKEN_ENV, raising=False)
+    claude_token.write_token(claude_token.token_path(str(tmp_path / "home")), "sk-ant-oat01-test")
 
 
 def _profile(tmp_path):

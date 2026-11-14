@@ -31,15 +31,16 @@ def test_approved_facts_carries_merged_and_defaults_false() -> None:
 
 def test_land_at_comes_from_the_cartridge_and_initiative_value() -> None:
     cartridge = {"landing_areas": {"land_at": "level"}}
-    assert land_at_facts(cartridge, {"b": "task"}, ["a", "b"]) == {"a": "level", "b": "task"}
+    # The retired level reads as initiative.
+    assert land_at_facts(cartridge, {"b": "task"}, ["a", "b"]) == {"a": "initiative", "b": "task"}
 
 
-def test_land_at_defaults_to_ticket_without_a_cartridge_or_on_a_bad_value() -> None:
-    assert land_at_facts({}, {}, ["a"]) == {"a": "ticket"}
-    assert land_at_facts({"landing_areas": {"land_at": "sometimes"}}, {}, ["a"]) == {"a": "ticket"}
+def test_land_at_defaults_to_initiative_without_a_cartridge_or_on_a_bad_value() -> None:
+    assert land_at_facts({}, {}, ["a"]) == {"a": "initiative"}
+    assert land_at_facts({"landing_areas": {"land_at": "sometimes"}}, {}, ["a"]) == {"a": "initiative"}
 
 
 def test_initiative_facts_carries_land_at_only_when_given() -> None:
     docket = {"initiatives": [{"id": "a", "started": False, "ready_tasks": [], "landed": []}]}
-    assert initiative_facts(docket, set(), land_at={"a": "level"})[0]["land_at"] == "level"
+    assert initiative_facts(docket, set(), land_at={"a": "task"})[0]["land_at"] == "task"
     assert "land_at" not in initiative_facts(docket, set())[0]

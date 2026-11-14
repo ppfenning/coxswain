@@ -38,7 +38,7 @@ def test_unedited_file_is_exported_as_before_and_its_hash_recorded(tmp_path: Pat
     assert export_files(tmp_path, [newer], hashes=hashes).touched == []
 
 
-def test_hand_edited_file_is_left_byte_identical_and_one_line_logged(tmp_path: Path, caplog) -> None:
+def test_hand_edited_file_is_saved_byte_identical_and_one_line_logged(tmp_path: Path, caplog) -> None:
     hashes = fake_store()
     export_files(tmp_path, [ROW], hashes=hashes)
     before = dict(hashes.stored)
@@ -46,22 +46,25 @@ def test_hand_edited_file_is_left_byte_identical_and_one_line_logged(tmp_path: P
     (tmp_path / PATH).write_text(edited)
     with caplog.at_level(logging.INFO):
         result = export_files(tmp_path, [{**ROW, "title": "Changed in the store"}], hashes=hashes)
-    assert (tmp_path / PATH).read_bytes() == edited.encode()
-    assert result.touched == []
-    assert hashes.stored == before
+    [saved] = (tmp_path / "runs/.hand-edits").iterdir()
+    assert saved.read_bytes() == edited.encode()
+    assert "Changed in the store" in (tmp_path / PATH).read_text()
+    assert result.touched == [PATH]
+    assert hashes.stored != before
     assert len(caplog.records) == 1
     line = caplog.records[0].getMessage()
     assert str(tmp_path / PATH) in line
     assert f"cox route import --workspace {tmp_path}" in line
 
 
-def test_untracked_differing_file_with_no_baseline_is_left_alone(tmp_path: Path) -> None:
+def test_untracked_differing_file_with_no_baseline_is_saved_and_overwritten(tmp_path: Path) -> None:
     (tmp_path / PATH).parent.mkdir(parents=True)
     (tmp_path / PATH).write_text("older history\n")
     hashes = fake_store()
-    assert export_files(tmp_path, [ROW], hashes=hashes).touched == []
-    assert (tmp_path / PATH).read_text() == "older history\n"
-    assert hashes.stored == {}
+    assert export_files(tmp_path, [ROW], hashes=hashes).touched == [PATH]
+    [saved] = (tmp_path / "runs/.hand-edits").iterdir()
+    assert saved.read_text() == "older history\n"
+    assert hashes.stored == {KEY: text_hash((tmp_path / PATH).read_text())}
 
 
 def test_row_with_no_hash_and_an_equal_file_records_without_writing(tmp_path: Path) -> None:
@@ -71,13 +74,16 @@ def test_row_with_no_hash_and_an_equal_file_records_without_writing(tmp_path: Pa
     assert hashes.stored == {KEY: text_hash((tmp_path / PATH).read_text())}
 
 
-def test_forced_export_overwrites_a_hand_edit_and_records_the_hash(tmp_path: Path) -> None:
+def test_export_overwrites_a_hand_edit_saved_beside_and_force_overwrites_without_saving(tmp_path: Path) -> None:
     hashes = fake_store()
     export_file(tmp_path, ROW, hashes=hashes)
     (tmp_path / PATH).write_text("hand edit\n")
-    assert export_file(tmp_path, ROW, hashes=hashes).touched == []
-    assert (tmp_path / PATH).read_text() == "hand edit\n"
+    assert export_file(tmp_path, ROW, hashes=hashes).touched == [PATH]
+    [saved] = (tmp_path / "runs/.hand-edits").iterdir()
+    assert saved.read_text() == "hand edit\n"
+    (tmp_path / PATH).write_text("another edit\n")
     assert export_file(tmp_path, ROW, force=True, hashes=hashes).touched == [PATH]
+    assert [p.name for p in (tmp_path / "runs/.hand-edits").iterdir()] == [saved.name]
     text = (tmp_path / PATH).read_text()
     assert "hand edit" not in text
     assert hashes.stored == {KEY: text_hash(text)}

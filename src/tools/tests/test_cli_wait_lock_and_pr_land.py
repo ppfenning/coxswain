@@ -3,7 +3,7 @@ import pytest
 # The fixtures and the `_land` driver are the store-mode land harness; this file scripts the repo lease on top of it.
 from test_land_from_store import _land, _own_tempdir, repo, store  # noqa: F401
 
-from agent_tools import cli, forge_github, store_cli
+from agent_tools import cli, forge_github, pr_land, store_cli
 
 HOLDER = "other@host:1"
 URL = "https://github.com/o/r/pull/7"
@@ -70,11 +70,14 @@ def test_the_wait_lock_timeout_states_its_default_in_the_help(capsys):
 class Forge:
     """Recording forge edges for one open PR 7 whose required check is `test`."""
 
-    def __init__(self, monkeypatch, tmp_path, rows):
-        self.merges = []
+    def __init__(self, monkeypatch, tmp_path, rows, body="Task: t-one"):
+        self.merges, self.marked = [], []
         pr = {"number": 7, "state": "OPEN", "url": URL, "headRefName": "b", "headRefOid": "abc", "baseRefName": "main",
-              "body": "no carried tasks"}
+              "body": body}
         monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(tmp_path / "no-profile.yaml"))
+        monkeypatch.setattr(cli, "_runs_dir_for_land", lambda _args: (tmp_path, None))
+        monkeypatch.setattr(pr_land, "_store_mark_done",
+                            lambda _runs, _at, task, url: (self.marked.append((task, url)), (True, f"{task} marked done"))[1])
         monkeypatch.setattr(forge_github, "read_pr", lambda _repo, number: pr)
         monkeypatch.setattr(forge_github, "required_for_pr", lambda _repo, number: ("test",))
         monkeypatch.setattr(forge_github, "pr_check_rows", lambda _repo, sha: rows)
@@ -100,5 +103,13 @@ def test_pr_land_exits_0_with_level_merged_and_merges_once_on_green(tmp_path, mo
     rc = _pr_land(tmp_path)
     out = capsys.readouterr().out
     assert rc == 0
-    assert f"level_merged: merged {URL}; marked 0 task(s) done" in out
-    assert fake.merges == [7]
+    assert f"level_merged: merged {URL}; marked 1 task(s) done" in out
+    assert (fake.merges, fake.marked) == ([7], [("t-one", URL)])
+
+
+def test_pr_land_exits_2_and_never_merges_an_open_pr_that_names_no_tasks(tmp_path, monkeypatch, capsys):
+    fake = Forge(monkeypatch, tmp_path, [{"name": "test", "state": "success"}], body="no carried tasks")
+    rc = _pr_land(tmp_path)
+    assert rc == 2
+    assert "names no tasks" in capsys.readouterr().out
+    assert (fake.merges, fake.marked) == ([], [])

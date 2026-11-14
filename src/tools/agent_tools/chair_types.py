@@ -12,7 +12,6 @@ from zoneinfo import ZoneInfo
 from agent_tools.chair_decompose_streak import DecomposeStreak
 from agent_tools.chair_land_backoff import LandRefusal
 from agent_tools.chair_land_conflict import LandConflict
-from agent_tools.chair_steward import StewardFacts
 
 EASTERN = ZoneInfo("America/New_York")  # every time the chair prints for an operator is shown in this zone
 STALE_CHECKOUT_CAUSE = "stale_checkout"  # the needs_chair cause for a lane host whose checkout environment is stale
@@ -32,6 +31,7 @@ class LeaseFacts(TypedDict):
     expired: bool  # another holder's takeover window has passed
     until: str  # that window's end, ISO; empty when the holder set none
     lent: NotRequired[bool]  # the live holder has lent the routine ticks; read with .get("lent", False)
+    session_held: NotRequired[bool]  # a session holds the lease informally, no takeover window; read with .get("session_held", False)
 
 
 class SmokeCommandResult(TypedDict):
@@ -140,6 +140,14 @@ class ReviewPr(TypedDict):
     merged_at: str | None
 
 
+class MergedPr(TypedDict):
+    """A merged chair PR and the task ids its body carries."""
+
+    url: str
+    repo: str
+    task_ids: list[str]
+
+
 class CarryTask(TypedDict):
     """One approved task commit to cherry-pick; run_seq is higher for a newer run."""
 
@@ -202,6 +210,7 @@ class RunningInitiative(TypedDict):
     surfaces: list[str]
     phase: NotRequired[str]  # the phase this entry runs; absent means the whole initiative
     live: NotRequired[bool]  # False when the entry exists only for unlanded approvals; a missing key means live
+    state: NotRequired[Literal["running", "awaiting_land"]]  # awaiting_land: no live run, only approved unmerged items
 
 
 class InitiativeFacts(TypedDict):
@@ -230,6 +239,8 @@ class QuarantineFacts(TypedDict):
     causes: NotRequired[list[str]]  # every quarantine cause on the current body, oldest attempt first; absent means just `cause`
     run: NotRequired[str]  # the run the remedy command names; absent means unknown
     repo: NotRequired[str]  # the repository the remedy command names; absent means unknown
+    task_state_key: NotRequired[str]  # names the harness state the task was quarantined in; absent leaves the quarantine unsorted
+    held_objection: NotRequired[str]  # the review objection text holding the task; absent leaves a review quarantine unsorted
 
 
 class EmptyDecomposeFacts(TypedDict):
@@ -440,11 +451,6 @@ class EpicFacts(TypedDict):
     complete: bool
 
 
-class StewardPlanFacts(TypedDict):
-    enabled: bool  # False plans exactly what an absent key plans
-    epics: list[StewardFacts]  # one entry per epic the steward handles; its epic_id is the initiative id
-
-
 class SteerPolicy(TypedDict):
     limit: int  # most initiatives that may hold one file at once, the candidate included
     serial: list[str]  # always-serial paths; an entry ending in `/` covers everything under it
@@ -533,6 +539,14 @@ class WronglyReleased(TypedDict):
     task_id: str
 
 
+class RemoteUnfetched(dict[str, str]):
+    """The `remote_unfetched` map, plus the initiatives among it whose newest unfetched run is a decompose."""
+
+    def __init__(self, unfetched: dict[str, str], decompose: list[str]) -> None:
+        super().__init__(unfetched)
+        self.decompose = decompose
+
+
 class Facts(TypedDict):
     lease: LeaseFacts
     limits: LimitsFacts
@@ -553,6 +567,7 @@ class Facts(TypedDict):
     # directory with no local run directory or log for that run id. Maps the initiative id to
     # that run id. Absent when the newest run is local, is a fetched remote run, or there is no run.
     remote_unfetched: dict[str, str]
+    remote_unfetched_decompose: NotRequired[list[str]]  # sorted initiatives whose newest unfetched run is a decompose; absent means []
     missing_repos: NotRequired[list[str]]  # sorted repository paths newly seen missing this tick
     last_housekeeping_at: str | None  # ISO UTC of the newest recorded housekeeping action; None when the store has none
     housekeeping_hours: float  # period in hours; the edge fills it from profile chair.housekeeping_hours, default 24
@@ -578,6 +593,7 @@ class Facts(TypedDict):
     home: dict[str, str]
     run_hosts: NotRequired[dict[str, str]]  # run id to the host name that ran it; a local run is absent; absent means {}
     review_prs: NotRequired[list[ReviewPr]]  # approved tasks awaiting a review PR; absent means none
+    merged_prs: NotRequired[list[MergedPr]]  # merged chair PRs with the task ids their bodies carry; absent means none
     landing: NotRequired[list[LandingFact]]  # lands in progress on the land worker; absent means none
     running: NotRequired[list[RunningInitiative]]  # initiatives with a live lane on any machine; absent means none
     live_phases: NotRequired[list[LivePhase]]  # phases with their own live run; absent means no phase runs live
@@ -585,7 +601,6 @@ class Facts(TypedDict):
     steer_streaks: NotRequired[dict[str, int]]
     approval_holds: NotRequired[list[ApprovalHold]]  # absent means none
     wrongly_released: NotRequired[list[WronglyReleased]]  # tasks the hold released while merged on their phase branch; absent means none
-    approval_hold_ticks: NotRequired[int]  # the hold limit in ticks; absent means 6
     steer_policy: NotRequired[SteerPolicy]  # absent means strict: limit 1, no serial paths
     # Each initiative's newest waiting row as `<phase>|<quarantined>|<awaiting_land>`, until a later launch of it.
     waiting_reported: NotRequired[dict[str, str]]  # absent means {}
@@ -615,6 +630,8 @@ class Facts(TypedDict):
     merge_queue: NotRequired[MergeQueueFacts]  # the profile's enabled merge queue; absent means the queue is off
     # `<run1>|<run2>` of each relaunch_loop needs_chair already in the action log. Absent means [].
     relaunch_loop_reported: NotRequired[list[str]]
+    # chair_sort keys already acted on: `<task>:<state key>` for a rebuild, an objection hash for an annotation. Absent means none.
+    handled_keys: NotRequired[list[str]]
     # Land refusals still counted: refused or failed land_phase rows since the key's last landed row. Absent means [].
     land_refusals: NotRequired[list[LandRefusal]]
     land_fail_streaks: NotRequired[list[LandFailStreak]]  # per (initiative, phase), the run of identical failed-land reasons; absent means none
@@ -627,7 +644,7 @@ class Facts(TypedDict):
     phase_records: NotRequired[list[str]]
     # Each initiative row in state todo with its task rows' states, in row order; absent means none. `plan_close_initiatives` plans a close_initiative for each finished one.
     todo_initiatives: NotRequired[list[TodoInitiative]]
-    steward: NotRequired[StewardPlanFacts]  # the epic steward's inputs; absent means the steward is off
+    chat_epics: NotRequired[list[dict[str, Any]]]  # each open initiative's tasks by phase, for the chair's answers; absent means none
     schedule_inputs: NotRequired[ScheduleInputs]  # the scheduler's inputs; absent means the edge did not read them
     # The previous tick's `chair_schedule.schedule_feed` form; absent means none was read, so the schedule is announced.
     previous_schedule_feed: NotRequired[dict[str, Any]]
@@ -674,12 +691,12 @@ ActionKind = Literal[
     "unlaunched",
     "close_initiative",
     "finish_task",
-    "merge_level",
-    "run_gate",
-    "steward_event",
+    "close_merged_task",
     "unlaunched",
     "schedule_updated",
     "requeue_task",
+    "rebuild_quarantined",
+    "annotate_objection",
 ]
 
 
@@ -711,13 +728,11 @@ class Action(TypedDict, total=False):
     awaiting_land and runs no command. deferred carries initiative, phase and land_at and runs no command: the land waits for
     the granularity land_at names. unlaunched carries initiative and reason, runs no command and writes no row.
     close_initiative carries initiative and state (done or dropped).
-    The steward's actions each carry epic and topic (both the epic id) and fields. merge_level also carries level,
-    the index of the level to merge, plus land_at (how the initiative lands) and phase (the level's phase name) as
-    top-level keys, never inside fields, so the reported-set key is unchanged. run_gate carries no more. steward_event also carries event, the name to publish.
+    close_merged_task carries initiative, task_id, pr (the merged PR's url) and repo; it is planned only, and executing it is a later task.
     unlaunched carries initiative and reason and runs no command: why a ready initiative was not launched.
-    The steward's relaunch is a relaunch carrying initiative, plus epic, topic and fields (the signature) so the executor
-    can record `relaunched`. A planner relaunch carries none of those three.
-    requeue_task carries initiative, phase, task_id, reason and epoch; it is declared here and not yet planned or executed."""
+    requeue_task carries initiative, phase, task_id, reason and epoch; it is declared here and not yet planned or executed.
+    rebuild_quarantined carries initiative, task_id and key (the chair_sort state key); it clears branches onto current main, then relaunches.
+    annotate_objection carries initiative, task_id, objection (the objection text) and key (its chair_sort hash)."""
 
     kind: ActionKind
     epoch: int
@@ -734,6 +749,8 @@ class Action(TypedDict, total=False):
     reason: str  # a take_lease over an expired takeover says so; a stale_to_draft carries its stale_reason string; a quarantine needs_chair or a widen_ticket carries the trimmed reason, at most 600 characters
     remedy: str  # a quarantine needs_chair names the remedy kind choose_remedy picks for its cause
     command: list[str]  # a quarantine needs_chair carries the argv remedy_for returns for that remedy
+    objection: str  # an annotate_objection's review objection text
+    key: str  # a rebuild_quarantined or annotate_objection's chair_sort handled key
     stale_tasks: list[str]  # a stale_to_draft names the task ids found stale
     since: str  # a stale_to_draft names the ISO timestamp the staleness was detected
     carry: list[str]  # the phases a clear_branches keeps and merges main into
@@ -741,6 +758,7 @@ class Action(TypedDict, total=False):
     merged_at: str | None  # a review_landed names when that PR merged
     other: str  # a steer_clear names the running initiative it steers clear of
     other_phase: str  # a steer_clear names the phase of the running entry it steers clear of, when that entry has one
+    partner_state: str  # a steer_clear may carry the state of that entry: running or awaiting_land
     paths: list[str]  # a steer_clear names the shared paths; a widen_ticket names the repo-relative files to add to surfaces
     task_ids: list[str]  # a partial_land names the approved task ids it would land, in phase order
     quarantined: int  # a partial_land or waiting counts the phase's quarantined tasks
@@ -759,17 +777,15 @@ class Action(TypedDict, total=False):
     evidence: dict[str, object]  # a tune_lanes carries the stats and meter figures that justify the change
     proposals: list[dict[str, object]]  # a propose_tiers lists one entry per role
     body: str  # a propose_tiers carries the rendered inbox text
-    pr: int  # a revert_land names the pull request whose land turned main red
+    pr: int | str  # a revert_land names the number of the pull request whose land turned main red; a close_merged_task names the merged PR's url
     commit: str  # a revert_land names the new main commit of that land
     additions: list[str]  # a widen_ticket names the addition for each path, same order and length as paths
     state: str  # a close_initiative names the state to move the initiative to: done or dropped
-    epic: str  # a merge_level, run_gate or steward_event names the epic it acts on
-    level: int  # a merge_level names the index of the level it merges
-    land_at: str  # a merge_level or deferred names the land_at (ticket, level or task) of its initiative
-    event: str  # a steward_event names the event it publishes, for example needs_attention
-    fields: dict[str, str]  # a merge_level, run_gate or steward_event carries the scope fields of its reported-set key
-    topic: str  # a merge_level, run_gate or steward_event names the topic its event is published under
-    after_steward: bool  # the relaunch runs behind the same epic's steward action
+    epic: str  # the initiative a published event is about
+    land_at: str  # a deferred names the land_at of its initiative
+    event: str  # the event an action publishes, for example needs_attention
+    fields: dict[str, str]  # the fields of a published event
+    topic: str  # the topic a published event is filed under
 
 
 class PlanLands(Protocol):

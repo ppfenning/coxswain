@@ -14,7 +14,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
-from agent_tools import store_cli
+from agent_tools import queue_export, store_cli
 from agent_tools.land import _approved
 
 __all__ = ["apply_fetched_approvals", "apply_ready_to_approved", "approved_task_ids"]
@@ -69,11 +69,12 @@ def _ticket_path(work_dir: Path, initiative: str, task_id: str) -> Path | None:
     return next(iter(sorted((work_dir / "work" / initiative).glob(f"**/{task_id}.md"))), None)
 
 
-def _approve_ticket_file(work_dir: Path, initiative: str, task_id: str) -> tuple[bool, str | None]:
+def _approve_ticket_file(work_dir: Path, workspace: Path, initiative: str, task_id: str) -> tuple[bool, str | None]:
     """Edge. Whether to mirror the task, and a warning when its ticket file could not be read or written.
 
     A missing ticket file is mirrored without a warning. Only a ticket whose state is neither ready, approved
-    nor done is not mirrored, since the file itself says the task is not approved.
+    nor done is not mirrored, since the file itself says the task is not approved. A file this writes is recorded
+    in `workspace`'s export baseline, so an export racing it does not read the write as a hand edit.
     """
     path = _ticket_path(work_dir, initiative, task_id)
     if path is None:
@@ -84,6 +85,7 @@ def _approve_ticket_file(work_dir: Path, initiative: str, task_id: str) -> tuple
             return False, None
         if new_text is not None:
             path.write_text(new_text, encoding="utf-8")
+            queue_export.record_written_paths(workspace, [path])
     except OSError as exc:
         return True, f"warning: {task_id}: ticket file not updated: {type(exc).__name__}: {exc}"
     return True, None
@@ -96,8 +98,9 @@ def apply_fetched_approvals(runs_dir: Path, work_dir: Path, run: str, initiative
     """
     ids: list[str] = []
     warnings: list[str] = []
+    workspace = runs_dir.parent
     for task_id in dict.fromkeys(approved_task_ids(_task_records(runs_dir, run))):
-        mirror, file_warning = _approve_ticket_file(work_dir, initiative, task_id)
+        mirror, file_warning = _approve_ticket_file(work_dir, workspace, initiative, task_id)
         warnings.extend([] if file_warning is None else [file_warning])
         if not mirror:
             continue

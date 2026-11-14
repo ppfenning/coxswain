@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import shlex
+import shutil
 import signal
 import socket
 import subprocess
@@ -58,6 +59,7 @@ from harness.checks import all_passed, checks_evidence, repo_checks, run_checks
 from harness.digest import build_digest
 from harness.escalate import escalate_self_modification
 from harness.gate import apply_decisions, auto_apply, gate
+from harness.lane_pytest_tmp import basetemp_env, lane_scratch_dir
 from harness.lane_workers import LANE_CAPACITY_VAR, check_env, lane_workers_from
 from harness.lanes import resolve_max_parallel
 from harness.phase import run_phase
@@ -837,8 +839,16 @@ def _run_worktree_checks(
     worktree: Path, checks_config: Sequence[Mapping[str, Any]], log_dir: Path
 ) -> list[dict[str, Any]]:
     """The edge: reads the process environment and core count so the checks run under the lane cap."""
-    env = _checks_env(os.environ, os.cpu_count() or 1)
-    return run_checks(worktree, checks_config, log_dir=log_dir, log_prefix="checks/", env=env)
+    scratch = lane_scratch_dir(log_dir.parent, "checks", worktree.name)
+    env = {
+        **(_checks_env(os.environ, os.cpu_count() or 1) or dict(os.environ)),
+        **basetemp_env(os.environ, scratch),
+    }
+    scratch.mkdir(parents=True, exist_ok=True)
+    try:
+        return run_checks(worktree, checks_config, log_dir=log_dir, log_prefix="checks/", env=env)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
 
 
 def pgrep_pids(text: str) -> list[int]:

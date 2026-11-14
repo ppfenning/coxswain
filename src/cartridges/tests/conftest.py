@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 import yaml
+
+# sqlite is the suites' stand-in for the one real store, Postgres. Outside the suites it does not open.
+os.environ.setdefault("COXSWAIN_STORE_DOUBLE", "sqlite")
 
 
 def write_cartridge(directory: Path, config: dict, context: dict[str, str] | None = None) -> Path:
@@ -17,6 +21,19 @@ def write_cartridge(directory: Path, config: dict, context: dict[str, str] | Non
         pack.parent.mkdir(parents=True, exist_ok=True)
         pack.write_text(body, encoding="utf-8")
     return directory
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _git_templates_are_empty(tmp_path_factory):
+    """`git init` and `git clone` copy the stock templates (sample hooks, description, info/exclude) unless the template holds none.
+
+    The template keeps empty `hooks/` and `info/` directories: tests write hook scripts and `info/exclude` into them."""
+    templates = tmp_path_factory.mktemp("git-templates")
+    for name in ("hooks", "info"):
+        (templates / name).mkdir()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("GIT_TEMPLATE_DIR", str(templates))
+        yield
 
 
 @pytest.fixture

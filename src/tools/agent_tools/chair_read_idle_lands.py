@@ -14,7 +14,6 @@ read after `budget_s`. `forge_status.StatusReader` has no fetch in the repositor
 to None; `status_text` adapts a `ForgeStatus` for a caller that has one.
 """
 
-import json
 import re
 import subprocess
 import time
@@ -27,6 +26,7 @@ from typing import Any
 from agent_tools import land
 from agent_tools.chair_types import LandWait
 from agent_tools.forge_status import ForgeStatus
+from agent_tools.jsonl_log import parse_log
 
 Bodies = tuple[dict[str, Any], dict[str, Any]]
 CheckRead = Bodies | str  # a str is the failed read's error text
@@ -79,13 +79,6 @@ def land_waits(
     return [w for w in waits if w is not None]
 
 
-def _json_or_none(line: str) -> object:
-    try:
-        return json.loads(line)
-    except ValueError:
-        return None
-
-
 def _when(row: Mapping[str, Any]) -> datetime | None:
     try:
         stamp = datetime.fromisoformat(str(row.get("ts") or ""))
@@ -94,9 +87,11 @@ def _when(row: Mapping[str, Any]) -> datetime | None:
     return stamp if stamp.tzinfo is not None else stamp.replace(tzinfo=UTC)
 
 
-def unmerged_lands(lines: Sequence[str], now: datetime, recent: timedelta = RECENT, cap: int = MAX_ROWS) -> list[dict]:
+def unmerged_lands(
+    rows: Sequence[Mapping[str, Any]], now: datetime, recent: timedelta = RECENT, cap: int = MAX_ROWS
+) -> list[dict]:
     """Newest-first, at most `cap`: per run and task, the newest row when it has a `pr`, no `merge`, and is recent."""
-    parsed = [(w, r) for r in map(_json_or_none, lines) if isinstance(r, dict) and (w := _when(r)) is not None]
+    parsed = [(w, r) for r in rows if (w := _when(r)) is not None]
     newest = {(r.get("run"), r.get("task")): (w, r) for w, r in parsed}
     open_rows = sorted(
         (
@@ -188,10 +183,10 @@ def read_lands_waiting(
 ) -> list[LandWait]:
     """Edge. `[]` on an unreadable log; a raised or malformed check read is `checks unreadable`, a bad status is None."""
     try:
-        lines = (Path(runs_dir) / "land.jsonl").read_text(encoding="utf-8").splitlines()
-    except (OSError, ValueError):
+        text = (Path(runs_dir) / "land.jsonl").read_bytes().decode("utf-8", errors="replace")
+    except OSError:
         return []
-    rows = unmerged_lands(lines, now)
+    rows = unmerged_lands(parse_log(text).rows, now)
     deadline = clock() + budget_s
     # Every read is submitted before any is awaited, so the PRs are read together; the budget gates each start.
     with ThreadPoolExecutor(max_workers=max(1, len(rows))) as pool:

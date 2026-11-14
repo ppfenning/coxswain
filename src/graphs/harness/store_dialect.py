@@ -8,6 +8,7 @@ Postgres driver is imported inside `connect`, on first use.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import threading
@@ -219,10 +220,27 @@ def _pg_connect_kwargs(pg_url: str, extra: Mapping[str, Any] | None = None) -> d
     return {**{k: v for k, v in defaults.items() if k not in in_url}, **(extra or {})}
 
 
+# The one store is Postgres. sqlite stays in this module only as the test suites' stand-in for it, and opens only
+# when the environment says so. No workspace sets this: the suites' conftest files do.
+STORE_DOUBLE_ENV = "COXSWAIN_STORE_DOUBLE"
+SQLITE_RETIRED = (
+    "sqlite is not a supported store: set storage_url in the provider profile to a postgresql:// URL "
+    "(cox setup store --store shared)"
+)
+
+
+def double_allowed(environ: Mapping[str, str] | None = None) -> bool:
+    """Whether a sqlite store may open: only as the test double."""
+    return (os.environ if environ is None else environ).get(STORE_DOUBLE_ENV) == "sqlite"
+
+
 def connect(url: str) -> Connection:
-    """Open a connection for a sqlite: or postgresql: URL (postgresql+psycopg:// too)."""
+    """Open a connection for a postgresql: URL (postgresql+psycopg:// too). A sqlite: URL opens only as the test
+    double (`double_allowed`); anywhere else it raises ValueError, the same error an unknown scheme gives."""
     pg_url = _driver_free_url(url)
     if url.startswith("sqlite://"):
+        if not double_allowed():
+            raise ValueError(SQLITE_RETIRED)
         # isolation_level=None: no implicit BEGIN, so a failed statement holds no lock.
         # check_same_thread=False: the Connection's own lock serialises the threads that share it.
         raw = sqlite3.connect(_sqlite_target(url), timeout=30.0, isolation_level=None, check_same_thread=False)
@@ -246,7 +264,7 @@ def connect(url: str) -> Connection:
         raw.adapters.register_loader("jsonb", TextLoader)
         return Connection(raw, POSTGRES, begin="BEGIN")
     raise ValueError(
-        f"unsupported store URL {redact_url(url)!r}: accepted schemes are sqlite:// and postgresql://"
+        f"unsupported store URL {redact_url(url)!r}: the accepted scheme is postgresql://"
     )
 
 

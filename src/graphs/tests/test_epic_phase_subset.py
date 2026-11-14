@@ -6,6 +6,8 @@ import pytest
 
 from harness import epic as epic_module
 from harness.epic import outside_parents_complete
+from harness.store_migrate import open_store
+from harness.store_write import Store
 from tests.test_epic_driver import (  # noqa: F401 -- cart and repo are fixtures
     Runner,
     cart,
@@ -39,6 +41,7 @@ def built(runner: Runner) -> list[str]:
     ]
 
 
+@pytest.mark.usefixtures("at_task")
 def test_a_subset_run_of_b_records_only_b_and_builds_on_the_settled_parent_branch(repo, cart, tmp_path) -> None:  # noqa: F811
     git("branch", P1_BRANCH, cwd=repo)
     result, runner = drive(repo, cart, tmp_path, work=staged(), only_phases=[P2])
@@ -49,11 +52,35 @@ def test_a_subset_run_of_b_records_only_b_and_builds_on_the_settled_parent_branc
     assert built(runner) == [CUTOVER]
 
 
-def test_a_subset_run_builds_on_the_pr_branch_when_one_exists(repo, cart, tmp_path) -> None:  # noqa: F811
+def _one_store() -> Store:
+    return Store(open_store("sqlite:///:memory:", "2026-11-12T00:00:00+00:00"))
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["init", "legacy-pr-branch"])
+def test_a_subset_run_builds_on_the_initiative_branch_once_the_parent_is_merged_into_it(repo, cart, tmp_path, legacy) -> None:  # noqa: F811
+    """A `pr/<initiative>` branch an earlier release left is kept as the initiative branch."""
+    if legacy:
+        git("branch", "pr/demo-initiative", cwd=repo)
+    branch = "pr/demo-initiative" if legacy else "init/demo-initiative"
+    store = _one_store()
+    first, _ = drive(repo, cart, tmp_path, work=initiative(two_phases=False), store=store, run_id="epic-1")
+    assert first["phases"][0]["initiative_merge"] == {**first["phases"][0]["initiative_merge"], "status": "merged", "branch": branch}
+
+    result, runner = drive(repo, cart, tmp_path, work=staged(), only_phases=[P2], store=store, run_id="epic-2")
+
+    assert [p["phase"] for p in result["phases"]] == [P2]
+    assert result["phases"][0]["base"] == branch and result["phases"][0]["status"] != "blocked"
+    assert built(runner) == [CUTOVER]
+    assert git("merge-base", "--is-ancestor", P1_BRANCH, f"epic/demo-initiative/{P2}", cwd=repo) == ""
+
+
+def test_a_subset_run_is_blocked_while_the_parent_is_built_but_not_merged_into_the_initiative_branch(repo, cart, tmp_path) -> None:  # noqa: F811
     git("branch", P1_BRANCH, cwd=repo)
-    git("branch", "pr/demo-initiative", cwd=repo)
-    result, _ = drive(repo, cart, tmp_path, work=staged(), only_phases=[P2])
-    assert result["phases"][0]["base"] == "pr/demo-initiative"
+    result, runner = drive(repo, cart, tmp_path, work=staged(), only_phases=[P2])
+    (record,) = result["phases"]
+    assert record["status"] == "blocked"
+    assert record["reason"] == f"parent phase '{P1}' is not merged into init/demo-initiative yet; dependents start once it is"
+    assert built(runner) == [] and result["quarantined"] == []
 
 
 def test_at_task_an_approved_unmerged_parent_task_leaves_the_named_phase_blocked(repo, cart, tmp_path, prs) -> None:  # noqa: F811
@@ -71,10 +98,12 @@ def test_at_task_a_merged_parent_lets_the_named_phase_run(repo, cart, tmp_path, 
     assert built(runner) == [CUTOVER]
 
 
-def test_at_level_an_approved_unmerged_parent_task_is_met(repo, cart, tmp_path, prs) -> None:  # noqa: F811
+def test_the_retired_level_reads_as_initiative_and_an_unmerged_parent_blocks_the_named_phase(repo, cart, tmp_path, prs) -> None:  # noqa: F811
     git("branch", P1_BRANCH, cwd=repo)
     result, runner = drive(repo, cart, tmp_path, work=staged("level", unmerged=("t2-bench",)), only_phases=[P2])
-    assert result["phases"][0]["status"] != "blocked" and built(runner) == [CUTOVER]
+    assert result["land_at"] == "initiative"
+    assert result["phases"][0]["status"] == "blocked" and built(runner) == []
+    assert prs == []
 
 
 def test_a_parent_still_ready_blocks_the_named_phase_and_nothing_runs(repo, cart, tmp_path) -> None:  # noqa: F811

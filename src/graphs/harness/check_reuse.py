@@ -14,7 +14,7 @@ import os
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -154,9 +154,13 @@ def run_checks_reusing(
     checks: Sequence[Mapping[str, Any]],
     *,
     ledger_dir: Path,
+    run: Callable[..., list[dict[str, Any]]] | None = None,
     **run_checks_kwargs: Any,
 ) -> list[dict[str, Any]]:
     """`run_checks`, skipping each check that already passed on this exact tree.
+
+    `run` is the function that runs the misses, `run_checks` by default; a caller passes its own so whatever wraps
+    its check runs (a lane's environment, a test's spy) still sees them.
 
     `ledger_dir` is the git common directory. Only checks that missed are run, so
     with `log_dir` the log numbers follow the miss list, not the original list.
@@ -168,13 +172,13 @@ def run_checks_reusing(
     except OSError:
         tree = None
     if tree is None:
-        return run_checks(worktree, checks, **run_checks_kwargs)
+        return (run or run_checks)(worktree, checks, **run_checks_kwargs)
 
     hits = [
         find_reusable(rows, tree, check["cmd"]) if check.get("name") and check.get("cmd") else None for check in checks
     ]
     misses = [check for check, hit in zip(checks, hits, strict=True) if hit is None]
-    fresh = run_checks(worktree, misses, **run_checks_kwargs) if misses else []
+    fresh = (run or run_checks)(worktree, misses, **run_checks_kwargs) if misses else []
     fresh_iter = iter(fresh)
     results = [reused_result(hit) if hit is not None else next(fresh_iter) for hit in hits]
 

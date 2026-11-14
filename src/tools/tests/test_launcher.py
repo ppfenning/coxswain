@@ -250,11 +250,21 @@ def test_a_session_beside_a_live_service_leaves_the_lease_and_the_record_and_pri
     execs = _bare(tmp_path, monkeypatch)
     record = _service_beside_the_session(monkeypatch, tmp_path)
     lease_calls = _watch_the_lease(monkeypatch)
-    assert main([]) == 0
+    assert main(["--workspace"]) == 0  # the workspace session; a bare launch here attaches over MCP instead
     assert capsys.readouterr().out.splitlines() == ["chair held by chair-svc (service)"]
     assert lease_calls == []
     assert chair.read(tmp_path / "workspace" / "runs") == record
     assert execs and execs[0][0] == "claude"
+
+
+def test_a_bare_launch_beside_a_live_service_attaches_over_mcp_and_leaves_the_lease_and_the_record(tmp_path, monkeypatch, capsys):
+    execs = _bare(tmp_path, monkeypatch)
+    record = _service_beside_the_session(monkeypatch, tmp_path)
+    lease_calls = _watch_the_lease(monkeypatch)
+    assert main([]) == 0
+    assert "attaching to it over MCP" in capsys.readouterr().out
+    assert lease_calls == [] and chair.read(tmp_path / "workspace" / "runs") == record
+    assert execs and execs[0][0] == "claude" and "--mcp-config" in execs[0][1]
 
 
 def test_a_record_only_loop_with_no_lease_row_is_still_live_and_reads_as_a_chair_loop_off_the_service(tmp_path, monkeypatch, capsys):
@@ -262,7 +272,7 @@ def test_a_record_only_loop_with_no_lease_row_is_still_live_and_reads_as_a_chair
     record = _service_beside_the_session(monkeypatch, tmp_path)
     monkeypatch.setattr("agent_tools.cli._read_holder_inputs", lambda runs_dir: None)
     monkeypatch.setattr("agent_tools.cli._pid_cgroup", lambda pid: "0::/user.slice/session-3.scope\n")
-    assert main([]) == 0
+    assert main(["--workspace"]) == 0
     assert capsys.readouterr().out.splitlines() == ["chair held by chair-svc (chair loop)"]
     assert chair.read(tmp_path / "workspace" / "runs") == record
     assert execs and execs[0][0] == "claude"

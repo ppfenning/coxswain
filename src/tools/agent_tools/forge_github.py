@@ -421,9 +421,36 @@ def failed_check_run_ids(check_runs: dict) -> frozenset:
     return frozenset(r.get("id") for r in check_runs.get("check_runs") or [] if r.get("conclusion") in land._FAILED_CONCLUSIONS)
 
 
+def jobs_argv(run_id: str) -> list[str]:
+    return ["gh", "api", f"repos/{{owner}}/{{repo}}/actions/runs/{run_id}/jobs"]
+
+
+def parse_failed_steps(stdout: str) -> tuple[str, ...] | None:
+    """Names of the failed steps in a run's jobs body, in order; None unless the body holds a `jobs` list."""
+    data = _loads(stdout)
+    jobs = data.get("jobs") if isinstance(data, dict) else None
+    if not isinstance(jobs, list):
+        return None
+    steps = [s for j in jobs if isinstance(j, dict) for s in j.get("steps") or [] if isinstance(s, dict)]
+    return tuple(str(s.get("name")) for s in steps if s.get("conclusion") in land._FAILED_CONCLUSIONS)
+
+
 def base_ref_argv(ref: str) -> list[str]:
     """`gh pr view` for `ref`'s PR. `HEAD` is no branch name, so it is left out and gh reads the checked-out branch."""
     return ["gh", "pr", "view", *([] if ref == "HEAD" else [ref]), "--json", "baseRefName"]
+
+
+def changed_paths_argv(ref: str) -> list[str]:
+    return ["gh", "pr", "view", *([] if ref == "HEAD" else [ref]), "--json", "files"]
+
+
+def parse_changed_paths(stdout: str) -> tuple[str, ...] | None:
+    """The `path` of each file in `gh pr view --json files` output; None unless the body holds a `files` list."""
+    data = _loads(stdout)
+    files = data.get("files") if isinstance(data, dict) else None
+    if not isinstance(files, list):
+        return None
+    return tuple(f["path"] for f in files if isinstance(f, dict) and isinstance(f.get("path"), str))
 
 
 def _gh_text(argv: list[str], repo: Path, *, timeout: int) -> str | None:
@@ -433,6 +460,14 @@ def _gh_text(argv: list[str], repo: Path, *, timeout: int) -> str | None:
     except (OSError, ForgeError):
         return None
     return r.stdout or "" if r.returncode == 0 else None
+
+
+def read_rerun_scope(repo: Path, ref: str, ids: tuple[str, ...]) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+    """The failed steps of runs `ids` and the PR's changed paths; None when any read fails or is unreadable."""
+    texts = [_gh_text(jobs_argv(i), repo, timeout=READ_TIMEOUT_S) for i in ids]
+    paths = parse_changed_paths(_gh_text(changed_paths_argv(ref), repo, timeout=READ_TIMEOUT_S) or "")
+    steps = [parse_failed_steps(t or "") for t in texts]
+    return None if paths is None or any(s is None for s in steps) else (tuple(n for s in steps for n in s or ()), paths)
 
 
 def _required_for_base(repo: Path, base: str) -> tuple[str, ...] | None:
@@ -591,7 +626,12 @@ def wait_checks(repo: Path, timeout_s: float, sleep=time.sleep, now=time.monoton
                 stale_polls += stale
                 return (land.PENDING_RC, "rerun not yet registered: " + result[1]) if stale else result
             ids = rerun_run_ids(value[0])
-            return rerun(ids, failed) if ids and rerun_tries < land.POLL_ERROR_LIMIT else result
+            if not ids or rerun_tries >= land.POLL_ERROR_LIMIT:
+                return result
+            scope = read_rerun_scope(repo, ref, ids)  # unknown: an unreadable read falls back to the one rerun
+            if scope is not None and not land.rerun_scope(*scope):
+                return result[0], f"{result[1]}; not rerun, the change touches the failing suites: {', '.join(scope[0])}"
+            return rerun(ids, failed)
         result = land.unreadable_poll(errors, value)
         if land.is_pending(result[0]):
             sleep(land.poll_backoff_s(errors))  # on top of the 15s between polls: a rate limit needs room

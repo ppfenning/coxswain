@@ -97,6 +97,22 @@ def test_partial_land_text_names_approved_and_quarantined_counts():
     assert partial_land_text(_partial(["a", "b", "c"], 2)) == "partial-land: i/p 3 approved, 2 quarantined"
 
 
+def _take_lease(reason, status="done"):
+    return {"action": {"kind": "take_lease", "holder": "chair-1", "host": "box-1", "reason": reason}, "status": status, "reason": ""}
+
+
+def test_a_done_takeback_reads_as_took_the_chair_back_not_standby():
+    result = _take_lease("takeback from sess-9@box-1:42")
+    line = format_status(_facts(), [result["action"]], [result], NOW)
+    assert "takeback: took the chair back from sess-9@box-1:42" in line
+    assert "standby" not in line
+
+
+def test_a_plain_done_take_lease_is_not_a_takeback_and_a_refused_one_is_not_reported():
+    for result in (_take_lease(""), _take_lease("takeback from sess-9@box-1:42", "refused")):
+        assert "takeback:" not in format_status(_facts(), [result["action"]], [result], NOW)
+
+
 def test_standby_line_names_the_holder_and_host():
     actions = [{"kind": "standby", "holder": "chair-7", "host": "box-1"}]
     line = format_status(_facts(), actions, [_landed("standby", "recorded")], NOW)

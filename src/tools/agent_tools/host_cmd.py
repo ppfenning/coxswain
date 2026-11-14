@@ -23,6 +23,7 @@ from agent_tools.checkout_env import (
     host_env_verdict,
     sync_instruction,
 )
+from agent_tools.git_ref_health import scan_repo_refs
 from agent_tools.host_load import LOAD_KEY, load_report
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_argv import ssh_argv
@@ -423,6 +424,18 @@ def _checkouts(run: Run, repos: Sequence[str]) -> dict:
     return dict(_checkout_detail(run, repo) for repo in repos)
 
 
+def _ref_faults(repos: Sequence[str]) -> dict[str, list[str]]:
+    """Each repo path as given, mapped to its corrupt ref paths. A repo with none, or one that cannot be scanned, is omitted."""
+
+    def scan(repo: str) -> list[str]:
+        try:
+            return [Path(found).relative_to(repo).as_posix() for found in scan_repo_refs(Path(repo))]
+        except OSError:
+            return []
+
+    return {repo: faults for repo in repos if (faults := scan(repo))}
+
+
 def _env_check_argv(repo: str) -> list[str]:
     # unknown: `--check` is the uv flag that exits non-zero when the environment lags uv.lock and
     # installs nothing; confirm against the host's `uv sync --help`.
@@ -463,7 +476,7 @@ def beat_versions(
     workspace_dir: str | None = None, repos: Sequence[str] = (),
 ) -> dict:
     """This machine's versions, plus its workspace_dir, checkout paths, host facts, live host load, load record, per-checkout branch
-    and commits-behind-main, and per-checkout lock and synced hashes. `cox --version` text if it answers,
+    and commits-behind-main, per-checkout lock and synced hashes, and per-checkout corrupt ref paths. `cox --version` text if it answers,
     else the package version."""
     def tag(directory: str | None) -> str | None:
         return _out(run, ["git", "-C", directory, "describe", "--tags"]) if directory else None
@@ -476,6 +489,7 @@ def beat_versions(
         **versions, "workspace_dir": workspace_dir, "repos": list(repos),
         "host_facts": _host_facts(), "host_load": _host_load(), LOAD_KEY: _load_record(), "checkouts": _checkouts(run, repos),
         CHECKOUT_ENV_KEY: dict(_checkout_env(run, repo) for repo in repos),
+        "ref_faults": _ref_faults(repos),
     }
 
 

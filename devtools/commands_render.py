@@ -50,14 +50,15 @@ def usage(command: str, args: Sequence[Arg]) -> str:
 
 
 def _leaves(rows: Sequence[Command]) -> list[tuple[Command, tuple[str, ...]]]:
-    """Each invocable row with its name path; a row with subcommands is replaced by them."""
-    return [
-        (leaf, path)
-        for r in rows
-        for leaf, path in (
-            [(s, (r.name, s.name)) for s in getattr(r, "subcommands", ())] or [(r, (r.name,))]
-        )
-    ]
+    """Each invocable row with its name path; a row with subcommands is replaced by them, at any depth."""
+
+    def walk(row: Command, path: tuple[str, ...]) -> list[tuple[Command, tuple[str, ...]]]:
+        children = getattr(row, "subcommands", ())
+        if not children:
+            return [(row, path)]
+        return [found for child in children for found in walk(child, (*path, child.name))]
+
+    return [found for r in rows for found in walk(r, (r.name,))]
 
 
 def _entries(group: Group, rows: Sequence[Command]) -> list[Entry]:

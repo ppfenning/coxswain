@@ -70,11 +70,17 @@ def _lent(lease: Row, record: Mapping[str, Any]) -> bool:
     return not lease["released"] and record.get("routine_lent") is True
 
 
+def _session_held(lease: Row, record: Mapping[str, Any]) -> bool:
+    """A matched record with no `until`, no `taken_over_from` stamp and no lent routine ticks: a session that took the lease informally."""
+    return not lease["released"] and "until" not in record and "taken_over_from" not in record and record.get("routine_lent") is not True
+
+
 def _with_takeover(
     lease: Row, runs_dir: Path, now: datetime, *, pid_alive: Callable[[int], bool] = chair.pid_alive, host: str | None = None
 ) -> Row:
     """Edge. Adds `until` and `expired` from chair.json when it is this lease holder's record and carries an `until`.
     Adds `lent` when that record is the holder's and its `routine_lent` is true, with or without an `until`.
+    Adds `session_held` when that record is the holder's and carries no `until`, `taken_over_from` or lent routine ticks.
     A session or thief holder never renews its store lease, so a record that reads live and unexpired clears `stale`.
     The record carries no heartbeat window, so `chair.liveness` uses its default. A released lease stays released."""
     try:
@@ -87,7 +93,7 @@ def _with_takeover(
         return lease
     lent = {"lent": True} if _lent(lease, record) else {}
     if "until" not in record:
-        return {**lease, **lent}
+        return {**lease, **lent, **({"session_held": True} if _session_held(lease, record) else {})}
     expired = chair.expired(record, now)
     taken = {**lease, "until": str(record["until"]), "expired": expired, **lent}
     pid = record.get("pid")

@@ -16,6 +16,8 @@ from agent_tools.cli import main
 from agent_tools.launch_place import Placement, Refusal, format_refusal, place, place_local
 from agent_tools.remote_argv import launch_argv
 
+pytestmark = pytest.mark.usefixtures("board_store")  # the store is the board; these launches read its rows
+
 NOW = datetime.datetime(2026, 10, 30, 12, 0, tzinfo=datetime.UTC)
 FRESH = "2026-10-30T11:59:00+00:00"
 WORKSPACE = json.dumps({"workspace_dir": "/srv/ws"})

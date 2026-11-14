@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import threading
 
+import pytest
+
 from runner.protocol import RunnerError
 from tests.test_epic_driver import Runner, cart, drive, git, new_file_patch, repo  # noqa: F401
 
@@ -53,6 +55,7 @@ def by_phase(result: dict) -> dict:
     return {r["phase"]: r for r in result["phases"]}
 
 
+@pytest.mark.usefixtures("at_task")
 def test_two_chains_build_at_once_and_the_join_is_assembled_from_both(repo, cart, tmp_path) -> None:  # noqa: F811
     spec = work(("ta-one", "pa", []), ("tb-one", "pb", []), ("tj-join", "pj", ["ta-one", "tb-one"]))
     result, runner = drive(repo, cart, tmp_path, runner=Gated(gate=True), work=spec)

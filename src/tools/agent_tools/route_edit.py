@@ -385,8 +385,11 @@ def _recorded_result(note: str) -> EditResult | None:
     return None if note.startswith("recorded PR") else EditResult(note.rstrip("\n"), DONE)
 
 
+_DONE_WITH_PR_FROM = ("approved", "ready", "quarantined")
+
+
 def mark_done_with_pr(runs_dir: Path, row: dict, pr: str, now: str | None) -> EditResult | None:
-    """Edge: approved row to done with `pr`; None once recorded, a DONE note when it could not be, else a REFUSED or FAILED result."""
+    """Edge: approved, ready or quarantined row to done with `pr`; None once recorded, a DONE note when it could not be, else a REFUSED or FAILED result."""
     state, task = row.get("state"), row["task_id"]
     if state == "done":  # a retry: never a state write, and the PR is recorded only when no run holds one yet
         seen = _recorded_pr(runs_dir, row)
@@ -394,8 +397,8 @@ def mark_done_with_pr(runs_dir: Path, row: dict, pr: str, now: str | None) -> Ed
             return EditResult(f"{task} is done with PR {seen}; not recording {pr}", REFUSED)
         return None if seen == pr else _recorded_result(_record_pr(runs_dir, row, pr, now))
     refusal = check_state_move(state, "done")
-    if refusal is None and state != "approved":
-        refusal = f"the ticket is {state!r}; only an approved task is marked done with a PR"
+    if refusal is None and state not in _DONE_WITH_PR_FROM:
+        refusal = f"the ticket is {state!r}; only an approved, ready or quarantined task is marked done with a PR"
     if refusal:
         return EditResult(refusal, REFUSED)
     failed = _set_state(runs_dir, row, "done")

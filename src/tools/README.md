@@ -71,6 +71,7 @@ cox runs triage TASK_ID [--json] [--profile PROFILE] [--repo PATH]   print a qua
 cox courier send REF --to TO --note NOTE [--profile PROFILE] [--event EVENT] [--topic TOPIC] [--field FIELD]   append a bus entry naming a courier reference
 cox courier inbox [--label LABEL] [--profile PROFILE] [--topic TOPIC] [--event EVENT] [--consumer CONSUMER] [--wake]   list this label's unacknowledged bus entries
 cox courier ack ID [--profile PROFILE] [--consumer CONSUMER]   acknowledge one bus entry by id
+cox mcp [serve] [--http HOST:PORT] [--token-file PATH] [--label LABEL] [--profile PROFILE]   serve the chair's tools to MCP clients
 cox versions [--root ROOT] [--home HOME] [--manifest MANIFEST]   component versions against the manifest
 cox console [--runs-dir RUNS_DIR] [--work-dir WORK_DIR] [--interval INTERVAL] [--once] [--profile PROFILE]   one screen of hosts, drafts, lanes and the chair; keys run cox commands after a y/n
 cox dash [--runs-dir RUNS_DIR] [--work-dir WORK_DIR] [--feed] [--once] [--interval INTERVAL] [--detail KIND]   a versioned JSON snapshot of the workspace: --feed streams it, --once prints one, --detail drills into one kind
@@ -79,13 +80,13 @@ cox settings set cartridge|profile|host KEY VALUE [--dry-run] [--commit] [--prof
 cox install [--root ROOT] [--home HOME] [--manifest MANIFEST] [--provider PROVIDER] [--with FLAG] [--team TEAM] [--workspace WORKSPACE] [--edge] [--dry-run]   clone/update coxswain components against the manifest
 cox upgrade [--root ROOT] [--home HOME] [--manifest MANIFEST] [--provider PROVIDER] [--with FLAG] [--team TEAM] [--workspace WORKSPACE] [--to TO] [--dry-run]   fetch and check out newer pinned versions; refuses dirty checkouts
 cox home [--profile PROFILE]   the live dashboard: runs, leader, backlog
-cox session [--profile PROFILE] [--no-plugin] [--print-argv] [CLAUDE_ARG...]   open the coxswain Claude session
+cox session [--profile PROFILE] [--no-plugin] [--print-argv] [--workspace] [CLAUDE_ARG...]   open the coxswain Claude session
 cox stats ingest [RUNS_DIR] [--db DB] [--work-store-root WORK_STORE_ROOT] [--cartridges-repo CARTRIDGES_REPO]   load usage, task, node and launch records into stats.db
 cox stats roles [--db DB] [--runs-dir RUNS_DIR] [--json] [--cartridge-sha CARTRIDGE_SHA] [--provider-profile PROVIDER_PROFILE]   landed rate, attempts-to-land and $/landed per role and model
 cox stats tiers [--db DB] [--since SINCE] [--min-samples MIN_SAMPLES] [--json]   per-role model summaries, a cost-aware pick and the spend it would save
 cox stats models [--db DB] [--role ROLE] [--since SINCE] [--json]   per-role cost, tokens, turns, $/landed and first-try per model id
 cox stats causes [--runs-dir RUNS_DIR] [--since SINCE] [--json]   quarantined attempts by cause and kind, with sample reasons
-cox stats efficiency [--runs-dir RUNS_DIR] [--days DAYS] [--json]   cost per turn, cost per landed task, first-try rate, waste share, per day
+cox stats efficiency [--runs-dir RUNS_DIR] [--days DAYS] [--json]   cost per turn, cost per completion, first-try rate, waste share, per day
 cox stats gates [--db DB] [--since SINCE] [--store] [--runs-dir RUNS_DIR] [--min-sample MIN_SAMPLE] [--json]   what each review, validation and plan gate costs and how often it changes the outcome
 cox stats explain ROLE [--db DB] [--json]   the failure-class breakdown behind one role
 cox stats series [--db DB] [--json] [--cartridge-sha CARTRIDGE_SHA] [--provider-profile PROVIDER_PROFILE]   per-run summary rows read from the stats store
@@ -107,12 +108,14 @@ cox epic watch PIDFILE [--log LOG] [--max-seconds MAX_SECONDS] [--interval INTER
 cox pr land NUMBER --repo REPO [--timeout TIMEOUT]   wait for the required checks, squash-merge a pull request and mark its tasks done
 cox route context [--profile PROFILE] [--json]   the routing profile's resolved context
 cox route status [--profile PROFILE] [--json] [--all]   what is queued or running for this profile
-cox route file [--profile PROFILE] [--repo REPO] [--title TITLE] [--body BODY] [--phase PHASE] [--intake] [--from-intake FROM_INTAKE] [--force] [--link LINK] [--after AFTER] [--draft] [--ready]   file a new ticket for the harness
+cox route file [--profile PROFILE] [--repo REPO] [--title TITLE] [--body BODY] [--phase PHASE] [--intake] [--from-intake FROM_INTAKE] [--force] [--link LINK] [--after AFTER] [--draft] [--ready] [--epic EPIC] [--priority PRIORITY] [--target-release TARGET_RELEASE]   file a new ticket for the harness
 cox route priority [INITIATIVE] [--profile PROFILE] [--set N] [--up] [--down] [--top] [--bottom]   move an initiative or a queued intake up or down the launch order
 cox route schedule [--profile PROFILE] [--explain INITIATIVE] [--should-jump INITIATIVE]   project the whole queue as one schedule
 cox route pull [--profile PROFILE] [--source SOURCE] [--dry-run]   file intake tickets from a source, once per link
 cox route lint INITIATIVE_DIR [--repo REPO]   static ticket lint over a filed initiative, work-shape.md §3
 cox route groups [--profile PROFILE]   print the newest plans/intake-groups/<date>.md file, work-shape.md §5
+cox route cartridges publish|fetch [--sha SHA] [--replace] [--into INTO] [--profile PROFILE]   publish this machine's cartridges to the store, or write a published snapshot here
+cox route export [--profile PROFILE]   write this machine's work/ and intake/ files from the store; nothing is committed
 cox route drift [--profile PROFILE] [--json]   items whose store state and file state differ
 cox route import [--profile PROFILE] [--workspace WORKSPACE]   load the current work item files into the store's work_items table
 cox route paths [--profile PROFILE] [--workspace WORKSPACE] [--apply] [--move ('OLD', 'NEW')]   rewrite recorded repo paths to the tilde form, dry run first
@@ -135,6 +138,9 @@ cox route chair release [--profile PROFILE] [--label LABEL] [--pid PID]   releas
 cox route chair status [--profile PROFILE] [--json]   the chair lock's holder and computed state
 cox route chair clear [--profile PROFILE] [--force]   remove the chair lock file, refusing a live holder unless --force
 cox route chair chat [TEXT] [--profile PROFILE] [--read] [--since SINCE] [--json] [--as-leader]   append to or read the leader chat thread (runs/leader.chat.jsonl)
+cox route chair converse send KIND [ARGS...] [--profile PROFILE] [--sender SENDER]   send the chair a directive; it applies on the chair's next tick
+cox route chair converse ask KIND [SUBJECT] [--profile PROFILE] [--sender SENDER] [--wait WAIT]   ask the chair a question and wait a bounded time for its answer
+cox route chair converse state [--profile PROFILE]   print the directives in force, the epics the chair last saw, and recent events
 cox route sync [--profile PROFILE] [--item ITEM] [--project PROJECT] [--workspace WORKSPACE] [--dry-run] [--prune-out-of-scope]   mirror the work store onto the profile's tracker
 cox route launch epic [--profile PROFILE] --initiative INITIATIVE [--repo REPO] [--fix-attempts FIX_ATTEMPTS] [--base BASE] [--dry-run] [--run-id RUN_ID] [--on ON] [--local] [--include-blocked] [--phase PHASE] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the run of one filed initiative (the epic graph; epic is its historical name)
 cox route launch decompose [--profile PROFILE] --idea PATH --initiative-id INITIATIVE_ID [--task-ids ordinal] [--local] [--detach] [--dry-run] [--run-id RUN_ID] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the decompose graph against an idea
@@ -149,6 +155,12 @@ cox chair answer ID OPTION [--profile PROFILE]   answer an open decision with on
 cox chair decisions [--open] [--answered] [--json] [--profile PROFILE]   list decisions asked of the operator and their answers
 cox chair watchdog [--idle-minutes IDLE_MINUTES] [--stale-minutes STALE_MINUTES] [--dry-run] [--profile PROFILE] [--install] [--uninstall] [--interval-minutes INTERVAL_MINUTES]   one-shot loop check for a five-minute timer; reads only the store
 cox chair freeze-lands [--for MINUTES] [--reason TEXT] [--off] [--profile PROFILE]   hold every land for a release cut, show the freeze, or lift it
+cox lander once [--profile PROFILE]   one pass: queue what is ready, then merge and land within the caps
+cox lander run [--interval INTERVAL] [--profile PROFILE]   pass after pass until interrupted
+cox lander status [--json] [--profile PROFILE]   every initiative in flight with its phases, and the land queue with how long each item has waited
+cox lander adopt [INITIATIVE...] [--apply] [--profile PROFILE]   bring initiatives that were in flight before the landing record under it; a dry run unless --apply
+cox lander backlog --manifest MANIFEST --pr PR [--apply] [--profile PROFILE]   mark the tasks a hand-folded pull request carried as done, once it has merged; a dry run unless --apply
+cox lander service [--install] [--status] [--interval INTERVAL] [--environment-file ENVIRONMENT_FILE] [--profile PROFILE]   write or show the systemd user unit; never runs systemctl
 cox host add NAME --ssh SSH --capacity CAPACITY [--weight WEIGHT] [--capabilities CAPABILITIES]   add or update a host in the table
 cox host list   one line per host: state, capacity, beat age, login
 cox host drain NAME   stop launching on a host; its live lanes finish
@@ -168,7 +180,8 @@ cox setup doctor [--profile PROFILE] [--repo REPO] [--json] [--host HOST]   chec
 cox setup install [--root ROOT] --team TEAM [--workspace WORKSPACE] [--home HOME] [--provider-profile PROVIDER_PROFILE] [--skills-root SKILLS_ROOT] [--assume a|r] [--plugins] [--hook] [--force-profile] [--dry-run] [--window-ceiling-usd WINDOW_CEILING_USD] [--weekly-ceiling-usd WEEKLY_CEILING_USD]   sync the checkout's venv, install cox and write a profile for this machine
 cox setup extras [--with EXTRA] [--dry-run]   install the optional extras into this venv, pinned and hash-checked from uv.lock
 cox setup migrate [--home HOME] [--dry-run] [--apply] [--hosts] [--finish] [--old-root PATH] [--to VERSION]   plan moving this host to the one monorepo checkout; --apply migrates
-cox setup store switch files|shared [--host HOST] [--port PORT] [--database DATABASE] [--user USER] [--bucket BUCKET] [--endpoint ENDPOINT] [--region REGION] [--password-env PASSWORD_ENV] [--access-key-env ACCESS_KEY_ENV] [--secret-key-env SECRET_KEY_ENV] [--dry-run]   copy the run store and traces to the other backend, then record store.mode
+cox setup store switch files|shared [--host HOST] [--port PORT] [--database DATABASE] [--user USER] [--bucket BUCKET] [--endpoint ENDPOINT] [--region REGION] [--password-env PASSWORD_ENV] [--access-key-env ACCESS_KEY_ENV] [--secret-key-env SECRET_KEY_ENV] [--dry-run]   copy an old local run store and its traces into the shared store, then record store.mode
+cox setup token status [--probe]   report whether the stored token file exists and claude accepts it
 ```
 <!-- commands:end -->
 
@@ -183,8 +196,8 @@ and `cox setup migrate` point its `harness_dir`, `skills_roots` and
 `provider_profile` at the shipped `src/cartridges/providers/claude-code.yaml`
 unless `--provider-profile` names another; a team's own provider profile
 lives outside the checkout, in `<home>/providers/` or the workspace, and
-`cox setup migrate` keeps it. `cox setup store --store files|shared` picks
-the run store; see [`docs/shared-store.md`](docs/shared-store.md). New to
+`cox setup migrate` keeps it. `cox setup store --store shared` configures
+the run store, which is Postgres; see [`docs/shared-store.md`](docs/shared-store.md). New to
 the profile? [`docs/getting-started.md`](docs/getting-started.md) walks
 through it.
 

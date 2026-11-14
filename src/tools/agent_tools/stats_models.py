@@ -44,7 +44,7 @@ class ModelRow:
     p90_cost: Figure
     output_tokens: Figure
     turns: Figure
-    cost_per_landed: Figure
+    cost_per_completion: Figure
     first_try: Figure | None  # None outside the build role
     challenger_calls: Figure
     challenger_cost: Figure
@@ -63,7 +63,7 @@ def _mean(values: Sequence[float]) -> float | None:
     return sum(values) / len(values) if values else None
 
 
-def cost_per_landed(rows: Sequence[ModelCall]) -> Figure:
+def cost_per_completion(rows: Sequence[ModelCall]) -> Figure:
     """Total cost of landed tasks' calls over landed distinct tasks."""
     landed = {r.task_id for r in rows if r.task_landed}
     total = sum(r.cost_usd for r in rows if r.task_id in landed)
@@ -93,7 +93,7 @@ def _cell(role: str, model_id: str, rows: Sequence[ModelCall]) -> ModelRow:
         p90_cost=Figure(p90_cost(costs), n),
         output_tokens=Figure(_mean([r.output_tokens for r in standard]), n),
         turns=Figure(_mean([r.turns for r in standard]), n),
-        cost_per_landed=cost_per_landed(standard),
+        cost_per_completion=cost_per_completion(standard),
         first_try=first_try_rate(standard, role),
         challenger_calls=Figure(len(challenger), len(challenger)),
         challenger_cost=Figure(_mean([r.cost_usd for r in challenger]), len(challenger)),
@@ -137,7 +137,7 @@ def _labelled(
         ("p90 cost", row.p90_cost, _money),
         ("output tokens", row.output_tokens, _whole),
         ("turns", row.turns, _one),
-        ("cost per landed", row.cost_per_landed, _money),
+        ("cost per completion", row.cost_per_completion, _money),
         ("first-try", row.first_try, _percent),
         ("challenger cost", row.challenger_cost, _money),
     ]
@@ -181,7 +181,7 @@ def to_json(
                 "p90_cost": _json_figure(row.p90_cost, min_count),
                 "output_tokens": _json_figure(row.output_tokens, min_count),
                 "turns": _json_figure(row.turns, min_count),
-                "cost_per_landed": _json_figure(row.cost_per_landed, min_count),
+                "cost_per_completion": _json_figure(row.cost_per_completion, min_count),
                 "first_try": _json_figure(row.first_try, min_count),
                 "challenger_calls": _json_figure(row.challenger_calls, min_count, exempt=True),
                 "challenger_cost": _json_figure(row.challenger_cost, min_count),

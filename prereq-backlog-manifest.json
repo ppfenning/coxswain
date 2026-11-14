@@ -1,0 +1,1201 @@
+{
+  "status": "complete: every approved task is applied except one skipped as not really approved and one whose fixtures are ahead of an unbuilt producer",
+  "base": "origin/main 104ea2e83",
+  "order": "cherry-pick -x the remaining tasks in the listed order; tasks are grouped by initiative, phase order and needs honoured",
+  "tests": {
+    "after_last_pick": "see the commit message of the manifest commit"
+  },
+  "superseded_prs": {
+    "1148": "superseded by the combined PR",
+    "1135": "superseded by the combined PR",
+    "1121": "superseded by the combined PR",
+    "1134": "superseded by the combined PR",
+    "1102": "folded into the combined PR"
+  },
+  "notes": [
+    "launch-cap tasks may be superseded by main #1137; refreshing-a-phase-branch by #1138; schedule-conflict-edges by #1139: check before applying",
+    "tests/test_cli_startup.py::test_route_chair_status_startup_relative_to_baseline fails under load and passes alone",
+    "chair-reload-core: the reported test_chair_tick_reuse failure did not reproduce here; tools suite passed after it"
+  ],
+  "excluded": [
+    {
+      "initiative": "aim-slack-an-aim-style-native-rust-slack-client-2",
+      "task_id": "aim-slack-an-aim-style-native-rust-slack-client-2-scaffold-crate-and-boundary",
+      "reason": "other repo: ~/repos/aim-slack"
+    },
+    {
+      "initiative": "aim-slack-an-aim-style-native-rust-slack-client-2",
+      "task_id": "aim-slack-an-aim-style-native-rust-slack-client-2-conversation-state",
+      "reason": "other repo: ~/repos/aim-slack"
+    },
+    {
+      "initiative": "aim-slack-an-aim-style-native-rust-slack-client-2",
+      "task_id": "aim-slack-an-aim-style-native-rust-slack-client-2-mock-backend",
+      "reason": "other repo: ~/repos/aim-slack"
+    },
+    {
+      "initiative": "aim-slack-an-aim-style-native-rust-slack-client-2",
+      "task_id": "aim-slack-an-aim-style-native-rust-slack-client-2-sound-layer",
+      "reason": "other repo: ~/repos/aim-slack"
+    },
+    {
+      "initiative": "aim-slack-an-aim-style-native-rust-slack-client-2",
+      "task_id": "aim-slack-an-aim-style-native-rust-slack-client-2-win98-theme",
+      "reason": "other repo: ~/repos/aim-slack"
+    },
+    {
+      "initiative": "aim-slack-an-aim-style-native-rust-slack-client-2",
+      "task_id": "aim-slack-an-aim-style-native-rust-slack-client-2-app-wiring",
+      "reason": "other repo: ~/repos/aim-slack"
+    },
+    {
+      "initiative": "aim-slack-an-aim-style-native-rust-slack-client-2",
+      "task_id": "aim-slack-an-aim-style-native-rust-slack-client-2-buddy-list-window",
+      "reason": "other repo: ~/repos/aim-slack"
+    },
+    {
+      "initiative": "aim-slack-an-aim-style-native-rust-slack-client-2",
+      "task_id": "aim-slack-an-aim-style-native-rust-slack-client-2-chat-window",
+      "reason": "other repo: ~/repos/aim-slack"
+    },
+    {
+      "initiative": "aim-slack-an-aim-style-native-rust-slack-client-2",
+      "task_id": "aim-slack-an-aim-style-native-rust-slack-client-2-budget-tests",
+      "reason": "other repo: ~/repos/aim-slack"
+    },
+    {
+      "initiative": "aim-slack-an-aim-style-native-rust-slack-client-2",
+      "task_id": "aim-slack-an-aim-style-native-rust-slack-client-2-readme-phase1",
+      "reason": "other repo: ~/repos/aim-slack"
+    },
+    {
+      "initiative": "aim-slack-an-aim-style-native-rust-slack-client-2",
+      "task_id": "aim-slack-an-aim-style-native-rust-slack-client-2-slack-auth",
+      "reason": "other repo: ~/repos/aim-slack"
+    },
+    {
+      "initiative": "aim-slack-an-aim-style-native-rust-slack-client-2",
+      "task_id": "aim-slack-an-aim-style-native-rust-slack-client-2-slack-event-mapping",
+      "reason": "other repo: ~/repos/aim-slack"
+    },
+    {
+      "initiative": "aim-slack-an-aim-style-native-rust-slack-client-2",
+      "task_id": "aim-slack-an-aim-style-native-rust-slack-client-2-slack-presence-poller",
+      "reason": "other repo: ~/repos/aim-slack"
+    },
+    {
+      "initiative": "aim-slack-an-aim-style-native-rust-slack-client-2",
+      "task_id": "aim-slack-an-aim-style-native-rust-slack-client-2-slack-socket-mode",
+      "reason": "other repo: ~/repos/aim-slack"
+    },
+    {
+      "initiative": "aim-slack-an-aim-style-native-rust-slack-client-2",
+      "task_id": "aim-slack-an-aim-style-native-rust-slack-client-2-slack-backend-assembly",
+      "reason": "other repo: ~/repos/aim-slack"
+    },
+    {
+      "initiative": "aim-slack-an-aim-style-native-rust-slack-client-2",
+      "task_id": "aim-slack-an-aim-style-native-rust-slack-client-2-backend-selection",
+      "reason": "other repo: ~/repos/aim-slack"
+    },
+    {
+      "initiative": "aim-slack-an-aim-style-native-rust-slack-client-2",
+      "task_id": "aim-slack-an-aim-style-native-rust-slack-client-2-slack-deps-and-module-layout",
+      "reason": "other repo: ~/repos/aim-slack"
+    },
+    {
+      "initiative": "intakes-have-draft-and-ready-states-and-state",
+      "task_id": "intakes-have-draft-and-ready-states-and-state-chair-release-order",
+      "reason": "held"
+    },
+    {
+      "initiative": "towpath-board-shows-epics-initiatives-phases",
+      "task_id": "towpath-board-shows-epics-initiatives-phases-schedule-feed-parse",
+      "reason": "other repo: ~/repos/coxswain-dash"
+    },
+    {
+      "initiative": "towpath-fails-the-whole-feed-on-a-fractional",
+      "task_id": "towpath-fails-the-whole-feed-on-a-fractional-live-agents-contract-fixture",
+      "reason": "other repo: ~/repos/coxswain-dash"
+    },
+    {
+      "initiative": "towpath-fails-the-whole-feed-on-a-fractional",
+      "task_id": "towpath-fails-the-whole-feed-on-a-fractional-towpath-lenient-live-parsing",
+      "reason": "other repo: ~/repos/coxswain-dash"
+    },
+    {
+      "initiative": "towpath-feed-snapshot-ships-every-landed",
+      "task_id": "towpath-feed-snapshot-ships-every-landed-board-slim-producer",
+      "reason": "held"
+    },
+    {
+      "initiative": "towpath-feed-snapshot-ships-every-landed",
+      "task_id": "towpath-feed-snapshot-ships-every-landed-board-slim-contract",
+      "reason": "held"
+    },
+    {
+      "initiative": "towpath-feed-snapshot-ships-every-landed",
+      "task_id": "towpath-feed-snapshot-ships-every-landed-detail-settled-initiative",
+      "reason": "held"
+    },
+    {
+      "initiative": "towpath-feed-snapshot-ships-every-landed",
+      "task_id": "towpath-feed-snapshot-ships-every-landed-unchanged-sections-contract",
+      "reason": "held"
+    }
+  ],
+  "tasks": [
+    {
+      "task_id": "chair-applies-a-changed-profile-or-cartridge-at-chair-reload-core",
+      "initiative": "chair-applies-a-changed-profile-or-cartridge-at",
+      "phase": "p1-parts",
+      "needs": [],
+      "source_run": "chair-applies-a-changed-profile-or-cartridge-at-2",
+      "source_commits": [
+        "1c645f190b0a6fb4e056b6b55262b93e8601a2ad"
+      ],
+      "source_branch": "agents/chair-applies-a-changed-profile-or-cartridge-at-2/chair-applies-a-changed-profile-or-cartridge-at-chair-reload-core",
+      "new_commits": [
+        "e98b554e7d9da7e06043e58c56e0d24d7db5888e"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "chair-s-own-notes-in-work-files-never-count-as-release-note-reaches-store-row",
+      "initiative": "chair-s-own-notes-in-work-files-never-count-as",
+      "phase": "p1-blocks",
+      "needs": [],
+      "source_run": "chair-s-own-notes-in-work-files-never-count-as-2",
+      "source_commits": [
+        "b18398a0ed7968238f6361c5739365a875d2cb03"
+      ],
+      "source_branch": "agents/chair-s-own-notes-in-work-files-never-count-as-2/chair-s-own-notes-in-work-files-never-count-as-release-note-reaches-store-row",
+      "new_commits": [
+        "cf68df837f504d060a4cfe8487b17ed7b0cfc6f0"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "chair-s-own-notes-in-work-files-never-count-as-widen-note-reaches-store-row",
+      "initiative": "chair-s-own-notes-in-work-files-never-count-as",
+      "phase": "p1-blocks",
+      "needs": [],
+      "source_run": "chair-s-own-notes-in-work-files-never-count-as-2",
+      "source_commits": [
+        "ca7b3eef1bd8b539f30a5bb3f975e7aee9553384"
+      ],
+      "source_branch": "agents/chair-s-own-notes-in-work-files-never-count-as-2/chair-s-own-notes-in-work-files-never-count-as-widen-note-reaches-store-row",
+      "new_commits": [
+        "e2c12020442c7c07deda28138911cd6f4338aadb"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "coxswain-owns-its-long-lived-claude-token-setup-chair-login-check-token",
+      "initiative": "coxswain-owns-its-long-lived-claude-token-setup",
+      "phase": "p2-hosts-report-token",
+      "needs": [
+        "coxswain-owns-its-long-lived-claude-token-setup-remote-token-argv"
+      ],
+      "source_run": "coxswain-owns-its-long-lived-claude-token-setup-11",
+      "source_commits": [
+        "506e4c5b58534a2a9efabbac739369a14ab8b264"
+      ],
+      "source_branch": "agents/coxswain-owns-its-long-lived-claude-token-setup-11/coxswain-owns-its-long-lived-claude-token-setup-chair-login-check-token",
+      "new_commits": [
+        "1e240ebae6193d73dc4fa7fe057bba4507fed22a"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "damaged-line-in-a-jsonl-log-is-skipped-and-log-doctor-core",
+      "initiative": "damaged-line-in-a-jsonl-log-is-skipped-and",
+      "phase": "doctor",
+      "needs": [
+        "damaged-line-in-a-jsonl-log-is-skipped-and-jsonl-log-core"
+      ],
+      "source_run": "damaged-line-in-a-jsonl-log-is-skipped-and-7",
+      "source_commits": [
+        "5b1ecf6ca048704f0e3009f17a85836fe129771f"
+      ],
+      "source_branch": "agents/damaged-line-in-a-jsonl-log-is-skipped-and-7/damaged-line-in-a-jsonl-log-is-skipped-and-log-doctor-core",
+      "new_commits": [
+        "a833581d5328365bb939ad61660e928e3c01d566"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "damaged-line-in-a-jsonl-log-is-skipped-and-chair-actions-log",
+      "initiative": "damaged-line-in-a-jsonl-log-is-skipped-and",
+      "phase": "feed-survives-b",
+      "needs": [],
+      "source_run": "damaged-line-in-a-jsonl-log-is-skipped-and-7",
+      "source_commits": [
+        "a440cad26070881badd11c7823814bd8f971212c"
+      ],
+      "source_branch": "agents/damaged-line-in-a-jsonl-log-is-skipped-and-7/damaged-line-in-a-jsonl-log-is-skipped-and-chair-actions-log",
+      "new_commits": [
+        "f42f2d12308ed200d418bc6d9b8384a0f002ca5c"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "damaged-line-in-a-jsonl-log-is-skipped-and-courier-tolerant-durable",
+      "initiative": "damaged-line-in-a-jsonl-log-is-skipped-and",
+      "phase": "feed-survives-b",
+      "needs": [
+        "damaged-line-in-a-jsonl-log-is-skipped-and-jsonl-log-core"
+      ],
+      "source_run": "damaged-line-in-a-jsonl-log-is-skipped-and-5",
+      "source_commits": [
+        "9e8d79f51e3920d9c7927c4746b461a8ab32c471"
+      ],
+      "source_branch": "agents/damaged-line-in-a-jsonl-log-is-skipped-and-5/damaged-line-in-a-jsonl-log-is-skipped-and-courier-tolerant-durable",
+      "new_commits": [],
+      "status": "skipped",
+      "reason": "refused with \"no arbitration, reviewers silent\": not really approved"
+    },
+    {
+      "task_id": "damaged-line-in-a-jsonl-log-is-skipped-and-dash-feed-health-producer",
+      "initiative": "damaged-line-in-a-jsonl-log-is-skipped-and",
+      "phase": "feed-survives-b",
+      "needs": [
+        "damaged-line-in-a-jsonl-log-is-skipped-and-jsonl-log-core",
+        "damaged-line-in-a-jsonl-log-is-skipped-and-dash-feed-health-contract"
+      ],
+      "source_run": "damaged-line-in-a-jsonl-log-is-skipped-and-5",
+      "source_commits": [
+        "2fef1f89a0baad899c61f1c186d8bea623428da1"
+      ],
+      "source_branch": "agents/damaged-line-in-a-jsonl-log-is-skipped-and-5/damaged-line-in-a-jsonl-log-is-skipped-and-dash-feed-health-producer",
+      "new_commits": [
+        "4f12e0ff3a6cf933407596da9abc3bc6b69ffde0"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "damaged-line-in-a-jsonl-log-is-skipped-and-land-log-chair-readers",
+      "initiative": "damaged-line-in-a-jsonl-log-is-skipped-and",
+      "phase": "feed-survives-b",
+      "needs": [
+        "damaged-line-in-a-jsonl-log-is-skipped-and-jsonl-log-core"
+      ],
+      "source_run": "damaged-line-in-a-jsonl-log-is-skipped-and-5",
+      "source_commits": [
+        "8ae35332051e24f9c9a6cd642033c6abc2323952"
+      ],
+      "source_branch": "agents/damaged-line-in-a-jsonl-log-is-skipped-and-5/damaged-line-in-a-jsonl-log-is-skipped-and-land-log-chair-readers",
+      "new_commits": [
+        "91a1614337d0c4b89548edef559fed51ab3bebe1"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "damaged-line-in-a-jsonl-log-is-skipped-and-land-log-cli-writer",
+      "initiative": "damaged-line-in-a-jsonl-log-is-skipped-and",
+      "phase": "feed-survives-b",
+      "needs": [
+        "damaged-line-in-a-jsonl-log-is-skipped-and-jsonl-log-core"
+      ],
+      "source_run": "damaged-line-in-a-jsonl-log-is-skipped-and-5",
+      "source_commits": [
+        "9556341dd717362f40209f5d92c046569595f00e"
+      ],
+      "source_branch": "agents/damaged-line-in-a-jsonl-log-is-skipped-and-5/damaged-line-in-a-jsonl-log-is-skipped-and-land-log-cli-writer",
+      "new_commits": [
+        "6aa7198454af335bd6e9244e00ddc1fa79c4ba1b"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "damaged-line-in-a-jsonl-log-is-skipped-and-land-log-stats-readers",
+      "initiative": "damaged-line-in-a-jsonl-log-is-skipped-and",
+      "phase": "feed-survives-b",
+      "needs": [
+        "damaged-line-in-a-jsonl-log-is-skipped-and-jsonl-log-core"
+      ],
+      "source_run": "damaged-line-in-a-jsonl-log-is-skipped-and-5",
+      "source_commits": [
+        "ed4ef34538d8a2d78dfd01681c4a593b008703b5"
+      ],
+      "source_branch": "agents/damaged-line-in-a-jsonl-log-is-skipped-and-5/damaged-line-in-a-jsonl-log-is-skipped-and-land-log-stats-readers",
+      "new_commits": [
+        "12d42a81a6108bfb0ceeccf315e27d50be9563db"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "damaged-line-in-a-jsonl-log-is-skipped-and-notify-cards-shared-parser",
+      "initiative": "damaged-line-in-a-jsonl-log-is-skipped-and",
+      "phase": "feed-survives-b",
+      "needs": [
+        "damaged-line-in-a-jsonl-log-is-skipped-and-jsonl-log-core"
+      ],
+      "source_run": "damaged-line-in-a-jsonl-log-is-skipped-and-5",
+      "source_commits": [
+        "4de1e54a23e1d2f1079499492a5f73842cd67a03"
+      ],
+      "source_branch": "agents/damaged-line-in-a-jsonl-log-is-skipped-and-5/damaged-line-in-a-jsonl-log-is-skipped-and-notify-cards-shared-parser",
+      "new_commits": [
+        "be109dcf01fce75b25e53377509b96357d4931a2"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "decompose-splits-tasks-for-another-repository-repo-layout-classifier",
+      "initiative": "decompose-splits-tasks-for-another-repository",
+      "phase": "p1-plan-time",
+      "needs": [],
+      "source_run": "decompose-splits-tasks-for-another-repository-2",
+      "source_commits": [
+        "4eec23787e44fb0feee5cdbb710de43a6b3a1b60"
+      ],
+      "source_branch": "agents/decompose-splits-tasks-for-another-repository-2/decompose-splits-tasks-for-another-repository-repo-layout-classifier",
+      "new_commits": [
+        "ba32aec8d97d850e46e6f71406b337ee3afcf906"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "decompose-splits-tasks-for-another-repository-decompose-splits-by-layout",
+      "initiative": "decompose-splits-tasks-for-another-repository",
+      "phase": "p1-plan-time-b",
+      "needs": [
+        "decompose-splits-tasks-for-another-repository-repo-layout-classifier"
+      ],
+      "source_run": "decompose-splits-tasks-for-another-repository-4",
+      "source_commits": [
+        "fad33a4d8c91df193cb71f6d0b997f87c4934b80"
+      ],
+      "source_branch": "agents/decompose-splits-tasks-for-another-repository-4/decompose-splits-tasks-for-another-repository-decompose-splits-by-layout",
+      "new_commits": [
+        "c49c5912b98679c0efac894e341e78fe0577417c"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "decompose-splits-tasks-for-another-repository-lint-refuses-wrong-repository",
+      "initiative": "decompose-splits-tasks-for-another-repository",
+      "phase": "p1-plan-time-b",
+      "needs": [
+        "decompose-splits-tasks-for-another-repository-repo-layout-classifier"
+      ],
+      "source_run": "decompose-splits-tasks-for-another-repository-3",
+      "source_commits": [
+        "755ba98b1093a1d78d0dc801bcc7b169373efc38"
+      ],
+      "source_branch": "agents/decompose-splits-tasks-for-another-repository-3/decompose-splits-tasks-for-another-repository-lint-refuses-wrong-repository",
+      "new_commits": [
+        "d9a9d474031c3b6e7c9786bcd457484662950c37"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "decompose-whose-idea-file-is-missing-backs-off-decompose-miss-backoff-core",
+      "initiative": "decompose-whose-idea-file-is-missing-backs-off",
+      "phase": "core",
+      "needs": [],
+      "source_run": "decompose-whose-idea-file-is-missing-backs-off-2",
+      "source_commits": [
+        "89649f1926b5a1904b5e67e70728ae06dabf0983"
+      ],
+      "source_branch": "agents/decompose-whose-idea-file-is-missing-backs-off-2/decompose-whose-idea-file-is-missing-backs-off-decompose-miss-backoff-core",
+      "new_commits": [
+        "e410f602e83782e601c88c085a6256eae239a452"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "every-land-path-marks-the-tasks-it-carried-done-batch-plan-marks-every-task",
+      "initiative": "every-land-path-marks-the-tasks-it-carried-done",
+      "phase": "land-paths",
+      "needs": [],
+      "source_run": "every-land-path-marks-the-tasks-it-carried-done-2",
+      "source_commits": [
+        "3e5fc60283d0afeedf480ea9727635c625c38714"
+      ],
+      "source_branch": "agents/every-land-path-marks-the-tasks-it-carried-done-2/every-land-path-marks-the-tasks-it-carried-done-batch-plan-marks-every-task",
+      "new_commits": [
+        "e9e74cd995498f3aad6bccb0bae0b88832fbacf5"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "every-land-path-marks-the-tasks-it-carried-done-land-plans-mark-every-task",
+      "initiative": "every-land-path-marks-the-tasks-it-carried-done",
+      "phase": "land-paths",
+      "needs": [],
+      "source_run": "every-land-path-marks-the-tasks-it-carried-done-2",
+      "source_commits": [
+        "48b9bb36733fc462605b5e8f8c2265cce4183ed3"
+      ],
+      "source_branch": "agents/every-land-path-marks-the-tasks-it-carried-done-2/every-land-path-marks-the-tasks-it-carried-done-land-plans-mark-every-task",
+      "new_commits": [
+        "b5c006aee0a3de8740600b8fea1e4b99c13eee70"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "every-land-path-marks-the-tasks-it-carried-done-pr-land-carried-tasks",
+      "initiative": "every-land-path-marks-the-tasks-it-carried-done",
+      "phase": "land-paths",
+      "needs": [],
+      "source_run": "every-land-path-marks-the-tasks-it-carried-done-2",
+      "source_commits": [
+        "3c835538647502e1995c4023b71d64718ce13cb9"
+      ],
+      "source_branch": "agents/every-land-path-marks-the-tasks-it-carried-done-2/every-land-path-marks-the-tasks-it-carried-done-pr-land-carried-tasks",
+      "new_commits": [
+        "93a55b74a133bbe72a0d36ba899adb3541a7e70d"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "every-land-path-marks-the-tasks-it-carried-done-route-edit-done-from-open-states",
+      "initiative": "every-land-path-marks-the-tasks-it-carried-done",
+      "phase": "land-paths",
+      "needs": [],
+      "source_run": "every-land-path-marks-the-tasks-it-carried-done-2",
+      "source_commits": [
+        "e461dc112834193ad8f8da70e15b63bee743dbe0"
+      ],
+      "source_branch": "agents/every-land-path-marks-the-tasks-it-carried-done-2/every-land-path-marks-the-tasks-it-carried-done-route-edit-done-from-open-states",
+      "new_commits": [
+        "5d9c344300ab5511a2d4db3135b2d49172643ea2"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "every-land-path-marks-the-tasks-it-carried-done-missed-close-plan",
+      "initiative": "every-land-path-marks-the-tasks-it-carried-done",
+      "phase": "tick-repair",
+      "needs": [],
+      "source_run": "every-land-path-marks-the-tasks-it-carried-done-2",
+      "source_commits": [
+        "1225954596d255e69404b4a42a5802fb99efa675"
+      ],
+      "source_branch": "agents/every-land-path-marks-the-tasks-it-carried-done-2/every-land-path-marks-the-tasks-it-carried-done-missed-close-plan",
+      "new_commits": [
+        "b1a4b997eb144d299459ad5335cc188e18e1eaf2"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "failed-land-records-why-and-awaiting-land-is-land-failure-format",
+      "initiative": "failed-land-records-why-and-awaiting-land-is",
+      "phase": "p1-failed-land-records-why",
+      "needs": [],
+      "source_run": "failed-land-records-why-and-awaiting-land-is-2",
+      "source_commits": [
+        "1d7b0fbef252248b7cd8a7bcbb4ed204a262c72e"
+      ],
+      "source_branch": "agents/failed-land-records-why-and-awaiting-land-is-2/failed-land-records-why-and-awaiting-land-is-land-failure-format",
+      "new_commits": [
+        "e417b28e56fb2eb4f7654e162bffa27c2ebea2e9"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "failed-land-records-why-and-awaiting-land-is-running-state-in-facts",
+      "initiative": "failed-land-records-why-and-awaiting-land-is",
+      "phase": "p2-awaiting-land-is-not-running",
+      "needs": [],
+      "source_run": "failed-land-records-why-and-awaiting-land-is-2",
+      "source_commits": [
+        "a173aad7975773b56478ed4533e45f2e03a06514"
+      ],
+      "source_branch": "agents/failed-land-records-why-and-awaiting-land-is-2/failed-land-records-why-and-awaiting-land-is-running-state-in-facts",
+      "new_commits": [
+        "f3a68fef9a6a28cdaede53b936f66df0b047984b"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "failing-recovery-action-stops-holding-its-stuck-recovery-planner",
+      "initiative": "failing-recovery-action-stops-holding-its",
+      "phase": "p2",
+      "needs": [
+        "failing-recovery-action-stops-holding-its-fail-streak-facts"
+      ],
+      "source_run": "failing-recovery-action-stops-holding-its-8",
+      "source_commits": [
+        "1a7e5d5550e8b1996b5d58003c53716b1d2a5ea9"
+      ],
+      "source_branch": "agents/failing-recovery-action-stops-holding-its-8/failing-recovery-action-stops-holding-its-stuck-recovery-planner",
+      "new_commits": [
+        "3cea4bd23c69039c11a54fcd875c34356ef81442"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "graphs-tests-stop-failing-intermittently-and-a-graphs-isolation-guard",
+      "initiative": "graphs-tests-stop-failing-intermittently-and-a",
+      "phase": "guard",
+      "needs": [
+        "graphs-tests-stop-failing-intermittently-and-a-flake-epic-driver-helpers",
+        "graphs-tests-stop-failing-intermittently-and-a-flake-worker-count-tests",
+        "graphs-tests-stop-failing-intermittently-and-a-flake-timing-tests",
+        "graphs-tests-stop-failing-intermittently-and-a-flake-git-worktree-tests"
+      ],
+      "source_run": "graphs-tests-stop-failing-intermittently-and-a-43",
+      "source_commits": [
+        "440cde251c95a3eb4dd00bd72c492872ea8cdcb3"
+      ],
+      "source_branch": "agents/graphs-tests-stop-failing-intermittently-and-a-43/graphs-tests-stop-failing-intermittently-and-a-graphs-isolation-guard",
+      "new_commits": [
+        "381fc06a1a179de022cd5d6d679b3e9e628fe793"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "lane-test-runs-keep-pytest-temp-directories-pytest-ini-retention",
+      "initiative": "lane-test-runs-keep-pytest-temp-directories",
+      "phase": "lane-tmp",
+      "needs": [],
+      "source_run": "lane-test-runs-keep-pytest-temp-directories-10",
+      "source_commits": [
+        "cbfa0d0bae744751b785e44f15a7e712950460f7"
+      ],
+      "source_branch": "agents/lane-test-runs-keep-pytest-temp-directories-10/lane-test-runs-keep-pytest-temp-directories-pytest-ini-retention",
+      "new_commits": [
+        "4a7a3d00f20bbfebd3ebda015dd3b728886a62b6"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "lane-test-runs-keep-pytest-temp-directories-lane-basetemp-wire-cli",
+      "initiative": "lane-test-runs-keep-pytest-temp-directories",
+      "phase": "lane-tmp-b",
+      "needs": [
+        "lane-test-runs-keep-pytest-temp-directories-lane-basetemp-env-core"
+      ],
+      "source_run": "lane-test-runs-keep-pytest-temp-directories-9",
+      "source_commits": [
+        "5a7bc5ade6cd8f27cb696bfdb03a7b47159bc559"
+      ],
+      "source_branch": "agents/lane-test-runs-keep-pytest-temp-directories-9/lane-test-runs-keep-pytest-temp-directories-lane-basetemp-wire-cli",
+      "new_commits": [
+        "b7064ab52b5ab09e878172a8c15dc34a5bb7e0e1"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "lane-test-runs-keep-pytest-temp-directories-lane-basetemp-wire-epic",
+      "initiative": "lane-test-runs-keep-pytest-temp-directories",
+      "phase": "lane-tmp-b",
+      "needs": [
+        "lane-test-runs-keep-pytest-temp-directories-lane-basetemp-env-core"
+      ],
+      "source_run": "lane-test-runs-keep-pytest-temp-directories-9",
+      "source_commits": [
+        "26dfea3a020ef0e29981c09ef15f1a77147d1efb"
+      ],
+      "source_branch": "agents/lane-test-runs-keep-pytest-temp-directories-9/lane-test-runs-keep-pytest-temp-directories-lane-basetemp-wire-epic",
+      "new_commits": [
+        "9366340bb44e23c30b773e0c4e3e83f2ba1cec62"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "lane-test-runs-keep-pytest-temp-directories-pytest-tmp-stale-sweep-wire",
+      "initiative": "lane-test-runs-keep-pytest-temp-directories",
+      "phase": "sweep-b",
+      "needs": [
+        "lane-test-runs-keep-pytest-temp-directories-pytest-tmp-stale-sweep-core"
+      ],
+      "source_run": "lane-test-runs-keep-pytest-temp-directories-9",
+      "source_commits": [
+        "fec5aed367db74a5c67739068121504e9fc241ad"
+      ],
+      "source_branch": "agents/lane-test-runs-keep-pytest-temp-directories-9/lane-test-runs-keep-pytest-temp-directories-pytest-tmp-stale-sweep-wire",
+      "new_commits": [
+        "e038e8d4a6959b13c012ac3deb5daec4b873942f"
+      ],
+      "status": "applied, conflict resolved: chair_exec.py imports (both sides kept)",
+      "expected_conflict": "src/tools/agent_tools/chair_exec.py"
+    },
+    {
+      "task_id": "launch-cap-bounds-remote-launches-too-so-the-fill-launch-budget",
+      "initiative": "launch-cap-bounds-remote-launches-too-so-the",
+      "phase": "p1",
+      "needs": [],
+      "source_run": "launch-cap-bounds-remote-launches-too-so-the-2",
+      "source_commits": [
+        "121184fc7553dda626cc3261b1b8ee1a39c0974a"
+      ],
+      "source_branch": "agents/launch-cap-bounds-remote-launches-too-so-the-2/launch-cap-bounds-remote-launches-too-so-the-fill-launch-budget",
+      "new_commits": [
+        "4e2511653e72d78ccec0e13f40c74a72e474e3a6"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "launch-cap-bounds-remote-launches-too-so-the-unlaunched-cap-reason",
+      "initiative": "launch-cap-bounds-remote-launches-too-so-the",
+      "phase": "p1",
+      "needs": [],
+      "source_run": "launch-cap-bounds-remote-launches-too-so-the-2",
+      "source_commits": [
+        "4d257ad1032648bd7fbee54afa5246d33f87ef76"
+      ],
+      "source_branch": "agents/launch-cap-bounds-remote-launches-too-so-the-2/launch-cap-bounds-remote-launches-too-so-the-unlaunched-cap-reason",
+      "new_commits": [
+        "1cc601811bfa59820f7e5807dae0a162ceb975e1"
+      ],
+      "status": "applied, conflict resolved: chair_launch_why.py reason list (both reasons kept)",
+      "expected_conflict": "src/tools/agent_tools/chair_launch_why.py"
+    },
+    {
+      "task_id": "mcp-exposes-the-chair-to-mcp-clients-locally-mcp-read-tools",
+      "initiative": "mcp-exposes-the-chair-to-mcp-clients-locally",
+      "phase": "core-b",
+      "needs": [
+        "mcp-exposes-the-chair-to-mcp-clients-locally-mcp-protocol"
+      ],
+      "source_run": "mcp-exposes-the-chair-to-mcp-clients-locally-4",
+      "source_commits": [
+        "ddac71a5bec7608a841d295bb871ba618ec89395"
+      ],
+      "source_branch": "agents/mcp-exposes-the-chair-to-mcp-clients-locally-4/mcp-exposes-the-chair-to-mcp-clients-locally-mcp-read-tools",
+      "new_commits": [
+        "9b604611657b45b9d937ac81d0605dc30a05aaf7"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "mcp-exposes-the-chair-to-mcp-clients-locally-mcp-http-server",
+      "initiative": "mcp-exposes-the-chair-to-mcp-clients-locally",
+      "phase": "transports",
+      "needs": [
+        "mcp-exposes-the-chair-to-mcp-clients-locally-mcp-protocol"
+      ],
+      "source_run": "mcp-exposes-the-chair-to-mcp-clients-locally-4",
+      "source_commits": [
+        "a9a6a9626798ea6d521e52275c323788a425cf59"
+      ],
+      "source_branch": "agents/mcp-exposes-the-chair-to-mcp-clients-locally-4/mcp-exposes-the-chair-to-mcp-clients-locally-mcp-http-server",
+      "new_commits": [
+        "cfa583cb754e7e2e3144c2618a56a91ab0a66691"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "mcp-exposes-the-chair-to-mcp-clients-locally-mcp-stdio-server",
+      "initiative": "mcp-exposes-the-chair-to-mcp-clients-locally",
+      "phase": "transports",
+      "needs": [
+        "mcp-exposes-the-chair-to-mcp-clients-locally-mcp-protocol",
+        "mcp-exposes-the-chair-to-mcp-clients-locally-mcp-read-tools",
+        "mcp-exposes-the-chair-to-mcp-clients-locally-mcp-write-tools"
+      ],
+      "source_run": "mcp-exposes-the-chair-to-mcp-clients-locally-7",
+      "source_commits": [
+        "6608302f8448a8de209dabf69a496d3dd4e65ffc"
+      ],
+      "source_branch": "agents/mcp-exposes-the-chair-to-mcp-clients-locally-7/mcp-exposes-the-chair-to-mcp-clients-locally-mcp-stdio-server",
+      "new_commits": [
+        "7e8cd318354113a477f5c6f0057ac8a2ae6b64c4"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "merged-commit-is-checked-against-the-fetched-git-ref-health-scan",
+      "initiative": "merged-commit-is-checked-against-the-fetched",
+      "phase": "p2-ref-heartbeat",
+      "needs": [],
+      "source_run": "merged-commit-is-checked-against-the-fetched-6",
+      "source_commits": [
+        "5ff07eb8cf05b291d5b2de1ca293a0ec35f2a29d"
+      ],
+      "source_branch": "agents/merged-commit-is-checked-against-the-fetched-6/merged-commit-is-checked-against-the-fetched-git-ref-health-scan",
+      "new_commits": [
+        "753cc09d93e8f8818dcb8e91caefe3fa8b3c5631"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "merged-commit-is-checked-against-the-fetched-host-beat-reports-corrupt-refs",
+      "initiative": "merged-commit-is-checked-against-the-fetched",
+      "phase": "p2-ref-heartbeat-b",
+      "needs": [
+        "merged-commit-is-checked-against-the-fetched-git-ref-health-scan"
+      ],
+      "source_run": "merged-commit-is-checked-against-the-fetched-8",
+      "source_commits": [
+        "adee571b2c9f889f0aee84476f6b96db15acf2ab"
+      ],
+      "source_branch": "agents/merged-commit-is-checked-against-the-fetched-8/merged-commit-is-checked-against-the-fetched-host-beat-reports-corrupt-refs",
+      "new_commits": [
+        "3ddbd8a8bd9c351619e7637b5c5333f9ff8605b5"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "refreshing-a-phase-branch-onto-main-never-drops-rebase-guard-reason-helpers",
+      "initiative": "refreshing-a-phase-branch-onto-main-never-drops",
+      "phase": "p1-keep-merges",
+      "needs": [],
+      "source_run": "refreshing-a-phase-branch-onto-main-never-drops-2",
+      "source_commits": [
+        "be8c67b1ca85157951caffef3971856a72a77a2a"
+      ],
+      "source_branch": "agents/refreshing-a-phase-branch-onto-main-never-drops-2/refreshing-a-phase-branch-onto-main-never-drops-rebase-guard-reason-helpers",
+      "new_commits": [
+        "6cd5803a9218aec7f407c66ef01772d5a1276db0"
+      ],
+      "status": "applied, conflict resolved: stack_refresh.py imports (both kept) (fetched from the first machine, applied after the landing commits)",
+      "expected_conflict": "src/graphs/harness/stack_refresh.py"
+    },
+    {
+      "task_id": "resumed-session-leaves-a-live-chair-service-s-resume-hook-take-decision",
+      "initiative": "resumed-session-leaves-a-live-chair-service-s",
+      "phase": "p1-resume-hook",
+      "needs": [],
+      "source_run": "resumed-session-leaves-a-live-chair-service-s-12",
+      "source_commits": [
+        "853779d28617b27a5640a73c11f8f125a309966f"
+      ],
+      "source_branch": "agents/resumed-session-leaves-a-live-chair-service-s-12/resumed-session-leaves-a-live-chair-service-s-resume-hook-take-decision",
+      "new_commits": [
+        "28f49db8674ea3ebfb6de1f07953a041494eb824"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "resumed-session-leaves-a-live-chair-service-s-takeback-exec-and-report",
+      "initiative": "resumed-session-leaves-a-live-chair-service-s",
+      "phase": "p2-takeback",
+      "needs": [],
+      "source_run": "resumed-session-leaves-a-live-chair-service-s-12",
+      "source_commits": [
+        "909f8694e90a7570a0dc6762428a415cf501fdca"
+      ],
+      "source_branch": "agents/resumed-session-leaves-a-live-chair-service-s-12/resumed-session-leaves-a-live-chair-service-s-takeback-exec-and-report",
+      "new_commits": [
+        "88f00f964e79c909ed04cfbb99dbf3e6d42fcfb8"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "resumed-session-leaves-a-live-chair-service-s-takeback-lease-fact",
+      "initiative": "resumed-session-leaves-a-live-chair-service-s",
+      "phase": "p2-takeback",
+      "needs": [],
+      "source_run": "resumed-session-leaves-a-live-chair-service-s-12",
+      "source_commits": [
+        "e94907fa2a062cc4ac57ccec097d68a3ec5f6a95"
+      ],
+      "source_branch": "agents/resumed-session-leaves-a-live-chair-service-s-12/resumed-session-leaves-a-live-chair-service-s-takeback-lease-fact",
+      "new_commits": [
+        "8462639e6ac7ca4a71d5b1900a794066e84f66e9"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "schedule-conflict-edges-only-order-work-behind-route-schedule-withheld-and-scenarios",
+      "initiative": "schedule-conflict-edges-only-order-work-behind",
+      "phase": "wire",
+      "needs": [
+        "schedule-conflict-edges-only-order-work-behind-graph-conflict-needs-startable-phase",
+        "schedule-conflict-edges-only-order-work-behind-schedule-waiting-takes-no-lane",
+        "schedule-conflict-edges-only-order-work-behind-schedule-inputs-carry-running-lanes"
+      ],
+      "source_run": "schedule-conflict-edges-only-order-work-behind-8",
+      "source_commits": [
+        "67824d70ae43f852057ed781ecbeedfdd78d2548"
+      ],
+      "source_branch": "agents/schedule-conflict-edges-only-order-work-behind-8/schedule-conflict-edges-only-order-work-behind-route-schedule-withheld-and-scenarios",
+      "new_commits": [
+        "d18421d239e34a45477d3bb5de8d3f3496e861b1"
+      ],
+      "status": "applied, conflict resolved: route_schedule.py keeps main's signature for `withheld` (fetched from the first machine, applied after the landing commits)",
+      "expected_conflict": "src/tools/agent_tools/route_schedule.py"
+    },
+    {
+      "task_id": "sessions-converse-with-a-self-sustaining-chair-chat-core",
+      "initiative": "sessions-converse-with-a-self-sustaining-chair",
+      "phase": "p1-cores",
+      "needs": [],
+      "source_run": "sessions-converse-with-a-self-sustaining-chair-4",
+      "source_commits": [
+        "cc3f2a0afcd1fb32020c2f1df44052b62c1a915a"
+      ],
+      "source_branch": "agents/sessions-converse-with-a-self-sustaining-chair-4/sessions-converse-with-a-self-sustaining-chair-chat-core",
+      "new_commits": [
+        "1d19d1137dc103c125ddc0fc0a136994e948a75c"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "sessions-converse-with-a-self-sustaining-chair-idle-core",
+      "initiative": "sessions-converse-with-a-self-sustaining-chair",
+      "phase": "p1-cores",
+      "needs": [],
+      "source_run": "sessions-converse-with-a-self-sustaining-chair-4",
+      "source_commits": [
+        "ff0db160853fa9b8859330f59fbb3244f385cf68"
+      ],
+      "source_branch": "agents/sessions-converse-with-a-self-sustaining-chair-4/sessions-converse-with-a-self-sustaining-chair-idle-core",
+      "new_commits": [
+        "76d0a2c9170561dc3e9796db04eb85619da39174"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "sessions-converse-with-a-self-sustaining-chair-service-install",
+      "initiative": "sessions-converse-with-a-self-sustaining-chair",
+      "phase": "p1-cores",
+      "needs": [],
+      "source_run": "sessions-converse-with-a-self-sustaining-chair-4",
+      "source_commits": [
+        "6aafd706273d55b1e7ff4b0fbff70f8abcd3e9a5"
+      ],
+      "source_branch": "agents/sessions-converse-with-a-self-sustaining-chair-4/sessions-converse-with-a-self-sustaining-chair-service-install",
+      "new_commits": [
+        "a8ddca8cf3356ca73b3a7299e4aaf4dc9d8eedae"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "sessions-converse-with-a-self-sustaining-chair-sort-core",
+      "initiative": "sessions-converse-with-a-self-sustaining-chair",
+      "phase": "p1-cores",
+      "needs": [],
+      "source_run": "sessions-converse-with-a-self-sustaining-chair-4",
+      "source_commits": [
+        "f6bc92b885722f49d096ec8835d20dd9438b44d1"
+      ],
+      "source_branch": "agents/sessions-converse-with-a-self-sustaining-chair-4/sessions-converse-with-a-self-sustaining-chair-sort-core",
+      "new_commits": [
+        "2c218757dffe6cf7465c6a95d55a7573b9ee2d4e"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "sessions-converse-with-a-self-sustaining-chair-chat-wire",
+      "initiative": "sessions-converse-with-a-self-sustaining-chair",
+      "phase": "p2-loop-wiring",
+      "needs": [
+        "sessions-converse-with-a-self-sustaining-chair-chat-core",
+        "sessions-converse-with-a-self-sustaining-chair-service-install"
+      ],
+      "source_run": "sessions-converse-with-a-self-sustaining-chair-5",
+      "source_commits": [
+        "bbf8045e0a31833a735de5bddad72122f28feb1d"
+      ],
+      "source_branch": "agents/sessions-converse-with-a-self-sustaining-chair-5/sessions-converse-with-a-self-sustaining-chair-chat-wire",
+      "new_commits": [
+        "697d53a90d4a3a9df5012bcfa3c729e52b63a59f"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "sessions-converse-with-a-self-sustaining-chair-sort-wire",
+      "initiative": "sessions-converse-with-a-self-sustaining-chair",
+      "phase": "p2-loop-wiring",
+      "needs": [
+        "sessions-converse-with-a-self-sustaining-chair-sort-core"
+      ],
+      "source_run": "sessions-converse-with-a-self-sustaining-chair-5",
+      "source_commits": [
+        "75d79877165bfe5c3e55d0fcf8f16c667f188a64"
+      ],
+      "source_branch": "agents/sessions-converse-with-a-self-sustaining-chair-5/sessions-converse-with-a-self-sustaining-chair-sort-wire",
+      "new_commits": [
+        "16cbb7af3627d9b5666a48e0710b25eb2fd883e1"
+      ],
+      "status": "applied, conflict resolved: chair_exec.py Deps fields and test_chair_facts.py ungathered keys (both sides kept)",
+      "expected_conflict": "src/tools/tests/test_chair_facts.py"
+    },
+    {
+      "task_id": "task-marked-done-closes-its-other-open-pull-pr-close-selector",
+      "initiative": "task-marked-done-closes-its-other-open-pull",
+      "phase": "p1-selector",
+      "needs": [],
+      "source_run": "task-marked-done-closes-its-other-open-pull-2",
+      "source_commits": [
+        "475477c0d7ea3f1357def005114fde67d1d6ea04"
+      ],
+      "source_branch": "agents/task-marked-done-closes-its-other-open-pull-2/task-marked-done-closes-its-other-open-pull-pr-close-selector",
+      "new_commits": [
+        "1c3f6bffa304d4268f4bc78fb2ac7c9564fa0751"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "ticket-land-that-has-merged-finishes-its-after-merge-failure-finishes-bookkeeping",
+      "initiative": "ticket-land-that-has-merged-finishes-its",
+      "phase": "safe-after-merge",
+      "needs": [
+        "ticket-land-that-has-merged-finishes-its-plan-names-existing-records"
+      ],
+      "source_run": "ticket-land-that-has-merged-finishes-its-2",
+      "source_commits": [
+        "feee7d4e9af93d2a7cc14daea5dbabe9b3e2c1c8"
+      ],
+      "source_branch": "agents/ticket-land-that-has-merged-finishes-its-2/ticket-land-that-has-merged-finishes-its-after-merge-failure-finishes-bookkeeping",
+      "new_commits": [
+        "264ee064d204dafe2e0e39d9932972817342f015"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "ticket-land-that-has-merged-finishes-its-rerun-after-merge-finishes",
+      "initiative": "ticket-land-that-has-merged-finishes-its",
+      "phase": "rerun-finishes",
+      "needs": [
+        "ticket-land-that-has-merged-finishes-its-after-merge-failure-finishes-bookkeeping"
+      ],
+      "source_run": "ticket-land-that-has-merged-finishes-its-3",
+      "source_commits": [
+        "8fced540f2d39aca271988fe9929e4f9566e6b7e"
+      ],
+      "source_branch": "agents/ticket-land-that-has-merged-finishes-its-3/ticket-land-that-has-merged-finishes-its-rerun-after-merge-finishes",
+      "new_commits": [
+        "58c339a193b90d6fa19576c12215285f4a7eff7a"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "workflow-concerns-from-a-29-task-9-phase-retry-carries-objection",
+      "initiative": "workflow-concerns-from-a-29-task-9-phase",
+      "phase": "gate",
+      "needs": [
+        "workflow-concerns-from-a-29-task-9-phase-lease-loss-is-interruption"
+      ],
+      "source_run": "workflow-concerns-from-a-29-task-9-phase-6",
+      "source_commits": [
+        "d448e61aaa7e6364e0d646688e256bf882cbe10b"
+      ],
+      "source_branch": "agents/workflow-concerns-from-a-29-task-9-phase-6/workflow-concerns-from-a-29-task-9-phase-retry-carries-objection",
+      "new_commits": [
+        "e21f06a591dc25e9e4d74884b4460c01009e69f4"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "workflow-concerns-from-a-29-task-9-phase-task-file-cap",
+      "initiative": "workflow-concerns-from-a-29-task-9-phase",
+      "phase": "gate",
+      "needs": [
+        "workflow-concerns-from-a-29-task-9-phase-references-outside-surfaces"
+      ],
+      "source_run": "workflow-concerns-from-a-29-task-9-phase-6",
+      "source_commits": [
+        "6c9500fc8f0071e194c9dd50d5dd0b13da2adb65"
+      ],
+      "source_branch": "agents/workflow-concerns-from-a-29-task-9-phase-6/workflow-concerns-from-a-29-task-9-phase-task-file-cap",
+      "new_commits": [
+        "5083bf18864e09085d7fe008fb07ea2622459543"
+      ],
+      "status": "applied, conflict resolved: ticket_lint.py constants (both sides kept)",
+      "expected_conflict": "src/graphs/graphs/delivery/ticket_lint.py"
+    },
+    {
+      "task_id": "efficiency-reads-cost-per-completion-not-cost-feed-contract",
+      "initiative": "efficiency-reads-cost-per-completion-not-cost",
+      "phase": "p1-producer",
+      "needs": [],
+      "source_run": "efficiency-reads-cost-per-completion-not-cost-6",
+      "source_commits": [
+        "9a5183ba27bc207cf5013ba5107726c33a70c9fd"
+      ],
+      "source_branch": "agents/efficiency-reads-cost-per-completion-not-cost-6/efficiency-reads-cost-per-completion-not-cost-feed-contract",
+      "new_commits": [],
+      "status": "not applied: it changes only the expected dashboard feed fixtures (adds completions and cost_per_completion to the spend split), and no approved task makes the producer emit them, so applying it turns six fixture tests red"
+    },
+    {
+      "task_id": "efficiency-reads-cost-per-completion-not-cost-status-line",
+      "initiative": "efficiency-reads-cost-per-completion-not-cost",
+      "phase": "p1-producer-b",
+      "needs": [
+        "efficiency-reads-cost-per-completion-not-cost-feed-contract"
+      ],
+      "source_run": "efficiency-reads-cost-per-completion-not-cost-5",
+      "source_commits": [
+        "95b6418de2f62dbaf57412f83bbc9fe2cfe5dbdb"
+      ],
+      "source_branch": "agents/efficiency-reads-cost-per-completion-not-cost-5/efficiency-reads-cost-per-completion-not-cost-status-line",
+      "new_commits": [
+        "edccc714e925f7add45b088f9720f90a32aa6277"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "efficiency-reads-cost-per-completion-not-cost-stats-efficiency-label",
+      "initiative": "efficiency-reads-cost-per-completion-not-cost",
+      "phase": "p2-readers",
+      "needs": [],
+      "source_run": "efficiency-reads-cost-per-completion-not-cost-5",
+      "source_commits": [
+        "bced7f7ee81ad9f1f84971ee31c3ad846a967c88"
+      ],
+      "source_branch": "agents/efficiency-reads-cost-per-completion-not-cost-5/efficiency-reads-cost-per-completion-not-cost-stats-efficiency-label",
+      "new_commits": [
+        "604f4f4b866c966da5cb7db7d14fdcab53b825b5"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "efficiency-reads-cost-per-completion-not-cost-tuning-read-label",
+      "initiative": "efficiency-reads-cost-per-completion-not-cost",
+      "phase": "p2-readers",
+      "needs": [],
+      "source_run": "efficiency-reads-cost-per-completion-not-cost-5",
+      "source_commits": [
+        "293995d3ef8768e4a326882e298c6412346d7e14"
+      ],
+      "source_branch": "agents/efficiency-reads-cost-per-completion-not-cost-5/efficiency-reads-cost-per-completion-not-cost-tuning-read-label",
+      "new_commits": [
+        "34e59e880ba4d5d34d2b01f789927ca21ed613d1"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "efficiency-reads-cost-per-completion-not-cost-efficiency-docs",
+      "initiative": "efficiency-reads-cost-per-completion-not-cost",
+      "phase": "p2-readers-b",
+      "needs": [
+        "efficiency-reads-cost-per-completion-not-cost-status-line",
+        "efficiency-reads-cost-per-completion-not-cost-stats-efficiency-label"
+      ],
+      "source_run": "efficiency-reads-cost-per-completion-not-cost-6",
+      "source_commits": [
+        "a1bd9d3393e1116334122e9b2e43974fb2e199e6"
+      ],
+      "source_branch": "agents/efficiency-reads-cost-per-completion-not-cost-6/efficiency-reads-cost-per-completion-not-cost-efficiency-docs",
+      "new_commits": [
+        "c118915f8a21234b082dfd5168e11a9d3933f640"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "not-launched-lines-name-the-real-reason-an-plan-passes-real-reasons",
+      "initiative": "not-launched-lines-name-the-real-reason-an",
+      "phase": "truthful-reasons-b",
+      "needs": [
+        "not-launched-lines-name-the-real-reason-an-why-names-real-reasons"
+      ],
+      "source_run": "not-launched-lines-name-the-real-reason-an-6",
+      "source_commits": [
+        "fc68c7c7bda91d8193312437cbdd9980e4ca5af7"
+      ],
+      "source_branch": "agents/not-launched-lines-name-the-real-reason-an-6/not-launched-lines-name-the-real-reason-an-plan-passes-real-reasons",
+      "new_commits": [
+        "f4d3ff871842815d4dedf22a4e5c434cb8b83c22"
+      ],
+      "status": "applied, conflict resolved: chair_plan.py passes the cap left and the schedule (fetched from the first machine, applied after the landing commits)",
+      "expected_conflict": "src/tools/agent_tools/chair_plan.py"
+    },
+    {
+      "task_id": "task-checks-run-only-the-tests-a-change-affects-epic-record-records-selection-and-cpu",
+      "initiative": "task-checks-run-only-the-tests-a-change-affects",
+      "phase": "narrow-b",
+      "needs": [
+        "task-checks-run-only-the-tests-a-change-affects-check-scope-counts-tests-selected",
+        "task-checks-run-only-the-tests-a-change-affects-run-checks-reports-cpu-seconds"
+      ],
+      "source_run": "task-checks-run-only-the-tests-a-change-affects-7",
+      "source_commits": [
+        "41031e4fb0889d6499d155020ea5213d14f86b6a"
+      ],
+      "source_branch": "agents/task-checks-run-only-the-tests-a-change-affects-7/task-checks-run-only-the-tests-a-change-affects-epic-record-records-selection-and-cpu",
+      "new_commits": [
+        "6cf1f938b0ecf90fd7d2ec90a0086e7bb558fb0b"
+      ],
+      "status": "applied, conflict resolved: epic.py task checks: the scoped check list, inside main's try/finally that removes the scratch tree",
+      "expected_conflict": "src/graphs/harness/epic.py"
+    },
+    {
+      "task_id": "task-checks-run-only-the-tests-a-change-affects-dash-feed-task-checks-producer",
+      "initiative": "task-checks-run-only-the-tests-a-change-affects",
+      "phase": "feed",
+      "needs": [
+        "task-checks-run-only-the-tests-a-change-affects-task-check-load-contract",
+        "task-checks-run-only-the-tests-a-change-affects-epic-record-records-selection-and-cpu"
+      ],
+      "source_run": "task-checks-run-only-the-tests-a-change-affects-8",
+      "source_commits": [
+        "98ab87db9a4cb32c4ef5dd563f692c13aff3a676"
+      ],
+      "source_branch": "agents/task-checks-run-only-the-tests-a-change-affects-8/task-checks-run-only-the-tests-a-change-affects-dash-feed-task-checks-producer",
+      "new_commits": [
+        "68a48e3a2e08cf0ae5cec49df85d111b8c77a7b7"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "task-checks-run-only-the-tests-a-change-affects-epic-task-gate-reuses-ledger",
+      "initiative": "task-checks-run-only-the-tests-a-change-affects",
+      "phase": "reuse-b",
+      "needs": [
+        "task-checks-run-only-the-tests-a-change-affects-check-ledger-reuses-same-tree-results",
+        "task-checks-run-only-the-tests-a-change-affects-epic-record-records-selection-and-cpu"
+      ],
+      "source_run": "task-checks-run-only-the-tests-a-change-affects-8",
+      "source_commits": [
+        "0229623ad71a1b3056f5e065687c8ca1726dc0c7"
+      ],
+      "source_branch": "agents/task-checks-run-only-the-tests-a-change-affects-8/task-checks-run-only-the-tests-a-change-affects-epic-task-gate-reuses-ledger",
+      "new_commits": [
+        "def80ad0f2c184f59151d1b96e6f1835e8a159e0"
+      ],
+      "status": "applied, conflict resolved: epic.py: the ledger-reusing gate and its reused names, on top of the scoped selection record of the sibling task",
+      "expected_conflict": "src/graphs/harness/epic.py"
+    },
+    {
+      "task_id": "task-checks-run-only-the-tests-a-change-affects-land-check-reuses-ledger",
+      "initiative": "task-checks-run-only-the-tests-a-change-affects",
+      "phase": "reuse-b",
+      "needs": [
+        "task-checks-run-only-the-tests-a-change-affects-check-ledger-reuses-same-tree-results"
+      ],
+      "source_run": "task-checks-run-only-the-tests-a-change-affects-6",
+      "source_commits": [
+        "01b5f7e56b1305db817bba75acd412a73f32fc01"
+      ],
+      "source_branch": "agents/task-checks-run-only-the-tests-a-change-affects-6/task-checks-run-only-the-tests-a-change-affects-land-check-reuses-ledger",
+      "new_commits": [
+        "0bdbb0fc38a003c3fa2bcce734099b921e40d1c9"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "task_id": "task-checks-run-only-the-tests-a-change-affects-review-verify-evidence-reuses-ledger",
+      "initiative": "task-checks-run-only-the-tests-a-change-affects",
+      "phase": "reuse-b",
+      "needs": [
+        "task-checks-run-only-the-tests-a-change-affects-check-ledger-reuses-same-tree-results"
+      ],
+      "source_run": "task-checks-run-only-the-tests-a-change-affects-7",
+      "source_commits": [
+        "59b37cbf83e6e8015d0270ac95a2277aae62b356"
+      ],
+      "source_branch": "agents/task-checks-run-only-the-tests-a-change-affects-7/task-checks-run-only-the-tests-a-change-affects-review-verify-evidence-reuses-ledger",
+      "new_commits": [
+        "3822982c489bacbb7d11a1f3343fa1f5b3664374"
+      ],
+      "status": "applied clean"
+    },
+    {
+      "initiative": "intakes-have-draft-and-ready-states-and-state",
+      "task_id": "intakes-have-draft-and-ready-states-and-state-fields-cli",
+      "status": "applied clean (from open pull request #1102; it was listed as held; its README command table is regenerated)",
+      "new_commits": [
+        "44a4182cff426aad9b8d086ffdeb52f1df35ed30"
+      ]
+    }
+  ],
+  "integration_fixes": [
+    "harness/checks.py + tests/test_epic_check_reuse.py: two tasks each wrote a 'reused' line on a check's evidence; one line is kept ('reused: same tree and command passed earlier')",
+    "harness/check_reuse.py run_checks_reusing(run=...) and epic._gate_checks: the reuse step runs misses through the caller's run_checks, so the lane environment and scoped-check tasks still see every run",
+    "agent_tools/host_cmd.py: imports scan_repo_refs (the name git_ref_health defines) and reports repo-relative paths, as its own tests expect"
+  ],
+  "open_prs_reviewed": {
+    "1148": "already in the combined PR",
+    "1134": "an older attempt (run 4) of a task applied from run 11",
+    "1135": "the fixtures-only feed-contract task: not applied, see its task entry",
+    "1121": "an older attempt of the same fixtures-only task",
+    "1102": "folded in"
+  }
+}

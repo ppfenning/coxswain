@@ -366,9 +366,8 @@ def test_ticket_checks_run_in_the_land_that_opens_the_pr_not_in_every_phase_land
     assert _ticket_steps(_card_plan({"ticket_checks": _TICKET}, last_phase=False)) == []
 
 
-@pytest.mark.parametrize("land_at", ["level", "task"])
-def test_level_and_task_grain_plans_have_no_ticket_step(land_at):
-    assert _ticket_steps(_card_plan({"ticket_checks": _TICKET}, land_at=land_at)) == []
+def test_a_task_grain_plan_has_no_ticket_step():
+    assert _ticket_steps(_card_plan({"ticket_checks": _TICKET}, land_at="task")) == []
 
 
 def test_a_repo_with_no_ticket_checks_plans_the_same_steps_as_before():
@@ -388,7 +387,7 @@ def test_the_phase_plan_that_opens_the_ticket_pr_has_the_ticket_step_once_before
     steps = plan({"ticket_checks": _TICKET})
     [gate] = _ticket_steps(steps)
     assert _kinds_of(steps).index("checks") < steps.index(gate) < _kinds_of(steps).index("push")
-    assert _ticket_steps(plan({"ticket_checks": _TICKET}, land_at="level")) == []
+    assert _ticket_steps(plan({"ticket_checks": _TICKET}, land_at="task")) == []
     assert plan({}) == plan({"ticket_checks": []})
 
 

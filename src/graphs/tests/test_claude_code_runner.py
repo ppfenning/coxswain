@@ -23,6 +23,7 @@ import yaml
 from harness.store_migrate import open_store
 from harness.store_read import calls as store_calls
 from harness.store_write import Store
+from harness.worktree import apply_patch as apply_harness_patch
 from runner import RunnerError
 from runner.claude_code_runner import (
     _DIFF_CMD,
@@ -2440,6 +2441,58 @@ def test_a_scratch_links_the_target_repos_venv_and_dropping_it_keeps_the_target(
     finally:
         runner._drop_scratch(parent, scratch)
     assert (repo / ".venv").is_dir()
+
+
+def _git_in(cwd: Path, *args: str) -> str:
+    proc = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args], cwd=cwd, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout
+
+
+def _scratch_with_empty_and_full_new_files(tmp_path: Path) -> tuple[Path, str]:
+    """A one-commit repo holding `base.txt`, then an empty `empty.txt` and a non-empty `full.txt`; returns it and the diff."""
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    _git_in(scratch, "init", "-q")
+    (scratch / "base.txt").write_text("base\n")
+    _git_in(scratch, "add", "-A")
+    _git_in(scratch, "commit", "-q", "-m", "base")
+    (scratch / "empty.txt").write_bytes(b"")
+    (scratch / "full.txt").write_text("full\n")
+    diff = subprocess.run(_DIFF_CMD, shell=True, cwd=scratch, capture_output=True, text=True)
+    assert diff.returncode == 0, diff.stderr
+    return scratch, diff.stdout
+
+
+def test_diff_cmd_names_an_empty_new_file_as_a_header_only_block(tmp_path) -> None:
+    _, patch = _scratch_with_empty_and_full_new_files(tmp_path)
+    assert "diff --git a/empty.txt b/empty.txt" in patch
+    assert "diff --git a/full.txt b/full.txt" in patch
+    empty_block = patch.split("diff --git a/empty.txt b/empty.txt", 1)[1].split("diff --git", 1)[0]
+    assert "new file mode 100644" in empty_block
+    assert re.search(r"^index 0{40}\.\.[0-9a-f]{40}$", empty_block, re.MULTILINE)
+    assert "+++" not in empty_block
+
+
+def test_the_diff_cmd_patch_replays_the_empty_file_through_apply_reported_patch(tmp_path) -> None:
+    scratch, patch = _scratch_with_empty_and_full_new_files(tmp_path)
+    fresh = tmp_path / "fresh"
+    _git_in(tmp_path, "clone", "-q", str(scratch), str(fresh))
+    assert apply_reported_patch(fresh, patch) is True
+    assert (fresh / "full.txt").read_text() == "full\n"
+    assert (fresh / "empty.txt").is_file()
+    assert (fresh / "empty.txt").stat().st_size == 0
+
+
+def test_the_diff_cmd_patch_replays_the_empty_file_through_the_harness_apply_patch(tmp_path) -> None:
+    scratch, patch = _scratch_with_empty_and_full_new_files(tmp_path)
+    fresh = tmp_path / "fresh"
+    _git_in(tmp_path, "clone", "-q", str(scratch), str(fresh))
+    ok, detail = apply_harness_patch(patch, fresh)
+    assert ok, detail
+    assert (fresh / "full.txt").read_text() == "full\n"
+    assert (fresh / "empty.txt").is_file()
+    assert (fresh / "empty.txt").stat().st_size == 0
 
 
 def test_python_tool_checks_also_permit_the_python_m_form(fake_claude, tmp_path, repo) -> None:

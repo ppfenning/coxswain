@@ -10,6 +10,8 @@ from test_runs_fetch_landed_elsewhere import RUN, _world
 from agent_tools import cli, remote_fetch, remote_launch, usage_window
 from agent_tools.cli import main
 
+pytestmark = pytest.mark.usefixtures("board_store")  # the store is the board; these launches read its rows
+
 
 @pytest.fixture(autouse=True)
 def _no_usage_gather(monkeypatch):

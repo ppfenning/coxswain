@@ -1,14 +1,15 @@
 from agent_tools import cli, doctor
 
-OFF_DETAIL = "off; turn it on with chair.steward set to true in the profile"
+SET_DETAIL = "retired; chair.steward is set and ignored (the lander lands: cox lander run)"
+UNSET_DETAIL = "retired; the lander merges phases and lands initiatives (cox lander run)"
 
 
-def test_steward_row_on():
-    assert doctor.steward_row(True) == {"check": "steward", "ok": True, "detail": "on"}
+def test_steward_row_for_a_profile_that_still_sets_it_says_retired_and_ignored():
+    assert doctor.steward_row(True) == {"check": "steward", "ok": True, "detail": SET_DETAIL}
 
 
-def test_steward_row_off_says_how_to_turn_it_on():
-    assert doctor.steward_row(False) == {"check": "steward", "ok": True, "detail": OFF_DETAIL}
+def test_steward_row_for_a_profile_without_it_says_retired():
+    assert doctor.steward_row(False) == {"check": "steward", "ok": True, "detail": UNSET_DETAIL}
 
 
 def test_the_row_never_changes_the_exit_code():

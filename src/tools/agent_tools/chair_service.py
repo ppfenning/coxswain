@@ -5,7 +5,7 @@ from __future__ import annotations
 import posixpath
 import re
 from itertools import pairwise
-from pathlib import Path
+from pathlib import PurePath
 from xml.sax.saxutils import escape
 
 from agent_tools.chair_restart import RESTART_EXIT_CODE
@@ -13,6 +13,8 @@ from agent_tools.chair_restart import RESTART_EXIT_CODE
 UNIT_NAME = "coxswain-chair.service"
 WATCHDOG_SERVICE_NAME = "coxswain-chair-watchdog.service"
 WATCHDOG_TIMER_NAME = "coxswain-chair-watchdog.timer"
+CHAIR_PLIST_LABEL = "coxswain-chair"
+CHAIR_PLIST_NAME = "coxswain-chair.plist"
 WATCHDOG_PLIST_LABEL = "coxswain-chair-watchdog"
 WATCHDOG_PLIST_NAME = "coxswain-chair-watchdog.plist"
 
@@ -22,7 +24,7 @@ _EXEC_START = re.compile(r"^ExecStart=(.*)$", re.MULTILINE)
 _ENV_FILE = re.compile(r"^EnvironmentFile=-(\S+)\s*$", re.MULTILINE)
 
 
-def unit_path(home: Path) -> Path:
+def unit_path[Home: PurePath](home: Home) -> Home:  # a Path in, a Path out: the edge calls .exists on the result
     return home / ".config/systemd/user" / UNIT_NAME
 
 
@@ -125,6 +127,46 @@ def watchdog_plist_text(cox: str, profile: str, path: str, minutes: int) -> str:
         "  </array>",
         "  <key>StartInterval</key>",
         f"  <integer>{minutes * 60}</integer>",
+        "  <key>EnvironmentVariables</key>",
+        "  <dict>",
+        "    <key>PATH</key>",
+        f"    <string>{escape(path)}</string>",
+        "  </dict>",
+        "</dict>",
+        "</plist>",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def chair_plist_path[Home: PurePath](home: Home) -> Home:
+    return home / "Library/LaunchAgents" / CHAIR_PLIST_NAME
+
+
+def service_file[Home: PurePath](platform: str, home: Home) -> Home | None:
+    """Where `setup install` puts the chair service file; None for a platform with no service manager supported."""
+    return {"linux": unit_path, "darwin": chair_plist_path}.get(platform, lambda _home: None)(home)
+
+
+def chair_plist_text(cox: str, workspace_dir: str, label: str, interval: int, path: str, profile: str) -> str:
+    """KeepAlive true restarts the chair on any exit, including RESTART_EXIT_CODE; every interpolated value is XML-escaped."""
+    arguments = [cox, "chair", "run", "--label", label, "--interval", str(interval), "--profile", profile]
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+        '<plist version="1.0">',
+        "<dict>",
+        "  <key>Label</key>",
+        f"  <string>{escape(CHAIR_PLIST_LABEL)}</string>",
+        "  <key>ProgramArguments</key>",
+        "  <array>",
+        *(f"    <string>{escape(argument)}</string>" for argument in arguments),
+        "  </array>",
+        "  <key>RunAtLoad</key>",
+        "  <true/>",
+        "  <key>KeepAlive</key>",
+        "  <true/>",
+        "  <key>WorkingDirectory</key>",
+        f"  <string>{escape(workspace_dir)}</string>",
         "  <key>EnvironmentVariables</key>",
         "  <dict>",
         "    <key>PATH</key>",

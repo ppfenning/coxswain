@@ -6,6 +6,7 @@ from collections.abc import Collection, Mapping
 from typing import Any, NamedTuple
 
 from graphs.delivery.decompose_size import NEW_MARKER
+from graphs.delivery.repo_layout import foreign_repo, repo_path
 
 Task = dict[str, Any]
 
@@ -40,21 +41,32 @@ def _has(paths: Collection[str], path: str, is_new: bool) -> bool:
 
 
 def classify(
-    surface: str, own_paths: Collection[str], foreign_trees: Mapping[str, Collection[str]]
+    surface: str,
+    own_paths: Collection[str],
+    foreign_trees: Mapping[str, Collection[str]],
+    own_key: str | None = None,
 ) -> tuple[str, str | None]:
-    """Return ('own', None), ('foreign', repo) or ('neither', None). Own wins over foreign."""
+    """Return ('own', None), ('foreign', repo) or ('neither', None). Own wins over foreign.
+
+    A surface no listing places falls back to its path layout when `own_key` is known."""
     is_new = surface.endswith(NEW_MARKER)
     path = surface.removesuffix(NEW_MARKER)
     if _has(own_paths, path, is_new):
         return ("own", None)
     homes = [repo for repo, paths in foreign_trees.items() if _has(paths, path, is_new)]
-    return ("foreign", homes[0]) if len(homes) == 1 else ("neither", None)
+    if homes:
+        return ("foreign", homes[0]) if len(homes) == 1 else ("neither", None)
+    key = foreign_repo(path, own_key) if own_key is not None else None
+    return ("foreign", repo_path(key)) if key is not None else ("neither", None)
 
 
 def _sort_surfaces(
-    surfaces: list[str], own_paths: Collection[str], foreign_trees: Mapping[str, Collection[str]]
+    surfaces: list[str],
+    own_paths: Collection[str],
+    foreign_trees: Mapping[str, Collection[str]],
+    own_key: str | None,
 ) -> _Sorted:
-    kinds = [(s, *classify(s, own_paths, foreign_trees)) for s in surfaces]
+    kinds = [(s, *classify(s, own_paths, foreign_trees, own_key)) for s in surfaces]
     repos = list(dict.fromkeys(r for _, k, r in kinds if k == "foreign" and r is not None))
     return _Sorted(
         [s for s, k, _ in kinds if k == "own"],
@@ -141,13 +153,14 @@ def split_foreign(
     foreign_trees: Mapping[str, Collection[str]],
     *,
     title: str,
+    own_key: str | None = None,
 ) -> Split:
     """Sort each task's surfaces into this repository, one other repository, or neither."""
     if not own_paths:
         return Split(list(tasks), [], [], [])
     own = frozenset(own_paths)
     trees = {repo: frozenset(paths) for repo, paths in foreign_trees.items()}
-    sorted_ = [_sort_surfaces(t.get("surfaces") or [], own, trees) for t in tasks]
+    sorted_ = [_sort_surfaces(t.get("surfaces") or [], own, trees, own_key) for t in tasks]
     labels = _labels(list(dict.fromkeys(r for s in sorted_ for r in s.foreign)))
     placed = [_place(t, s, labels) for t, s in zip(tasks, sorted_)]
     fates = {

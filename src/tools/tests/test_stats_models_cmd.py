@@ -42,10 +42,10 @@ def _models(tmp_path, *flags):
 BUILD = (
     "role build\n"
     "  big-1: calls 2, challenger calls 0, median cost too few (n=2), p90 cost too few (n=2),"
-    " output tokens too few (n=2), turns too few (n=2), cost per landed too few (n=1),"
+    " output tokens too few (n=2), turns too few (n=2), cost per completion too few (n=1),"
     " first-try too few (n=2), challenger cost too few (n=0)\n"
     "  small: calls 1, challenger calls 1, median cost too few (n=1), p90 cost too few (n=1),"
-    " output tokens too few (n=1), turns too few (n=1), cost per landed too few (n=1),"
+    " output tokens too few (n=1), turns too few (n=1), cost per completion too few (n=1),"
     " first-try too few (n=1), challenger cost too few (n=1)\n"
 )
 SKIPPED_3 = "skipped 3 calls: no joined task, or no role, model, cost, output tokens or turns\n"
@@ -53,7 +53,7 @@ SKIPPED_3 = "skipped 3 calls: no joined task, or no role, model, cost, output to
 TEXT = BUILD + (
     "role review_charter\n"
     "  big-1: calls 1, challenger calls 0, median cost too few (n=1), p90 cost too few (n=1),"
-    " output tokens too few (n=1), turns too few (n=1), cost per landed too few (n=1),"
+    " output tokens too few (n=1), turns too few (n=1), cost per completion too few (n=1),"
     " challenger cost too few (n=0)\n"
 ) + SKIPPED_3
 
@@ -89,7 +89,7 @@ def test_json_is_the_core_dict_plus_the_skipped_count(tmp_path, capsys):
             "review_charter": {
                 "big-1": {
                     "calls": {"value": 1, "count": 1}, "median_cost": too_few, "p90_cost": too_few,
-                    "output_tokens": too_few, "turns": too_few, "cost_per_landed": too_few, "first_try": None,
+                    "output_tokens": too_few, "turns": too_few, "cost_per_completion": too_few, "first_try": None,
                     "challenger_calls": {"value": 0, "count": 0}, "challenger_cost": {"value": "too few", "count": 0},
                 }
             }
@@ -132,10 +132,10 @@ def test_adapted_rows_give_the_figures_once_the_threshold_is_met():
     assert lines == [
         "role build",
         "  big-1: calls 2, challenger calls 0, median cost 2.00 (n=2), p90 cost 3.00 (n=2), output tokens 200 (n=2),"
-        " turns 5.0 (n=2), cost per landed 1.00 (n=1), first-try 50% (n=2), challenger cost too few (n=0)",
+        " turns 5.0 (n=2), cost per completion 1.00 (n=1), first-try 50% (n=2), challenger cost too few (n=0)",
         "  small: calls 1, challenger calls 0, median cost 0.50 (n=1), p90 cost 0.50 (n=1), output tokens 50 (n=1),"
-        " turns 2.0 (n=1), cost per landed 0.50 (n=1), first-try 100% (n=1), challenger cost too few (n=0)",
+        " turns 2.0 (n=1), cost per completion 0.50 (n=1), first-try 100% (n=1), challenger cost too few (n=0)",
         "role review_charter",
         "  small-2: calls 1, challenger calls 0, median cost 0.25 (n=1), p90 cost 0.25 (n=1), output tokens 10 (n=1),"
-        " turns 1.0 (n=1), cost per landed 0.25 (n=1), challenger cost too few (n=0)",
+        " turns 1.0 (n=1), cost per completion 0.25 (n=1), challenger cost too few (n=0)",
     ]

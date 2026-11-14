@@ -99,6 +99,7 @@ def test_a_failed_side_commit_leaves_the_checkout_on_main(repo) -> None:
     assert git("rev-parse", "--abbrev-ref", "HEAD", cwd=repo) == "main"
 
 
+@pytest.mark.usefixtures("at_task")
 def test_a_base_missing_a_needed_commit_is_rebuilt_and_the_build_runs(repo, cart, tmp_path, memory_store) -> None:
     commit = _side_commit(repo, "needed.txt", "ok\n")
     runner = Watching(repo, {DEPENDENT: new_file_patch(f"{DEPENDENT}.txt")})
@@ -113,6 +114,7 @@ def test_a_base_missing_a_needed_commit_is_rebuilt_and_the_build_runs(repo, cart
     assert result["quarantined"] == []
 
 
+@pytest.mark.usefixtures("at_task")
 @pytest.mark.parametrize("conflicting", [True, False], ids=["conflict", "unknown-commit"])
 def test_a_base_that_cannot_be_assembled_stops_the_phase_before_any_build(
     repo, cart, tmp_path, memory_store, conflicting
@@ -151,6 +153,7 @@ def test_a_base_that_holds_every_needed_commit_builds_unchanged(repo, cart, tmp_
     assert phase["status"] == "complete"
 
 
+@pytest.mark.usefixtures("at_task")
 @pytest.mark.parametrize(("need_state", "blocked"), [("done", False), ("approved", True)])
 def test_only_an_unlanded_need_is_checked_against_the_base(
     repo, cart, tmp_path, memory_store, need_state, blocked

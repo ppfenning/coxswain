@@ -57,11 +57,3 @@ def test_route_status_shows_the_stores_state(workspace, capsys):
     _provider(workspace, "store")
     assert main(["route", "status", "--profile", str(workspace)]) == 0
     assert "problem: x: p1/t.md: unknown state 'bogus'" in capsys.readouterr().out
-
-
-@pytest.mark.parametrize("command", ["context", "status"])
-def test_files_mode_shows_the_file_state_and_reads_no_store(workspace, capsys, monkeypatch, command):
-    _provider(workspace, "files")
-    monkeypatch.setattr(run_store, "work_items", lambda *a, **k: pytest.fail("the store was read under files mode"))
-    assert main(["route", command, "--profile", str(workspace)]) == 0
-    assert "problem:" not in capsys.readouterr().out

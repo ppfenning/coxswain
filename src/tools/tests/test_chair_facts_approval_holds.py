@@ -5,7 +5,6 @@ from agent_tools import cli
 from agent_tools.chair_facts import (
     approval_holds_from_actions,
     approved_facts,
-    resolve_approval_hold_ticks,
     running_initiatives,
 )
 
@@ -20,14 +19,14 @@ LANDS = [
 
 
 def test_a_branch_merged_approved_row_carries_the_fact_and_has_no_hold_however_many_lands():
-    [fact] = approved_facts([ROW], {"i": "ticket"}, lambda row: True)
-    assert (fact["branch_merged"], fact["land_at"]) == (True, "ticket")
+    [fact] = approved_facts([ROW], {"i": "initiative"}, lambda row: True)
+    assert (fact["branch_merged"], fact["land_at"]) == (True, "initiative")
     assert approval_holds_from_actions([fact], LANDS) == []
 
 
 def test_a_row_the_stub_says_is_not_branch_merged_holds_as_before():
     [fact] = approved_facts([ROW], {}, lambda row: False)
-    assert (fact["branch_merged"], fact["land_at"]) == (False, "ticket")
+    assert (fact["branch_merged"], fact["land_at"]) == (False, "initiative")
     assert [h["ticks"] for h in approval_holds_from_actions([fact], LANDS)] == [4]
 
 
@@ -35,11 +34,6 @@ def test_task_landing_never_consults_the_branch_merged_callable():
     asked = []
     [fact] = approved_facts([ROW], {"i": "task"}, lambda row: asked.append(row) or True)
     assert (fact["branch_merged"], fact["land_at"], asked) == (False, "task", [])
-
-
-def test_level_landing_consults_the_branch_merged_callable():
-    [fact] = approved_facts([ROW], {"i": "level"}, lambda row: True)
-    assert (fact["branch_merged"], fact["land_at"]) == (True, "level")
 
 
 def test_no_callable_reads_branch_merged_false():
@@ -74,7 +68,7 @@ def test_the_cli_binding_resolves_the_recorded_branch_and_asks_the_epic_phase_br
 def test_the_cli_binding_reads_false_when_the_recorded_branch_no_longer_resolves(tmp_path):
     asked = _binding(tmp_path, [])
     gone = cli._approved_branch_merged(lambda argv: (1, ""), lambda row: "/repo", tmp_path)
-    assert (asked({**ROW, "land_at": "level"}), gone({**ROW, "land_at": "level"})) == (True, False)
+    assert (asked({**ROW, "land_at": "initiative"}), gone({**ROW, "land_at": "initiative"})) == (True, False)
 
 
 def test_the_cli_binding_finds_a_commit_on_the_epic_phase_branch_in_a_real_repo(tmp_path):
@@ -130,7 +124,3 @@ def test_hold_age_counts_distinct_ticks_since_the_last_landed_row_and_skips_merg
     assert approval_holds_from_actions(approved, actions) == [
         {"initiative": "i", "repo": "r", "task_id": "t1", "run": "i-1", "ticks": 2}
     ]
-
-
-def test_the_approval_hold_limit_defaults_to_6_when_missing_non_numeric_or_not_positive():
-    assert [resolve_approval_hold_ticks(v) for v in (None, "x", 0, -3, "4")] == [6, 6, 6, 6, 4]

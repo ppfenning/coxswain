@@ -20,6 +20,7 @@ EVENTS = (
     "needs_attention", "level_merged", "merge_failed", "relaunched", "stuck", "gate_passed", "gate_failed",
     "epic_complete", "run_exited",
     "chat_directive", "chat_question", "chat_answer", "directive_applied", "directive_refused",
+    "chat_action",  # a record of a write an MCP client already made; nothing acts on it
 )
 EXCEPTION_EVENTS = ("needs_attention", "merge_failed", "stuck", "gate_failed")
 _PATTERN = re.compile(r"^coxswain://([a-z]+)/(.+)$")
@@ -225,9 +226,41 @@ def ack(blob: str, message_id: str, consumer: str | None = None) -> str:
     return blob if entry is None else append_line(blob, _ack_line(entry, consumer))
 
 
+def read_text(path: Path) -> str:
+    """Edge. The bus named by `path` as JSON lines; "" when there is none yet. With a shared store the bus is the
+    store's courier log (`courier_bus`), else the file itself."""
+    from agent_tools import courier_bus
+
+    if courier_bus.uses_store(Path(path)):
+        return courier_bus.read_text(Path(path))
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def stamp(path: Path) -> tuple:
+    """Edge. A value that changes whenever the bus named by `path` gains a line, for a cache key: the store's line
+    count, or the file's size and mtime. No size for a bus that cannot be read."""
+    from agent_tools import courier_bus
+
+    if courier_bus.uses_store(Path(path)):
+        return (str(path), "store", courier_bus.line_count(Path(path)))
+    try:
+        info = Path(path).stat()
+    except OSError:
+        return (str(path), None)
+    return (str(path), info.st_size, info.st_mtime_ns)
+
+
 def append_file(path: Path, entry: dict) -> None:
-    """Appends one line and never reads or rewrites the file. A final line missing its newline
+    """Appends one line and never reads or rewrites the bus. In a file, a final line missing its newline
     (a torn write) is closed first so the entry stays on its own line."""
+    from agent_tools import courier_bus
+
+    if courier_bus.uses_store(Path(path)):
+        courier_bus.append_line(Path(path), json.dumps(entry))
+        return
     with open(path, "ab+") as f:
         size = f.seek(0, 2)
         if size > 0:
@@ -238,10 +271,9 @@ def append_file(path: Path, entry: dict) -> None:
 
 
 def ack_file(path: Path, message_id: str, consumer: str | None = None) -> bool:
-    """Appends one ack line and never rewrites the file; False when no entry has `message_id`."""
-    try:
-        blob = path.read_text(encoding="utf-8")
-    except OSError:
+    """Appends one ack line and never rewrites the bus; False when no entry has `message_id`."""
+    blob = read_text(path)
+    if not blob:
         return False
     entry = _latest_by_id(blob).get(message_id)
     if entry is None:

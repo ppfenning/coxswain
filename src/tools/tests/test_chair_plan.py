@@ -1583,3 +1583,13 @@ def test_a_held_edit_is_reported_once_and_a_new_edit_to_the_file_again():
     reported = ["work/a/p1/t1.md|b1"]
     assert plan_held_files({"held_files": [row], "held_reported": reported}) == []
     assert len(plan_held_files({"held_files": [{**row, "blob": "b2"}], "held_reported": reported})) == 1
+
+
+def test_a_steward_key_in_the_facts_is_ignored_and_plans_no_merge_gate_or_steward_event():
+    level = {"tasks": [{"id": "a-t", "state": "approved"}], "merged": False, "phase": "p1"}
+    epic = {"epic_id": "a", "branch_head": "h1", "levels": [level], "exited": True, "signature": "s1", "reported": (), "land_at": "ticket"}
+    facts = _facts(initiatives=[_initiative("a")], run_exited={"a": True}, approved=[_approved("t1")])
+    with_key = plan_tick({**facts, "steward": {"enabled": True, "epics": [epic]}})
+    assert with_key == plan_tick(facts)
+    assert {a["kind"] for a in with_key} & {"merge_level", "run_gate", "steward_event"} == set()
+    assert [a["kind"] for a in with_key] == ["land_phase", "clear_branches", "relaunch"]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 
 REASON_MAX = 120
@@ -17,6 +18,21 @@ def cut_reason(text: str) -> tuple[str, str | None]:
 def waiting_on(needs: Sequence[str], state_by_id: Mapping[str, str]) -> list[str]:
     """The needs that are not yet done or dropped, in order; a need the store does not list is still waited on."""
     return [need for need in needs if state_by_id.get(need) not in SETTLED_STATES]
+
+
+def _count(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def checks_from_scope(scope: Mapping | None) -> dict | None:
+    """The `checks` object from a task record's `check_scope`; None when its totals are missing or malformed."""
+    totals = scope.get("totals") if isinstance(scope, Mapping) else None
+    if not isinstance(totals, Mapping):
+        return None
+    selected, total, cpu = totals.get("tests_selected"), totals.get("tests_total"), totals.get("cpu_seconds")
+    cpu_ok = isinstance(cpu, int | float) and not isinstance(cpu, bool) and math.isfinite(cpu) and cpu >= 0
+    ok = _count(selected) and _count(total) and cpu_ok
+    return {"tests_selected": selected, "tests_total": total, "cpu_seconds": cpu} if ok else None
 
 
 def _entry(
@@ -40,6 +56,7 @@ def _entry(
         # The contract (both repos' dash_feed_tasks_v1.json) and towpath's `Option<String>` carry one task id:
         # the first need still pending. A list here fails towpath's parse of the whole feed line.
         **({"waiting_on": pending[0]} if pending else {}),
+        **({"checks": checks} if (checks := checks_from_scope(latest.get("check_scope"))) is not None else {}),
     }
 
 

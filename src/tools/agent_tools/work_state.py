@@ -1,4 +1,4 @@
-"""Which work-state backend the provider profile selects: `store` or `files`."""
+"""The work-state backend. There is one: the store. `files`, in which the ticket files were the board, is retired."""
 
 import contextlib
 import urllib.parse
@@ -7,22 +7,14 @@ from pathlib import Path
 from typing import Any
 
 from agent_tools import store_dialect
-from agent_tools.store_url import read_provider_profile
 
 _PROBE_CONNECT_TIMEOUT_S = 3
 
 
 def _resolve_mode(explicit: object, shared_store: bool, store_answered: bool) -> str:
-    """Pure. `files` for explicit `"files"`. `store` for explicit `"store"` only when
-    `store_answered`. `store` for a missing or `None` explicit only when `shared_store
-    and store_answered`. `files` for any other value, such as a typo."""
-    if explicit == "files":
-        return "files"
-    if explicit == "store":
-        return "store" if store_answered else "files"
-    if explicit is None:
-        return "store" if shared_store and store_answered else "files"
-    return "files"
+    """Pure. Always `store`: the store is the only board. The arguments are kept for the status line's callers;
+    none of them can select the retired `files` mode, in which the ticket files were the board."""
+    return "store"
 
 
 def _with_connect_timeout(url: str) -> str:
@@ -49,34 +41,30 @@ def _probe_store(url: str) -> bool:
         return False
 
 
+FILES_RETIRED = "work_state: files is retired: the store is the only board. Remove the key from the provider profile."
+
+
 def resolve(profile: Mapping[str, Any]) -> tuple[str, str]:
-    """Edge. The mode and its status line, from at most one probe. `shared_store` is whether
-    `storage_url` names a Postgres store; a malformed URL reads as not shared. Probes only
-    when the answer can matter and the store is Postgres: explicit `store`, or no key with a
-    shared store. Never probes for explicit `files`, a typo, or a non-Postgres URL — a `store`
-    explicitly named with no Postgres URL is trusted without a probe, matching the pre-existing
-    local, file-backed meaning of `store` mode."""
+    """Edge. The mode, always `store`, and its status line, from at most one probe of a Postgres store.
+    A store that does not answer is still the board: commands that need it fail and say so, and nothing stands in
+    for it. A profile that still says `work_state: files` gets a line saying the key is retired."""
     url = profile.get("storage_url") or ""
     try:
         shared_store = store_dialect.is_postgres(url)
     except ValueError:
         shared_store = False
-    explicit = profile.get("work_state")
-    should_probe = shared_store and (explicit == "store" or explicit is None)
-    store_answered = _probe_store(url) if should_probe else True
-    mode = _resolve_mode(explicit, shared_store, store_answered)
-    if mode == "store":
-        return mode, "work state: store"
-    if should_probe and not store_answered:
-        return mode, "work state: files (store unreachable)"
-    return mode, "work state: files"
+    if profile.get("work_state") == "files":
+        return "store", f"work state: store ({FILES_RETIRED})"
+    if shared_store and not _probe_store(url):
+        return "store", "work state: store (unreachable)"
+    return "store", "work state: store"
 
 
 def work_state_mode(profile: Mapping[str, Any]) -> str:
-    """Only the exact string `store` selects store mode; a missing key, null or any other value is `files`."""
-    return resolve(profile)[0]
+    """Always `store`. Opens no connection: whether the store answers changes the status line, never the mode."""
+    return "store"
 
 
 def work_state_mode_at(provider_profile: Path | str) -> str:
-    """Edge. The mode for the provider profile at `provider_profile`; an unreadable profile is `files`."""
-    return work_state_mode(read_provider_profile(provider_profile))
+    """The mode for the provider profile at `provider_profile`: always `store`."""
+    return "store"

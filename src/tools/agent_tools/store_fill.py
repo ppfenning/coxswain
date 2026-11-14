@@ -7,7 +7,7 @@ the writes. Reading files and calling `run_store` is the edge's job, at the bott
 from __future__ import annotations
 
 import argparse
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -167,6 +167,21 @@ def _record_inserted(ws: Path, files: list[tuple[tuple[str, ...], str]], existin
         queue_export.record_written(ws, texts)
 
 
+def stale_exports(files: list[tuple[tuple[str, ...], str]], existing: list[Row], record: dict[str, str], blob: Callable[[str], str]) -> list[str]:
+    """Pure: the workspace-relative paths that are this machine's own exported copy of a row the store no longer
+    holds: the file names no stored row, and its text is exactly what an export last recorded writing there.
+    A file nobody exported (a new intake someone wrote here) or one edited since is never listed."""
+    stored = {_key(row) for row in existing}
+    stale = []
+    for parts, text in files:
+        path = "/".join(parts)
+        shape = shape_of(parts)
+        row = None if shape is None else queue_rows.parse_item(*shape, text)
+        if row is not None and _key(row) not in stored and record.get(path) == blob(text):
+            stale.append(path)
+    return stale
+
+
 def format_summary(plan: Plan, skipped: int) -> str:
     return f"inserted {plan.inserted}, filled {plan.filled}, unchanged {plan.unchanged}, skipped {skipped}"
 
@@ -208,14 +223,24 @@ def _text_or_none(path: Path) -> str | None:
         return None
 
 
-def fill_workspace(ws: Path) -> str:
+def fill_workspace(ws: Path, prune_stale: bool = False) -> str:
     """Edge. Insert or fill the store's rows from `ws`'s files and return the summary line. Raises RuntimeError when the
-    store cannot be read or refuses a row, so a caller about to export (and delete files with no row) stops instead."""
+    store cannot be read or refuses a row, so a caller about to export (and delete files with no row) stops instead.
+
+    With `prune_stale` (a workspace that is only this machine's copy of the store), a file that is an unchanged
+    exported copy of a row the store has since dropped is deleted first, so a stale machine never puts the row back."""
     runs_dir = ws / "runs"
     existing = _read_store(runs_dir)
     if existing is None:
         raise RuntimeError(_UNREADABLE)
     files = _workspace_files(ws)
+    if prune_stale and existing:  # no rows at all reads as a store that is not there yet, never as "everything was dropped"
+        from agent_tools import queue_export  # imported here: queue_export reads shape_of from this module
+
+        gone = set(stale_exports(files, existing, queue_export.read_baseline_record(ws), queue_export.blob_hash))
+        for path in sorted(gone):
+            (ws / path).unlink(missing_ok=True)
+        files = [(parts, text) for parts, text in files if "/".join(parts) not in gone]
     parsed, skipped = parse_workspace(files)
     plan = plan_fill(parsed, existing)
     for row in plan.writes:

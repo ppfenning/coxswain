@@ -4,6 +4,7 @@ from graphs.delivery.ticket_lint import (
     heal_idea_reach,
     idea_reach_problems,
     idea_reach_refusal,
+    lint_refusal_text,
     lint_tickets,
 )
 
@@ -199,6 +200,7 @@ def test_problem_severity_distinguishes_refusal_from_advisory():
     assert Problem("t1", "size", "d", "f").severity == "advisory"
     assert Problem("t1", "cross_repo", "d", "f").severity == "advisory"
     assert Problem("t1", "surface_missing", "d", "f").severity == "refusal"
+    assert Problem("t1", "wrong_repo", "d", "f").severity == "refusal"
 
 
 _TOOLS_TREE = [{"path": "agent_tools/run_store.py", "repo": "tools"}]
@@ -309,6 +311,60 @@ def test_an_empty_tree_yields_no_surface_missing_problem():
 def test_a_surface_under_another_repos_roots_is_cross_repo_and_not_surface_missing():
     problems = lint_tickets([_task(surfaces=["core/x.py"])], _TOOLS_TREE, [], "tools")
     assert [p.rule for p in problems] == ["cross_repo"]
+
+
+_COXSWAIN_TREE = [{"path": "src/graphs/graphs/delivery/ticket_lint.py", "repo": "coxswain"}]
+_DASH_TREE = [
+    {"path": "src/ui/regatta.rs", "repo": "coxswain-dash"},
+    {"path": "src/tools/agent_tools/dash_feed.py", "repo": "coxswain-dash"},
+]
+
+
+def _wrong_repo(problems):
+    return [p for p in problems if p.rule == "wrong_repo"]
+
+
+def test_a_coxswain_plan_with_a_dash_surface_is_refused_naming_the_task_and_the_repository():
+    tasks = [_task(id="t2", surfaces=["src/ui/regatta.rs"])]
+    problems = lint_tickets(tasks, _COXSWAIN_TREE, [], "~/repos/coxswain")
+    assert [(p.task, p.rule, p.severity) for p in problems] == [("t2", "wrong_repo", "refusal")]
+    assert problems[0].detail == "task t2 names src/ui/regatta.rs, which belongs to coxswain-dash, not this repository"
+    assert "move the task to an initiative" in problems[0].fix
+    text = lint_refusal_text(problems)
+    assert text is not None
+    assert "t2" in text
+    assert "coxswain-dash" in text
+
+
+def test_the_same_dash_surface_in_a_coxswain_plan_is_not_also_surface_missing():
+    problems = lint_tickets([_task(surfaces=["src/ui/regatta.rs"])], _COXSWAIN_TREE, [], "~/repos/coxswain")
+    assert "surface_missing" not in [p.rule for p in problems]
+
+
+def test_a_dash_plan_is_clean_for_a_dash_task_and_refused_for_a_coxswain_task():
+    tasks = [_task(id="t1", surfaces=["src/ui/regatta.rs"]), _task(id="t2", surfaces=["src/tools/agent_tools/dash_feed.py"])]
+    problems = lint_tickets(tasks, _DASH_TREE, [], "~/repos/coxswain-dash")
+    assert [(p.task, p.rule) for p in problems] == [("t2", "wrong_repo")]
+    assert "belongs to coxswain," in problems[0].detail
+
+
+def test_one_task_naming_two_paths_of_one_foreign_repository_gets_one_problem():
+    tasks = [_task(id="t2", surfaces=["src/ui/regatta.rs", "themes/a.toml", "src/graphs/x.py"])]
+    problems = _wrong_repo(lint_tickets(tasks, _COXSWAIN_TREE, [], "~/repos/coxswain"))
+    assert [p.detail for p in problems] == [
+        "task t2 names src/ui/regatta.rs, themes/a.toml, which belongs to coxswain-dash, not this repository"
+    ]
+
+
+def test_a_plan_wholly_in_the_own_repository_has_no_wrong_repo_problem():
+    tasks = [_task(surfaces=["src/graphs/graphs/delivery/ticket_lint.py", "src/tools/agent_tools/x.py (new)"])]
+    assert _wrong_repo(lint_tickets(tasks, _COXSWAIN_TREE, [], "~/repos/coxswain")) == []
+
+
+def test_an_unknown_repo_value_yields_no_wrong_repo_problem():
+    tasks = [_task(surfaces=["src/ui/regatta.rs"])]
+    assert _wrong_repo(lint_tickets(tasks, _COXSWAIN_TREE, [], "graphs")) == []
+    assert _wrong_repo(lint_tickets(tasks, _COXSWAIN_TREE, [], "~/repos/other")) == []
 
 
 def _contract_problems(tasks):

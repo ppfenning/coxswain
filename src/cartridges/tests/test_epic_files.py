@@ -81,3 +81,11 @@ def test_malformed_file_names_its_path(tmp_path: Path) -> None:
     bad.write_text("---\ntarget_branch: bad branch\n---\n", encoding="utf-8")
     with pytest.raises(WorkStoreError, match=str(bad)):
         read_epic_definitions(tmp_path)
+
+
+def test_an_epic_file_may_name_its_issue_and_ask_for_a_stack() -> None:
+    from core.epic_files import parse_epic
+
+    got = parse_epic("---\ntitle: Payments\nissue: 41\nepic_stack: true\ntarget_branch: epic/payments\n---\n", "payments.md")
+    assert (got["issue"], got["epic_stack"], got["target_branch"]) == (41, True, "epic/payments")
+    assert "issue" not in parse_epic("---\n---\n", "payments.md") and "epic_stack" not in parse_epic("---\nepic_stack: yes please\n---\n", "payments.md")

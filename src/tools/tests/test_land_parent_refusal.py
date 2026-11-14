@@ -50,7 +50,7 @@ def repo(tmp_path):
     return root
 
 
-def _records(tmp_path, land_at="level"):
+def _records(tmp_path, land_at="task"):
     runs = tmp_path / "runs"
     for phase, task in (("p1", "t1"), ("p2", "t2")):
         (runs / "epic-x-5" / "tasks" / phase).mkdir(parents=True, exist_ok=True)

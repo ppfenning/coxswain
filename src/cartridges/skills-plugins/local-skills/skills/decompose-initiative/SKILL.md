@@ -26,6 +26,10 @@ before what it depends on exists.
   start without re-reading the initiative: what to do, what done looks like,
   what is out of bounds. A task needing its own decomposition was scoped too
   big.
+- **A task names at most the file cap of surfaces.** The cap is 12 unless
+  the cartridge sets `max_files_per_task`. A task over it is split by
+  directory or by layer, or its body carries one sentence saying why it
+  cannot be split. The lint flags it either way.
 - **A task's tests ride with its code.** Never split tests into a task of
   their own — a separate tests task doubles the reviews and lands code
   without its evidence.
