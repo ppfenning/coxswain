@@ -33,7 +33,11 @@ from harness.work_mirror import set_frontmatter_state
 EXIT_OK = 0
 EXIT_BAD_INPUT = 2
 EXIT_PRECONDITION = 3
-WORK_STATES = ("ready", "approved", "done", "dropped")
+# The states a caller may move a work item to. `blocked` is the chair's hold for a person (a reason in `extra`);
+# `quarantined` is written only by the epic driver, never through this command.
+WORK_STATES = ("ready", "approved", "done", "dropped", "blocked")
+# Every state a row can be in, so a compare-and-set can name the one the caller saw (`core.workstore.STATES`).
+EXPECT_STATES = ("todo", "ready", "in_progress", "approved", "blocked", "done", "dropped", "quarantined")
 
 _DB_ERRORS: tuple[type[BaseException], ...] = (sqlite3.Error,)
 try:  # the postgres driver is an optional extra
@@ -121,7 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
     state.add_argument("state", choices=WORK_STATES)
     state.add_argument("--by", required=True, type=_non_empty, help="who made the change")
     state.add_argument("--phase", help="phase for a new row; ignored when the row exists")
-    state.add_argument("--expect", choices=WORK_STATES, help="apply only if the row's current state equals this; exit 3 otherwise")
+    state.add_argument("--expect", choices=EXPECT_STATES, help="apply only if the row's current state equals this; exit 3 otherwise")
 
     lease = commands.add_parser("lease", help="acquire, renew or release a named lease")
     actions = lease.add_subparsers(dest="action", required=True)
