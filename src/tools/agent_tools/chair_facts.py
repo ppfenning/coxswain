@@ -43,6 +43,7 @@ from agent_tools.chair_types import (
     STALE_CHECKOUT_CAUSE,
     ApprovalHold,
     ApprovedTask,
+    AwaitingFetch,
     CarryTask,
     DispatchFacts,
     EmptyDecomposeFacts,
@@ -118,7 +119,9 @@ class FactsDeps:
         No initiative. `expected` is true for a deliberate `land: manual` repo, whose row raises no quarantine entry.
     attempts: every attempt over all runs, oldest first, keys run, phase, task, cause, and initiative when known.
         A work item's frontmatter `attempts` entries carry run and cause, as `stats_chair` reads them; the item's
-        path adds phase and task. The store's `attempts` table has no task column (`run_store.attempt_causes`).
+        path adds phase and task. Under work_state store no work file holds an attempt, so the run task records
+        under `runs/` add one row per record that names a cause, for each task the store holds open
+        (`chair_read_run_records`); `gather_facts` gives a queue quarantine its run and reason from these rows.
     has_patch: (initiative, task id) to whether the task's stored record holds a non-blank build.patch. Called once
         per quarantine entry, and False when no record can be found.
     live_initiatives: initiatives with a live run, meaning the `runs:<initiative>` store lease is held and
@@ -551,6 +554,39 @@ def _quarantine(
     return fact
 
 
+def with_attempt_runs(quarantined: Sequence[Row], attempts: Sequence[Row]) -> list[Row]:
+    """Each quarantine row that names no run takes `run` and `reason` from its task's newest attempt on the current body.
+
+    Under work_state store a queue row's `extra` holds no attempts, so `quarantined_from_rows` finds no run; the attempts
+    reader (`chair_read_run_records`) finds it in the run task records. A row that names a run keeps it, and a task with
+    no attempt on its current body keeps its empty run, so it still reaches the chair."""
+    def newest(q: Row) -> Row | None:
+        return next(reversed(_on_body(attempts, _key(q))), None)
+
+    return [
+        {**q, "run": str(a.get("run") or ""), "reason": str(a.get("reason") or "")}
+        if not q.get("run") and (a := newest(q)) is not None else q
+        for q in quarantined
+    ]
+
+
+def awaiting_fetch(quarantined: Sequence[Row], unfetched: Mapping[str, str]) -> list[AwaitingFetch]:
+    """The quarantines that wait for a remote run's fetch: their initiative's unfetched epic run (`remote_unfetched`) is
+    later than the run that names the quarantine, so its task records, still on the lane host, may hold a newer attempt.
+
+    One initiative's runs never overlap (its `runs:<initiative>` lease), so a later run number is a later run. A
+    quarantine that names no run waits for any: the unfetched run may be the one that quarantined it. An older unfetched
+    run never holds back a later quarantine. A decompose-only unfetched run writes no task record, so nothing waits on it.
+    Each entry names the run it waits for; the status line shows it, so a waiting quarantine is never hidden."""
+    decompose = frozenset(getattr(unfetched, "decompose", ()))
+    return [
+        {"initiative": str(q["initiative"]), "task_id": str(q["task"]), "run": unfetched[q["initiative"]]}
+        for q in quarantined
+        if q["initiative"] in unfetched and q["initiative"] not in decompose
+        and _run_number(unfetched[q["initiative"]]) > _run_number(str(q.get("run") or ""))
+    ]
+
+
 def quarantine_facts(
     quarantined: Sequence[Row],
     stranded: Sequence[Row],
@@ -576,8 +612,8 @@ def quarantine_facts(
     for a stranded entry whose `task_id` is one of them, so a run's lead task is one that is not, and one such task keeps
     the run's note alive.
 
-    An open quarantine whose attempts name no cause (a store row in state quarantined whose ticket file never got the
-    attempt) reports `QUARANTINED_CAUSE`, so the status line never shows it with an empty cause.
+    An open quarantine whose attempts name no cause (a store row in state quarantined with no run task record that
+    names one) reports `QUARANTINED_CAUSE`, so the status line never shows it with an empty cause.
 
     An initiative with a live run contributes nothing: a retry in flight is never planned again."""
     opened = list(dict.fromkeys(_key(q) for q in quarantined))
@@ -1892,7 +1928,15 @@ def gather_facts(
     # An approved row is, by construction, an approved task not yet landed; `chair_plan_prune.phases_to_carry`
     # draws its carried-partial-phase set from these same rows, so their initiatives cover both cases home tracks.
     unfinished = {r["initiative"] for r in approved}
-    quarantined = quarantined_from_rows(rows) if rows else list(deps.quarantined())
+    attempts = list(deps.attempts())
+    unfetched = deps.remote_unfetched() if deps.remote_unfetched is not None else {}
+    # A queue row names no attempt under work_state store: its run and reason come from the attempts the reader found,
+    # which are the runs' task records. A remote run's records come home with its fetch, so a quarantine older than its
+    # initiative's unfetched run waits for that fetch rather than act on an older record, and says so on the status line.
+    queued = with_attempt_runs(quarantined_from_rows(rows), attempts) if rows else []
+    waiting = awaiting_fetch(queued, unfetched)
+    held_back = {(w["initiative"], w["task_id"]) for w in waiting}
+    quarantined = [q for q in queued if (q["initiative"], q["task"]) not in held_back] if rows else list(deps.quarantined())
     stranded_records = deps.stranded_records() if deps.stranded_records is not None else None
     stranded = stranded_from_rows(rows, list(stranded_records)) if rows and stranded_records is not None else list(deps.stranded())
     current = deps.current_version() if rows else None  # file mode carries no gate rows, so it reads no version
@@ -1900,7 +1944,7 @@ def gather_facts(
     # Store mode drops stranded rows for tasks the store does not hold approved (see `store_approved_tasks`, which
     # also names the gap). File mode carries no store state and filters nothing.
     quarantine = quarantine_facts(
-        quarantined, stranded, deps.attempts(), live, deps.has_patch, planned_tasks(approved, initiatives),
+        quarantined, stranded, attempts, live, deps.has_patch, planned_tasks(approved, initiatives),
         store_approved_tasks(rows) if rows else None,
         waiting={(a["initiative"], a["id"]) for a in approved},
     )
@@ -1908,7 +1952,6 @@ def gather_facts(
     login_hosts = deps.hosts()
     decomposed = dict(deps.decomposed_intake()) if deps.decomposed_intake is not None else {}
     probe = dict(deps.pid_probe())
-    unfetched = deps.remote_unfetched() if deps.remote_unfetched is not None else {}
     from agent_tools.chair_decompose_runs import decompose_refusals  # lazy: chair_decompose_runs imports this module
 
     refusals = land_refusals_from_actions(action_rows, now)
@@ -1937,6 +1980,7 @@ def gather_facts(
         "handled_keys": list(deps.handled_keys()) if deps.handled_keys is not None else [],
         "run_exited": dict(deps.run_exited()) if deps.run_exited is not None else {},
         "remote_unfetched": dict(unfetched),
+        "awaiting_fetch": waiting,
         "remote_unfetched_decompose": list(unfetched.decompose) if isinstance(unfetched, RemoteUnfetched) else [],
         "schema_deaths": {i: list(r) for i, r in deps.schema_deaths().items()},
         "lost_runs": dict(deps.lost_runs()) if deps.lost_runs is not None else {},

@@ -1138,6 +1138,16 @@ def _announce_hold(action: Action, deps: Deps) -> Result:
     return _result(action, "done", f"{task} announced: {reason}")
 
 
+def _rescue(action: Action, deps: Deps) -> Result:
+    """The rescue launch; once it is out, its task state's key is handled, so the next tick does not launch it again.
+
+    A rescue that finds the task not eligible writes nothing, so the key is all that tells the next tick it ran."""
+    result = _launch(action, deps)
+    if result["status"] == "done" and deps.mark_handled is not None and action.get("key"):
+        deps.mark_handled(action["key"])
+    return result
+
+
 def _rebuild_quarantined(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
     """The relaunch pair, in line: clear_branches carries current main into the kept phases, then the relaunch runs.
 
@@ -1636,6 +1646,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
         return _finish_task(action, deps)
     if kind == "requeue_task":
         return _requeue_task(action, deps)
+    if kind == "rescue":
+        return _rescue(action, deps)
     if kind in LAUNCH_KINDS or kind in ("pull", "fetch"):
         return _launch(action, deps)
     if kind == "housekeeping":

@@ -119,6 +119,7 @@ chair_read_quarantined = _LazyModule("agent_tools.chair_read_quarantined")
 chair_read_record = _LazyModule("agent_tools.chair_read_record")
 chair_read_remote_unfetched = _LazyModule("agent_tools.chair_read_remote_unfetched")
 chair_read_run_id = _LazyModule("agent_tools.chair_read_run_id")
+chair_read_run_records = _LazyModule("agent_tools.chair_read_run_records")
 chair_read_stale = _LazyModule("agent_tools.chair_read_stale")
 chair_read_stall = _LazyModule("agent_tools.chair_read_stall")
 chair_read_stranded = _LazyModule("agent_tools.chair_read_stranded")
@@ -14110,6 +14111,7 @@ CHAIR_WAKE_POLL_SECONDS = 5.0  # how often the between-tick wait re-reads the bu
 # Bounds of the process-lifetime read caches, sized from the work they hold so a day of ticks cannot grow memory.
 CHAIR_FILES_CACHE_MAX = 4096  # one entry per work file: a few thousand
 CHAIR_STORE_CACHE_MAX = 8  # one entry per store read shape: the work rows and the queue rows
+CHAIR_RECORDS_CACHE_MAX = 4096  # one entry per run task record of an open task: a few thousand
 CHAIR_DECOMPOSE_CACHE_MAX = 256  # one intake's exit rows, task count and run logs: a few hundred runs at most
 CHAIR_DECOMPOSE_INTAKES_MAX = 64  # intakes holding a decompose cache at once; the least recently used is dropped
 
@@ -14186,6 +14188,7 @@ def _chair_run_deps(
     files_cache = chair_read_cache.StampCache(CHAIR_FILES_CACHE_MAX)
     store_cache = chair_read_cache.StampCache(CHAIR_STORE_CACHE_MAX)
     queue_cache = chair_read_cache.StampCache(CHAIR_STORE_CACHE_MAX)  # not saved: queue rows carry claims
+    records_cache = chair_read_cache.StampCache(CHAIR_RECORDS_CACHE_MAX)  # not saved: the records are files a tick re-stamps
     if not dry_run:
         chair_read_cache.load_cache(files_cache, files_path)
         chair_read_cache.load_cache(store_cache, store_path)
@@ -14225,6 +14228,12 @@ def _chair_run_deps(
         return once("store_rows", lambda: run_store.work_items(runs_dir, None, store_cache) if mode == "store" else [])  # type: ignore[return-value]
 
     def attempts() -> list[dict]:
+        # Under work_state store nothing writes an attempt into a work file: the run task records under runs/ hold the
+        # cause, run and reason of each open task's attempts, and a fetched remote run's records land there too.
+        if mode == "store":
+            return once(  # type: ignore[return-value]
+                "attempts", lambda: chair_read_run_records.read_store_attempts(ws, work_files(), work_rows(), records_cache)
+            )
         return once("attempts", lambda: chair_read_attempts.read_attempts(ws, work_files()))  # type: ignore[return-value]
 
     def stranded_inputs() -> tuple[list[dict], list[dict]]:
@@ -14552,7 +14561,10 @@ def _chair_run_deps(
         shared_file_limit=lambda: (profile.get("chair") or {}).get("max_shared_file_initiatives"),
         serial_files=lambda: profile.get("serial_files"),
         host_load_ceiling=lambda: (profile.get("chair") or {}).get("host_load_ceiling"),
-        stale_candidates=lambda n: chair_read_stale.read_stale_candidates(ws, n, work_files(), attempts(), actions()),
+        # A run task record that names no body cannot be told apart from the current body, so the stale count leaves it out.
+        stale_candidates=lambda n: chair_read_stale.read_stale_candidates(
+            ws, n, work_files(), chair_read_run_records.stale_attempts(attempts()) if mode == "store" else attempts(), actions()
+        ),
         stall_candidates=lambda n: chair_read_stall.read_stall_candidates(runs_dir, startup_hosts, n),
         idle_stall=idle_stall,
         hosts=lambda: run_store.hosts(runs_dir),

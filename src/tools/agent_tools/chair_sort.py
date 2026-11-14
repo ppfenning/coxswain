@@ -49,6 +49,11 @@ def triage_key(task_id: str, run: str) -> str:
     return f"triage:{task_id}:{run}"
 
 
+def rescue_key(task_id: str, run: str) -> str:
+    """The handled key for a rescue of a kept patch: one per task and the run that quarantined it."""
+    return f"rescue:{task_id}:{run}"
+
+
 def hold_key(task_id: str, run: str) -> str:
     """The handled key for the chair's hold of a quarantined task: one per task and the run that quarantined it."""
     return f"hold:{task_id}:{run}"

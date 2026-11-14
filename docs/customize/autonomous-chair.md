@@ -705,6 +705,31 @@ interrupted run, and an empty build of a task whose base was stale.
 
 The other causes mean the task needs a change before it is built again.
 
+### Where the cause comes from
+
+With `work_state: store`, the board lives in the store and no ticket file
+holds an attempt. The chair reads each attempt from the run's task record
+instead. A run writes one record for each task, at
+`runs/<run>/tasks/<phase>/<task>.json`, and puts the cause of a quarantine
+on it. The newest record names the run and the reason. A record with no
+cause is not an attempt.
+
+A run writes the ticket's body hash on the record too. An attempt on an
+earlier version of the ticket then does not count against the amended
+one. A record without the hash still counts toward triage and the hold,
+but not toward the stale check.
+
+A run on a lane host keeps its records on that host until the chair
+fetches the run. The fetch copies the whole run directory, records
+included, and the next tick reads them. Until then, a quarantine from an
+earlier run of that initiative waits, so the chair never judges a task by
+an older record. The status line shows each one, as
+`awaiting fetch: <initiative>:<task> (run <run>)`. A quarantine from a
+later run does not wait.
+
+A quarantine with no record at all shows the cause `quarantined` and goes
+to `needs chair`.
+
 ### Triage
 
 To ask for triage, the chair sets `triage_requested` on the task's row in

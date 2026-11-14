@@ -158,9 +158,9 @@ def test_cache_entries_follow_the_files_and_runs_that_remain(deps, made, ws: Pat
 
 def test_the_bounds_are_set_from_the_work_cached(made, deps) -> None:
     assert sorted(c.max_entries for c in made if c.max_entries != cli.CHAIR_DECOMPOSE_CACHE_MAX) == [
-        cli.CHAIR_STORE_CACHE_MAX, cli.CHAIR_STORE_CACHE_MAX, cli.CHAIR_FILES_CACHE_MAX,
+        cli.CHAIR_STORE_CACHE_MAX, cli.CHAIR_STORE_CACHE_MAX, cli.CHAIR_FILES_CACHE_MAX, cli.CHAIR_RECORDS_CACHE_MAX,
     ]
-    assert cli.CHAIR_FILES_CACHE_MAX >= 2000 and cli.CHAIR_DECOMPOSE_CACHE_MAX >= 200
+    assert cli.CHAIR_FILES_CACHE_MAX >= 2000 and cli.CHAIR_DECOMPOSE_CACHE_MAX >= 200 and cli.CHAIR_RECORDS_CACHE_MAX >= 2000
 
 
 def test_a_reader_without_a_cache_parameter_is_called_exactly_as_before() -> None:

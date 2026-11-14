@@ -1972,6 +1972,7 @@ def _refix(
         result = retried[0]
         result.setdefault("initiative", ctx.initiative_id)
         result.setdefault("phase", phase)
+        result.update(_body_stamp(item))
         _save_result(ctx, result, phase=phase, task=task)
         spent += float((result.get("fix_loop") or {}).get("attempts") or 1)
         routes.append("revise")
@@ -2701,7 +2702,7 @@ def _quarantine_task(
             )
 
         ctx.retry.write(attempt, _END_WRITE_WINDOW_S)
-        _record_task_cause(ctx, phase, task, cause, cause_why)
+        _record_task_cause(ctx, phase, task, cause, cause_why, by_id.get(task))
     # A merge conflict leaves the row at approved with its work unlanded; approved is not always finished.
     _quarantine_row(ctx, phase, task, approved_is_open=approved_is_open or judged == ("harness", "merge conflict"))
     return entry
@@ -2721,8 +2722,20 @@ def _cause_of(runner: Any, kind: str, reason: str, result: Mapping[str, Any] | N
         return "unknown", one_line(f"classifier failed: {type(exc).__name__}: {exc}")
 
 
-def _record_task_cause(ctx: _Ctx, phase: str, task: str, cause: str, cause_why: str) -> None:
-    """Put the cause on this run's saved result, which mirrors it into the store row: file and row stay equal.
+def _body_stamp(item: Mapping[str, Any] | None) -> dict[str, str]:
+    """`{"body_sha": ...}` of the work item's own body, the ticket the build was on; {} for an item with no body.
+
+    The item's text, not the prompt's: a carried-forward history is not the ticket. Under work_state store the record is
+    the attempt (`core.run_record`), so the chair compares this with the row's current body, as it does a file attempt's."""
+    body = (item or {}).get("body")
+    return {"body_sha": workstore.body_sha(body)} if isinstance(body, str) else {}
+
+
+def _record_task_cause(
+    ctx: _Ctx, phase: str, task: str, cause: str, cause_why: str, item: Mapping[str, Any] | None = None,
+) -> None:
+    """Put the cause, and the body the task was built on (`_body_stamp(item)`), on this run's saved result, which
+    mirrors it into the store row: file and row stay equal.
 
     A task with no saved result gets a minimal result-shaped one. A failure is a warning, never a block.
     """
@@ -2734,14 +2747,15 @@ def _record_task_cause(ctx: _Ctx, phase: str, task: str, cause: str, cause_why: 
             "initiative": ctx.initiative_id,
             "phase": phase,
         }
-        _save_result(ctx, {**saved, "cause": cause, "cause_why": cause_why}, phase=phase, task=task)
+        _save_result(ctx, {**saved, "cause": cause, "cause_why": cause_why, **_body_stamp(item)}, phase=phase, task=task)
     except Exception as exc:
         _log.warning("cause for %s/%s/%s not recorded on the task record: %r", ctx.run_id, phase, task, exc)
 
 
 def _without_cause(saved: Mapping[str, Any]) -> dict[str, Any]:
-    """A saved result as a later run reuses it. Its cause names the run that quarantined it, not this one."""
-    return {k: v for k, v in saved.items() if k not in ("cause", "cause_why")}
+    """A saved result as a later run reuses it. Its cause, and the body it was quarantined on, name the run that
+    quarantined it, not this one."""
+    return {k: v for k, v in saved.items() if k not in ("cause", "cause_why", "body_sha")}
 
 
 def _next_attempt_seq(store: Store, run_id: str, task: str) -> int:
@@ -4425,6 +4439,9 @@ def _run_phase(
         with ctx.items_lock:
             shared = {str(item["id"]): item for item in items}
             context_items = [dict(item) for item in items]
+        # Under work_state store no work file holds an attempt: a flagged task's attempts are its runs' task records.
+        for task_id in capped_ids:
+            attempts_by_id[task_id] = attempts_by_id[task_id] or _build_attempts(_record_attempts(ctx, phase, task_id))
         _wait_if_paused(ctx)
         triaged, _, triage_failures = invoke_graphs(
             [
@@ -4809,6 +4826,7 @@ def _run_phase(
         # without these two fields on the saved record, neither command can find it.
         result.setdefault("initiative", ctx.initiative_id)
         result.setdefault("phase", phase)
+        result.update(_body_stamp(by_id.get(str(result.get("ticket")))))
         _save_result(ctx, result, phase=phase, task=str(result.get("ticket")))
 
     built: dict[str, dict[str, Any]] = {}
@@ -6121,6 +6139,82 @@ def _stored_causes(ctx: _Ctx, task: str) -> list[dict[str, Any]]:
     return [dict(zip(cols, row, strict=True)) for row in ctx.store.conn.query_all(sql, (task,))]
 
 
+def _run_number(run: str) -> int:
+    """The number a run id ends in, `x-3` is 3; -1 for a run id that ends in none."""
+    tail = run.rsplit("-", 1)[-1]
+    return int(tail) if "-" in run and tail.isdigit() else -1
+
+
+def _record_initiative(run: str, record: Mapping[str, Any]) -> str:
+    """The initiative a record belongs to: its own `initiative`, else its run id less the run number."""
+    return str(record.get("initiative") or "") or (run.rsplit("-", 1)[0] if _run_number(run) >= 0 else run)
+
+
+def _record_attempt(run: str, phase: str, record: Mapping[str, Any], ts: str) -> dict[str, Any] | None:
+    """One attempt from one run task record that names a cause, None for a record that names none.
+
+    The cause, reason, kind and the body it was built on are `core.run_record`'s; the record's own verdicts ride beside
+    them, which is what triage reads from "the task records of its attempts" (docs/design/triage.md §1). `ts` is the
+    record's `date`, else `ts`."""
+    # Not module level: importing the driver loads no more of core than it did, so a process that imports it alone
+    # (the import-cost tests run one) resolves the same core modules it always has.
+    from core import run_record
+
+    attempt = run_record.record_attempt(record)
+    if attempt is None:
+        return None
+    build = record.get("build") if isinstance(record.get("build"), Mapping) else {}
+    evidence = record.get("evidence") or build.get("evidence")
+    verdicts = {key: record[key] for key in ("review", "adversary", "arbitration", "fix_loop") if isinstance(record.get(key), Mapping)}
+    sha = run_record.record_body_sha(record)
+    return {
+        "run": run, "phase": phase, **attempt, "ts": str(record.get("date") or "") or ts, **verdicts,
+        **({"evidence": list(evidence)} if isinstance(evidence, list) else {}),
+        **({"body_sha": sha} if sha else {}),
+    }
+
+
+def _caused_records(ctx: _Ctx, phase: str, task: str) -> list[tuple[dict[str, Any], Mapping[str, Any]]]:
+    """(attempt, record) for each of the task's run task records that names a cause, oldest first.
+
+    Under work_state store nothing writes an attempt into the work file: these records are the attempts. This machine's
+    record files under the runs directory are read first; the store's copy (`task_records`) adds the runs another lane
+    recorded. Only this initiative's records count. A read that fails is logged and gives what was read before it.
+
+    A run's number orders them, its `ts` only within one run: one initiative's runs never overlap (its
+    `runs:<initiative>` lease), and the minimal record an invoke failure leaves has no date, only its file's time."""
+    found: dict[str, tuple[Mapping[str, Any], str]] = {}
+    for path in sorted(Path(ctx.runs_dir).glob(f"*/tasks/{phase}/{task}.json")):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+            stamp = datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat()
+        except (OSError, ValueError):
+            continue
+        if isinstance(record, Mapping):
+            found[path.parts[-4]] = (record, stamp)
+    if ctx.store is not None:
+        try:
+            from harness import store_read  # not module level: see `_mirror_read`
+
+            for row in store_read.task_records_of(ctx.store.conn, phase, task):
+                if isinstance(row["record_json"], Mapping):
+                    found.setdefault(str(row["run_id"]), (row["record_json"], str(row.get("updated_at") or "")))
+        except Exception as exc:
+            _log.warning("task records of %s/%s not read from the store: %s: %s", phase, task, type(exc).__name__, exc)
+    caused = [
+        (_run_number(run), attempt["ts"], stamp, attempt, record)
+        for run, (record, stamp) in found.items()
+        if _record_initiative(run, record) == ctx.initiative_id and (attempt := _record_attempt(run, phase, record, stamp)) is not None
+    ]
+    return [(attempt, record) for *_, attempt, record in sorted(caused, key=lambda t: t[:3])]
+
+
+def _record_attempts(ctx: _Ctx, phase: str, task: str) -> list[dict[str, Any]]:
+    """The task's attempts as its runs' task records hold them (`_caused_records`), oldest first: for triage of an item
+    with no attempt, which would otherwise reach triage with nothing to cite."""
+    return [attempt for attempt, _ in _caused_records(ctx, phase, task)]
+
+
 def _record_rescue_gate(ctx: _Ctx, phase: str, move: Mapping[str, Any], diff: Mapping[str, Any], minutes: float) -> None:
     """Ledger the gate's decision on a rescue's move, as `_run_phase` ledgers a phase batch's.
 
@@ -6240,7 +6334,15 @@ def rescue_task(ctx: _Ctx, item: Mapping[str, Any], *, phase: str) -> dict[str, 
     """Harness checks on a quarantined task's kept patch, one review round, then a gated move to `approved` or `rescue_failed`."""
     task = str(item["id"])
     attempts = item.get("attempts") or []
-    saved = load_result(ctx.runs_dir, attempts[-1]["run"], phase, task) if attempts else None
+    # Under work_state store no work file holds an attempt: the runs' task records are the attempts, and the newest one
+    # holds the kept patch (the store's copy, when another lane wrote it). Reading only the file, the rescue the chair
+    # launched from those records would find nothing, and the chair would launch it again.
+    records = _caused_records(ctx, phase, task) if not attempts and _store_authoritative(ctx) else []
+    if records:
+        item = {**item, "attempts": [attempt for attempt, _ in records]}
+        saved: Mapping[str, Any] | None = records[-1][1]
+    else:
+        saved = load_result(ctx.runs_dir, attempts[-1]["run"], phase, task) if attempts else None
     patch = rescue_select.patch_of(saved)
     caused = with_stored_causes(item, _stored_causes(ctx, task))
     ok, why = rescue_select.eligible(with_stored_rescues(caused, _stored_rescues(ctx, task)), patch)
@@ -6271,7 +6373,7 @@ def rescue_task(ctx: _Ctx, item: Mapping[str, Any], *, phase: str) -> dict[str, 
     evidence = [*((saved or {}).get("evidence") or []), *rows]
     _save_result(
         ctx,
-        {**_without_cause(saved or {}), "initiative": ctx.initiative_id, "phase": phase, "evidence": evidence},
+        {**_without_cause(saved or {}), "initiative": ctx.initiative_id, "phase": phase, "evidence": evidence, **_body_stamp(item)},
         phase=phase,
         task=task,
     )
@@ -6301,7 +6403,7 @@ def rescue_task(ctx: _Ctx, item: Mapping[str, Any], *, phase: str) -> dict[str, 
     if land_fault is not None:
         return _rescue_failed(ctx, item, phase=phase, reason=land_fault, failed_checks=False)
     _save_result(
-        ctx, {**graph, "initiative": ctx.initiative_id, "phase": phase, "evidence": evidence}, phase=phase, task=task
+        ctx, {**graph, "initiative": ctx.initiative_id, "phase": phase, "evidence": evidence, **_body_stamp(item)}, phase=phase, task=task
     )
     applied, detail = _rescue_move(
         ctx,

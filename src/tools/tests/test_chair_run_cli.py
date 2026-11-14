@@ -185,6 +185,8 @@ def test_each_fact_reader_reaches_its_own_module_with_the_workspace_and_mode(mon
     monkeypatch.setattr(reader[0], "read_fetch_facts", lambda runs, stranded: {})
     monkeypatch.setattr(reader[1], "read_quarantined", lambda ws, mode, *_a: ("quarantined", ws, mode))
     monkeypatch.setattr(reader[2], "read_attempts", lambda ws, *_a: ("attempts", ws))
+    # Under work_state store the attempts are the files path's plus the run task records (`chair_read_run_records`).
+    monkeypatch.setattr(cli.chair_read_run_records, "read_store_attempts", lambda ws, *_a: ("attempts", ws))
     monkeypatch.setattr(reader[3], "read_intake", lambda ws, *_a: ("intake", ws))
     monkeypatch.setattr(reader[3], "read_sources_configured", lambda path: ("sources_configured", path))
     monkeypatch.setattr(cli.chair_read_lease, "read_lease", lambda runs, _now: ("lease", runs))

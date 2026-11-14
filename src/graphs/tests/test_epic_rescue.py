@@ -198,6 +198,57 @@ def test_a_stored_rescue_older_than_the_current_body_is_stamped_as_an_older_body
     assert with_stored_rescues(item, [row])["attempts"][0]["body_sha"] == "before the current body"
 
 
+# ── under work_state store, the attempts are the run task records ────────────
+
+
+def _record(runs: Path, run: str, patch: str) -> None:
+    """The record a store-mode run leaves for a harness quarantine that kept its patch: the cause and the body on it."""
+    save_result(
+        {"ticket": TASK, "initiative": "demo-initiative", "phase": PHASE, "build": {"patch": patch}, "cause": "harness",
+         "cause_why": "rule: kind infra", "body_sha": SHA, "date": "2026-09-25"},
+        runs_dir=runs, run_id=run, phase=PHASE, task=TASK,
+    )  # fmt: skip
+
+
+def test_under_store_a_task_with_no_file_attempt_is_rescued_from_its_run_record(repo, cart, tmp_path) -> None:  # noqa: F811
+    # The chair launched this rescue from the record; reading only the work file, the rescue found nothing and the
+    # chair launched it again every tick.
+    ctx, item, _ = _setup(repo, cart, tmp_path, new_file_patch("t1-probe.txt"), [])
+    _record(ctx.runs_dir, "demo-initiative-2", new_file_patch("t1-probe.txt", "bad"))
+
+    result = _rescue(replace(ctx, work_state="store"), item, Runner({}))
+
+    assert (result["status"], result["cause"]) == ("rescue_failed", "code")  # the record's patch, checked and failed
+    assert _one(ctx, "SELECT kind, cause FROM attempts") == ("rescue_failed", "code")
+
+
+def test_under_store_a_record_another_lane_wrote_is_read_from_the_store(repo, cart, tmp_path) -> None:  # noqa: F811
+    ctx, item, _ = _setup(repo, cart, tmp_path, new_file_patch("t1-probe.txt"), [])
+    _record(tmp_path / "elsewhere", "demo-initiative-2", new_file_patch("t1-probe.txt", "bad"))
+    record = load_result(tmp_path / "elsewhere", "demo-initiative-2", PHASE, TASK)
+    ctx.store.record_task_record("demo-initiative-2", PHASE, TASK, record, "2026-09-25T10:00:00+00:00")
+
+    assert _rescue(replace(ctx, work_state="store"), item, Runner({}))["status"] == "rescue_failed"
+
+
+def test_under_store_a_record_on_an_older_body_is_not_rescued(repo, cart, tmp_path) -> None:  # noqa: F811
+    ctx, item, _ = _setup(repo, cart, tmp_path, new_file_patch("t1-probe.txt"), [])
+    _record(ctx.runs_dir, "demo-initiative-2", new_file_patch("t1-probe.txt"))
+    runner = Runner({})
+
+    assert _rescue(replace(ctx, work_state="store"), {**item, "body": "an amended body"}, runner) == {
+        "status": "not_eligible", "why": "no attempts on the current body",
+    }
+    assert runner.calls == []
+
+
+def test_under_files_a_task_with_no_file_attempt_is_still_not_rescued(repo, cart, tmp_path) -> None:  # noqa: F811
+    ctx, item, _ = _setup(repo, cart, tmp_path, new_file_patch("t1-probe.txt"), [])
+    _record(ctx.runs_dir, "demo-initiative-2", new_file_patch("t1-probe.txt"))
+
+    assert _rescue(ctx, item, Runner({})) == {"status": "not_eligible", "why": "no patch kept"}
+
+
 def test_a_causeless_file_attempt_takes_the_cause_of_the_store_row_for_its_run_and_phase() -> None:
     item = {"body": BODY, "attempts": [{"run": "r-1", "phase": "p"}]}
     row = {"run_id": "r-1", "phase_id": "p", "seq": 1, "cause": "harness"}

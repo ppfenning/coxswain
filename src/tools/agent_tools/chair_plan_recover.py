@@ -141,6 +141,15 @@ def _tweak_actions(q: QuarantineFacts, kind: Recovery, handled: Collection[str],
     return [{**base, "kind": "hold_task", "key": hold, "reason": _hold_reason(q, kind, hold_after)}]
 
 
+def _rescue_actions(q: QuarantineFacts, handled: Collection[str]) -> list[Action]:
+    """One rescue per task state (`rescue:<task>:<run>`). A rescue already launched for this state that left the task
+    quarantined in it (a rescue that found the task not eligible writes nothing) reaches the chair, never goes out again."""
+    key = chair_sort.rescue_key(q["task_id"], q.get("run", ""))
+    if key in handled:
+        return [_quarantine_action(q, "needs_chair")]
+    return [{"kind": "rescue", "initiative": q["initiative"], "task_id": q["task_id"], "key": key}]
+
+
 def _sorted_action(q: QuarantineFacts, handled: Collection[str], recovery: Recovery) -> list[Action] | None:
     """chair_sort's answer for a harness quarantine: its actions, [] for a skip. None when the sort does not name it.
 
@@ -167,6 +176,7 @@ def _quarantine_actions(
     kinds = {id(q): _recovery(q, approved, outcomes, hold_after) for q in quarantines}
     named = {
         id(q): _tweak_actions(q, kinds[id(q)], handled, hold_after) if kinds[id(q)] in ("triage", "hold")
+        else _rescue_actions(q, handled) if kinds[id(q)] == "rescue"
         else _sorted_action(q, handled, kinds[id(q)])
         for q in quarantines
     }
@@ -505,7 +515,8 @@ def plan_recover(facts: Facts, now: datetime | None = None) -> list[Action]:
     A runaway-ceiling quarantine always reaches the chair, ahead of every other rule: it is never retried or
     rescued, whatever its harness_failures, retry count or approval state.
     A one-failure harness quarantine is rescued if it kept a patch, retried if not, and goes to the chair once a
-    rescue failed. A stranded quarantine whose task is also an approved row of its initiative plans no action:
+    rescue failed. A rescue goes out once per task state (`rescue:<task>:<run>`); the same state quarantined again
+    after it reaches the chair. A stranded quarantine whose task is also an approved row of its initiative plans no action:
     `plan_lands` lands that task once its whole phase is done, approved or dropped, and recovery never lands it alone.
     A started initiative with a ready task but no ready task whose needs are all landed is not relaunched
     either; it reaches the chair instead, as `waiting on <need>`, naming the first unmet need.

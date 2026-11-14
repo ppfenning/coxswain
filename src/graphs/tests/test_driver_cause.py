@@ -4,7 +4,8 @@ from pathlib import Path
 import pytest
 
 import harness.store_read as read
-from harness.epic import EXIT_PAUSED, _Ctx, _quarantine_task, _save_result
+from core import workstore
+from harness.epic import EXIT_PAUSED, _Ctx, _quarantine_task, _save_result, _without_cause
 from harness.resume import load_result
 from harness.store_write import Store, task_cause
 from runner.protocol import LimitStop
@@ -143,6 +144,19 @@ def test_an_unmatched_kind_with_no_arbitration_sends_the_quarantine_reason_to_th
     on_file = load_result(c.runs_dir, "r1", "p1", "t1")
     assert on_file == {"ticket": "t1", "initiative": "i", "phase": "p1", "cause": "review", "cause_why": attempt[1]}
     assert read.task_record(store_conn, "r1", "p1", "t1") == on_file
+
+
+def test_the_cause_names_the_body_the_task_was_built_on_on_file_and_row(tmp_path, store_conn):
+    # Under work_state store the record is the attempt: without the body, an amended ticket's earlier failures read as
+    # failures of the new body, and the chair's stale count drafts the initiative.
+    c = ctx(tmp_path, Store(store_conn), StubRunner())
+    _save_result(c, REFUSED, phase="p1", task="t1")
+    quarantine(c, kind="infra", reason="apply arm raised", by_id={"t1": {"body": "\nread the vendor schema\n"}})
+    on_file = load_result(c.runs_dir, "r1", "p1", "t1")
+    assert on_file["body_sha"] == workstore.body_sha("read the vendor schema")
+    assert read.task_record(store_conn, "r1", "p1", "t1") == on_file
+    # A later run that reuses the saved result is not that quarantine: it carries neither its cause nor its body.
+    assert not {"cause", "cause_why", "body_sha"} & set(_without_cause(on_file))
 
 
 def test_a_failing_classifier_records_unknown_and_still_quarantines(tmp_path, store_conn):

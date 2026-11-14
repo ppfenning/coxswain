@@ -1416,6 +1416,16 @@ def test_a_rescue_launches_through_cox_route_launch_rescue() -> None:
     assert [r["status"] for r in results] == ["done"]
 
 
+@pytest.mark.parametrize(("code", "marked"), [(0, ["rescue:t1:a-3"]), (1, [])])
+def test_a_launched_rescue_marks_its_task_state_handled_and_a_failed_launch_does_not(code: int, marked: list) -> None:
+    # The rescue run may answer not_eligible and write nothing: its key is what keeps the next tick from launching it again.
+    calls: list = []
+    handled: list[str] = []
+    deps = replace(_deps(calls, code=code), mark_handled=handled.append)
+    perform([{"kind": "rescue", "initiative": "a", "task_id": "t1", "key": "rescue:t1:a-3", "epoch": 1}], deps, lambda: 1, False)
+    assert handled == marked
+
+
 @pytest.mark.parametrize(
     "action",
     [
