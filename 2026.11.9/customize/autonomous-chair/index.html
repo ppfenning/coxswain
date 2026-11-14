@@ -2212,6 +2212,17 @@ Coxswain is in beta — versions may change between releases
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#where-the-cause-comes-from" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where the cause comes from
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#triage" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -7000,6 +7011,17 @@ Coxswain is in beta — versions may change between releases
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#where-the-cause-comes-from" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where the cause comes from
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#triage" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -7627,6 +7649,26 @@ cause, and the chair handles it by that cause without asking you.</p>
 limit, an expired login, an infrastructure failure, a stale base, an
 interrupted run, and an empty build of a task whose base was stale.</p>
 <p>The other causes mean the task needs a change before it is built again.</p>
+<h3 id="where-the-cause-comes-from">Where the cause comes from</h3>
+<p>With <code>work_state: store</code>, the board lives in the store and no ticket file
+holds an attempt. The chair reads each attempt from the run's task record
+instead. A run writes one record for each task, at
+<code>runs/&lt;run&gt;/tasks/&lt;phase&gt;/&lt;task&gt;.json</code>, and puts the cause of a quarantine
+on it. The newest record names the run and the reason. A record with no
+cause is not an attempt.</p>
+<p>A run writes the ticket's body hash on the record too. An attempt on an
+earlier version of the ticket then does not count against the amended
+one. A record without the hash still counts toward triage and the hold,
+but not toward the stale check.</p>
+<p>A run on a lane host keeps its records on that host until the chair
+fetches the run. The fetch copies the whole run directory, records
+included, and the next tick reads them. Until then, a quarantine from an
+earlier run of that initiative waits, so the chair never judges a task by
+an older record. The status line shows each one, as
+<code>awaiting fetch: &lt;initiative&gt;:&lt;task&gt; (run &lt;run&gt;)</code>. A quarantine from a
+later run does not wait.</p>
+<p>A quarantine with no record at all shows the cause <code>quarantined</code> and goes
+to <code>needs chair</code>.</p>
 <h3 id="triage">Triage</h3>
 <p>To ask for triage, the chair sets <code>triage_requested</code> on the task's row in
 the store and moves the task back to ready. It does this once for each run
