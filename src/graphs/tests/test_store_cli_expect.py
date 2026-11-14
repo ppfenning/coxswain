@@ -42,3 +42,26 @@ def test_an_expect_outside_the_work_states_exits_two(url, run):  # noqa: F811
     assert (code, out) == (2, "")
     assert err
     assert [r["state"] for r in rows(url, "i1")] == ["ready"]
+
+
+def test_a_quarantined_row_moves_to_ready_on_expect_quarantined(url, run):  # noqa: F811
+    # The chair's triage request: quarantined -> ready, only if nobody moved the row first.
+    seed(url, state="quarantined")
+    code, _, err = run(url, "set-state", "i1", "t1", "ready", "--by", "chair", "--expect", "quarantined")
+    assert (code, err) == (0, "")
+    assert [r["state"] for r in rows(url, "i1")] == ["ready"]
+
+
+def test_a_hold_moves_a_quarantined_row_to_blocked(url, run):  # noqa: F811
+    # The chair's hold for a person: quarantined -> blocked.
+    seed(url, state="quarantined")
+    code, _, err = run(url, "set-state", "i1", "t1", "blocked", "--by", "chair", "--expect", "quarantined")
+    assert (code, err) == (0, "")
+    assert [r["state"] for r in rows(url, "i1")] == ["blocked"]
+
+
+def test_every_work_store_state_can_be_expected():
+    from core.workstore import STATES
+    from harness import store_cli
+
+    assert set(store_cli.EXPECT_STATES) == set(STATES)
