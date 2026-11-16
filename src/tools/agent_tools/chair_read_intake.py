@@ -8,12 +8,21 @@ from pathlib import Path
 from agent_tools import intake_queue, release_gate, route
 
 
-def queued_oldest_first(groups: Mapping[str, Sequence[Mapping]], mtimes: Mapping[str, float]) -> list[str]:
+def queued_oldest_first(
+    groups: Mapping[str, Sequence[Mapping]], mtimes: Mapping[str, float], current: str | None = None
+) -> list[str]:
     """Paths of the `queued` group of `route.intake_groups`: priority descending, then oldest mtime, then path.
 
-    A held entry is skipped. An entry with any non-empty `after` is skipped too: files and mtimes cannot say whether
-    its target has landed, so it waits for the row path, which can. This is the conservative choice."""
-    free = [row for row in groups["queued"] if not row.get("held") and not row.get("after")]
+    A held entry (a draft) is skipped. An entry with any non-empty `after` is skipped too: files and mtimes cannot say
+    whether its target has landed, so it waits for the row path, which can. This is the conservative choice.
+    With `current` (the release in progress), an entry whose `target_release` is later is skipped as well."""
+    free = [
+        row
+        for row in groups["queued"]
+        if not row.get("held")
+        and not row.get("after")
+        and not (current is not None and release_gate.is_deferred(row.get("target_release") or "", current))
+    ]
     return [path for _, _, path in sorted((-row.get("priority", 0), mtimes[row["path"]], row["path"]) for row in free)]
 
 
@@ -38,15 +47,16 @@ def intake_from_rows(rows: Sequence[Mapping], current: str | None = None) -> lis
     ]
 
 
-def read_intake(ws: Path, initiative_texts: Mapping[Path, str] | None = None) -> list[str]:
+def read_intake(ws: Path, initiative_texts: Mapping[Path, str] | None = None, current: str | None = None) -> list[str]:
     """Edge. Queued intake paths under `ws/intake`, oldest first; none when the directory is absent.
 
-    `initiative_texts` (path to text of each `work/*/initiative.md`) stands in for reading them when a tick already holds them."""
+    `initiative_texts` (path to text of each `work/*/initiative.md`) stands in for reading them when a tick already holds them.
+    `current` is the release in progress; see `queued_oldest_first`."""
     root = ws / "intake"
     paths = sorted(root.glob("*.md")) + sorted((root / "done").glob("*.md"))
     files = {str(p.relative_to(root)): p.read_text(encoding="utf-8") for p in paths}
     groups = route.intake_groups(route.intake_entries(files), _initiatives(ws, initiative_texts))
-    return queued_oldest_first(groups, {row["path"]: (ws / row["path"]).stat().st_mtime for row in groups["queued"]})
+    return queued_oldest_first(groups, {row["path"]: (ws / row["path"]).stat().st_mtime for row in groups["queued"]}, current)
 
 
 def _initiatives(ws: Path, texts: Mapping[Path, str] | None = None) -> list[dict]:
