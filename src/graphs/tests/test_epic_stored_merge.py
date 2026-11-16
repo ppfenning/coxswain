@@ -237,8 +237,9 @@ def test_a_fetch_that_fails_quarantines_nothing_and_raises_one_fault(store_conn,
     restart = _merged(ctx, tmp_path, monkeypatch, ("t1", "1" * 40), ("t2", "2" * 40))
     quarantined: list = []
     with caplog.at_level(logging.WARNING, logger=epic.__name__):
-        epic._quarantine_missing_merges(ctx, "p1", restart, quarantined)
+        paused = epic._quarantine_missing_merges(ctx, "p1", restart, quarantined)
     assert quarantined == []
+    assert paused is not None and paused.startswith("merged commits of t1, t2 could not be checked")
     assert [(i["state"], i["merged"]) for i in restart] == [("approved", True), ("approved", True)]
     assert _states(store_conn) == {"t1": "approved", "t2": "approved"}
     faults = [r.getMessage() for r in caplog.records if r.getMessage().startswith("harness fault:")]
@@ -256,3 +257,26 @@ def test_a_commit_absent_locally_and_on_origin_still_quarantines(store_conn, tmp
     assert [q["id"] for q in quarantined] == ["t1"]
     assert quarantined[0]["reason"].startswith(f"merged commit {'0' * 40} is not on main; t1 was approved and merged")
     assert ctx.merge_fetch_faults == set()
+
+
+def test_a_fetch_that_fails_pauses_the_phase_instead_of_reading_the_commit_as_present(store_conn, tmp_path, monkeypatch):
+    origin, repo, _ = _clone_behind_origin(tmp_path)
+    shutil.rmtree(origin)
+    ctx = _fault_ctx(store_conn, repo)
+    restart = _merged(ctx, tmp_path, monkeypatch, ("t1", "1" * 40))
+    paused = epic._quarantine_missing_merges(ctx, "p1", restart, [])
+    assert paused is not None
+    assert str(repo) in paused and "not built this run" in paused
+
+
+def test_a_repository_whose_fetch_already_failed_is_not_fetched_again(store_conn, tmp_path, monkeypatch):
+    origin, repo, _ = _clone_behind_origin(tmp_path)
+    shutil.rmtree(origin)
+    ctx = _fault_ctx(store_conn, repo)
+    restart = _merged(ctx, tmp_path, monkeypatch, ("t1", "1" * 40), ("t2", "2" * 40))
+    fetches: list[str] = []
+    real = epic.fetch_branch
+    monkeypatch.setattr(epic, "fetch_branch", lambda r, b: fetches.append(b) or real(r, b))
+    assert epic._quarantine_missing_merges(ctx, "p1", restart, []) is not None
+    assert epic._quarantine_missing_merges(ctx, "p1", restart, []) is not None
+    assert len(fetches) == 1  # each fetch can wait 120 s; a faulted repository is not asked again this run
