@@ -62,8 +62,9 @@ claude token: no token file at <path>
 Run `cox setup token` on the host to store one. A token the host rejects
 gives a `claude token: rejected: ...` row instead. A login can lapse on a machine nobody
 types on, so a lane machine that worked last week can fail this check.
-`cox route launch --on <host>` runs the same check first and refuses to
-launch when it fails.
+`cox route launch --on <host>` checks the host's login first, with
+`claude auth status` rather than the token verb, and refuses to launch when
+the host is not logged in.
 
 A login watchdog also checks every lane host's Claude login over ssh every
 30 minutes, timing out after 60 seconds, and records the result with the

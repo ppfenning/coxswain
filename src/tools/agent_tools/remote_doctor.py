@@ -12,7 +12,7 @@ def auth_verdict(output: str) -> str | None:
     """None when the reply is JSON with `loggedIn` true; otherwise the refusal line.
 
     The host's token verb states its own reason (a missing token file, a rejected token), and that reason is the line.
-    A reply with no reason, such as `claude auth status` from the launch preflight, says to log in on the host."""
+    A reply with no reason says to log in on the host."""
     status = json_object_in(output)
     if status is None:
         return f"claude token: status unreadable: {output.strip()[:80]}"
@@ -23,6 +23,18 @@ def auth_verdict(output: str) -> str | None:
         return reason
     if status.get("tokenFile") is False:
         return "claude token: no token file on the host"
+    return "claude auth: not logged in on the host (run claude auth login there)"
+
+
+def auth_status_verdict(output: str) -> str | None:
+    """None when `claude auth status` output is JSON with `loggedIn` true; otherwise the refusal line.
+
+    The `route launch --on` preflight still asks `claude auth status`, so its lines keep the `claude auth:` wording."""
+    status = json_object_in(output)
+    if status is None:
+        return f"claude auth: status unreadable: {output.strip()[:80]}"
+    if status.get("loggedIn") is True:
+        return None
     return "claude auth: not logged in on the host (run claude auth login there)"
 
 

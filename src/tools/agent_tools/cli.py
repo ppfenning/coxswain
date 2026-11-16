@@ -7975,7 +7975,7 @@ def _route_launch_on_host(
     # `setup doctor --host` helper once remote-doctor-runner-check lands one; do not write a second read.
     runner, env_names = chair_exec._login_runner_and_env(dict(provider))
     if runner == "claude-code":
-        preflight = remote_doctor.auth_verdict(_host_auth_output(remote_argv.ssh_argv(host.ssh, remote_argv.auth_status_argv())))
+        preflight = remote_doctor.auth_status_verdict(_host_auth_output(remote_argv.ssh_argv(host.ssh, remote_argv.auth_status_argv())))
     else:
         preflight = remote_launch.env_preflight(
             env_names, {name: _host_env_probe(remote_argv.ssh_argv(host.ssh, remote_argv.env_check_argv(name))) for name in env_names}
