@@ -1631,6 +1631,7 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
                         f"set {intake_path}'s frontmatter to `initiative: {initiative_id or run_id}` and move it "
                         f"to `intake/done/{intake_path.rsplit('/', 1)[-1]}`"
                     ),
+                    apply=_intake_retire_apply(intake_path, initiative_id or run_id),
                 )
             ]
             if intake_path
@@ -1666,6 +1667,15 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
 def _strip_trailing_tag(body: str) -> str:
     """Drop a trailing closing tag on its own line — the seat's own output wrapper, not the ticket."""
     return re.sub(r"\n?</[^\n>]+>\s*$", "", body)
+
+
+def _intake_retire_apply(intake_path: str, initiative: str) -> dict[str, Any]:
+    """Pure: the payload the workstore arm's retire route applies, the same move the prose action describes."""
+    return {
+        "path": intake_path,
+        "retire_to": f"intake/done/{intake_path.rsplit('/', 1)[-1]}",
+        "fields": {"initiative": initiative},
+    }
 
 
 def _task_path(task: Mapping[str, Any], *, landing: str, initiative_id: str | None) -> str:
