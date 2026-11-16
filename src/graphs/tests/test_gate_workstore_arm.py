@@ -159,3 +159,21 @@ def test_model_arm_refuses_when_no_tier_has_tool_use() -> None:
     tooled.calls = []
     assert auto_apply(proposal("state_move"), cartridge=cartridge("state_move"), runner=tooled) == (True, "by the model")
     assert tooled.calls[0]["tier"] == "standard"
+
+
+def test_the_model_arm_is_told_the_absolute_work_root(tmp_path: Path) -> None:
+    """On a lane host the arm's session starts in the work root, but the model writes absolute paths. Told only
+    `work/<initiative>/...`, it once built them under the home directory, and the decompose found no file."""
+    runner = RecordingRunner()
+    root = tmp_path / "workspace"
+    runner.cwd = root  # type: ignore[attr-defined]
+    auto_apply(proposal("item_create"), cartridge=cartridge("item_create"), runner=runner)
+    prompt = runner.calls[0]["prompt"]
+    assert f"work root is {root}" in prompt
+    assert f"{root}/work/" in prompt
+
+
+def test_a_runner_without_a_working_directory_gets_the_prompt_as_before() -> None:
+    runner = RecordingRunner()
+    auto_apply(proposal("item_create"), cartridge=cartridge("item_create"), runner=runner)
+    assert "work root is" not in runner.calls[0]["prompt"]
