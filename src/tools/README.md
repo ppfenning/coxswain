@@ -176,7 +176,7 @@ cox host sync NAME   bring a host's checkouts to the commits this machine runs (
 cox router select --role ROLE [--db DB] [--profile PROFILE] [--json]   the effective tier for a role under the profile's router: off|shadow|on flag
 cox steward propose [--db DB] [--profile PROFILE] [--json]   write each candidate clearing the evidence bar as a new intake file; never edits a provider profile
 cox steward draft [--profile PROFILE] [--json]   write each grounded proposal in intake as a draft initiative under work/, list those that exist or could not be grounded
-cox setup doctor [--profile PROFILE] [--repo REPO] [--json] [--host HOST]   check this machine's profile against what it needs
+cox setup doctor [--profile PROFILE] [--repo REPO] [--json] [--host HOST] [--fix]   check this machine's profile against what it needs
 cox setup install [--root ROOT] --team TEAM [--workspace WORKSPACE] [--home HOME] [--provider-profile PROVIDER_PROFILE] [--skills-root SKILLS_ROOT] [--assume a|r] [--plugins] [--hook] [--force-profile] [--dry-run] [--window-ceiling-usd WINDOW_CEILING_USD] [--weekly-ceiling-usd WEEKLY_CEILING_USD]   sync the checkout's venv, install cox and write a profile for this machine
 cox setup extras [--with EXTRA] [--dry-run]   install the optional extras into this venv, pinned and hash-checked from uv.lock
 cox setup migrate [--home HOME] [--dry-run] [--apply] [--hosts] [--finish] [--old-root PATH] [--to VERSION]   plan moving this host to the one monorepo checkout; --apply migrates
@@ -187,6 +187,13 @@ cox setup token status [--probe]   report whether the stored token file exists a
 
 Bare `cox setup` opens towpath; it needs a terminal and towpath, and otherwise
 points you at `setup doctor` and `setup install`.
+
+`cox setup doctor` also checks the three append-only logs under the profile's
+workspace: `courier.jsonl`, and `land.jsonl` and `chair.actions.jsonl` in its
+`runs` folder. A damaged line, such as one of NUL bytes left by a crash, is a
+warning row that points at `--fix`. `cox setup doctor --fix` moves each damaged
+line to a `.damaged` file beside its log, prints one line per log it changed,
+and then checks again. `--host` ignores `--fix`.
 
 The `route` group reads one profile, `~/.config/agent-tools/profile.yaml` (the
 directory keeps the deprecated agent-tools name), or the path in

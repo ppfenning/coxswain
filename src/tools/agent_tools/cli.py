@@ -186,6 +186,7 @@ lane_python = _LazyModule("agent_tools.lane_python")
 lane_toolchain = _LazyModule("agent_tools.lane_toolchain")
 launch_place = _LazyModule("agent_tools.launch_place")
 leader_chat = _LazyModule("agent_tools.leader_chat")
+log_doctor = _LazyModule("agent_tools.log_doctor")
 notify = _LazyModule("agent_tools.notify")
 notify_core = _LazyModule("agent_tools.notify_core")
 pacing = _LazyModule("agent_tools.pacing")
@@ -9211,6 +9212,19 @@ def _doctor_steward_rows(profile: dict | None) -> list[dict]:
     return [doctor.steward_row(chair_facts.steward_asked_for(raw))]
 
 
+def _doctor_log_rows(profile: dict | None, *, fix: bool, out) -> list[dict]:
+    """Edge. The append-only log rows, under the profile's workspace and its runs dir; none without a workspace.
+    With `fix`, damaged lines move to `<log>.damaged` first, one line per log moved, and the rows show the repaired logs."""
+    if not (profile and profile.get("workspace_dir")):
+        return []
+    runs_dir, work_dir = _dash_dirs(None, None, profile)
+    if fix:
+        for name, count in log_doctor.fix_logs(work_dir, runs_dir).items():
+            if count:
+                print(f"{name}: moved {count} damaged line(s) to {name}.damaged", file=out)
+    return log_doctor.check_logs(work_dir, runs_dir)
+
+
 def _setup_doctor(a: argparse.Namespace) -> int:
     if getattr(a, "host", None):
         return _setup_doctor_host(a, _run_ssh)
@@ -9228,6 +9242,7 @@ def _setup_doctor(a: argparse.Namespace) -> int:
         *_doctor_store_rows(profile),
         *_doctor_dash_build_rows(profile),
         *_doctor_steward_rows(profile),
+        *_doctor_log_rows(profile, fix=getattr(a, "fix", False), out=sys.stderr if a.json else sys.stdout),
     ]
     rc = doctor.exit_code(rows)
     # Informational: outside rows, so outside rc. Reuses the text the facts already read.
@@ -13423,6 +13438,7 @@ SETUP_COMMANDS = [
             commands.Arg(("--repo",), {"help": "target repo to check for a .agent/cartridge.yaml overlay (default: cwd)"}),
             commands.Arg(("--json",), {"action": "store_true"}),
             commands.Arg(("--host",), {"help": "run the doctor on this lane host from lane_hosts; --json is ignored"}),
+            commands.Arg(("--fix",), {"action": "store_true", "help": "move damaged log lines to a .damaged file beside the log, then check again"}),
         ),
         "agent_tools.cli:_setup_doctor_row", False, (),
     ),
