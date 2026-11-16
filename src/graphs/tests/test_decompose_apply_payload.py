@@ -64,14 +64,22 @@ def without_body(item: dict) -> dict:
     return {k: v for k, v in item.items() if k != "body"}
 
 
-def test_every_item_create_routes_to_the_workstore_arm(result) -> None:
+def test_every_task_item_create_routes_to_the_workstore_arm(result) -> None:
     assert len(result["proposals"]) == 3
-    for p in result["proposals"]:
+    for p in result["proposals"][:2]:
         assert isinstance(p["apply"]["path"], str)
         assert isinstance(p["apply"]["item"], dict)
         assert workstore_route(p["kind"], p["apply"])[0] == "item_create"
     assert result["proposals"][0]["apply"]["path"] == "work/init/p1/init-t1.md"
-    assert result["proposals"][2]["apply"]["path"] == "work/init/initiative.md"
+
+
+def test_the_initiative_item_create_carries_no_payload_and_stays_on_the_model_arm(result) -> None:
+    # `workstore.write_item` keeps only work-item fields: an initiative.md written through it would lose `repo`,
+    # `intake` and the size fields. Until the initiative has a route of its own, its proposal goes to the model arm.
+    initiative = result["proposals"][2]
+    assert initiative["target"] == "initiative"
+    assert "apply" not in initiative
+    assert workstore_route(initiative["kind"], initiative.get("apply")) == ("fallback", {})
 
 
 def test_the_prose_action_names_the_same_path_and_frontmatter_as_the_payload(result) -> None:
@@ -80,17 +88,9 @@ def test_the_prose_action_names_the_same_path_and_frontmatter_as_the_payload(res
         assert rendered_frontmatter(p["suggested_action"]) == without_body(p["apply"]["item"])
 
 
-def test_the_initiative_prose_and_payload_agree_on_frontmatter_and_body(result) -> None:
-    initiative = result["proposals"][2]
-    prose = initiative["suggested_action"].split("with body =\n", 1)[1]
-    _, front, body = prose.split("---\n", 2)
-    assert yaml.safe_load(front) == without_body(initiative["apply"]["item"])
-    assert body == "\n" + initiative["apply"]["item"]["body"]
-
-
-def test_auto_apply_writes_both_tickets_and_the_initiative(result, cart, tmp_path, monkeypatch) -> None:
+def test_auto_apply_writes_both_tickets_with_no_model_call(result, cart, tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
-    for p in result["proposals"]:
+    for p in result["proposals"][:2]:
         assert auto_apply(p, cartridge=cart, runner=ForbiddenRunner())[0] is True
     for p in result["proposals"][:2]:
         rendered = rendered_frontmatter(p["suggested_action"])
@@ -100,10 +100,6 @@ def test_auto_apply_writes_both_tickets_and_the_initiative(result, cart, tmp_pat
         # Expected loss: write_item keeps no `lint` (and no `checks`), though the action renders `lint`.
         assert "lint" in rendered
         assert "lint" not in read
-    initiative = workstore.read_item(tmp_path / "work/init/initiative.md")
-    assert initiative["id"] == "init"
-    assert initiative["body"] == result["proposals"][2]["apply"]["item"]["body"].strip()
-    assert "---" not in initiative["body"]
 
 
 @pytest.mark.parametrize("plan", [PLAN, EDGE_PLAN], ids=["plain", "trailing-tag-and-empty"])

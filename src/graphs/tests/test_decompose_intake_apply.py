@@ -78,12 +78,14 @@ def test_auto_apply_writes_every_item_and_retires_the_intake_with_no_model_call(
     (tmp_path / "intake" / "regatta.md").write_text(INTAKE, encoding="utf-8")
     result = run_plan(cart, initiative_id="init", intake_path="intake/regatta.md")
     assert [p["kind"] for p in result["proposals"]] == ["item_create", "item_create", "item_create", "state_move"]
+    # The initiative item_create carries no payload yet, so it stays with the model arm and is not applied here.
     for p in result["proposals"]:
-        assert auto_apply(p, cartridge=cart, runner=ForbiddenRunner())[0] is True
+        if p["target"] != "initiative":
+            assert auto_apply(p, cartridge=cart, runner=ForbiddenRunner())[0] is True
     assert not (tmp_path / "intake" / "regatta.md").exists()
     text = (tmp_path / "intake" / "done" / "regatta.md").read_text(encoding="utf-8")
     retired = yaml.safe_load(text.split("---\n", 2)[1])
     assert retired == {"id": "regatta", "title": "Go arrow-native", "repo": "~/repos/r", "initiative": "init"}
     assert text.endswith("\n\nThe idea, in full.\n")
-    for rel in ("work/init/p1/init-t1.md", "work/init/p2/init-t2.md", "work/init/initiative.md"):
+    for rel in ("work/init/p1/init-t1.md", "work/init/p2/init-t2.md"):
         assert (tmp_path / rel).is_file(), rel

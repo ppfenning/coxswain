@@ -1542,25 +1542,6 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
     tasks = [
         {**t, "body": _strip_trailing_tag(str(t.get("body") or decomposition.get("rationale", "")))} for t in tasks
     ]
-    # The item's body is the text after the frontmatter, not `initiative_body`: that string
-    # already carries its own `---` block, and the store writes the frontmatter itself.
-    initiative_apply = {
-        "path": f"{initiative_where}/initiative.md",
-        "item": {
-            **initiative_frontmatter(
-                idea_doc,
-                str(args.get("repo") or idea_doc.get("repo") or ""),
-                intake=intake_path,
-                size=size_record,
-                home=str(Path.home()),
-                epic=carried.get("epic"),
-                target_branch=carried.get("target_branch"),
-                lint=[*heal.notes, *ordering_notes, *split_notes],
-            ),
-            "body": initiative_body_text(idea_doc, phase_order, goals),
-        },
-    }
-
     proposals = (
         [
             proposal(
@@ -1614,8 +1595,9 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
                 target="initiative",
                 evidence=[{"check": "phases", "output": ", ".join(phase_order) or "none"}],
                 rationale=str(decomposition.get("rationale") or ""),
+                # No `apply` payload yet: `workstore.write_item` keeps only work-item fields, so an initiative.md
+                # written through it would lose `repo`, `intake` and the size fields. The model arm writes it.
                 suggested_action=f"create {initiative_where}/initiative.md with body =\n{initiative_body}",
-                apply=initiative_apply,
             )
         ]
         + (
