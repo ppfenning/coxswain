@@ -79,12 +79,17 @@ def workstore_route(kind: str, apply: object) -> tuple[str, dict[str, Any]]:
     return "fallback", {}
 
 
-def _apply_workstore(route: str, fields: dict[str, Any]) -> tuple[bool, str]:
-    """The edge: perform the workstore write a route chose. Errors come back as values."""
-    path = fields["path"]
+def _apply_workstore(route: str, fields: dict[str, Any], root: Path) -> tuple[bool, str]:
+    """The edge: perform the workstore write a route chose. Errors come back as values.
+
+    A relative path is store-relative, so it resolves against `root`, the work root, and never against the
+    process cwd: a decompose launched over ssh stands in the login directory, and its task files once all
+    landed under `~/work/` while the settle step read the work root and found none of them.
+    """
+    path = str(root / fields["path"])
     try:
         if route == "retire":
-            source, target = Path(path), Path(fields["retire_to"])
+            source, target = Path(path), root / fields["retire_to"]
             if not source.exists():
                 return False, f"refused: {path} does not exist"
             if target.exists():
@@ -109,6 +114,12 @@ def _apply_workstore(route: str, fields: dict[str, Any]) -> tuple[bool, str]:
         return True, f"{path} {'created' if route == 'item_create' else 'updated'}"
     except (OSError, ValueError, workstore.WorkStoreError) as error:
         return False, str(error)
+
+
+def _work_root(runner: Any) -> Path:
+    """Where store-relative paths resolve: the runner's `cwd` (the harness's `--workdir`), else the process cwd."""
+    root = getattr(runner, "cwd", None)
+    return Path(root).expanduser() if root else Path.cwd()
 
 
 def _apply_tier(runner: Any, role: str, tier: str) -> tuple[str, str | None]:
@@ -155,7 +166,7 @@ def auto_apply(
     if arm == "workstore":
         route, fields = workstore_route(item["kind"], item.get("apply"))
         if route != "fallback":
-            return _apply_workstore(route, fields)
+            return _apply_workstore(route, fields, _work_root(runner))
         arm = _FALLBACK_ROLE.get(item["kind"])
         if arm is None:
             return False, f"the workstore arm does not apply to '{item['kind']}'"

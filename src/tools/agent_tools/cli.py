@@ -7546,11 +7546,16 @@ def _route_launch(a: argparse.Namespace) -> int:
             encoding="utf-8",
         )
 
+    # A decompose starts in the work root, the directory its `--workdir` names. Launched over ssh, this process stands
+    # in the login directory, and a store-relative `work/...` path resolved there once put every task file under
+    # `~/work/` while the settle step read the work root and found none of them.
+    start_in = runs_dir.parent if a.graph == "decompose" else None
+
     if via_rows:
         (runs_dir / f"{run_id}.launched.json").write_text(
             json.dumps({"initiative": a.initiative_id, "at": datetime.datetime.now(datetime.UTC).isoformat()}), encoding="utf-8",
         )
-        exit_code, result = _run_decompose_for_result(argv, env, log_path, result_path, pid_path)
+        exit_code, result = _run_decompose_for_result(argv, env, log_path, result_path, pid_path, cwd=start_in)
         if exit_code or result is None:
             # The harness writes the result before its own failure checks, so a failed run can leave a valid file: no rows then.
             print(f"routing: decompose exited {exit_code}; no rows written" if exit_code else f"routing: decompose wrote no readable result at {result_path}")
@@ -7574,7 +7579,7 @@ def _route_launch(a: argparse.Namespace) -> int:
         with open(log_path, "ab") as log:
             proc = subprocess.Popen(
                 background, env={**os.environ, _OWN_RUN_ID_ENV: run_id}, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                start_new_session=True,
+                start_new_session=True, cwd=start_in,
             )
         pid_path.write_text(str(proc.pid))
         print(f"run {run_id}")
@@ -7588,7 +7593,7 @@ def _route_launch(a: argparse.Namespace) -> int:
     )
     with open(log_path, "ab") as log:
         proc = subprocess.Popen(
-            argv, env=launch_env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
+            argv, env=launch_env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True, cwd=start_in,
         )
     exit_code = _wait_for_exit(
         proc, lambda: _LAUNCH_STARTED_MARKER in (_read_text_or_none(log_path) or ""), _LAUNCH_SETTLE_S,
@@ -7648,16 +7653,19 @@ _DECOMPOSE_TIMEOUT_S = 3600
 
 
 def _run_decompose_for_result(
-    argv: list[str], env: Mapping[str, str], log_path: Path, result_path: Path, pid_path: Path,
+    argv: list[str], env: Mapping[str, str], log_path: Path, result_path: Path, pid_path: Path, *, cwd: Path | None = None,
 ) -> tuple[int, dict | None]:
     """Edge: run the decompose to completion, its pid in `pid_path` while it runs and its output in the log.
 
+    `cwd` is the directory the run starts in, the work root; None keeps this process's own.
     Returns `(exit code, result)`; the result is the `--result-out` JSON, None when missing, invalid or not an object.
     A run past the timeout is killed and reports exit 124.
     """
     result_path.unlink(missing_ok=True)
     with open(log_path, "ab") as log:
-        proc = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+        proc = subprocess.Popen(
+            argv, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True, cwd=cwd,
+        )
         pid_path.write_text(str(proc.pid))
         try:
             code = proc.wait(timeout=_DECOMPOSE_TIMEOUT_S)

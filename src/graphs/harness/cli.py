@@ -1508,6 +1508,19 @@ def _withdraw_dependents(
     return done
 
 
+def _outside_root(root: Path, rel: str) -> Path | None:
+    """Edge: `rel` under the process cwd when that is not the work root and a file is there, else None.
+
+    The one place an arm that resolved a store-relative path against the wrong directory leaves its file.
+    """
+    try:
+        here = Path.cwd()
+        candidate = here / rel
+        return candidate if here.resolve() != root.resolve() and candidate.is_file() else None
+    except OSError:
+        return None
+
+
 def _settle_decompose_tasks(
     expected: Mapping[str, str],
     *,
@@ -1546,6 +1559,13 @@ def _settle_decompose_tasks(
         try:
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
+            stray = _outside_root(root, rel)
+            if stray is not None:
+                # Named, never moved: which copy is right is the operator's call, not the settle step's.
+                return False, False, (
+                    f"decompose: {task} not written: found at {stray}, outside the work root {root}; "
+                    "it was left where it is"
+                )
             return False, False, f"decompose: {task} not written: {exc} (the apply line above carries the arm's own detail)"
         if task in kept:
             print(f"decompose: {task} was already in the store as '{kept[task].get('state')}'; its row is kept", file=sys.stderr)

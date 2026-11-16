@@ -53,7 +53,7 @@ def test_an_intake_with_no_repo_is_refused_and_starts_nothing(tmp_path, monkeypa
 def test_a_store_mode_launch_writes_the_intake_repo_onto_the_initiative_row(tmp_path, monkeypatch):
     code, upserts, _harness_dir, _ws = _launch(
         tmp_path, monkeypatch, "store", f"---\nid: fix-thing\ntitle: Fix thing\nrepo: {REPO}\n---\n\nBody\n",
-        lambda *_a: (0, RESULT),
+        lambda *_a, **_k: (0, RESULT),
     )
 
     assert code == 0
