@@ -173,8 +173,10 @@ def auto_apply(
     tier, refusal = _apply_tier(runner, arm, "standard")
     if refusal is not None:
         return False, refusal
-    # The arm's session starts in the work root, but the model writes absolute paths. Told only `work/...`, it
-    # once built them under the home directory on a lane host, and the decompose then found none of its files.
+    # A guard for model-arm writes when the runner's cwd is not the process cwd: the model writes absolute paths,
+    # so it is told the root that `work/...` is relative to. The task files once found under the home directory on
+    # a lane host were not the model arm's: `_apply_workstore` opened the store-relative path with a bare Path,
+    # resolved against the process cwd, and now resolves it against the work root.
     root = getattr(runner, "cwd", None)
     where = (
         f"The work root is {root}. Every relative path in this proposal is relative to it: write "
