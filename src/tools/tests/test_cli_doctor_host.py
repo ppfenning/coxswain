@@ -2,7 +2,7 @@ import pytest
 
 from agent_tools import cli
 from agent_tools.cli import main
-from agent_tools.remote_argv import auth_status_argv, ssh_argv
+from agent_tools.remote_argv import ssh_argv, token_status_argv
 
 SSH_BOUND = ["ssh", "-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3"]
 _HOSTS = """team: t
@@ -27,7 +27,7 @@ def _fake_run(monkeypatch, code=0, output="ok  profile\nok  git\n"):
 
     def run(argv):
         calls.append(argv)
-        if "claude auth status" in argv[-1]:
+        if "cox setup token status --probe" in argv[-1]:
             return 0, '{"loggedIn": true}'
         return code, output
 
@@ -39,10 +39,10 @@ def test_a_known_host_prints_its_rows_under_a_header_and_exits_zero(tmp_path, mo
     calls = _fake_run(monkeypatch)
     rc = main(["setup", "doctor", "--profile", _profile(tmp_path), "--host", "box"])
     assert rc == 0
-    assert capsys.readouterr().out == "doctor on box (me@box.example)\nok  profile\nok  git\nclaude auth      ok\n"
+    assert capsys.readouterr().out == "doctor on box (me@box.example)\nok  profile\nok  git\nclaude token     ok\n"
     assert calls == [
         [*SSH_BOUND, "me@box.example", "cox setup doctor"],
-        ssh_argv("me@box.example", auth_status_argv()),
+        ssh_argv("me@box.example", token_status_argv(probe=True)),
     ]
 
 
@@ -50,7 +50,7 @@ def test_a_failing_remote_doctor_prints_its_rows_and_exits_non_zero(tmp_path, mo
     _fake_run(monkeypatch, code=1, output="FAIL  git\n")
     rc = main(["setup", "doctor", "--profile", _profile(tmp_path), "--host", "gpu"])
     assert rc == 1
-    assert capsys.readouterr().out == "doctor on gpu (me@gpu.example)\nFAIL  git\nclaude auth      ok\n"
+    assert capsys.readouterr().out == "doctor on gpu (me@gpu.example)\nFAIL  git\nclaude token     ok\n"
 
 
 def test_an_unknown_host_names_the_configured_ones_and_runs_nothing(tmp_path, monkeypatch, capsys):
@@ -100,5 +100,5 @@ def test_doctor_on_host_returns_the_code_and_the_split_rows(output, rows):
 
     host = LaneHost("box", "me@box", "/srv")
     auth = '{"loggedIn": true}'
-    run = lambda argv: (0, auth) if "claude auth status" in argv[-1] else (3, output)  # noqa: E731
-    assert doctor_on_host(host, run) == (3, [*rows, "claude auth      ok"])
+    run = lambda argv: (0, auth) if "cox setup token status --probe" in argv[-1] else (3, output)  # noqa: E731
+    assert doctor_on_host(host, run) == (3, [*rows, "claude token     ok"])
