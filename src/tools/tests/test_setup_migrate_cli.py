@@ -18,6 +18,11 @@ NAMES = ("coxswain-cartridges", "coxswain-graphs", "coxswain-tools")
 TAG = "v2026.10.0"
 
 
+def names_a_component(text: str) -> bool:
+    """A path into a component checkout. Not any `coxswain-`: the temp root the profile's paths sit under may carry one."""
+    return any(f"/{name}" in text for name in NAMES)
+
+
 def git(*argv, cwd):
     subprocess.run(["git", "-c", "user.email=t@example.com", "-c", "user.name=t", *argv], cwd=cwd, check=True,
                    capture_output=True)
@@ -190,7 +195,7 @@ def test_apply_makes_the_umbrella_the_monorepo_and_retires_the_components(layout
     text = layout.profile.read_text()
     assert f"harness_dir: {layout.checkout}/src/graphs" in text
     assert f"provider_profile: {layout.checkout}/src/cartridges/providers/claude-code.yaml" in text
-    assert "coxswain-" not in text
+    assert not names_a_component(text)
     assert layout.uv_log.read_text().splitlines() == ["sync --frozen --all-extras --inexact -q"]
 
 
@@ -300,7 +305,7 @@ def test_rerun_after_a_stop_resumes_from_the_remaining_steps(layout, capsys):
     assert run(apply=True) == 0
     out = capsys.readouterr().out
     assert "fetch --tags" not in out
-    assert "profile skills_roots" in out and "coxswain-" not in layout.profile.read_text()
+    assert "profile skills_roots" in out and not names_a_component(layout.profile.read_text())
 
 
 def test_edit_key_replaces_one_line_appends_a_missing_one_and_refuses_block_lists():

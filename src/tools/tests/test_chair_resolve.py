@@ -2,11 +2,19 @@ import datetime
 import socket
 from pathlib import Path
 
+import pytest
+
 from agent_tools import chair, chair_land, chair_resolve
 from agent_tools.cli import main
 
 HOST = socket.gethostname()
 NOW = datetime.datetime.now(datetime.UTC)
+
+
+@pytest.fixture
+def tmp_path(short_tmp_path):
+    """The transcript's folder is named for the whole workspace path, so the workspace's path stays short."""
+    return short_tmp_path
 
 
 def _record(**extra):
