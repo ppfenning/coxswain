@@ -139,6 +139,7 @@ chair_watchdog = _LazyModule("agent_tools.chair_watchdog")
 checkout = _LazyModule("agent_tools.checkout")
 checkout_sync = _LazyModule("agent_tools.checkout_sync")
 cleanup = _LazyModule("agent_tools.cleanup")
+completions = _LazyModule("agent_tools.completions")
 console_screen = _LazyModule("agent_tools.console_screen")
 courier = _LazyModule("agent_tools.courier")
 dash_binary = _LazyModule("agent_tools.dash_binary")
@@ -150,6 +151,7 @@ dash_detail_run = _LazyModule("agent_tools.dash_detail_run")
 dash_detail_spend = _LazyModule("agent_tools.dash_detail_spend")
 dash_feed = _LazyModule("agent_tools.dash_feed")
 dash_feed_share = _LazyModule("agent_tools.dash_feed_share")
+dash_history_store = _LazyModule("agent_tools.dash_history_store")
 decisions = _LazyModule("agent_tools.decisions")
 doctor = _LazyModule("agent_tools.doctor")
 draft_apply = _LazyModule("agent_tools.draft_apply")
@@ -4835,27 +4837,38 @@ def _with_lane_fields(rows: list, runs: list, now: str) -> list:
 
 
 def _efficiency_figures(runs_dir: Path, now: str) -> dict | None:
-    """Edge. Today's (UTC day of `now`) cost, landed count, per-landed cost and first-try share; None with no store or one that fails to answer.
+    """Edge. Today's (UTC day of `now`) cost, landed count, completions, cost per completion and first-try share; None
+    with no store or one that fails to answer.
 
-    The one place both the docket's `efficiency:` line and the dash feed's `spend.today` read from."""
+    The one place both the docket's `efficiency:` line and the dash feed's `spend.today` read from. `landed` counts the
+    tasks the land log shows reaching `mark_done` today. `completions` counts tasks the way the feed's spend_split
+    windows do (`completions.day_completions`): a task done, or approved and merged into its phase or PR branch, or
+    landed on main, at its earliest such stamp, if that falls today; a logged land the store holds no record of counts
+    too. `cost_per_completion` is today's spend over `completions`, and `per_landed` is its deprecated alias, the same
+    value, kept one release. The first-try share is still measured over the land log's tasks."""
     today = now[:10]
-    tomorrow = (datetime.date.fromisoformat(today) + datetime.timedelta(days=1)).isoformat()
+    day = datetime.date.fromisoformat(today)
+    start = datetime.datetime(day.year, day.month, day.day, tzinfo=datetime.UTC)
+    tomorrow = (day + datetime.timedelta(days=1)).isoformat()
     try:
         spend = run_store.cost_since(runs_dir, today, tomorrow)
         if spend is None:
             return None
         landed = route.landed_today(_read_text_or_none(runs_dir / "land.jsonl") or "", today)
         counts = run_store.build_counts(runs_dir, [t for _, t in landed if t is not None], [r for r, _ in landed if r is not None])
+        records = dash_history_store.read_task_records_since(runs_dir, today)
     except (*run_store._DB_ERRORS, OSError, RuntimeError, ValueError, TypeError):
         return None
     rate, measured = route.first_try(landed, counts)
+    done = completions.day_completions(records, landed, start, start + datetime.timedelta(days=1))
+    per_completion = spend / len(done) if done else None
     return {
         "date": today,
         "cost": spend,
         "landed": len(landed),
-        "per_landed": spend / len(landed) if landed else None,  # deprecated alias of cost_per_completion
-        "completions": len(landed),
-        "cost_per_completion": spend / len(landed) if landed else None,
+        "per_landed": per_completion,  # deprecated alias of cost_per_completion, the same value
+        "completions": len(done),
+        "cost_per_completion": per_completion,
         "first_try_rate": rate,
         "measured": measured,
     }

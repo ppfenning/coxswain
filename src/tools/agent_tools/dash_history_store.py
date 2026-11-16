@@ -14,6 +14,43 @@ _RUNS = (
 )
 
 
+_OPEN_TASK_RECORDS = (
+    "SELECT * FROM task_records WHERE updated_at >= {p} AND run_id IN (SELECT run_id FROM runs WHERE ended_at IS NULL)"
+)
+_TASK_RECORDS_SINCE = "SELECT * FROM task_records WHERE updated_at >= {p}"
+
+
+def _task_records(store: Path, sql: str, since: str) -> list[dict[str, Any]]:
+    """Edge. The task records `sql` selects for `since`; empty with no store, no such table or column, or an
+    unreadable store."""
+    try:
+        opened = _open(store)
+    except (*_DB_ERRORS, RuntimeError):  # an unreachable Postgres, or psycopg not installed
+        return []
+    if opened is None:
+        return []
+    conn, token = opened
+    try:
+        return [dict(r) for r in conn.execute(_sql(sql, token), (since,)).fetchall()]
+    except _DB_ERRORS:
+        return []
+    finally:
+        conn.close()
+
+
+def read_open_task_records(store: Path, since: str) -> list[dict[str, Any]]:
+    """Edge. The task records of runs not yet ended, written at or after `since` (ISO text), column names unchanged.
+    `read_history_rows` reads ended runs only, and a task merged into its phase or PR branch completes while its run is
+    still in flight, so the spend windows read these beside it. Empty with no store or an unreadable one."""
+    return _task_records(store, _OPEN_TASK_RECORDS, since)
+
+
+def read_task_records_since(store: Path, since: str) -> list[dict[str, Any]]:
+    """Edge. Every task record written at or after `since` (ISO text), ended run or not: what today's completion count
+    reads. Empty with no store or an unreadable one."""
+    return _task_records(store, _TASK_RECORDS_SINCE, since)
+
+
 def _empty() -> dict[str, list[dict[str, Any]]]:
     return {"runs": [], "task_records": [], "node_calls": []}
 

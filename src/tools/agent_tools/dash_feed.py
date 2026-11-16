@@ -78,7 +78,7 @@ from agent_tools.dash_feed_tasks import counts, task_entries
 from agent_tools.dash_finished_runs import LIMIT, finished_runs
 from agent_tools.dash_history import _by_run, _in_task_order, _is_landed, _landed_pr, _pr_number, _record, build_history
 from agent_tools.dash_history import history_today as _history_today
-from agent_tools.dash_history_store import RECENT_ENDED, read_history_rows
+from agent_tools.dash_history_store import RECENT_ENDED, read_history_rows, read_open_task_records
 from agent_tools.dash_live_turns_lane import advance_lane_cursor
 from agent_tools.dash_live_turns_session import read_session_turns_with_cursor
 from agent_tools.dash_run_end import End, run_end
@@ -459,10 +459,11 @@ def _completed_at(task_records: Sequence[Mapping], ended: Mapping[str, datetime 
 def _window_node_inputs(rows: Mapping, windows: Mapping[str, Mapping]) -> tuple[dict[str, list], dict[str, int]]:
     """Each window's `node_calls` rows at or after its `start`, and its completions likewise. Wrong belief to avoid:
     "a task is done when it lands on main". Under ticket landing a task merged into its PR branch is complete long
-    before the initiative's one pull request lands, so it counts at its merge, even while its run is in flight."""
+    before the initiative's one pull request lands, so it counts at its merge, even while its run is in flight: the
+    ended runs' `task_records` and the in-flight runs' `open_task_records` (see `_store_rows`) are counted together."""
     ended = {str(run.get("run_id")): _utc(run.get("ended_at")) for run in rows.get("runs", ())}
     calls = [(_utc(call.get("ts")), call) for call in rows.get("node_calls", ())]
-    finished = _completed_at(rows.get("task_records", ()), ended)
+    finished = _completed_at([*rows.get("task_records", ()), *rows.get("open_task_records", ())], ended)
     starts = {name: _utc(window["start"]) for name, window in windows.items()}
     node_rows = {name: [call for ts, call in calls if ts and start and ts >= start] for name, start in starts.items()}
     done = {name: sum(1 for ts in finished if start and ts >= start) for name, start in starts.items()}
@@ -1971,12 +1972,13 @@ def _history_rows(rows: Mapping, at: datetime) -> Mapping:
 def _store_rows(runs_dir: Path, at: datetime, spend: Mapping) -> Mapping:
     """Edge: the ended runs since the earliest of local midnight and the spend windows' starts, or the newest ones,
     with their task records and calls. Read once, wide enough for the weekly spend split; `_history_rows` narrows it.
-    An unreadable store gives no rows."""
+    `open_task_records` adds the task records of runs still in flight written since then, which the history never
+    reads and the spend windows count as completions once merged. An unreadable store gives no rows."""
     offset = at.astimezone(EASTERN).utcoffset() or timedelta(0)
     starts = [local_midnight(at, offset), *_window_starts(spend, at)]
     since = min(start.astimezone(UTC) for start in starts).isoformat()
     try:
-        return read_history_rows(runs_dir, since)
+        return {**read_history_rows(runs_dir, since), "open_task_records": read_open_task_records(runs_dir, since)}
     except Exception:  # the history and ends are garnish: a store failure must not take the feed down
         return {}
 
@@ -2015,12 +2017,22 @@ def _ends_edge(runs_dir: Path, rows: Mapping) -> dict[str, End]:
         return {}
 
 
-def _console_now(held: Mapping, spend: dict, local_name: str, local_versions: dict | None) -> dict:
-    """A held console gather as this refresh sees it: `spend` read this refresh, and the local host row's login check
-    stamped at this refresh, both of which the held gather carries from the refresh that computed it. A gather run
-    this refresh already has both, so this is applied to a reused one only."""
+def _console_chair(runs_dir: Path) -> list[dict]:
+    """Edge: the console's chair rows as `console_screen.gather` reads them: `runs_top_screen.chair_now`, or none."""
+    chair_state = console_screen.runs_top_screen.chair_now(runs_dir)
+    return [chair_state] if chair_state is not None else []
+
+
+def _console_now(
+    held: Mapping, spend: dict, local_name: str, local_versions: dict | None, chair_rows: list[dict],
+) -> dict:
+    """A held console gather as this refresh sees it: `spend` read this refresh, the chair rows read this refresh, and
+    the local host row's login check stamped at this refresh, all of which the held gather carries from the refresh
+    that computed it. Wrong belief to avoid: "the chair row moves with the store". It reads chair.json, its pid and the
+    clock, so it is read afresh on every reuse and the chair block never lags the console hold. A gather run this
+    refresh already has all three, so this is applied to a reused one only."""
     if local_versions is None:
-        return {**held, "spend": spend}
+        return {**held, "spend": spend, "chair": chair_rows}
     hosts = [
         {**row, "versions_json": local_versions}
         if row.get("name") == local_name and isinstance(row.get("versions_json"), Mapping)
@@ -2028,7 +2040,7 @@ def _console_now(held: Mapping, spend: dict, local_name: str, local_versions: di
         else row
         for row in held["hosts"]
     ]
-    return {**held, "spend": spend, "hosts": hosts}
+    return {**held, "spend": spend, "chair": chair_rows, "hosts": hosts}
 
 
 def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None = None) -> dict:
@@ -2081,7 +2093,7 @@ def _build(
             runs_dir, work_dir, now, local_name, local_capacity, spend, local_versions=local_versions,
         ),
         extra=(local_name, local_capacity, login_ok),
-        fresh=lambda held: _console_now(held, spend, local_name, local_versions),
+        fresh=lambda held: _console_now(held, spend, local_name, local_versions, _console_chair(runs_dir)),
     )
     chair_row = sections["chair"][0] if sections["chair"] else {}
     live_phases = _live_lanes(sections["lanes"])
@@ -2258,9 +2270,10 @@ _SECTION_STEP_S = {
     "chair": 60, "spend": 3600, "history": 60, "machines": 3600, "runs": 3600,
     "queue": 3600, "inbox": 3600, "board": 3600, "epics": 3600,
     "live": int(min(dash_live_series.MINUTE, dash_live_series.HOUR).total_seconds()),
-    # The console gather compares lease expiry and the chair's heartbeat with `now`, and a lane whose host died lapses
-    # with no store write. Wrong belief to avoid: "the console moves only with the store". Holding it for a minute at
-    # most bounds how late such a lapse shows. The other three read no clock.
+    # The console gather compares lease expiry with `now`, and a lane whose host died lapses with no store write. Wrong
+    # belief to avoid: "the console moves only with the store". Holding it for a minute at most bounds how late such a
+    # lapse shows. Its chair row is read afresh on every reuse (`_console_now`), so the chair never lags. The other
+    # three read no clock.
     "console": 60, "review_prs": 3600, "queue_rows": 3600, "queue_states": 3600,
     # The activity's seat spend and agent states count against `at`: a reused block is as of the minute's first refresh.
     "activity": 60,

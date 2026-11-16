@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -594,6 +595,31 @@ def test_window_node_inputs_cut_calls_and_landed_tasks_at_each_window_start():
 def _merged(task: str, at: str) -> dict:
     record = {"status": "approved", "merged": True, "merged_commit": f"c-{task}"}
     return {"run_id": "r-live", "task_id": task, "updated_at": at, "record_json": json.dumps(record)}
+
+
+def test_tasks_merged_in_a_run_still_in_flight_count_through_the_real_store_read(monkeypatch, tmp_path):
+    # Wrong belief this pins: "the store rows hold every completion". `read_history_rows` reads ended runs only, so the
+    # in-flight run's merged tasks reach the windows only through the open task records the store read adds.
+    conn = sqlite3.connect(tmp_path / "cox.db")
+    conn.execute("CREATE TABLE runs (run_id TEXT, launched_at TEXT, ended_at TEXT)")
+    conn.execute("CREATE TABLE task_records (run_id TEXT, phase_id TEXT, task_id TEXT, record_json TEXT, updated_at TEXT)")
+    conn.execute("CREATE TABLE node_calls (run_id TEXT, task_id TEXT, role TEXT, cost_usd REAL, ts TEXT)")
+    conn.execute("INSERT INTO runs VALUES ('r-live', '2026-10-16T16:00:00Z', NULL)")
+    for row in (_merged("a", "2026-10-16T17:10:00Z"), _merged("b", "2026-10-14T09:00:00Z"), _merged("c", "2026-10-16T17:30:00Z")):
+        conn.execute(
+            "INSERT INTO task_records VALUES (?, 'p1', ?, ?, ?)",
+            (row["run_id"], row["task_id"], row["record_json"], row["updated_at"]),
+        )
+    conn.commit()
+    conn.close()
+    _stub_activity_readers(monkeypatch, {}, 2.0, 96.9)
+
+    rows = dash_feed._store_rows(tmp_path, _ACTIVITY_AT, _SPEND)
+    split = dash_feed._activity(tmp_path, {}, "sess", tmp_path, _SPEND, _ACTIVITY_AT, rows)["spend_split"]
+
+    assert rows["runs"] == []
+    assert (split["five_hour"]["completions"], split["weekly"]["completions"]) == (2, 3)
+    assert split["weekly"]["cost_per_completion"] == round(96.9 / 3, 4)
 
 
 def test_three_tasks_merged_into_the_pr_branch_and_none_on_main_are_three_completions(monkeypatch, tmp_path):

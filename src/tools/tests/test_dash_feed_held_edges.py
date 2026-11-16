@@ -24,7 +24,7 @@ def counted(tmp_path, monkeypatch):
     for directory in (runs, work, projects):
         directory.mkdir()
     calls: Counter = Counter()
-    world = {"stamp": (("runs", 1),), "login": None, "spend": {"spend_age_s": 5}}
+    world = {"stamp": (("runs", 1),), "login": None, "spend": {"spend_age_s": 5}, "chair": None}
 
     def count(name, value):
         def reader(*args, **kwargs):
@@ -64,8 +64,11 @@ def counted(tmp_path, monkeypatch):
     def gather(runs_dir, work_dir, now, local_name, local_capacity, spend, local_versions=None):
         calls["console"] += 1
         hosts = dash_feed.console_screen.with_local_host([dict(HOST)], local_name, local_capacity, local_versions)
-        return {"chair": [], "lanes": [LANE], "hosts": hosts, "spend": spend}
+        chair = dash_feed.console_screen.runs_top_screen.chair_now(runs_dir)
+        return {"chair": [chair] if chair else [], "lanes": [LANE], "hosts": hosts, "spend": spend}
 
+    # As the real gather does, its chair row is `runs_top_screen.chair_now`'s answer.
+    set_(dash_feed.console_screen.runs_top_screen, "chair_now", lambda runs_dir: world["chair"])
     set_(dash_feed.console_screen, "gather", gather)
     return runs, work, calls, world
 
@@ -131,3 +134,15 @@ def test_none_of_the_internal_holds_shows_in_the_cost_block(counted):
     feed, _ = dash_feed.gather_feed_cached(runs, work, NOW, None, dash_feed.EMPTY_CACHE)
     listed = {*feed["cost"]["recomputed"], *feed["cost"]["reused"]}
     assert listed.isdisjoint({"console", "review_prs", "queue_rows", "queue_states"})
+
+
+def test_a_reused_console_reads_the_chair_afresh(counted):
+    # The chair row (chair.json, its pid and heartbeat) moves with no store write, so a held gather must not carry it.
+    runs, work, calls, world = counted
+    world["chair"] = {"holder": "chair-a", "state": "live", "minutes_ago": 0}
+    _, cache = dash_feed.gather_feed_cached(runs, work, NOW, None, dash_feed.EMPTY_CACHE)
+    world["chair"] = {"holder": "chair-b", "state": "crashed", "minutes_ago": 0}
+    feed, _ = dash_feed.gather_feed_cached(runs, work, LATER, None, cache)
+    assert calls["console"] == 1
+    assert feed["chair"]["holder"] == "chair-b"
+    assert _without_cost(feed) == _fresh(runs, work, LATER)

@@ -39,8 +39,10 @@ def _window_inputs(
 
 def _node_fields(window_out: Mapping, rows: Sequence[Mapping], done: int) -> dict:
     """`spend_split` has a fixed key set, so the node fields are added to its window after it returns. `done` is the
-    window's completions; `cost_per_landed_task` is the deprecated alias of `cost_per_completion`, kept one release so
-    an older towpath still reads a value."""
+    window's completions: tasks done, or approved and merged into their phase or PR branch, or landed on main, at the
+    earliest such stamp in the window (`dash_feed._window_node_inputs`). `cost_per_completion` is the cox-seat spend
+    over them. `cost_per_landed_task` is its deprecated alias with the same value, kept one release so an older towpath
+    still reads a value. Despite its name, it is not a cost per task landed on main."""
     per_completion = round(cost_per_done_task(window_out["cox_seats_usd"], done), 4)  # 96.9 / 6 is 16.150000000000002
     return {
         **window_out,
