@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import shutil
 import subprocess
 import threading
 from pathlib import Path
@@ -178,3 +180,79 @@ def test_the_plan_input_holds_only_the_handoff_of_the_tasks_needed():
     assert text.startswith("body of t2\n\n## Handoff from t1\nbranch: scratch/t1\ncommit: c1")
     assert "a.py" in text and "d1" in text
     assert "t9" not in text and "z.py" not in text
+
+
+def _git(repo: Path, *args: str) -> str:
+    git = ["git", "-C", str(repo), "-c", "user.name=a", "-c", "user.email=a@b"]
+    return subprocess.run([*git, *args], check=True, capture_output=True, text=True).stdout.strip()
+
+
+def _clone_behind_origin(tmp_path: Path) -> tuple[Path, Path, str]:
+    """A clone whose main is one commit behind origin's main; the newest commit exists only on origin."""
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git(origin, "init", "-q", "-b", "main")
+    _git(origin, "commit", "-q", "--allow-empty", "-m", "one")
+    clone = tmp_path / "repo"
+    subprocess.run(["git", "clone", "-q", str(origin), str(clone)], check=True)
+    _git(origin, "commit", "-q", "--allow-empty", "-m", "two")
+    return origin, clone, _git(origin, "rev-parse", "HEAD")
+
+
+def _fault_ctx(store_conn, repo: Path):
+    ctx = _ctx(store_conn, repo)
+    ctx.merge_fetch_faults = set()
+    return ctx
+
+
+def _merged(ctx, tmp_path, monkeypatch, *pairs: tuple[str, str]) -> list[dict]:
+    items = _files(tmp_path, *((task, []) for task, _ in pairs))
+    for item, (_, commit) in zip(items, pairs, strict=True):
+        _put(ctx, item, "ready")
+        _merge_in_run_n(ctx, item, commit, monkeypatch)
+    restart = _files(tmp_path, *((task, []) for task, _ in pairs))
+    epic._mirror_read(ctx, restart)
+    return restart
+
+
+def _states(store_conn) -> dict[str, str]:
+    return {r["task_id"]: r["state"] for r in read.work_items(store_conn, INITIATIVE)}
+
+
+def test_a_merged_commit_only_on_origin_is_fetched_and_not_quarantined(store_conn, tmp_path, monkeypatch):
+    _origin, repo, newest = _clone_behind_origin(tmp_path)
+    ctx = _fault_ctx(store_conn, repo)
+    restart = _merged(ctx, tmp_path, monkeypatch, ("t1", newest))
+    quarantined: list = []
+    epic._quarantine_missing_merges(ctx, "p1", restart, quarantined)
+    assert quarantined == []
+    assert (restart[0]["state"], restart[0]["merged"]) == ("approved", True)
+    assert _states(store_conn) == {"t1": "approved"}
+
+
+def test_a_fetch_that_fails_quarantines_nothing_and_raises_one_fault(store_conn, tmp_path, monkeypatch, caplog):
+    origin, repo, _ = _clone_behind_origin(tmp_path)
+    shutil.rmtree(origin)
+    ctx = _fault_ctx(store_conn, repo)
+    restart = _merged(ctx, tmp_path, monkeypatch, ("t1", "1" * 40), ("t2", "2" * 40))
+    quarantined: list = []
+    with caplog.at_level(logging.WARNING, logger=epic.__name__):
+        epic._quarantine_missing_merges(ctx, "p1", restart, quarantined)
+    assert quarantined == []
+    assert [(i["state"], i["merged"]) for i in restart] == [("approved", True), ("approved", True)]
+    assert _states(store_conn) == {"t1": "approved", "t2": "approved"}
+    faults = [r.getMessage() for r in caplog.records if r.getMessage().startswith("harness fault:")]
+    assert len(faults) == 1
+    assert str(repo) in faults[0]
+    assert str(origin) in faults[0]  # git's own error names the origin it could not read
+
+
+def test_a_commit_absent_locally_and_on_origin_still_quarantines(store_conn, tmp_path, monkeypatch):
+    _origin, repo, _ = _clone_behind_origin(tmp_path)
+    ctx = _fault_ctx(store_conn, repo)
+    restart = _merged(ctx, tmp_path, monkeypatch, ("t1", "0" * 40))
+    quarantined: list = []
+    epic._quarantine_missing_merges(ctx, "p1", restart, quarantined)
+    assert [q["id"] for q in quarantined] == ["t1"]
+    assert quarantined[0]["reason"].startswith(f"merged commit {'0' * 40} is not on main; t1 was approved and merged")
+    assert ctx.merge_fetch_faults == set()

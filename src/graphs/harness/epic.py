@@ -872,6 +872,8 @@ class _Ctx:
     # Run-level and mutable: the future of each phase this run launched, so a dependent that starts early can wait for the cut.
     # The scheduler thread sets one key per launch and workers only `get`, each atomic, and a parent is set before any dependent starts.
     launched: dict[str, Future[Any]] = field(default_factory=dict, compare=False, repr=False)
+    # Run-level and mutable: the repositories whose phase branch fetch failed while checking merged commits, faulted once.
+    merge_fetch_faults: set[str] = field(default_factory=set, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         """Refuse a bad per-check timeout at build, before any model call; the ValueError names the check."""
@@ -3966,6 +3968,32 @@ def _ready_view(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def _merge_on_origin(ctx: _Ctx, commit: str, branch: str) -> bool | None:
+    """Whether `commit` is on `branch` once it is fetched from origin; None when origin could not be asked.
+
+    The local branch may be stale when another host pushed it. An unknown answer raises one harness fault per run and
+    quarantines nothing: the task stays approved and merged, and the next run checks again."""
+    outcome = fetch_branch(ctx.repo, branch)
+    if outcome.kind == Kind.FAST_FORWARDED:
+        return base_holds(ctx.repo, commit, branch)
+    if outcome.kind == Kind.FETCHED:
+        return base_holds(ctx.repo, commit, f"refs/remotes/origin/{branch}")
+    unasked = outcome.kind == Kind.FETCH_FAILED or (
+        outcome.kind == Kind.PRESENT_LOCALLY and outcome.detail.startswith("not refreshed from origin")
+    )
+    if not unasked:
+        return False
+    with ctx.items_lock:
+        first = str(ctx.repo) not in ctx.merge_fetch_faults
+        ctx.merge_fetch_faults.add(str(ctx.repo))
+    if first:
+        _log.warning(
+            "%s phase branch %s of %s could not be fetched, so its merged commits are not checked this run: %s",
+            HARNESS_FAULT_PREFIX, branch, ctx.repo, outcome.detail or "no detail from git",
+        )  # fmt: skip
+    return None
+
+
 def _merge_missing(ctx: _Ctx, phase: str, item: dict[str, Any]) -> str | None:
     """Why an approved, merged task of this phase cannot be resumed from the store, or None when its commit is on the phase branch.
 
@@ -3977,6 +4005,9 @@ def _merge_missing(ctx: _Ctx, phase: str, item: dict[str, Any]) -> str | None:
         return None
     branch = ctx.phase_branch(phase)
     if base_holds(ctx.repo, str(commit), branch):
+        return None
+    on_origin = _merge_on_origin(ctx, str(commit), branch)
+    if on_origin is not False:
         return None
     (fresh,) = _store_fresh([item], _read_store_rows(ctx))
     if fresh["state"] == "done":
