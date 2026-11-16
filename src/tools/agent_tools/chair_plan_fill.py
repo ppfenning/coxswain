@@ -39,7 +39,7 @@ def _launchable(initiative: InitiativeFacts, held_phases: frozenset[tuple[str, s
     """The initiative with held-phase ready tasks dropped; ready_surfaces stays, so steer overlap still sees them."""
     if not held_phases:
         return initiative
-    kept = [t for t in initiative["ready_tasks"] if (initiative["id"], t.get("phase")) not in held_phases]
+    kept = [t for t in initiative["ready_tasks"] if (initiative["id"], t["phase"]) not in held_phases]
     return {**initiative, "ready_tasks": kept}
 
 

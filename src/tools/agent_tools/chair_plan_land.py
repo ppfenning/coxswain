@@ -197,7 +197,7 @@ def _land_skipped(facts: Facts, initiative: str, phase: str, run: str, now: date
 
 
 def backoff_held(facts: Facts, now: datetime | None = None) -> frozenset[str]:
-    """Initiatives with a land this tick would plan but its backoff or a standing conflict suppresses. The chair no longer holds them from launches: a failing land holds only its own phase."""
+    """Initiatives with a land this tick would plan but its backoff or a standing conflict suppresses; they stay held from launches."""
     return frozenset(
         initiative
         for (initiative, phase), group in _land_groups(facts).items()
@@ -237,7 +237,7 @@ def plan_lands(facts: Facts, now: datetime | None = None) -> list[Action]:
 
     With `now`, a group whose (initiative, phase, run) is inside a `land_refusals` backoff window plans nothing:
     no fetch, no land_phase, no needs_chair, since perform already escalates each failed land. `backoff_held` names
-    those initiatives; they are not held from launches.
+    those initiatives, so the caller keeps holding them from launches as a planned land_phase would.
 
     A group whose (initiative, phase, run) has a `land_conflicts` entry plans nothing either: the identical squash
     conflict still stands, and the executor already recorded its needs_chair. `backoff_held` names those too.

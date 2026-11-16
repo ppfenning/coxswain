@@ -114,14 +114,13 @@ def _tick_kinds(facts: dict, now: datetime) -> list[tuple[str, str]]:
     return [(a["kind"], a.get("initiative", "")) for a in plan_tick(facts, now) if a["kind"] != "housekeeping"]
 
 
-def test_a_tick_inside_the_window_plans_no_land_and_no_longer_holds_the_initiative_from_launching():
-    # Unstarted, so recover plans no relaunch. A backed-off land holds nothing: the initiative's other ready work launches.
+def test_a_tick_inside_the_window_plans_no_land_and_still_holds_the_initiative_from_launching():
+    # Unstarted, so recover plans no relaunch and only the land hold stands between fill and a launch_epic.
     facts = _tick_facts(land_refusals=[_refusal()])
     unstarted = {**facts, "initiatives": [{**facts["initiatives"][0], "started": False}]}
     assert ("launch_epic", "i") in _tick_kinds({**unstarted, "approved": []}, T0)
     kinds = _tick_kinds(unstarted, T0 + timedelta(minutes=5))
-    assert not [k for k in kinds if k[1] == "i" and k[0] in {"fetch", "land_phase"}]
-    assert ("launch_epic", "i") in kinds
+    assert not [k for k in kinds if k[1] == "i" and k[0] in {"fetch", "land_phase", "launch_epic"}]
 
 
 def test_a_tick_passes_now_to_fill_so_the_launch_budget_refuses_a_launch_epic():

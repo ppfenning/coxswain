@@ -76,16 +76,14 @@ def test_the_same_initiative_launches_when_no_repo_is_landing():
     assert _launched(plan_tick(facts, _NOW)) == {"a"}
 
 
-def test_a_land_phase_planned_this_tick_holds_its_phase_and_leaves_another_repo_alone():
+def test_a_land_phase_planned_this_tick_withholds_its_initiative_and_leaves_another_repo_alone():
     approved = [
         {
             "id": "t1", "initiative": "a", "repo": "r1", "phase": "p", "phase_done": True, "needs": [], "run": "a-1",
             "needs_fetch": False,
         }
     ]
-    # a's only ready work is in the landing phase, so the land holds it; work in another phase would launch.
-    landing_phase = {**_initiative("a", "r9"), "ready_tasks": [{"id": "a-t", "phase": "p", "needs": []}]}
-    facts = _facts(approved=approved, initiatives=[landing_phase, _initiative("b", "r2")])
+    facts = _facts(approved=approved, initiatives=[_initiative("a", "r9"), _initiative("b", "r2")])
     actions = plan_tick(facts, _NOW)
     assert [a["initiative"] for a in actions if a["kind"] == "land_phase"] == ["a"]
     assert _launched(actions) == {"b"}
