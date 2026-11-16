@@ -64,9 +64,17 @@ def parse_run(record: Any) -> DecomposeRun:
     )
 
 
+# `harness cli _refuse_start` stamps a run `refused` when the intake's `runs:` lease was held: no graph ran, so it is
+# not a decompose attempt. Counted, it made one real empty run plus an overlapping refused launch stall the intake.
+NOT_STARTED = frozenset({"refused"})
+
+
 def select_runs(rows: Sequence[Mapping[str, Any]], intake_id: str) -> list[Mapping[str, Any]]:
-    """The `runs` rows whose id is `<intake_id>-<n>`, oldest `launched_at` first."""
-    own = (r for r in rows if run_initiative(str(r.get("run_id") or "")) == intake_id)
+    """The `runs` rows whose id is `<intake_id>-<n>`, oldest `launched_at` first, leaving out runs that never started."""
+    own = (
+        r for r in rows
+        if run_initiative(str(r.get("run_id") or "")) == intake_id and r.get("status") not in NOT_STARTED
+    )
     return sorted(own, key=lambda r: str(r.get("launched_at") or ""))
 
 

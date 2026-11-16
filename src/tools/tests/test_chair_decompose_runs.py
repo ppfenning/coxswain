@@ -106,3 +106,13 @@ def test_decompose_refusals_keeps_only_refusing_logs(tmp_path):
     (tmp_path / "a-1.log").write_text(f"{LINT_HEAD}\n{LINT_DETAIL}\n", encoding="utf-8")
     (tmp_path / "a-3.log").write_text("start\ndone\n", encoding="utf-8")
     assert decompose_refusals(tmp_path, ["a-1", "a-2", "a-3"]) == {"a-1": f"{LINT_HEAD} — {LINT_DETAIL}"}
+
+
+def test_select_runs_leaves_out_a_run_the_lease_refused():
+    """A launch refused because the intake's run lease was held never started; counting it as an empty decompose
+    stalled an intake after one real failure."""
+    rows = [
+        {"run_id": "a-1", "launched_at": "1", "ended_at": "3", "status": "failed"},
+        {"run_id": "a-2", "launched_at": "2", "ended_at": "2", "status": "refused"},
+    ]
+    assert [r["run_id"] for r in select_runs(rows, "a")] == ["a-1"]
