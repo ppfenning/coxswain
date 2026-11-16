@@ -51,6 +51,7 @@ nav:
       - Providers: install/providers.md
   - Methodology:
       - Methodology: methodology/index.md
+      - Hardening plan: hardening.md
       - Crew and seats: methodology/crew-and-seats.md
       - Cartridges: methodology/cartridges.md
       - Graphs:
