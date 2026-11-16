@@ -10,7 +10,7 @@ from test_chair_facts import _deps as _facts_deps
 from agent_tools import chair_exec
 from agent_tools.chair_decompose_miss import DecomposeMiss
 from agent_tools.chair_facts import decompose_miss_facts, decompose_misses_reported_keys, gather_facts
-from agent_tools.chair_read_decompose_miss import intake_fingerprint
+from agent_tools.chair_read_decompose_miss import fingerprint_or_none, intake_fingerprint
 
 PATH = "intake/2026-11-11-some-idea.md"
 MISS_OUTPUT = f"routing: no idea file at {PATH}\n"
@@ -92,15 +92,58 @@ def test_the_reported_keys_are_the_intake_and_fingerprint_of_each_missing_idea_n
 def test_gather_reads_the_misses_their_current_fingerprints_and_the_reported_keys() -> None:
     reported = {"kind": "needs_chair", "cause": "decompose_missing_idea", "intake": PATH, "fingerprint": "fp-1", "status": "recorded"}
     rows = [_row("2026-11-11T10:00:00Z"), {"ts": "2026-11-11T10:01:00Z", "kind": "needs_chair", "action_json": json.dumps(reported)}]
-    deps = replace(_facts_deps(), actions=lambda: rows, intake_fingerprint=lambda path: f"now:{path}")
+    deps = replace(_facts_deps(), intake=lambda: [PATH], actions=lambda: rows, intake_fingerprint=lambda path: f"now:{path}")
     facts = gather_facts(deps, NOW)
     assert facts["decompose_misses"][PATH].count == 1
     assert facts["decompose_miss_fingerprints"] == {PATH: f"now:{PATH}"}
     assert facts["decompose_misses_reported"] == [f"{PATH}|fp-1"]
 
 
+def test_a_path_no_longer_queued_drops_out_and_is_never_fingerprinted() -> None:
+    asked: list[str] = []
+    rows = [_row("2026-11-11T10:00:00Z"), _row("2026-11-11T10:00:00Z", path="intake/other.md")]
+    deps = replace(
+        _facts_deps(), intake=lambda: [PATH], actions=lambda: rows, intake_fingerprint=lambda path: asked.append(path) or "fp-1"
+    )
+    facts = gather_facts(deps, NOW)
+    assert list(facts["decompose_misses"]) == [PATH]
+    assert asked == [PATH]
+
+
+def test_an_unreadable_fingerprint_keeps_the_recorded_one_so_nothing_resets_or_launches() -> None:
+    rows = [_row("2026-11-11T10:00:00Z"), _row("2026-11-11T10:05:00Z")]
+    deps = replace(_facts_deps(), intake=lambda: [PATH], actions=lambda: rows, intake_fingerprint=lambda path: None)
+    facts = gather_facts(deps, NOW)
+    assert facts["decompose_misses"][PATH].count == 2
+    assert facts["decompose_miss_fingerprints"] == {PATH: "fp-1"}
+
+
+def test_a_miss_recorded_with_no_fingerprint_leaves_the_backoff_as_it_was() -> None:
+    blind = _row("2026-11-11T10:10:00Z")
+    doc = json.loads(blind["action_json"])
+    del doc["fingerprint"]
+    blind["action_json"] = json.dumps(doc)
+    misses = decompose_miss_facts([_row("2026-11-11T10:00:00Z"), blind])
+    assert (misses[PATH].count, misses[PATH].last_miss_at) == (1, "2026-11-11T10:00:00Z")
+
+
+def test_a_launch_whose_fingerprint_cannot_be_read_records_the_miss_without_one() -> None:
+    recorded: list[dict] = []
+    deps = replace(_exec_deps([], output=MISS_OUTPUT, code=2), record=recorded.append, intake_fingerprint=lambda path: None)
+    chair_exec.perform([dict(LAUNCH)], deps, lambda: 1, False)
+    [row] = recorded
+    assert row["idea_missing"] == PATH and "fingerprint" not in row
+
+
+def test_in_store_mode_an_intake_with_no_row_read_has_no_fingerprint(tmp_path) -> None:
+    row = {"kind": "intake", "task_id": "2026-11-11-some-idea", "state": "queued", "extra": {}}
+    assert fingerprint_or_none(tmp_path, [], PATH, store_mode=True) is None
+    assert fingerprint_or_none(tmp_path, [row], PATH, store_mode=True) == intake_fingerprint(tmp_path, [row], PATH)
+    assert fingerprint_or_none(tmp_path, [], PATH, store_mode=False) == intake_fingerprint(tmp_path, [], PATH)
+
+
 def test_with_no_fingerprint_reader_the_miss_facts_are_empty() -> None:
-    deps = replace(_facts_deps(), actions=lambda: [_row("2026-11-11T10:00:00Z")])
+    deps = replace(_facts_deps(), intake=lambda: [PATH], actions=lambda: [_row("2026-11-11T10:00:00Z")])
     facts = gather_facts(deps, NOW)
     assert (facts["decompose_misses"], facts["decompose_miss_fingerprints"]) == ({}, {})
 

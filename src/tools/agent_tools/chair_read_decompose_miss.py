@@ -31,3 +31,12 @@ def intake_fingerprint(ws: Path, rows: Sequence[Row], path: str) -> str:
     except (OSError, UnicodeDecodeError):
         text = None
     return fingerprint_of(path, text, _own_row(rows, path))
+
+
+def fingerprint_or_none(ws: Path, rows: Sequence[Row], path: str, *, store_mode: bool) -> str | None:
+    """Edge. `intake_fingerprint`, or None when it cannot be trusted this tick: in store mode a queued intake has a
+    row, so no row among `rows` means the store read failed (`run_store.read_queue` returns [] then). A None leaves
+    the backoff as it was, so a store blip neither resets a count nor frees an intake to launch."""
+    if store_mode and _own_row(rows, path) is None:
+        return None
+    return intake_fingerprint(ws, rows, path)

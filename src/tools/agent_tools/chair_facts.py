@@ -213,8 +213,9 @@ class FactsDeps:
         Build it with `windowed_actions` so one gather reads the table once and every caller shares the rows.
         Optional, and absent means {}.
     intake_fingerprint: an intake path to a digest that changes when the intake does (`chair_read_decompose_miss`),
-        read for each path in `decompose_misses` into `decompose_miss_fingerprints`. Optional, and absent means both
-        are {}, so no intake is ever held back for a missing idea file.
+        read for each path in `decompose_misses` still in `intake` into `decompose_miss_fingerprints`; a path no longer
+        queued drops out. It returns None when it cannot be read this tick, and the recorded fingerprint then stands.
+        Optional, and absent means both are {}, so no intake is ever held back for a missing idea file.
     run_commits: one row per approved commit a run holds, oldest first, keys task, initiative, phase, run, host,
         branch (the run's agents branch), commit, run_seq. Optional, and absent means no stranded phase is built.
     phase_state: one row per phase with approved work, keys initiative, phase, tasks (every task id of the phase),
@@ -301,7 +302,7 @@ class FactsDeps:
     repos: Callable[[], Mapping[str, str]] | None = None  # initiative to its initiative.md `repo:`; absent means no repo is known
     actions: Callable[[], Sequence[Row]] | None = None  # windowed chair_actions rows, read once per gather (`windowed_actions`); absent means no steer streaks
     decompose_runs: Callable[[str], Sequence[DecomposeRun]] | None = None  # intake path to its decompose runs, oldest first; absent means no decompose streaks
-    intake_fingerprint: Callable[[str], str] | None = None  # intake path to its fingerprint now (`chair_read_decompose_miss`); absent means no decompose misses
+    intake_fingerprint: Callable[[str], str | None] | None = None  # intake path to its fingerprint now (`chair_read_decompose_miss`); absent means no decompose misses
     run_commits: Callable[[], Sequence[Row]] = lambda: []  # approved commits per run, oldest first; absent means []
     phase_state: Callable[[], Sequence[Row]] = lambda: []  # per phase: its task ids and whether a phase land adds over main; absent means []
     phase_tasks: Callable[[], list[PhaseTasks]] = lambda: []  # per phase with an approved task, each task's state; absent means []
@@ -1129,6 +1130,8 @@ def _miss_step(misses: Mapping[str, DecomposeMiss], doc: Row) -> dict[str, Decom
     if doc.get("kind") != "launch_decompose" or not paths:
         return dict(misses)
     path = str(paths[0])
+    if doc.get("idea_missing") and not doc.get("fingerprint"):
+        return dict(misses)  # recorded while the intake could not be read: the backoff stays as it was
     if doc.get("idea_missing"):
         missed = next_miss(misses.get(path), Path(path).stem, str(doc["idea_missing"]), str(doc.get("fingerprint") or ""), str(doc.get("ts") or ""))
         return {**misses, path: missed}
@@ -1143,14 +1146,21 @@ def decompose_miss_facts(actions: Sequence[Row]) -> dict[str, DecomposeMiss]:
     return reduce(_miss_step, ordered, {})
 
 
-def decompose_miss_fact_keys(actions: Sequence[Row], fingerprint: Callable[[str], str] | None) -> dict[str, Any]:
+def decompose_miss_fact_keys(
+    actions: Sequence[Row], fingerprint: Callable[[str], str | None] | None, queued: Collection[str]
+) -> dict[str, Any]:
     """The three decompose-miss facts: the misses, each missed intake's fingerprint now, and the reported keys.
 
-    With no fingerprint reader nothing can tell a fixed intake from an unchanged one, so there are no misses at all."""
-    misses = decompose_miss_facts(actions) if fingerprint is not None else {}
+    Only a path still in `queued` (the tick's intake) is kept or fingerprinted: one no longer queued costs nothing.
+    With no fingerprint reader nothing can tell a fixed intake from an unchanged one, so there are no misses at all.
+    A fingerprint that cannot be read this tick (None) keeps the recorded one, so the backoff holds as it was."""
+    if fingerprint is None:
+        return {"decompose_misses": {}, "decompose_miss_fingerprints": {}, "decompose_misses_reported": decompose_misses_reported_keys(actions)}
+    misses = {path: miss for path, miss in decompose_miss_facts(actions).items() if path in queued}
+    read = {path: fingerprint(path) for path in misses}
     return {
         "decompose_misses": misses,
-        "decompose_miss_fingerprints": {path: fingerprint(path) for path in misses} if fingerprint is not None else {},
+        "decompose_miss_fingerprints": {path: fp if fp is not None else misses[path].fingerprint for path, fp in read.items()},
         "decompose_misses_reported": decompose_misses_reported_keys(actions),
     }
 
@@ -2047,7 +2057,7 @@ def gather_facts(
         "todo_initiatives": todo_initiative_facts(list(deps.work_rows())) if deps.work_rows is not None else [],
         "decompose_streaks": decompose_streak_facts(intake, deps.decompose_runs) if deps.decompose_runs is not None else {},
         "decompose_stalled_reported": decompose_stalled_keys(action_rows),
-        **decompose_miss_fact_keys(action_rows, deps.intake_fingerprint),
+        **decompose_miss_fact_keys(action_rows, deps.intake_fingerprint, frozenset(intake)),
         "env_stale_reported": stale_checkout_keys(action_rows),
         "held_files": [dict(h) for h in deps.held_files()],  # type: ignore[misc]
         "held_reported": held_file_keys(action_rows),

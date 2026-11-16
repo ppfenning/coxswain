@@ -210,7 +210,9 @@ class Deps:
     mark_handled: Callable[[str], None] | None = None  # a handled key's extra sink; the recorded action already carries `key`
     # An intake path -> a digest that changes when the intake does (its file, its store row, its path); a decompose
     # launch that found no idea file records it, so the planner can tell a repeat on an unchanged intake from a fixed one.
-    intake_fingerprint: Callable[[str], str] = _no_intake_id
+    # None when it cannot be read this tick (a failed store read): the miss is then recorded with no fingerprint,
+    # which the facts read as no change to the backoff.
+    intake_fingerprint: Callable[[str], str | None] = _no_intake_id
 
 
 def resolved_target(cartridge_target: str | None, epic_branch: str | None, initiative_branch: str | None) -> str | None:
@@ -952,7 +954,8 @@ def _launch(action: Action, deps: Deps) -> Result:
     missing = idea_miss_path(output) if action.get("kind") == "launch_decompose" and action.get("intake_ids") else None
     if missing is not None:
         # The recorded row carries the miss, which `chair_facts.decompose_miss_facts` counts into the planner's backoff.
-        missed = {**action, "idea_missing": missing, "fingerprint": deps.intake_fingerprint(action["intake_ids"][0])}
+        fingerprint = deps.intake_fingerprint(action["intake_ids"][0])
+        missed = {**action, "idea_missing": missing, **({"fingerprint": fingerprint} if fingerprint is not None else {})}
         return _result(missed, "failed", output)
     return _result(action, "failed", output)
 
