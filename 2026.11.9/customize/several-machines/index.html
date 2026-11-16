@@ -6743,18 +6743,22 @@ install replaces the extras <code>cox</code> had, so name each one you use, such
 </ol>
 <p>The <code>store</code> row of the doctor shows the store's kind and run count. It never
 shows the URL.</p>
-<p>From the chair, <code>cox setup doctor --host &lt;name&gt;</code> also runs <code>claude auth
-status</code> on the host. It adds a <code>claude auth</code> row. The row reads like this
-when the login is good:</p>
-<div class="highlight"><pre><span></span><code>claude auth      ok
+<p>From the chair, <code>cox setup doctor --host &lt;name&gt;</code> also runs <code>cox setup token
+status --probe</code> on the host. That verb reads the host's own token file and
+probes it with one turn. It adds a <code>claude token</code> row. The row reads like
+this when the token is good:</p>
+<div class="highlight"><pre><span></span><code>claude token     ok
 </code></pre></div>
-<p>When it is not, the row reads like this, and the doctor exits 1:</p>
-<div class="highlight"><pre><span></span><code>claude auth: not logged in on the host (run claude auth login there)
+<p>When it is not, the row is the host's own reason, and the doctor exits 1.
+A host with no token file reads like this:</p>
+<div class="highlight"><pre><span></span><code>claude token: no token file at &lt;path&gt;
 </code></pre></div>
-<p>Run <code>claude auth login</code> on the host. A login can lapse on a machine nobody
+<p>Run <code>cox setup token</code> on the host to store one. A token the host rejects
+gives a <code>claude token: rejected: ...</code> row instead. A login can lapse on a machine nobody
 types on, so a lane machine that worked last week can fail this check.
-<code>cox route launch --on &lt;host&gt;</code> runs the same check first and refuses to
-launch when it fails.</p>
+<code>cox route launch --on &lt;host&gt;</code> checks the host's login first, with
+<code>claude auth status</code> rather than the token verb, and refuses to launch when
+the host is not logged in.</p>
 <p>A login watchdog also checks every lane host's Claude login over ssh every
 30 minutes, timing out after 60 seconds, and records the result with the
 host's beat. A host whose login has lapsed gets no new lanes; it stays in
