@@ -123,8 +123,15 @@ def test_the_second_gather_reads_no_body_no_run_record_and_no_full_store_table(d
     second = _tick(deps)
     assert all(after_first[key] > 0 for key in FULL_READS), after_first
     assert {key: counts[key] - after_first[key] for key in FULL_READS} == dict.fromkeys(FULL_READS, 0)
-    # `tuning` reads the real clock for the week's elapsed fraction, so two gathers differ there and nowhere else
-    assert {k: v for k, v in first.items() if k != "tuning"} == {k: v for k, v in second.items() if k != "tuning"}
+    # Two fields read the real clock, so two gathers can differ there and nowhere else: `tuning` for the week's
+    # elapsed fraction, and `limits.window_start_day`, the start of a rolling weekly window shown to the minute, which
+    # moves when the two gathers straddle a minute boundary.
+    assert _clock_free(first) == _clock_free(second)
+
+
+def _clock_free(facts: chair_facts.Facts) -> dict:
+    limits = {k: v for k, v in facts["limits"].items() if k != "window_start_day"}
+    return {**{k: v for k, v in facts.items() if k != "tuning"}, "limits": limits}
 
 
 def test_a_changed_work_file_is_read_again_and_only_that_one(deps, counts, ws: Path) -> None:

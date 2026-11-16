@@ -5,11 +5,31 @@ from collections.abc import Callable, Sequence
 from agent_tools import lane_toolchain
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.lane_toolchain import CheckTools
-from agent_tools.remote_argv import auth_status_argv, doctor_argv, env_check_argv, json_object_in, ssh_argv
+from agent_tools.remote_argv import doctor_argv, env_check_argv, json_object_in, ssh_argv, token_status_argv
 
 
 def auth_verdict(output: str) -> str | None:
-    """None when `claude auth status` output is JSON with `loggedIn` true; otherwise the refusal line."""
+    """None when the reply is JSON with `loggedIn` true; otherwise the refusal line.
+
+    The host's token verb states its own reason (a missing token file, a rejected token), and that reason is the line.
+    A reply with no reason says to log in on the host."""
+    status = json_object_in(output)
+    if status is None:
+        return f"claude token: status unreadable: {output.strip()[:80]}"
+    if status.get("loggedIn") is True:
+        return None
+    reason = status.get("reason")
+    if isinstance(reason, str) and reason:
+        return reason
+    if status.get("tokenFile") is False:
+        return "claude token: no token file on the host"
+    return "claude auth: not logged in on the host (run claude auth login there)"
+
+
+def auth_status_verdict(output: str) -> str | None:
+    """None when `claude auth status` output is JSON with `loggedIn` true; otherwise the refusal line.
+
+    The `route launch --on` preflight still asks `claude auth status`, so its lines keep the `claude auth:` wording."""
     status = json_object_in(output)
     if status is None:
         return f"claude auth: status unreadable: {output.strip()[:80]}"
@@ -41,9 +61,10 @@ def doctor_on_host(
     wrap = argv_for if argv_for is not None else (lambda argv: ssh_argv(host.ssh, argv))
     code, output = run(wrap(doctor_argv()))
     if runner == "claude-code":
-        _, auth_output = run(wrap(auth_status_argv()))
-        verdict = auth_verdict(auth_output)
-        row = "claude auth      ok" if verdict is None else verdict
+        # The host's token verb reads its own token file; the probe costs one haiku turn.
+        _, token_output = run(wrap(token_status_argv(probe=True)))
+        verdict = auth_verdict(token_output)
+        row = "claude token     ok" if verdict is None else verdict
     else:
         verdict = env_verdict(env_names, lambda name: run(wrap(env_check_argv(name)))[1])
         row = "env vars      ok" if verdict is None else verdict
