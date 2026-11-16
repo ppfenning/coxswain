@@ -29,6 +29,7 @@ from agent_tools import (
     chair_capacity,
     chair_login_check,
     chair_orchestrate,
+    completions,
     console_screen,
     courier,
     dash_board,
@@ -42,20 +43,22 @@ from agent_tools import (
     dash_live_turns_session,
     dash_machine_lanes,
     decisions,
+    intake_queue,
     jsonl_log,
     operator_sessions,
     pacing,
     queue_rows,
+    release_gate,
     route,
     run_store,
     runs_stranded,
     usage_meter,
     usage_window,
+    version_info,
 )
 from agent_tools import (
     events as events_module,
 )
-from agent_tools import completions
 from agent_tools.chair_read_exits import exit_rows
 from agent_tools.chair_read_housekeeping import latest_housekeeping, read_last_housekeeping
 from agent_tools.chair_read_record import ACTION_LOG
@@ -120,7 +123,7 @@ _ZERO_HEALTH = {"skipped_total": 0, "logs": []}
 def snapshot(
     at, chair, spend, machines, runs, queue, queue_total, inbox, inbox_total, watch, decisions=(), spend_series=(),
     history=(), history_today=None, *, chair_agents=None, spend_split=None, spend_sources=None, budget=None,
-    epics=(), board=None, live=None, orchestration=None, operator_sessions=None, schedule=None,
+    epics=(), board=None, live=None, orchestration=None, operator_sessions=None, intake=(), schedule=None,
     health=None,
 ) -> dict:
     """Assemble the schema-1 dash feed snapshot from its sections. `queue_total`/`inbox_total` are each
@@ -152,6 +155,7 @@ def snapshot(
         "runs": runs,
         "queue": queue,
         "queue_total": queue_total,
+        "intake": list(intake),
         "inbox": inbox,
         "inbox_total": inbox_total,
         "decisions": list(decisions),
@@ -813,6 +817,40 @@ def _queue_rows_edge(runs_dir: Path) -> list[dict]:
         return run_store.read_queue(runs_dir)
     except OSError:
         return []
+
+
+def _intake_v1(rows: Sequence[Mapping], current: str) -> list[dict]:
+    """The queued intake rows as feed records: ready ones by priority descending, then drafts, ties in row order,
+    capped at `_MAX_ROWS`. An intake row keeps its title in `title`, and its repo, epic, target_release, stage and
+    priority in `extra`. `current` is the release in progress; empty means nothing is deferred. `repo` is the repo's
+    folder name, "" when unset: towpath reads it as a string, so it is never null."""
+
+    def record(row: Mapping) -> dict:
+        extra = row.get("extra") or {}
+        target = str(extra.get("target_release") or "").strip() or None
+        return {
+            "id": row["task_id"],
+            "title": row.get("title") or "",
+            "stage": intake_queue.stage(extra),
+            "repo": os.path.basename(str(extra.get("repo") or "").rstrip("/")),
+            "epic": str(extra.get("epic") or "").strip() or None,
+            "priority": intake_queue.intake_priority(extra),
+            "target_release": target,
+            "deferred": target is not None and release_gate.is_deferred(target, current),
+        }
+
+    records = [record(row) for row in rows if row.get("kind") == "intake" and row.get("state") == "queued"]
+    ready = sorted((r for r in records if r["stage"] == "ready"), key=lambda r: -r["priority"])
+    return [*ready, *(r for r in records if r["stage"] != "ready")][:_MAX_ROWS]
+
+
+def _current_release_edge() -> str:
+    """Edge: the umbrella version the chair gates `target_release` on (`version_info.package_version`, as
+    `chair_facts.FactsDeps.current_version` reads it); empty when it cannot be read, so nothing is deferred."""
+    try:
+        return version_info.package_version()
+    except Exception:  # any failure to read the version means no gate
+        return ""
 
 
 def _queue_states_edge(
@@ -2012,7 +2050,9 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
     series, burn and agents from the lane traces and session transcripts, the zero block when they cannot be read.
     So is `operator_sessions`: every operator session of the workspace's project folder, plus the lease holder's, as
     rows per window with their agents, which the `spend_split` sums; `spend_sources` gains `sessions_found` and
-    `sessions_priced`. The key is absent when the activity section did not gather sessions."""
+    `sessions_priced`. The key is absent when the activity section did not gather sessions. `intake` is the queued
+    intake list, `[]` when there is none, deferred against the chair's release version and built from the same queue
+    rows (tests/fixtures/dash_feed_intake_v1.json fixes its records)."""
     return _build(
         Path(runs_dir), Path(work_dir), now, profile, lambda name, compute, anchor=None, extra=(), fresh=None: compute(),
     )
@@ -2159,6 +2199,8 @@ def _build(
         live=live,
         orchestration=_orchestration_edge(profile, local_name, sections["hosts"], now),
         operator_sessions=activity.get("operator_sessions"),
+        # From the queue rows already read (held under the store); the release is read on every refresh.
+        intake=_intake_v1(task_rows, _current_release_edge()),
         # Read on every refresh, not held: the section fingerprints do not stat schedule.json.
         schedule=_schedule_edge(runs_dir),
         # Read on every refresh, not held: the section fingerprints do not stat the logs it counts.
