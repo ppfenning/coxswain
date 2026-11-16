@@ -40,18 +40,33 @@ def test_a_ready_issue_with_milestone_priority_and_epic_carries_all_three():
     ]
 
 
-def test_the_same_issue_without_the_ready_label_is_a_draft():
+def test_the_same_issue_without_the_ready_label_is_still_ready_by_default():
     files, _, refusals = _plan([_cand(labels={"priority:3", "epic:regatta"})], known_epics={"regatta"})
     assert refusals == []
-    assert _front(files)["stage"] == "draft"
+    assert _front(files)["stage"] == "ready"
 
 
-def test_an_issue_with_no_labels_at_all_still_files_a_draft():
+def test_an_issue_with_no_labels_at_all_files_ready():
     files, _, refusals = _plan([_cand()])
     assert refusals == []
     front = _front(files)
-    assert front["stage"] == "draft"
+    assert front["stage"] == "ready"
     assert not {"priority", "epic", "target_release"} & set(front)
+
+
+def test_the_draft_label_files_a_draft():
+    files, _, _ = _plan([_cand(labels={"intake:draft"})])
+    assert _front(files)["stage"] == "draft"
+
+
+def test_the_draft_label_wins_over_the_ready_label():
+    files, _, _ = _plan([_cand(labels={"intake:draft", "intake:ready"})])
+    assert _front(files)["stage"] == "draft"
+
+
+def test_a_draft_default_files_a_draft_unless_the_issue_is_labelled_ready():
+    assert _front(_plan([_cand()], default_stage="draft")[0])["stage"] == "draft"
+    assert _front(_plan([_cand(labels={"intake:ready"})], default_stage="draft")[0])["stage"] == "ready"
 
 
 def test_an_unknown_epic_is_refused_with_the_valid_choices_and_writes_nothing():
@@ -74,6 +89,12 @@ def test_an_unmapped_repo_is_refused_with_the_valid_repos():
     [line] = refusals
     assert "repo x/y has no mapping in the profile" in line
     assert "valid repos: a/b" in line
+
+
+def test_a_custom_draft_label_is_honoured():
+    custom = PullMap(draft_label="later")
+    assert _front(_plan([_cand(labels={"later"})], pull_map=custom)[0])["stage"] == "draft"
+    assert _front(_plan([_cand(labels={"intake:draft"})], pull_map=custom)[0])["stage"] == "ready"
 
 
 def test_a_custom_pull_map_is_honoured():
@@ -186,3 +207,28 @@ def test_the_github_adapter_maps_labels_and_the_folder_adapter_does_not():
 
     assert source_github.MAPS_LABELS is True
     assert not getattr(source_folder, "MAPS_LABELS", False)
+
+
+def test_the_pull_command_files_ready_by_default_and_says_so(tmp_path, monkeypatch, capsys):
+    profile, ws = _pull_setup(tmp_path, monkeypatch, [_issue("https://x/1")])
+    assert main(["route", "pull", "--profile", str(profile)]) == 0
+    [written] = (ws / "intake").glob("*.md")
+    assert route.parse_frontmatter(written.read_text(encoding="utf-8"))[0]["stage"] == "ready"
+    assert f"filed intake/{written.name} (ready)" in capsys.readouterr().out
+
+
+def test_the_profile_intake_stage_makes_a_pulled_issue_a_draft_and_names_the_ready_command(tmp_path, monkeypatch, capsys):
+    profile, ws = _pull_setup(tmp_path, monkeypatch, [_issue("https://x/1")], "intake_stage: draft\n")
+    assert main(["route", "pull", "--profile", str(profile)]) == 0
+    [written] = (ws / "intake").glob("*.md")
+    front = route.parse_frontmatter(written.read_text(encoding="utf-8"))[0]
+    assert front["stage"] == "draft"
+    assert f"filed intake/{written.name} as a draft; cox route ready {front['id']}" in capsys.readouterr().out
+
+
+def test_the_draft_label_on_a_pulled_issue_files_a_draft(tmp_path, monkeypatch, capsys):
+    profile, ws = _pull_setup(tmp_path, monkeypatch, [_issue("https://x/1", labels=["intake:draft"])])
+    assert main(["route", "pull", "--profile", str(profile)]) == 0
+    [written] = (ws / "intake").glob("*.md")
+    assert route.parse_frontmatter(written.read_text(encoding="utf-8"))[0]["stage"] == "draft"
+    assert "as a draft; cox route ready" in capsys.readouterr().out

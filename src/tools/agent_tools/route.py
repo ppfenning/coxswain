@@ -773,12 +773,14 @@ def pull_plan(
     known_issues: Mapping[tuple[str, str], str] = MappingProxyType({}),
     pull_map: PullMap | None = None,
     known_epics: Collection[str] = frozenset(),
+    default_stage: str = "ready",
 ) -> tuple[list[dict], list[str], list[str]]:
     """Intake files, PR links to review, and refusals; an unmapped repo is refused, never guessed, and a second candidate on one path is refused, never dropped.
 
     An issue is held only by repository and number together: a candidate whose (repo, number) is in `known_issues` is skipped like a taken link, without a refusal.
     With a `pull_map`, each file carries the stage, priority, epic and target release it reads off the candidate's labels
-    and milestone: with no ready label it is a draft. An epic not in `known_epics` is refused with the valid choices, and
+    and milestone: the draft label files a draft, the ready label files it ready, and with neither it takes
+    `default_stage` (ready, or the profile's `intake_stage`). An epic not in `known_epics` is refused with the valid choices, and
     nothing is written for it. With none (a source that carries no labels), the file has no stage line and reads as ready.
     """
     reviews = [c.link for c in candidates if c.kind == "pr"]
@@ -792,7 +794,7 @@ def pull_plan(
     ]
     mapped = [c for c in fresh if c.repo in profile_repos]
     unnamed = [_pull_refusal(c, "title has no alphanumeric characters to slugify") for c in mapped if not slugify(c.title)]
-    fielded = [(c, _pulled_fields(c, pull_map)) for c in mapped if slugify(c.title)]
+    fielded = [(c, _pulled_fields(c, pull_map, default_stage)) for c in mapped if slugify(c.title)]
     # The repo was checked above against the profile's own names; only the label-borne fields are judged here.
     judged = [
         (c, f, intake_fields.validate(c.repo, f["epic"], f["priority"], f["target_release"], {c.repo}, known_epics))
@@ -825,9 +827,11 @@ def pull_plan(
 _UNMAPPED_FIELDS = MappingProxyType({"stage": None, "priority": None, "epic": "", "target_release": ""})
 
 
-def _pulled_fields(candidate, pull_map: PullMap | None) -> Mapping:
+def _pulled_fields(candidate, pull_map: PullMap | None, default_stage: str) -> Mapping:
     """The intake fields a candidate's labels and milestone give under `pull_map`; none of them without one."""
-    return _UNMAPPED_FIELDS if pull_map is None else map_fields(candidate.labels, candidate.milestone, pull_map)[0]
+    if pull_map is None:
+        return _UNMAPPED_FIELDS
+    return map_fields(candidate.labels, candidate.milestone, pull_map, default_stage)[0]
 
 
 def pull_notes(candidates: Sequence, pull_map: PullMap) -> list[str]:

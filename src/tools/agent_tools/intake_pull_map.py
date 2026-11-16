@@ -18,6 +18,7 @@ class PullMap:
     priority_prefix: str = "priority:"
     epic_prefix: str = "epic:"
     milestone_is_release: bool = True
+    draft_label: str = "intake:draft"
 
     @classmethod
     def from_profile(cls, raw: dict) -> PullMap | str:
@@ -37,8 +38,19 @@ def _remainders(sorted_labels: list[str], prefix: str) -> list[str]:
     return [label[len(prefix) :] for label in sorted_labels if prefix and label.startswith(prefix)]
 
 
-def map_fields(labels: Iterable[str], milestone: str | None, pull_map: PullMap) -> tuple[dict, list[str]]:
-    """Return the intake fields and notes; priority is None when no label gives an integer."""
+def _stage(ordered: list[str], pull_map: PullMap, default_stage: str) -> str:
+    """The draft label wins, then the ready label; with neither, `default_stage`."""
+    if pull_map.draft_label in ordered:
+        return "draft"
+    return "ready" if pull_map.ready_label in ordered else default_stage
+
+
+def map_fields(
+    labels: Iterable[str], milestone: str | None, pull_map: PullMap, default_stage: str = "draft"
+) -> tuple[dict, list[str]]:
+    """Return the intake fields and notes; priority is None when no label gives an integer.
+
+    `default_stage` is the stage of an issue that carries neither the draft nor the ready label."""
     ordered = sorted(labels)
     priorities = [int(r) for r in _remainders(ordered, pull_map.priority_prefix) if _INTEGER.fullmatch(r)]
     epics = _remainders(ordered, pull_map.epic_prefix)
@@ -50,7 +62,7 @@ def map_fields(labels: Iterable[str], milestone: str | None, pull_map: PullMap) 
         else []
     )
     fields_out = {
-        "stage": "ready" if pull_map.ready_label in ordered else "draft",
+        "stage": _stage(ordered, pull_map, default_stage),
         "priority": priorities[0] if priorities else None,
         "epic": epics[0] if epics else "",
         "target_release": release,

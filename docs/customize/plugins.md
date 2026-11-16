@@ -37,13 +37,16 @@ repo_map: {"owner/repo": "/path/to/repo", "~/intake": "/path/to/repo"}
   picks another label), then swaps the label for `intake:taken` and
   comments the intake path. An open PR labelled `review` is reviewed
   instead, and relabelled `review:taken`. The issue's labels and
-  milestone become the intake's fields: `intake:ready` files it ready
-  (else it is a draft the chair skips until `cox route ready`),
-  `priority:<n>` its priority, `epic:<id>` its epic, and a version
+  milestone become the intake's fields. An issue is filed ready, so the
+  chair plans it, unless it is labelled `intake:draft`. A draft waits
+  until `cox route ready <id>`. The profile's `intake_stage: draft` makes
+  draft the default, and then `intake:ready` files an issue ready.
+  `priority:<n>` sets its priority, `epic:<id>` its epic, and a version
   milestone its `target_release`. An epic the store does not know is
-  refused with the valid choices. The profile's `intake_map` renames the
-  labels, for example
-  `intake_map: {"ready_label": "go", "priority_prefix": "p-", "epic_prefix": "e-", "milestone_is_release": false}`.
+  refused with the valid choices. The pull prints the stage it filed
+  each intake under. The profile's `intake_map` renames the labels, for
+  example
+  `intake_map: {"ready_label": "go", "draft_label": "later", "priority_prefix": "p-", "epic_prefix": "e-", "milestone_is_release": false}`.
 - **folder** files each `*.md` directly in the folder: its first
   `# heading` is the title (else the file name), the rest the body. A
   filed file moves into the folder's `done/`, so the folder holds only

@@ -6695,17 +6695,26 @@ def _mark_argv(adapter, config, ref, rel: str) -> list[str]:
 def _pull_one(adapter, config, mapping: dict, found: dict, ws: Path, dry_run: bool) -> bool:
     """Write one planned intake file, then mark its source; True after printing why when either step failed."""
     (rel, text), = mapping.items()
-    origin = found[route.parse_frontmatter(text)[0]["link"]]
+    fields = route.parse_frontmatter(text)[0]
+    origin = found[fields["link"]]
     if dry_run:
         print(f"would write {rel}")
         return False
     if refusal := _write_mapping(mapping, ws):
         print(f"{refusal}; {origin.title!r} ({origin.link}) not filed")
         return True
+    print(_filed_line(rel, fields))
     rc, _, err = _run_argv(_mark_argv(adapter, config, sources.Ref(origin.link, origin.repo), rel))
     if rc != 0:
         print(f"routing: wrote {rel}; marking {origin.link} failed (exit {rc}): {err}")
     return rc != 0
+
+
+def _filed_line(rel: str, fields: Mapping) -> str:
+    """Pure. The line a pull prints for a filed intake: its stage, and for a draft the command that readies it."""
+    if fields.get("stage") == "draft":
+        return f"filed {rel} as a draft; cox route ready {fields.get('id') or Path(rel).stem}"
+    return f"filed {rel} (ready)"
 
 
 def _review_one(adapter, origin, profile: str, dry_run: bool) -> bool:
@@ -6824,6 +6833,8 @@ def _pull_source(a: argparse.Namespace, profile: dict, source: str, *, named: bo
         known_issues=held,
         pull_map=pull_map,
         known_epics=_known_epic_ids(rows),
+        # A pulled issue is ready unless labelled a draft; the profile's `intake_stage` changes that default.
+        default_stage=profile.get("intake_stage") or "ready",
     )
     problems = [*unreadable, *refusals]
     for line in problems:
