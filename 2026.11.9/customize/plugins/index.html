@@ -6647,7 +6647,17 @@ or folder to the repository its tickets target:</p>
 <li><strong>github</strong> files each issue labelled <code>intake</code> (<code>filter: label:&lt;name&gt;</code>
   picks another label), then swaps the label for <code>intake:taken</code> and
   comments the intake path. An open PR labelled <code>review</code> is reviewed
-  instead, and relabelled <code>review:taken</code>.</li>
+  instead, and relabelled <code>review:taken</code>. The issue's labels and
+  milestone become the intake's fields. An issue is filed ready, so the
+  chair plans it, unless it is labelled <code>intake:draft</code>. A draft waits
+  until <code>cox route ready &lt;id&gt;</code>. The profile's <code>intake_stage: draft</code> makes
+  draft the default, and then <code>intake:ready</code> files an issue ready.
+  <code>priority:&lt;n&gt;</code> sets its priority, <code>epic:&lt;id&gt;</code> its epic, and a version
+  milestone its <code>target_release</code>. An epic the store does not know is
+  refused with the valid choices. The pull prints the stage it filed
+  each intake under. The profile's <code>intake_map</code> renames the labels, for
+  example
+  <code>intake_map: {"ready_label": "go", "draft_label": "later", "priority_prefix": "p-", "epic_prefix": "e-", "milestone_is_release": false}</code>.</li>
 <li><strong>folder</strong> files each <code>*.md</code> directly in the folder: its first
   <code># heading</code> is the title (else the file name), the rest the body. A
   filed file moves into the folder's <code>done/</code>, so the folder holds only
