@@ -5999,8 +5999,18 @@ def _route_leader_status(a: argparse.Namespace) -> int:
         return read_rc
     host = socket.gethostname()
     live = _live_loop_holder(runs_dir)
-    if live is not None and not chair.is_caller_holder(record, os.environ, host):
+    caller_holds = chair.is_caller_holder(record, os.environ, host)
+    if live is not None and not caller_holds:
         print(chair_resolve.held_line(live.label or "?", live.is_service))  # a live chair loop holds the chair: read only, the lease is not touched
+        return 0
+    # A record matched by session id alone can be a resumed session's, while the live holder is another process.
+    # Only a caller holding the record by pid is that holder. The hook source is not read: every source decides the same.
+    by_pid = record is not None and str(os.environ.get("CLAUDE_PID", "")) == str(record.get("pid"))
+    decision = chair_resolve.session_start_decision(
+        _launcher_session_takes(getattr(a, "profile", None)), record, live, caller_holds, caller_label=str(record.get("session")) if by_pid and record else None,
+    )
+    if live is not None and decision.action == "observer":
+        print(decision.line)  # read only: the lease and chair.json are not touched
         return 0
     state = chair.liveness(record, _leader_pid_alive(record), datetime.datetime.now(datetime.UTC), host, _leader_heartbeat_minutes())
     with chair.locked(runs_dir):  # re-read under the lock: a beat or a takeover's release request may have landed since the read above
@@ -15990,7 +16000,7 @@ def _read_holder_inputs(runs_dir: Path):
 
 def _loop_holder(label: str, pid: int, host: str) -> chair_resolve.SessionHolder:
     """Edge. A live chair loop holder; the service form when its cgroup names the chair service (readable only on this host)."""
-    return chair_resolve.SessionHolder("loop", label, host == socket.gethostname() and _is_service_cgroup(_pid_cgroup(pid)))
+    return chair_resolve.SessionHolder("loop", label, host == socket.gethostname() and _is_service_cgroup(_pid_cgroup(pid)), host)
 
 
 def _live_loop_holder(runs_dir: Path) -> chair_resolve.SessionHolder | None:
