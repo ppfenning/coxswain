@@ -6652,15 +6652,32 @@ See <a href="../dashboards/">Dashboards</a> to run it.</p>
 </ul>
 <p>Quarantines by cause is also a chart.</p>
 <h2 id="cost-per-completion">Cost per completion</h2>
-<p>A task counts as a completion when it is done, or approved and merged
-into its phase or PR branch, or landed on main. It counts once, however
-it later lands.</p>
+<p>A task counts as a completion when its task record shows it done, or
+approved and merged into its phase or PR branch, or landed on main. It
+counts once, at the earliest of those stamps, however it later lands. A
+task still counts while its run is in flight.</p>
 <p>Cost per completion is spend divided by completions in the same window.
 The status line and the feed report it for today, the five-hour window
-and the week.</p>
+and the week. Today and the two windows count completions the same way:</p>
+<ul>
+<li><strong>Today</strong> (<code>spend.today</code>, and the status line). Tasks whose completion
+  falls on today's UTC day, divided into today's spend. The land log also
+  counts: a task logged as landed today counts if the store holds no
+  record for it. A task merged yesterday that lands today does not count
+  again.</li>
+<li><strong>Five-hour and weekly windows</strong> (<code>spend_split</code>). Tasks whose
+  completion falls in the window, divided into the window's cox-seat
+  spend. A landed record with no stamp of its own counts at the end of
+  its run.</li>
+</ul>
+<p><code>spend.today.landed</code> is a different figure: the tasks the land log shows
+reaching <code>mark_done</code> today. The first-try rate is measured over those
+tasks.</p>
 <p>The feed keeps the old keys for one release as deprecated aliases:
 <code>per_landed</code> under <code>spend.today</code>, and <code>cost_per_landed_task</code> under each
-<code>spend_split</code> window. Towpath reads <code>cost_per_completion</code> first.</p>
+<code>spend_split</code> window. Each alias has the same value as
+<code>cost_per_completion</code>. It is a cost per completion, not a cost per task
+landed on main. Towpath reads <code>cost_per_completion</code> first.</p>
 <h2 id="cox-stats-gates"><code>cox stats gates</code></h2>
 <p>For each review step, <code>cox stats gates</code> shows its cost and how often its
 verdict changed the outcome. It flags steps that change fewer than 5% of
