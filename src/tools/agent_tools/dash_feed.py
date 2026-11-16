@@ -1928,6 +1928,22 @@ def _ends_edge(runs_dir: Path, rows: Mapping) -> dict[str, End]:
         return {}
 
 
+def _console_now(held: Mapping, spend: dict, local_name: str, local_versions: dict | None) -> dict:
+    """A held console gather as this refresh sees it: `spend` read this refresh, and the local host row's login check
+    stamped at this refresh, both of which the held gather carries from the refresh that computed it. A gather run
+    this refresh already has both, so this is applied to a reused one only."""
+    if local_versions is None:
+        return {**held, "spend": spend}
+    hosts = [
+        {**row, "versions_json": local_versions}
+        if row.get("name") == local_name and isinstance(row.get("versions_json"), Mapping)
+        and set(row["versions_json"]) == set(local_versions)
+        else row
+        for row in held["hosts"]
+    ]
+    return {**held, "spend": spend, "hosts": hosts}
+
+
 def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None = None) -> dict:
     """Edge: the live schema-1 snapshot from the fleet's existing readers, every section mapped to the shape
     tests/fixtures/dash_feed_v1.json fixes (the contract coxtop parses), with no nulls and nothing json can't write,
@@ -1947,30 +1963,39 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
     So is `operator_sessions`: every operator session of the workspace's project folder, plus the lease holder's, as
     rows per window with their agents, which the `spend_split` sums; `spend_sources` gains `sessions_found` and
     `sessions_priced`. The key is absent when the activity section did not gather sessions."""
-    return _build(Path(runs_dir), Path(work_dir), now, profile, lambda name, compute, anchor=None, extra=(): compute())
+    return _build(
+        Path(runs_dir), Path(work_dir), now, profile, lambda name, compute, anchor=None, extra=(), fresh=None: compute(),
+    )
 
 
 def _build(
     runs_dir: Path, work_dir: Path, now: str, profile: dict | None, hold,
     cursors: LiveCursors | None = None, on_cursors: Callable[[LiveCursors], None] | None = None,
 ) -> dict:
-    """Edge: the body of `gather_feed`. `hold(name, compute, anchor, extra)` gives one section's value:
+    """Edge: the body of `gather_feed`. `hold(name, compute, anchor, extra, fresh)` gives one section's value:
     `compute()` uncached, a memoised value in `gather_feed_cached`. `anchor` is read after a compute only and names the
-    stamps the section's ages count from; `extra` is the section's time-dependent inputs already read, for its key.
+    stamps the section's ages count from; `extra` is the section's time-dependent inputs already read, for its key;
+    `fresh`, when given, is applied to a reused value only, to put back what this refresh read beside the hold.
     `cursors` and `on_cursors` make the live block read incrementally; see `_live_edge`."""
     at = _parse_now(now)
     local_name, local_capacity = _local_identity(runs_dir, profile or {})
-    local_versions = _local_versions(_local_login(local_name), now)
+    login_ok = _local_login(local_name)
+    local_versions = _local_versions(login_ok, now)
     spend = _spend(runs_dir, now)
-    sections = console_screen.gather(
-        runs_dir, work_dir, now, local_name, local_capacity, spend, local_versions=local_versions,
+    sections = hold(
+        "console",
+        lambda: console_screen.gather(
+            runs_dir, work_dir, now, local_name, local_capacity, spend, local_versions=local_versions,
+        ),
+        extra=(local_name, local_capacity, login_ok),
+        fresh=lambda held: _console_now(held, spend, local_name, local_versions),
     )
     chair_row = sections["chair"][0] if sections["chair"] else {}
     live_phases = _live_lanes(sections["lanes"])
     blob = _courier_blob(work_dir)
     entries = courier.inbox(blob)
     # A state callable that answers nothing: the feed lists each awaiting PR with its url and never asks the forge.
-    review_prs = read_review_prs(runs_dir, lambda url: {})
+    review_prs = hold("review_prs", lambda: read_review_prs(runs_dir, lambda url: {}))
     lane_ids = {lane.run for lane in sections["lanes"]}
     records = _finished_records(runs_dir, lane_ids)
     calls_by_run = {
@@ -1986,8 +2011,12 @@ def _build(
     spend_block = {**_spend_v1(sections["spend"]), "today": today_spend}
     wide_rows = _store_rows(runs_dir, at, spend_block)
     store_rows = _history_rows(wide_rows, at)
-    task_rows = _queue_rows_edge(runs_dir)
-    states = _queue_states_edge(runs_dir, live_phases, task_rows)
+    task_rows = hold("queue_rows", lambda: _queue_rows_edge(runs_dir))
+    states = hold(
+        "queue_states",
+        lambda: _queue_states_edge(runs_dir, live_phases, task_rows),
+        extra=tuple(sorted(live_phases.items())),
+    )
 
     def queue_block() -> tuple[list[dict], int]:
         queue, total = _queue(runs_dir, live_phases)
@@ -2105,6 +2134,14 @@ _SECTION_GROUPS = {
     "board": _STORE_RECORDS_TRACES,
     "epics": ("store",),
     "live": ("transcripts", "lane_traces"),
+    # Internal holds: inputs `_build` shares between sections, not in `dash_feed_cost.SECTION_ORDER`, so the cost
+    # block never lists them. The console gather reads the store (leases, hosts, runs, work items), the run records
+    # (chair.json, pidfiles, logs) and the lane traces (each lane's calls). The review PRs read the task records
+    # and the store's run hosts. The queue rows are the store's; their states add the task records under runs.
+    "console": _STORE_RECORDS_TRACES,
+    "review_prs": ("store", "records"),
+    "queue_rows": ("store",),
+    "queue_states": ("store", "records"),
 }
 # The finest step, in seconds, a section's output moves with `now` once its age fields are refreshed and its other
 # time-dependent inputs are in its key (`extra` in `_build`: the lanes, the hosts, the run window, the console chair
@@ -2114,6 +2151,10 @@ _SECTION_STEP_S = {
     "chair": 60, "spend": 3600, "history": 60, "machines": 3600, "runs": 3600,
     "queue": 3600, "inbox": 3600, "board": 3600, "epics": 3600,
     "live": int(min(dash_live_series.MINUTE, dash_live_series.HOUR).total_seconds()),
+    # The console gather compares lease expiry and the chair's heartbeat with `now`, and a lane whose host died lapses
+    # with no store write. Wrong belief to avoid: "the console moves only with the store". Holding it for a minute at
+    # most bounds how late such a lapse shows. The other three read no clock.
+    "console": 60, "review_prs": 3600, "queue_rows": 3600, "queue_states": 3600,
 }
 # These read `courier.jsonl` and `*/initiative.md` under `work_dir`, which the probe does not stat.
 _WORK_STAMPED = frozenset({"chair", "inbox"})
@@ -2190,14 +2231,17 @@ def gather_feed_cached(
     state: dict = {"memo": cache.memo, "live": cache.live}
     results: list[tuple[str, bool]] = []
 
-    def hold(name: str, compute, anchor=None, extra=()):
+    def hold(name: str, compute, anchor=None, extra=(), fresh=None):
         key = (*_section_key(name, fingerprints, at, stamp), extra)
         value, state["memo"], reused = dash_feed_memo.reuse(
             state["memo"], name, key, lambda: (compute(), None if anchor is None else anchor()),
         )
         results.append((name, reused))
         section, anchors = value
-        return _refresh_ages(name, section, anchors, at) if reused else section
+        if not reused:
+            return section
+        aged = _refresh_ages(name, section, anchors, at)
+        return aged if fresh is None else fresh(aged)
 
     feed = _build(runs_dir, work_dir, now, profile, hold, cache.live, lambda cursors: state.update(live=cursors))
     recomputed, reused = dash_feed_memo.split_reuse(dash_feed_cost.SECTION_ORDER, results)

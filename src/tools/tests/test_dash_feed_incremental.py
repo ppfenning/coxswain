@@ -11,6 +11,7 @@ from agent_tools.console_screen import LaneRow
 FIXTURE = Path(__file__).parent / "fixtures" / "dash_feed_cost_v1.json"
 NOW = "2026-11-09T12:00:00Z"
 LATER = "2026-11-09T12:00:30Z"
+NEXT_MINUTE = "2026-11-09T12:01:05Z"
 STORE_DRIVEN = [name for name in dash_feed_cost.SECTION_ORDER if name != "live"]
 LANE = LaneRow("alpha-1", None, "", "p1", "build", 1, 2, 0.5, 0, 1)
 CALL = {"ts": "2026-11-09T11:58:00Z", "node": "build", "attempt": 1, "turns": 2, "cost_usd": 0.5}
@@ -71,7 +72,10 @@ def workspace(tmp_path, monkeypatch):
     set_(dash_feed, "read_review_prs", lambda runs_dir, state: [])
     set_(
         dash_feed.console_screen, "gather",
-        lambda *a, **k: {"chair": [], "lanes": list(WORLD["lanes"]), "hosts": [host], "spend": {"spend_age_s": 5}},
+        # As the real gather does, it hands back the spend it was given, so a held one can carry this refresh's spend.
+        lambda runs_dir, work_dir, now, name, capacity, spend, **k: {
+            "chair": [], "lanes": list(WORLD["lanes"]), "hosts": [host], "spend": spend,
+        },
     )
     return runs, work
 
@@ -154,11 +158,26 @@ def test_a_run_aging_out_of_the_window_recomputes_runs(workspace):
 
 
 def test_lanes_that_change_recompute_the_sections_built_from_them(workspace):
+    # The console gather is held, so a lane change with no input change (a lease that lapsed, no store write) shows at
+    # the next minute, when the held gather expires. The sections keyed on the lanes recompute beside the ones that
+    # move with the minute anyway (chair, live); the hour-step sections that do not read lanes stay reused.
     runs, work = workspace
     _, cache = dash_feed.gather_feed_cached(runs, work, NOW, None, dash_feed.EMPTY_CACHE)
     WORLD["lanes"] = []
+    feed, _ = dash_feed.gather_feed_cached(runs, work, NEXT_MINUTE, None, cache)
+    assert feed["cost"]["recomputed"] == ["chair", "machines", "runs", "queue", "history", "board", "live"]
+    assert feed["cost"]["reused"] == ["spend", "inbox", "epics"]
+    assert feed["runs"] == []
+    assert _without_cost(feed) == _fresh(runs, work, NEXT_MINUTE)
+
+
+def test_a_store_write_shows_changed_lanes_on_the_next_refresh(workspace):
+    runs, work = workspace
+    _, cache = dash_feed.gather_feed_cached(runs, work, NOW, None, dash_feed.EMPTY_CACHE)
+    WORLD["lanes"] = []
+    (runs / "cox.db").write_bytes(b"store, lease released")
     feed, _ = dash_feed.gather_feed_cached(runs, work, LATER, None, cache)
-    assert feed["cost"]["recomputed"] == ["machines", "runs", "queue", "history", "board"]
+    assert feed["runs"] == []
     assert _without_cost(feed) == _fresh(runs, work, LATER)
 
 
