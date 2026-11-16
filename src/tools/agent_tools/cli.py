@@ -102,6 +102,7 @@ chair_read_approved = _LazyModule("agent_tools.chair_read_approved")
 chair_read_attempts = _LazyModule("agent_tools.chair_read_attempts")
 chair_read_branch_merged = _LazyModule("agent_tools.chair_read_branch_merged")
 chair_read_cache = _LazyModule("agent_tools.chair_read_cache")
+chair_read_decompose_miss = _LazyModule("agent_tools.chair_read_decompose_miss")
 chair_read_docket = _LazyModule("agent_tools.chair_read_docket")
 chair_read_exits = _LazyModule("agent_tools.chair_read_exits")
 chair_read_housekeeping = _LazyModule("agent_tools.chair_read_housekeeping")
@@ -14275,6 +14276,10 @@ def _chair_run_deps(
     def stranded_inputs() -> tuple[list[dict], list[dict]]:
         return once("stranded", lambda: _chair_stranded_inputs(ws, mode, work_files(), store_rows()))  # type: ignore[return-value]
 
+    def intake_rows_now() -> list[dict]:
+        # Uncached: the exec reads it after a launch, the facts once per path per tick; both must see the same rows.
+        return run_store.read_queue(runs_dir, kind="intake") if mode == "store" else []
+
     def work_rows() -> list[dict]:
         # `store_rows` (run_store.work_items) carries no `kind` column; the queue read does. Store mode only, once per tick.
         return once("work_rows", lambda: _takes_cache(run_store.read_queue, queue_cache)(runs_dir) if mode == "store" else [])  # type: ignore[return-value]
@@ -14587,6 +14592,7 @@ def _chair_run_deps(
         land_hold=lambda: chair_smoke.read_hold(str(runs_dir)),
         land_outcomes=lambda: chair_revert_watch.outcomes(actions),
         decompose_runs=decompose_runs_of,
+        intake_fingerprint=lambda path: chair_read_decompose_miss.intake_fingerprint(ws, intake_rows_now(), path),
         newest_run_host=lambda: run_store.newest_run_hosts(runs_dir, [row["id"] for row in docket()["initiatives"]]),
         history=lambda: chair_read_housekeeping.read_last_housekeeping(runs_dir),
         housekeeping_hours=lambda: (profile.get("chair") or {}).get("housekeeping_hours"),
@@ -14632,6 +14638,8 @@ def _chair_run_deps(
         rerun_main=lambda repo, commit: chair_revert_ports.rerun_infra(runner, _gh_repo(repo), commit),
         launch_stagger_s=chair_exec.stagger_seconds((profile.get("chair") or {}).get("launch_stagger_s")),
         mark_handled=None if dry_run else (lambda key: _mark_handled_key(runs_dir, key)),
+        # Read after the launch failed, so a miss records the intake as it was then; facts read the same shape each tick.
+        intake_fingerprint=lambda path: chair_read_decompose_miss.intake_fingerprint(ws, intake_rows_now(), path),
     )
     def held() -> None:
         """Resolves each pending watch the smoke hold does not name, when its commit is green on main or main went green after it."""

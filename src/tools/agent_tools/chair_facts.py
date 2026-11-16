@@ -18,6 +18,7 @@ from typing import Any, cast
 from agent_tools import chair_lease_refusal, chair_read_docket, chair_smoke, forge, pacing, queue_rows, repo_path, route
 from agent_tools.budget import MonthBudget
 from agent_tools.chair import lease_holder
+from agent_tools.chair_decompose_miss import DecomposeMiss, next_miss
 from agent_tools.chair_decompose_streak import DecomposeRun, DecomposeStreak, at_limit, streak
 from agent_tools.chair_idle_stall import IDLE_STALL_MINUTES
 from agent_tools.chair_land_backoff import LandRefusal, aligned
@@ -207,9 +208,13 @@ class FactsDeps:
         means no initiative has a known repo.
     actions: the `chair_actions` rows, keys kind, ts, and action_json or the action's own keys
         (`chair_read_stale.read_chair_actions`). `steer_streaks`, `decompose_stalled_reported`, `land_refusals`,
-        `launch_history` and `relaunch_loop_reported` derive from them.
+        `launch_history` and `relaunch_loop_reported` derive from them, and so do `decompose_misses` (each intake
+        path's run of decompose launches that found no idea file) and `decompose_misses_reported`.
         Build it with `windowed_actions` so one gather reads the table once and every caller shares the rows.
         Optional, and absent means {}.
+    intake_fingerprint: an intake path to a digest that changes when the intake does (`chair_read_decompose_miss`),
+        read for each path in `decompose_misses` into `decompose_miss_fingerprints`. Optional, and absent means both
+        are {}, so no intake is ever held back for a missing idea file.
     run_commits: one row per approved commit a run holds, oldest first, keys task, initiative, phase, run, host,
         branch (the run's agents branch), commit, run_seq. Optional, and absent means no stranded phase is built.
     phase_state: one row per phase with approved work, keys initiative, phase, tasks (every task id of the phase),
@@ -296,6 +301,7 @@ class FactsDeps:
     repos: Callable[[], Mapping[str, str]] | None = None  # initiative to its initiative.md `repo:`; absent means no repo is known
     actions: Callable[[], Sequence[Row]] | None = None  # windowed chair_actions rows, read once per gather (`windowed_actions`); absent means no steer streaks
     decompose_runs: Callable[[str], Sequence[DecomposeRun]] | None = None  # intake path to its decompose runs, oldest first; absent means no decompose streaks
+    intake_fingerprint: Callable[[str], str] | None = None  # intake path to its fingerprint now (`chair_read_decompose_miss`); absent means no decompose misses
     run_commits: Callable[[], Sequence[Row]] = lambda: []  # approved commits per run, oldest first; absent means []
     phase_state: Callable[[], Sequence[Row]] = lambda: []  # per phase: its task ids and whether a phase land adds over main; absent means []
     phase_tasks: Callable[[], list[PhaseTasks]] = lambda: []  # per phase with an approved task, each task's state; absent means []
@@ -1112,6 +1118,50 @@ def decompose_stalled_keys(actions: Sequence[Row]) -> list[str]:
         f"{d['initiative']}|{d['run']}"
         for d in docs
         if d.get("kind") == "needs_chair" and d.get("cause") == "decompose_stalled" and d.get("initiative") and d.get("run")
+    ]
+
+
+MISSING_IDEA_CAUSE = "decompose_missing_idea"  # the needs_chair cause for an intake whose idea file a launch kept not finding
+
+
+def _miss_step(misses: Mapping[str, DecomposeMiss], doc: Row) -> dict[str, DecomposeMiss]:
+    paths = doc.get("intake_ids") or []
+    if doc.get("kind") != "launch_decompose" or not paths:
+        return dict(misses)
+    path = str(paths[0])
+    if doc.get("idea_missing"):
+        missed = next_miss(misses.get(path), Path(path).stem, str(doc["idea_missing"]), str(doc.get("fingerprint") or ""), str(doc.get("ts") or ""))
+        return {**misses, path: missed}
+    if doc.get("status") == "done":  # the launch got past the idea file, so the run of misses is over
+        return {k: v for k, v in misses.items() if k != path}
+    return dict(misses)
+
+
+def decompose_miss_facts(actions: Sequence[Row]) -> dict[str, DecomposeMiss]:
+    """Intake path to its run of launches that found no idea file, oldest row first; a done launch of the path ends it."""
+    ordered = sorted(map(_action_doc, actions), key=lambda d: str(d.get("ts") or ""))
+    return reduce(_miss_step, ordered, {})
+
+
+def decompose_miss_fact_keys(actions: Sequence[Row], fingerprint: Callable[[str], str] | None) -> dict[str, Any]:
+    """The three decompose-miss facts: the misses, each missed intake's fingerprint now, and the reported keys.
+
+    With no fingerprint reader nothing can tell a fixed intake from an unchanged one, so there are no misses at all."""
+    misses = decompose_miss_facts(actions) if fingerprint is not None else {}
+    return {
+        "decompose_misses": misses,
+        "decompose_miss_fingerprints": {path: fingerprint(path) for path in misses} if fingerprint is not None else {},
+        "decompose_misses_reported": decompose_misses_reported_keys(actions),
+    }
+
+
+def decompose_misses_reported_keys(actions: Sequence[Row]) -> list[str]:
+    """`<intake path>|<fingerprint>` of each decompose_missing_idea needs_chair row, in row order."""
+    docs = [_action_doc(row) for row in actions]
+    return [
+        f"{d['intake']}|{d.get('fingerprint', '')}"
+        for d in docs
+        if d.get("kind") == "needs_chair" and d.get("cause") == MISSING_IDEA_CAUSE and d.get("intake")
     ]
 
 
@@ -1997,6 +2047,7 @@ def gather_facts(
         "todo_initiatives": todo_initiative_facts(list(deps.work_rows())) if deps.work_rows is not None else [],
         "decompose_streaks": decompose_streak_facts(intake, deps.decompose_runs) if deps.decompose_runs is not None else {},
         "decompose_stalled_reported": decompose_stalled_keys(action_rows),
+        **decompose_miss_fact_keys(action_rows, deps.intake_fingerprint),
         "env_stale_reported": stale_checkout_keys(action_rows),
         "held_files": [dict(h) for h in deps.held_files()],  # type: ignore[misc]
         "held_reported": held_file_keys(action_rows),

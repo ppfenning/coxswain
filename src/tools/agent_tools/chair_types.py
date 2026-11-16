@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Any, Literal, NotRequired, Protocol, TypedDict
 from zoneinfo import ZoneInfo
 
+from agent_tools.chair_decompose_miss import DecomposeMiss
 from agent_tools.chair_decompose_streak import DecomposeStreak
 from agent_tools.chair_land_backoff import LandRefusal
 from agent_tools.chair_land_conflict import LandConflict
@@ -604,6 +605,12 @@ class Facts(TypedDict):
     decompose_streaks: NotRequired[dict[str, DecomposeStreak]]
     # `<initiative>|<newest run id>` of each decompose_stalled needs_chair already in the action log. Absent means [].
     decompose_stalled_reported: NotRequired[list[str]]
+    # An intake path to its run of decompose launches that found no idea file, read from the action log. Absent means {}.
+    decompose_misses: NotRequired[dict[str, DecomposeMiss]]
+    # The same paths to the intake's fingerprint now; a path missing here is never skipped. Absent means {}.
+    decompose_miss_fingerprints: NotRequired[dict[str, str]]
+    # `<intake path>|<fingerprint>` of each decompose_missing_idea needs_chair already in the action log. Absent means [].
+    decompose_misses_reported: NotRequired[list[str]]
     # Host name to the checkout_env record in that host's versions_json; {} for a host whose beat lacks it. Absent means {}.
     host_env: NotRequired[dict[str, dict]]
     # `<host>|<repo>` of each stale_checkout needs_chair already in the action log. Absent means [].
@@ -779,6 +786,9 @@ class Action(TypedDict, total=False):
     phase: str  # a land_phase names the phase it lands; a carry_phase or rebase_phase names the phase it works on; a merge_level names its level's phase
     cause: str
     intake_ids: list[str]
+    intake: str  # a decompose_missing_idea needs_chair names the intake path it skips
+    idea_missing: str  # a failed launch_decompose names the idea path the launch found no file at
+    fingerprint: str  # that launch, and a decompose_missing_idea needs_chair, name the intake's fingerprint then
     holder: str
     host: str
     until: str  # a standby names when the holder's takeover window ends

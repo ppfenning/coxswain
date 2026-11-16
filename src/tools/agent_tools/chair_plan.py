@@ -18,6 +18,7 @@ from agent_tools import (
     chair_steer_cycle,
 )
 from agent_tools.chair_carry import plan_carry
+from agent_tools.chair_decompose_miss import DecomposeMiss, escalation_reason, is_skipped, needs_escalation
 from agent_tools.chair_idle_ready import plan_idle_ready
 from agent_tools.chair_idle_stall import diagnose, is_stalled
 from agent_tools.chair_plan_fill import (
@@ -640,6 +641,51 @@ def _decompose_gate(facts: Facts) -> tuple[frozenset[str], list[Action]]:
     return frozenset(streaks), actions
 
 
+# The tick length the miss backoff counts in: chair_run.DEFAULT_INTERVAL, the service's default. A longer real interval
+# only makes the backoff shorter in ticks; it never makes a skipped intake launch more often than once per window.
+MISS_TICK_SECONDS = 60
+MISSING_IDEA_CAUSE = "decompose_missing_idea"  # chair_facts.MISSING_IDEA_CAUSE: chair_facts imports this module
+
+
+def _miss_skipped(miss: DecomposeMiss, current: str, now: datetime | None) -> bool:
+    """`is_skipped` at the tick's clock. With no clock, or a recorded time that does not parse, an unchanged intake is
+    skipped: holding one intake back a tick costs less than letting a broken launch take every tick's slot."""
+    if current != miss.fingerprint:
+        return False
+    try:
+        return True if now is None else is_skipped(miss, current, now.isoformat(), MISS_TICK_SECONDS)
+    except ValueError:
+        return True
+
+
+def _decompose_miss_gate(facts: Facts, now: datetime | None) -> tuple[frozenset[str], list[Action]]:
+    """Intake paths whose decompose found no idea file and are still backing off, and one needs_chair for each that has
+    missed MISS_ESCALATE_AT times on an unchanged intake and was not yet reported for that fingerprint.
+
+    A path with no current fingerprint is never skipped: nothing can say the intake is unchanged."""
+    current = facts.get("decompose_miss_fingerprints", {})
+    reported = set(facts.get("decompose_misses_reported", []))
+    unchanged = {
+        path: miss
+        for path, miss in facts.get("decompose_misses", {}).items()
+        if path in current and current[path] == miss.fingerprint
+    }
+    skipped = frozenset(path for path, miss in unchanged.items() if _miss_skipped(miss, current[path], now))
+    actions: list[Action] = [
+        {
+            "kind": "needs_chair",
+            "initiative": miss.intake_id,
+            "cause": MISSING_IDEA_CAUSE,
+            "reason": escalation_reason(miss),
+            "intake": path,
+            "fingerprint": miss.fingerprint,
+        }
+        for path, miss in sorted(unchanged.items())
+        if needs_escalation(miss, f"{path}|{miss.fingerprint}" in reported)
+    ]
+    return skipped, actions
+
+
 def _login_check_actions(facts: Facts, now: datetime | None) -> list[Action]:
     """One check_login per due host; requires the tick's clock, like housekeeping."""
     if now is None:
@@ -1067,7 +1113,11 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     login_needs_chair = _login_needs_chair_actions(facts, now)
     empty_decompose_needs_chair = _empty_decompose_needs_chair_actions(facts)
     held_needs_chair = plan_held_files(facts)
-    stalled_intake, decompose_stalled_needs_chair = _decompose_gate(facts)
+    streak_stalled, streak_needs_chair = _decompose_gate(facts)
+    missed_intake, miss_needs_chair = _decompose_miss_gate(facts, now)
+    # A skipped intake stays in facts["intake"] (so no pull is planned), but plan_fill never launches it.
+    stalled_intake = streak_stalled | missed_intake
+    decompose_stalled_needs_chair = [*streak_needs_chair, *miss_needs_chair]
     review = plan_review(facts)
     planned_unstarted_waiting_chair = _unstarted_waiting_chair(facts["initiatives"])
     lost = frozenset(facts.get("lost_runs", {}))
