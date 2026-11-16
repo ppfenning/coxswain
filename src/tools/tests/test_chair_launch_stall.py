@@ -10,9 +10,8 @@ four-lane control that launches four:
 
 - A cleared carry: the fixture plans a carry_phase for i00, and the other ten still fill the four lanes.
 - A launch cap of 0 with lanes free: nothing launches, and all eleven carry an unlaunched line.
-- Land backoff: a refusal inside its window holds an unstarted initiative as "land backoff", and the lanes still fill.
-  A started initiative in the same case relaunches through plan_recover, which does not read backoff_held. That launches
-  more, not fewer, so it is no cause of the stall and is left alone.
+- Land backoff: a refusal inside its window no longer holds its initiative (a failing land holds only its own phase,
+  and only on a tick that plans it), and the lanes still fill.
 - A relaunch the launch budget refuses: it holds only its own initiative and takes no lane.
 - A steer-held head: it yields its lane and the walk goes on to the tail.
 - A land in flight on another repo holds nothing. A land in flight on their repo holds all eleven as "its repo is
@@ -93,14 +92,15 @@ def test_a_launch_cap_of_zero_with_lanes_free_launches_nothing_and_every_initiat
     assert set(unlaunched) == set(_IDS) and all(unlaunched.values())
 
 
-def test_a_land_backoff_holds_its_unstarted_initiative_and_the_four_lanes_still_fill():
+def test_a_land_backoff_no_longer_holds_its_unstarted_initiative_and_the_four_lanes_still_fill():
     refusal = {"initiative": "i05", "phase": "p", "run": "i05-1", "attempts": 1, "last_refused_at": (_NOW - timedelta(minutes=5)).isoformat()}
     task = {**_CARRIED, "id": "t5", "initiative": "i05", "run": "i05-1", "needs_fetch": True}
     facts = _symptom(approved=[task], land_refusals=[refusal])
     # land_at task: an incomplete initiative-grain epic plans no land, so there would be no backoff to hold i05.
     facts["initiatives"] = [{**i, "land_at": "task"} if i["id"] == "i05" else i for i in facts["initiatives"]]
     unlaunched = _four_launch_and_none_overlap(facts, "i05")
-    assert "backoff" in unlaunched["i05"]
+    # A backed-off land holds only its phase, and only while a land is planned: i05 waits for a lane like the rest.
+    assert "backoff" not in unlaunched["i05"]
 
 
 def test_a_relaunch_the_budget_refuses_holds_its_own_initiative_and_takes_no_lane():

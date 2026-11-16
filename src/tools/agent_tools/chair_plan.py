@@ -32,7 +32,6 @@ from agent_tools.chair_plan_fill import (
     plan_fill,
 )
 from agent_tools.chair_plan_land import (
-    backoff_held,
     fetch_action,
     newest_run,
     plan_finish,
@@ -51,6 +50,7 @@ from agent_tools.chair_plan_recover import (
 from agent_tools.chair_plan_review import plan_review
 from agent_tools.chair_plan_routine import routine_only
 from agent_tools.chair_plan_stale import plan_stale
+from agent_tools.chair_plan_stuck import RECOVERY_KINDS, failed_recovery_phases, requeue_no_run, stuck_lands
 from agent_tools.chair_plan_tune import plan_tune
 from agent_tools.chair_plan_widen import plan_widen
 from agent_tools.chair_rebase import plan_rebase
@@ -353,8 +353,25 @@ def _without_carried_lands(lands: list[Action], carries: list[Action]) -> list[A
 
 def _landing_initiatives(facts: Facts, lands: list[Action]) -> frozenset[str]:
     """Initiatives a land in flight touches (landing_initiatives), plus those with a land_phase or partial_land planned
-    this tick. Another initiative in the landing repo is not withheld: it launches beside the land."""
+    this tick. The tick withholds only the first set; a planned land holds its own phase instead (held_phases)."""
     return landing_initiatives(facts) | frozenset(a["initiative"] for a in lands if a["kind"] in ("land_phase", "partial_land"))
+
+
+def _without_stuck_lands(lands: list[Action], stuck: frozenset[tuple[str, str]]) -> list[Action]:
+    """A land that failed the same way STUCK_TICKS ticks running is not planned again; its needs_chair goes instead."""
+    return [a for a in lands if not (a["kind"] in RECOVERY_KINDS and (a["initiative"], a["phase"]) in stuck)]
+
+
+def _with_requeues(lands: list[Action], facts: Facts) -> list[Action]:
+    """The lands plus a requeue_task per run-less approved task stuck STUCK_TICKS ticks; an initiative whose run-less
+    tasks are all requeued raises no `no_run` needs_chair beside them."""
+    runless = {t["id"]: t["initiative"] for t in facts["approved"] if not t.get("run")}
+    requeues = [a for a in requeue_no_run(facts) if a["task_id"] in runless]
+    requeued = {a["task_id"] for a in requeues}
+    unrequeued = {i for task, i in runless.items() if task not in requeued}
+    settled = {a["initiative"] for a in requeues} - unrequeued
+    kept = [a for a in lands if not (a["kind"] == "needs_chair" and a.get("cause") == "no_run" and a["initiative"] in settled)]
+    return [*kept, *requeues]
 
 
 def _is_launch(action: Action) -> bool:
@@ -1062,7 +1079,12 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     reverts = revert_check(facts.get("landed_main", []))
     carries = plan_carry(facts.get("stranded", []))
     gated = _gated_initiatives(facts)
-    planned_lands = _without_carried_lands(_without_gated_lands(plan_lands(facts, now), gated), carries)
+    stuck_chair, stuck = stuck_lands(facts)
+    planned_lands = _with_requeues(
+        _without_stuck_lands(_without_carried_lands(_without_gated_lands(plan_lands(facts, now), gated), carries), stuck), facts
+    )
+    # A planned land holds its own phase from launches for this tick only; the initiative's other phases still launch.
+    held_phases = failed_recovery_phases(planned_lands)
     fetch_exits = _fetch_exit_actions(facts)
     login_needs_chair = _login_needs_chair_actions(facts, now)
     empty_decompose_needs_chair = _empty_decompose_needs_chair_actions(facts)
@@ -1081,7 +1103,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     run_exited = facts.get("run_exited", {})
     widen = plan_widen(facts)
     widened = frozenset((a["initiative"], a["task_id"]) for a in widen)
-    lands = planned_lands
+    lands = [*planned_lands, *stuck_chair]
     recover_actions = plan_recover(facts, now)
     lost_actions = plan_lost_runs(facts, now)
     ordinary = _withhold_lost_runs(_without_widened(recover_actions, widened), lost)
@@ -1151,8 +1173,8 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     # Recover already owns a relaunched or quarantined initiative this tick; fill must not launch it a second time.
     # Withheld initiatives stay in the facts so their ready tasks still block a pull.
     # A steer deferral already reports its initiative; fill would find the same overlap and report it twice.
-    # An initiative being landed, or whose phase lands this tick, must not launch until the land settles; the rest of
-    # its repo launches beside the land.
+    # An initiative a land in flight touches must not launch until the land settles; the rest of its repo launches
+    # beside the land. A land planned or backed off this tick holds only its phase (held_phases), not the initiative.
     decompose_only = frozenset(facts.get("remote_unfetched_decompose", ()))  # type: ignore[typeddict-item]
     # Each set is keyed by the plain words a stuck steer head reports when it is the reason the head is left out.
     withheld_by = {
@@ -1168,10 +1190,9 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         "its run is lost": lost,
         "schema version death": frozenset(facts.get("schema_deaths", {})),
         "an unmet need": _unmet_needs_ids(facts["initiatives"]),
-        "its repo is landing": _landing_initiatives(facts, planned_lands),
+        "its repo is landing": landing_initiatives(facts),
         # A relaunch the budget or the loop rule refused must not go out again as a launch_epic.
         "relaunch refused by the budget or the loop rule": refused_launches(facts, now),
-        "land backoff": backoff_held(facts, now),
         "waiting on a need": waiting_ids,
         "its launch was refused on a held lease": lease_held,
         "it is held or deferred to a later release": gated,
@@ -1181,7 +1202,9 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     free_lanes = _free_lanes(cap, kept, facts["dispatch"], _cap_count(capped) - kept)
     # Fill plans with the withheld set, so an initiative recovery holds does not keep others behind its surfaces.
     fill_schedule = _planned_schedule(facts, now, withheld) if withheld else schedule
-    planned_fill = plan_fill(facts, free_lanes, withheld, consumed, claimed, stalled=stalled_intake, now=now, schedule=fill_schedule)
+    planned_fill = plan_fill(
+        facts, free_lanes, withheld, consumed, claimed, stalled=stalled_intake, now=now, schedule=fill_schedule, held_phases=held_phases
+    )
     # Fill places epics on lane hosts past the local lanes; what the cap has no room left for is dropped here.
     filled = _within_cap(planned_fill, cap - _cap_count(capped))
     launches = [*capped, *filled]
