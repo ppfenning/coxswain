@@ -463,9 +463,42 @@ def _workspace(work_dir: Path) -> Path:
     return work_dir.parent if work_dir.name == "work" else work_dir
 
 
+_ACTIVITY_SPEND_KEYS = (
+    "five_hour_resets_at", "weekly_resets_at", "five_hour_source", "weekly_source", "five_hour_fraction",
+    "weekly_fraction",
+)
+
+
+def _activity_spend_key(spend: Mapping) -> tuple:
+    """The fields of the spend block `_activity` reads, through `_window_starts` and `_pane_meter_fraction`."""
+    return tuple(repr(spend.get(key)) for key in _ACTIVITY_SPEND_KEYS)
+
+
+def _transcripts_read(
+    projects_dir: Path, session: str, workspace: Path,
+    cache: chair_activity_read.Cache | None, on_cache: Callable[[chair_activity_read.Cache], None] | None,
+) -> tuple[list[str], list[dict], list[dict]]:
+    """Edge: the holder's transcript lines, its agents and the workspace's operator sessions. With no `cache`, read in
+    full; with one, read past its cursors, and the cache of every file seen now goes to `on_cache`."""
+    if cache is None:
+        return (
+            chair_activity_read.read_session_lines(projects_dir, session),
+            chair_activity_read.read_agents(projects_dir, session),
+            chair_activity_read.read_project_sessions(projects_dir, workspace),
+        )
+    seen_lines, lines = chair_activity_read.read_session_lines_cached(projects_dir, session, cache)
+    seen_agents, agents = chair_activity_read.read_agents_cached(projects_dir, session, cache)
+    seen_sessions, sessions = chair_activity_read.read_project_sessions_cached(projects_dir, workspace, cache)
+    if on_cache is not None:
+        on_cache(MappingProxyType({**seen_lines, **seen_agents, **seen_sessions}))
+    return lines, agents, sessions
+
+
 def _activity(
     runs_dir: Path, profile: dict, session: str, workspace: Path, spend: Mapping, at: datetime,
     store_rows: Mapping | None = None,
+    reader_cache: chair_activity_read.Cache | None = None,
+    on_reader_cache: Callable[[chair_activity_read.Cache], None] | None = None,
 ) -> dict:
     """Edge: the chair's background agent rows, the three-way spend split, `operator_sessions` and `spend_sources`.
     The sessions are every transcript in `workspace`'s project folder plus the lease holder's own when it resolves
@@ -474,7 +507,8 @@ def _activity(
     `spend_sources` says whether the holder's session and the price catalog were found, and the session counts. Each
     window starts five hours (weekly: seven days) before its `resets_at`, or before `at` when the spend section has
     no reset time to read. The per-node rows and done counts are cut from `store_rows`, the one store read, which
-    reaches back to the weekly start."""
+    reaches back to the weekly start. With a `reader_cache`, the transcripts are read only past the cursors it holds,
+    and the new cache goes to `on_reader_cache`; the result equals an uncached call's."""
     projects_dir = Path(_PROJECTS_DIR).expanduser()
     five_start, weekly_start = _window_starts(spend, at)
     windows = {
@@ -494,13 +528,14 @@ def _activity(
         },
     }
     node_rows, done_counts = _window_node_inputs(store_rows or {}, windows)
-    holder_lines = chair_activity_read.read_session_lines(projects_dir, session)
-    holder_agents = chair_activity_read.read_agents(projects_dir, session)
+    holder_lines, holder_agents, project_sessions = _transcripts_read(
+        projects_dir, session, workspace, reader_cache, on_reader_cache,
+    )
     holder_status = chair_activity_read.session_status(projects_dir, session)
     prices = chair_activity_read.prices_for_profile(profile)
     # A holder that is not_found or ambiguous has no transcript to add; `with_holder` adds only a non-empty id.
     sessions = operator_sessions.with_holder(
-        chair_activity_read.read_project_sessions(projects_dir, workspace),
+        project_sessions,
         session if holder_status == "ok" else "",
         holder_lines,
         holder_agents,
@@ -1971,12 +2006,15 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
 def _build(
     runs_dir: Path, work_dir: Path, now: str, profile: dict | None, hold,
     cursors: LiveCursors | None = None, on_cursors: Callable[[LiveCursors], None] | None = None,
+    reader_cache: chair_activity_read.Cache | None = None,
+    on_reader_cache: Callable[[chair_activity_read.Cache], None] | None = None,
 ) -> dict:
     """Edge: the body of `gather_feed`. `hold(name, compute, anchor, extra, fresh)` gives one section's value:
     `compute()` uncached, a memoised value in `gather_feed_cached`. `anchor` is read after a compute only and names the
     stamps the section's ages count from; `extra` is the section's time-dependent inputs already read, for its key;
     `fresh`, when given, is applied to a reused value only, to put back what this refresh read beside the hold.
-    `cursors` and `on_cursors` make the live block read incrementally; see `_live_edge`."""
+    `cursors` and `on_cursors` make the live block read incrementally; see `_live_edge`. `reader_cache` and
+    `on_reader_cache` do the same for the activity block's operator transcripts; see `_activity`."""
     at = _parse_now(now)
     local_name, local_capacity = _local_identity(runs_dir, profile or {})
     login_ok = _local_login(local_name)
@@ -2041,8 +2079,16 @@ def _build(
         lambda: _chair_parts(runs_dir, chair_row, entries, read_drafts(work_dir, now), at),
         extra=repr(chair_row),
     )
-    activity = _activity(
-        runs_dir, profile or {}, chair_block["session"], _workspace(work_dir), spend_block, at, wide_rows,
+    # The key adds what the block reads beside the store, the run records and the transcripts: the chair session, the
+    # profile (prices) and the meter fields of the spend block. Wrong belief to avoid: "activity keys on the whole
+    # spend block". Its ages move on every refresh, and the block reads only the windows' resets, sources and fractions.
+    activity = hold(
+        "activity",
+        lambda: _activity(
+            runs_dir, profile or {}, chair_block["session"], _workspace(work_dir), spend_block, at, wide_rows,
+            reader_cache, on_reader_cache,
+        ),
+        extra=(chair_block["session"], repr(profile or {}), _activity_spend_key(spend_block)),
     )
     targets = _lane_targets(sections["lanes"], states, records, _run_hosts(wide_rows), local_name, at)
     meters = _burn_meters(spend_block, activity["spend_split"] or {}, _hard_stop_fraction(runs_dir))
@@ -2114,6 +2160,7 @@ class FeedCache:
     fingerprints: Mapping[str, object]
     clock: tuple[float, float]
     live: LiveCursors = LiveCursors()
+    activity: chair_activity_read.Cache = MappingProxyType({})
 
 
 EMPTY_CACHE = FeedCache(dash_feed_memo.EMPTY, {}, (0.0, 0.0))
@@ -2142,6 +2189,9 @@ _SECTION_GROUPS = {
     "review_prs": ("store", "records"),
     "queue_rows": ("store",),
     "queue_states": ("store", "records"),
+    # The activity block reads the store rows, the run usage and `.ccusage-block.json` (records) and the operator
+    # transcripts. It reads no lane trace.
+    "activity": ("store", "records", "transcripts"),
 }
 # The finest step, in seconds, a section's output moves with `now` once its age fields are refreshed and its other
 # time-dependent inputs are in its key (`extra` in `_build`: the lanes, the hosts, the run window, the console chair
@@ -2155,6 +2205,8 @@ _SECTION_STEP_S = {
     # with no store write. Wrong belief to avoid: "the console moves only with the store". Holding it for a minute at
     # most bounds how late such a lapse shows. The other three read no clock.
     "console": 60, "review_prs": 3600, "queue_rows": 3600, "queue_states": 3600,
+    # The activity's seat spend and agent states count against `at`: a reused block is as of the minute's first refresh.
+    "activity": 60,
 }
 # These read `courier.jsonl` and `*/initiative.md` under `work_dir`, which the probe does not stat.
 _WORK_STAMPED = frozenset({"chair", "inbox"})
@@ -2228,7 +2280,7 @@ def gather_feed_cached(
     store_stamp = None if local_store else run_store.store_change_stamp(runs_dir)
     fingerprints = dash_feed_inputs.probe(runs_dir, Path(_PROJECTS_DIR).expanduser(), local_store, store_stamp)
     stamp = _work_stamp(work_dir)
-    state: dict = {"memo": cache.memo, "live": cache.live}
+    state: dict = {"memo": cache.memo, "live": cache.live, "activity": cache.activity}
     results: list[tuple[str, bool]] = []
 
     def hold(name: str, compute, anchor=None, extra=(), fresh=None):
@@ -2243,9 +2295,12 @@ def gather_feed_cached(
         aged = _refresh_ages(name, section, anchors, at)
         return aged if fresh is None else fresh(aged)
 
-    feed = _build(runs_dir, work_dir, now, profile, hold, cache.live, lambda cursors: state.update(live=cursors))
+    feed = _build(
+        runs_dir, work_dir, now, profile, hold, cache.live, lambda cursors: state.update(live=cursors),
+        cache.activity, lambda readers: state.update(activity=readers),
+    )
     recomputed, reused = dash_feed_memo.split_reuse(dash_feed_cost.SECTION_ORDER, results)
     cpu_s, wall_s = finish()
     cost = dash_feed_cost.cost_block(cpu_s, wall_s, recomputed, reused)
     clock = (start[0] + cpu_s, start[1] + wall_s)
-    return {**feed, "cost": cost}, FeedCache(state["memo"], fingerprints, clock, state["live"])
+    return {**feed, "cost": cost}, FeedCache(state["memo"], fingerprints, clock, state["live"], state["activity"])
