@@ -1,6 +1,36 @@
+import copy
+import json
+from pathlib import Path
+
 import pytest
 
 from agent_tools.dash_board import STATUSES, build_board, rollup_status, task_costs
+
+SLIM_BOARD = json.loads((Path(__file__).parent / "fixtures" / "dash_feed_board_slim_v1.json").read_text(encoding="utf-8"))["board"]
+# (initiative, phase, task, status, cost) in the order the slim fixture lists them.
+SLIM_TASKS = [
+    ("board-feed", "p1-schema", "board-schema", "landed", 0.5),
+    ("board-feed", "p1-schema", "board-rollup", "merged", 0.25),
+    ("board-feed", "p2-render", "board-render", "building", 1.0),
+    ("board-feed", "p2-render", "board-keys", "ready", 0.0),
+    ("board-feed", "p2-render", "board-docs", "blocked", 0.0),
+    ("board-old", "p1", "old-a", "landed", 0.5),
+    ("board-old", "p1", "old-b", "landed", 0.5),
+    ("board-cut", "p1", "cut-a", "dropped", 0.5),
+    ("ops-scripts", "p1", "ops-a", "landed", 0.75),
+    ("ops-scripts", "p1", "ops-b", "landed", 0.5),
+    ("ops-scripts", "p1", "ops-c", "landed", 0.5),
+    ("ops-legacy", "p1", "legacy-a", "dropped", 0.5),
+    ("cost-ledger", "p1-core", "ledger-sum", "approved", 0.75),
+    ("cost-ledger", "p1-core", "ledger-attempts", "quarantined", 1.25),
+    ("cost-ledger", "p2-wire", "ledger-wire", "dropped", 0.25),
+    ("cost-ledger", "p2-wire", "ledger-test", "landed", 0.5),
+]
+SLIM_EPIC_OF = {
+    "board-feed": "dash-board", "board-old": "dash-board", "board-cut": "dash-board",
+    "ops-scripts": "ops-cleanup", "ops-legacy": "ops-cleanup", "cost-ledger": None,
+}
+SLIM_EPIC_TITLES = {"dash-board": "Board tree on the dash", "ops-cleanup": "Retire the old ops scripts", "": "no epic"}
 
 ROWS = [
     {"initiative": "alpha", "phase": "p2", "task_id": "t-build"},
@@ -127,6 +157,62 @@ def test_board_inputs_are_not_mutated():
     rows, states = [dict(row) for row in ROWS], dict(STATES)
     build_board(rows, states, RUNS, EPIC_OF, SHORT_IDS, COSTS)
     assert (rows, states) == (ROWS, STATES)
+
+
+def _board_of(tasks, epic_of, short_ids=None, runs=None):
+    rows = [{"initiative": i, "phase": p, "task_id": t} for i, p, t, _, _ in tasks]
+    states = {(i, p, t): status for i, p, t, status, _ in tasks}
+    return build_board(rows, states, runs or {}, epic_of, short_ids or {}, {t: cost for _, _, t, _, cost in tasks})
+
+
+def _many_landed(landed):
+    """One epic: five open initiatives of one building task each, and `landed` landed initiatives of one task each."""
+    open_tasks = [(f"open{n}", "p", f"open{n}-t", "building", 1.0) for n in range(5)]
+    landed_tasks = [(f"done{n}", "p", f"done{n}-t", "landed", 0.25) for n in range(landed)]
+    tasks = [*open_tasks, *landed_tasks]
+    return _board_of(tasks, {i: "e" for i, *_ in tasks})
+
+
+def test_the_board_of_the_contract_rows_is_the_slim_fixture_board():
+    short_ids = {"board-feed": "I501", "cost-ledger": "I498"}
+    board = _board_of(SLIM_TASKS, SLIM_EPIC_OF, short_ids, {"board-render": ("board-feed-1", "host-b")})
+    assert [e["title"] for e in board["epics"]] == ["dash-board", "ops-cleanup", "no epic"]
+    # The builder has no title input, so it titles an epic by its id. The titles below are pinned literals, so a
+    # change to a title in the fixture fails here instead of being normalised away.
+    titled = {"epics": [{**e, "title": SLIM_EPIC_TITLES[e["id"]]} for e in board["epics"]]}
+    assert titled == SLIM_BOARD
+
+
+def test_a_thousand_landed_initiatives_are_counted_and_the_five_open_ones_listed():
+    epic = _many_landed(1000)["epics"][0]
+    assert [i["id"] for i in epic["initiatives"]] == [f"open{n}" for n in range(5)]
+    assert all(i["phases"] for i in epic["initiatives"])
+    assert epic["settled"] == {"landed": 1000, "dropped": 0, "cost_usd": 250.0}
+    assert (epic["status"], epic["cost_usd"]) == ("building", 255.0)
+    assert epic["counts"] == _counts(building=5, landed=1000)
+
+
+def test_the_serialised_board_does_not_grow_with_the_landed_initiatives():
+    big, small = (len(json.dumps(_many_landed(n))) for n in (1000, 100))
+    # Going from 100 to 1,000 adds one digit to four numbers: settled landed and cost, epic counts and cost.
+    assert big - small == 4
+
+
+def test_settled_dropped_and_landed_initiatives_are_split_and_costed():
+    tasks = [("a", "p", "a1", "dropped", 0.5), ("b", "p", "b1", "landed", 0.25), ("c", "p", "c1", "ready", 0.0)]
+    epic = _board_of(tasks, {})["epics"][0]
+    assert [i["id"] for i in epic["initiatives"]] == ["c"]
+    assert epic["settled"] == {"landed": 1, "dropped": 1, "cost_usd": 0.75}
+    assert list(epic) == ["id", "title", "status", "cost_usd", "counts", "initiatives", "settled"]
+
+
+def test_a_settled_board_does_not_mutate_its_inputs():
+    rows = [{"initiative": i, "phase": p, "task_id": t} for i, p, t, _, _ in SLIM_TASKS]
+    states = {(i, p, t): status for i, p, t, status, _ in SLIM_TASKS}
+    given = (rows, states, dict(SLIM_EPIC_OF))
+    before = copy.deepcopy(given)
+    build_board(rows, states, {}, SLIM_EPIC_OF, {}, {})
+    assert given == before
 
 
 def test_rollup_of_nothing_or_only_dropped_is_dropped():
