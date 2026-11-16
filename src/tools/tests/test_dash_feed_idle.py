@@ -16,6 +16,12 @@ SECTIONS = list(dash_feed_cost.SECTION_ORDER)
 
 
 @pytest.fixture
+def tmp_path(short_tmp_path):
+    """The project folder is named for the whole workspace path, so the workspace's path stays short."""
+    return short_tmp_path
+
+
+@pytest.fixture
 def reads(monkeypatch):
     """Every transcript byte read, as (file name, offset), through either the cursor reader or the plain one."""
     seen: list[tuple[str, int]] = []

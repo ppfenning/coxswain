@@ -2329,11 +2329,11 @@ def _worktree_scratch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[
     """(the run's scratch root, the checks' TMPDIR in it), with the system temp directory moved under `tmp_path`."""
     import tempfile
 
-    from harness.lane_pytest_tmp import run_scratch_root
+    from harness.lane_pytest_tmp import lane_scratch_dir, run_scratch_root
 
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "temp"))
     root = run_scratch_root(tmp_path / "temp", tmp_path / "run")
-    return root, root / "pytest-tmp" / "checks--wt"
+    return root, lane_scratch_dir(root, "checks", "wt")
 
 
 def test_worktree_checks_env_carries_the_tmpdir_and_the_dir_is_removed_after_a_pass(tmp_path, monkeypatch):

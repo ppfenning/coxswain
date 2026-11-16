@@ -23,6 +23,12 @@ _SESSION_C = "9a7b6c5d-1e2f-4a3b-8c4d-5e6f7a8b9c0d"
 _NODE_KEYS = {"by_node", "cost_per_landed_task", "completions", "cost_per_completion"}
 
 
+@pytest.fixture
+def tmp_path(short_tmp_path):
+    """The project folder is named for the whole workspace path, so the workspace's path stays short."""
+    return short_tmp_path
+
+
 def _line(message_id: str, timestamp: str, input_tokens: int = 0, output_tokens: int = 0) -> str:
     """One priced assistant line; model m1 costs $1 per million input tokens and $2 per million output tokens."""
     return json.dumps({

@@ -188,7 +188,7 @@ def test_a_deleted_pr_branch_is_reported_with_the_escape_hatch_not_left_silent(t
 
 def test_an_unreachable_origin_names_the_fetch_error(tmp_path, monkeypatch):
     repo = make_repo(tmp_path, "squash")
-    git(repo, "remote", "set-url", "origin", str(tmp_path / "missing.git"))
+    git(repo, "remote", "set-url", "origin", "missing.git")  # relative: the reason keeps 200 characters of the error, and a temp root's path can be longer
     result, writes = finish(repo, runs_dir_with_record(tmp_path), monkeypatch)
     assert result["status"] == "failed" and writes == []
     assert "missing.git" in result["reason"]

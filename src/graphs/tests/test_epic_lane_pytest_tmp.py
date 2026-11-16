@@ -19,7 +19,7 @@ from test_epic_driver import (  # noqa: F401 -- cart and repo are fixtures
 from test_epic_rescue import _rescue, _setup
 
 import harness.epic as epic
-from harness.lane_pytest_tmp import run_scratch_root
+from harness.lane_pytest_tmp import lane_scratch_dir, run_scratch_root
 
 RUN_ID = "epic-1"
 PHASE = "p1-foundations"
@@ -121,7 +121,7 @@ def test_a_lane_directory_is_gone_before_the_phase_level_checks_run(repo, cart, 
     drive(repo, cart, tmp_path, work=_work())
     at_level = [present for name, _, _, present in calls if name not in TASKS]
     assert at_level
-    assert all(present == {f"{PHASE}--@level"} for present in at_level)
+    assert all(present == {lane_scratch_dir(Path("/r"), PHASE, "@level").name} for present in at_level)
 
 
 def test_nothing_is_left_behind_once_the_lanes_are_dropped(repo, cart, tmp_path, monkeypatch) -> None:  # noqa: F811

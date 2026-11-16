@@ -1,6 +1,8 @@
 import os
 import re
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -164,3 +166,18 @@ def _no_token_in_the_environment(monkeypatch):
     """The token status and the doctor count a token kept in the environment. A machine that keeps its real one
     there must not change what a test sees: a test that wants one sets it."""
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+
+SHORT_TEMP_ROOT = Path("/tmp")
+
+
+@pytest.fixture
+def short_tmp_path():
+    """A fresh directory whose path is short whatever the temp root is. Claude's project folder is the whole workspace
+    path in one file name, so a test that makes one for a workspace under `tmp_path` failed with "File name too long"
+    when the run's temp root was long, as a lane's TMPDIR is. A module that names project folders overrides `tmp_path`
+    with this one."""
+    root = SHORT_TEMP_ROOT if SHORT_TEMP_ROOT.is_dir() else Path(tempfile.gettempdir())
+    path = Path(tempfile.mkdtemp(prefix="t-", dir=root)).resolve()
+    yield path
+    shutil.rmtree(path, ignore_errors=True)
