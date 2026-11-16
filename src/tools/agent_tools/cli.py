@@ -165,6 +165,7 @@ install = _LazyModule("agent_tools.install")
 install_exec = _LazyModule("agent_tools.install_exec")
 install_root = _LazyModule("agent_tools.install_root")
 intake_fields = _LazyModule("agent_tools.intake_fields")
+intake_pull_map = _LazyModule("agent_tools.intake_pull_map")
 intake_queue = _LazyModule("agent_tools.intake_queue")
 intake_state = _LazyModule("agent_tools.intake_state")
 jsonl_log = _LazyModule("agent_tools.jsonl_log")
@@ -6793,6 +6794,12 @@ def _pull_source(a: argparse.Namespace, profile: dict, source: str, *, named: bo
     if config is None or adapter is None:
         print(f"routing: no source {source!r} in the profile and adapters")
         return 2
+    # Only a source that carries labels maps them; a folder's files keep no stage line, as before.
+    pull_map = intake_pull_map.PullMap.from_profile(profile.get("intake_map") or {})
+    if isinstance(pull_map, str):
+        print(f"routing: intake_map: {pull_map}")
+        return 2
+    pull_map = pull_map if getattr(adapter, "MAPS_LABELS", False) else None
     listing = _fetch_listing(adapter, config)
     if listing is None:
         return 2
@@ -6801,9 +6808,8 @@ def _pull_source(a: argparse.Namespace, profile: dict, source: str, *, named: bo
     known = sorted(intake_root.glob("*.md")) + sorted((intake_root / "done").glob("*.md"))
     links = sources.intake_links({str(p.relative_to(ws)): p.read_text(encoding="utf-8") for p in known})
     found, unreadable = _pull_candidates(adapter, config, listing)
-    taken = frozenset(link for link in found if adapter.taken(link, links)) | _taken_by_project_item(
-        found, run_store.read_queue(ws / "runs")
-    )
+    rows = run_store.read_queue(ws / "runs")
+    taken = frozenset(link for link in found if adapter.taken(link, links)) | _taken_by_project_item(found, rows)
     date = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
     repo_map = profile.get("repo_map", {})
     held = _held_issues(ws, repo_map)
@@ -6815,9 +6821,13 @@ def _pull_source(a: argparse.Namespace, profile: dict, source: str, *, named: bo
         source=source,
         ids=profile.get("ids", "slug"),
         known_issues=held,
+        pull_map=pull_map,
+        known_epics=_known_epic_ids(rows),
     )
     problems = [*unreadable, *refusals]
     for line in problems:
+        print(line)
+    for line in route.pull_notes([c for c in found.values() if c.link not in taken], pull_map) if pull_map else ():
         print(line)
     if a.dry_run:
         for candidate, label in route.held_candidates(tuple(found.values()), held):

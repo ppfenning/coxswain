@@ -9,6 +9,9 @@ INTAKE_LABEL = "intake"
 REVIEW_LABEL = "review"
 REVIEW_TAKEN_LABEL = "review:taken"
 TAKEN_LABEL = "intake:taken"
+# A pull maps this source's labels and milestone onto an intake's fields (`intake_pull_map`); a source without the
+# flag, such as `folder`, carries no labels, so its files keep no stage line and read as ready.
+MAPS_LABELS = True
 
 
 def _repo(raw: Mapping) -> str:
