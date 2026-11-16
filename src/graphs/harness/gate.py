@@ -162,6 +162,14 @@ def auto_apply(
     tier, refusal = _apply_tier(runner, arm, "standard")
     if refusal is not None:
         return False, refusal
+    # The arm's session starts in the work root, but the model writes absolute paths. Told only `work/...`, it
+    # once built them under the home directory on a lane host, and the decompose then found none of its files.
+    root = getattr(runner, "cwd", None)
+    where = (
+        f"The work root is {root}. Every relative path in this proposal is relative to it: write "
+        f"work/<initiative>/... at {root}/work/<initiative>/..., never under the home directory.\n\n"
+        if root else ""
+    )
     result = runner.run(
         role=arm,
         tier=tier,
@@ -172,7 +180,7 @@ def auto_apply(
         # writes, and an arm handed only the action and the evidence was left
         # to refuse — correctly — for want of the content it was told to land.
         prompt=(
-            f"Apply this approved proposal exactly as written. Do not widen it.\n\n"
+            f"Apply this approved proposal exactly as written. Do not widen it.\n\n{where}"
             f"kind: {item['kind']}\ntarget: {item['target']}\n"
             f"action: {item['suggested_action']}\n"
             f"rationale (the content, where the action calls for one):\n{item['rationale']}\n\n"
