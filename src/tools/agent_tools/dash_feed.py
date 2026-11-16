@@ -2091,6 +2091,8 @@ EMPTY_CACHE = FeedCache(dash_feed_memo.EMPTY, {}, (0.0, 0.0))
 
 # The fingerprint groups each section's builders read. Wrong belief to avoid: "machines reads only the store". Its
 # lane entries come from `_board_edge`, so it reads what the board reads. Only `epics` is on the store alone.
+# The `store` group is the sqlite file stat, or for a Postgres store its change stamp; it is None, so every section on
+# it recomputes, only when a non-sqlite store gives no stamp.
 _STORE_RECORDS_TRACES = ("store", "records", "lane_traces")
 _SECTION_GROUPS = {
     "chair": ("store", "records"),
@@ -2132,7 +2134,8 @@ def _work_stamp(work_dir: Path) -> tuple:
 
 def _section_key(name: str, fingerprints: Mapping[str, object], at: datetime, work_stamp: tuple) -> tuple:
     """A section's memo key: its groups' fingerprints, `at` floored to its step, and the work-dir stamp where it reads
-    the work dir. A group with no fingerprint (a non-sqlite store) gives a key equal to no other."""
+    the work dir. A group with no fingerprint gives a key equal to no other: a non-sqlite store whose change stamp
+    could not be read (`run_store.store_change_stamp` gave None). A Postgres store with a stamp matches like sqlite."""
     prints = tuple(fingerprints.get(group) for group in _SECTION_GROUPS[name])
     if any(print_ is None for print_ in prints):
         return (object(),)
@@ -2180,7 +2183,9 @@ def gather_feed_cached(
     start, finish = dash_feed_cost.measure(time.process_time, time.perf_counter)
     runs_dir, work_dir = Path(runs_dir), Path(work_dir)
     at = _parse_now(now)
-    fingerprints = dash_feed_inputs.probe(runs_dir, Path(_PROJECTS_DIR).expanduser(), _store_is_local_sqlite(runs_dir))
+    local_store = _store_is_local_sqlite(runs_dir)
+    store_stamp = None if local_store else run_store.store_change_stamp(runs_dir)
+    fingerprints = dash_feed_inputs.probe(runs_dir, Path(_PROJECTS_DIR).expanduser(), local_store, store_stamp)
     stamp = _work_stamp(work_dir)
     state: dict = {"memo": cache.memo, "live": cache.live}
     results: list[tuple[str, bool]] = []

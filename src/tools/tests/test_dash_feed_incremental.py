@@ -186,3 +186,57 @@ def test_cost_block_matches_the_fixture_shape(workspace):
     assert cost.keys() == expected.keys()
     assert all(isinstance(cost[key], type(expected[key])) for key in expected)
     assert set(cost["recomputed"]) | set(cost["reused"]) == set(dash_feed_cost.SECTION_ORDER)
+
+
+@pytest.fixture
+def postgres(workspace, monkeypatch):
+    """The workspace on a Postgres-style store: no local file to stat, and a change stamp the test can move."""
+    stamp = {"value": (("runs", 5), ("work_items", 9))}
+    monkeypatch.setattr(dash_feed, "_store_is_local_sqlite", lambda runs_dir: False)
+    monkeypatch.setattr(dash_feed.run_store, "store_change_stamp", lambda runs_dir: stamp["value"])
+    return (*workspace, stamp)
+
+
+def test_a_postgres_store_with_a_stamp_reuses_store_sections_across_self_written_files(postgres):
+    # `.ccusage-block.json` is not rewritten here: the spend section reads it, so it stays in `records` on purpose
+    # (see the dash_feed_inputs docstring), and moving it recomputes the sections that read records.
+    runs, work, _ = postgres
+    share = runs / ".dash-feed"
+    share.mkdir()
+    (share / "feed.snapshot").write_text("{}")
+    (runs / "alpha-1.progress.json").write_text("{}")
+    _, cache = dash_feed.gather_feed_cached(runs, work, NOW, None, dash_feed.EMPTY_CACHE)
+    (share / "feed.snapshot").write_text('{"schema": 1}')
+    (runs / "alpha-1.progress.json").write_text('{"step": 2}')
+    feed, _ = dash_feed.gather_feed_cached(runs, work, NOW, None, cache)
+    assert feed["cost"]["reused"] == list(dash_feed_cost.SECTION_ORDER)
+    assert feed["cost"]["recomputed"] == []
+
+
+def test_a_changed_stamp_recomputes_only_the_sections_on_the_store(postgres):
+    runs, work, stamp = postgres
+    _, cache = dash_feed.gather_feed_cached(runs, work, NOW, None, dash_feed.EMPTY_CACHE)
+    stamp["value"] = (("runs", 6), ("work_items", 9))
+    feed, _ = dash_feed.gather_feed_cached(runs, work, LATER, None, cache)
+    on_store = [n for n in dash_feed_cost.SECTION_ORDER if "store" in dash_feed._SECTION_GROUPS[n]]
+    assert feed["cost"]["recomputed"] == on_store
+    assert feed["cost"]["reused"] == ["live"]
+    assert _without_cost(feed) == _fresh(runs, work, LATER)
+
+
+def test_a_postgres_store_without_a_stamp_recomputes_every_store_section(postgres):
+    runs, work, stamp = postgres
+    stamp["value"] = None
+    _, cache = dash_feed.gather_feed_cached(runs, work, NOW, None, dash_feed.EMPTY_CACHE)
+    feed, _ = dash_feed.gather_feed_cached(runs, work, NOW, None, cache)
+    assert feed["cost"]["reused"] == ["live"]
+
+
+def test_a_sqlite_store_never_asks_for_a_stamp(workspace, monkeypatch):
+    runs, work = workspace
+
+    def refuse(runs_dir):
+        raise AssertionError("a local sqlite store is stat'ed, not stamped")
+
+    monkeypatch.setattr(dash_feed.run_store, "store_change_stamp", refuse)
+    dash_feed.gather_feed_cached(runs, work, NOW, None, dash_feed.EMPTY_CACHE)
