@@ -102,6 +102,7 @@ chair_read_approved = _LazyModule("agent_tools.chair_read_approved")
 chair_read_attempts = _LazyModule("agent_tools.chair_read_attempts")
 chair_read_branch_merged = _LazyModule("agent_tools.chair_read_branch_merged")
 chair_read_cache = _LazyModule("agent_tools.chair_read_cache")
+chair_read_decompose_miss = _LazyModule("agent_tools.chair_read_decompose_miss")
 chair_read_docket = _LazyModule("agent_tools.chair_read_docket")
 chair_read_exits = _LazyModule("agent_tools.chair_read_exits")
 chair_read_housekeeping = _LazyModule("agent_tools.chair_read_housekeeping")
@@ -165,6 +166,7 @@ install = _LazyModule("agent_tools.install")
 install_exec = _LazyModule("agent_tools.install_exec")
 install_root = _LazyModule("agent_tools.install_root")
 intake_fields = _LazyModule("agent_tools.intake_fields")
+intake_pull_map = _LazyModule("agent_tools.intake_pull_map")
 intake_queue = _LazyModule("agent_tools.intake_queue")
 intake_state = _LazyModule("agent_tools.intake_state")
 jsonl_log = _LazyModule("agent_tools.jsonl_log")
@@ -6693,17 +6695,26 @@ def _mark_argv(adapter, config, ref, rel: str) -> list[str]:
 def _pull_one(adapter, config, mapping: dict, found: dict, ws: Path, dry_run: bool) -> bool:
     """Write one planned intake file, then mark its source; True after printing why when either step failed."""
     (rel, text), = mapping.items()
-    origin = found[route.parse_frontmatter(text)[0]["link"]]
+    fields = route.parse_frontmatter(text)[0]
+    origin = found[fields["link"]]
     if dry_run:
         print(f"would write {rel}")
         return False
     if refusal := _write_mapping(mapping, ws):
         print(f"{refusal}; {origin.title!r} ({origin.link}) not filed")
         return True
+    print(_filed_line(rel, fields))
     rc, _, err = _run_argv(_mark_argv(adapter, config, sources.Ref(origin.link, origin.repo), rel))
     if rc != 0:
         print(f"routing: wrote {rel}; marking {origin.link} failed (exit {rc}): {err}")
     return rc != 0
+
+
+def _filed_line(rel: str, fields: Mapping) -> str:
+    """Pure. The line a pull prints for a filed intake: its stage, and for a draft the command that readies it."""
+    if fields.get("stage") == "draft":
+        return f"filed {rel} as a draft; cox route ready {fields.get('id') or Path(rel).stem}"
+    return f"filed {rel} (ready)"
 
 
 def _review_one(adapter, origin, profile: str, dry_run: bool) -> bool:
@@ -6793,6 +6804,12 @@ def _pull_source(a: argparse.Namespace, profile: dict, source: str, *, named: bo
     if config is None or adapter is None:
         print(f"routing: no source {source!r} in the profile and adapters")
         return 2
+    # Only a source that carries labels maps them; a folder's files keep no stage line, as before.
+    pull_map = intake_pull_map.PullMap.from_profile(profile.get("intake_map") or {})
+    if isinstance(pull_map, str):
+        print(f"routing: intake_map: {pull_map}")
+        return 2
+    pull_map = pull_map if getattr(adapter, "MAPS_LABELS", False) else None
     listing = _fetch_listing(adapter, config)
     if listing is None:
         return 2
@@ -6801,9 +6818,8 @@ def _pull_source(a: argparse.Namespace, profile: dict, source: str, *, named: bo
     known = sorted(intake_root.glob("*.md")) + sorted((intake_root / "done").glob("*.md"))
     links = sources.intake_links({str(p.relative_to(ws)): p.read_text(encoding="utf-8") for p in known})
     found, unreadable = _pull_candidates(adapter, config, listing)
-    taken = frozenset(link for link in found if adapter.taken(link, links)) | _taken_by_project_item(
-        found, run_store.read_queue(ws / "runs")
-    )
+    rows = run_store.read_queue(ws / "runs")
+    taken = frozenset(link for link in found if adapter.taken(link, links)) | _taken_by_project_item(found, rows)
     date = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
     repo_map = profile.get("repo_map", {})
     held = _held_issues(ws, repo_map)
@@ -6815,9 +6831,15 @@ def _pull_source(a: argparse.Namespace, profile: dict, source: str, *, named: bo
         source=source,
         ids=profile.get("ids", "slug"),
         known_issues=held,
+        pull_map=pull_map,
+        known_epics=_known_epic_ids(rows),
+        # A pulled issue is ready unless labelled a draft; the profile's `intake_stage` changes that default.
+        default_stage=profile.get("intake_stage") or "ready",
     )
     problems = [*unreadable, *refusals]
     for line in problems:
+        print(line)
+    for line in route.pull_notes([c for c in found.values() if c.link not in taken], pull_map) if pull_map else ():
         print(line)
     if a.dry_run:
         for candidate, label in route.held_candidates(tuple(found.values()), held):
@@ -14265,6 +14287,10 @@ def _chair_run_deps(
     def stranded_inputs() -> tuple[list[dict], list[dict]]:
         return once("stranded", lambda: _chair_stranded_inputs(ws, mode, work_files(), store_rows()))  # type: ignore[return-value]
 
+    def intake_fingerprint(path: str) -> str | None:
+        # The tick's one queue read, shared by the facts and the exec; None when the store read gave no row for it.
+        return chair_read_decompose_miss.fingerprint_or_none(ws, work_rows(), path, store_mode=mode == "store")
+
     def work_rows() -> list[dict]:
         # `store_rows` (run_store.work_items) carries no `kind` column; the queue read does. Store mode only, once per tick.
         return once("work_rows", lambda: _takes_cache(run_store.read_queue, queue_cache)(runs_dir) if mode == "store" else [])  # type: ignore[return-value]
@@ -14577,6 +14603,7 @@ def _chair_run_deps(
         land_hold=lambda: chair_smoke.read_hold(str(runs_dir)),
         land_outcomes=lambda: chair_revert_watch.outcomes(actions),
         decompose_runs=decompose_runs_of,
+        intake_fingerprint=intake_fingerprint,
         newest_run_host=lambda: run_store.newest_run_hosts(runs_dir, [row["id"] for row in docket()["initiatives"]]),
         history=lambda: chair_read_housekeeping.read_last_housekeeping(runs_dir),
         housekeeping_hours=lambda: (profile.get("chair") or {}).get("housekeeping_hours"),
@@ -14622,6 +14649,8 @@ def _chair_run_deps(
         rerun_main=lambda repo, commit: chair_revert_ports.rerun_infra(runner, _gh_repo(repo), commit),
         launch_stagger_s=chair_exec.stagger_seconds((profile.get("chair") or {}).get("launch_stagger_s")),
         mark_handled=None if dry_run else (lambda key: _mark_handled_key(runs_dir, key)),
+        # The same reader the facts use, so a miss records the fingerprint the next tick's facts compare against.
+        intake_fingerprint=intake_fingerprint,
     )
     def held() -> None:
         """Resolves each pending watch the smoke hold does not name, when its commit is green on main or main went green after it."""

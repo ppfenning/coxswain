@@ -208,6 +208,11 @@ class Deps:
     # plans annotate_objection: a failure that needs a tweak is triaged by the model in the next run (request_triage).
     objection_note: chair_sort.ObjectionNote | None = None
     mark_handled: Callable[[str], None] | None = None  # a handled key's extra sink; the recorded action already carries `key`
+    # An intake path -> a digest that changes when the intake does (its file, its store row, its path); a decompose
+    # launch that found no idea file records it, so the planner can tell a repeat on an unchanged intake from a fixed one.
+    # None when it cannot be read this tick (a failed store read): the miss is then recorded with no fingerprint,
+    # which the facts read as no change to the backoff.
+    intake_fingerprint: Callable[[str], str | None] = _no_intake_id
 
 
 def resolved_target(cartridge_target: str | None, epic_branch: str | None, initiative_branch: str | None) -> str | None:
@@ -946,7 +951,21 @@ def _launch(action: Action, deps: Deps) -> Result:
         return _result(action, "done", output)
     if chair_lease_refusal.parse_lease_refusal(output) is not None:  # the previous run's lease has not expired: not a broken launch
         return _result(action, chair_lease_refusal.STATUS, output)
+    missing = idea_miss_path(output) if action.get("kind") == "launch_decompose" and action.get("intake_ids") else None
+    if missing is not None:
+        # The recorded row carries the miss, which `chair_facts.decompose_miss_facts` counts into the planner's backoff.
+        fingerprint = deps.intake_fingerprint(action["intake_ids"][0])
+        missed = {**action, "idea_missing": missing, **({"fingerprint": fingerprint} if fingerprint is not None else {})}
+        return _result(missed, "failed", output)
     return _result(action, "failed", output)
+
+
+IDEA_MISS_PREFIX = "routing: no idea file at "  # the line `cox route launch decompose` prints when --idea names no file
+
+
+def idea_miss_path(output: str) -> str | None:
+    """Pure. The path a decompose launch's `routing: no idea file at <path>` line names; None when it printed none."""
+    return next((line[len(IDEA_MISS_PREFIX):].strip() for line in output.splitlines() if line.startswith(IDEA_MISS_PREFIX)), None)
 
 
 def _fetched_host(runs_dir: Path, run: str) -> str:
