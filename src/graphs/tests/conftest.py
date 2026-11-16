@@ -6,6 +6,7 @@ import os
 import threading
 import uuid
 from collections.abc import Mapping
+from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -183,6 +184,19 @@ def _git_templates_are_empty(tmp_path_factory):
         (templates / name).mkdir()
     with pytest.MonkeyPatch.context() as patch:
         patch.setenv("GIT_TEMPLATE_DIR", str(templates))
+        yield
+
+
+_SOURCE_ROOTS = tuple(str(Path(__file__).resolve().parents[2] / name) for name in ("graphs", "tools", "cartridges"))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _child_interpreters_import_this_tree():
+    """A child `sys.executable` (the store-traces dump, the pool edge's acquire) imports the source roots pytest.ini
+    puts on `sys.path`, not the checkout an editable install in the venv points at: that one may be older than this tree."""
+    inherited = os.environ.get("PYTHONPATH", "")
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("PYTHONPATH", os.pathsep.join(p for p in (*_SOURCE_ROOTS, inherited) if p))
         yield
 
 
