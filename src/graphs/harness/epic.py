@@ -81,6 +81,7 @@ from graphs._contract import proposal
 from graphs.delivery import rescue_review
 from graphs.delivery.budget_estimate import estimate_budget
 from graphs.delivery.lifecycle_propose import DEFAULT_FIX_ATTEMPTS
+from graphs.delivery.repo_layout import repo_key
 from harness import (
     landing_git,
     landing_ops,
@@ -139,7 +140,14 @@ from harness.phase_remote import FetchOutcome, Kind, fetch_branch, materialise_l
 from harness.resume import load_result, reusable, save_result
 from harness.scheduler import plan_launches
 from harness.stack_refresh import guarded_refresh, refresh_record
-from harness.stale_base import is_patch_empty, missing_paths, stale_base_reason, ticket_paths
+from harness.stale_base import (
+    is_patch_empty,
+    missing_paths,
+    stale_base_reason,
+    ticket_paths,
+    wrong_repository,
+    wrong_repository_reason,
+)
 from harness.store_dialect import Connection, connect
 from harness.store_lease import assert_epoch, renew
 from harness.store_pause import clear_paused, is_paused
@@ -4838,10 +4846,15 @@ def _run_phase(
             # An empty patch from a base that lacks the ticket's own files is the base's fault, not the ticket's.
             empty = is_patch_empty(failure) and failed in by_id
             missing = _stale_base_missing(ctx, phase, by_id[failed]) if empty else ()
+            # Files that all live in one other repository are the ticket's fault: its cause is `ticket`, no free retry.
+            elsewhere = wrong_repository(missing, repo_key(str(ctx.repo)))
+            stale_reason = (
+                wrong_repository_reason(failed, missing, elsewhere) if elsewhere else stale_base_reason(failed, missing)
+            )
             quarantined.append(
                 _quarantine_task(
                     ctx, by_id, phase=phase, task=failed,
-                    reason=stale_base_reason(failed, missing) if missing else failure,
+                    reason=stale_reason if missing else failure,
                     kind="stale_base" if missing else _invoke_failure_kind(failure),
                 )
             )
