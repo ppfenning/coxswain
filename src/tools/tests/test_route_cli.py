@@ -201,6 +201,23 @@ def test_efficiency_figures_keep_per_landed_as_an_alias_of_cost_per_completion(t
     assert figures["completions"] == figures["landed"] == 1
 
 
+def test_todays_completions_count_tasks_merged_today_as_the_spend_windows_do(tmp_path):
+    # Two tasks of a run still in flight merged into their PR branch today and nothing landed: the land log is empty,
+    # so `landed` is 0, and `completions` counts both, the way the feed's spend_split windows count them.
+    ts, calls = _today_and_calls({"cost_usd": 3.0, "role": "build", "task_id": "epic-x-5:seams:seams-t"})
+    store(tmp_path, *calls)
+    conn = sqlite3.connect(tmp_path / "cox.db")
+    conn.execute("CREATE TABLE task_records (run_id TEXT, phase_id TEXT, task_id TEXT, record_json TEXT, updated_at TEXT)")
+    merged = json.dumps({"status": "approved", "merged": True, "merged_commit": "abc"})
+    for task in ("seams-task", "wires-task"):
+        conn.execute("INSERT INTO task_records VALUES ('epic-x-5', 'p1', ?, ?, ?)", (task, merged, ts))
+    conn.commit()
+    conn.close()
+    figures = cli._efficiency_figures(tmp_path, ts)
+    assert (figures["landed"], figures["completions"]) == (0, 2)
+    assert figures["cost_per_completion"] == 1.5 and figures["per_landed"] == figures["cost_per_completion"]
+
+
 def test_context_does_not_hand_a_ticket_the_builds_of_a_ticket_whose_name_it_extends(tmp_path, capsys):
     profile = _write_workspace(tmp_path)
     runs = tmp_path / "workspace" / "runs"

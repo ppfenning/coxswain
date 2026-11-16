@@ -11,6 +11,7 @@ from agent_tools.console_screen import LaneRow
 FIXTURE = Path(__file__).parent / "fixtures" / "dash_feed_cost_v1.json"
 NOW = "2026-11-09T12:00:00Z"
 LATER = "2026-11-09T12:00:30Z"
+NEXT_MINUTE = "2026-11-09T12:01:05Z"
 STORE_DRIVEN = [name for name in dash_feed_cost.SECTION_ORDER if name != "live"]
 LANE = LaneRow("alpha-1", None, "", "p1", "build", 1, 2, 0.5, 0, 1)
 CALL = {"ts": "2026-11-09T11:58:00Z", "node": "build", "attempt": 1, "turns": 2, "cost_usd": 0.5}
@@ -71,7 +72,10 @@ def workspace(tmp_path, monkeypatch):
     set_(dash_feed, "read_review_prs", lambda runs_dir, state: [])
     set_(
         dash_feed.console_screen, "gather",
-        lambda *a, **k: {"chair": [], "lanes": list(WORLD["lanes"]), "hosts": [host], "spend": {"spend_age_s": 5}},
+        # As the real gather does, it hands back the spend it was given, so a held one can carry this refresh's spend.
+        lambda runs_dir, work_dir, now, name, capacity, spend, **k: {
+            "chair": [], "lanes": list(WORLD["lanes"]), "hosts": [host], "spend": spend,
+        },
     )
     return runs, work
 
@@ -154,11 +158,26 @@ def test_a_run_aging_out_of_the_window_recomputes_runs(workspace):
 
 
 def test_lanes_that_change_recompute_the_sections_built_from_them(workspace):
+    # The console gather is held, so a lane change with no input change (a lease that lapsed, no store write) shows at
+    # the next minute, when the held gather expires. The sections keyed on the lanes recompute beside the ones that
+    # move with the minute anyway (chair, live); the hour-step sections that do not read lanes stay reused.
     runs, work = workspace
     _, cache = dash_feed.gather_feed_cached(runs, work, NOW, None, dash_feed.EMPTY_CACHE)
     WORLD["lanes"] = []
+    feed, _ = dash_feed.gather_feed_cached(runs, work, NEXT_MINUTE, None, cache)
+    assert feed["cost"]["recomputed"] == ["chair", "machines", "runs", "queue", "history", "board", "live"]
+    assert feed["cost"]["reused"] == ["spend", "inbox", "epics"]
+    assert feed["runs"] == []
+    assert _without_cost(feed) == _fresh(runs, work, NEXT_MINUTE)
+
+
+def test_a_store_write_shows_changed_lanes_on_the_next_refresh(workspace):
+    runs, work = workspace
+    _, cache = dash_feed.gather_feed_cached(runs, work, NOW, None, dash_feed.EMPTY_CACHE)
+    WORLD["lanes"] = []
+    (runs / "cox.db").write_bytes(b"store, lease released")
     feed, _ = dash_feed.gather_feed_cached(runs, work, LATER, None, cache)
-    assert feed["cost"]["recomputed"] == ["machines", "runs", "queue", "history", "board"]
+    assert feed["runs"] == []
     assert _without_cost(feed) == _fresh(runs, work, LATER)
 
 
@@ -186,3 +205,57 @@ def test_cost_block_matches_the_fixture_shape(workspace):
     assert cost.keys() == expected.keys()
     assert all(isinstance(cost[key], type(expected[key])) for key in expected)
     assert set(cost["recomputed"]) | set(cost["reused"]) == set(dash_feed_cost.SECTION_ORDER)
+
+
+@pytest.fixture
+def postgres(workspace, monkeypatch):
+    """The workspace on a Postgres-style store: no local file to stat, and a change stamp the test can move."""
+    stamp = {"value": (("runs", 5), ("work_items", 9))}
+    monkeypatch.setattr(dash_feed, "_store_is_local_sqlite", lambda runs_dir: False)
+    monkeypatch.setattr(dash_feed.run_store, "store_change_stamp", lambda runs_dir: stamp["value"])
+    return (*workspace, stamp)
+
+
+def test_a_postgres_store_with_a_stamp_reuses_store_sections_across_self_written_files(postgres):
+    # `.ccusage-block.json` is not rewritten here: the spend section reads it, so it stays in `records` on purpose
+    # (see the dash_feed_inputs docstring), and moving it recomputes the sections that read records.
+    runs, work, _ = postgres
+    share = runs / ".dash-feed"
+    share.mkdir()
+    (share / "feed.snapshot").write_text("{}")
+    (runs / "alpha-1.progress.json").write_text("{}")
+    _, cache = dash_feed.gather_feed_cached(runs, work, NOW, None, dash_feed.EMPTY_CACHE)
+    (share / "feed.snapshot").write_text('{"schema": 1}')
+    (runs / "alpha-1.progress.json").write_text('{"step": 2}')
+    feed, _ = dash_feed.gather_feed_cached(runs, work, NOW, None, cache)
+    assert feed["cost"]["reused"] == list(dash_feed_cost.SECTION_ORDER)
+    assert feed["cost"]["recomputed"] == []
+
+
+def test_a_changed_stamp_recomputes_only_the_sections_on_the_store(postgres):
+    runs, work, stamp = postgres
+    _, cache = dash_feed.gather_feed_cached(runs, work, NOW, None, dash_feed.EMPTY_CACHE)
+    stamp["value"] = (("runs", 6), ("work_items", 9))
+    feed, _ = dash_feed.gather_feed_cached(runs, work, LATER, None, cache)
+    on_store = [n for n in dash_feed_cost.SECTION_ORDER if "store" in dash_feed._SECTION_GROUPS[n]]
+    assert feed["cost"]["recomputed"] == on_store
+    assert feed["cost"]["reused"] == ["live"]
+    assert _without_cost(feed) == _fresh(runs, work, LATER)
+
+
+def test_a_postgres_store_without_a_stamp_recomputes_every_store_section(postgres):
+    runs, work, stamp = postgres
+    stamp["value"] = None
+    _, cache = dash_feed.gather_feed_cached(runs, work, NOW, None, dash_feed.EMPTY_CACHE)
+    feed, _ = dash_feed.gather_feed_cached(runs, work, NOW, None, cache)
+    assert feed["cost"]["reused"] == ["live"]
+
+
+def test_a_sqlite_store_never_asks_for_a_stamp(workspace, monkeypatch):
+    runs, work = workspace
+
+    def refuse(runs_dir):
+        raise AssertionError("a local sqlite store is stat'ed, not stamped")
+
+    monkeypatch.setattr(dash_feed.run_store, "store_change_stamp", refuse)
+    dash_feed.gather_feed_cached(runs, work, NOW, None, dash_feed.EMPTY_CACHE)

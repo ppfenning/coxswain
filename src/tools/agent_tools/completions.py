@@ -62,6 +62,20 @@ def completions(rows: Iterable[Row]) -> list[Completion]:
     return [next(group) for _, group in groupby(found, key=lambda c: c[:2])]
 
 
+def day_completions(
+    rows: Iterable[Row], logged: Sequence[tuple[str | None, str | None]], start: datetime, end: datetime,
+) -> list[tuple[str | None, str | None]]:
+    """`(run id, task id)` per task completed in `[start, end)`: each task `completions` dates there, then each `logged`
+    land (the land log's `(run, task)` for that day) that no row shows a completion for at all, in log order.
+
+    A logged task whose row completed earlier (merged yesterday, landed on main today) is not counted again, so a day
+    counts what the spend windows count; the land log only stands in for a task the store holds no record of."""
+    done = completions(rows)
+    seen = {(run, task) for run, task, _ in done}
+    dated: list[tuple[str | None, str | None]] = [(run, task) for run, task, at in done if start <= at < end]
+    return [*dated, *(pair for pair in logged if pair not in seen)]
+
+
 def count_completions(done: Sequence[Completion], since: datetime) -> int:
     """How many completions are at or after `since`."""
     return sum(1 for _, _, at in done if at >= since)
