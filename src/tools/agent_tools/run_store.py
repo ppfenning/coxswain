@@ -219,7 +219,14 @@ def store_change_stamp(runs_dir: Path) -> Hashable | None:
     The feed reads runs, leases, hosts, node_calls, attempts, phases, task_records, work_items, chair_actions and
     export_hashes. The stamp sums inserted, updated and deleted rows for every user table, so it covers those and
     any table added later. Reads leave the counters alone, which a transaction commit counter would not.
-    Postgres flushes these statistics after a write, not at commit, so the stamp can trail a write by about a second.
+    The counters are cumulative statistics, not part of the write's transaction. The writing backend flushes them
+    when it goes idle, no more often than about once a second and, under lock contention, as late as about 60 s.
+    So the stamp can trail a committed write by about 10 s, and up to about 60 s on a busy server. A section held
+    over that gap shows its pre-write value until the stamp moves or its own step runs out.
+    The stamp never moves when the counters do not count this database's writes: on a read replica (a standby keeps
+    no write counters of its own) or with `track_counts = off`. Then each store-driven section goes stale for up to
+    its hold step in `dash_feed._SECTION_STEP_S`, an hour for most. Point the feed at the primary, with
+    `track_counts` on.
     TRUNCATE is not counted as deleted rows, and the counters restart on crash recovery or `pg_stat_reset`.
     None for a SQLite store, an absent store or any failure, from config, psycopg or the database. Never raises.
     """
