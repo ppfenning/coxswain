@@ -54,7 +54,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, gettempdir
 from time import monotonic
 from typing import Any, Literal
 from urllib.parse import urlencode
@@ -132,7 +132,7 @@ from harness.invoke import Invocation, invoke_graphs
 from harness.lane_database import database_name, lane_env
 from harness.lane_database_create import create_lane_database, creation_failure
 from harness.lane_database_drop import drop_lane_database
-from harness.lane_pytest_tmp import basetemp_env, lane_scratch_dir
+from harness.lane_pytest_tmp import lane_scratch_dir, lane_tmp_env, run_scratch_root
 from harness.lane_workers import lane_workers_from, workers_env
 from harness.lanes import lane_bound
 from harness.phase_remote import FetchOutcome, Kind, fetch_branch, materialise_local, missing_branch_cause, push_branch
@@ -1564,9 +1564,15 @@ def _run_level_integration(ctx: _Ctx, phase: str, base: str, record: dict[str, A
         record["status"], record["reason"] = "partial", reason
 
 
+def _run_scratch(ctx: _Ctx) -> Path:
+    """The run's temp directory, under the system temp directory a hand run's pytest also uses, never under the home
+    directory the worktrees sit in: a suite can read a path under a home directory as a home path."""
+    return run_scratch_root(Path(gettempdir()), ctx.worktree_root / ctx.run_id)
+
+
 def _scratch_dir(ctx: _Ctx, phase: str, task: str) -> Path:
     """`@` opens every name that is not a task id, so a task called `level` cannot share the level's directory."""
-    return lane_scratch_dir(ctx.worktree_root / ctx.run_id, phase, task)
+    return lane_scratch_dir(_run_scratch(ctx), phase, task)
 
 
 def _remove_scratch(ctx: _Ctx, phase: str, task: str) -> None:
@@ -1574,15 +1580,15 @@ def _remove_scratch(ctx: _Ctx, phase: str, task: str) -> None:
 
 
 def _checks_env(ctx: _Ctx, lane: Mapping[str, str], phase: str, task: str) -> dict[str, str]:
-    """The process environment with the worker count, the lane variable and a made pytest scratch directory over it."""
+    """The process environment with the worker count, the lane variable and a made temp directory (TMPDIR) over it."""
     scratch = _scratch_dir(ctx, phase, task)
     scratch.mkdir(parents=True, exist_ok=True)
     workers = {} if ctx.lane_workers is None else workers_env(os.environ, ctx.lane_workers)
-    return {**os.environ, **workers, **lane, **basetemp_env(os.environ, scratch)}
+    return {**os.environ, **workers, **lane, **lane_tmp_env(scratch)}
 
 
 def _lane_checks_env(ctx: _Ctx, phase: str, task: str) -> dict[str, str]:
-    """The child environment for one lane's checks: its database, worker count and own pytest scratch directory."""
+    """The child environment for one lane's checks: its database, worker count and own temp directory."""
     return _checks_env(ctx, lane_env(ctx.test_database, ctx.run_id, phase, task), phase, task)
 
 
@@ -2321,8 +2327,8 @@ def run_epic(
         if ctx is not None:
             run_dir = ctx.worktree_root / ctx.run_id
             _settle_pool(ctx, keep_worktrees=keep_worktrees)
-            # The phase-level and end-of-run scratch directories; a kept run must not carry this one as a phase directory.
-            shutil.rmtree(run_dir / "pytest-tmp", ignore_errors=True)
+            # The phase-level and end-of-run scratch directories, outside the run directory, so a kept run never carries them.
+            shutil.rmtree(_run_scratch(ctx), ignore_errors=True)
             if keep_worktrees:
                 # `keep_worktree` moves ONE named worktree to
                 # `_kept/<run_id>/<name>`; run_dir's own name is the run id,
@@ -6357,15 +6363,19 @@ def rescue_task(ctx: _Ctx, item: Mapping[str, Any], *, phase: str) -> dict[str, 
         applied, detail = apply_patch(text, worktree)
         return None if applied else detail
 
-    verified = rescue_checks.verify_patch(
-        ctx.repo,
-        ctx.default_ref,
-        patch,
-        ctx.checks,
-        apply=apply,
-        workdir=ctx.worktree_root / ctx.run_id,
-        env=_checks_env(ctx, {}, phase, f"@rescue-{task}"),
-    )
+    try:
+        verified = rescue_checks.verify_patch(
+            ctx.repo,
+            ctx.default_ref,
+            patch,
+            ctx.checks,
+            apply=apply,
+            workdir=ctx.worktree_root / ctx.run_id,
+            env=_checks_env(ctx, {}, phase, f"@rescue-{task}"),
+        )
+    finally:
+        # A rescue is one task under a run id of its own, so the run's whole temp directory goes with it.
+        shutil.rmtree(_run_scratch(ctx), ignore_errors=True)
     if not verified["passed"]:
         return _rescue_failed(ctx, item, phase=phase, reason=str(verified["reason"]), failed_checks=True)
 

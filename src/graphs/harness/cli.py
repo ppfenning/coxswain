@@ -24,6 +24,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -59,7 +60,7 @@ from harness.checks import all_passed, checks_evidence, repo_checks, run_checks
 from harness.digest import build_digest
 from harness.escalate import escalate_self_modification
 from harness.gate import apply_decisions, auto_apply, gate
-from harness.lane_pytest_tmp import basetemp_env, lane_scratch_dir
+from harness.lane_pytest_tmp import lane_scratch_dir, lane_tmp_env, run_scratch_root
 from harness.lane_workers import LANE_CAPACITY_VAR, check_env, lane_workers_from
 from harness.lanes import resolve_max_parallel
 from harness.phase import run_phase
@@ -838,17 +839,21 @@ def _checks_env(environ: Mapping[str, str], cores: int) -> dict[str, str] | None
 def _run_worktree_checks(
     worktree: Path, checks_config: Sequence[Mapping[str, Any]], log_dir: Path
 ) -> list[dict[str, Any]]:
-    """The edge: reads the process environment and core count so the checks run under the lane cap."""
-    scratch = lane_scratch_dir(log_dir.parent, "checks", worktree.name)
+    """The edge: reads the process environment and core count so the checks run under the lane cap.
+
+    Their temp directory is the run's own, under the system temp directory (`harness.lane_pytest_tmp`), and goes with them.
+    """
+    root = run_scratch_root(Path(tempfile.gettempdir()), log_dir.parent)
+    scratch = lane_scratch_dir(root, "checks", worktree.name)
     env = {
         **(_checks_env(os.environ, os.cpu_count() or 1) or dict(os.environ)),
-        **basetemp_env(os.environ, scratch),
+        **lane_tmp_env(scratch),
     }
     scratch.mkdir(parents=True, exist_ok=True)
     try:
         return run_checks(worktree, checks_config, log_dir=log_dir, log_prefix="checks/", env=env)
     finally:
-        shutil.rmtree(scratch, ignore_errors=True)
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def pgrep_pids(text: str) -> list[int]:
