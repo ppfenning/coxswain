@@ -302,6 +302,7 @@ class FactsDeps:
     repos: Callable[[], Mapping[str, str]] | None = None  # initiative to its initiative.md `repo:`; absent means no repo is known
     actions: Callable[[], Sequence[Row]] | None = None  # windowed chair_actions rows, read once per gather (`windowed_actions`); absent means no steer streaks
     decompose_runs: Callable[[str], Sequence[DecomposeRun]] | None = None  # intake path to its decompose runs, oldest first; absent means no decompose streaks
+    decompose_cutoff: Callable[[str], datetime | None] | None = None  # intake path to its last release or requeue time; absent means every run counts
     intake_fingerprint: Callable[[str], str | None] | None = None  # intake path to its fingerprint now (`chair_read_decompose_miss`); absent means no decompose misses
     run_commits: Callable[[], Sequence[Row]] = lambda: []  # approved commits per run, oldest first; absent means []
     phase_state: Callable[[], Sequence[Row]] = lambda: []  # per phase: its task ids and whether a phase land adds over main; absent means []
@@ -1393,10 +1394,15 @@ def lease_refusals_from_actions(actions: Sequence[Row], now: datetime) -> dict[s
 
 
 def decompose_streak_facts(
-    paths: Sequence[str], runs_for: Callable[[str], Sequence[DecomposeRun]]
+    paths: Sequence[str],
+    runs_for: Callable[[str], Sequence[DecomposeRun]],
+    cutoff_for: Callable[[str], datetime | None] | None = None,
 ) -> dict[str, DecomposeStreak]:
-    """Intake path to its streak, for only the paths whose trailing empty runs reach the limit."""
-    streaks = {path: streak(runs_for(path)) for path in paths}
+    """Intake path to its streak, for only the paths whose trailing empty runs reach the limit.
+
+    `cutoff_for` gives an intake's last release or requeue time; runs launched before it are not counted."""
+    since = cutoff_for or (lambda path: None)
+    streaks = {path: streak(runs_for(path), since(path)) for path in paths}
     return {path: s for path, s in streaks.items() if at_limit(s)}
 
 
@@ -2055,7 +2061,7 @@ def gather_facts(
             refusals=decompose_refusals(Path(deps.runs_dir()), decomposed.values()),
         ),
         "todo_initiatives": todo_initiative_facts(list(deps.work_rows())) if deps.work_rows is not None else [],
-        "decompose_streaks": decompose_streak_facts(intake, deps.decompose_runs) if deps.decompose_runs is not None else {},
+        "decompose_streaks": decompose_streak_facts(intake, deps.decompose_runs, deps.decompose_cutoff) if deps.decompose_runs is not None else {},
         "decompose_stalled_reported": decompose_stalled_keys(action_rows),
         **decompose_miss_fact_keys(action_rows, deps.intake_fingerprint, frozenset(intake)),
         "env_stale_reported": stale_checkout_keys(action_rows),

@@ -2,10 +2,11 @@
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from agent_tools import run_store
+from agent_tools import route, run_store
 from agent_tools.chair_decompose_streak import DecomposeRun
 from agent_tools.chair_facts import run_initiative
 from agent_tools.chair_read_cache import Stamp, StampCache, file_stamp
@@ -76,6 +77,28 @@ def select_runs(rows: Sequence[Mapping[str, Any]], intake_id: str) -> list[Mappi
         if run_initiative(str(r.get("run_id") or "")) == intake_id and r.get("status") not in NOT_STARTED
     )
     return sorted(own, key=lambda r: str(r.get("launched_at") or ""))
+
+
+def parse_when(value: Any) -> datetime | None:
+    """An ISO time as a timezone-aware datetime, a naive one read as UTC; None for anything else."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        when = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return when if when.tzinfo is not None else when.replace(tzinfo=UTC)
+
+
+def read_released_at(workspace: Path, path: str) -> datetime | None:
+    """Edge. The `released_at` that `route release` and `route requeue` stamp on the intake file at `workspace/path`.
+
+    None when the file is unreadable or carries no readable time: then every decompose run of the intake counts."""
+    try:
+        fields, _ = route.parse_frontmatter((workspace / path).read_text(encoding="utf-8"))
+    except OSError:
+        return None
+    return parse_when(fields.get("released_at"))
 
 
 # Deliberate process-lifetime cache, a bend of charter A4: one parse per (run_id, log mtime_ns).
@@ -163,7 +186,7 @@ def read_decompose_runs(runs_dir: Path, intake_id: str, cache: StampCache | None
         run = parse_run({"run_id": str(row["run_id"]), "log": None, "task_items": items if exited else None})
         refusal, verdict = _log_facts(runs_dir, run.run_id, cache)
         wrote = verdict if exited and verdict is not None else run.wrote_items
-        out.append(replace(run, wrote_items=wrote, refusal_line=refusal))
+        out.append(replace(run, wrote_items=wrote, refusal_line=refusal, launched_at=parse_when(row.get("launched_at"))))
     if cache is not None:
         cache.keep([exits_key, items_key, *(_log_key(runs_dir, run.run_id) for run in out)])
     return out

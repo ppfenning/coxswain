@@ -69,7 +69,10 @@ def test_hold_then_release_round_trips_the_intake_file(env):
     assert _route(env, "release", task_id) == 0
     released = _path(env, task_id).read_bytes()
     assert b"stage: ready\n" in released and b"hold_reason" not in released
-    assert released == original
+    # the release stamps `released_at`, so the chair stops counting earlier empty decompose runs; nothing else changes
+    stamp = [line for line in released.splitlines(keepends=True) if line.startswith(b"released_at: ")]
+    assert len(stamp) == 1
+    assert released.replace(stamp[0], b"") == original
 
 
 def test_a_held_intake_stays_in_the_queue_rows_but_not_in_the_chairs_runnable_intake(env):
