@@ -56,12 +56,20 @@ def _paths(work_dir: Path, runs_dir: Path) -> dict[str, Path]:
     return {COURIER: work_dir / COURIER, LAND: runs_dir / LAND, CHAIR_ACTIONS: runs_dir / CHAIR_ACTIONS}
 
 
-def _read_text(path: Path) -> str:
-    """Bytes that are not UTF-8 survive a round trip through surrogateescape."""
+def _read_raw(path: Path) -> bytes:
     try:
-        return path.read_bytes().decode("utf-8", errors="surrogateescape")
+        return path.read_bytes()
     except OSError:
-        return ""
+        return b""
+
+
+def _decode(raw: bytes) -> str:
+    """Bytes that are not UTF-8 survive a round trip through surrogateescape."""
+    return raw.decode("utf-8", errors="surrogateescape")
+
+
+def _read_text(path: Path) -> str:
+    return _decode(_read_raw(path))
 
 
 def check_logs(work_dir: Path, runs_dir: Path) -> list[dict]:
@@ -73,28 +81,50 @@ def _encode(text: str) -> bytes:
     return text.encode("utf-8", errors="surrogateescape")
 
 
-def _move_aside(path: Path, kept_text: str, damaged: tuple[str, ...]) -> None:
-    """Appends the raw damaged lines to `<log>.damaged`, and only then replaces the log."""
-    aside = path.with_name(path.name + ".damaged")
-    with open(aside, "ab") as out:
-        out.write(_encode("".join(line + "\n" for line in damaged)))
-        out.flush()
-        os.fsync(out.fileno())
+# Writers append to these logs without a lock, so a line can land between the read and the replace.
+_SETTLE_TRIES = 5
+
+
+def _fix_one(path: Path) -> int:
+    """Moves the damaged lines of one log aside; the number moved.
+
+    The cleaned copy is written first. Before it replaces the log, the log is read again: a tail appended since is
+    sorted the same way and carried into the copy, until the log holds still. A log that was rewritten rather than
+    appended to, or that keeps growing, is left as it is for the next fix. The raw damaged lines are appended to
+    `<log>.damaged` before the replace."""
+    seen = _read_raw(path)
+    kept_text, damaged = plan_fix(_decode(seen))
+    if not damaged:
+        return 0
     tmp = path.with_name(path.name + ".tmp")
     try:
         tmp.write_bytes(_encode(kept_text))
+        for _ in range(_SETTLE_TRIES):
+            now = _read_raw(path)
+            if now == seen:
+                break
+            if not now.startswith(seen):
+                tmp.unlink(missing_ok=True)
+                return 0
+            tail_kept, tail_damaged = plan_fix(_decode(now[len(seen) :]))
+            with open(tmp, "ab") as out:
+                out.write(_encode(tail_kept))
+            damaged, seen = (*damaged, *tail_damaged), now
+        else:
+            tmp.unlink(missing_ok=True)
+            return 0
+        aside = path.with_name(path.name + ".damaged")
+        with open(aside, "ab") as out:
+            out.write(_encode("".join(line + "\n" for line in damaged)))
+            out.flush()
+            os.fsync(out.fileno())
         os.replace(tmp, path)
     except OSError:
         tmp.unlink(missing_ok=True)
         raise
+    return len(damaged)
 
 
 def fix_logs(work_dir: Path, runs_dir: Path) -> dict[str, int]:
     """Returns the number of damaged lines moved per log. A log with no damage is not touched."""
-    moved: dict[str, int] = {}
-    for name, path in _paths(work_dir, runs_dir).items():
-        kept_text, damaged = plan_fix(_read_text(path))
-        if damaged:
-            _move_aside(path, kept_text, damaged)
-        moved[name] = len(damaged)
-    return moved
+    return {name: _fix_one(path) for name, path in _paths(work_dir, runs_dir).items()}

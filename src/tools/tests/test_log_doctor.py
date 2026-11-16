@@ -118,3 +118,38 @@ def test_non_utf8_bytes_in_good_lines_survive_a_fix(dirs):
     (work / COURIER).write_bytes(b'{"a": "\xff"}\nnot json\n')
     fix_logs(work, runs)
     assert (work / COURIER).read_bytes() == b'{"a": "\xff"}\n'
+
+
+def _append_once_while_fixing(monkeypatch, path, line: bytes) -> None:
+    """A writer appends to the log after fix_logs read it and before the cleaned copy replaces it."""
+    import agent_tools.log_doctor as log_doctor
+
+    real = log_doctor._encode
+    done: list[bool] = []
+
+    def encode(text: str) -> bytes:
+        if not done:
+            done.append(True)
+            with open(path, "ab") as log:
+                log.write(line)
+        return real(text)
+
+    monkeypatch.setattr(log_doctor, "_encode", encode)
+
+
+def test_a_line_appended_during_the_fix_is_kept(dirs, monkeypatch):
+    work, runs = dirs
+    (runs / LAND).write_bytes(b'{"a": 1}\nnot json\n')
+    _append_once_while_fixing(monkeypatch, runs / LAND, b'{"late": 2}\n')
+    assert fix_logs(work, runs)[LAND] == 1
+    assert (runs / LAND).read_bytes() == b'{"a": 1}\n{"late": 2}\n'
+    assert (runs / (LAND + ".damaged")).read_bytes() == b"not json\n"
+
+
+def test_a_damaged_line_appended_during_the_fix_is_moved_aside_too(dirs, monkeypatch):
+    work, runs = dirs
+    (runs / LAND).write_bytes(b'{"a": 1}\nnot json\n')
+    _append_once_while_fixing(monkeypatch, runs / LAND, b'\x00\x00\n{"late": 2}\n')
+    assert fix_logs(work, runs)[LAND] == 2
+    assert (runs / LAND).read_bytes() == b'{"a": 1}\n{"late": 2}\n'
+    assert (runs / (LAND + ".damaged")).read_bytes() == b"not json\n\x00\x00\n"
