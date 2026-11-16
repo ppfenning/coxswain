@@ -3,7 +3,7 @@
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from agent_tools import queue_export, route_guard, run_store
@@ -90,6 +90,19 @@ def released_text(text: str) -> str:
     """The intake text with `stage: ready`, and without `hold_reason` and `held`. An intake that is already ready and not held comes back unchanged."""
     edit = lambda lines: _with_line(_without_key(_without_key(lines, "held"), "hold_reason"), "stage", "stage: ready")  # noqa: E731
     return _rewritten(text, edit, "stage: ready\n")
+
+
+RELEASED_AT = "released_at"  # the chair counts no decompose run launched before it toward an intake's empty streak
+
+
+def released_at_value(now: datetime) -> str:
+    return now.astimezone(UTC).isoformat(timespec="seconds")
+
+
+def stamped_text(text: str, at: str) -> str:
+    """The intake text with `released_at` set to `at` and nothing else touched."""
+    line = f"{RELEASED_AT}: {json.dumps(at)}"
+    return _rewritten(text, lambda lines: _with_line(lines, RELEASED_AT, line), f"{line}\n")
 
 
 def _initiative_held_text(text: str, reason: str, by: str, date: str) -> str:
@@ -224,14 +237,30 @@ def hold(
     return _apply("hold", ws, runs_dir, plan, rows, lambda row: _row_held(row, value), lambda text: held_text(text, reason, by, date), value, dry_run)
 
 
-def release(ws: Path, runs_dir: Path, id: str, rows: Sequence[Mapping], *, dry_run: bool = False) -> int:
-    """Edge. Exit codes as `hold`. Releasing an initiative that is not held, or an intake that is ready and not held, writes nothing."""
+def _row_released(row: Mapping, at: str) -> dict:
+    freed = _row_without_held(row)
+    return {**freed, "extra": {**freed["extra"], RELEASED_AT: at}}
+
+
+def release(
+    ws: Path, runs_dir: Path, id: str, rows: Sequence[Mapping], *, dry_run: bool = False, now: datetime | None = None,
+) -> int:
+    """Edge. Exit codes as `hold`. Releasing an initiative that is not held writes nothing.
+
+    With `now`, a released intake's row and file also get `released_at`, so the chair stops counting the intake's earlier
+    empty decompose runs; then even an intake that was ready and not held is written. Without it, such an intake writes nothing."""
     plan = plan_release(rows, id)
     if isinstance(plan, Refused):
         return _refuse("release", plan.reason)
     if isinstance(plan, route_guard.InitiativeFound):
         return _apply("release", ws, runs_dir, plan, rows, _initiative_row_without_held, _initiative_released_text, "held fields removed", dry_run)
-    return _apply("release", ws, runs_dir, plan, rows, _row_without_held, released_text, "stage ready, hold removed", dry_run)
+    if now is None:
+        return _apply("release", ws, runs_dir, plan, rows, _row_without_held, released_text, "stage ready, hold removed", dry_run)
+    at = released_at_value(now)
+    return _apply(
+        "release", ws, runs_dir, plan, rows, lambda row: _row_released(row, at),
+        lambda text: stamped_text(released_text(text), at), f"stage ready, hold removed, released at {at}", dry_run,
+    )
 
 
 def set_stage(ws: Path, runs_dir: Path, target_id: str, stage: str, rows: Sequence[Mapping], dry_run: bool = False) -> int:

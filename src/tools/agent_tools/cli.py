@@ -5524,7 +5524,9 @@ def _route_release(a: argparse.Namespace) -> int:
     if runs_dir is None:
         print(f"route: {reason}")
         return 2
-    return route_hold.release(runs_dir.parent, runs_dir, a.id, run_store.read_queue(runs_dir), dry_run=a.dry_run)
+    return route_hold.release(
+        runs_dir.parent, runs_dir, a.id, run_store.read_queue(runs_dir), dry_run=a.dry_run, now=datetime.datetime.now(datetime.UTC)
+    )
 
 
 def _route_set_stage(a: argparse.Namespace, stage: str) -> int:
@@ -5548,7 +5550,9 @@ def _route_requeue(a: argparse.Namespace) -> int:
     if runs_dir is None:
         print(f"route: {reason}")
         return 2
-    code, message = route_requeue.requeue(runs_dir.parent, runs_dir, a.id, dry_run=a.dry_run)
+    code, message = route_requeue.requeue(
+        runs_dir.parent, runs_dir, a.id, dry_run=a.dry_run, now=datetime.datetime.now(datetime.UTC)
+    )
     print(message)
     return code
 
@@ -14624,6 +14628,7 @@ def _chair_run_deps(
         land_hold=lambda: chair_smoke.read_hold(str(runs_dir)),
         land_outcomes=lambda: chair_revert_watch.outcomes(actions),
         decompose_runs=decompose_runs_of,
+        decompose_cutoff=lambda path: chair_decompose_runs.read_released_at(ws, path),
         intake_fingerprint=intake_fingerprint,
         newest_run_host=lambda: run_store.newest_run_hosts(runs_dir, [row["id"] for row in docket()["initiatives"]]),
         history=lambda: chair_read_housekeeping.read_last_housekeeping(runs_dir),
