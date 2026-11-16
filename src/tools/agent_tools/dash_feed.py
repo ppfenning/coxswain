@@ -55,6 +55,7 @@ from agent_tools import (
 from agent_tools import (
     events as events_module,
 )
+from agent_tools import completions
 from agent_tools.chair_read_exits import exit_rows
 from agent_tools.chair_read_housekeeping import latest_housekeeping, read_last_housekeeping
 from agent_tools.chair_read_record import ACTION_LOG
@@ -103,7 +104,7 @@ _PROJECTS_DIR = "~/.claude/projects"
 _ZERO_SPLIT_WINDOW = {
     "chair_session_usd": 0.0, "chair_agents_usd": 0.0, "cox_seats_usd": 0.0, "total_usd": 0.0,
     "chair_session_share": 0.0, "chair_agents_share": 0.0, "cox_seats_share": 0.0,
-    "meter_fraction": 0.0, "resets_at": "", "cost_per_landed_task": 0.0,
+    "meter_fraction": 0.0, "resets_at": "", "cost_per_landed_task": 0.0, "completions": 0, "cost_per_completion": 0.0,
 }
 # The feed's budget block when no budget is wired: every figure 0.0 or 0, period none (the feed has no nulls).
 _NONE_BUDGET = {
@@ -439,15 +440,28 @@ def _landed_at(task: Mapping, ended: Mapping[str, datetime | None]) -> datetime 
     return _utc(stamp) or ended.get(str(task.get("run_id")))
 
 
+def _completed_at(task_records: Sequence[Mapping], ended: Mapping[str, datetime | None]) -> list[datetime]:
+    """One completion time per task: the earliest `completions.completions` stamp (done, approved and merged into its
+    phase or PR branch, or `landed.at`), else, for a landed record with no stamp of its own, the end of its run."""
+    stamped = {(run, task): at for run, task, at in completions.completions(task_records)}
+    fallback = {
+        (str(row.get("run_id")), str(row.get("task_id"))): _landed_at(row, ended)
+        for row in task_records
+        if _is_landed(row)
+    }
+    return [at for at in ({**fallback, **stamped}).values() if at is not None]
+
+
 def _window_node_inputs(rows: Mapping, windows: Mapping[str, Mapping]) -> tuple[dict[str, list], dict[str, int]]:
-    """Each window's `node_calls` rows at or after its `start`, and its landed task records likewise.
-    `rows` holds ended runs only, so a run still in flight is not counted."""
+    """Each window's `node_calls` rows at or after its `start`, and its completions likewise. Wrong belief to avoid:
+    "a task is done when it lands on main". Under ticket landing a task merged into its PR branch is complete long
+    before the initiative's one pull request lands, so it counts at its merge, even while its run is in flight."""
     ended = {str(run.get("run_id")): _utc(run.get("ended_at")) for run in rows.get("runs", ())}
     calls = [(_utc(call.get("ts")), call) for call in rows.get("node_calls", ())]
-    lands = [_landed_at(task, ended) for task in rows.get("task_records", ()) if _is_landed(task)]
+    finished = _completed_at(rows.get("task_records", ()), ended)
     starts = {name: _utc(window["start"]) for name, window in windows.items()}
     node_rows = {name: [call for ts, call in calls if ts and start and ts >= start] for name, start in starts.items()}
-    done = {name: sum(1 for ts in lands if ts and start and ts >= start) for name, start in starts.items()}
+    done = {name: sum(1 for ts in finished if start and ts >= start) for name, start in starts.items()}
     return node_rows, done
 
 
@@ -1984,8 +1998,9 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
     tests/fixtures/dash_feed_v1.json fixes (the contract coxtop parses), with no nulls and nothing json can't write,
     except a machine's `login_ok`, which is null while its login is unchecked, a row's `short_id`, which is
     null when its initiative has none, a row's `project`, which is null when its initiative has no known
-    repository, and `spend.today`, which is null when the run store is unavailable (its `per_landed` is null
-    when nothing landed and its `first_try_rate` when nothing was measured). `spend.today` is a new key
+    repository, and `spend.today`, which is null when the run store is unavailable (its `cost_per_completion` and the
+    deprecated alias `per_landed` are null when nothing completed, and `completions` counts tasks done or merged today,
+    and its `first_try_rate` when nothing was measured). `spend.today` is a new key
     under schema 1, as `weekly_pace` was: older towpath builds ignore a key they do not know. So is `history[].tasks`,
     one `{id, state, pr}` per task the run built: its current queue state and its landed PR number, or null. So are
     `runs[].tasks`, `runs[].landed` and `runs[].quarantined`: every task of the run's initiative as `task_entries`

@@ -38,13 +38,16 @@ def _window_inputs(
 
 
 def _node_fields(window_out: Mapping, rows: Sequence[Mapping], done: int) -> dict:
-    """`spend_split` has a fixed key set, so the node fields are added to its window after it returns."""
+    """`spend_split` has a fixed key set, so the node fields are added to its window after it returns. `done` is the
+    window's completions; `cost_per_landed_task` is the deprecated alias of `cost_per_completion`, kept one release so
+    an older towpath still reads a value."""
+    per_completion = round(cost_per_done_task(window_out["cox_seats_usd"], done), 4)  # 96.9 / 6 is 16.150000000000002
     return {
         **window_out,
         "by_node": group_spend_nodes(rows),
-        "cost_per_landed_task": round(
-            cost_per_done_task(window_out["cox_seats_usd"], done), 4
-        ),  # 96.9 / 6 is 16.150000000000002
+        "cost_per_landed_task": per_completion,
+        "completions": done,
+        "cost_per_completion": per_completion,
     }
 
 
