@@ -6885,6 +6885,29 @@ imported a different checkout's <code>core</code> and <code>harness</code> (seen
 </ol>
 <p><strong>Done when.</strong> No <code>python -m harness</code> call remains in <code>agent_tools</code>; a test asserts the CLI's choices equal the
 API's enums; a lane check imports only its worktree's code (a test proves it with two checkouts).</p>
+<p><strong>Status.</strong> <code>harness.store_api</code> is the typed store API: <code>*_on</code> functions over an open connection, which
+<code>harness.store_cli</code> wraps, and url-level functions that <code>agent_tools</code> calls in process (<code>store_cli</code>, <code>run_store</code>).
+Its values are frozen dataclasses and TypedDicts; <code>WorkState</code> is the one enum and <code>core.workstore.STATES</code> must equal
+it. The chair's remedies, which <code>cox inbox</code> accept and deny run, are <code>cox route edit &lt;task&gt; --state &lt;state&gt;</code>. What stays a
+command line, and why: the <code>cox runs recover --reopen</code> hint prints <code>-m harness.store_cli set-state</code> for a person, and
+<code>store_switch</code> copies a store with <code>-m harness.store_copy</code>, which needs the sqlite double set in its own environment.
+The chair's trace prune (<code>-m harness.store_backfill_traces prune</code>) still runs as a child of the profile's harness
+python: it is file maintenance, not a store row, and moves when the chair's housekeeping does.</p>
+<p><strong>Bounds.</strong> An in-process store call is bounded by its connection, every value in <code>harness.store_dialect</code>: a statement
+runs at most 60 s (<code>statement_timeout</code>), a lock wait at most 30 s (<code>lock_timeout</code>, and sqlite's busy timeout in the
+suites), a silent peer surfaces in 60 s (<code>tcp_user_timeout</code>), a connect in 10 s. A migration lifts the statement and
+lock bounds for its own transaction (<code>SET LOCAL</code>); the <code>pg_dump</code> backup before it is bounded at 30 minutes. A call past
+a bound comes back as <code>Failed</code>, as does any other error under the API, so the chair's tick reports it instead of
+crashing. <code>smoke/test_contract_store_bounds.py</code> holds a row lock on a real Postgres store and proves it.</p>
+<p><strong>One install per machine (item 3).</strong> <code>cox setup install</code> installs <code>coxswain</code> editable from the install checkout
+(<code>&lt;home&gt;/installs/coxswain</code>) into that checkout's <code>.venv</code> and as the <code>coxswain</code> uv tool, and into nothing else. A
+development venv for another checkout installs from that checkout or not at all; a lane never relies on the venv's
+install, since each suite's <code>pytest.ini</code> puts its own tree first and the store is called in process. <code>cox setup
+doctor</code> checks both: <code>install bins</code> (required) fails when the checkout's venv or the uv tool is editable from anywhere
+else, and <code>running install</code> (advisory, so a person running the doctor from a development venv never rolls an upgrade
+back) warns when the interpreter running <code>cox</code> is editable from outside the install checkout. The tool always installs with the <code>postgres</code> and <code>parquet</code> extras (<code>setup_install.TOOL_EXTRAS</code>), since <code>cox</code>
+opens the store in process; the doctor's advisory <code>extras</code> row names either one when the interpreter running <code>cox</code>
+cannot import it.</p>
 <h2 id="h2-types-on-the-core">H2. Types on the core</h2>
 <p><strong>Evidence.</strong> 396 loose dict signatures in the code that plans and performs actions on every project.</p>
 <p><strong>Change.</strong></p>

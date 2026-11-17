@@ -6762,6 +6762,21 @@ into a scratch copy of the tree and confirming that they fail.</p>
 <td>The git argv, the worktree add and remove, and the close. The repo is passed as <code>~/src/app</code>, so recover's own handling of a tilde path is covered. That is the kind of bug #572 fixed in the partial land (<code>cox runs land</code>). That path is not covered here.</td>
 </tr>
 <tr>
+<td><code>test_contract_store_api.py</code></td>
+<td><code>cox runs pause</code> and <code>cox runs resume</code> to the store, in process through <code>harness.store_api</code></td>
+<td>A pause that never reaches the store (<code>cox runs move</code> once called it with no store at all), or an unknown run read as a failure instead of a refusal.</td>
+</tr>
+<tr>
+<td><code>test_doctor_running_install.py</code></td>
+<td><code>cox setup doctor</code> to the interpreter running it</td>
+<td>The <code>running install</code> row missing, or a plain install read as editable.</td>
+</tr>
+<tr>
+<td><code>test_contract_store_bounds.py</code></td>
+<td>an in-process store call to a locked row</td>
+<td>A store call with no time bound: a held row lock must end the write as <code>Failed</code> within the lock bound.</td>
+</tr>
+<tr>
 <td><code>test_sandbox.py</code></td>
 <td>the harness itself</td>
 <td>A child interpreter importing another checkout. It also checks that <code>cox</code> resolves the profile the sandbox HOME names, and that every path <code>cox route context</code> reports is under the sandbox or the install. It does not prove that <code>cox</code> opens no other file; the environment the sandbox builds is what keeps the real home out of reach.</td>
