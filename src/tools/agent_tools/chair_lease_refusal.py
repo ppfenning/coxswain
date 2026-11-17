@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 STATUS = "lease_held"
-LEASE_TTL_S = 120  # mirrors _LEASE_TTL in src/graphs/harness/cli.py
+LEASE_TTL_S = 120  # mirrors _LEASE_TTL in src/graphs/harness/cli_launch.py
 
 _REFUSAL = re.compile(r"run: (\S+) holds (runs:[^\s;]+); refusing to start (\S+)")
 

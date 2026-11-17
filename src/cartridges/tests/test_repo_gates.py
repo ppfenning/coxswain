@@ -86,6 +86,7 @@ EXCLUDE_BASELINE = frozenset({
     "src/graphs/harness/bounded_proc.py",
     "src/graphs/harness/check_scope.py",
     "src/graphs/harness/checks.py",
+    "src/graphs/harness/cli.py",
     "src/graphs/harness/cos.py",
     "src/graphs/harness/escalate.py",
     "src/graphs/harness/landing_ops.py",

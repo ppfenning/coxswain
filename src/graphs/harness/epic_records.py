@@ -465,7 +465,7 @@ try:  # the postgres driver is an optional extra
 except ImportError:  # pragma: no cover - depends on what is installed
     pass
 
-_PAUSE_LEASE_TTL = 120  # seconds; matches the CLI's own `_LEASE_TTL` (harness/cli.py) heartbeat renew.
+_PAUSE_LEASE_TTL = 120  # seconds; matches the CLI's own `_LEASE_TTL` (harness/cli_launch.py) heartbeat renew.
 
 
 def _wait_while_paused(
