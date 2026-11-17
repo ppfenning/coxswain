@@ -7136,7 +7136,7 @@ files.</p>
 </tr>
 <tr>
 <td><code>initiative_land</code></td>
-<td>Merges the parent into the initiative branch, runs the gate checks, pushes, opens the one pull request, waits for its checks, merges it at gate <code>full</code> (or leaves the merge to a person), then marks every task done and cleans the branches.</td>
+<td>Merges the parent into the initiative branch, runs the gate checks, pushes, opens the one pull request, reads its checks once per pass until they finish, merges it at gate <code>full</code> (or leaves the merge to a person), then marks every task done and cleans the branches.</td>
 </tr>
 </tbody>
 </table>
@@ -7144,6 +7144,38 @@ files.</p>
 it. The two kinds have separate caps (<code>landing_areas.phase_cap</code>, default 2, and <code>landing_areas.land_cap</code>, default 1)
 and neither counts against the launch cap. An item open for an hour is told to the chair once; a pull request waiting
 for a person never is. <code>cox lander status</code> shows every initiative in flight and every item with its age.</p>
+<p>The lander never waits inside a pass. A land reads its pull request's checks once: green merges, red goes back to
+build, and pending leaves the item <code>waiting</code> for the next pass to read again. A failure the forge can rerun is rerun
+once per commit, and that pass waits too. The bounds <code>wait_checks</code> keeps hold across passes, on the record as
+<code>checks_poll</code>: a rerun refused five times is final, and right after a rerun the old failures read as pending for at
+most five passes. Checks unreadable five passes in a row are not the change's fault but the reading's (a token, the
+forge's address), so the land keeps waiting and the chair is told once per commit and reason. A land item that fails
+and is queued again keeps its first <code>queued_at</code>, so the queue alarm still sees it after an hour. Each pass splits its work
+into one lane per repository, and each lane runs on a thread of its own. The caps count per repository. A repository
+whose gate checks are still running, or whose lane is still busy from an earlier pass, holds only itself: under
+<code>cox lander run</code> the other repositories keep landing, and the busy one rejoins the passes once its lane is done. All
+the per-initiative work of a pass (the sweep, the queue alarm, reconciliation, the items) runs in the lane that owns
+the initiative, so a busy lane's records are not written by anything else in that process.</p>
+<p>Each pass also checks every published landing record against origin. Published means assembled, or with a pull
+request URL on the record, whatever the state; before that the host that builds the initiative owns its branch, and
+a phase it has not pushed yet is not a phase lost. So an initiative sent back to build (<code>conflicted</code>) after its pull
+request opened is still judged: its open pull request must still hold every phase merged before, while the
+<code>integrate</code> work is built on top. Under the initiative's branch lease, the lander fetches origin's initiative branch and reads the
+record again. A phase the record calls merged must be on that branch, both its tip and its merge commit. When it is
+not and the phase tip is in the clone, or on origin's phase branch, the lander merges the phase into origin's branch
+again and pushes it. The push is a plain one, so origin takes it only as a fast-forward, and the open pull request
+gets the repair. The record's merge commit is rewritten only after origin takes the push. When the tip is gone, the
+initiative is held: <code>cox lander status</code> shows the reason, the chair is told once, and nothing merges into the
+initiative (a build run's phase merge included) or lands from it. A busy lease, a refused push, an unreadable origin or a
+clone that has diverged from origin waits for the next pass and changes nothing. A clone ahead of origin (a repair
+merged here whose push never happened) is built on, and the push publishes it. The hold lifts on the first pass that
+finds the record and origin agree. Whatever reconciliation decided, the land itself checks once more right before
+its merge: while the branch that would merge (origin's, or this clone's for a forge that merges locally) lacks a tip
+or merge commit the record names, the land waits.</p>
+<p>The record is what decides which phases an initiative carries, not the branch. So do not drop a phase by resetting
+<code>init/&lt;id&gt;</code> on origin by hand: the next pass reads that as a lost phase and merges it back in (or, when its tip is
+gone, holds the initiative). To take a phase out, move it to a follow-up initiative (<code>landing_areas.on_blocked:
+split</code>, which runs <code>split_initiative</code>), or edit the landing record so it no longer calls the phase merged.</p>
 <p>Lands on one parent are one at a time by default, since each needs an up-to-date parent. With
 <code>landing_areas.land_batch</code> above 1, the lander lands together up to that many initiatives that share a repo and a
 parent and change no file in common. Each keeps its own pull request. They are refreshed onto the same parent so their
