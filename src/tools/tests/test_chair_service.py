@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_tools import chair_restart, chair_service, cli, unit_env
+from agent_tools import chair_restart, chair_service, cli
 
 
 def test_unit_text_with_an_environment_file_loads_it_and_runs_the_labelled_chair() -> None:
@@ -132,32 +132,6 @@ def test_unit_args_round_trips_unit_text() -> None:
 def test_unit_args_is_none_for_text_that_does_not_run_the_chair() -> None:
     assert chair_service.unit_args("[Service]\nExecStart=/usr/bin/other serve --label x\n") is None
     assert chair_service.unit_args("") is None
-
-
-def test_watchdog_plist_text_carries_the_parsed_environment_and_path_wins() -> None:
-    environment = unit_env.parse_env(f"{unit_env.TOKEN_ENV}=abc\nPATH=/ignored\nX=1\n")
-    parsed = plistlib.loads(chair_service.watchdog_plist_text("/bin/cox", "/p.yaml", "/a&b:/c", 5, environment).encode())
-    assert parsed["EnvironmentVariables"] == {unit_env.TOKEN_ENV: "abc", "PATH": "/a&b:/c", "X": "1"}
-
-
-def test_chair_plist_text_carries_the_parsed_environment_and_path_wins() -> None:
-    environment = {unit_env.TOKEN_ENV: "abc", "PATH": "/ignored"}
-    text = chair_service.chair_plist_text("/bin/cox", "/ws", "chair", 60, "/a:/b", "/p.yaml", environment)
-    assert plistlib.loads(text.encode())["EnvironmentVariables"] == {unit_env.TOKEN_ENV: "abc", "PATH": "/a:/b"}
-
-
-def test_chair_unit_watchdog_service_and_watchdog_plist_carry_the_same_environment_file() -> None:
-    env_path = "/etc/coxswain/chair.env"
-    mapping = {unit_env.TOKEN_ENV: "abc", "X": "postgresql://h:5432/db"}
-    env_text = unit_env.render_env(mapping)
-    line = unit_env.environment_file_line(env_path)
-    unit = chair_service.unit_text("/bin/cox", "/ws", "chair", 60, env_path)
-    service = chair_service.watchdog_service_text("/bin/cox", "/p.yaml", "/a:/b", env_path)
-    assert line in unit.splitlines() and line in service.splitlines()
-    assert chair_service.unit_args(unit)["env_file"] == env_path
-    assert chair_service._ENV_FILE.search(service).group(1) == env_path
-    plist = chair_service.watchdog_plist_text("/bin/cox", "/p.yaml", "/a:/b", 5, unit_env.parse_env(env_text))
-    assert plistlib.loads(plist.encode())["EnvironmentVariables"] == {**mapping, "PATH": "/a:/b"}
 
 
 def test_chair_run_accepts_the_flags_the_unit_passes_it() -> None:

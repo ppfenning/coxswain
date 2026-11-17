@@ -4,6 +4,7 @@ The lane-sync proof runs the real read script against real clones in test_lane_c
 from __future__ import annotations
 
 import os
+import plistlib
 import stat
 import subprocess
 import sys
@@ -11,6 +12,8 @@ import time
 from pathlib import Path
 
 import pytest
+
+from agent_tools import chair_service, upgrade_edge
 
 TOOLS = Path(__file__).resolve().parents[1]
 SLUG = "example-org/example-repo"
@@ -97,6 +100,36 @@ def test_all_three_units_read_the_one_env_file_that_setup_unit_env_writes(machin
     line = f"EnvironmentFile=-{env_file}"
     for name in ("coxswain-chair.service", "coxswain-lander.service", "coxswain-upgrade.service"):
         assert (unit_dir / name).read_text().splitlines().count(line) == 1, name
+        assert stat.S_IMODE((unit_dir / name).stat().st_mode) in (0o600, 0o644), name
+
+
+def test_the_launchd_agents_carry_no_secret_and_read_the_env_file_at_launch(machine: dict) -> None:
+    """Regression: the plists embedded CLAUDE_CODE_OAUTH_TOKEN in clear at mode 0644 and went stale on rotation. After
+    a real `cox setup unit-env`, the three agents' plists hold no value from the file and name it instead; running an
+    agent's ProgramArguments for real (with `env` standing in for cox) shows the sourced token, and a rotated token
+    reaches the next launch with no reinstall."""
+    home = machine["home"]
+    token_file = home / ".config" / "agent-tools" / "claude-token"
+    token_file.write_text("tok-smoke-2\n", encoding="utf-8")
+    assert _cox(machine, "setup", "unit-env").returncode == 0
+    env_file = str(home / ".config" / "agent-tools" / "garage.env")
+    plists = {
+        "chair": chair_service.chair_plist_text("/opt/cox", str(home / "ws"), "chair", 60, "/usr/bin", "/p.yaml", env_file),
+        "watchdog": chair_service.watchdog_plist_text("/opt/cox", "/p.yaml", "/usr/bin", 5, env_file),
+        "upgrade": upgrade_edge.plist_text("/opt/cox", "/p.yaml", "/usr/bin", 30, env_file),
+    }
+    for name, text in plists.items():
+        assert "tok-smoke-2" not in text, name
+        assert plistlib.loads(text.encode())["ProgramArguments"][4] == env_file, name
+    arguments = plistlib.loads(plists["upgrade"].encode())["ProgramArguments"]
+    launched = subprocess.run([*arguments[:5], "env"], env={"PATH": os.environ["PATH"]}, capture_output=True,
+                              text=True, timeout=30)
+    assert "CLAUDE_CODE_OAUTH_TOKEN=tok-smoke-2" in launched.stdout.splitlines()
+    token_file.write_text("tok-smoke-3\n", encoding="utf-8")
+    assert _cox(machine, "setup", "unit-env").returncode == 0
+    again = subprocess.run([*arguments[:5], "env"], env={"PATH": os.environ["PATH"]}, capture_output=True,
+                           text=True, timeout=30)
+    assert "CLAUDE_CODE_OAUTH_TOKEN=tok-smoke-3" in again.stdout.splitlines()
 
 
 def test_setup_unit_env_refuses_an_export_style_file_and_leaves_it_as_it_was(machine: dict) -> None:

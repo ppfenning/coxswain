@@ -223,6 +223,29 @@ systemctl --user enable --now coxswain-upgrade.timer
 On macOS the same `cox upgrade --install-timer` writes a launchd agent,
 `~/Library/LaunchAgents/coxswain-upgrade.plist`, that runs the same command on
 the same interval, and prints the `launchctl bootstrap` line that loads it.
+The agent stores no secret. At each launch it reads the env file described
+below, so a new token takes effect on the next run without a reinstall. The
+plist is written with mode 0600.
+
+#### Check the schedule on a macOS host
+
+The test suite cannot run launchd, so check a macOS host by hand after you
+install or change the schedule:
+
+```sh
+plist=~/Library/LaunchAgents/coxswain-upgrade.plist
+plutil -lint "$plist"                                  # prints: OK
+launchctl bootstrap gui/$(id -u) "$plist"             # once; it fails if already loaded
+launchctl kickstart -k gui/$(id -u)/coxswain-upgrade  # run it now, not in 30 minutes
+cox versions                                          # the edge upgrade line: a fresh time and an outcome
+```
+
+The check passes when `plutil` prints `OK` and `cox versions` shows an edge
+upgrade from the run you just started (the record is `edge-upgrade.json` in
+the installs folder). If the machine was already at the newest green commit, no
+record is written; the agent's run is then visible in `log show --predicate
+'process == "launchd"' --last 5m`. If the record is unchanged, run the command from the
+plist's `ProgramArguments` by hand. Its output names the step that failed.
 
 `cox setup unit-env` writes the one environment file that the chair, lander
 and upgrade units all read: systemd units load it with `EnvironmentFile=`, and

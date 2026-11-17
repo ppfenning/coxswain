@@ -23,6 +23,8 @@ import tomllib
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
+from agent_tools import bounded_run
+
 EXTRAS = ("traces", "parquet", "lake", "postgres")
 REQUIREMENTS_NAME = "extras-requirements.txt"
 DEFAULT_LOCK = "uv.lock"
@@ -282,7 +284,7 @@ def run_extras(
 def setup_extras(with_extras: list[str] | None, dry_run: bool) -> int:
     return run_extras(
         tuple(with_extras or EXTRAS), dry_run, prefix=sys.prefix, requirements_text=shipped_requirements(),
-        runner=lambda argv: subprocess.run(argv, check=False), installed=installed_versions, env=current_env(), out=print,
+        runner=lambda argv: bounded_run.completed(argv, bounded_run.STEP_TIMEOUT_SECONDS, check=False), installed=installed_versions, env=current_env(), out=print,
     )
 
 

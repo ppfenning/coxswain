@@ -22,21 +22,6 @@ from agent_tools.bounded_run import (
 )
 
 
-def fake(returncode: int, output: str):
-    def runner(argv, timeout, cwd):
-        return returncode, output
-
-    return runner
-
-
-def hung(argv, timeout, cwd):
-    raise subprocess.TimeoutExpired(argv, timeout)
-
-
-def missing(argv, timeout, cwd):
-    raise FileNotFoundError(2, "No such file or directory", argv[0])
-
-
 def test_result_holds_its_three_fields() -> None:
     result = BoundedResult(1, "boom", False)
     assert (result.returncode, result.output, result.timed_out) == (1, "boom", False)
@@ -47,46 +32,25 @@ def test_default_timeouts_are_positive_ints() -> None:
     assert isinstance(GIT_TIMEOUT_SECONDS, int) and GIT_TIMEOUT_SECONDS > 0
 
 
-def test_success_passes_through() -> None:
-    assert run(["git", "status"], 5, runner=fake(0, "ok")) == BoundedResult(0, "ok", False)
+def test_a_real_child_that_exits_passes_its_code_and_merged_output_through(tmp_path: Path) -> None:
+    assert run(["sh", "-c", "echo ok; exit 2"], 5, cwd=tmp_path) == BoundedResult(2, "ok\n", False)
 
 
-def test_nonzero_exit_passes_through() -> None:
-    assert run(["git", "status"], 5, runner=fake(2, "bad")) == BoundedResult(2, "bad", False)
+def test_a_real_hung_child_becomes_a_timed_out_result_keeping_what_it_printed() -> None:
+    argv = ["sh", "-c", "echo half; exec sleep 30"]
+    started = time.monotonic()
+    result = run(argv, 1)
+    assert time.monotonic() - started < 10
+    assert result == BoundedResult(124, "half\n", True)
+    assert failure_line(argv, result, 1) == "sh -c timed out after 1 seconds"
 
 
-def test_runner_receives_argv_timeout_and_cwd(tmp_path: Path) -> None:
-    seen = []
-
-    def spy(argv, timeout, cwd):
-        seen.append((list(argv), timeout, cwd))
-        return 0, ""
-
-    run(["git", "fetch"], 7, cwd=tmp_path, runner=spy)
-    assert seen == [(["git", "fetch"], 7, tmp_path)]
-
-
-def test_hung_runner_becomes_timed_out_result_with_failure_line() -> None:
-    argv = ["gh", "pr", "view", "12"]
-    result = run(argv, 30, runner=hung)
-    assert result == BoundedResult(124, "", True)
-    assert failure_line(argv, result, 30) == "gh pr timed out after 30 seconds"
-
-
-def test_timeout_keeps_partial_output_from_bytes() -> None:
-    def partial(argv, timeout, cwd):
-        raise subprocess.TimeoutExpired(argv, timeout, output=b"half")
-
-    assert run(["git", "log"], 5, runner=partial) == BoundedResult(124, "half", True)
-
-
-def test_unrunnable_binary_becomes_127() -> None:
-    argv = ["no-such-tool", "--version"]
-    result = run(argv, 5, runner=missing)
-    assert result.returncode == 127
-    assert result.timed_out is False
+def test_a_binary_that_does_not_exist_becomes_127() -> None:
+    argv = ["no-such-tool-h5", "--version"]
+    result = run(argv, 5)
+    assert (result.returncode, result.timed_out) == (127, False)
     assert failure_line(argv, result, 5) == (
-        "no-such-tool --version exited with code 127: [Errno 2] No such file or directory: 'no-such-tool'"
+        "no-such-tool-h5 --version exited with code 127: [Errno 2] No such file or directory: 'no-such-tool-h5'"
     )
 
 
@@ -150,15 +114,14 @@ def test_popen_runner_kills_the_whole_process_group_on_timeout(tmp_path: Path) -
     assert (first > 0, beat.stat().st_size == first) == (True, True)
 
 
-def test_popen_runner_gives_up_on_a_descendant_that_escaped_the_group(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(bounded_run, "REAP_SECONDS", 0.3)
+def test_popen_runner_gives_up_on_a_descendant_that_escaped_the_group(tmp_path: Path) -> None:
+    """The unreaped-child case: a real grandchild in its own session holds the pipe; the runner still returns within
+    the timeout plus REAP_SECONDS for the read and REAP_SECONDS for the wait."""
     started = time.monotonic()
     try:
         with pytest.raises(subprocess.TimeoutExpired) as caught:
             popen_runner(hung_tree(tmp_path, "escape"), 2, tmp_path)
     finally:
         os.kill(int((tmp_path / "pid").read_text()), signal.SIGKILL)
-    assert time.monotonic() - started < 10
+    assert time.monotonic() - started < 2 + 2 * bounded_run.REAP_SECONDS + 5
     assert caught.value.output.strip() == "half"

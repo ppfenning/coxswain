@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_tools import chair_service, cli
+from agent_tools import chair_service, cli, unit_env
 
 COX = "/usr/local/bin/cox"
 
@@ -50,7 +50,9 @@ def test_darwin_install_writes_the_plist_prints_the_launchctl_line_then_uninstal
     assert capsys.readouterr().out.splitlines() == [str(plist), f"launchctl bootstrap gui/$(id -u) {plist}"]
     parsed = plistlib.loads(plist.read_bytes())
     assert parsed["Label"] == "coxswain-chair-watchdog"
-    assert parsed["ProgramArguments"] == [COX, "chair", "watchdog", "--profile", str(home / "profile.yaml")]
+    env_file = str(home / ".config" / "agent-tools" / "garage.env")
+    assert parsed["ProgramArguments"] == unit_env.launchd_arguments(
+        env_file, [COX, "chair", "watchdog", "--profile", str(home / "profile.yaml")])
     assert parsed["StartInterval"] == 420
     assert _watchdog(home, "--uninstall") == 0
     assert capsys.readouterr().out.splitlines() == [f"removed {plist}"]

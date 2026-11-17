@@ -1204,7 +1204,7 @@ def _runs_cause(a: argparse.Namespace) -> int:
 
 def _runs_stop_run_remote(argv: list[str]) -> bool:
     """Edge: the one real subprocess call for a remote `runs stop`; ok only when it exits 0."""
-    return subprocess.run(argv).returncode == 0
+    return bounded_run.completed(argv).returncode == 0
 
 
 def _runs_stop_is_ended(runs_dir: Path) -> Callable[[str], bool]:
@@ -2387,7 +2387,7 @@ def _generate_and_amend(wt: Path, umbrella: str | None, echo: Callable[[str], No
             echo(f"land: {note}")
     env = {**os.environ, **generate.build_env(str(wt), umbrella)}
     for command in (c for c, note in plan if note is None):
-        r = subprocess.run(command, shell=True, cwd=wt, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        r = bounded_run.completed(command, bounded_run.STEP_TIMEOUT_SECONDS, shell=True, cwd=wt, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         if r.returncode != 0:
             return False, f"{_GENERATE_FAILED}{command!r} exited {r.returncode}: {r.stdout.strip()}"
     # `_link_venv`'s `.venv` is a symlink, which a `.venv/` ignore rule does not match: keep it out of the commit.
@@ -2518,7 +2518,7 @@ def _regenerate_generated_conflicts(wt: Path, conflicted: Sequence[str]) -> str 
             return f"{name} conflicts outside its generated block"
         (wt / name).write_text(text, encoding="utf-8")
         # Run from the worktree's own tree: `python -m` puts the cwd first on sys.path, ahead of any install.
-        run = subprocess.run([sys.executable, *spec.command, str(wt / name)], cwd=wt / spec.cwd,
+        run = bounded_run.completed([sys.executable, *spec.command, str(wt / name)], bounded_run.STEP_TIMEOUT_SECONDS, cwd=wt / spec.cwd,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         if run.returncode != 0:
             return f"generator {' '.join(spec.command)} for {name} exited {run.returncode}: {run.stdout.strip()}"
@@ -6626,9 +6626,10 @@ def _route_schedule(a: argparse.Namespace) -> int:
 
 
 def _run_argv(argv: list[str]) -> tuple[int, str, str]:
-    """`(returncode, stdout, stderr)`; a missing executable is returncode 127, never an exception."""
+    """`(returncode, stdout, stderr)`; a missing executable is returncode 127, never an exception. Bounded: the adapters
+    build `gh issue list` and `gh pr edit` argvs here, and a hung one is 124 with the failure line."""
     try:
-        r = subprocess.run(argv, capture_output=True, text=True)
+        r = bounded_run.completed(argv, capture_output=True, text=True)
     except OSError as exc:
         return 127, "", str(exc)
     return r.returncode, r.stdout, r.stderr.strip()
@@ -7693,7 +7694,7 @@ def _remote_edge(cwd: Path) -> tuple[Callable[[list[str]], int], Callable[[str],
 
     def run(argv: list[str]) -> int:
         try:
-            return subprocess.run(argv, cwd=cwd).returncode
+            return bounded_run.completed(argv, bounded_run.STEP_TIMEOUT_SECONDS, cwd=cwd).returncode
         except OSError as exc:
             print(f"{argv[0]}: {exc}")
             return 127
@@ -7912,7 +7913,7 @@ def _lane_host_or_refuse(a: argparse.Namespace, profile: Mapping) -> tuple[lane_
 def _host_auth_output(argv: list[str]) -> str:
     """Edge: stdout and stderr of `claude auth status` on the host; an ssh that cannot run gives its error text."""
     try:
-        done = subprocess.run(argv, capture_output=True, text=True)
+        done = bounded_run.completed(argv, capture_output=True, text=True)
     except OSError as exc:
         return f"{argv[0]}: {exc}"
     return done.stdout + done.stderr
@@ -7924,7 +7925,7 @@ def _host_env_probe(argv: list[str], env: Mapping[str, str] | None = None) -> tu
     `env` is the probe's environment for a local lookup; None inherits this process's, as ssh probes do.
     Not `_host_auth_output`: ssh stderr (a host-key warning) is never the variable's value."""
     try:
-        done = subprocess.run(argv, capture_output=True, text=True, env=env)
+        done = bounded_run.completed(argv, capture_output=True, text=True, env=env)
     except OSError as exc:
         return 127, f"{argv[0]}: {exc}"
     return done.returncode, done.stdout if done.returncode == 0 else done.stderr
@@ -8058,7 +8059,7 @@ def _remote_capture(cwd: Path) -> Callable[[list[str]], str | None]:
 
     def capture(argv: list[str]) -> str | None:
         try:
-            done = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
+            done = bounded_run.completed(argv, cwd=cwd, capture_output=True, text=True)
         except OSError:
             return None
         return done.stdout if done.returncode == 0 else None
@@ -9145,7 +9146,7 @@ def _profile_lane_hosts(text: str) -> tuple[lane_hosts.LaneHost, ...] | lane_hos
 def _run_ssh(argv: list[str]) -> tuple[int, str]:
     """Edge: the one real subprocess call for `setup doctor --host`; stderr joins the output rows."""
     try:
-        done = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        done = bounded_run.completed(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     except OSError as exc:
         return 127, f"{argv[0]}: {exc}"
     return done.returncode, done.stdout
@@ -9319,7 +9320,7 @@ def _marketplace_listing() -> dict[str, str] | None:
     if shutil.which("claude") is None:
         return None
     try:
-        r = subprocess.run(["claude", "plugin", "marketplace", "list", "--json"], capture_output=True, text=True)
+        r = bounded_run.completed(["claude", "plugin", "marketplace", "list", "--json"], capture_output=True, text=True)
     except OSError:
         return None
     if r.returncode != 0:
@@ -9343,7 +9344,7 @@ def _marketplace_plugins() -> list[str]:
     if shutil.which("claude") is None:
         return []
     try:
-        r = subprocess.run(["claude", "plugin", "list", "--json"], capture_output=True, text=True)
+        r = bounded_run.completed(["claude", "plugin", "list", "--json"], capture_output=True, text=True)
     except OSError:
         return []
     if r.returncode != 0:
@@ -9423,14 +9424,13 @@ def _install_facts(a: argparse.Namespace) -> dict:
         "chair_service_exists": service_file is not None and service_file.exists(),
         "chair_env_file": chair_env_file,
         "chair_env_exports": tuple(chair_service.export_lines(chair_env_text or "")),
-        "chair_env_values": unit_env.parse_env(chair_env_text or ""),
     }
 
 
 def _install_run(step: dict) -> str | None:
     argv = " ".join(step["argv"])
     try:
-        proc = subprocess.run(step["argv"], cwd=step.get("cwd"), capture_output=True, text=True)
+        proc = bounded_run.completed(step["argv"], cwd=step.get("cwd"), capture_output=True, text=True)
     except OSError as exc:
         if step.get("warn_only"):
             print(f"warn: {argv}: {exc}")
@@ -9449,14 +9449,26 @@ def _install_run(step: dict) -> str | None:
     return f"{argv} exited {proc.returncode}"
 
 
+def _write_private(path: Path, text: str) -> None:
+    """Edge. A unit or agent file, readable by its owner only: created 0600 before any byte is written."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    path.chmod(0o600)
+
+
 def _execute_step(step: dict) -> str | None:
     op = step["op"]
     if op == "run":
         return _install_run(step)
     if op == "write":
         path = Path(step["path"])
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(step["text"], encoding="utf-8")
+        if path.suffix in (".plist", ".service", ".timer"):
+            _write_private(path, step["text"])
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(step["text"], encoding="utf-8")
         print(f"write {path}")
         return None
     if op == "skip":
@@ -9571,7 +9583,7 @@ def _migrate_old_root(profile: Mapping, locs) -> str | None:
 def _migrate_tool_dir() -> str | None:
     """Edge. The output of `uv tool dir`; None when uv is missing, exits non-zero or prints nothing."""
     try:
-        done = subprocess.run(["uv", "tool", "dir"], capture_output=True, text=True)
+        done = bounded_run.completed(["uv", "tool", "dir"], capture_output=True, text=True)
     except OSError:
         return None
     return done.stdout.strip() or None if done.returncode == 0 else None
@@ -9615,7 +9627,7 @@ def _migrate_venv_current(checkout: Path) -> bool:
     """Edge. Whether the checkout's venv matches its lock with every extra: `uv sync --check` exits 0, changing nothing."""
     argv = [*setup_install.SYNC_ARGV[:2], "--check", *setup_install.SYNC_ARGV[2:], "--directory", str(checkout)]
     try:
-        return subprocess.run(argv, capture_output=True, text=True).returncode == 0
+        return bounded_run.completed(argv, capture_output=True, text=True).returncode == 0
     except OSError:
         return False
 
@@ -9832,7 +9844,7 @@ def _migrate_checkout(step: dict) -> str | None:
 def _migrate_git(step: dict) -> str | None:
     argv = " ".join(step["argv"])
     try:
-        done = subprocess.run(step["argv"], capture_output=True, text=True)
+        done = bounded_run.completed(step["argv"], capture_output=True, text=True)
     except OSError as exc:
         return f"{argv}: {exc}"
     if done.returncode != 0:
@@ -9884,7 +9896,7 @@ def _migrate_exec(step: dict, locs) -> str | None:
 def _migrate_systemctl(*argv: str) -> subprocess.CompletedProcess | str:
     """Edge. One `systemctl --user` call, or the reason it could not run."""
     try:
-        return subprocess.run(["systemctl", "--user", *argv], capture_output=True, text=True, check=False)
+        return bounded_run.completed(["systemctl", "--user", *argv], capture_output=True, text=True, check=False)
     except OSError as exc:
         return f"systemctl --user {' '.join(argv)}: {exc}"
 
@@ -10004,7 +10016,7 @@ def _migrate_run_host_step(step, locs) -> tuple[bool, str]:
     if step.op == "remote_migrate":
         argv = shlex.join(step.argv)
         try:
-            done = subprocess.run(step.argv, capture_output=True, text=True)
+            done = bounded_run.completed(step.argv, capture_output=True, text=True)
         except OSError as exc:
             return False, f"{argv}: {exc}"
         if done.returncode != 0:
@@ -10711,12 +10723,11 @@ def _manifest_provider_command(manifest: dict, provider: str) -> str:
 def _real_run(argv: list, cwd: str | None) -> tuple:
     """The subprocess wrapper `install_exec.execute` calls at the edge;
     stdout and stderr are folded together since the caller only prints. A command that cannot start (a missing
-    program or working folder) is exit 127 with the reason, never a traceback. A `git` or `gh` step is bounded by
-    `bounded_run.completed`: a hung fetch is exit 124 with the failure line. Other steps (uv, an install script) are
-    not, since how long a venv build takes is not this function's to guess."""
+    program or working folder) is exit 127 with the reason, never a traceback. Every step is bounded by
+    `bounded_run.completed`: git and gh by their bounds, a venv sync or a tool install by the step bound, so a hung
+    step is exit 124 with the failure line and the edge upgrade goes on to roll back or report."""
     try:
-        run = bounded_run.completed if Path(str(argv[0])).name in ("git", "gh") else subprocess.run
-        result = run(argv, cwd=cwd, capture_output=True, text=True)
+        result = bounded_run.completed(argv, cwd=cwd, capture_output=True, text=True)
     except OSError as exc:
         return 127, f"{argv[0]}: {exc}"
     return result.returncode, result.stdout + result.stderr
@@ -11015,17 +11026,12 @@ def _upgrade_channel(a: argparse.Namespace) -> str | None:
         return upgrade_edge.DEFAULT_CHANNEL
 
 
-# The runner every edge-upgrade subprocess goes through; None is `bounded_run.popen_runner`. Tests set one that hangs.
-_edge_runner = None
-
-
 def _edge_run(argv: list, cwd: str | None = None) -> tuple[int, str]:
     """Edge. Every command the edge upgrade runs (git, gh, systemctl, the doctor), bounded by
     `bounded_run.default_timeout`: a hung one is killed with its process group and its output is the failure line,
     `gh run timed out after 120 seconds`, so the timer's oneshot reports it and returns instead of wedging."""
     limit = bounded_run.default_timeout(argv, os.environ)
-    runner = _edge_runner or bounded_run.popen_runner
-    result = bounded_run.run(argv, limit, Path(cwd) if cwd else None, runner)
+    result = bounded_run.run(argv, limit, Path(cwd) if cwd else None)
     if result.timed_out or result.returncode == bounded_run.UNRUNNABLE_RETURNCODE:
         return result.returncode, bounded_run.failure_line(argv, result, limit)
     return result.returncode, result.output
@@ -11097,12 +11103,18 @@ def _edge_unit_states(units: list[str]) -> dict[str, str]:
     return dict(zip(units, (line.strip() for line in out.splitlines() if line.strip()), strict=False))
 
 
+def _edge_venv_check(checkout: Path) -> int:
+    """Edge. The exit code of `uv sync --check` for the checkout's venv: 0 when it matches the checkout's lock."""
+    argv = [*setup_install.SYNC_ARGV[:2], "--check", *setup_install.SYNC_ARGV[2:], "--directory", str(checkout)]
+    return _edge_run(argv)[0]
+
+
 def _edge_doctor(before: Mapping[str, str] | None = None, units: list[str] | None = None) -> str | None:
     """Edge. Runs the moved install's doctor (`cox` on PATH is the checkout's own) and reads the units' states;
     `doctor.edge_verdict` judges them. None when the required tier passes; an advisory failure only prints a warning."""
     argv = [*remote_argv.doctor_argv(), "--json"]
     code, out = _edge_run(argv)
-    failure, warning = doctor.edge_verdict(argv, code, out, before or {}, _edge_unit_states(units or []))
+    failure, warning = doctor.edge_verdict(argv, code, out, units or [], before or {}, _edge_unit_states(units or []))
     if warning:
         print(warning)
     return failure
@@ -11148,6 +11160,8 @@ def _upgrade_edge(a: argparse.Namespace) -> int:
     verdict = upgrade_edge.decide(head, target, first_parent, last)
     if verdict != upgrade_edge.MOVE:
         print(upgrade_edge.verdict_line(verdict, head, target, last))
+        if upgrade_edge.needs_resync(verdict, _edge_venv_check(checkout)):
+            return _edge_resync(a, head)
         return 0
     added = _edge_added_migrations(checkout, head, target)
     if isinstance(added, str):
@@ -11158,6 +11172,11 @@ def _upgrade_edge(a: argparse.Namespace) -> int:
               "store, and a failed doctor then cannot roll back past them")
     units = _edge_units()
     before = _edge_unit_states(units)
+    unknown = doctor.unreadable_units(units, before)
+    if unknown:
+        # After the move there would be no telling whether the upgrade stopped these units, so do not move.
+        print(f"refusing: systemctl --user is-active gave no state for {', '.join(unknown)}")
+        return 2
     if a.dry_run:
         print(f"would restart: {', '.join(units) or 'no chair or lander unit'}; would run cox setup doctor")
         return _upgrade_move(argparse.Namespace(**{**vars(a), "to": target}))
@@ -11191,6 +11210,22 @@ def _upgrade_edge(a: argparse.Namespace) -> int:
     return 1
 
 
+def _edge_resync(a: argparse.Namespace, head: str) -> int:
+    """Edge. The checkout is where it should be but its venv is not synced to it (a move whose sync was killed, or a
+    systemd timeout mid-upgrade): run the after-move steps at the same commit, restart the running units and judge the
+    doctor. Nothing to roll back to, so a failure is reported and left for the next run or a person."""
+    print(f"edge: the venv is not synced to {head[:12]}; syncing it")
+    if a.dry_run:
+        return 0
+    units = _edge_units()
+    before = _edge_unit_states(units)
+    code = _upgrade_move(argparse.Namespace(**{**vars(a), "to": head}))
+    failure = (None if code == 0 else f"cox upgrade --to {head} exited {code}") or _edge_restart(units) or _edge_doctor(
+        before, units)
+    print(f"edge: resynced {head[:12]}" if failure is None else f"edge: resync of {head[:12]} failed: {failure}")
+    return 0 if failure is None else 1
+
+
 def _upgrade_timer_install(a: argparse.Namespace) -> int:
     """Edge. Writes the upgrade schedule (a systemd service and timer on Linux, a launchd agent on macOS) and prints
     the lines that activate it; runs no launchd or systemd tool. Both read the one env file the other units read."""
@@ -11204,12 +11239,10 @@ def _upgrade_timer_install(a: argparse.Namespace) -> int:
     if isinstance(resolved, _ChairUnitRefusal):
         print(resolved.message)
         return 2
-    env_values = unit_env.parse_env(_read_text_or_none(Path(resolved.env_file)) or "") if resolved.env_file else {}
     files = upgrade_edge.schedule_files(sys.platform, Path.home(), resolved.cox, resolved.profile, resolved.path,
-                                        a.interval_minutes, resolved.env_file, env_values)
+                                        a.interval_minutes, resolved.env_file)
     for path, text in files:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
+        _write_private(path, text)
         print(path)
     print("\n".join(upgrade_edge.activation_lines(sys.platform, files[0][0])))
     channel = _upgrade_channel(a)
@@ -12660,7 +12693,7 @@ def _release_notify(event) -> None:
         print(f"[{note.urgency}] {note.title}: {note.body}")
         return
     with contextlib.suppress(OSError):
-        subprocess.run(notify.notify_argv(note))
+        bounded_run.completed(notify.notify_argv(note))
 
 
 def _release_deploy(a: argparse.Namespace) -> int:
@@ -15031,7 +15064,7 @@ def _chair_service_host_apply(steps: list) -> int:
         if not run:
             print(f"{shlex.join(argv)}  # run by hand")
             continue
-        done = subprocess.run(argv, capture_output=True, text=True)
+        done = bounded_run.completed(argv, capture_output=True, text=True)
         if done.returncode != 0:
             print((done.stdout + done.stderr).strip())
             for left_argv, _left_run in steps[i + 1 :]:
@@ -15311,8 +15344,8 @@ def _watchdog_paths(platform: str, home: Path) -> list[Path]:
 def _watchdog_install_plan(platform: str, home: Path, resolved: _ChairUnitInputs, minutes: int) -> list[tuple[Path, str]]:
     """Each file to write, in `_watchdog_paths` order, with its text."""
     if platform == "darwin":
-        env_values = unit_env.parse_env(_read_text_or_none(Path(resolved.env_file)) or "") if resolved.env_file else {}
-        texts = [chair_service.watchdog_plist_text(resolved.cox, resolved.profile, resolved.path, minutes, env_values)]
+        env_file = resolved.env_file or unit_env.env_file_path(str(home))
+        texts = [chair_service.watchdog_plist_text(resolved.cox, resolved.profile, resolved.path, minutes, env_file)]
     else:
         texts = [
             chair_service.watchdog_service_text(resolved.cox, resolved.profile, resolved.path, resolved.env_file),
@@ -15339,8 +15372,7 @@ def _chair_watchdog_install(a: argparse.Namespace) -> int:
         return 2
     plan = _watchdog_install_plan(sys.platform, Path.home(), resolved, a.interval_minutes)
     for path, text in plan:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
+        _write_private(path, text)
         print(path)
     print("\n".join(_watchdog_activation_lines(sys.platform, plan[0][0])))
     return 0

@@ -65,6 +65,18 @@ def env_file_path(user_home: str) -> str:
     return f"{user_home.rstrip('/')}/{ENV_FILE}"
 
 
+# launchd has no EnvironmentFile: an agent runs this script, which exports every NAME=value line of the one env file
+# and then execs the real command. render_env's safe charset makes the lines safe to source. A missing file is skipped,
+# as systemd's `EnvironmentFile=-` skips it. So the plist holds no value from the file, and a rotated token reaches the
+# agent at its next launch with no reinstall.
+SOURCE_SCRIPT = 'set -a; [ -r "$1" ] && . "$1"; set +a; shift; exec "$@"'
+
+
+def launchd_arguments(environment_file: str, argv: list[str]) -> list[str]:
+    """The ProgramArguments of an agent that reads `environment_file` at launch, then runs `argv`."""
+    return ["/bin/sh", "-c", SOURCE_SCRIPT, "coxswain-env", environment_file, *argv]
+
+
 def file_text(existing: str | None, token: str | None) -> str:
     """The env file's new text: every NAME=value line the file already has, with the token set when one is given.
     Raises ValueError for `export` lines (parse_env would drop them, losing a setting) and for anything `render_env`

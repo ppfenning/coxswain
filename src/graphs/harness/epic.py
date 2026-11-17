@@ -667,25 +667,21 @@ def _note_push_failure(record: dict[str, Any], warning: str | None) -> None:
 
 def _open_review_pr(ctx: _Ctx, *, title: str, body: str, head: str, base: str) -> tuple[bool, str]:
     """Open a PR for `head` against `base`; the detail is its URL on success."""
-    try:
-        proc = subprocess.run(
-            ["gh", "pr", "create", "--title", title, "--body", body, "--head", head, "--base", base],
-            cwd=ctx.repo, capture_output=True, text=True, timeout=_GH_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired:
-        return False, f"gh pr create timed out after {_GH_TIMEOUT_SECONDS}s"
+    # A hung gh is exit 124 with `gh pr timed out after 120 seconds` as stderr, reported as any failed create.
+    proc = bounded_proc.completed(
+        ["gh", "pr", "create", "--title", title, "--body", body, "--head", head, "--base", base],
+        _GH_TIMEOUT_SECONDS, cwd=ctx.repo, capture_output=True, text=True,
+    )
     return proc.returncode == 0, (proc.stdout if proc.returncode == 0 else proc.stderr or proc.stdout).strip()
 
 
 def _existing_pr(ctx: _Ctx, head: str) -> tuple[bool, str]:
     """(known, url): known is False when the forge could not be asked, so "no PR" is never guessed from an error."""
     try:
-        proc = subprocess.run(
+        proc = bounded_proc.completed(
             ["gh", "pr", "view", head, "--json", "url", "--jq", ".url"],
-            cwd=ctx.repo, capture_output=True, text=True, timeout=_GH_TIMEOUT_SECONDS,
+            _GH_TIMEOUT_SECONDS, cwd=ctx.repo, capture_output=True, text=True,
         )
-    except subprocess.TimeoutExpired:
-        return False, f"gh pr view timed out after {_GH_TIMEOUT_SECONDS}s"
     except OSError as exc:
         return False, f"{type(exc).__name__}: {exc}"
     if proc.returncode == 0:

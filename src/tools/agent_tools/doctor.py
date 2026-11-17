@@ -747,14 +747,26 @@ UPGRADE_REQUIRED_CHECKS = frozenset(
     | {f"{_STORE_CHECK} {component}" for component in _REQUIRED_PROBES}
 )
 
+# The required rows `checks` emits on every run, whatever the facts; doctor output missing one of them was not a whole
+# doctor run (an older doctor, a truncated print), so it cannot pass an upgrade.
+UPGRADE_EXPECTED_CHECKS = ("profile", "workspace", "harness venv", "core importable", "chair unit PATH", "store", "schema")
 
-def units_start_row(before: Mapping[str, str], after: Mapping[str, str]) -> dict:
+
+def unreadable_units(units: Sequence[str], states: Mapping[str, str]) -> list[str]:
+    """The units `systemctl --user is-active` gave no state for; the edge refuses to move when there are any, since it
+    could not tell afterwards whether the upgrade stopped them."""
+    return [unit for unit in units if not states.get(unit)]
+
+
+def units_start_row(units: Sequence[str], before: Mapping[str, str], after: Mapping[str, str]) -> dict:
     """Every unit that was `active` before the upgrade must be `active` after its restart; a unit that was not running
-    is not judged. `before` and `after` map a unit name to what `systemctl --user is-active` printed for it."""
-    judged = [unit for unit, state in before.items() if state == "active"]
+    is not judged, and a unit whose state before is unknown fails. `before` and `after` map a unit name to what
+    `systemctl --user is-active` printed for it."""
+    unknown = [f"{unit} had no state before the upgrade" for unit in unreadable_units(units, before)]
+    judged = [unit for unit in units if before.get(unit) == "active"]
     down = [f"{unit} is {after.get(unit) or 'unknown'}" for unit in judged if after.get(unit) != "active"]
-    if down:
-        return {"check": UNITS_START_CHECK, "ok": False, "detail": "; ".join(down)}
+    if unknown or down:
+        return {"check": UNITS_START_CHECK, "ok": False, "detail": "; ".join([*unknown, *down])}
     return {"check": UNITS_START_CHECK, "ok": True,
             "detail": f"{len(judged)} restarted unit(s) active" if judged else "no unit was running"}
 
@@ -765,11 +777,6 @@ def row_tier(row: dict) -> str:
 
 def failing_required(rows: list[dict]) -> list[dict]:
     return [row for row in rows if row_tier(row) == "required" and not row["ok"]]
-
-
-def upgrade_exit_code(rows: list[dict]) -> int:
-    """0 unless a required row is not ok; an advisory failure never blocks an upgrade."""
-    return 1 if failing_required(rows) else 0
 
 
 def failing_advisory(rows: list[dict]) -> list[dict]:
@@ -802,16 +809,20 @@ def rows_from_json(output: str) -> list[dict] | None:
 
 
 def edge_verdict(
-    argv: Sequence[str], code: int, output: str, before: Mapping[str, str], after: Mapping[str, str],
+    argv: Sequence[str], code: int, output: str,
+    units: Sequence[str], before: Mapping[str, str], after: Mapping[str, str],
 ) -> tuple[str | None, str | None]:
     """What the edge upgrade does with the moved install's doctor: (the failure that rolls back, the warning that does
-    not). Only the required tier and the units-start row can fail it; doctor output with no rows to judge (a crash, a
-    timeout) is a failure, since nothing shows the install works."""
+    not). Only the required tier and the units-start row can fail it. Doctor output with no rows to judge (a crash, a
+    timeout), or missing a row of UPGRADE_EXPECTED_CHECKS, is a failure, since nothing shows the install works."""
     rows = rows_from_json(output)
     if rows is None:
         first = next((line.strip() for line in output.splitlines() if line.strip()), "")
         return f"{' '.join(argv)} exited {code} with no rows to judge" + (f": {first}" if first else ""), None
-    return upgrade_verdict_lines([*rows, units_start_row(before, after)])
+    present = {row["check"] for row in rows}
+    missing = [{"check": check, "ok": False, "detail": "missing from the doctor output"}
+               for check in UPGRADE_EXPECTED_CHECKS if check not in present]
+    return upgrade_verdict_lines([*rows, *missing, units_start_row(units, before, after)])
 
 
 _PARQUET_FIXES = {

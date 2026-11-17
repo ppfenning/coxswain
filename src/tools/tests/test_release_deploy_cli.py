@@ -89,7 +89,7 @@ def test_notify_sends_the_notify_send_argv_and_prints_when_it_is_missing(monkeyp
     event = Event("release-1", "released", 2, {"version": "1"})
     sent: list[list[str]] = []
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/notify-send")
-    monkeypatch.setattr(cli.subprocess, "run", sent.append)
+    monkeypatch.setattr(cli.subprocess, "run", lambda argv, **_bound: sent.append(argv))
     cli._release_notify(event)
     assert sent == [["notify-send", "-u", "normal", "-a", "cox", "release-1 released", "1"]]
     monkeypatch.setattr(cli.shutil, "which", lambda name: None)

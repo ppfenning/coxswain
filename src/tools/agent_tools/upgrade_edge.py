@@ -70,6 +70,12 @@ def decide(head: str, target: str, first_parent: Sequence[str], record: Mapping 
     return MOVE
 
 
+def needs_resync(verdict: str, venv_check_code: int) -> bool:
+    """Whether a run that moves nothing must still sync the venv: `uv sync --check` said the venv does not match the
+    checkout (exit 1). A check that timed out (124) or could not run (127) is not evidence either way."""
+    return verdict != MOVE and venv_check_code == 1
+
+
 def verdict_line(verdict: str, head: str, target: str, record: Mapping | None = None) -> str:
     """What a run that does not move prints."""
     if verdict == UNCHANGED:
@@ -145,10 +151,10 @@ def timer_text(minutes: int) -> str:
     return "\n".join(lines) + "\n"
 
 
-def plist_text(cox: str, profile: str, path: str, minutes: int, environment: Mapping[str, str] | None) -> str:
-    """The launchd agent a macOS host upgrades on: the same command as the systemd service, every `minutes`, with the
-    one env file's values as EnvironmentVariables (launchd has no EnvironmentFile). Every value is XML-escaped."""
-    arguments = [cox, "upgrade", "--scheduled", "--profile", profile]
+def plist_text(cox: str, profile: str, path: str, minutes: int, environment_file: str) -> str:
+    """The launchd agent a macOS host upgrades on: the same command as the systemd service, every `minutes`, run
+    through `unit_env.launchd_arguments` so it sources the one env file at launch. Every value is XML-escaped."""
+    arguments = chair_service.program_arguments(environment_file, [cox, "upgrade", "--scheduled", "--profile", profile])
     lines = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
@@ -162,7 +168,7 @@ def plist_text(cox: str, profile: str, path: str, minutes: int, environment: Map
         "  </array>",
         "  <key>StartInterval</key>",
         f"  <integer>{minutes * 60}</integer>",
-        *chair_service.environment_variable_lines(path, environment),
+        *chair_service.environment_variable_lines(path),
         "</dict>",
         "</plist>",
     ]
@@ -178,13 +184,13 @@ def schedule_paths[Home: PurePath](platform: str, home: Home) -> list[Home]:
 
 
 def schedule_files[Home: PurePath](
-    platform: str, home: Home, cox: str, profile: str, path: str, minutes: int,
-    environment_file: str | None, environment: Mapping[str, str] | None,
+    platform: str, home: Home, cox: str, profile: str, path: str, minutes: int, environment_file: str | None,
 ) -> list[tuple[Home, str]]:
     """Each file `cox upgrade --install-timer` writes, in `schedule_paths` order. Both platforms read the one env
-    file: systemd by its EnvironmentFile= line, launchd by its parsed values."""
+    file: systemd by its EnvironmentFile= line, launchd by sourcing it at launch (the default file when none is given,
+    so the agent picks it up once `cox setup unit-env` writes it)."""
     if platform == "darwin":
-        texts = [plist_text(cox, profile, path, minutes, environment)]
+        texts = [plist_text(cox, profile, path, minutes, environment_file or unit_env.env_file_path(str(home)))]
     else:
         texts = [service_text(cox, profile, path, environment_file), timer_text(minutes)]
     return list(zip(schedule_paths(platform, home), texts, strict=True))

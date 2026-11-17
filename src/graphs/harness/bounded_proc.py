@@ -14,6 +14,8 @@ from collections.abc import Sequence
 GH_TIMEOUT_SECONDS = 120
 GIT_TIMEOUT_SECONDS = 60
 GIT_SLOW_TIMEOUT_SECONDS = 600
+# A step whose length scales with what it builds (a venv sync, a tool install, a generator): long, but never forever.
+STEP_TIMEOUT_SECONDS = 1800
 GIT_SLOW_SUBCOMMANDS = frozenset({"fetch", "push", "pull", "clone", "ls-remote", "commit", "merge", "cherry-pick",
                                   "rebase", "am", "submodule", "worktree"})
 TIMEOUT_RETURNCODE = 124
@@ -33,7 +35,9 @@ def default_timeout(argv: Sequence[str]) -> float:
         return GH_TIMEOUT_SECONDS
     if program == "git" and git_subcommand(argv) not in GIT_SLOW_SUBCOMMANDS:
         return GIT_TIMEOUT_SECONDS
-    return GIT_SLOW_TIMEOUT_SECONDS
+    if program == "git":
+        return GIT_SLOW_TIMEOUT_SECONDS
+    return STEP_TIMEOUT_SECONDS
 
 
 def timeout_line(argv: Sequence[str], timeout: float) -> str:

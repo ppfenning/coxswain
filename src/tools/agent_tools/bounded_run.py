@@ -28,6 +28,8 @@ GH_TIMEOUT_SECONDS = 120
 GIT_TIMEOUT_SECONDS = 60
 # git subcommands that talk to a remote or run repository hooks, so may legitimately take minutes.
 GIT_SLOW_TIMEOUT_SECONDS = 600
+# A step whose length scales with what it builds (a venv sync, a tool install, a generator): long, but never forever.
+STEP_TIMEOUT_SECONDS = 1800
 GIT_SLOW_SUBCOMMANDS = frozenset({"fetch", "push", "pull", "clone", "ls-remote", "commit", "merge", "cherry-pick",
                                   "rebase", "am", "submodule", "worktree"})
 
@@ -137,7 +139,7 @@ GH_TIMEOUT_ENV = "COXSWAIN_GH_TIMEOUT_SECONDS"
 
 def default_timeout(argv: Sequence[str], env: Mapping[str, str] | None = None) -> float:
     """GH_TIMEOUT_SECONDS (or a positive GH_TIMEOUT_ENV in `env`) for gh; for git, the slow bound for a remote or
-    hook-running subcommand, else the short one; the slow bound for anything else."""
+    hook-running subcommand, else the short one; the step bound for anything else."""
     program = os.path.basename(str(argv[0])) if argv else ""
     if program == "gh":
         raw = (env or {}).get(GH_TIMEOUT_ENV, "")
@@ -148,22 +150,30 @@ def default_timeout(argv: Sequence[str], env: Mapping[str, str] | None = None) -
         return override if override > 0 else GH_TIMEOUT_SECONDS
     if program == "git" and git_subcommand(argv) not in GIT_SLOW_SUBCOMMANDS:
         return GIT_TIMEOUT_SECONDS
-    return GIT_SLOW_TIMEOUT_SECONDS
+    if program == "git":
+        return GIT_SLOW_TIMEOUT_SECONDS
+    return STEP_TIMEOUT_SECONDS
 
 
 def _is_text(kwargs: dict) -> bool:
     return bool(kwargs.get("text") or kwargs.get("universal_newlines") or "encoding" in kwargs or "errors" in kwargs)
 
 
-def completed(argv: Sequence[str], timeout: float | None = None, **kwargs) -> subprocess.CompletedProcess:
+def _words(argv: Sequence[str] | str) -> list[str]:
+    """The argv as a list; a `shell=True` command string is split on whitespace, for the failure line only."""
+    return argv.split() if isinstance(argv, str) else list(argv)
+
+
+def completed(argv: Sequence[str] | str, timeout: float | None = None, **kwargs) -> subprocess.CompletedProcess:
     """Edge. `subprocess.run(argv, timeout=..., **kwargs)` with `default_timeout(argv)` when none is given. A timeout
     returns exit 124 (raises CalledProcessError under `check=True`) with the failure line as stderr, or appended to
     stdout when stderr is merged into it; when stderr is not captured the line is printed to this process's stderr."""
-    limit = default_timeout(argv, os.environ) if timeout is None else timeout
+    words = _words(argv)
+    limit = default_timeout(words, os.environ) if timeout is None else timeout
     try:
-        return subprocess.run(list(argv), timeout=limit, **kwargs)
+        return subprocess.run(argv if isinstance(argv, str) else words, timeout=limit, **kwargs)
     except subprocess.TimeoutExpired as expired:
-        line = failure_line(list(argv), BoundedResult(TIMEOUT_RETURNCODE, "", True), limit)
+        line = failure_line(words, BoundedResult(TIMEOUT_RETURNCODE, "", True), limit)
         text = _is_text(kwargs)
         stdout_piped = bool(kwargs.get("capture_output")) or kwargs.get("stdout") is subprocess.PIPE
         stderr_piped = bool(kwargs.get("capture_output")) or kwargs.get("stderr") is subprocess.PIPE
@@ -176,5 +186,5 @@ def completed(argv: Sequence[str], timeout: float | None = None, **kwargs) -> su
         if not stderr_piped and not (merged and stdout_piped):
             print(line, file=sys.stderr)
         if kwargs.get("check"):
-            raise subprocess.CalledProcessError(TIMEOUT_RETURNCODE, list(argv), out, err) from None
-        return subprocess.CompletedProcess(list(argv), TIMEOUT_RETURNCODE, out, err)
+            raise subprocess.CalledProcessError(TIMEOUT_RETURNCODE, argv, out, err) from None
+        return subprocess.CompletedProcess(argv, TIMEOUT_RETURNCODE, out, err)

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_tools import cli, forge_github, upgrade_edge
+from agent_tools import cli, doctor, forge_github, upgrade_edge
 
 A, B, C = ("a" * 40, "b" * 40, "c" * 40)  # newest first on main: A is the tip, B the newest green, C installed
 SLUG = "example-org/example-repo"
@@ -55,12 +55,15 @@ class World:
         if argv[:3] == ["systemctl", "--user", "is-active"]:
             states = ["inactive" if self.restarted and unit in self.down_after_restart else "active" for unit in argv[3:]]
             return (0 if set(states) == {"active"} else 3), "".join(f"{state}\n" for state in states)
+        if argv[:3] == ["uv", "sync", "--check"]:
+            return 0, ""
         if argv[:3] == ["systemctl", "--user", "try-restart"]:
             self.restarted = True
             return 0, ""
         if argv == DOCTOR:
             rows = [{"check": "store", "ok": self.head not in self.doctor_fails_at, "detail": "store FAIL"},
-                    {"check": "claude token", "ok": self.head not in self.advisory_fails_at, "detail": "no token file"}]
+                    {"check": "claude token", "ok": self.head not in self.advisory_fails_at, "detail": "no token file"},
+                    *({"check": c, "ok": True} for c in doctor.UPGRADE_EXPECTED_CHECKS if c != "store")]
             return int(not all(r["ok"] for r in rows)), json.dumps({"rows": rows, "ok": all(r["ok"] for r in rows)})
         raise AssertionError(f"unexpected command: {argv}")
 

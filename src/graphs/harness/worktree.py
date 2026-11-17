@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import shutil
-import subprocess
 import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -229,7 +228,7 @@ def read_lock(worktree: Path, names: Sequence[str] = ("uv.lock",)) -> bytes | No
 
 def sync_env(worktree: Path, argv: Sequence[str]) -> tuple[bool, str]:
     """Run the caller's environment sync `argv` with the worktree as cwd; the command is never named here."""
-    result = subprocess.run(list(argv), cwd=worktree, capture_output=True, text=True)
+    result = bounded_proc.completed(list(argv), bounded_proc.STEP_TIMEOUT_SECONDS, cwd=worktree, capture_output=True, text=True)
     return result.returncode == 0, "\n".join(s for s in (result.stdout.strip(), result.stderr.strip()) if s)
 
 
