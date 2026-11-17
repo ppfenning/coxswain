@@ -21,7 +21,6 @@ from pathlib import Path
 
 from agent_tools.cli import (
     _CHAIR_RUN_INTERVAL,
-    _courier_profile,
     _holder_label,
     _lake_provider,
     _leader_heartbeat_minutes,
@@ -54,6 +53,7 @@ from agent_tools.cli import (
 from agent_tools.cli_chair import _chair_once_exit, _chair_run_deps, _chair_unwired_sources
 from agent_tools.cli_host import _chair_heads, _chair_service_host_repos, _origin_url
 from agent_tools.cli_leader import _is_chair_run_command, _pid_command
+from agent_tools.cli_route import _courier_profile
 
 
 def _write_private(path: Path, text: str) -> None:

@@ -21,7 +21,6 @@ from typing import Any
 
 from agent_tools.cli import (
     _approved_branch_merged,
-    _chair_export_hook,
     _chair_max_in_flight,
     _chair_meter,
     _check_capacity,
@@ -30,11 +29,7 @@ from agent_tools.cli import (
     _initiative_texts,
     _json_or,
     _lane_host_candidates,
-    _lane_sync_ssh,
-    _live_by_host,
-    _live_runs,
     _local_max_in_flight,
-    _pid_probe_ssh,
     _profile_lane_hosts,
     _profile_month,
     _read_epics,
@@ -43,7 +38,6 @@ from agent_tools.cli import (
     _repo_for,
     _resolved_pacing_policy,
     _run_argv,
-    _shadowed_note,
     _store_held_records,
     _stored_work_items,
     _team_cartridge,
@@ -117,7 +111,10 @@ from agent_tools.cli import (
     workspace_git_on,
     workspace_sync,
 )
+from agent_tools.cli_board import _chair_export_hook
 from agent_tools.cli_leader import _chat_deps
+from agent_tools.cli_route import _live_runs
+from agent_tools.cli_route_launch import _lane_sync_ssh, _live_by_host, _pid_probe_ssh, _shadowed_note
 
 
 @dataclasses.dataclass(frozen=True)
