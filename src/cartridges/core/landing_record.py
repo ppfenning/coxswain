@@ -111,6 +111,29 @@ def phase_parents(tasks: Iterable[Mapping[str, Any]]) -> dict[str, set[str]]:
     return parents
 
 
+def phase_cycle(parents: Mapping[str, Collection[str]]) -> list[str]:
+    """Pure. One cycle among the phases, as the path `[a, b, ..., a]` where each phase needs the next; [] for none.
+    Phases are tried in natural order, so the same parents always name the same cycle. A phase on a cycle can never
+    merge (`phase_state` reads it `waiting`), so the chair reports this as the initiative's DAG problem."""
+    done: set[str] = set()
+
+    def walk(phase: str, path: list[str]) -> list[str]:
+        if phase in path:
+            return [*path[path.index(phase):], phase]
+        if phase in done:
+            return []
+        for parent in sorted(parents.get(phase, ()), key=natural_key):
+            if parent != phase and (found := walk(parent, [*path, phase])):
+                return found
+        done.add(phase)
+        return []
+
+    for start in sorted(parents, key=natural_key):
+        if found := walk(start, []):
+            return found
+    return []
+
+
 def waves(parents: Mapping[str, Collection[str]]) -> list[list[str]]:
     """The phases by depth: wave 1 has no parent, wave n needs a phase of wave n-1. Phases on a cycle are left out."""
     depth: dict[str, int] = {}

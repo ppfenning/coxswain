@@ -56,3 +56,18 @@ def test_the_gathered_facts_of_an_invalid_initiative_carry_dag_problem_and_a_val
 
 def test_no_ticket_rows_set_no_dag_problem():
     assert all("dag_problem" not in i for i in _gathered(None).values())
+
+
+def test_a_cycle_between_phases_with_no_task_cycle_is_the_initiatives_problem():
+    # a (p1) needs b (p2) and c (p2) needs d (p1): no task waits on itself, but neither phase can merge first.
+    rows = [
+        {**_row("i", "a", ["b"]), "phase": "p1"}, {**_row("i", "b"), "phase": "p2"},
+        {**_row("i", "c", ["d"]), "phase": "p2"}, {**_row("i", "d"), "phase": "p1"},
+        _row("j", "x"),
+    ]
+    assert dag_problems(rows) == {"i": "phase cycle: p1 -> p2 -> p1"}
+
+
+def test_phases_in_order_are_not_a_problem():
+    rows = [{**_row("i", "a"), "phase": "p1"}, {**_row("i", "b", ["a"]), "phase": "p2"}]
+    assert dag_problems(rows) == {}

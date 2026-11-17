@@ -48,6 +48,14 @@ def test_phases_on_a_cycle_wait_instead_of_recursing_forever() -> None:
     assert lr.phase_states(record(), tasks) == {"p1": "waiting", "p2": "waiting", "p3": "open"}
 
 
+def test_phase_cycle_names_one_cycle_as_a_path_and_none_for_a_dag() -> None:
+    assert lr.phase_cycle({"p1": {"p2"}, "p2": {"p1"}, "p3": set()}) == ["p1", "p2", "p1"]
+    assert lr.phase_cycle({"p1": set(), "p2": {"p3"}, "p3": {"p10"}, "p10": {"p2"}}) == ["p2", "p3", "p10", "p2"]
+    assert lr.phase_cycle(lr.phase_parents(TWO_WAVES)) == []
+    assert lr.phase_cycle({"p1": {"p1"}}) == []  # a phase's own needs are not a cycle
+    assert lr.phase_cycle({}) == []
+
+
 def test_a_new_initiative_has_wave_one_open_and_the_rest_waiting() -> None:
     assert lr.phase_states(record(), TWO_WAVES) == {"p1": "open", "p2": "open", "p3": "waiting", "p10": "waiting"}
     assert lr.placeable_phases(record(), TWO_WAVES) == ["p1", "p2"]

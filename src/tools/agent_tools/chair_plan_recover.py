@@ -58,7 +58,8 @@ def _recovery(
     # A main_red quarantine does not block its initiative's relaunch pair until two reverts in a row; then it plans
     # nothing and blocks it (_blocks): relaunching onto a main that keeps going red stacks work on it. Either way the
     # reverted tasks themselves stay quarantined, so the relaunch builds the initiative's other ready work, never them:
-    # a person releases each one (`cox route edit <task> --state ready`), which the revert's needs_chair names.
+    # a person releases each one (`cox route edit <task> --initiative <initiative> --state ready`), which the revert's
+    # needs_chair names.
     if q["cause"] == MAIN_RED_CAUSE:
         return "none" if revert_stopped(outcomes.get(q["initiative"], [])) else "relaunch"
     # A failure that needs a tweak is never rebuilt as it was: the next run triages it first. A fact that names no run

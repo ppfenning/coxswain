@@ -80,7 +80,7 @@ class ReaderCache:
             # One entry per name: a new key (another initiative set, say) replaces the old one, so the cache stays small.
             for old in [k for k in self._entries if k[0] == name and k != (name, key)]:
                 del self._entries[old]
-            self._entries[(name, key)] = _Entry(stamp, now, value)
+            self._entries[(name, key)] = _Entry(stamp, now, copy.deepcopy(value))  # the caller's value stays the caller's
         return value
 
     def tick_counts(self) -> tuple[dict[str, int], dict[str, int]]:

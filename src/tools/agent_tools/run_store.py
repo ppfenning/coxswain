@@ -196,8 +196,13 @@ def connect_readonly(runs_dir: Path) -> Any | None:
 
 
 def _change_stamp_sql() -> str:
-    """One row per user table: its name and the rows inserted, updated and deleted since statistics began."""
-    return "SELECT relname, n_tup_ins + n_tup_upd + n_tup_del AS changes FROM pg_stat_user_tables"
+    """One row per user table the connection's `search_path` resolves to: its name and the rows inserted, updated and
+    deleted since statistics began. `pg_table_is_visible` keeps a same-named table in another schema (a `public.work_items`
+    beside the store's own, say) out, so its writes neither move the stamp nor hide the store's."""
+    return (
+        "SELECT relname, n_tup_ins + n_tup_upd + n_tup_del AS changes FROM pg_stat_user_tables "
+        "WHERE pg_table_is_visible(relid)"
+    )
 
 
 def _stamp_of_rows(rows: Sequence[Any]) -> Hashable:

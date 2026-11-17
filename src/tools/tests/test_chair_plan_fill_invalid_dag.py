@@ -46,3 +46,17 @@ def test_an_unstarted_initiative_with_a_dag_problem_launches_no_epic():
 def test_the_invalid_dag_is_reported_once_in_the_needs_chair_line():
     facts = _facts(_init("bad", started=False, dag_problem="t2 needs t1"))
     assert needs_chair_items(plan_recover(facts)) == ["needs chair: bad:invalid_dag (t2 needs t1)"]
+
+
+def test_a_phase_cycle_is_one_needs_chair_naming_the_cycle():
+    from agent_tools.chair_read_dag import dag_problems
+
+    rows = [
+        {"initiative": "bad", "id": "a", "needs": ["b"], "state": "ready", "phase": "p1"},
+        {"initiative": "bad", "id": "b", "needs": [], "state": "ready", "phase": "p2"},
+        {"initiative": "bad", "id": "c", "needs": ["d"], "state": "ready", "phase": "p2"},
+        {"initiative": "bad", "id": "d", "needs": [], "state": "ready", "phase": "p1"},
+    ]
+    facts = _facts(_init("bad", started=False, dag_problem=dag_problems(rows)["bad"]))
+    assert needs_chair_items(plan_recover(facts)) == ["needs chair: bad:invalid_dag (phase cycle: p1 -> p2 -> p1)"]
+    assert plan_fill(facts, 3) == []

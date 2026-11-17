@@ -94,3 +94,51 @@ def test_a_quiet_tick_reads_nothing_and_one_write_rereads_only_its_readers(sandb
     # One write to work_items: exactly its readers again, the rest reused.
     assert done["third"]["read"] == WORK_ITEMS_READERS, done
     assert set(done["first"]["read"]) - set(WORK_ITEMS_READERS) <= set(done["third"]["reused"]), done
+
+
+SCHEMAS = """import json, time
+from pathlib import Path
+from agent_tools import route, run_store
+from harness import store_api
+
+profile = route.parse_profile((Path.home() / ".config" / "agent-tools" / "profile.yaml").read_text())
+runs_dir = Path(profile["workspace_dir"]) / "runs"
+
+
+def work_items_after(previous, wait_s):
+    deadline = time.monotonic() + wait_s
+    while True:
+        now = run_store.table_counters(runs_dir)["work_items"]
+        if now != previous or time.monotonic() > deadline:
+            return now
+        time.sleep(0.1)
+
+
+# Make public's count the larger, so a reader that kept whichever same-named row came last would follow public's.
+for n in range(4):
+    store_api.set_work_state({public!r}, "ship", f"p{{n}}", "ready", "smoke", "2026-11-17T00:00:00Z", phase="p1")
+time.sleep(2)
+start = run_store.table_counters(runs_dir)["work_items"]
+public = store_api.set_work_state({public!r}, "ship", "p-only", "ready", "smoke", "2026-11-17T00:00:00Z", phase="p1")
+after_public = work_items_after(start, 3)
+own = store_api.set_work_state({own!r}, "ship", "t9", "ready", "smoke", "2026-11-17T00:00:01Z", phase="p1")
+after_own = work_items_after(after_public, 15)
+print(json.dumps([type(public).__name__, type(own).__name__, start, after_public, after_own]))
+"""
+
+
+def test_the_stamp_counts_the_search_path_table_not_a_same_named_one_in_another_schema(sandbox):
+    # The store lives in schema `cox`, named by the URL's own options; `public.work_items` exists beside it. Writes to
+    # the public one must not move the stamp, and a write to the store's own must (H6 review).
+    own = sandbox.store_url + ("&" if "?" in sandbox.store_url else "?") + "options=-c%20search_path%3Dcox"
+    with psycopg.connect(sandbox.store_url, connect_timeout=10, autocommit=True) as conn:
+        conn.execute("CREATE SCHEMA cox")
+    assert sandbox.python_json(SEED.format(url=own)) == "StateSet"  # migrates the `cox` schema and writes t1 there
+    provider = sandbox.home / ".config" / "agent-tools" / "provider.yaml"
+    provider.write_text(f"storage_url: {own}\n", encoding="utf-8")
+    public_kind, own_kind, start, after_public, after_own = sandbox.python_json(
+        SCHEMAS.format(public=sandbox.store_url, own=own)
+    )
+    assert (public_kind, own_kind) == ("StateSet", "StateSet")
+    assert after_public == start, "a write to public.work_items moved the cox store's stamp"
+    assert after_own > after_public, "a write to cox.work_items did not move the stamp"

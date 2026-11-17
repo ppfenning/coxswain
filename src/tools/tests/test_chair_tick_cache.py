@@ -86,3 +86,14 @@ def test_store_note_names_the_readers_one_tick_read():
 def test_rows_by_task_keeps_the_first_row_of_each_key_as_task_state_does():
     rows = [{"initiative": "a", "task_id": "t1", "state": "ready"}, {"initiative": "a", "task_id": "t1", "state": "done"}]
     assert rows_by_task(rows) == {("a", "t1"): rows[0]}
+
+
+def test_a_caller_that_edits_its_rows_never_edits_the_cache():
+    cache = ReaderCache(lambda: 0.0)
+    first = cache.get("hosts", ("hosts",), QUIET, lambda: [{"name": "a"}])
+    first[0]["name"] = "edited"
+    first.append({"name": "b"})
+    second = cache.get("hosts", ("hosts",), QUIET, lambda: [{"name": "unread"}])
+    assert second == [{"name": "a"}]
+    second.clear()
+    assert cache.get("hosts", ("hosts",), QUIET, lambda: []) == [{"name": "a"}]

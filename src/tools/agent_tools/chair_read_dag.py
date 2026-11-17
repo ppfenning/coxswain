@@ -5,6 +5,7 @@ The check is `core.workstore.validate_dag`, the one the epic driver runs through
 from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
+from core.landing_record import phase_cycle, phase_parents
 from core.workstore import DONE, DROPPED, WorkStoreError, validate_dag
 
 _CYCLE = "dependency cycle: "
@@ -54,7 +55,9 @@ def dag_problems(rows: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     own: dict[str, list[dict[str, Any]]] = {i: [] for i in initiatives}
     owners: dict[str, list[tuple[str, str]]] = {}
     for r in rows:
-        own[str(r["initiative"])].append({"id": r["id"], "needs": list(r.get("needs") or []), "state": r.get("state")})
+        own[str(r["initiative"])].append(
+            {"id": r["id"], "needs": list(r.get("needs") or []), "state": r.get("state"), "phase": r.get("phase")}
+        )
         owners.setdefault(str(r["id"]), []).append((str(r["initiative"]), str(r.get("state"))))
 
     def problem(initiative: str) -> str | None:
@@ -64,7 +67,10 @@ def dag_problems(rows: Sequence[Mapping[str, Any]]) -> dict[str, str]:
             validate_dag(items, foreign)
         except WorkStoreError as err:
             return _first_problem(items, foreign, str(err))
-        return None
+        # Tasks with no cycle can still make one between phases (a task of p1 needs p2, one of p2 needs p1): neither
+        # phase can merge first, so the initiative is reported, not left waiting in silence.
+        cycle = phase_cycle(phase_parents(items))
+        return f"phase cycle: {' -> '.join(cycle)}" if cycle else None
 
     found = {i: problem(i) for i in initiatives}
     return {i: p for i, p in found.items() if p is not None}

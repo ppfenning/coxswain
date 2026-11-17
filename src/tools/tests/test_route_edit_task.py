@@ -492,3 +492,11 @@ def test_a_task_id_in_two_initiatives_edits_the_named_one(tmp_path, monkeypatch)
     result = route_edit.apply_edit(tmp_path, tmp_path, "t1", title="New", live_runs=(), initiative="other", dry_run=True)
     assert result.code == route_edit.DONE, result.text
     assert store.upserts == []
+
+
+def test_pick_ticket_refuses_an_unknown_task_and_ignores_initiative_rows():
+    rows = [{"kind": "initiative", "initiative": "t1", "task_id": "t1"}, {"initiative": "a", "task_id": "t2"}]
+    assert route_edit.pick_ticket(rows, "t1", None) == "no queued intake or initiative named 't1'"
+    assert route_edit.pick_ticket(rows, "t2", None) == rows[1]  # a row with no kind is a task
+    assert route_edit.pick_ticket(rows, "t2", "a") == rows[1]
+    assert route_edit.pick_ticket(rows, "t2", "b") == "no task 't2' in initiative 'b'"
