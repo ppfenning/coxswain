@@ -127,7 +127,41 @@ def test_a_bare_name_string_counts_only_as_the_name_getattr_or_hasattr_looks_up(
 def test_each_ref_carries_its_line_and_its_top_level_owner():
     source = "def run():\n    return helper()\n\n\nhelper()\n"
     refs = [ref for ref in check_unwired.python_refs(CORE, source) if ref.name == "helper"]
-    assert sorted(refs, key=lambda ref: ref.line) == [Ref("helper", 2, "run"), Ref("helper", 5, None)]
+    assert sorted(refs, key=lambda ref: ref.line) == [Ref("helper", 2, "run", 2), Ref("helper", 5, None, 5)]
+
+
+def test_a_use_spans_its_whole_statement_but_not_a_compound_body():
+    source = "from pkg.a import (\n    bar,\n    foo,\n)\n\n\n@register\ndef run(\n    x,\n):\n    return foo(x)\n"
+    spans = {(ref.name, ref.owner): ref.lines() for ref in check_unwired.python_refs(CLI, source)}
+    assert spans[("foo", None)] == range(1, 5)  # the import's alias line 3, widened to the whole statement
+    assert spans[("register", "run")] == range(7, 11)  # the decorator and header, not the body
+    assert spans[("foo", "run")] == range(11, 12)  # the call in the body is its own statement
+
+
+def test_a_multi_line_import_whose_first_line_changed_wires_every_name_in_it():
+    sources = {CORE: "def helper(): ...\n", CLI: "from pkg.core import (\n    helper,\n)\n"}
+    assert wired(sources, {CLI: frozenset({1})})
+
+
+def test_a_def_the_same_diff_removes_from_another_file_was_moved_not_added():
+    changes = (Change("M", "src/pkg/a.py", "src/pkg/a.py"), Change("A", None, "src/pkg/b.py"))
+    old = {"src/pkg/a.py": "def foo(): ...\ndef bar(): ...\n"}
+    new = {"src/pkg/a.py": "from pkg.b import foo\ndef bar(): ...\n", "src/pkg/b.py": "def foo(): ...\ndef baz(): ...\n"}
+    assert check_unwired.removed_names(changes, old, new) == frozenset({"foo"})
+    assert check_unwired.added_symbols(changes, old, new) == (
+        Symbol("src/pkg/b.py", "b", "module", 1),
+        Symbol("src/pkg/b.py", "baz", "function", 2),
+    )
+
+
+def test_a_deleted_files_defs_are_removed_names():
+    changes = (Change("D", "src/pkg/old.py", "src/pkg/old.py"),)
+    assert check_unwired.removed_names(changes, {"src/pkg/old.py": "def foo(): ...\n"}, {}) == frozenset({"foo"})
+
+
+def test_an_init_imports_its_submodule_but_does_not_call_what_it_reexports():
+    names_in_init = names(check_unwired.python_refs("src/pkg/__init__.py", "from .parts import helper\n"))
+    assert "parts" in names_in_init and "helper" not in names_in_init
 
 
 def test_dunder_all_and_init_reexports_are_not_references():
@@ -363,3 +397,57 @@ def test_end_to_end_a_private_wrapper_nothing_calls_does_not_wire_its_callee(rep
     assert check(repo).returncode == 1
     write(repo, CLI, "from pkg.core import _report, parse\n\n\ndef main(argv):\n    return parse(argv[0]), _report(argv[0])\n")
     assert check(repo).returncode == 0
+
+
+def commit_all(repo: Path, message: str) -> None:
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", message)
+
+
+def test_end_to_end_a_move_to_a_new_module_with_a_multi_line_caller_passes(repo: Path):
+    """The re-review's repro: c.py imports foo over several lines and is unchanged; foo moves from a.py to b.py."""
+    write(repo, "src/pkg/a.py", "def foo():\n    return 1\n\n\ndef bar():\n    return 2\n")
+    write(repo, "src/pkg/c.py", "from pkg.a import (\n    bar,\n    foo,\n)\n\n\ndef run():\n    return foo() + bar()\n")
+    write(repo, CLI, "from pkg.c import run\n\n\ndef main(argv):\n    return run()\n")
+    commit_all(repo, "a and c")
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    write(repo, "src/pkg/b.py", "def foo():\n    return 1\n")
+    write(repo, "src/pkg/a.py", "from pkg.b import foo  # noqa: F401\n\n\ndef bar():\n    return 2\n")
+    commit_all(repo, "move foo to b")
+    result = check(repo)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_end_to_end_a_move_out_of_a_package_init_into_a_reexported_submodule_passes(repo: Path):
+    write(repo, "src/pkg/__init__.py", "def helper():\n    return 1\n")
+    write(repo, CLI, "from pkg import helper\n\n\ndef main(argv):\n    return helper()\n")
+    commit_all(repo, "helper in the package")
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    write(repo, "src/pkg/parts.py", "def helper():\n    return 1\n")
+    write(repo, "src/pkg/__init__.py", "from .parts import helper  # noqa: F401\n")
+    commit_all(repo, "move helper to parts")
+    result = check(repo)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_end_to_end_an_h9_split_with_callers_unchanged_passes_and_a_new_helper_in_it_still_fails(repo: Path):
+    """Three functions leave a big module for a new submodule, the old module re-exports them, no caller changes."""
+    big = "".join(f"def step_{n}(x):\n    return x + {n}\n\n\n" for n in range(1, 6))
+    write(repo, "src/pkg/big.py", big)
+    write(repo, CLI, "from pkg.big import (\n" + "".join(f"    step_{n},\n" for n in range(1, 6)) + ")\n\n\n"
+                     "def main(argv):\n    return " + " + ".join(f"step_{n}(0)" for n in range(1, 6)) + "\n")
+    commit_all(repo, "big module")
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    write(repo, "src/pkg/big_steps.py", "".join(f"def step_{n}(x):\n    return x + {n}\n\n\n" for n in (1, 2, 3)))
+    write(repo, "src/pkg/big.py", "from pkg.big_steps import step_1, step_2, step_3  # noqa: F401\n\n\n"
+                                  + "".join(f"def step_{n}(x):\n    return x + {n}\n\n\n" for n in (4, 5)))
+    commit_all(repo, "split big")
+    moved = check(repo)
+    assert moved.returncode == 0, moved.stdout + moved.stderr
+    assert "1 added public symbol(s)" in moved.stdout  # the new module, imported by big.py
+
+    with (repo / "src/pkg/big_steps.py").open("a", encoding="utf-8") as steps:
+        steps.write("def step_6(x):\n    return x + 6\n")
+    added = check(repo)
+    assert added.returncode == 1
+    assert "function step_6" in added.stdout and "step_1" not in added.stdout

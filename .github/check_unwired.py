@@ -7,16 +7,18 @@ How it decides:
   added      a top-level `def`, `async def` or `class` whose name does not start with `_`, present in the new
              source of a changed non-test .py file under src/ and absent from its source at the merge base;
              and a whole new non-test .py file under src/ whose name does not start with `_` (the module).
-  reference  the symbol's name, used in a non-test file on a line the diff adds or changes, or anywhere in its own
+             A def whose name the same diff removes from another in-scope file was moved, not added.
+  reference  the symbol's name, used in a non-test file in a statement the diff adds or changes (any line of it:
+             a multi-line import whose first line changed counts for every name it imports), or anywhere in its own
              file outside its own body (recursion is not a caller). A use is a loaded name, an attribute, an import,
              a string holding a dotted path (`pkg.mod`, `pkg.mod:func`, as lazy tables and pyproject entry points
              write them), or a bare-name string passed to `getattr` or `hasattr`; in .toml/.yaml/.yml/.json/.cfg/.ini/
-             .sh files, a part of a dotted path. A module's own file, an `__all__` list and an `__init__.py` re-export
-             are not callers. A use inside a private top-level function or class the diff also adds counts only when
+             .sh files, a part of a dotted path. A module's own file, an `__all__` list and the names an `__init__.py`
+             re-exports are not callers (the submodule it imports them from is). A use inside a private top-level function or class the diff also adds counts only when
              that private one is itself referenced, so a new `_wrapper` nothing calls does not wire what it calls.
   tests      a path with a `tests`, `test`, `smoke` or `fixtures` folder, or a `test_*.py`, `*_test.py` or
              `conftest.py` file.
-Matching is by name on the lines the diff touches, so it errs toward silence only when the diff itself uses the name.
+Matching is by name in the statements the diff touches, so it errs toward silence only when the diff itself uses the name.
 It catches a symbol nothing calls; it does not catch a caller that passes the wrong arguments, or none of the ones
 that matter (a guard called without the paths it should check). That is the smoke suite's to prove.
 
@@ -68,11 +70,16 @@ class Symbol(NamedTuple):
 
 
 class Ref(NamedTuple):
-    """One use of a name: the line it is on, and the top-level `def`/`class` it sits in (None at module level)."""
+    """One use of a name: the lines of the statement it is in (`line`..`end`; 0 means `line` alone), and the
+    top-level `def`/`class` it sits in (None at module level)."""
 
     name: str
     line: int
     owner: str | None
+    end: int = 0
+
+    def lines(self) -> range:
+        return range(self.line, max(self.line, self.end) + 1)
 
 
 class Allowlist(NamedTuple):
@@ -179,14 +186,32 @@ def new_defs(changes: Iterable[Change], old: Mapping[str, str], new: Mapping[str
     return tuple(found)
 
 
-def added_symbols(changes: Iterable[Change], old: Mapping[str, str], new: Mapping[str, str]) -> tuple[Symbol, ...]:
-    """The public symbols in scope that the diff adds: what must have a caller."""
-    return tuple(symbol for symbol in new_defs(changes, old, new) if not symbol.name.startswith("_"))
+def removed_names(changes: Iterable[Change], old: Mapping[str, str], new: Mapping[str, str]) -> frozenset[str]:
+    """Names of the top-level defs the diff takes out of an in-scope file: a def of one of these elsewhere is a move."""
+    removed: set[str] = set()
+    for change in changes:
+        before = old.get(change.old) if change.old and in_scope(change.old) else None
+        if before is None:
+            continue
+        kept = change.status != "D" and in_scope(change.new) and change.new in new
+        after = {symbol.name for symbol in top_level_defs(change.new, new[change.new])} if kept else set()
+        removed |= {symbol.name for symbol in top_level_defs(change.old, before)} - after
+    return frozenset(removed)
 
 
-def added_private(changes: Iterable[Change], old: Mapping[str, str], new: Mapping[str, str]) -> frozenset[tuple[str, str]]:
+def _moved_in(changes: Sequence[Change], old: Mapping[str, str], new: Mapping[str, str]) -> tuple[Symbol, ...]:
+    moved = removed_names(changes, old, new)
+    return tuple(symbol for symbol in new_defs(changes, old, new) if symbol.kind == "module" or symbol.name not in moved)
+
+
+def added_symbols(changes: Sequence[Change], old: Mapping[str, str], new: Mapping[str, str]) -> tuple[Symbol, ...]:
+    """The public symbols in scope that the diff adds, a def moved from another file excepted: what needs a caller."""
+    return tuple(symbol for symbol in _moved_in(changes, old, new) if not symbol.name.startswith("_"))
+
+
+def added_private(changes: Sequence[Change], old: Mapping[str, str], new: Mapping[str, str]) -> frozenset[tuple[str, str]]:
     """(path, name) of each private top-level def the diff adds: a use inside one counts only when it is called."""
-    return frozenset((s.path, s.name) for s in new_defs(changes, old, new) if s.name.startswith("_"))
+    return frozenset((s.path, s.name) for s in _moved_in(changes, old, new) if s.name.startswith("_"))
 
 
 def _string_refs(value: str, line: int, owner: str | None) -> list[Ref]:
@@ -213,12 +238,26 @@ def _node_refs(node: ast.AST, owner: str | None, reexport: bool) -> list[Ref]:
         name = node.args[1] if len(node.args) > 1 else None
         bare = isinstance(name, ast.Constant) and isinstance(name.value, str) and IDENTIFIER.fullmatch(name.value)
         return [Ref(name.value, name.lineno, owner)] if bare else []
-    if isinstance(node, ast.Import) and not reexport:
+    if isinstance(node, ast.Import):
         return [Ref(part, alias.lineno, owner) for alias in node.names for part in alias.name.split(".")]
-    if isinstance(node, ast.ImportFrom) and not reexport:
+    if isinstance(node, ast.ImportFrom):
+        # A package's __init__.py importing a submodule runs it; the names it re-exports are not thereby called.
         modules = [Ref(part, node.lineno, owner) for part in (node.module or "").split(".") if part]
-        return modules + [Ref(alias.name, alias.lineno, owner) for alias in node.names]
+        return modules + ([] if reexport else [Ref(alias.name, alias.lineno, owner) for alias in node.names])
     return []
+
+
+def _header(statement: ast.stmt | ast.excepthandler) -> tuple[int, int]:
+    """A statement's own lines: all of a simple one, the decorators and header of a compound one, not its body."""
+    start = min([statement.lineno, *(d.lineno for d in getattr(statement, "decorator_list", ()))])
+    body = getattr(statement, "body", None)
+    if isinstance(body, list) and body and isinstance(body[0], ast.stmt):
+        return start, max(statement.lineno, body[0].lineno - 1)
+    return start, statement.end_lineno or statement.lineno
+
+
+def _in_statement(ref: Ref, header: tuple[int, int]) -> Ref:
+    return ref._replace(line=min(header[0], ref.line), end=max(header[1], ref.line))
 
 
 def python_refs(path: str, source: str) -> tuple[Ref, ...]:
@@ -229,11 +268,13 @@ def python_refs(path: str, source: str) -> tuple[Ref, ...]:
         if _is_dunder_all(statement):
             continue
         owner = statement.name if isinstance(statement, DEFS) else None
-        pending: list[ast.AST] = [statement]
+        pending: list[tuple[ast.AST, tuple[int, int]]] = [(statement, _header(statement))]
         while pending:
-            node = pending.pop()
-            pending.extend(ast.iter_child_nodes(node))
-            refs.extend(_node_refs(node, owner, reexport))
+            node, header = pending.pop()
+            if isinstance(node, (ast.stmt, ast.excepthandler)):
+                header = _header(node)
+            pending.extend((child, header) for child in ast.iter_child_nodes(node))
+            refs.extend(_in_statement(ref, header) for ref in _node_refs(node, owner, reexport))
     return tuple(refs)
 
 
@@ -310,7 +351,7 @@ def unwired(
         target_path, name, is_module = target
         if path == target_path and (is_module or ref.owner == name):
             return False
-        if path != target_path and ref.line not in added_lines.get(path, frozenset()):
+        if path != target_path and added_lines.get(path, frozenset()).isdisjoint(ref.lines()):
             return False
         if ref.owner is not None and (path, ref.owner) in private:
             return wired((path, ref.owner, False), visiting)
@@ -394,7 +435,7 @@ def main(argv: Sequence[str], environ: Mapping[str, str]) -> int:
         old = {
             change.old: _git(root, "show", f"{base}:{change.old}")
             for change in changes
-            if change.old and change.status != "D" and in_scope(change.old) and in_scope(change.new)
+            if change.old and in_scope(change.old)
         }
     except GitError as error:
         print(f"unwired: cannot read the diff: {error}", file=sys.stderr)
