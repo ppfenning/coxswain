@@ -12,8 +12,9 @@ import sys
 import uuid
 from pathlib import Path
 
-from agent_tools.cli import _profile_path, chair, chair_attach, courier
+from agent_tools.cli_common import _profile_path
 from agent_tools.cli_land import _read_epics
+from agent_tools.cli_lazy import chair, chair_attach, courier
 from agent_tools.cli_route import _courier_profile
 
 

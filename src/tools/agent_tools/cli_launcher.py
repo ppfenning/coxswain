@@ -13,18 +13,11 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
-from agent_tools.cli import (
-    _profile_path,
-    _read_text_or_none,
-    build_parser,
-    chair,
-    chair_attach,
-    chair_resolve,
-    courier,
-    route,
-)
+from agent_tools.cli import build_parser
+from agent_tools.cli_common import _profile_path, _read_text_or_none
 from agent_tools.cli_courier import _launcher_argv, _plugin_root, _print_inbox, _spawn
 from agent_tools.cli_land import _leader_pid_alive
+from agent_tools.cli_lazy import chair, chair_attach, chair_resolve, courier, route
 from agent_tools.cli_leader import _launcher_session_takes, _live_loop_holder, _read_key, _route_chair_take
 from agent_tools.cli_runs import _leader_heartbeat_minutes
 

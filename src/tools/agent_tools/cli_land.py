@@ -19,44 +19,8 @@ from pathlib import Path
 
 import yaml
 
-from agent_tools.cli import (
-    _lake_provider,
-    _lake_real_run,
-    _profile_path,
-    _read_text_or_none,
-    _resolve_profile_or_refuse,
-    _resolved_gate_level,
-    base_branch,
-    bounded_run,
-    chair,
-    chair_facts,
-    forge,
-    forge_github,
-    install_root,
-    jsonl_log,
-    lake_config,
-    lake_lease,
-    land,
-    land_batch_effects,
-    land_batch_group,
-    land_batch_run,
-    land_batch_settings,
-    land_checkout_guard,
-    land_lease,
-    land_limit,
-    land_merge_lock,
-    land_repo_lease,
-    queue_export,
-    remote_lane,
-    repo_clone,
-    review_pr,
-    route,
-    route_edit,
-    run_store,
-    store_cli,
-    store_url,
-    work_state,
-)
+from agent_tools.cli_common import _profile_path, _read_text_or_none
+from agent_tools.cli_lake import _lake_provider, _lake_real_run
 from agent_tools.cli_land_facts import (
     _backfill_phase_task_files,
     _carried_files,
@@ -113,6 +77,38 @@ from agent_tools.cli_land_steps import (
     _sync_default_branch,
     _taken_run_names,
 )
+from agent_tools.cli_lazy import (
+    base_branch,
+    bounded_run,
+    chair,
+    chair_facts,
+    forge,
+    forge_github,
+    install_root,
+    jsonl_log,
+    lake_config,
+    lake_lease,
+    land,
+    land_batch_effects,
+    land_batch_group,
+    land_batch_run,
+    land_batch_settings,
+    land_checkout_guard,
+    land_lease,
+    land_limit,
+    land_merge_lock,
+    land_repo_lease,
+    queue_export,
+    remote_lane,
+    repo_clone,
+    review_pr,
+    route,
+    route_edit,
+    run_store,
+    store_cli,
+    store_url,
+    work_state,
+)
 from agent_tools.cli_route_sync import _initiative_land_at, _local_max_in_flight, _resolved_tracker, _team_cartridge
 from agent_tools.cli_runs import _leader_heartbeat_minutes, _resolved_run_id
 from agent_tools.cli_runs_fetch import (
@@ -122,6 +118,8 @@ from agent_tools.cli_runs_fetch import (
     _land_refetch_phase_branch,
     _runs_dir_for_land,
 )
+from agent_tools.cli_stats import _resolve_profile_or_refuse
+from agent_tools.cli_usage import _resolved_gate_level
 
 
 def _runs_review(a: argparse.Namespace) -> int:

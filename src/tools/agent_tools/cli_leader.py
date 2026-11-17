@@ -15,9 +15,10 @@ import uuid
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
-from agent_tools.cli import (
-    _profile_path,
-    _read_text_or_none,
+from agent_tools.cli_common import _profile_path, _read_text_or_none
+from agent_tools.cli_courier import _courier_workspace, _parse_fields
+from agent_tools.cli_land import _leader_identity, _leader_pid_alive, _leader_pid_choice, _leader_read_or_refuse
+from agent_tools.cli_lazy import (
     chair,
     chair_chat,
     chair_holder,
@@ -29,8 +30,6 @@ from agent_tools.cli import (
     route,
     run_store,
 )
-from agent_tools.cli_courier import _courier_workspace, _parse_fields
-from agent_tools.cli_land import _leader_identity, _leader_pid_alive, _leader_pid_choice, _leader_read_or_refuse
 from agent_tools.cli_runs import _leader_heartbeat_minutes, _leader_runs_dir_or_refuse
 
 

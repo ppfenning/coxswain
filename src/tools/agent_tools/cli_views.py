@@ -12,10 +12,9 @@ import sys
 import time
 from pathlib import Path
 
-from agent_tools.cli import (
-    _profile_path,
-    _read_text_or_none,
-    _resolved_pacing_policy,
+from agent_tools.cli_common import _profile_path, _read_text_or_none
+from agent_tools.cli_launcher import _launcher
+from agent_tools.cli_lazy import (
     console_screen,
     dash_detail_health,
     dash_detail_initiative,
@@ -30,10 +29,10 @@ from agent_tools.cli import (
     towpath_launch,
     usage_window,
 )
-from agent_tools.cli_launcher import _launcher
 from agent_tools.cli_route import _route_context
 from agent_tools.cli_route_sync import _chair_max_in_flight, _initiative_token
 from agent_tools.cli_runs import _resolved_run_id
+from agent_tools.cli_usage import _resolved_pacing_policy
 
 
 def _console_spend(runs_dir: Path, profile: dict, now: datetime.datetime) -> dict:
