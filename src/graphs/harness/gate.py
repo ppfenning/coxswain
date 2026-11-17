@@ -203,7 +203,7 @@ def auto_apply(
     return bool(result.get("applied")), str(result.get("detail", ""))
 
 
-def gate(proposals: list[dict[str, Any]], *, assume: str | None) -> tuple[list[dict[str, Any]], float]:
+def gate(proposals: list[dict[str, Any]], *, assume: str | None) -> tuple[list[tuple[dict[str, Any], str, bool]], float]:
     """Present each proposal and capture a decision. Nothing applies without one.
 
     `human_minutes` is entered here, at the gate, not reconstructed later. A time

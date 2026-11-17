@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import TypedDict, cast
+
+from core.jsontypes import is_mapping
 
 # `land_at` answers one question: which level opens a pull request on origin. Everything below it completes locally.
 # `initiative` is the default; `ticket` is its permanent alias, so no cartridge or `initiative.md` needs editing.
@@ -16,7 +18,7 @@ ACCEPTED_LAND_AT = (*LAND_AT_VALUES, *LAND_AT_ALIASES)
 DEFAULT_LAND_AT = INITIATIVE
 
 
-def canonical_land_at(value: Any) -> str | None:
+def canonical_land_at(value: object) -> str | None:
     """`initiative` or `task` for any accepted spelling (`ticket` and the retired `level` read as `initiative`); None for anything else."""
     if not isinstance(value, str):
         return None
@@ -25,18 +27,18 @@ def canonical_land_at(value: Any) -> str | None:
     return LAND_AT_ALIASES.get(value)
 
 
-def lands_at_initiative(value: Any) -> bool:
+def lands_at_initiative(value: object) -> bool:
     """True for `initiative`, its alias `ticket`, the retired `level`, and an absent value (the default)."""
     return value is None or canonical_land_at(value) == INITIATIVE
 
 
-def is_initiative(value: Any) -> bool:
+def is_initiative(value: object) -> bool:
     """True for `initiative` and the spellings that read as it (`ticket`, the retired `level`); False for `task`, an
     absent value and anything else. Use it wherever a stored or recorded `land_at` is compared."""
     return canonical_land_at(value) == INITIATIVE
 
 
-def retired_land_at_warning(value: Any, where: str) -> str | None:
+def retired_land_at_warning(value: object, where: str) -> str | None:
     """The warning a retired `land_at` value earns, None for every other value."""
     if value in RETIRED_LAND_AT:
         return (f"{where} land_at {value!r} is retired: per-phase pull requests no longer exist; "
@@ -44,7 +46,7 @@ def retired_land_at_warning(value: Any, where: str) -> str | None:
     return None
 
 
-def _checked(value: Any, where: str) -> str:
+def _checked(value: object, where: str) -> str:
     canonical = canonical_land_at(value)
     if canonical is not None:
         return canonical
@@ -52,21 +54,21 @@ def _checked(value: Any, where: str) -> str:
     raise ValueError(f"{where} land_at must be one of {allowed}, got {value!r}")
 
 
-def resolve_land_at(cartridge: Mapping[str, Any], initiative_land_at: str | None) -> str:
+def resolve_land_at(cartridge: Mapping[str, object], initiative_land_at: str | None) -> str:
     """The initiative value, else the cartridge or overlay value, else `initiative`; every value given is validated,
     and every accepted spelling comes back canonical (`initiative` or `task`)."""
     landing = cartridge.get("landing_areas")
-    configured = landing.get("land_at") if isinstance(landing, Mapping) else None
+    configured = landing.get("land_at") if is_mapping(landing) else None
     # Both places are checked even when the initiative overrides, so a bad cartridge never hides.
     checked_config = None if configured is None else _checked(configured, "cartridge")
     checked_initiative = None if initiative_land_at is None else _checked(initiative_land_at, "initiative")
     return checked_initiative or checked_config or DEFAULT_LAND_AT
 
 
-def land_at_warnings(cartridge: Mapping[str, Any], initiative_land_at: str | None) -> list[str]:
+def land_at_warnings(cartridge: Mapping[str, object], initiative_land_at: str | None) -> list[str]:
     """One warning per retired `land_at` value given, the cartridge's first."""
     landing = cartridge.get("landing_areas")
-    configured = landing.get("land_at") if isinstance(landing, Mapping) else None
+    configured = landing.get("land_at") if is_mapping(landing) else None
     found = (retired_land_at_warning(configured, "cartridge"), retired_land_at_warning(initiative_land_at, "initiative"))
     return [w for w in found if w is not None]
 
@@ -74,7 +76,7 @@ def land_at_warnings(cartridge: Mapping[str, Any], initiative_land_at: str | Non
 _BRANCH_FORBIDDEN = frozenset("~^:?*[\\")
 
 
-def valid_branch(value: Any, where: str) -> str:
+def valid_branch(value: object, where: str) -> str:
     """A bare branch name under git's ref-name rules; a non-string or any broken rule raises."""
     ok = (
         isinstance(value, str)
@@ -86,16 +88,16 @@ def valid_branch(value: Any, where: str) -> str:
         and not value.endswith(("/", ".", ".lock"))
     )
     if ok:
-        return value
+        return cast("str", value)
     raise ValueError(f"{where} target_branch must be a valid branch name, got {value!r}")
 
 
 def resolve_target_branch(
-    cartridge: Mapping[str, Any], epic_branch: str | None, initiative_branch: str | None
+    cartridge: Mapping[str, object], epic_branch: str | None, initiative_branch: str | None
 ) -> str | None:
     """The initiative value, else the epic, else `landing_areas.target_branch`, else None; every value given is validated."""
     landing = cartridge.get("landing_areas")
-    configured = landing.get("target_branch") if isinstance(landing, Mapping) else None
+    configured = landing.get("target_branch") if is_mapping(landing) else None
     # Validate all three even when a higher one wins, so a bad lower value never hides.
     checked = [
         None if value is None else valid_branch(value, where)
@@ -185,14 +187,14 @@ class TemplateError(ValueError):
     """A landing template is malformed, or names a field the initiative does not carry."""
 
 
-def _landing(cartridge: Mapping[str, Any]) -> Mapping[str, Any]:
+def _landing(cartridge: Mapping[str, object]) -> Mapping[str, object]:
     landing = cartridge.get("landing_areas")
-    return landing if isinstance(landing, Mapping) else {}
+    return landing if is_mapping(landing) else {}
 
 
-def _initiative_pr(cartridge: Mapping[str, Any]) -> Mapping[str, Any]:
+def _initiative_pr(cartridge: Mapping[str, object]) -> Mapping[str, object]:
     block = _landing(cartridge).get("initiative_pr")
-    return block if isinstance(block, Mapping) else {}
+    return block if is_mapping(block) else {}
 
 
 def branch_slug(text: str) -> str:
@@ -205,7 +207,7 @@ def template_fields(template: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(_FIELD.findall(template)))
 
 
-def template_problems(template: Any, where: str) -> list[str]:
+def template_problems(template: object, where: str) -> list[str]:
     """Why `template` cannot be used: not a non-empty string, or it names a field outside `TEMPLATE_FIELDS`."""
     if not isinstance(template, str) or not template.strip():
         return [f"{where} must be a non-empty string, got {template!r}"]
@@ -215,7 +217,7 @@ def template_problems(template: Any, where: str) -> list[str]:
     return []
 
 
-def render_template(template: str, fields: Mapping[str, Any], where: str) -> str:
+def render_template(template: str, fields: Mapping[str, object], where: str) -> str:
     """`template` with each `{field}` replaced. A field that is absent or empty raises `TemplateError` naming it."""
     problems = template_problems(template, where)
     if problems:
@@ -226,25 +228,36 @@ def render_template(template: str, fields: Mapping[str, Any], where: str) -> str
     return _FIELD.sub(lambda m: str(fields[m.group(1)]), template)
 
 
-def _branch_template(cartridge: Mapping[str, Any], target: str | None) -> str:
+def _branch_template(cartridge: Mapping[str, object], target: str | None) -> str:
     configured = _initiative_pr(cartridge).get("branch")
-    if isinstance(configured, Mapping):
+    if is_mapping(configured):
         chosen = configured.get(target) if target is not None else None
-        return chosen if chosen is not None else configured.get("default", DEFAULT_BRANCH_TEMPLATE)
-    return DEFAULT_BRANCH_TEMPLATE if configured is None else configured
+        return cast("str", chosen if chosen is not None else configured.get("default", DEFAULT_BRANCH_TEMPLATE))
+    return DEFAULT_BRANCH_TEMPLATE if configured is None else cast("str", configured)
 
 
-def branch_kind(cartridge: Mapping[str, Any], target: str | None, initiative_kind: str | None = None) -> str:
+def branch_kind(cartridge: Mapping[str, object], target: str | None, initiative_kind: str | None = None) -> str:
     """The `{kind}` of a branch: the initiative's own `branch_kind`, else `initiative_pr.kinds[<target>]`, else `feature`."""
     if initiative_kind:
         return str(initiative_kind)
     kinds = _initiative_pr(cartridge).get("kinds")
-    chosen = kinds.get(target) if isinstance(kinds, Mapping) and target is not None else None
+    chosen = kinds.get(target) if is_mapping(kinds) and target is not None else None
     return str(chosen) if chosen else DEFAULT_BRANCH_KIND
 
 
-def template_values(initiative: Mapping[str, Any], cartridge: Mapping[str, Any], target: str | None,
-                    epic_issue: Any = None) -> dict[str, Any]:
+class TemplateValues(TypedDict):
+    id: str
+    name: str
+    title: str
+    issue: str | None
+    epic: object
+    epic_issue: str | None
+    target: str | None
+    kind: str
+
+
+def template_values(initiative: Mapping[str, object], cartridge: Mapping[str, object], target: str | None,
+                    epic_issue: object = None) -> TemplateValues:
     """The fields a template may use, read from an initiative (`id`, `title`, `issue` or `ticket`, `epic`, `branch_kind`)."""
     ident = str(initiative.get("id") or "")
     issue = initiative.get("issue")
@@ -258,12 +271,12 @@ def template_values(initiative: Mapping[str, Any], cartridge: Mapping[str, Any],
         "epic": initiative.get("epic"),
         "epic_issue": None if epic_issue in (None, "") else str(epic_issue).lstrip("#"),
         "target": target,
-        "kind": branch_kind(cartridge, target, initiative.get("branch_kind")),
+        "kind": branch_kind(cartridge, target, cast("str | None", initiative.get("branch_kind"))),
     }
 
 
-def initiative_branch_name(cartridge: Mapping[str, Any], initiative: Mapping[str, Any], target: str | None,
-                           epic_issue: Any = None) -> str:
+def initiative_branch_name(cartridge: Mapping[str, object], initiative: Mapping[str, object], target: str | None,
+                           epic_issue: object = None) -> str:
     """The initiative branch: the initiative's own `branch` when it sets one, else the cartridge template rendered
     (default `init/<id>`). The result is checked as a branch name; a missing field or a bad name raises `TemplateError`."""
     own = initiative.get("branch")
@@ -278,22 +291,22 @@ def initiative_branch_name(cartridge: Mapping[str, Any], initiative: Mapping[str
         raise TemplateError(f"initiative branch {name!r} is not a valid branch name") from exc
 
 
-def initiative_pr_title(cartridge: Mapping[str, Any], initiative: Mapping[str, Any], target: str | None,
-                        epic_issue: Any = None) -> str:
+def initiative_pr_title(cartridge: Mapping[str, object], initiative: Mapping[str, object], target: str | None,
+                        epic_issue: object = None) -> str:
     """The pull request title: `initiative_pr.title` rendered, default the initiative's own title."""
     template = _initiative_pr(cartridge).get("title", DEFAULT_TITLE_TEMPLATE)
-    return render_template(template, template_values(initiative, cartridge, target, epic_issue), "landing_areas.initiative_pr.title")
+    return render_template(cast("str", template), template_values(initiative, cartridge, target, epic_issue), "landing_areas.initiative_pr.title")
 
 
-def initiative_pr_reference(cartridge: Mapping[str, Any], initiative: Mapping[str, Any], target: str | None,
-                            epic_issue: Any = None) -> str | None:
+def initiative_pr_reference(cartridge: Mapping[str, object], initiative: Mapping[str, object], target: str | None,
+                            epic_issue: object = None) -> str | None:
     """The issue line of the pull request body. A configured template (`initiative_pr.reference`, or the flat
     `landing_areas.pr_reference`) is rendered, and a field it lacks raises. With no template the existing issue rule
     applies: `Closes #n` for the initiative's own issue, else `Part of #n` for its epic's, else no line."""
     template = _initiative_pr(cartridge).get("reference", _landing(cartridge).get("pr_reference"))
     values = template_values(initiative, cartridge, target, epic_issue)
     if template is not None:
-        return render_template(template, values, "landing_areas.initiative_pr.reference")
+        return render_template(cast("str", template), values, "landing_areas.initiative_pr.reference")
     if values["issue"] and str(values["issue"]).isdigit():
         return f"Closes #{values['issue']}"
     if values["epic_issue"] and str(values["epic_issue"]).isdigit():
@@ -301,7 +314,7 @@ def initiative_pr_reference(cartridge: Mapping[str, Any], initiative: Mapping[st
     return None
 
 
-def _one_of(value: Any, allowed: Sequence[str], default: str, where: str) -> str:
+def _one_of(value: object, allowed: Sequence[str], default: str, where: str) -> str:
     if value is None:
         return default
     if isinstance(value, str) and value in allowed:
@@ -309,7 +322,7 @@ def _one_of(value: Any, allowed: Sequence[str], default: str, where: str) -> str
     raise ValueError(f"{where} must be one of {', '.join(repr(v) for v in allowed)}, got {value!r}")
 
 
-def _flag(value: Any, default: bool, where: str) -> bool:
+def _flag(value: object, default: bool, where: str) -> bool:
     if value is None:
         return default
     if isinstance(value, bool):
@@ -317,7 +330,7 @@ def _flag(value: Any, default: bool, where: str) -> bool:
     raise ValueError(f"{where} must be true or false, got {value!r}")
 
 
-def _cap(value: Any, default: int, where: str) -> int:
+def _cap(value: object, default: int, where: str) -> int:
     if value is None:
         return default
     if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
@@ -325,25 +338,25 @@ def _cap(value: Any, default: int, where: str) -> int:
     raise ValueError(f"{where} must be a whole number of 1 or more, got {value!r}")
 
 
-def resolve_on_blocked(cartridge: Mapping[str, Any], initiative_value: str | None = None) -> str:
+def resolve_on_blocked(cartridge: Mapping[str, object], initiative_value: str | None = None) -> str:
     """`hold` or `split`: the initiative's own value, else `landing_areas.on_blocked`, else `hold`."""
     configured = _one_of(_landing(cartridge).get("on_blocked"), ON_BLOCKED_VALUES, DEFAULT_ON_BLOCKED, "landing_areas.on_blocked")
     return _one_of(initiative_value, ON_BLOCKED_VALUES, configured, "initiative on_blocked")
 
 
-def resolve_push_initiative(cartridge: Mapping[str, Any]) -> str:
+def resolve_push_initiative(cartridge: Mapping[str, object]) -> str:
     """`at_pr` (the initiative branch is first pushed when its pull request opens) or `early` (after every phase merge)."""
     return _one_of(_landing(cartridge).get("push_initiative"), PUSH_INITIATIVE_VALUES, DEFAULT_PUSH_INITIATIVE,
                    "landing_areas.push_initiative")
 
 
-def resolve_epic_stack(cartridge: Mapping[str, Any], epic_value: bool | None = None) -> bool:
+def resolve_epic_stack(cartridge: Mapping[str, object], epic_value: bool | None = None) -> bool:
     """Whether an epic's initiatives land as a stack on an epic branch: the epic file's `epic_stack`, else the cartridge's, else off."""
     configured = _flag(_landing(cartridge).get("epic_stack"), False, "landing_areas.epic_stack")
     return _flag(epic_value, configured, "epic epic_stack")
 
 
-def stack_parent(needs: Sequence[str], members: Mapping[str, Mapping[str, Any]], epic_branch: str | None) -> str | None:
+def stack_parent(needs: Sequence[str], members: Mapping[str, Mapping[str, object]], epic_branch: str | None) -> str | None:
     """The branch a stacked initiative forks from and bases its pull request on, with `epic_stack` on.
 
     `needs` are the initiatives this one needs, in order; `members` maps each initiative of the same epic to
@@ -357,37 +370,46 @@ def stack_parent(needs: Sequence[str], members: Mapping[str, Mapping[str, Any]],
     return epic_branch
 
 
-def resolve_phase_cap(cartridge: Mapping[str, Any]) -> int:
+def resolve_phase_cap(cartridge: Mapping[str, object]) -> int:
     """How many phase merges run at once: `landing_areas.phase_cap`, default 2."""
     return _cap(_landing(cartridge).get("phase_cap"), DEFAULT_PHASE_CAP, "landing_areas.phase_cap")
 
 
-def resolve_land_cap(cartridge: Mapping[str, Any]) -> int:
+def resolve_land_cap(cartridge: Mapping[str, object]) -> int:
     """How many initiative lands run at once per parent branch: `landing_areas.land_cap`, default 1."""
     return _cap(_landing(cartridge).get("land_cap"), DEFAULT_LAND_CAP, "landing_areas.land_cap")
 
 
-def resolve_land_batch(cartridge: Mapping[str, Any]) -> int:
+def resolve_land_batch(cartridge: Mapping[str, object]) -> int:
     """How many initiatives the lander may land together on one parent when they change no file in common:
     `landing_areas.land_batch`, default 1, which is one at a time. Each still has its own pull request."""
     return _cap(_landing(cartridge).get("land_batch"), 1, "landing_areas.land_batch")
 
 
-def landing_settings(cartridge: Mapping[str, Any], initiative: Mapping[str, Any] | None = None,
-                     epic: Mapping[str, Any] | None = None) -> dict[str, Any]:
+class LandingSettings(TypedDict):
+    land_at: str
+    on_blocked: str
+    push_initiative: str
+    epic_stack: bool
+    phase_cap: int
+    land_cap: int
+
+
+def landing_settings(cartridge: Mapping[str, object], initiative: Mapping[str, object] | None = None,
+                     epic: Mapping[str, object] | None = None) -> LandingSettings:
     """Every resolved landing setting of one initiative, in one mapping; each value given is validated."""
     own = initiative or {}
-    return {
-        "land_at": resolve_land_at(cartridge, own.get("land_at")),
-        "on_blocked": resolve_on_blocked(cartridge, own.get("on_blocked")),
-        "push_initiative": resolve_push_initiative(cartridge),
-        "epic_stack": resolve_epic_stack(cartridge, (epic or {}).get("epic_stack")),
-        "phase_cap": resolve_phase_cap(cartridge),
-        "land_cap": resolve_land_cap(cartridge),
-    }
+    return LandingSettings(
+        land_at=resolve_land_at(cartridge, cast("str | None", own.get("land_at"))),
+        on_blocked=resolve_on_blocked(cartridge, cast("str | None", own.get("on_blocked"))),
+        push_initiative=resolve_push_initiative(cartridge),
+        epic_stack=resolve_epic_stack(cartridge, cast("bool | None", (epic or {}).get("epic_stack"))),
+        phase_cap=resolve_phase_cap(cartridge),
+        land_cap=resolve_land_cap(cartridge),
+    )
 
 
-def landing_config_problems(landing: Mapping[str, Any]) -> list[str]:
+def landing_config_problems(landing: Mapping[str, object]) -> list[str]:
     """Every problem with the landing keys of one `landing_areas` block; empty when it can be used."""
     problems: list[str] = []
     for resolve in (resolve_on_blocked, resolve_push_initiative, resolve_epic_stack, resolve_phase_cap, resolve_land_cap):
@@ -398,10 +420,10 @@ def landing_config_problems(landing: Mapping[str, Any]) -> list[str]:
     block = landing.get("initiative_pr")
     if block is None:
         return problems
-    if not isinstance(block, Mapping):
+    if not is_mapping(block):
         return [*problems, f"landing_areas.initiative_pr must be a mapping, got {type(block).__name__}"]
     branch = block.get("branch")
-    templates = dict(branch) if isinstance(branch, Mapping) else ({} if branch is None else {"": branch})
+    templates: dict[str, object] = dict(branch) if is_mapping(branch) else ({} if branch is None else {"": branch})
     for target, template in templates.items():
         where = f"landing_areas.initiative_pr.branch{'.' + str(target) if target else ''}"
         problems += template_problems(template, where)
@@ -409,7 +431,7 @@ def landing_config_problems(landing: Mapping[str, Any]) -> list[str]:
         if key in block:
             problems += template_problems(block[key], f"landing_areas.initiative_pr.{key}")
     kinds = block.get("kinds")
-    if kinds is not None and not (isinstance(kinds, Mapping) and all(isinstance(v, str) and branch_slug(v) == v for v in kinds.values())):
+    if kinds is not None and not (is_mapping(kinds) and all(isinstance(v, str) and branch_slug(v) == v for v in kinds.values())):
         problems.append("landing_areas.initiative_pr.kinds must map a target branch to a lowercase word")
     if "pr_reference" in landing:
         problems += template_problems(landing["pr_reference"], "landing_areas.pr_reference")

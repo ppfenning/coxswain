@@ -7,6 +7,7 @@ from collections import Counter
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import cast
 
 from agent_tools import (
     chair_approval_restore,
@@ -65,9 +66,11 @@ from agent_tools.chair_types import (
     DEADLOCK_CAUSE,
     HELD_FILE_CAUSE,
     Action,
+    ActionKind,
     ApprovedTask,
     DispatchFacts,
     Facts,
+    HeldFile,
     IdleStallInputs,
     InitiativeFacts,
     LastCall,
@@ -104,13 +107,13 @@ def _lease_gate(lease: LeaseFacts) -> list[Action] | None:
     if lease["mine"]:
         return None
     if lease["released"] or lease["stale"]:
-        return [{"kind": "take_lease"}]
+        return [{"kind": ActionKind.TAKE_LEASE}]
     if lease.get("expired", False):
-        return [{"kind": "take_lease", "reason": f"takeover expired at {lease.get('until', '')}"}]
+        return [{"kind": ActionKind.TAKE_LEASE, "reason": f"takeover expired at {lease.get('until', '')}"}]
     if lease.get("session_held", False):
-        return [{"kind": "take_lease", "reason": f"takeback from {lease['holder']}"}]
+        return [{"kind": ActionKind.TAKE_LEASE, "reason": f"takeback from {lease['holder']}"}]
     until = lease.get("until", "")
-    return [{"kind": "standby", "holder": lease["holder"], "host": lease["host"], **({"until": until} if until else {})}]
+    return [{"kind": ActionKind.STANDBY, "holder": lease["holder"], "host": lease["host"], **cast(Action, {"until": until} if until else {})}]
 
 
 def _route_homed(
@@ -340,7 +343,7 @@ def _cap_launches(
         )
     ]
     # A stuck home with no run to fetch from never moves blind: the chair hears why the relaunch was dropped.
-    unmoved: list[Action] = [{"kind": "needs_chair", "initiative": i, "cause": "home_unfetchable"} for i in sorted(unfetchable)]
+    unmoved: list[Action] = [{"kind": ActionKind.NEEDS_CHAIR, "initiative": i, "cause": "home_unfetchable"} for i in sorted(unfetchable)]
     return [*kept, *unmoved], consumed
 
 
@@ -386,7 +389,7 @@ def _hosted(action: Action, placed: str | None, routed_home: Mapping[str, str]) 
     return {**action, "host": home} if action["kind"] == "clear_branches" and home else action
 
 
-def _with_carry(action: Action, approved: list[dict]) -> Action:
+def _with_carry(action: Action, approved: Sequence[ApprovedTask]) -> Action:
     """A clear_branches gains `carry`, the sorted phases of the initiative still partial, when there are any."""
     if action["kind"] != "clear_branches":
         return action
@@ -427,7 +430,7 @@ def _within_cap(actions: list[Action], budget: int) -> list[Action]:
 
 def _fetch_exit_actions(facts: Facts) -> list[Action]:
     """One fetch_exit per remote-unfetched initiative, naming its stranded run."""
-    return [{"kind": "fetch_exit", "initiative": initiative, "run": run} for initiative, run in facts.get("remote_unfetched", {}).items()]
+    return [{"kind": ActionKind.FETCH_EXIT, "initiative": initiative, "run": run} for initiative, run in facts.get("remote_unfetched", {}).items()]
 
 
 def _withhold_remote_unfetched(actions: list[Action], remote_unfetched: frozenset[str]) -> list[Action]:
@@ -518,7 +521,7 @@ def _lease_stuck_actions(facts: Facts, now: datetime | None) -> list[Action]:
     ]
     return [
         {
-            "kind": "needs_chair",
+            "kind": ActionKind.NEEDS_CHAIR,
             "initiative": initiative,
             "cause": "lease_stuck",
             "reason": f"run {s['holder_run']} still holds the lease; launches refused from {s['first_at']} to {s['last_at']}",
@@ -550,7 +553,7 @@ def _unstarted_waiting_chair(initiatives: list[InitiativeFacts]) -> list[Action]
     """waiting-on reports for unstarted initiatives only; plan_recover's own waiting-on reports cover the
     started ones, so this never double-reports."""
     return [
-        {"kind": "needs_chair", "initiative": i["id"], "cause": f"waiting on {need}"}
+        {"kind": ActionKind.NEEDS_CHAIR, "initiative": i["id"], "cause": f"waiting on {need}"}
         for i in initiatives
         if not i["started"] and (need := _initiative_first_unmet_need(i)) is not None
     ]
@@ -563,7 +566,7 @@ def _login_needs_chair_actions(facts: Facts, now: datetime | None) -> list[Actio
     return [*chair_login_watch.login_needs_chair(login_hosts), *chair_login_watch.host_unreachable_needs_chair(login_hosts), *back]
 
 
-def _held_reason(held: dict) -> str:
+def _held_reason(held: HeldFile) -> str:
     """The action's reason: the diff summary when the row has one, else the export's own reason text."""
     what = f"changed with no matching store change ({held['diff_summary']})" if held.get("diff_summary") else held["reason"]
     return f"{held['path']}: {what}; keep it with `cox route import`, or restore the export"
@@ -575,7 +578,7 @@ def plan_held_files(facts: Facts) -> list[Action]:
     reported = set(facts.get("held_reported", []))
     return [
         {
-            "kind": "needs_chair",
+            "kind": ActionKind.NEEDS_CHAIR,
             "initiative": held["initiative"],
             "cause": HELD_FILE_CAUSE,
             "path": held["path"],
@@ -590,7 +593,7 @@ def plan_held_files(facts: Facts) -> list[Action]:
 def plan_close_initiatives(facts: Facts) -> list[Action]:
     """One close_initiative per todo initiative with task rows that are all done or dropped; state is done when any task is done."""
     return [
-        {"kind": "close_initiative", "initiative": entry["id"], "state": "done" if "done" in entry["task_states"] else "dropped"}
+        {"kind": ActionKind.CLOSE_INITIATIVE, "initiative": entry["id"], "state": "done" if "done" in entry["task_states"] else "dropped"}
         for entry in facts.get("todo_initiatives", [])
         if entry["task_states"] and set(entry["task_states"]) <= {"done", "dropped"}
     ]
@@ -603,7 +606,7 @@ def _empty_decompose_needs_chair_actions(facts: Facts) -> list[Action]:
     reported = set(facts.get("empty_decompose_reported", []))
     return [
         {
-            "kind": "needs_chair",
+            "kind": ActionKind.NEEDS_CHAIR,
             "initiative": entry["initiative"],
             "run": entry["run"],
             "cause": "empty_decompose",
@@ -628,7 +631,7 @@ def _decompose_gate(facts: Facts) -> tuple[frozenset[str], list[Action]]:
     ]
     actions: list[Action] = [
         {
-            "kind": "needs_chair",
+            "kind": ActionKind.NEEDS_CHAIR,
             "initiative": initiative,
             "run": run,
             "cause": "decompose_stalled",
@@ -675,7 +678,7 @@ def _decompose_miss_gate(facts: Facts, now: datetime | None) -> tuple[frozenset[
     skipped = frozenset(path for path, miss in unchanged.items() if _miss_skipped(miss, current[path], now))
     actions: list[Action] = [
         {
-            "kind": "needs_chair",
+            "kind": ActionKind.NEEDS_CHAIR,
             "initiative": miss.intake_id,
             "cause": MISSING_IDEA_CAUSE,
             "reason": escalation_reason(miss),
@@ -693,7 +696,7 @@ def _login_check_actions(facts: Facts, now: datetime | None) -> list[Action]:
     if now is None:
         return []
     login_hosts = facts.get("login_hosts", [])
-    return [{"kind": "check_login", "host": name} for name in chair_login_watch.due_for_login_check(login_hosts, now.isoformat())]
+    return [{"kind": ActionKind.CHECK_LOGIN, "host": name} for name in chair_login_watch.due_for_login_check(login_hosts, now.isoformat())]
 
 
 def _probe_host_actions(facts: Facts, now: datetime | None) -> list[Action]:
@@ -701,7 +704,7 @@ def _probe_host_actions(facts: Facts, now: datetime | None) -> list[Action]:
     if now is None:
         return []
     login_hosts = facts.get("login_hosts", [])
-    return [{"kind": "probe_host", "host": name} for name in chair_login_watch.due_for_probe(login_hosts, now.isoformat())]
+    return [{"kind": ActionKind.PROBE_HOST, "host": name} for name in chair_login_watch.due_for_probe(login_hosts, now.isoformat())]
 
 
 def _stall_reason(last_call: LastCall | None, idle: float) -> str:
@@ -712,7 +715,7 @@ def _stall_reason(last_call: LastCall | None, idle: float) -> str:
 
 def _stall_needs_chair(candidate: StallCandidate, idle: float) -> Action:
     return {
-        "kind": "needs_chair",
+        "kind": ActionKind.NEEDS_CHAIR,
         "initiative": candidate["initiative"],
         "run": candidate["run"],
         "cause": "stalled",
@@ -732,9 +735,9 @@ def plan_stall(candidates: list[StallCandidate], now: datetime) -> list[Action]:
         if not candidate["local"]:
             actions.append(_stall_needs_chair(candidate, idle))
         elif not candidate["usr1_sent"]:
-            actions.append({"kind": "stalled_usr1", "run": candidate["run"], "initiative": candidate["initiative"]})
+            actions.append({"kind": ActionKind.STALLED_USR1, "run": candidate["run"], "initiative": candidate["initiative"]})
         else:
-            actions.append({"kind": "stalled_stop", "run": candidate["run"], "initiative": candidate["initiative"]})
+            actions.append({"kind": ActionKind.STALLED_STOP, "run": candidate["run"], "initiative": candidate["initiative"]})
             actions.append(_stall_needs_chair(candidate, idle))
     return actions
 
@@ -748,7 +751,7 @@ def plan_idle_stall(inputs: IdleStallInputs | None, now: datetime) -> list[Actio
         return []
     return [
         {  # type: ignore[typeddict-unknown-key]  # Action has no signature field yet
-            "kind": "needs_chair",
+            "kind": ActionKind.NEEDS_CHAIR,
             "initiative": diagnosis["subject"],
             "cause": "idle_stall",
             "reason": diagnosis["text"],
@@ -767,7 +770,7 @@ def deferred_land_deadlock(facts: Facts, now: datetime | None) -> tuple[str, App
 def _land_command(task: ApprovedTask) -> list[str] | None:
     from agent_tools.chair_exec import argv_for  # deferred: chair_exec imports chair_facts, which imports this module
 
-    return argv_for({"kind": "land", "run": task["run"], "task_id": task["id"], "repo": task["repo"]})  # type: ignore[typeddict-item]
+    return argv_for({"kind": ActionKind.LAND, "run": task["run"], "task_id": task["id"], "repo": task["repo"]})  # type: ignore[typeddict-item]
 
 
 def plan_deferred_land_deadlock(facts: Facts, now: datetime | None) -> list[Action]:
@@ -782,7 +785,7 @@ def plan_deferred_land_deadlock(facts: Facts, now: datetime | None) -> list[Acti
     command = _land_command(need)
     return [
         {  # type: ignore[typeddict-unknown-key]  # Action has no signature field yet
-            "kind": "needs_chair",
+            "kind": ActionKind.NEEDS_CHAIR,
             "initiative": need["initiative"],
             "cause": DEADLOCK_CAUSE,
             "reason": f"{waiting} needs approved {need['id']}; land_at defers that land",
@@ -944,7 +947,7 @@ def _waiting_actions(waiting: Sequence[WaitingInitiative], reported: Mapping[str
     """One waiting action per initiative whose `<phase>|<quarantined>|<awaiting_land>` differs from what was last reported."""
     return [
         {
-            "kind": "waiting",
+            "kind": ActionKind.WAITING,
             "initiative": w.initiative,
             "phase": w.blocking.phase,
             "quarantined": w.blocking.quarantined,
@@ -1002,7 +1005,7 @@ def _stuck_steer_heads(
         return "no host" if no_host else "launch refused: left out of the launch list"
 
     return [
-        {"kind": "needs_chair", "initiative": h, "cause": "steer_head_stuck", "reason": reason(h)}
+        {"kind": ActionKind.NEEDS_CHAIR, "initiative": h, "cause": "steer_head_stuck", "reason": reason(h)}
         for h in heads
         if h not in running and h not in launched
     ]
@@ -1099,7 +1102,7 @@ def _schedule_update(facts: Facts, schedule: Schedule | None, now: datetime | No
         return []
     feed = schedule_feed(schedule, now)
     previous = facts.get("previous_schedule_feed")
-    unchanged = previous is not None and _without_advice_clock(previous.get("schedule", {})) == _without_advice_clock(feed["schedule"])
+    unchanged = previous is not None and _without_advice_clock(cast(Mapping, previous.get("schedule", {}))) == _without_advice_clock(feed["schedule"])
     return [] if unchanged else [feed["action"]]
 
 
@@ -1116,7 +1119,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     empty_decompose_needs_chair = _empty_decompose_needs_chair_actions(facts)
     held_needs_chair = plan_held_files(facts)
     # H4.1: an initiative whose last runs ended the same way is held for a person, and not relaunched meanwhile.
-    no_progress_holds = plan_no_progress(facts)
+    no_progress_holds = cast(list[Action], plan_no_progress(facts))  # its actions are hold_initiative; chair_no_progress cannot import ActionKind without a cycle
     # Only an initiative held this tick is withheld: once its hold is visible the held gate takes over, and a hold a
     # person cleared by any route lets it launch again.
     no_progress = frozenset(a["initiative"] for a in no_progress_holds)
@@ -1165,7 +1168,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     )
     if facts["limits"]["hard_stop"]:
         # Nothing launches, so every ready initiative is left out; a pace cap of 0 names the first reason, which the stop replaces.
-        stopped = [
+        stopped: list[Action] = [
             {**a, "reason": "hard stop: nothing launches until the stop lifts"}
             for a in _unlaunched_actions(facts, [], {}, {}, 0, False, 0, now, [])
         ]
@@ -1198,7 +1201,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
             *schedule_update,
         ]
         # H7.1: the hard stop means no launch on purpose, so only the land and repeated-failure checks stand.
-        return [*stopped_plan, *(plan_stall_alarm(facts, stopped_plan, now, launch_paused=True) if now is not None else [])]
+        return [*stopped_plan, *(cast(list[Action], plan_stall_alarm(facts, stopped_plan, now, launch_paused=True)) if now is not None else [])]
     cap = _launch_cap(facts["limits"])
     host_free = host_free_slots(facts)
     capped_actions, consumed = _cap_launches(
@@ -1295,7 +1298,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     ]
     # H7.1: one alarm per stall the tick sees and one all-clear per raised stall that no longer stands; a launch planned
     # this tick means the lanes are not idle.
-    return [*planned, *(plan_stall_alarm(facts, planned, now) if now is not None else [])]
+    return [*planned, *(cast(list[Action], plan_stall_alarm(facts, planned, now)) if now is not None else [])]
 
 
 def _parse_utc(ts: str | None) -> datetime | None:
@@ -1312,7 +1315,7 @@ def plan_housekeeping(facts: Facts, now: datetime) -> list[Action]:
     last = _parse_utc(facts["last_housekeeping_at"])
     if last is not None and now - last < timedelta(hours=facts["housekeeping_hours"]):
         return []
-    return [{"kind": "housekeeping", "reason": f"housekeeping due: last {facts['last_housekeeping_at'] if last else 'never'}"}]
+    return [{"kind": ActionKind.HOUSEKEEPING, "reason": f"housekeeping due: last {facts['last_housekeeping_at'] if last else 'never'}"}]
 
 
 def plan_tick_held(facts: Facts, now: datetime | None = None, gate: CiGate = _UNPAUSED) -> TickPlan:

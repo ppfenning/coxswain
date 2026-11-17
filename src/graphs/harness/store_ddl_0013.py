@@ -13,7 +13,7 @@ VERSION = 13
 DESCRIPTION = "work_items gains issue_number, project_item_id, parent_item"
 
 # Table and column pairs that the ALTERs append; store_copy reads this 2-tuple shape, matching ddl2/ddl3/ddl5/ddl9/ddl10/ddl11/ddl12.
-_ADDED: tuple[tuple[str, str], ...] = (
+ADDED: tuple[tuple[str, str], ...] = (
     ("work_items", "issue_number"),
     ("work_items", "project_item_id"),
     ("work_items", "parent_item"),

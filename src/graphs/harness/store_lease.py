@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import cast
 
-from harness.store_dialect import Connection, Dialect, insert_ignore
+from harness.store_dialect import Cell, Connection, Dialect, insert_ignore
 
 __all__ = ["LeaseResult", "acquire", "assert_epoch", "lease_state", "release", "renew"]
 
@@ -78,16 +78,16 @@ def _expiry(now: str, ttl: int) -> str:
     return (parsed + timedelta(seconds=ttl)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def lease_state(row: tuple[Any, ...] | None, now: str) -> str:
+def lease_state(row: tuple[Cell, ...] | None, now: str) -> str:
     """`free` for no row, `expired` once expires_at is not after now, else `held`. Row is the leases column order."""
     if row is None:
         return "free"
-    if _stamp(row[4]) <= _stamp(now):
+    if _stamp(cast(str, row[4])) <= _stamp(now):
         return "expired"
     return "held"
 
 
-def _read(conn: Connection, name: str) -> tuple[Any, ...] | None:
+def _read(conn: Connection, name: str) -> tuple[Cell, ...] | None:
     return conn.query_one(_sql(conn.dialect, _READ), (name,))
 
 
@@ -101,18 +101,20 @@ def acquire(conn: Connection, name: str, holder: str, now: str, ttl: int, steal:
     with conn.transaction():
         if conn.execute(_sql(conn.dialect, _TAKE), (holder, at, until, name, at, holder)) == 1:
             row = _read(conn, name)
-            return LeaseResult(True, None if row is None else int(row[2]), holder)
+            return LeaseResult(True, None if row is None else int(cast(int, row[2])), holder)
         insert = insert_ignore(conn.dialect, "leases", _COLUMNS, ("name",))
         if conn.execute(insert, (name, holder, 1, at, until)) == 1:
             return LeaseResult(True, 1, holder)
         row = _read(conn, name)
         # Updating on the epoch just read is what stops two stealers both winning: the loser matches no row.
         if steal and row is not None:
-            seen = int(row[2])
+            seen = int(cast(int, row[2]))
             if conn.execute(_sql(conn.dialect, _STEAL), (holder, at, until, name, seen)) == 1:
                 return LeaseResult(True, seen + 1, holder)
             row = _read(conn, name)
-        return LeaseResult(False, None if row is None else int(row[2]), None if row is None else row[1])
+        return LeaseResult(
+            False, None if row is None else int(cast(int, row[2])), None if row is None else cast(str | None, row[1])
+        )
 
 
 def renew(
@@ -122,8 +124,8 @@ def renew(
     epoch: int,
     now: str,
     ttl: int,
-    status: str | None = _KEEP,
-    progress: str | None = _KEEP,
+    status: str | None = cast("str | None", _KEEP),
+    progress: str | None = cast("str | None", _KEEP),
 ) -> bool:
     """Extend a live lease. An expired or released lease is not revived: the holder must acquire again.
 

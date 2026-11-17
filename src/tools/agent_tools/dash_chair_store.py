@@ -5,6 +5,7 @@ import sys
 from collections.abc import Iterable, Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any, cast
 
 from agent_tools import run_store
 from agent_tools.chair import LEASE_NAME
@@ -72,7 +73,7 @@ def chair_from_store(
     return {
         "holder": label,
         "host": str(lease.get("host") or rest.split(":", 1)[0]),
-        "epoch": int(lease.get("epoch") or 0),
+        "epoch": int(cast(Any, lease.get("epoch") or 0)),
         "liveness": _liveness(full, lease.get("expires_at"), now),
         "beat_age_s": max(0, age) if age is not None else 0,
         **_tick_fields(lease.get("status"), now),

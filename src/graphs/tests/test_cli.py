@@ -540,9 +540,9 @@ def _three_calls(runner) -> int:
 
 
 def test_storage_url_is_the_profile_key_else_the_sqlite_file_in_the_runs_dir() -> None:
-    assert cli._storage_url({"storage_url": "sqlite:///x.db"}, "runs") == "sqlite:///x.db"
-    assert cli._storage_url({}, "runs") == "sqlite:///runs/cox.db"
-    assert cli._storage_url({"storage_url": ""}, "runs") == "sqlite:///runs/cox.db"
+    assert cli.profile_storage_url({"storage_url": "sqlite:///x.db"}, "runs") == "sqlite:///x.db"
+    assert cli.profile_storage_url({}, "runs") == "sqlite:///runs/cox.db"
+    assert cli.profile_storage_url({"storage_url": ""}, "runs") == "sqlite:///runs/cox.db"
 
 
 def test_a_run_leaves_a_runs_row_joined_to_its_graph_and_a_node_call_per_scripted_call(monkeypatch, tmp_path) -> None:
@@ -1859,7 +1859,7 @@ def test_a_setup_step_that_raises_after_the_lease_still_releases_it_and_ends_the
 
 def test_a_heartbeat_build_that_raises_after_the_lease_still_releases_it_and_ends_the_run(monkeypatch, tmp_path) -> None:
     _store_run(monkeypatch, tmp_path)
-    real, calls = cli._storage_url, []
+    real, calls = cli.profile_storage_url, []
 
     def url(profile, runs_dir):
         calls.append(runs_dir)
@@ -1867,7 +1867,7 @@ def test_a_heartbeat_build_that_raises_after_the_lease_still_releases_it_and_end
             raise RuntimeError("profile unreadable")
         return real(profile, runs_dir)
 
-    monkeypatch.setattr(cli, "_storage_url", url)
+    monkeypatch.setattr(cli, "profile_storage_url", url)
 
     with pytest.raises(RuntimeError, match="profile unreadable"):
         cli.main([])

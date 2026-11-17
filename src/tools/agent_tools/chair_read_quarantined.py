@@ -7,7 +7,7 @@ with no file at all."""
 import hashlib
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, cast
 
 from agent_tools import route, run_store
 from agent_tools.chair_phase_quarantine import row_mark
@@ -86,7 +86,7 @@ def _classify_cause(cause: str) -> str:
     return RUNAWAY_CAUSE if "runaway ceiling" in cause else cause
 
 
-def quarantined_from_rows(rows: Iterable[Mapping[str, object]]) -> list[Row]:
+def quarantined_from_rows(rows: Iterable[Mapping[str, Any]]) -> list[Row]:
     """Quarantine facts for rows whose `state` is "quarantined": one row per queue row, in input order.
 
     A row already names its own quarantine, so no state or attempt-matching gate is needed to find one; the
@@ -177,7 +177,7 @@ def read_work_items(
         for p, text in texts.items()
     ]
     rows = store_rows if store_rows is not None else (run_store.work_items(root / "runs") if mode == "store" else [])
-    stored = route.with_store_states(items, rows, mode)
+    stored = route.with_store_states(items, cast(list[dict], rows), mode)
     return [(p, text, item) for (p, text), item in zip(texts.items(), stored, strict=True)]
 
 

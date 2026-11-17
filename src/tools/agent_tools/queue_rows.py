@@ -69,13 +69,13 @@ def row_requires(row: Row) -> list[str]:
     return requires_of(row.get("extra"))
 
 
-def _initiative_extra(row: Row, key: str) -> Any:
+def _initiative_extra(row: Mapping[str, Any], key: str) -> Any:
     """`extra[key]` of an initiative row; None for any other kind or when absent."""
     extra = row.get("extra")
     return extra.get(key) if row.get("kind") == "initiative" and isinstance(extra, Mapping) else None
 
 
-def epic_of_row(row: Row) -> str | None:
+def epic_of_row(row: Mapping[str, Any]) -> str | None:
     """The epic an initiative row belongs to. A bad value is None, not an error: a chair tick must not crash on a row."""
     from core.epics import valid_epic_id  # lazy: core sits beside agent_tools in one venv
 
@@ -86,7 +86,7 @@ def epic_of_row(row: Row) -> str | None:
         return None
 
 
-def target_branch_of_row(row: Row) -> str | None:
+def target_branch_of_row(row: Mapping[str, Any]) -> str | None:
     """The branch an initiative row lands on. A bad value is None, not an error: a chair tick must not crash on a row."""
     from core.landing import valid_branch  # lazy: core sits beside agent_tools in one venv
 

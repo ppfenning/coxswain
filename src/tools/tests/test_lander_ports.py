@@ -221,7 +221,7 @@ def test_a_split_moves_the_blocked_phase_with_everything_it_built_and_can_be_run
     assert git(repo, "rev-parse", "epic/demo-2/p2") == tip == git(repo, "rev-parse", "epic/demo/p2"), "copied, and the original left"
     assert not (ws / "work" / "demo" / "p2").exists()
     assert sorted(p.name for p in (ws / "work" / "demo-2" / "p2").glob("*.md")) == ["b.md", "gate.md"]
-    overview = workstore._split_frontmatter((ws / "work" / "demo-2" / "initiative.md").read_text(), ws)[0]
+    overview = workstore.split_frontmatter((ws / "work" / "demo-2" / "initiative.md").read_text(), ws)[0]
     assert (overview["id"], overview["split_from"], overview["title"]) == ("demo-2", "demo", "Demo title (follow-up)")
     assert {t["id"]: t["state"] for t in ports.tasks("demo")} == {"a": "approved"}
     moved = {t["id"]: t for t in ports.tasks("demo-2")}

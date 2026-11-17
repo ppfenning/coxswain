@@ -25,15 +25,19 @@ from __future__ import annotations
 import os
 import sqlite3
 from collections.abc import Sequence
+from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import TypedDict, cast
 
 from harness import store_traces
-from harness.store_dialect import SQLITE, SQLITE_BUSY_TIMEOUT_MS, Connection, connect, json_load
+from harness.store_dialect import SQLITE, SQLITE_BUSY_TIMEOUT_MS, Cell, Connection, Json, JsonObject, connect, json_load
 from harness.store_migrate import check_version
 
 __all__ = [
     "StoreVersionError",
+    "TaskRecord",
+    "TaskRecordRow",
+    "WorkItemReadRow",
     "attempts",
     "build_task_history",
     "calls",
@@ -57,7 +61,45 @@ __all__ = [
     "work_items",
 ]
 
-Row = dict[str, Any]
+Row = dict[str, Json]
+
+
+class WorkItemReadRow(TypedDict):
+    """One `work_items` row as `store_read.work_items` returns it: `needs` and `handoff` decoded, `merged` derived."""
+
+    initiative: str
+    task_id: str
+    phase: str | None
+    state: str
+    needs: list[str]
+    updated_at: str | None
+    updated_by: str | None
+    merged_commit: str | None
+    handoff: Json
+    merged: bool
+
+
+class TaskRecord(TypedDict, total=False):
+    """A task's saved record (`record_json`). Only the keys the store reads are named; a record carries more."""
+
+    run_id: str
+    cause: str | None
+    cause_why: str | None
+    scope: Json
+    change_facts: Json
+    outcome: Json
+    landed: Json
+
+
+class TaskRecordRow(TypedDict):
+    """One `task_records` row, `record_json` decoded."""
+
+    run_id: str
+    phase_id: str
+    task_id: str
+    record_json: TaskRecord | None
+    updated_at: str
+
 
 _RUN_COLS = ("run_id", "principal", "status", "started_at", "ended_at", "graph_id", "short_id")
 _CALL_COLS = (
@@ -90,9 +132,13 @@ class StoreVersionError(RuntimeError):
     """The database is not at the schema version this code expects."""
 
 
-def _dict(cols: Sequence[str], row: Sequence[Any]) -> Row:
+def _dict(cols: Sequence[str], row: Sequence[Cell]) -> Row:
     """Column names zipped to a row; json columns decoded, None kept as None."""
-    return {c: json_load(v) if c in _JSON_COLS else v for c, v in zip(cols, row)}
+    return cast(Row, {c: json_load(v) if c in _JSON_COLS else v for c, v in zip(cols, row)})
+
+
+def _task_record_row(row: Sequence[Cell]) -> TaskRecordRow:
+    return cast(TaskRecordRow, _dict(_TASK_RECORD_COLS, row))
 
 
 def _select(cols: Sequence[str], table: str) -> str:
@@ -167,9 +213,9 @@ def _cache_share(cache_read_tokens: int, input_total: int) -> float | None:
     return None if input_total == 0 else cache_read_tokens / input_total
 
 
-def summary_row(run_id: str, row: Sequence[Any]) -> Row:
+def summary_row(run_id: str, row: Sequence[Cell]) -> Row:
     """Aggregate tuple to plain int and float. Postgres SUM gives Decimal, so it is coerced here."""
-    n, cost, turns, input_total, cache_read, output = row
+    n, cost, turns, input_total, cache_read, output = cast("Sequence[Decimal | float]", row)
     return {
         "run_id": run_id,
         "calls": int(n),
@@ -203,7 +249,7 @@ def initiative_cost(conn: Connection, initiative: str) -> Row | None:
     p = conn.dialect.placeholder
     prefix = f"{initiative}-"
     candidates = (r[0] for r in conn.query_all(f"SELECT run_id FROM runs WHERE run_id LIKE {p}", (f"{prefix}%",)))
-    ids = [r for r in candidates if r.startswith(prefix) and r[len(prefix) :].isdigit()]
+    ids = [r for r in (cast(str, c) for c in candidates) if r.startswith(prefix) and r[len(prefix) :].isdigit()]
     if not ids:
         return None
     marks = ", ".join(p for _ in ids)
@@ -214,12 +260,15 @@ def initiative_cost(conn: Connection, initiative: str) -> Row | None:
         f" ON a.task_id = c.task_id WHERE c.run_id IN ({marks}) AND c.ts > a.first_ts",
         (*ids, *ids),
     )
-    return {"total_usd": float(total[0]) if total else 0.0, "retry_usd": float(retry[0]) if retry else 0.0}
+    return {
+        "total_usd": float(cast(float, total[0])) if total else 0.0,
+        "retry_usd": float(cast(float, retry[0])) if retry else 0.0,
+    }
 
 
-def model_row(row: Sequence[Any]) -> Row:
+def model_row(row: Sequence[Cell]) -> Row:
     """One cost_by_model group as plain str, int and float."""
-    alias, tier, n, cost, input_total, output = row
+    alias, tier, n, cost, input_total, output = cast("tuple[str, str, Decimal | float, Decimal | float, Decimal | float, Decimal | float]", tuple(row))
     return {
         "model_alias": alias,
         "tier": tier,
@@ -265,12 +314,15 @@ def ledger_rows(conn: Connection, run_id: str) -> list[Row]:
     return [_dict(_LEDGER_COLS, r) for r in conn.query_all(sql, (run_id,))]
 
 
-def ledger_streak_rows(conn: Connection, cartridge_sha: str | None, provider_profile: str) -> list[Row]:
+def ledger_streak_rows(conn: Connection, cartridge_sha: str | None, provider_profile: str) -> list[JsonObject]:
     """The decoded row_json of every ledger row for one configuration, in epoch, ts order."""
     p = conn.dialect.placeholder
     where = f"WHERE cartridge_sha = {p} AND provider_profile = {p}"
     sql = f"SELECT row_json FROM ledger {where} ORDER BY epoch, ts, row_hash"
-    return [_dict(("row_json",), r)["row_json"] for r in conn.query_all(sql, (cartridge_sha, provider_profile))]
+    return [
+        cast(JsonObject, _dict(("row_json",), r)["row_json"])
+        for r in conn.query_all(sql, (cartridge_sha, provider_profile))
+    ]
 
 
 def gate_decisions(conn: Connection, run_id: str) -> list[Row]:
@@ -318,32 +370,32 @@ def run_graph(conn: Connection, run_id: str) -> Row | None:
     }
 
 
-def task_record(conn: Connection, run_id: str, phase_id: str, task_id: str) -> Row | None:
+def task_record(conn: Connection, run_id: str, phase_id: str, task_id: str) -> TaskRecord | None:
     """The decoded record_json of one task, or None when the store has no such row."""
     p = conn.dialect.placeholder
     sql = f"{_select(_TASK_RECORD_COLS, 'task_records')} WHERE run_id = {p} AND phase_id = {p} AND task_id = {p}"
     row = conn.query_one(sql, (run_id, phase_id, task_id))
-    return None if row is None else _dict(_TASK_RECORD_COLS, row)["record_json"]
+    return None if row is None else _task_record_row(row)["record_json"]
 
 
-def task_records(conn: Connection, run_id: str) -> dict[tuple[str, str], Row]:
+def task_records(conn: Connection, run_id: str) -> dict[tuple[str, str], TaskRecord | None]:
     """A run's task records keyed by (phase_id, task_id), in that key order."""
     p = conn.dialect.placeholder
     sql = f"{_select(_TASK_RECORD_COLS, 'task_records')} WHERE run_id = {p} ORDER BY phase_id, task_id"
-    rows = (_dict(_TASK_RECORD_COLS, r) for r in conn.query_all(sql, (run_id,)))
+    rows = (_task_record_row(r) for r in conn.query_all(sql, (run_id,)))
     return {(r["phase_id"], r["task_id"]): r["record_json"] for r in rows}
 
 
-def task_records_of(conn: Connection, phase_id: str, task_id: str) -> list[Row]:
+def task_records_of(conn: Connection, phase_id: str, task_id: str) -> list[TaskRecordRow]:
     """Every run's record of one task in one phase, by run_id: run_id, phase_id, task_id, record_json decoded, updated_at.
 
     A task id repeats across initiatives, so the caller tells its own runs apart."""
     p = conn.dialect.placeholder
     sql = f"{_select(_TASK_RECORD_COLS, 'task_records')} WHERE phase_id = {p} AND task_id = {p} ORDER BY run_id"
-    return [_dict(_TASK_RECORD_COLS, r) for r in conn.query_all(sql, (phase_id, task_id))]
+    return [_task_record_row(r) for r in conn.query_all(sql, (phase_id, task_id))]
 
 
-def _scoped_to(record: dict[str, Any], repo: str) -> bool:
+def _scoped_to(record: TaskRecord, repo: str) -> bool:
     """True when the record's saved `scope.repos` names `repo`, exactly or by its last path component.
 
     `scope` is not always a mapping: a record can carry the scope seat's verdict as a plain string, which names no
@@ -394,19 +446,19 @@ def build_task_history(conn: Connection, repo: str, since: str) -> list[tuple[st
     )
     history: list[tuple[str, int, float]] = []
     for record_json, cost in conn.query_all(sql, ("build", since)):
-        record = json_load(record_json) or {}
-        files = (record.get("change_facts") or {}).get("files_touched")
+        record = cast(TaskRecord, json_load(record_json) or {})
+        files = cast(JsonObject, record.get("change_facts") or {}).get("files_touched")
         if not isinstance(files, list):
             continue
         if not cost:
             continue
         if not _scoped_to(record, repo):
             continue
-        history.append((repo, len(files), float(cost)))
+        history.append((repo, len(files), float(cast(float, cost))))
     return history
 
 
-def work_items(conn: Connection, initiative: str) -> list[Row]:
+def work_items(conn: Connection, initiative: str) -> list[WorkItemReadRow]:
     """An initiative's work_items rows in task_id order.
 
     needs_json and handoff_json are decoded and keyed as `needs` and `handoff`; `merged` is true when merged_commit is set.
@@ -415,7 +467,10 @@ def work_items(conn: Connection, initiative: str) -> list[Row]:
     sql = f"{_select(_WORK_ITEM_COLS, 'work_items')} WHERE initiative = {p} ORDER BY task_id"
     rows = (_dict(_WORK_ITEM_COLS, r) for r in conn.query_all(sql, (initiative,)))
     return [
-        {**{_WORK_ITEM_RENAMED.get(k, k): v for k, v in r.items()}, "merged": r["merged_commit"] is not None}
+        cast(
+            WorkItemReadRow,
+            {**{_WORK_ITEM_RENAMED.get(k, k): v for k, v in r.items()}, "merged": r["merged_commit"] is not None},
+        )
         for r in rows
     ]
 

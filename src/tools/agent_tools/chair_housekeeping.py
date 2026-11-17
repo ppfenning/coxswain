@@ -2,6 +2,7 @@
 
 import re
 from collections.abc import Callable
+from typing import Literal
 
 LINE_CUT = 80
 REASON_CUT = 200
@@ -63,7 +64,7 @@ def run_housekeeping(
     prune_available: Callable[[], bool],
     python: str,
     retention_days: int = 7,
-) -> tuple[str, str]:
+) -> tuple[Literal["done", "failed"], str]:
     clean = clean_argv()
     sync = _attempt(run, "lake sync", sync_argv())
     if traces_root.startswith("s3://"):

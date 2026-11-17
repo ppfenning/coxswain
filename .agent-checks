@@ -15,3 +15,7 @@ python .github/check_clean.py . --require-names
 # outside tests fails the lane; entry points nothing calls by name are allowlisted, with a reason, in .github/unwired-allow.txt.
 # An epic lane's base is its phase branch (COX_LANE_BASE, exported by the harness); elsewhere origin/main.
 python .github/check_unwired.py
+# H2 (docs/hardening.md): the type check, strict on the typed core and basic elsewhere ([tool.pyright] in pyproject.toml).
+# It reads its packages from the `python` on PATH, so the lane host's environment carries the dev group (pyright) and
+# the extras (psycopg, pyarrow, pyiceberg, duckdb), as `uv sync --group dev --all-extras` installs them.
+pyright

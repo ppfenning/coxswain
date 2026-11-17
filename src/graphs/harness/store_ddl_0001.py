@@ -22,7 +22,7 @@ def _cols(kind: str, *names: str) -> tuple[Column, ...]:
     return tuple((n, kind) for n in names)
 
 
-_TABLES: tuple[tuple[str, tuple[Column, ...], tuple[str, ...]], ...] = (
+TABLES: tuple[tuple[str, tuple[Column, ...], tuple[str, ...]], ...] = (
     (
         "runs",
         _cols(
@@ -149,6 +149,6 @@ def _create_table(dialect: Dialect, name: str, columns: tuple[Column, ...], key:
 def statements(dialect: Dialect) -> tuple[str, ...]:
     """The eight tables, then the four indexes."""
     return (
-        *(_create_table(dialect, n, c, k) for n, c, k in _TABLES),
+        *(_create_table(dialect, n, c, k) for n, c, k in TABLES),
         *(f"CREATE INDEX IF NOT EXISTS {i} ON {t} ({', '.join(cs)})" for i, t, cs in _INDEXES),
     )

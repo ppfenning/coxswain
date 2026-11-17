@@ -16,7 +16,7 @@ Traces live outside git, under a trace root. The layout is `YYYY/MM/DD/<run_id>.
 
 The `src/graphs` folder owns the DDL, the numbered migrations, the `schema_version` table, the graphs registry and the dialect shim. The shim is `harness/store_dialect.py`. The migrations and their runner are in `harness/store_migrate.py` and the `harness/store_ddl_NNNN.py` modules.
 
-The profile carries the connection string under the key `storage_url`. `_storage_url` in `harness/cli.py` returns it, and falls back to `cox.db` inside the runs directory when the key is absent. The accepted schemes are `sqlite://` and `postgresql://`.
+The profile carries the connection string under the key `storage_url`. `profile_storage_url` in `harness/cli.py` returns it, and falls back to `cox.db` inside the runs directory when the key is absent. The accepted schemes are `sqlite://` and `postgresql://`.
 
 Only `open_store` in `harness/store_migrate.py` applies migrations. The harness entry points that write (`shell.py`, and the `python -m harness.store_cli`, `store_queue`, `store_ids`, `store_copy` and `store_backfill` commands) open the store through it. The `cox` command in `src/tools` reads the store read-only and sends every write through one of those harness commands, so it never applies a migration itself.
 
@@ -167,7 +167,7 @@ Adding one never edits `harness/store_migrate.py`, because `default_modules` fin
 
 Test it two ways. From an empty database, it must reach the new version. From a database at the previous version, it must apply only the new migration. `tests/test_store_ddl_0002.py` does both and is the pattern to copy: see `test_an_empty_database_reaches_version_two` and `test_a_database_at_version_one_applies_only_0002`.
 
-A migration that adds columns to an existing table also lists them in a module-level `_ADDED` tuple of `(table, column)` pairs. `harness/store_copy.py` reads that shape when it copies a store from one URL to another.
+A migration that adds columns to an existing table also lists them in a module-level `ADDED` tuple of `(table, column)` pairs. `harness/store_copy.py` reads that shape when it copies a store from one URL to another.
 
 ## Portability rules
 

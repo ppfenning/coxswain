@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from pathlib import Path
 
 from agent_tools import bounded_run, epic, land_manual, remote_lane, repo_path, runs_stranded
@@ -59,7 +59,7 @@ def _log_row_is_stale(run: str, item: dict) -> bool:
     return runs_stranded._rebuilt({"run": run}, item) or runs_stranded._awaiting_rebuild(item)
 
 
-def _log_rows(run: str, text: str, items: list[dict], recorded: set[tuple[str, str]],
+def _log_rows(run: str, text: str, items: list[dict], recorded: Collection[tuple[object, object]],
               repo_exists: Callable[[str], bool], manual_of: Callable[[str], bool]) -> list[dict]:
     """Rows for one run's log approvals. The repo is the item's own, so no record is needed. A task with any record, or in two repos, yields none: the record path decides it. A `land: manual` repo gets its own remedy."""
     lines = epic.summarize_log(text)["approved"]

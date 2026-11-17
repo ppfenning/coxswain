@@ -56,7 +56,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory, gettempdir
 from time import monotonic
-from typing import Any, Literal, NamedTuple
+from typing import Any, Literal, NamedTuple, cast
 from urllib.parse import urlencode
 
 import yaml
@@ -433,7 +433,7 @@ def _start_initiative(ctx: _Ctx, initiative: Mapping[str, Any]) -> str:
         return name
     record, why = ctx.retry.write(
         lambda: landing_ops.start_record(
-            ctx.store.conn, ctx.repo, initiative=ctx.initiative_id, branch=name,
+            cast(Store, ctx.store).conn, ctx.repo, initiative=ctx.initiative_id, branch=name,
             parent=ctx.default_ref.removeprefix("origin/"), parent_ref=ctx.default_ref, now=_landing_stamp(),
             land_at=ctx.land_at, epic=initiative.get("epic"),
         ),
@@ -458,7 +458,7 @@ def _take_parent_forward(ctx: _Ctx) -> tuple[str, str, landing_git.Merge] | None
     record = landing_store.get_record(ctx.store.conn, ctx.initiative_id) or {}
     # A stacked initiative's recorded parent is the branch of the initiative below; once that one landed, its branch is
     # gone and its own parent is the one to take forward.
-    stacked = landing_record.stack_resolved_parent(record, landing_store.list_records(ctx.store.conn)) if record else ""
+    stacked = landing_record.stack_resolved_parent(record, landing_store.list_records(cast(Store, ctx.store).conn)) if record else ""
     parent = stacked or ctx.default_ref.removeprefix("origin/")
     parent_ref = f"origin/{parent}" if landing_git.rev(ctx.repo, f"refs/remotes/origin/{parent}") else parent
     if landing_git.is_ancestor(ctx.repo, parent_ref, branch):
@@ -467,7 +467,7 @@ def _take_parent_forward(ctx: _Ctx) -> tuple[str, str, landing_git.Merge] | None
     try:
         merged = ctx.retry.write(
             lambda: landing_ops.take_parent_forward(
-                ctx.store.conn, ctx.repo, initiative=ctx.initiative_id, parent_ref=parent_ref,
+                cast(Store, ctx.store).conn, ctx.repo, initiative=ctx.initiative_id, parent_ref=parent_ref,
                 worker=f"run:{ctx.run_id}", now=_landing_stamp(), fetch=lambda b: _fetch_initiative(ctx, b),
                 publish=(lambda b: _publish_branch(ctx, b)) if early else None,
             ),
@@ -544,7 +544,7 @@ def _file_integrate(
 
         if path is not None:
             workstore.write_item(item, path)
-        store_queue.upsert(ctx.store.conn, {
+        store_queue.upsert(cast(Store, ctx.store).conn, {
             "kind": "task", "initiative": ctx.initiative_id, "task_id": ident, "phase": INTEGRATE_PHASE, "state": "ready",
             "needs": [], "surfaces": [], "title": item["title"], "body": item["body"], "extra": {"id": ident, "phase": INTEGRATE_PHASE},
             "updated_at": _now(), "updated_by": f"run:{ctx.run_id}",
@@ -624,7 +624,7 @@ def _merge_into_initiative(ctx: _Ctx, phase: str, items: Sequence[Mapping[str, A
     try:
         done = ctx.retry.write(
             lambda: landing_ops.merge_phase(
-                ctx.store.conn, ctx.repo, initiative=ctx.initiative_id, phase=phase, tasks=rows,
+                cast(Store, ctx.store).conn, ctx.repo, initiative=ctx.initiative_id, phase=phase, tasks=rows,
                 worker=f"run:{ctx.run_id}", now=_landing_stamp(), checks=_merge_checks(ctx, phase),
                 fetch=lambda branch: _fetch_initiative(ctx, branch),
                 publish=(lambda branch: _publish_branch(ctx, branch)) if early else None,
@@ -730,7 +730,7 @@ def _fetch_or_stop(
     if diverged:
         record["phase_branch_diverged"] = diverged
     unresolved = any(not _git("-C", str(ctx.repo), "rev-parse", "--verify", "--quiet", f"{r}^{{commit}}")[0] for r in loose)
-    demanded = list(dict.fromkeys([*required, *(parent_branches if unresolved else [])]))
+    demanded: list[str] = list(dict.fromkeys([*required, *(parent_branches if unresolved else [])]))
     outcomes = {b: _await_launched_branch(ctx, b, o) if b in demanded else o for b, o in outcomes.items()}
     for branch in demanded:
         if outcomes[branch].kind in (Kind.MISSING_EVERYWHERE, Kind.FETCH_FAILED):
@@ -854,7 +854,7 @@ _EXIT_WINDOW_S = 300.0
 
 def _reopen_url(conn: Connection) -> str | None:
     """A URL `connect` accepts for the database `conn` is on, or None when it cannot be reopened (an in-memory sqlite)."""
-    raw = conn.raw
+    raw: Any = conn.raw
     if isinstance(raw, sqlite3.Connection):
         file = next((row[2] for row in raw.execute("PRAGMA database_list") if row[1] == "main"), "")
         return f"sqlite:///{file}" if file else None
@@ -2294,7 +2294,7 @@ def run_epic(
             fix_attempts=fix_attempts,
             resume_from=resume_from,
             repo_checks=repo_checks(agent_checks_text),
-            test_database=test_database_setting(cartridge),
+            test_database=cast(Mapping[str, str] | None, test_database_setting(cartridge)),
             lane_workers=lane_workers_from(os.environ, os.cpu_count() or 1),
             pool=pool,
             store=store,
@@ -2808,18 +2808,18 @@ def _quarantine_task(
             )
     if ctx.store is not None and judged is not None:
         # The store's attempt exists whether or not the item has a file behind it.
-        cause, cause_why = judged
+        judged_cause, cause_why = judged
         store = ctx.store
 
         def attempt() -> None:
             # The count and the insert retry as one unit, so a retry recounts rather than reusing a stale seq.
             seq = _next_attempt_seq(store, ctx.run_id, task)
             store.record_attempt(
-                ctx.run_id, task, seq, phase, kind, detail or reason, ts, epoch=ctx.epoch, cause=cause, cause_why=cause_why
+                ctx.run_id, task, seq, phase, kind, detail or reason, ts, epoch=ctx.epoch, cause=judged_cause, cause_why=cause_why
             )
 
         ctx.retry.write(attempt, _END_WRITE_WINDOW_S)
-        _record_task_cause(ctx, phase, task, cause, cause_why, by_id.get(task))
+        _record_task_cause(ctx, phase, task, judged_cause, cause_why, by_id.get(task))
     # A merge conflict leaves the row at approved with its work unlanded; approved is not always finished.
     _quarantine_row(ctx, phase, task, approved_is_open=approved_is_open or judged == ("harness", "merge conflict"))
     return entry
@@ -2879,7 +2879,7 @@ def _next_attempt_seq(store: Store, run_id: str, task: str) -> int:
     """The attempts already stored for (run, task), so a rerun of the same run id appends rather than collides."""
     mark = store.conn.dialect.placeholder
     row = store.conn.query_one(f"SELECT COUNT(*) FROM attempts WHERE run_id = {mark} AND task_id = {mark}", (run_id, task))
-    return 0 if row is None else int(row[0])
+    return 0 if row is None else int(cast(int, row[0]))
 
 
 LEASE_NAME = "chair"
@@ -2941,14 +2941,14 @@ def _mirror_read_store(ctx: _Ctx, items: Sequence[dict[str, Any]], rows: Sequenc
         row_state = None if row is None else row["state"]
         decision = work_mirror.authority_decision("store", file_state, row_state)
         if decision == work_mirror.USE_STORE_REWRITE_FILE:
-            if _repair_file_state(item, row_state):
+            if _repair_file_state(item, cast(str, row_state)):
                 _log.warning("work file state rewritten from the store: task=%s old=%s new=%s", task, file_state, row_state)
             else:
                 _log.warning("work file state not rewritable, store state used: task=%s file=%s", task, file_state)
             item["state"] = row_state
         elif decision == work_mirror.USE_FILE_AND_UPSERT:
             new = work_mirror.item_row(ctx.initiative_id, item, times.get(str(task)) or _now(), _mirror_by(ctx))
-            _upsert_row(ctx.store, new)
+            _upsert_row(cast(Store, ctx.store), new)
         if row is not None:
             # A merge and its handoff live only in the row, so `ready_tasks` sees a merged parent in any run.
             item["merged"] = bool(row.get("merged"))
@@ -3001,7 +3001,7 @@ def _read_store_rows(ctx: _Ctx) -> list[Mapping[str, Any]] | None:
     try:
         from harness import store_read  # not module level, for the reason given in `_mirror_read`
 
-        return list(store_read.work_items(ctx.store.conn, ctx.initiative_id))
+        return list(store_read.work_items(cast(Store, ctx.store).conn, ctx.initiative_id))
     except Exception as exc:
         _log.warning("work_items not re-read for %s: %s: %s", ctx.initiative_id, type(exc).__name__, exc)
         return None
@@ -3029,7 +3029,7 @@ def _store_first(ctx: _Ctx, item: dict[str, Any], state: str) -> str | None:
     task, expected = item.get("id"), str(item["state"])
     try:
         written = store_work_state.set_state(
-            ctx.store.conn, ctx.initiative_id, str(task), state, _mirror_by(ctx), item.get("phase"), _now(), expected=expected
+            cast(Store, ctx.store).conn, ctx.initiative_id, str(task), state, _mirror_by(ctx), item.get("phase"), _now(), expected=expected
         )
     except Exception as exc:
         reason = f"state move refused, store write failed: {type(exc).__name__}: {exc}"
@@ -3139,7 +3139,7 @@ def _heal_surfaces(task: Mapping[str, Any], paths: frozenset[str]) -> dict[str, 
         and s.strip() and not any(c.isspace() or c in "*?[]" for c in s.strip()) and s.strip() != ".."
     ]
     resolved = heal_bare_filenames({**task, "surfaces": [s for s in surfaces if s not in root_new]}, paths)
-    kept = {**resolved, "surfaces": [*(resolved.get("surfaces") or []), *root_new]}
+    kept = {**resolved, "surfaces": [*cast(Iterable[Any], resolved.get("surfaces") or []), *root_new]}
     return heal_new_markers(notes_out_of_surfaces(kept), paths)
 
 
@@ -3152,7 +3152,7 @@ def _rewrite_frontmatter_surfaces(path: Path, surfaces: Sequence[str], notes: Se
     end = next((i for i, line in enumerate(lines[1:], 1) if line.strip() == "---"), None)
     if lines[0].strip() != "---" or end is None:
         raise ValueError(f"{path}: no frontmatter block")
-    lint = list(dict.fromkeys([*((yaml.safe_load("\n".join(lines[1:end])) or {}).get("lint") or []), *notes]))
+    lint: list[str] = list(dict.fromkeys([*((yaml.safe_load("\n".join(lines[1:end])) or {}).get("lint") or []), *notes]))
     front = lines[1:end]
     for key, value in (("surfaces", surfaces), ("lint", lint)):
         at = next((i for i, line in enumerate(front) if line.startswith(f"{key}:")), None)
@@ -3200,7 +3200,7 @@ def _write_healed_surfaces(ctx: _Ctx, task: str, surfaces: Sequence[str], notes:
             _log.warning("healed surfaces: store row not read: task=%s: %s: %s", task, type(exc).__name__, exc)
         if row is None:
             _log.warning("healed surfaces not written to the store row: task=%s: no row", task)
-    extra = dict((row or {}).get("extra") or {})
+    extra = dict(cast(Mapping[str, Any], (row or {}).get("extra") or {}))
     row_lint = [str(n) for n in extra.get("lint") or []]
     lint = list(dict.fromkeys([*row_lint, *notes]))
     if path:
@@ -3218,7 +3218,7 @@ def _write_healed_surfaces(ctx: _Ctx, task: str, surfaces: Sequence[str], notes:
         return
     try:
         store_queue.upsert(
-            ctx.store.conn,
+            cast(Store, ctx.store).conn,
             {"initiative": ctx.initiative_id, "task_id": task, "surfaces": list(surfaces), "extra": {**extra, "lint": list(lint)}},
         )
     except Exception as exc:
@@ -3239,7 +3239,7 @@ def _quarantine_row(ctx: _Ctx, phase: str, task: str, *, approved_is_open: bool 
             return
         from harness import store_read  # not module level: see `_mirror_read`
 
-        row = next((r for r in store_read.work_items(ctx.store.conn, ctx.initiative_id) if r["task_id"] == task), None)
+        row = next((r for r in store_read.work_items(cast(Store, ctx.store).conn, ctx.initiative_id) if r["task_id"] == task), None)
         current = None if row is None else str(row["state"])
         if row_should_quarantine(ctx.work_state, current, approved_is_open=approved_is_open):
             _store_first(ctx, {"id": task, "phase": phase, "state": current}, "quarantined")
@@ -3535,7 +3535,7 @@ def _save_result(ctx: _Ctx, result: Mapping[str, Any], *, phase: str, task: str)
 
         def mirror() -> None:
             if _fenced(ctx) is None:
-                store.record_task_record(*args)
+                cast(Store, store).record_task_record(*cast(tuple[str, str, str, dict[str, Any], str], args))
 
         if args is not None and store is not None:
             ctx.retry.write(mirror, _END_WRITE_WINDOW_S)
@@ -3655,7 +3655,7 @@ def _apply_amend_directly(
     the ramp is not eligible, the check is false, the cartridge names no model arm, or there is no readable ticket file.
     """
     before = _read_ticket(item)
-    arm = apply_arm_for("ticket_amend", ctx.cartridge)
+    arm = apply_arm_for("ticket_amend", cast(dict[str, Any], ctx.cartridge))
     if (
         proposal.get("ramp") != "eligible"
         or not _is_append_only(old_body, new_body)
@@ -4421,23 +4421,23 @@ def _run_phase(
             return record
 
     opened = _open_phase_worktree(ctx, phase, cut_ref, parents, cut_from)
-    ok, detail, reused = opened
+    ok, detail, branch_reused = opened
     record["cleared_worktrees"] = list(getattr(opened, "cleared", ()))
     if not ok:
         return open_failed(detail, "created")
-    record["reused_branch"] = reused
+    record["reused_branch"] = branch_reused
     _note_push_failure(record, _publish_branch(ctx, branch))
 
     # Decided before a single task builds: a reused branch missing a commit it
     # needs is either recreated (nothing of its own to lose) or blocked (something is).
     # With an initiative branch none of this applies: the parent does not float, so a reused phase branch is never
     # stale against it. It is behind only by what siblings merged, and `_refresh_level` merges that forward below.
-    head_moved = ctx.initiative_branch is None and reused and _needs_missing(ctx, phase, needed)
+    head_moved = ctx.initiative_branch is None and branch_reused and _needs_missing(ctx, phase, needed)
     with ctx.items_lock:
         task_states = {str(i["id"]): str(i.get("state")) for i in items}
     cherry = _phase_branch_cherry(ctx, phase, pr_ref) if head_moved else []
     unlanded_kind = classify_unlanded(cherry, task_states)
-    action = branch_action(reused, head_moved, unlanded_kind not in ("landed", "rebuild"))
+    action = branch_action(branch_reused, head_moved, unlanded_kind not in ("landed", "rebuild"))
 
     foreign = initiative.get("foreign") or {}
     with ctx.items_lock:
@@ -4522,11 +4522,11 @@ def _run_phase(
             _git("-C", str(ctx.repo), "worktree", "remove", "--force", str(ctx.phase_worktree(phase)))
         _git("-C", str(ctx.repo), "branch", "-D", branch)
         reopened = _open_phase_worktree(ctx, phase, cut_ref, parents, cut_from)
-        ok, detail, reused = reopened
+        ok, detail, branch_reused = reopened
         record["cleared_worktrees"] = [*record["cleared_worktrees"], *getattr(reopened, "cleared", ())]
         if not ok:
             return open_failed(detail, "recreated")
-        record["reused_branch"] = reused
+        record["reused_branch"] = branch_reused
         _note_push_failure(record, _publish_branch(ctx, branch))
         return None
 
@@ -4706,7 +4706,7 @@ def _run_phase(
             if result.get("escalated"):
                 # The same (class, diagnosis) twice is the same reasoning restated: a person decides, by the mark.
                 print(f"  attempt cap: {task_id} launched triage, which escalated a repeated diagnosis; {_newest_attempt_text(attempts)}")
-                prior = result.get("prior") if isinstance(result.get("prior"), Mapping) else {}
+                prior = cast(Mapping[str, Any], result.get("prior") if isinstance(result.get("prior"), Mapping) else {})
                 hold(task_id, f"triage repeats its earlier {class_} diagnosis (run {prior.get('run') or 'unrecorded'}): {diagnosis}")
                 continue
 
@@ -4752,7 +4752,7 @@ def _run_phase(
                     rebuilt is None
                     and failure is None
                     and _store_authoritative(ctx)
-                    and apply_arm_for("ticket_amend", ctx.cartridge) in (None, "workstore")
+                    and apply_arm_for("ticket_amend", cast(dict[str, Any], ctx.cartridge)) in (None, "workstore")
                     and emitted["ramp"] == "eligible"
                     and _is_append_only(old_body, new_body)
                 ):
@@ -4827,7 +4827,7 @@ def _run_phase(
         for task in ready:
             saved = load_result(ctx.runs_dir, ctx.resume_from, phase, str(task["id"]))
             if reusable(saved):
-                reused.append(_without_cause(saved))
+                reused.append(_without_cause(cast(dict[str, Any], saved)))
                 print(f"  reused {task['id']} from {ctx.resume_from} (approved patch, no model call)")
             else:
                 to_run.append(task)
@@ -5382,7 +5382,7 @@ def _run_phase(
         # Built here rather than by `gate.apply_decisions`, which cannot know
         # about a branch this driver created: `applied` is what actually
         # happened, so an approved merge that conflicted records `skipped`.
-        diffs.append(gate_diff(item, decision, applied=applied, edited=edited))
+        diffs.append(gate_diff(item, decision, applied=applied, edited=cast(bool, edited)))
 
     for warning in state.push_warnings:
         _note_push_failure(record, warning)
@@ -5433,7 +5433,7 @@ def _run_phase(
         task_record["outcome"] = task_outcome(
             str((verdicts.get("review") or {}).get("verdict") or "") or None,
             # A skipped arbiter is recorded as a string, not a mapping.
-            str((verdicts.get("arbitration") if isinstance(verdicts.get("arbitration"), Mapping) else {}).get("verdict") or "") or None,
+            str(cast(Mapping[str, Any], verdicts.get("arbitration") if isinstance(verdicts.get("arbitration"), Mapping) else {}).get("verdict") or "") or None,
             task_record.get("quarantine"),
             # Merged AND quarantined only happens when `_execute`'s own
             # bookkeeping step failed after the code already landed — that is
@@ -6243,12 +6243,12 @@ def _execute(
         return True, "store moved to approved; file state line written"
     try:
         applied, detail = auto_apply(
-            dict(item), cartridge=ctx.cartridge, runner=ctx.runner, wait_if_paused=lambda: _wait_if_paused(ctx)
+            dict(item), cartridge=cast(dict[str, Any], ctx.cartridge), runner=ctx.runner, wait_if_paused=lambda: _wait_if_paused(ctx)
         )
     except LimitStop:
         raise  # the account's own limit, not this task's; never through `_quarantine_task`
     except RunnerError as exc:
-        arm = apply_arm_for(item.get("kind"), ctx.cartridge)
+        arm = apply_arm_for(cast(str, item.get("kind")), cast(dict[str, Any], ctx.cartridge))
         reason = f"apply arm '{arm}' raised {type(exc).__name__}: {exc}"
         state.quarantined.append(_quarantine_task(ctx, by_id, phase=phase, task=subject, reason=reason, kind="infra"))
         return False, reason
@@ -6269,8 +6269,8 @@ def _record_merge(ctx: _Ctx, state: _Execution, task: str) -> None:
         return
     try:
         handoff = build_handoff(state.builds.get(task) or {}, ctx.scratch_branch(task), commit)
-        record_merge(ctx.store.conn, ctx.initiative_id, task, commit, _now(), _mirror_by(ctx))
-        record_handoff(ctx.store.conn, ctx.initiative_id, task, handoff, _now(), _mirror_by(ctx))
+        record_merge(cast(Store, ctx.store).conn, ctx.initiative_id, task, commit, _now(), _mirror_by(ctx))
+        record_handoff(cast(Store, ctx.store).conn, ctx.initiative_id, task, handoff, _now(), _mirror_by(ctx))
     except Exception as exc:
         _log.warning("merge and handoff not written to the store row: task=%s: %s: %s", task, type(exc).__name__, exc)
         return
@@ -6396,7 +6396,7 @@ def _record_attempt(run: str, phase: str, record: Mapping[str, Any], ts: str) ->
     attempt = run_record.record_attempt(record)
     if attempt is None:
         return None
-    build = record.get("build") if isinstance(record.get("build"), Mapping) else {}
+    build = cast(Mapping[str, Any], record.get("build") if isinstance(record.get("build"), Mapping) else {})
     evidence = record.get("evidence") or build.get("evidence")
     verdicts = {key: record[key] for key in ("review", "adversary", "arbitration", "fix_loop") if isinstance(record.get(key), Mapping)}
     sha = run_record.record_body_sha(record)
@@ -6484,7 +6484,7 @@ def _policy_split(ctx: _Ctx, proposals: list[dict[str, Any]]) -> tuple[list[dict
     judges a kind by the streak every host shares; the host file is then only an export."""
     return split_by_policy(
         proposals,
-        cartridge=ctx.cartridge,
+        cartridge=cast(dict[str, Any], ctx.cartridge),
         ledger_path=ctx.ledger_path,
         provider_profile=ctx.provider_profile,
         store=ctx.store,

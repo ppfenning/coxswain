@@ -5,7 +5,7 @@ Pure. Takes the facts and the tick's clock, returns actions. No file, store or c
 from datetime import datetime
 
 from agent_tools.chair_stale import stale_reason
-from agent_tools.chair_types import Action, Facts, StaleCandidate
+from agent_tools.chair_types import Action, ActionKind, Facts, StaleCandidate
 
 _Row = tuple[str, str, str]  # initiative, task_id, reason
 
@@ -60,7 +60,7 @@ def plan_stale(facts: Facts, now: datetime) -> list[Action]:
     stale_sets = {initiative: [task_id for i, task_id, _ in stale_rows if i == initiative] for initiative in order}
     return [
         {
-            "kind": "stale_to_draft",
+            "kind": ActionKind.STALE_TO_DRAFT,
             "initiative": initiative,
             "stale_tasks": stale_sets[initiative],
             "reason": next(reason for i, _, reason in stale_rows if i == initiative),

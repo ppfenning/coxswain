@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from agent_tools.chair_launch_budget import WINDOW
+from agent_tools.chair_types import Action, ActionKind
 
 LEFT_OUT = "left out of the launch list for a reason the facts do not show"
 _STEER_KINDS = frozenset({"needs_chair", "steer_clear"})
@@ -19,7 +20,7 @@ _MAX = re.compile(r"max_launches_per_hour=(\d+)")
 
 def _parse_at(entry: Any) -> datetime | None:
     """An aware time from an ISO string or an {"at": ISO} record; a naive or malformed entry reads as None."""
-    raw = entry.get("at") if isinstance(entry, Mapping) else entry
+    raw: Any = entry.get("at") if isinstance(entry, Mapping) else entry
     try:
         parsed = datetime.fromisoformat(raw)
     except (TypeError, ValueError):
@@ -97,7 +98,7 @@ def unlaunched(
     launch_history: Sequence[Any],
     *,
     cap_spent: bool = False,
-) -> list[dict[str, str]]:
+) -> list[Action]:
     """One unlaunched action per ready initiative not in launched, naming the first reason that applies."""
     def reason(i: Mapping[str, Any]) -> str:
         local = i.get("host") == ""
@@ -117,7 +118,7 @@ def unlaunched(
         return next((c for c in candidates if c), LEFT_OUT)
 
     return [
-        {"kind": "unlaunched", "initiative": i["id"], "reason": reason(i)}
+        {"kind": ActionKind.UNLAUNCHED, "initiative": i["id"], "reason": reason(i)}
         for i in initiatives
         if i["ready_tasks"] and i["id"] not in launched
     ]

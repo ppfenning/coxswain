@@ -4,7 +4,7 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, cast
 
 from agent_tools import chair, run_store
 from agent_tools.chair import LEASE_NAME
@@ -89,7 +89,7 @@ def _with_takeover(
         return lease
     if record is None:
         return lease
-    if chair.lease_holder(str(record.get("session")), record.get("pid"), str(record.get("host"))) != lease["holder"]:
+    if chair.lease_holder(str(record.get("session")), cast(int, record.get("pid")), str(record.get("host"))) != lease["holder"]:
         return lease
     lent = {"lent": True} if _lent(lease, record) else {}
     if "until" not in record:

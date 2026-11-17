@@ -12,10 +12,10 @@ inside `from_policy`.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import cast
 
 import yaml
 
@@ -56,7 +56,7 @@ class ChairBounds:
     defaulted: tuple[str, ...]  # fields that used their default, neither flag nor policy
 
 
-def _pick(flags: Mapping[str, Any], flag_key: str, policy_value: Any, default: Any) -> tuple[Any, bool]:
+def _pick(flags: Mapping[str, object], flag_key: str, policy_value: object, default: object) -> tuple[object, bool]:
     """Flag, then policy value, then default. The bool is True when the default won."""
     if flags.get(flag_key) is not None:
         return flags[flag_key], False
@@ -70,11 +70,11 @@ def _to_class(name: str) -> str:
     return _CEILING_FROM_LEGACY.get(name, name)
 
 
-def _name_error(field: str, value: Any, allowed: tuple[str, ...]) -> list[str]:
+def _name_error(field: str, value: object, allowed: tuple[str, ...]) -> list[str]:
     return [] if value in allowed else [f"{field}: unknown value {value!r}, expected one of {list(allowed)}"]
 
 
-def _cap_error(field: str, value: Any) -> list[str]:
+def _cap_error(field: str, value: object) -> list[str]:
     if value is None:
         return []
     if isinstance(value, bool) or not isinstance(value, int | float):
@@ -82,7 +82,7 @@ def _cap_error(field: str, value: Any) -> list[str]:
     return [f"{field}: must not be negative, got {value!r}"] if value < 0 else []
 
 
-def from_policy(policy: Mapping[str, Any], flags: Mapping[str, Any]) -> ChairBounds | list[str]:
+def from_policy(policy: Mapping[str, object], flags: Mapping[str, object]) -> ChairBounds | list[str]:
     """Build the bounds from `policy:` and launch flags, or return every error found.
 
     Flag keys: tier_ceiling, effort_ceiling, node_budget_cap_usd, run_budget_cap_usd,
@@ -93,9 +93,9 @@ def from_policy(policy: Mapping[str, Any], flags: Mapping[str, Any]) -> ChairBou
     A custom `tier_ladder` head is no longer checked against its own ladder: a name outside
     the ceiling table is an error value here, where the router used to refuse it.
     """
-    pacing = policy.get("pacing") or {}
-    effort_ladder = tuple(pacing.get("effort_ladder") or EFFORT_LADDER)
-    ladder_head = pacing["tier_ladder"][0] if pacing.get("tier_ladder") else None
+    pacing = cast("Mapping[str, object]", policy.get("pacing") or {})
+    effort_ladder = tuple(cast("Sequence[str]", pacing.get("effort_ladder") or EFFORT_LADDER))
+    ladder_head = cast("Sequence[object]", pacing["tier_ladder"])[0] if pacing.get("tier_ladder") else None
     picks = {
         "class_ceiling": _pick(
             flags, "tier_ceiling", pacing.get("class_ceiling") or ladder_head, DEFAULT_CLASS_CEILING
@@ -115,12 +115,18 @@ def from_policy(policy: Mapping[str, Any], flags: Mapping[str, Any]) -> ChairBou
     ]
     if errors:
         return errors
-    values = {**picked, "class_ceiling": _to_class(picked["class_ceiling"])}
     defaulted = tuple(field for field, (_, used_default) in picks.items() if used_default)
-    return ChairBounds(**values, defaulted=defaulted)
+    return ChairBounds(
+        class_ceiling=_to_class(cast("str", picked["class_ceiling"])),
+        effort_ceiling=cast("str", picked["effort_ceiling"]),
+        node_budget_cap_usd=cast("float | None", picked["node_budget_cap_usd"]),
+        run_budget_cap_usd=cast("float | None", picked["run_budget_cap_usd"]),
+        pacing_state=cast("str", picked["pacing_state"]),
+        defaulted=defaulted,
+    )
 
 
-def load_bounds(cartridge_path: Path, flags: Mapping[str, Any]) -> ChairBounds | list[str]:
+def load_bounds(cartridge_path: Path, flags: Mapping[str, object]) -> ChairBounds | list[str]:
     """The edge: read the cartridge yaml and hand its `policy` mapping to `from_policy`."""
-    document = yaml.safe_load(Path(cartridge_path).read_text()) or {}
-    return from_policy(document.get("policy") or {}, flags)
+    document = cast("Mapping[str, object]", yaml.safe_load(Path(cartridge_path).read_text()) or {})
+    return from_policy(cast("Mapping[str, object]", document.get("policy") or {}), flags)

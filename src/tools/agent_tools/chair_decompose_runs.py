@@ -4,7 +4,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from agent_tools import route, run_store
 from agent_tools.chair_decompose_streak import DecomposeRun
@@ -59,9 +59,9 @@ def parse_run(record: Any) -> DecomposeRun:
     readable = isinstance(run_id, str) and (log is None or isinstance(log, str)) and (items is None or _is_count(items))
     if not readable:
         return DecomposeRun(run_id=run_id if isinstance(run_id, str) else "", wrote_items=True, refusal_line=None)
-    verdict = log_wrote_items(run_id, log or "")
+    verdict = log_wrote_items(cast(str, run_id), log or "")
     return DecomposeRun(
-        run_id=run_id, wrote_items=items != 0 if verdict is None else verdict, refusal_line=refusal_line(log or "")
+        run_id=cast(str, run_id), wrote_items=items != 0 if verdict is None else verdict, refusal_line=refusal_line(log or "")
     )
 
 

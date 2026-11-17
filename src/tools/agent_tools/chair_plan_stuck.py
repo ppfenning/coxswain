@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from agent_tools.chair_types import Action, Facts
+from agent_tools.chair_types import Action, ActionKind, Facts
 
 STUCK_TICKS = 3  # consecutive ticks a land failed, or a task sat approved with no run, before the chair acts
 RECOVERY_KINDS = ("land_phase", "partial_land", "merge_level")
@@ -20,7 +20,7 @@ def stuck_lands(facts: Facts) -> tuple[list[Action], frozenset[tuple[str, str]]]
     stuck = [s for s in facts.get("land_fail_streaks", []) if s["ticks"] >= STUCK_TICKS]
     actions: list[Action] = [
         {
-            "kind": "needs_chair", "initiative": s["initiative"], "phase": s["phase"], "cause": "stuck_land", "epoch": 0,
+            "kind": ActionKind.NEEDS_CHAIR, "initiative": s["initiative"], "phase": s["phase"], "cause": "stuck_land", "epoch": 0,
             "reason": f"initiative {s['initiative']} phase {s['phase']}: {s['kind']} failed {s['ticks']} ticks running: {s['reason']}",
         }
         for s in stuck
@@ -33,7 +33,7 @@ def requeue_no_run(facts: Facts) -> list[Action]:
     streaks = facts.get("no_run_streaks", {})
     return [
         {
-            "kind": "requeue_task", "initiative": t["initiative"], "phase": t["phase"], "task_id": t["id"],
+            "kind": ActionKind.REQUEUE_TASK, "initiative": t["initiative"], "phase": t["phase"], "task_id": t["id"],
             "reason": f"approved with no run to land from for {streaks[t['id']]} ticks; rebuilding",
         }
         for t in facts["approved"]

@@ -18,9 +18,11 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import cast
 
 import yaml
+
+from core.jsontypes import is_dict, is_list
 
 __all__ = [
     "CLASSES",
@@ -70,26 +72,26 @@ class Catalog:
     entries: tuple[ModelEntry, ...]
 
 
-def _is_number(v: Any) -> bool:
+def _is_number(v: object) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
-def _str_list(v: Any) -> list[str] | None:
-    return list(v) if isinstance(v, list) and all(isinstance(s, str) for s in v) else None
+def _str_list(v: object) -> list[str] | None:
+    return cast("list[str]", list(v)) if is_list(v) and all(isinstance(s, str) for s in v) else None
 
 
-def _price_errors(label: str, price: Any) -> list[str]:
-    if not isinstance(price, dict):
+def _price_errors(label: str, price: object) -> list[str]:
+    if not is_dict(price):
         return [f"{label}: price must be a mapping"]
     return [
         f"{label}: price.{k} must be a positive number"
         for k in _PRICE_KEYS
-        if not (_is_number(price.get(k)) and price[k] > 0)
+        if not (_is_number(price.get(k)) and cast("float", price[k]) > 0)
     ]
 
 
-def _entry_errors(i: int, e: Any) -> list[str]:
-    if not isinstance(e, dict):
+def _entry_errors(i: int, e: object) -> list[str]:
+    if not is_dict(e):
         return [f"models[{i}]: must be a mapping"]
     label = f"models[{i}] ({e.get('id')})"
     aliases = _str_list(e.get("aliases", []))
@@ -121,8 +123,8 @@ def _duplicates(names: list[str]) -> list[str]:
     return sorted({n for n in names if names.count(n) > 1})
 
 
-def _collision_errors(entries: list[dict[str, Any]]) -> list[str]:
-    ids = [e["id"] for e in entries if isinstance(e.get("id"), str)]
+def _collision_errors(entries: list[dict[str, object]]) -> list[str]:
+    ids = [cast("str", e["id"]) for e in entries if isinstance(e.get("id"), str)]
     aliases = [
         a
         for e in entries
@@ -135,28 +137,29 @@ def _collision_errors(entries: list[dict[str, Any]]) -> list[str]:
     ]
 
 
-def _build(e: dict[str, Any]) -> ModelEntry:
+def _build(e: dict[str, object]) -> ModelEntry:
+    price = cast("dict[str, float]", e["price"])
     return ModelEntry(
-        id=e["id"],
-        aliases=tuple(e.get("aliases", [])),
-        provider=e["provider"],
-        price=Price(**{k: float(e["price"][k]) for k in _PRICE_KEYS}),
-        effort=tuple(e["effort"]),
-        classes=tuple(e["classes"]),
-        context_window=e.get("context_window"),
+        id=cast("str", e["id"]),
+        aliases=tuple(cast("list[str]", e.get("aliases", []))),
+        provider=cast("str", e["provider"]),
+        price=Price(**{k: float(price[k]) for k in _PRICE_KEYS}),
+        effort=tuple(cast("list[str]", e["effort"])),
+        classes=tuple(cast("list[str]", e["classes"])),
+        context_window=cast("int | None", e.get("context_window")),
     )
 
 
-def parse_catalog(raw: Any) -> Catalog | list[str]:
+def parse_catalog(raw: object) -> Catalog | list[str]:
     """Validate a plain dict and build a Catalog, or return every error found."""
-    models = raw.get("models") if isinstance(raw, dict) else None
-    if not isinstance(models, list) or not models:
+    models = raw.get("models") if is_dict(raw) else None
+    if not is_list(models) or not models:
         return ["catalog must have a non-empty 'models' list"]
     errors = [
         *[m for i, e in enumerate(models) for m in _entry_errors(i, e)],
-        *_collision_errors([e for e in models if isinstance(e, dict)]),
+        *_collision_errors([e for e in models if is_dict(e)]),
     ]
-    return errors if errors else Catalog(entries=tuple(_build(e) for e in models))
+    return errors if errors else Catalog(entries=tuple(_build(cast("dict[str, object]", e)) for e in models))
 
 
 def entries_for_class(catalog: Catalog, cls: str) -> tuple[ModelEntry, ...]:

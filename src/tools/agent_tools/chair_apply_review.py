@@ -7,10 +7,13 @@ clear path after the phase lands.
 """
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from agent_tools.chair_types import Action
 from agent_tools.store_cli import Failed, Landed, StateSet
+
+if TYPE_CHECKING:
+    from agent_tools.store_cli import WorkState
 
 NO_RUN_CAUSE = "review_no_run"
 NO_HOST_CAUSE = "review_no_host"
@@ -92,7 +95,7 @@ def _stamped(result: object) -> str:
 def apply_review(
     action: Action,
     *,
-    set_state: Callable[[str, str, str, str], object],  # (initiative, task, state, by) -> a store_cli SetStateResult
+    set_state: Callable[[str, str, WorkState, str], object],  # (initiative, task, state, by) -> a store_cli SetStateResult
     mark_landed: Callable[[str, str, str, str, str], object],  # (run, phase, task, pr, at) -> a store_cli MarkLandedResult
     delete_branches: Callable[[str, str, str], tuple[list[str], str]],  # (ssh, repo, pattern); ssh "" is here
     ssh_for: Callable[[str], str],

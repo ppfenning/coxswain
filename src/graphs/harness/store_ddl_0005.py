@@ -12,9 +12,9 @@ DESCRIPTION = "attempts gains cause and cause_why"
 
 
 # Table and TEXT column that the ALTERs append to a migration 0001 table.
-_ADDED: tuple[tuple[str, str], ...] = (("attempts", "cause"), ("attempts", "cause_why"))
+ADDED: tuple[tuple[str, str], ...] = (("attempts", "cause"), ("attempts", "cause_why"))
 
 
 def statements(dialect: Dialect) -> tuple[str, ...]:
     """The same ALTERs on both dialects."""
-    return tuple(f"ALTER TABLE {t} ADD COLUMN {c} TEXT" for t, c in _ADDED)
+    return tuple(f"ALTER TABLE {t} ADD COLUMN {c} TEXT" for t, c in ADDED)

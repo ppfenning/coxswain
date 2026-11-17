@@ -20,7 +20,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import Any, Literal, NotRequired, Protocol, TypedDict
+from typing import Any, Literal, NotRequired, Protocol, TypedDict, assert_never, cast
 
 from agent_tools import (
     base_branch,
@@ -65,7 +65,7 @@ from agent_tools.chair_revert_exec import MERGED, RevertResult, perform_revert
 from agent_tools.chair_revert_exec import ForgePort as RevertForgePort
 from agent_tools.chair_revert_exec import GitPort as RevertGitPort
 from agent_tools.chair_schedule import SCHEDULE_FILE
-from agent_tools.chair_types import Action, LandTrigger, is_fenced
+from agent_tools.chair_types import Action, ActionKind, LandTrigger, is_fenced
 from agent_tools.land import LAND_CONFLICT_KEY, approve_to_done, conflict_note
 from agent_tools.pytest_tmp_sweep import sweep_pytest_tmp
 from agent_tools.remote_argv import LANE_HOST_TIMEOUT_S, incoming_ref, probe_argv, ssh_argv, sync_argv
@@ -341,7 +341,7 @@ def land_refusal(action: Action, code: int, output: str) -> Action | None:
     else:
         cause = "land"
     return {
-        "kind": "needs_chair", "initiative": action.get("initiative", ""), "task_id": action.get("task_id", ""),
+        "kind": ActionKind.NEEDS_CHAIR, "initiative": action.get("initiative", ""), "task_id": action.get("task_id", ""),
         "cause": cause, "epoch": action.get("epoch", 0), **_phase_of(action),
     }
 
@@ -705,7 +705,7 @@ def _carry_forward(
             if rcode != 0:
                 return merged, None, _result(action, "failed", f"git worktree remove --force {tmp} in {repo}: {rout.strip()}")
             needs_chair: Action = {
-                "kind": "needs_chair", "initiative": initiative, "cause": "carry_conflict", "epoch": action.get("epoch", 0),
+                "kind": ActionKind.NEEDS_CHAIR, "initiative": initiative, "cause": "carry_conflict", "epoch": action.get("epoch", 0),
                 "reason": f"phase {phase} conflicts with {base}: {conflicted}",
             }
             return merged, needs_chair, None
@@ -956,7 +956,9 @@ def _launch(action: Action, deps: Deps) -> Result:
     if missing is not None:
         # The recorded row carries the miss, which `chair_facts.decompose_miss_facts` counts into the planner's backoff.
         fingerprint = deps.intake_fingerprint(action["intake_ids"][0])
-        missed = {**action, "idea_missing": missing, **({"fingerprint": fingerprint} if fingerprint is not None else {})}
+        missed: Action = {**action, "idea_missing": missing}
+        if fingerprint is not None:
+            missed["fingerprint"] = fingerprint
         return _result(missed, "failed", output)
     return _result(action, "failed", output)
 
@@ -979,7 +981,7 @@ def _fetched_host(runs_dir: Path, run: str) -> str:
     return record["host"] if record else ""
 
 
-def fetch_status(code: int, message: str) -> str:
+def fetch_status(code: int, message: str) -> Status:
     """`skipped` for a nonzero fetch that refused because the run is still live, `failed` for any other nonzero fetch."""
     live = message.startswith("fetch: refuse:") and "is still live on" in message
     return "skipped" if code != 0 and live else "failed"
@@ -1080,7 +1082,7 @@ def taken_back(current: Mapping[str, Any], before: Mapping[str, Any], added: Map
 
 
 def _mark_then_move(
-    action: Action, deps: Deps, stored: Mapping[str, Any], added: Mapping[str, Any], removed: Collection[str], state: str, done: str
+    action: Action, deps: Deps, stored: Mapping[str, Any], added: Mapping[str, Any], removed: Collection[str], state: store_cli.WorkState, done: str
 ) -> Result:
     """Edge. Mark the quarantined row `stored` first (its extra with `added` set and `removed` taken out), then move it to
     `state` with a compare-and-set on quarantined.
@@ -1235,10 +1237,10 @@ def _rebuild_quarantined(action: Action, deps: Deps, blocked: dict[str, Blocker]
     """The relaunch pair, in line: clear_branches carries current main into the kept phases, then the relaunch runs.
 
     A clear that did not finish, or that raised a conflict, launches nothing and leaves the key unhandled."""
-    cleared = _clear({**action, "kind": "clear_branches"}, deps, blocked)
+    cleared = _clear({**action, "kind": ActionKind.CLEAR_BRANCHES}, deps, blocked)
     if cleared["status"] != "done" or "needs_chair" in cleared:
         return {**cleared, "action": action}
-    result = _launch({**action, "kind": "relaunch"}, deps)
+    result = _launch({**action, "kind": ActionKind.RELAUNCH}, deps)
     if result["status"] == "done" and deps.mark_handled is not None and action.get("key"):
         deps.mark_handled(action["key"])
     return {**result, "action": action}
@@ -1284,7 +1286,7 @@ def _close_initiative(action: Action, deps: Deps) -> Result:
     problem = _close_state_problem(state)
     if problem:
         return _result(action, "failed", problem)
-    written = store_cli.set_state(deps.runs_dir, initiative, initiative, str(state), "chair-loop")
+    written = store_cli.set_state(deps.runs_dir, initiative, initiative, cast("store_cli.WorkState", str(state)), "chair-loop")
     if isinstance(written, store_cli.StateSet):
         return _result(action, "done", f"closed {initiative} as {state}")
     return _result(action, "failed", f"set-state {state} for {initiative}: {written}")
@@ -1516,7 +1518,7 @@ def _review_landed(action: Action, deps: Deps) -> Result:
     if outcome.status != "needs_chair":
         return _result(action, outcome.status, outcome.reason)
     raised: Action = {
-        "kind": "needs_chair", "initiative": action.get("initiative", ""), "phase": action.get("phase", ""),
+        "kind": ActionKind.NEEDS_CHAIR, "initiative": action.get("initiative", ""), "phase": action.get("phase", ""),
         "task_id": action.get("task_id", ""), "url": action.get("url", ""), "cause": outcome.cause,
         "epoch": action.get("epoch", 0), "reason": outcome.reason,
     }
@@ -1576,7 +1578,9 @@ def _revert_land(action: Action, deps: Deps) -> Result:
     initiative, phase = action.get("initiative", ""), action.get("phase", "")
     git, forge = deps.revert_ports(action)
     try:
-        reverted = perform_revert(action.get("repo", ""), action.get("pr", 0), action.get("commit", ""), action.get("reason", ""), git, forge)
+        reverted = perform_revert(
+            action.get("repo", ""), cast(int, action.get("pr", 0)), action.get("commit", ""), action.get("reason", ""), git, forge
+        )  # a revert_land's pr is the number of the land's pull request
     except Exception as exc:  # the edge: a port failure is a failed revert, and main is still red
         reverted = RevertResult("failed", "", f"revert raised {type(exc).__name__}: {exc}")
     quarantined = deps.quarantine_phase(initiative, phase, "main_red", action.get("reason", "")) or Quarantined()
@@ -1585,7 +1589,7 @@ def _revert_land(action: Action, deps: Deps) -> Result:
     cause, outcome = revert_outcome(action, reverted)
     reason = revert_reason(outcome, quarantined, initiative)
     raised: Action = {
-        "kind": "needs_chair", "initiative": initiative, "phase": phase, "cause": cause,
+        "kind": ActionKind.NEEDS_CHAIR, "initiative": initiative, "phase": phase, "cause": cause,
         "epoch": action.get("epoch", 0), "reason": reason,
     }
     return {**_result(action, "done" if reverted.status == MERGED else "failed", reason), "needs_chair": raised}
@@ -1611,7 +1615,7 @@ def _rerun_main(action: Action, deps: Deps) -> Result:
         return _result(action, "done", line)
     reason = f"main CI for {commit} never got past setup and was not rerun again: {line}"
     raised: Action = {
-        "kind": "needs_chair", "initiative": action.get("initiative", ""), "phase": action.get("phase", ""),
+        "kind": ActionKind.NEEDS_CHAIR, "initiative": action.get("initiative", ""), "phase": action.get("phase", ""),
         "cause": MAIN_INFRA_CAUSE, "epoch": action.get("epoch", 0), "reason": reason,
     }
     return {**_result(action, "failed", reason), "needs_chair": raised}
@@ -1685,99 +1689,112 @@ _CARRIES_NEEDS_CHAIR = ("clear_branches", "rebuild_quarantined", "review_landed"
 
 
 def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
-    kind = action.get("kind")
+    """Run one action by its kind. The match names every ActionKind, and pyright checks it is exhaustive (H2)."""
+    raw = action.get("kind")
+    try:
+        kind = ActionKind(raw)
+    except ValueError:
+        return _result(action, "refused", f"unsupported action kind {raw!r}")
     if (
         kind in _LAND_KINDS and deps.lands is not None and action.get("repo", "") not in blocked
         and (argv_for(action) is not None or (kind == "partial_land" and bool(partial_land.steps(action))))
     ):
         return _land_async(action, deps, deps.lands)
-    if kind == "land":
-        return _land(action, deps, blocked)
-    if kind == "land_phase":
-        return _land_phase(action, deps, blocked)
-    if kind == "partial_land":
-        return _partial_land(action, deps, blocked)
-    if kind == "clear_branches":
-        return _clear(action, deps, blocked)
-    if kind == "review_landed":
-        return _review_landed(action, deps)
-    if kind == "carry_phase":
-        return _carry_phase(action, deps)
-    if kind == "rebase_phase":
-        return _rebase_phase(action, deps)
-    if kind == "revert_land":
-        return _revert_land(action, deps)
-    if kind == "rerun_main":
-        return _rerun_main(action, deps)
-    if kind == "take_lease":
-        return _lease(action, deps)
-    if kind == "check_login":
-        return _check_login(action, deps)
-    if kind == "probe_host":
-        return _probe_host(action, deps)
-    if kind in ("standby", "mark_lost"):
-        return _result(action, "recorded")
-    if kind == "needs_chair":
-        return _result(action, "recorded", action.get("reason", ""))  # `_recorded` overwrites reason, so carry it in the result
-    if kind == "steer_clear":
-        return _result(action, "recorded", _steer_reason(action))
-    if kind == "waiting":
-        return _result(
-            action,
-            "recorded",
-            f"blocked by {action['phase']}: {action['quarantined']} quarantined, {action['awaiting_land']} awaiting land",
-        )
-    if kind == "deferred":
-        return _result(action, "recorded", _deferred_reason(action))
-    if kind == "unlaunched":  # "skipped", not "recorded": CHANGED_STATUSES must not count it
-        return _result(action, "skipped", action.get("reason", ""))
-    if kind == "fetch_exit":
-        return _fetch_exit(action, deps)
-    if kind == "widen_ticket":
-        return _widen_ticket(action, deps)
-    if kind == "annotate_objection":
-        return _annotate_objection(action, deps)
-    if kind == "rebuild_quarantined":
-        return _rebuild_quarantined(action, deps, blocked)
-    if kind == "request_triage":
-        return _request_triage(action, deps)
-    if kind == "hold_task":
-        return _hold_task(action, deps)
-    if kind == "announce_hold":
-        return _announce_hold(action, deps)
-    if kind == "hold_initiative":
-        return _hold_initiative(action, deps)
-    if kind in ("stall_alarm", "stall_clear"):
-        return _stall_alarm(action, deps)
-    if kind == "release_approvals":
-        return _release_approvals(action, deps)
-    if kind == "restore_approvals":
-        return _restore_approvals(action, deps)
-    if kind == "close_initiative":
-        return _close_initiative(action, deps)
-    if kind == "finish_task":
-        return _finish_task(action, deps)
-    if kind == "requeue_task":
-        return _requeue_task(action, deps)
-    if kind == "rescue":
-        return _rescue(action, deps)
-    if kind in LAUNCH_KINDS or kind in ("pull", "fetch"):
-        return _launch(action, deps)
-    if kind == "housekeeping":
-        return _housekeeping(action, deps)
-    if kind == "stale_to_draft":
-        return _stale_to_draft(action, deps)
-    if kind == "tune_lanes":
-        return _tune_lanes(action, deps)
-    if kind == "propose_tiers":
-        return _propose_tiers(action, deps)
-    if kind == "stalled_usr1":
-        return _stalled(action, deps, signal.SIGUSR1)
-    if kind == "stalled_stop":
-        return _stalled(action, deps, signal.SIGTERM)
-    if kind == "schedule_updated":
-        return _schedule_updated(action, deps)
-    return _result(action, "refused", f"unsupported action kind {kind!r}")
+    match kind:
+        case ActionKind.LAND:
+            return _land(action, deps, blocked)
+        case ActionKind.LAND_PHASE:
+            return _land_phase(action, deps, blocked)
+        case ActionKind.PARTIAL_LAND:
+            return _partial_land(action, deps, blocked)
+        case ActionKind.CLEAR_BRANCHES:
+            return _clear(action, deps, blocked)
+        case ActionKind.REVIEW_LANDED:
+            return _review_landed(action, deps)
+        case ActionKind.CARRY_PHASE:
+            return _carry_phase(action, deps)
+        case ActionKind.REBASE_PHASE:
+            return _rebase_phase(action, deps)
+        case ActionKind.REVERT_LAND:
+            return _revert_land(action, deps)
+        case ActionKind.RERUN_MAIN:
+            return _rerun_main(action, deps)
+        case ActionKind.TAKE_LEASE:
+            return _lease(action, deps)
+        case ActionKind.CHECK_LOGIN:
+            return _check_login(action, deps)
+        case ActionKind.PROBE_HOST:
+            return _probe_host(action, deps)
+        case ActionKind.STANDBY | ActionKind.MARK_LOST:
+            return _result(action, "recorded")
+        case ActionKind.NEEDS_CHAIR:
+            return _result(action, "recorded", action.get("reason", ""))  # `_recorded` overwrites reason, so carry it in the result
+        case ActionKind.STEER_CLEAR:
+            return _result(action, "recorded", _steer_reason(action))
+        case ActionKind.WAITING:
+            return _result(
+                action,
+                "recorded",
+                f"blocked by {action['phase']}: {action['quarantined']} quarantined, {action['awaiting_land']} awaiting land",
+            )
+        case ActionKind.DEFERRED:
+            return _result(action, "recorded", _deferred_reason(action))
+        case ActionKind.UNLAUNCHED:  # "skipped", not "recorded": CHANGED_STATUSES must not count it
+            return _result(action, "skipped", action.get("reason", ""))
+        case ActionKind.FETCH_EXIT:
+            return _fetch_exit(action, deps)
+        case ActionKind.WIDEN_TICKET:
+            return _widen_ticket(action, deps)
+        case ActionKind.ANNOTATE_OBJECTION:
+            return _annotate_objection(action, deps)
+        case ActionKind.REBUILD_QUARANTINED:
+            return _rebuild_quarantined(action, deps, blocked)
+        case ActionKind.REQUEST_TRIAGE:
+            return _request_triage(action, deps)
+        case ActionKind.HOLD_TASK:
+            return _hold_task(action, deps)
+        case ActionKind.ANNOUNCE_HOLD:
+            return _announce_hold(action, deps)
+        case ActionKind.HOLD_INITIATIVE:
+            return _hold_initiative(action, deps)
+        case ActionKind.STALL_ALARM | ActionKind.STALL_CLEAR:
+            return _stall_alarm(action, deps)
+        case ActionKind.RELEASE_APPROVALS:
+            return _release_approvals(action, deps)
+        case ActionKind.RESTORE_APPROVALS:
+            return _restore_approvals(action, deps)
+        case ActionKind.CLOSE_INITIATIVE:
+            return _close_initiative(action, deps)
+        case ActionKind.FINISH_TASK:
+            return _finish_task(action, deps)
+        case ActionKind.REQUEUE_TASK:
+            return _requeue_task(action, deps)
+        case ActionKind.RESCUE:
+            return _rescue(action, deps)
+        case (
+            ActionKind.RELAUNCH | ActionKind.RETRY | ActionKind.LAUNCH_EPIC | ActionKind.LAUNCH_DECOMPOSE
+            | ActionKind.PULL | ActionKind.FETCH
+        ):
+            return _launch(action, deps)
+        case ActionKind.HOUSEKEEPING:
+            return _housekeeping(action, deps)
+        case ActionKind.STALE_TO_DRAFT:
+            return _stale_to_draft(action, deps)
+        case ActionKind.TUNE_LANES:
+            return _tune_lanes(action, deps)
+        case ActionKind.PROPOSE_TIERS:
+            return _propose_tiers(action, deps)
+        case ActionKind.STALLED_USR1:
+            return _stalled(action, deps, signal.SIGUSR1)
+        case ActionKind.STALLED_STOP:
+            return _stalled(action, deps, signal.SIGTERM)
+        case ActionKind.SCHEDULE_UPDATED:
+            return _schedule_updated(action, deps)
+        case ActionKind.LAND_BATCH | ActionKind.PULL_WORKSPACE | ActionKind.CLOSE_MERGED_TASK:
+            # declared and planned, but no executor runs them yet: refused, as before the match was exhaustive
+            return _result(action, "refused", f"unsupported action kind {raw!r}")
+        case _:
+            assert_never(kind)
 
 
 def notices_to_ack(tasks: list[dict], notices: list[dict]) -> list[str]:
@@ -2018,7 +2035,7 @@ def escalation(land: Action) -> Action:
     """The needs_chair a land that did not land raises when its command gave no refusal to classify: the facts
     dropped its stranded row, so this reports it instead."""
     return {
-        "kind": "needs_chair", "initiative": land.get("initiative", ""), "task_id": land.get("task_id", ""),
+        "kind": ActionKind.NEEDS_CHAIR, "initiative": land.get("initiative", ""), "task_id": land.get("task_id", ""),
         "cause": STRANDED_CAUSE, "epoch": land.get("epoch", 0), **_phase_of(land),
     }
 

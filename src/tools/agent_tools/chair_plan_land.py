@@ -4,11 +4,12 @@ An initiative that lands at `initiative` is not planned here at all: the lander 
 import heapq
 from collections.abc import Collection
 from datetime import datetime
+from typing import cast
 
 from agent_tools.chair_land_backoff import suppressing
 from agent_tools.chair_land_conflict import standing
 from agent_tools.chair_plan_partial import partial_land_action
-from agent_tools.chair_types import Action, ApprovedTask, Facts, InitiativeFacts
+from agent_tools.chair_types import Action, ActionKind, ApprovedTask, Facts, InitiativeFacts
 from core.landing import is_initiative
 
 
@@ -42,13 +43,13 @@ def _schedule(tasks: list[ApprovedTask], landed: set[str]) -> list[ApprovedTask]
     closed: set[str | None] = set()
     current: str | None = None
     while True:
-        if not ready.get(current):
+        if not ready.get(cast(str, current)):
             closed.add(current)
             open_repos = [(heap[0], repo) for repo, heap in ready.items() if heap and repo not in closed]
             if not open_repos:
                 return planned
             current = min(open_repos)[1]
-        task = tasks[heapq.heappop(ready[current])]
+        task = tasks[heapq.heappop(ready[cast(str, current)])]
         planned.append(task)
         for d in dependents[task["id"]]:
             pending[d] -= 1
@@ -81,7 +82,7 @@ def newest_run(runs: Collection[str]) -> str:
 
 def fetch_action(run: str, repo: str, initiative: str) -> Action:
     """The fetch a remote run's branches take before anything builds on them; plan_tick stamps the epoch."""
-    return {"kind": "fetch", "run": run, "repo": repo, "initiative": initiative, "epoch": None}  # type: ignore[typeddict-item]
+    return {"kind": ActionKind.FETCH, "run": run, "repo": repo, "initiative": initiative, "epoch": None}  # type: ignore[typeddict-item]
 
 
 def awaiting_phases(facts: Facts) -> frozenset[tuple[str, str]]:
@@ -97,7 +98,7 @@ def manual_phases(facts: Facts) -> frozenset[tuple[str, str]]:
 def plan_finish(facts: Facts) -> list[Action]:
     """A finish_task per approved task of a `land: manual` repo that has a run; the executor verifies the merge on origin."""
     return [
-        {"kind": "finish_task", "initiative": t["initiative"], "phase": t["phase"], "task_id": t["id"], "repo": t["repo"], "run": t["run"], "epoch": None}  # type: ignore[typeddict-item]
+        {"kind": ActionKind.FINISH_TASK, "initiative": t["initiative"], "phase": t["phase"], "task_id": t["id"], "repo": t["repo"], "run": t["run"], "epoch": None}  # type: ignore[typeddict-item]
         for t in facts["approved"]
         if t.get("land_manual") and t["run"]
     ]
@@ -121,7 +122,7 @@ def plan_missed_closes(facts: Facts) -> list[Action]:
     # Walking the PRs last to first makes the first PR the final assignment, so it wins.
     first = {key: n for n, pr in reversed(list(enumerate(prs))) for key in open_tasks if key[1] in pr["task_ids"]}
     return [
-        {"kind": "close_merged_task", "initiative": i, "task_id": t, "pr": prs[n]["url"], "repo": prs[n]["repo"]}
+        {"kind": ActionKind.CLOSE_MERGED_TASK, "initiative": i, "task_id": t, "pr": prs[n]["url"], "repo": prs[n]["repo"]}
         for (i, t), n in sorted(first.items(), key=lambda kv: (kv[1], kv[0]))
     ]
 
@@ -220,7 +221,7 @@ def by_task_action(initiative: str, phase: str, repo: str, run: str, task_runs: 
     It is a partial_land with nothing quarantined, so each task land backs up and restores its siblings' branches
     (a task land deletes every `agents/<run>/*` branch), and backoff, launch holds and blocking treat it as a phase land."""
     return {  # type: ignore[typeddict-item]  # plan_tick stamps the epoch on every action
-        "kind": "partial_land", "initiative": initiative, "phase": phase, "task_ids": list(task_runs),
+        "kind": ActionKind.PARTIAL_LAND, "initiative": initiative, "phase": phase, "task_ids": list(task_runs),
         "quarantined": 0, "repo": repo, "run": run, "task_runs": task_runs,
     }
 
@@ -254,7 +255,7 @@ def plan_lands(facts: Facts, now: datetime | None = None) -> list[Action]:
         repo = group[0]["repo"]
         run = newest_run({t["run"] for t in group})
         if not run:
-            actions.append({"kind": "needs_chair", "initiative": initiative, "cause": "no_run"})
+            actions.append({"kind": ActionKind.NEEDS_CHAIR, "initiative": initiative, "cause": "no_run"})
             continue
         if _land_skipped(facts, initiative, phase, run, now):
             continue
@@ -269,7 +270,7 @@ def plan_lands(facts: Facts, now: datetime | None = None) -> list[Action]:
             actions.append(by_task_action(initiative, phase, repo, run, task_runs))
             continue
         actions.append({
-            "kind": "land_phase", "initiative": initiative, "phase": phase, "repo": repo, "run": run, "epoch": None,
+            "kind": ActionKind.LAND_PHASE, "initiative": initiative, "phase": phase, "repo": repo, "run": run, "epoch": None,
             "task_runs": task_runs,
         })
     return actions + _partial_lands(facts, frozenset(_land_groups(facts)), now)

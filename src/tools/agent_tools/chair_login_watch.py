@@ -12,7 +12,9 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
+
+from agent_tools.chair_types import Action, ActionKind
 
 Row = Mapping[str, Any]
 
@@ -100,7 +102,7 @@ def login_blocked(hosts: Sequence[Row]) -> set[str]:
     }
 
 
-def login_needs_chair(hosts: Sequence[Row]) -> list[dict]:
+def login_needs_chair(hosts: Sequence[Row]) -> list[Action]:
     """One `{"kind": "needs_chair", "host": name, "cause": "login_lapsed"}` action per name in
     `login_blocked(hosts)`, never more than one per host. The action gains a `url` key when the host's
     `versions_json` holds a `login_url`, and has no such key otherwise."""
@@ -111,7 +113,7 @@ def login_needs_chair(hosts: Sequence[Row]) -> list[dict]:
         if str(row.get("name") or "") in blocked
     }
     return [
-        {"kind": "needs_chair", "host": name, "cause": "login_lapsed", **({"url": urls[name]} if urls.get(name) else {})}
+        {"kind": ActionKind.NEEDS_CHAIR, "host": name, "cause": "login_lapsed", **cast(Action, {"url": urls[name]} if urls.get(name) else {})}
         for name in sorted(blocked)
     ]
 
@@ -134,22 +136,22 @@ def due_for_probe(hosts: Sequence[Row], now: str, interval_s: int = PROBE_INTERV
     ]
 
 
-def host_unreachable_needs_chair(hosts: Sequence[Row]) -> list[dict]:
+def host_unreachable_needs_chair(hosts: Sequence[Row]) -> list[Action]:
     """One `host_unreachable` needs_chair action per `unreachable` row, sorted by name. `since` is
     omitted when the row holds no `unreachable_since`."""
     rows = sorted((row for row in hosts if row.get("state") == UNREACHABLE_STATE), key=lambda row: str(row.get("name") or ""))
     return [
         {
-            "kind": "needs_chair",
+            "kind": ActionKind.NEEDS_CHAIR,
             "host": str(row.get("name") or ""),
             "cause": "host_unreachable",
-            **({"since": since} if (since := _versions(row).get(UNREACHABLE_SINCE_KEY)) else {}),
+            **cast(Action, {"since": since} if (since := _versions(row).get(UNREACHABLE_SINCE_KEY)) else {}),
         }
         for row in rows
     ]
 
 
-def host_back_needs_chair(hosts: Sequence[Row], now: str) -> list[dict]:
+def host_back_needs_chair(hosts: Sequence[Row], now: str) -> list[Action]:
     """One `host_back` needs_chair action per `active` row whose `host_back_at` parses and lies within
     `BACK_WINDOW_S` seconds before `now`, sorted by name. A `host_back_at` after `now` is not within."""
     now_parsed = _parsed(now) or datetime.min.replace(tzinfo=UTC)
@@ -160,12 +162,12 @@ def host_back_needs_chair(hosts: Sequence[Row], now: str) -> list[dict]:
         for back_at in [_versions(row).get(HOST_BACK_AT_KEY)]
         if back_at and (parsed := _parsed(back_at)) is not None and 0 <= (now_parsed - parsed).total_seconds() <= BACK_WINDOW_S
     ]
-    return [{"kind": "needs_chair", "host": name, "cause": "host_back", "back_at": back_at} for name, back_at in sorted(returned)]
+    return [{"kind": ActionKind.NEEDS_CHAIR, "host": name, "cause": "host_back", "back_at": back_at} for name, back_at in sorted(returned)]
 
 
 def merge_login_versions(
     versions: Mapping[str, Any],
-    login_ok: bool,
+    login_ok: bool | None,
     checked_at: str,
     check: str = "claude_auth",
     reason: str | None = None,

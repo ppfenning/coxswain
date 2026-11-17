@@ -65,10 +65,10 @@ import os
 import shutil
 import sys
 import warnings
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import cast
 
 import yaml
 
@@ -77,8 +77,8 @@ from harness.store_migrate import open_store
 from harness.store_read import connect_readonly, work_items
 from harness.store_recost import apply_recost, plan_recost, totals
 from harness.store_write import (
-    _KEYS,
-    _RUN_KEYS,
+    KEYS,
+    RUN_KEYS,
     Row,
     Store,
     attempt_row,
@@ -98,6 +98,8 @@ _COUNTS = ("seen", "inserted", "already_present", "malformed")
 _USAGE_SUFFIX = ".usage.json"
 
 Report = dict[str, dict[str, int] | int | float | list[str] | list[Row]]
+# A parsed JSON or YAML document: any key's value is whatever the file held until a parser checks it.
+type Doc = dict[str, object]
 STAMPED_KEY = "runs_stamped_ended"
 STAMPED_STATUS = "backfilled"
 SKIPPED_KEY = "skipped_files"
@@ -123,39 +125,41 @@ class ArchiveRefused(RuntimeError):
 # ── pure parsers ─────────────────────────────────────────────────────────────
 
 
-def _json_object(text: str) -> dict[str, Any] | None:
+def _json_object(text: str) -> Doc | None:
     try:
-        value = json.loads(text)
+        value: object = json.loads(text)
     except ValueError:
         return None
-    return value if isinstance(value, dict) else None
+    return cast(Doc, value) if isinstance(value, dict) else None
 
 
-def _text(value: Any) -> str | None:
+def _text(value: object) -> str | None:
     """A non-empty string, or an ISO string for a datetime that a YAML loader turned a timestamp into."""
     if isinstance(value, datetime):
         return value.isoformat()
     return value if isinstance(value, str) and value else None
 
 
-def _record(doc: Any) -> dict[str, Any] | None:
+def _record(doc: object) -> Doc | None:
     """The record if it has a run_id and a gate_diffs that is absent or a list of objects."""
     if not isinstance(doc, dict):
         return None
-    diffs = doc.get("gate_diffs")
-    good_diffs = diffs is None or (isinstance(diffs, list) and all(isinstance(d, dict) for d in diffs))
-    return doc if isinstance(doc.get("run_id"), str) and doc["run_id"] and good_diffs else None
+    record = cast(Doc, doc)
+    diffs = record.get("gate_diffs")
+    good_diffs = diffs is None or (isinstance(diffs, list) and all(isinstance(d, dict) for d in cast("list[object]", diffs)))
+    return record if isinstance(record.get("run_id"), str) and record["run_id"] and good_diffs else None
 
 
-def malformed_reason(doc: Any) -> str:
+def malformed_reason(doc: object) -> str:
     """Why a runs-directory document that is neither launch, run nor phase record was refused."""
     if doc is None:
         return "not readable JSON"
     if not isinstance(doc, dict):
         return "not a JSON object"
-    if not (isinstance(doc.get("run_id"), str) and doc["run_id"]):
+    fields = cast(Doc, doc)
+    if not (isinstance(fields.get("run_id"), str) and fields["run_id"]):
         return "no run_id"
-    return "gate_diffs is not a list of objects" if _record(doc) is None else "unrecognised record"
+    return "gate_diffs is not a list of objects" if _record(fields) is None else "unrecognised record"
 
 
 def is_non_record(name: str) -> bool:
@@ -168,42 +172,47 @@ def is_non_record(name: str) -> bool:
     )
 
 
-def is_launch(doc: Any) -> bool:
+def is_launch(doc: object) -> bool:
     return isinstance(doc, dict) and "launched_by" in doc and "run_id" not in doc
 
 
-def parse_run(doc: Any, launch: dict[str, Any] | None = None) -> tuple[Row, list[Row]] | None:
+def _gate_diffs(record: Doc) -> list[Doc]:
+    return cast("list[Doc]", record.get("gate_diffs") or [])
+
+
+def parse_run(doc: object, launch: Mapping[str, object] | None = None) -> tuple[Row, list[Row]] | None:
     """The run row and its run-level gate rows (phase ''), or None for a malformed or phase record."""
     record = _record(doc)
-    if record is None or ":" in record["run_id"]:
+    if record is None or ":" in cast(str, record["run_id"]):
         return None
-    return run_row(record, launch), gate_rows(record["run_id"], "", record.get("gate_diffs") or [])
+    return run_row(record, launch), gate_rows(cast(str, record["run_id"]), "", _gate_diffs(record))
 
 
-def synth_run_record(run_id: str, phase_docs: Sequence[Any]) -> dict[str, Any]:
+def synth_run_record(run_id: str, phase_docs: Sequence[object]) -> Doc:
     """A run record for a run that wrote only phase records: its id plus the run keys of the earliest phase."""
     records = [r for r in (_record(d) for d in phase_docs) if r is not None]
-    earliest = min(records, key=lambda r: (not r.get("ts"), str(r.get("ts")), r["run_id"]), default={})
-    return {"run_id": run_id, **{k: earliest.get(k) for k in _RUN_KEYS if k in earliest}}
+    earliest: Doc = min(records, key=lambda r: (not r.get("ts"), str(r.get("ts")), cast(str, r["run_id"]))) if records else {}
+    return {"run_id": run_id, **{k: earliest.get(k) for k in RUN_KEYS if k in earliest}}
 
 
-def parse_phase(doc: Any) -> tuple[Row, list[Row]] | None:
+def parse_phase(doc: object) -> tuple[Row, list[Row]] | None:
     """The phase row and its gate rows, or None for a malformed or run-level record."""
     record = _record(doc)
-    if record is None or ":" not in record["run_id"]:
+    if record is None or ":" not in cast(str, record["run_id"]):
         return None
-    run_id, phase_id = split_phase_id(record["run_id"])
-    return phase_row(record), gate_rows(run_id, phase_id, record.get("gate_diffs") or [])
+    run_id, phase_id = split_phase_id(cast(str, record["run_id"]))
+    return phase_row(record), gate_rows(run_id, phase_id, _gate_diffs(record))
 
 
-def _call(run_id: str, seq: int, call: Any) -> Row | None:
+def _call(run_id: str, seq: int, call: object) -> Row | None:
     """A call with no id gets `legacy:<run>:<seq>`, so the same file always yields the same ids."""
     if not isinstance(call, dict):
         return None
-    return call_row({**call, "id": call.get("id") or f"legacy:{run_id}:{seq}"}, run_id=run_id, seq=seq)
+    fields = cast(Doc, call)
+    return call_row({**fields, "id": fields.get("id") or f"legacy:{run_id}:{seq}"}, run_id=run_id, seq=seq)
 
 
-def _calls(run_id: str, calls: Sequence[Any]) -> tuple[list[Row], int]:
+def _calls(run_id: str, calls: Sequence[object]) -> tuple[list[Row], int]:
     built = [_call(run_id, seq, call) for seq, call in enumerate(calls)]
     rows = [row for row in built if row is not None]
     return rows, len(built) - len(rows)
@@ -214,10 +223,10 @@ def parse_call_lines(run_id: str, lines: Sequence[str]) -> tuple[list[Row], int]
     return _calls(run_id, [_json_object(line) for line in lines if line.strip()])
 
 
-def parse_usage(run_id: str, doc: Any) -> tuple[list[Row], int]:
+def parse_usage(run_id: str, doc: object) -> tuple[list[Row], int]:
     """Rows for the calls list of a usage file, in the shape of call lines. No calls list is one malformed record."""
-    calls = doc.get("calls") if isinstance(doc, dict) else None
-    return _calls(run_id, calls) if isinstance(calls, list) else ([], 1)
+    calls = cast(Doc, doc).get("calls") if isinstance(doc, dict) else None
+    return _calls(run_id, cast("list[object]", calls)) if isinstance(calls, list) else ([], 1)
 
 
 def parse_ledger_line(line: str) -> Row | None:
@@ -226,26 +235,28 @@ def parse_ledger_line(line: str) -> Row | None:
     return ledger_row(entry) if good and entry is not None else None
 
 
-def _attempt(task_id: str, attempts: Sequence[Any], index: int) -> Row | None:
-    entry = attempts[index]
-    if not isinstance(entry, dict):
+def _attempt(task_id: str, attempts: Sequence[object], index: int) -> Row | None:
+    found = attempts[index]
+    if not isinstance(found, dict):
         return None
+    entry = cast(Doc, found)
     run, phase, kind, ts = (_text(entry.get(k)) for k in ("run", "phase", "kind", "ts"))
     if not (run and phase and ts):
         return None
     kind = kind or "unknown"  # the older attempt format carries no kind
     # seq counts the earlier attempts of the same run, as the driver's _next_attempt_seq does.
-    seq = sum(1 for e in attempts[:index] if isinstance(e, dict) and e.get("run") == entry["run"])
-    return attempt_row(run, task_id, seq, phase, kind, entry.get("reason"), ts)
+    seq = sum(1 for e in attempts[:index] if isinstance(e, dict) and cast(Doc, e).get("run") == entry["run"])
+    return attempt_row(run, task_id, seq, phase, kind, cast("str | None", entry.get("reason")), ts)
 
 
-def parse_attempts(task_id: str, attempts: Any) -> tuple[list[Row], int]:
+def parse_attempts(task_id: str, attempts: object) -> tuple[list[Row], int]:
     """Attempt rows for a task's attempts list, and the malformed count. No list is no attempts."""
     if attempts is None:
         return [], 0
     if not isinstance(attempts, list):
         return [], 1
-    built = [_attempt(task_id, attempts, i) for i in range(len(attempts))]
+    items = cast("list[object]", attempts)
+    built = [_attempt(task_id, items, i) for i in range(len(items))]
     rows = [row for row in built if row is not None]
     return rows, len(built) - len(rows)
 
@@ -260,9 +271,9 @@ def cause_report(counts: dict[str, int]) -> dict[str, int]:
     return {f"{CAUSE_FILLED_PREFIX}{c}": counts.get(c, 0) for c in CAUSES}
 
 
-def parse_task_record(doc: Any) -> dict[str, Any] | None:
+def parse_task_record(doc: object) -> Doc | None:
     """A task record is a JSON object. Anything else is not one."""
-    return doc if isinstance(doc, dict) else None
+    return cast(Doc, doc) if isinstance(doc, dict) else None
 
 
 def task_record_paths(runs_dir: Path | str) -> list[tuple[Path, str, str, str]]:
@@ -270,22 +281,23 @@ def task_record_paths(runs_dir: Path | str) -> list[tuple[Path, str, str, str]]:
     return [(p, p.parts[-4], p.parts[-2], p.stem) for p in sorted(Path(runs_dir).glob("*/tasks/*/*.json"))]
 
 
-def parse_work_item(doc: Any, phase_dir: str) -> Row | None:
+def parse_work_item(doc: object, phase_dir: str) -> Row | None:
     """`{id, phase, state, needs}` from task frontmatter, or None without an id or a state.
 
     A missing phase is the name of the phase directory the file sits in. needs must be absent or a list.
     """
     if not isinstance(doc, dict):
         return None
-    item_id, state = _text(doc.get("id")), _text(doc.get("state"))
-    needs = [] if doc.get("needs") is None else doc["needs"]
+    fields = cast(Doc, doc)
+    item_id, state = _text(fields.get("id")), _text(fields.get("state"))
+    needs: object = [] if fields.get("needs") is None else fields["needs"]
     if item_id is None or state is None or not isinstance(needs, list):
         return None
     return {
         "id": item_id,
-        "phase": _text(doc.get("phase")) or phase_dir,
+        "phase": _text(fields.get("phase")) or phase_dir,
         "state": state,
-        "needs": [str(n) for n in needs],
+        "needs": [str(n) for n in cast("list[object]", needs)],
     }
 
 
@@ -311,7 +323,7 @@ def balanced(report: Report) -> bool:
 
 
 def _tally(report: Report, table: str, **counts: int) -> None:
-    report[table] = {k: v + counts.get(k, 0) for k, v in report[table].items()}
+    report[table] = {k: v + counts.get(k, 0) for k, v in cast("dict[str, int]", report[table]).items()}
 
 
 # ── edge ─────────────────────────────────────────────────────────────────────
@@ -319,8 +331,8 @@ def _tally(report: Report, table: str, **counts: int) -> None:
 
 def _exists(store: Store, table: str, row: Row) -> bool:
     mark = store.conn.dialect.placeholder
-    where = " AND ".join(f"{k} = {mark}" for k in _KEYS[table])
-    return store.conn.query_one(f"SELECT 1 FROM {table} WHERE {where}", [row[k] for k in _KEYS[table]]) is not None
+    where = " AND ".join(f"{k} = {mark}" for k in KEYS[table])
+    return store.conn.query_one(f"SELECT 1 FROM {table} WHERE {where}", [row[k] for k in KEYS[table]]) is not None
 
 
 def _import(store: Store, report: Report, table: str, rows: Sequence[Row], malformed: int = 0) -> None:
@@ -328,7 +340,7 @@ def _import(store: Store, report: Report, table: str, rows: Sequence[Row], malfo
     with store.conn.transaction():
         for row in rows:
             present = _exists(store, table, row)
-            inserted = store._insert(table, row)
+            inserted = store.insert_row(table, row)
             _tally(report, table, seen=1, inserted=inserted, already_present=int(present))
     _tally(report, table, seen=malformed, malformed=malformed)
 
@@ -340,13 +352,18 @@ def _read(path: Path) -> str | None:
         return None
 
 
-def _load(path: Path) -> Any:
+def _load(path: Path) -> object:
     """The parsed JSON of a file, or None when it cannot be read or parsed."""
     text = _read(path)
     try:
         return None if text is None else json.loads(text)
     except ValueError:
         return None
+
+
+def _doc_run_id(doc: object) -> str | None:
+    """The run_id a parsed document names, None when it is not an object or names none."""
+    return cast("str | None", cast(Doc, doc).get("run_id")) if isinstance(doc, dict) else None
 
 
 def _cut(name: str, suffix: str) -> str:
@@ -379,17 +396,17 @@ def _import_records(store: Store, report: Report, files: Sequence[Path]) -> list
     malformed: list[str] = []
     # A launch file is a launch by its name: the oldest ones hold only {"at": ...}, with no launched_by.
     launch_paths = {p for p, d in docs.items() if p.name.endswith((".launched.json", ".launch.json")) or is_launch(d)}
-    launches = {_launch_key(p.name): d for p, d in docs.items() if p in launch_paths}
-    phases: dict[str, list[Any]] = {}
+    launches = {_launch_key(p.name): cast(Doc, d) for p, d in docs.items() if p in launch_paths}
+    phases: dict[str, list[object]] = {}
     for doc in docs.values():
         if parse_phase(doc) is not None:
-            phases.setdefault(split_phase_id(doc["run_id"])[0], []).append(doc)
+            phases.setdefault(split_phase_id(cast(str, _doc_run_id(doc)))[0], []).append(doc)
     used: set[str] = set()
     for path, doc in ((p, d) for p, d in docs.items() if p not in launch_paths):
-        run = parse_run(doc, launches.get(doc.get("run_id") if isinstance(doc, dict) else None))
+        run = parse_run(doc, launches.get(cast(str, _doc_run_id(doc))))
         phase = None if run is not None else parse_phase(doc)
         if run is not None:
-            used.add(doc["run_id"])
+            used.add(cast(str, _doc_run_id(doc)))
             _import(store, report, "runs", [run[0]])
             _import(store, report, "gate_decisions", run[1])
         elif phase is not None:
@@ -499,7 +516,7 @@ def _import_work_items(store: Store, work_dir: Path) -> tuple[int, list[Row], li
         found = [
             (item, _mtime_iso(path.stat().st_mtime)) for path, i, item in read if i == initiative and item is not None
         ]
-        times = {item["id"]: mtime for item, mtime in found}
+        times = {cast(str, item["id"]): mtime for item, mtime in found}
         with store.conn.transaction():
             rows, disagreed = plan_mirror(
                 initiative, [item for item, _ in found], work_items(store.conn, initiative), times, WORK_ITEMS_BY
@@ -529,10 +546,16 @@ def _stamp_ended(store: Store, runs_dir: Path) -> int:
     mark = store.conn.dialect.placeholder
     stamped = 0
     with store.conn.transaction():
-        for (run_id,) in store.conn.query_all("SELECT run_id FROM runs WHERE ended_at IS NULL ORDER BY run_id"):
+        for (run_id,) in cast(
+            "list[tuple[str]]", store.conn.query_all("SELECT run_id FROM runs WHERE ended_at IS NULL ORDER BY run_id")
+        ):
             usage = runs_dir / f"{run_id}{_USAGE_SUFFIX}"
             if usage.is_file():
-                latest = store.conn.query_one(f"SELECT MAX(ts) FROM node_calls WHERE run_id = {mark}", [run_id])[0]
+                latest_row = cast(
+                    "tuple[str | None]",
+                    store.conn.query_one(f"SELECT MAX(ts) FROM node_calls WHERE run_id = {mark}", [run_id]),
+                )
+                latest = latest_row[0]
                 stamped += store.finish_run(run_id, _ended_at(latest, usage.stat().st_mtime), STAMPED_STATUS)
     return stamped
 
@@ -547,8 +570,11 @@ def _fill_causes(store: Store) -> dict[str, int]:
     update = f"UPDATE attempts SET cause = {mark} WHERE run_id = {mark} AND task_id = {mark} AND seq = {mark} AND cause IS NULL"
     filled: dict[str, int] = {}
     with store.conn.transaction():
-        pending = store.conn.query_all(
-            "SELECT run_id, task_id, seq, kind, reason FROM attempts WHERE cause IS NULL ORDER BY run_id, task_id, seq"
+        pending = cast(
+            "list[tuple[str, str, int, str | None, str | None]]",
+            store.conn.query_all(
+                "SELECT run_id, task_id, seq, kind, reason FROM attempts WHERE cause IS NULL ORDER BY run_id, task_id, seq"
+            ),
         )
         for run_id, task_id, seq, kind, reason in pending:
             cause = derive_cause(kind, reason)
@@ -570,9 +596,12 @@ def _refill_causes(store: Store) -> dict[str, int]:
     )
     changed: dict[str, int] = {}
     with store.conn.transaction():
-        pending = store.conn.query_all(
-            f"SELECT run_id, task_id, seq, kind, reason FROM attempts WHERE cause_why LIKE {mark} ORDER BY run_id, task_id, seq",
-            (RULE_WHY_PATTERN,),
+        pending = cast(
+            "list[tuple[str, str, int, str | None, str | None]]",
+            store.conn.query_all(
+                f"SELECT run_id, task_id, seq, kind, reason FROM attempts WHERE cause_why LIKE {mark} ORDER BY run_id, task_id, seq",
+                (RULE_WHY_PATTERN,),
+            ),
         )
         for run_id, task_id, seq, kind, reason in pending:
             cause = classify_cause(kind or "", reason or "")
@@ -659,7 +688,7 @@ def archive_imported(files: Sequence[Path | str], archive_dir: Path | str, repor
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m harness.store_backfill", description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(prog="python -m harness.store_backfill", description=cast(str, __doc__).split("\n\n")[0])
     parser.add_argument("runs_dir", help="directory of run, phase, launch, call and usage files")
     parser.add_argument("work_dir", help="directory of task markdown files")
     parser.add_argument("ledger", help="the ledger file, one JSON object per line")
@@ -687,7 +716,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.dry_run:
         conn = connect_readonly(args.store_url)
         try:
-            n, before, after = totals(plan_recost(conn, traces))
+            n, before, after = totals(plan_recost(conn, cast(TracesRoot, traces)))
         finally:
             conn.close()
         shown = {"would_recost_calls": n, "cost_before_usd": round(before, 6), "cost_after_usd": round(after, 6)}

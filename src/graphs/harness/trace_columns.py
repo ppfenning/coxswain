@@ -1,6 +1,8 @@
 """Pure mapping between trace events and Parquet column rows."""
 
 import json
+from collections.abc import Mapping, Sequence
+from typing import cast
 
 COLUMNS: tuple[tuple[str, str], ...] = (
     ("run_id", "string"),
@@ -14,7 +16,7 @@ COLUMNS: tuple[tuple[str, str], ...] = (
 )
 
 
-def _tool(event: dict) -> str | None:
+def _tool(event: Mapping[str, object]) -> str | None:
     """Name of the first tool_use block of an assistant event, else None."""
     message = event.get("message")
     content = message.get("content") if isinstance(message, dict) else None
@@ -30,7 +32,7 @@ def _tool(event: dict) -> str | None:
     return names[0] if names else None
 
 
-def to_rows(run_id: str, call_id: str, day: str, events: list[dict]) -> list[dict]:
+def to_rows(run_id: str, call_id: str, day: str, events: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
     """One column row per event; seq is the event's index in the list."""
     return [
         {
@@ -47,6 +49,6 @@ def to_rows(run_id: str, call_id: str, day: str, events: list[dict]) -> list[dic
     ]
 
 
-def events_of(rows: list[dict]) -> list[dict]:
+def events_of(rows: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
     """Inverse of to_rows: events in seq order."""
-    return [json.loads(row["event"]) for row in sorted(rows, key=lambda r: r["seq"])]
+    return [json.loads(cast(str, row["event"])) for row in sorted(rows, key=lambda r: cast(int, r["seq"]))]

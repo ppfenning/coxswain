@@ -1,7 +1,6 @@
 import json
 import sqlite3
 from dataclasses import replace
-from typing import get_args
 
 from test_chair_facts_phases import NOW, _deps, _write
 
@@ -209,7 +208,7 @@ def test_hosts_load_and_mode_come_from_the_dispatch_facts():
 
 
 def test_schedule_updated_is_an_action_kind():
-    assert "schedule_updated" in get_args(ActionKind)
+    assert ActionKind("schedule_updated") is ActionKind.SCHEDULE_UPDATED
 
 
 def _running(**kw):

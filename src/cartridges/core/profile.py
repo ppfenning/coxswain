@@ -22,7 +22,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import cast
 
 import yaml
 
@@ -33,6 +33,7 @@ from core.catalog import (
     load_catalog,
     newest_in_family,
 )
+from core.jsontypes import is_dict, is_mapping
 
 __all__ = [
     "MergeQueue",
@@ -62,12 +63,12 @@ class MergeQueue:
 class Profile:
     name: str
     tiers: Mapping[str, ResolvedModel]
-    raw: Mapping[str, Any]
+    raw: Mapping[str, object]
     max_parallel: int | None = None
     merge_queue: MergeQueue | None = None
 
 
-def parse_max_parallel(value: Any) -> int | str | None:
+def parse_max_parallel(value: object) -> int | str | None:
     """None when absent, the int when positive, else a message. A bool is refused: it is an int subclass."""
     if value is None:
         return None
@@ -79,16 +80,16 @@ def parse_max_parallel(value: Any) -> int | str | None:
 _MERGE_QUEUE_KEYS = frozenset({"batch_size", "wait_s"})
 
 
-def _is_number(value: Any) -> bool:
+def _is_number(value: object) -> bool:
     """A bool is refused: it is an int subclass."""
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
-def parse_merge_queue(value: Any) -> MergeQueue | str | None:
+def parse_merge_queue(value: object) -> MergeQueue | str | None:
     """None when absent, a MergeQueue when valid, else one message listing every problem."""
     if value is None:
         return None
-    if not isinstance(value, Mapping):
+    if not is_mapping(value):
         return f"merge_queue must be a mapping, got {value!r}"
     batch_size = value.get("batch_size", 1)
     wait_s = value.get("wait_s", 0.0)
@@ -102,11 +103,11 @@ def parse_merge_queue(value: Any) -> MergeQueue | str | None:
         ),
         *(
             []
-            if _is_number(wait_s) and wait_s >= 0
+            if _is_number(wait_s) and cast("float", wait_s) >= 0
             else [f"merge_queue.wait_s must be a number of at least 0, got {wait_s!r}"]
         ),
     ]
-    return "; ".join(problems) if problems else MergeQueue(batch_size=batch_size, wait_s=float(wait_s))
+    return "; ".join(problems) if problems else MergeQueue(batch_size=cast("int", batch_size), wait_s=float(cast("float", wait_s)))
 
 
 def _resolve_alias(name: str, catalog: Catalog) -> ResolvedModel | str:
@@ -130,11 +131,12 @@ def resolve_entry(name: str, catalog: Catalog) -> ResolvedModel | str:
     return _resolve_alias(name, catalog) if is_family_alias(name) else _resolve_named(name, catalog)
 
 
-def resolve_profile(raw: Any, catalog: Catalog) -> Profile | list[str]:
+def resolve_profile(raw: object, catalog: Catalog) -> Profile | list[str]:
     """Resolve every tier; report every failure at once."""
-    tiers = raw.get("tiers") if isinstance(raw, dict) else None
-    if not isinstance(tiers, dict) or not tiers:
+    tiers = raw.get("tiers") if is_dict(raw) else None
+    if not is_dict(tiers) or not tiers:
         return ["profile must have a non-empty 'tiers' mapping"]
+    raw = cast("dict[str, object]", raw)
     resolved = {tier: resolve_entry(str(name), catalog) for tier, name in tiers.items()}
     cap = parse_max_parallel(raw.get("max_parallel"))
     queue = parse_merge_queue(raw.get("merge_queue"))

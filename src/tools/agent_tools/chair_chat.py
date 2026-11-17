@@ -5,30 +5,12 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Sequence
 from functools import reduce
-from typing import Literal, NotRequired, TypedDict
+from typing import Literal, NotRequired, TypedDict, TypeGuard, cast
 
+from agent_tools.chair_types import EpicView, ViewTask
 from agent_tools.courier import Reference, send
 
 BodyKind = Literal["directive", "question"]
-TaskState = Literal["ready", "approved", "done", "quarantined", "dropped", "building"]
-
-
-class ViewTask(TypedDict):
-    id: str
-    state: TaskState
-
-
-class ViewLevel(TypedDict):
-    phase: str
-    tasks: list[ViewTask]
-
-
-class EpicView(TypedDict):
-    """One initiative as an answer reads it: its tasks by phase, and whether its last run has exited."""
-
-    epic_id: str
-    levels: list[ViewLevel]
-    exited: bool
 
 
 class PlannedAction(TypedDict):
@@ -91,7 +73,7 @@ def _text(value: object) -> bool:
     return isinstance(value, str) and value.strip() != ""
 
 
-def _strings(value: object) -> bool:
+def _strings(value: object) -> TypeGuard[dict[str, str]]:
     return isinstance(value, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in value.items())
 
 
@@ -103,7 +85,7 @@ def parse_message(entry: object) -> ChatMessage | None:
     body_kind = _BODY_FOR.get(event) if isinstance(event, str) else None
     well_formed = entry.get("topic") == LABEL and body_kind is not None and _text(sender) and _text(id_)
     if well_formed and _strings(fields):
-        return {"id": str(id_), "sender": str(sender), "body_kind": body_kind, "payload": dict(fields)}
+        return {"id": str(id_), "sender": str(sender), "body_kind": cast(BodyKind, body_kind), "payload": dict(fields)}
     return None
 
 
@@ -186,7 +168,7 @@ def _step(now: str, acc: tuple[DirectiveState, list[Event]], entry: object) -> t
     base = {**payload, "id": message["id"], "kind": kind, "sender": message["sender"], "at": now}
     reason = validate_directive(kind, payload)
     if reason is None:
-        new = {**state, **_EFFECTS[kind](state, payload), "applied": [*state["applied"], message["id"]]}
+        new = cast(DirectiveState, {**state, **_EFFECTS[kind](state, payload), "applied": [*state["applied"], message["id"]]})
         return new, [*events, _event("directive_applied", base)]
     return state, [*events, _event("directive_refused", {**base, "reason": reason})]
 
@@ -211,7 +193,7 @@ def _planned(epic_id: str, plan: Sequence[PlannedAction]) -> str:
     return " Planned: " + ", ".join(_describe(a) for a in mine) + "." if mine else " Nothing is planned."
 
 
-def _tasks(facts: EpicView) -> list[dict]:
+def _tasks(facts: EpicView) -> list[ViewTask]:
     return [t for level in facts["levels"] for t in level["tasks"]]
 
 
@@ -228,7 +210,7 @@ def _left_on_release(subject: str, facts: Sequence[EpicView], plan: Sequence[Pla
     return head + _planned(subject, plan)
 
 
-def _why_task(epic: EpicView, task: dict, plan: Sequence[PlannedAction]) -> str:
+def _why_task(epic: EpicView, task: ViewTask, plan: Sequence[PlannedAction]) -> str:
     relaunch = any(a["topic"] == epic["epic_id"] and a["kind"] == "relaunch" for a in plan)
     state = task["state"]
     name = task["id"]

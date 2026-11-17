@@ -73,11 +73,12 @@ import hashlib
 import logging
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import NotRequired, TypedDict, cast
 
 import yaml
 
 from core.epics import valid_epic_id
+from core.jsontypes import is_list, is_mapping, is_object_mapping
 from core.landing import DEFAULT_LAND_AT, need_met, valid_branch
 
 logger = logging.getLogger(__name__)
@@ -135,6 +136,60 @@ TRIAGE_RECORDS = "triage"  # the epic's triage verdicts on the task, oldest firs
 FRESH_AFTER_RUN = "fresh_after_run"
 
 
+class Attempt(TypedDict):
+    """One recorded build attempt on a work item."""
+
+    run: str
+    phase: str
+    reason: str
+    ts: str
+    kind: NotRequired[str]
+    patch_kept: NotRequired[bool]
+    body_sha: NotRequired[str]
+
+
+class WorkItem(TypedDict):
+    """One work item as `read_item` parses it."""
+
+    id: str
+    phase: str
+    state: str
+    needs: list[str]
+    surfaces: list[str]
+    patterns: list[str]
+    verify: list[str]
+    tier: dict[str, str]
+    title: str
+    attempts: list[Attempt]
+    budget_usd: NotRequired[float]
+    priority: int
+    merged: bool
+    merged_commit: str | None
+    body: str
+    path: str
+
+
+class Initiative(TypedDict):
+    """An initiative as `read_initiative` parses it. `issue`, `ticket`, `branch`, `branch_kind` and `on_blocked` are
+    present only when its `initiative.md` sets them."""
+
+    id: str
+    title: str
+    body: str
+    land_at: str | None
+    epic: str | None
+    target_branch: str | None
+    issue: NotRequired[str]
+    ticket: NotRequired[str]
+    branch: NotRequired[str]
+    branch_kind: NotRequired[str]
+    on_blocked: NotRequired[str]
+    root: str
+    phases: list[str]
+    items: list[WorkItem]
+    foreign: dict[str, str]
+
+
 def run_series(run: object) -> tuple[str, int]:
     """(series, number) of a run id: `x-3` is ("x", 3), `x.p1-2` is ("x.p1", 2); ("", -1) for one that ends in no number."""
     series, _, tail = str(run or "").rpartition("-")
@@ -153,13 +208,13 @@ def fresh_mark(initiative: str, run_ids: Iterable[str]) -> dict[str, int]:
 
 def _mark_of(value: object) -> dict[str, int]:
     """A stored mark as {series: number}; a lone run id reads as that run's series alone."""
-    if isinstance(value, Mapping):
+    if is_mapping(value):
         return {str(k): v for k, v in value.items() if isinstance(v, int) and not isinstance(v, bool)}
     series, number = run_series(value)
     return {series: number} if number >= 0 else {}
 
 
-def fresh_cutoff(*extras: Mapping[str, Any] | None) -> dict[str, int]:
+def fresh_cutoff(*extras: Mapping[str, object] | None) -> dict[str, int]:
     """The marks among the row extras given (a task's and its initiative's), merged series by series to the later one."""
     cutoff: dict[str, int] = {}
     for extra in extras:
@@ -190,9 +245,10 @@ def hold_text(reason: str) -> str:
     return line if line.startswith(HOLD_MARK) else f"{HOLD_MARK} {line}"
 
 
-def is_held(row: Mapping[str, Any]) -> bool:
+def is_held(row: Mapping[str, object]) -> bool:
     """A task waits for a person: its state is `blocked` and its `extra` carries a hold reason with HOLD_MARK."""
-    extra = row.get("extra") if isinstance(row.get("extra"), Mapping) else {}
+    raw_extra = row.get("extra")
+    extra: Mapping[str, object] = raw_extra if is_mapping(raw_extra) else {}
     return row.get("state") == "blocked" and str(extra.get(HOLD_REASON) or "").startswith(HOLD_MARK)
 
 
@@ -200,7 +256,7 @@ class WorkStoreError(Exception):
     """The work store on disk could not be read, or describes something impossible."""
 
 
-def _split_frontmatter(text: str, source: Path) -> tuple[dict[str, Any], str]:
+def split_frontmatter(text: str, source: Path) -> tuple[dict[str, object], str]:
     lines = text.splitlines()
     if not lines or lines[0].strip() != _FRONTMATTER:
         raise WorkStoreError(f"{source}: work items must open with a '---' frontmatter block")
@@ -209,18 +265,18 @@ def _split_frontmatter(text: str, source: Path) -> tuple[dict[str, Any], str]:
     except StopIteration:
         raise WorkStoreError(f"{source}: frontmatter block is never closed") from None
     try:
-        meta = yaml.safe_load("\n".join(lines[1:end])) or {}
+        meta: object = yaml.safe_load("\n".join(lines[1:end])) or {}
     except yaml.YAMLError as exc:
         raise WorkStoreError(f"{source}: frontmatter is not valid YAML: {exc}") from exc
-    if not isinstance(meta, Mapping):
+    if not is_mapping(meta):
         raise WorkStoreError(f"{source}: frontmatter must be a mapping")
     return dict(meta), "\n".join(lines[end + 1 :]).strip()
 
 
-def _coerce_attempts(raw: Any) -> list[dict[str, str]]:
-    if not isinstance(raw, list):
+def _coerce_attempts(raw: object) -> list[Attempt]:
+    if not is_list(raw):
         return []
-    return [
+    return cast("list[Attempt]", [
         {
             "run": str(entry.get("run") or ""),
             "phase": str(entry.get("phase") or ""),
@@ -231,31 +287,31 @@ def _coerce_attempts(raw: Any) -> list[dict[str, str]]:
             **({"body_sha": str(entry["body_sha"])} if entry.get("body_sha") else {}),
         }
         for entry in raw
-        if isinstance(entry, Mapping)
-    ]
+        if is_mapping(entry)
+    ])
 
 
-def _coerce_patterns(raw: Any) -> list[str]:
-    if not isinstance(raw, list):
+def _coerce_patterns(raw: object) -> list[str]:
+    if not is_list(raw):
         return []
     return [str(p) for p in raw]
 
 
-def _coerce_verify(raw: Any, path: Path | str) -> list[str]:
+def _coerce_verify(raw: object, path: Path | str) -> list[str]:
     """Stripped non-blank command strings; absent is []. Anything but a string or list of strings raises."""
     if raw is None:
         return []
     items = [raw] if isinstance(raw, str) else raw
-    if not isinstance(items, list) or not all(isinstance(c, str) for c in items):
+    if not is_list(items) or not all(isinstance(c, str) for c in items):
         raise WorkStoreError(f"{path}: verify must be a string or a list of strings, got {raw!r}")
-    return [c.strip() for c in items if c.strip()]
+    return [c.strip() for c in cast("list[str]", items) if c.strip()]
 
 
-def _coerce_tier(raw: Any, path: Path | str) -> dict[str, str]:
+def _coerce_tier(raw: object, path: Path | str) -> dict[str, str]:
     """Role -> tier map; absent is {}. A non-mapping, blank role, or tier outside TIERS raises."""
     if raw is None:
         return {}
-    if not isinstance(raw, Mapping):
+    if not is_object_mapping(raw):
         raise WorkStoreError(f"{path}: tier must be a mapping of role to tier, got {raw!r}")
     bad_role = [k for k in raw if not isinstance(k, str) or not k.strip()]
     if bad_role:
@@ -263,41 +319,41 @@ def _coerce_tier(raw: Any, path: Path | str) -> dict[str, str]:
     bad_tier = [v for v in raw.values() if v not in TIERS]
     if bad_tier:
         raise WorkStoreError(f"{path}: tier must be one of {list(TIERS)}, got {bad_tier[0]!r}")
-    return {k.strip(): v for k, v in raw.items()}
+    return {cast("str", k).strip(): cast("str", v) for k, v in raw.items()}
 
 
-def _coerce_budget_usd(raw: Any) -> float | None:
+def _coerce_budget_usd(raw: object) -> float | None:
     if isinstance(raw, bool) or raw is None:
         return None
     try:
-        value = float(raw)
+        value = float(cast("float", raw))
     except (TypeError, ValueError):
         return None
     return value if value > 0 else None
 
 
-def _coerce_priority(raw: Any) -> int:
+def _coerce_priority(raw: object) -> int:
     """1..5, 1 highest. Anything else — absent, non-numeric, or out of range — is the default."""
     if isinstance(raw, bool):
         return DEFAULT_PRIORITY
     try:
-        value = int(raw)
+        value = int(cast("int", raw))
     except (TypeError, ValueError):
         return DEFAULT_PRIORITY
     return value if 1 <= value <= 5 else DEFAULT_PRIORITY
 
 
-def _coerce_merged(raw: Any) -> bool:
+def _coerce_merged(raw: object) -> bool:
     """True only for a real boolean true; the string 'false' must not read as merged."""
     return raw is True
 
 
-def _coerce_merged_commit(raw: Any) -> str | None:
+def _coerce_merged_commit(raw: object) -> str | None:
     text = str(raw).strip() if raw is not None else ""
     return text or None
 
 
-def _coerce_land_at(raw: Any, path: Path | str) -> str | None:
+def _coerce_land_at(raw: object, path: Path | str) -> str | None:
     if raw is None:
         return None
     if raw not in LAND_AT:
@@ -305,7 +361,7 @@ def _coerce_land_at(raw: Any, path: Path | str) -> str | None:
     return str(raw)
 
 
-def _coerce_epic(raw: Any, path: Path | str) -> str | None:
+def _coerce_epic(raw: object, path: Path | str) -> str | None:
     if raw is None:
         return None
     try:
@@ -319,7 +375,7 @@ def _coerce_epic(raw: Any, path: Path | str) -> str | None:
 LANDING_FIELDS = ("issue", "ticket", "branch", "branch_kind", "on_blocked")
 
 
-def _landing_fields(meta: Mapping[str, Any], path: Path | str) -> dict[str, str]:
+def _landing_fields(meta: Mapping[str, object], path: Path | str) -> dict[str, str]:
     """The initiative's own landing fields that are set, as text. A set `branch` must be a valid branch name."""
     found = {key: str(meta[key]).strip() for key in LANDING_FIELDS if meta.get(key) not in (None, "")}
     if "branch" in found:
@@ -332,7 +388,7 @@ def _landing_fields(meta: Mapping[str, Any], path: Path | str) -> dict[str, str]
     return found
 
 
-def _coerce_target_branch(raw: Any, path: Path | str) -> str | None:
+def _coerce_target_branch(raw: object, path: Path | str) -> str | None:
     if raw is None:
         return None
     try:
@@ -364,21 +420,21 @@ def surface_problem(unresolved: Sequence[str]) -> str | None:
     return "surfaces do not resolve against the checkout: " + ", ".join(unresolved)
 
 
-def read_item(path: Path | str) -> dict[str, Any]:
+def read_item(path: Path | str) -> WorkItem:
     """Read one work item. Its `id` defaults to the filename, never invented."""
     path = Path(path)
     try:
-        meta, body = _split_frontmatter(path.read_text(encoding="utf-8"), path)
+        meta, body = split_frontmatter(path.read_text(encoding="utf-8"), path)
     except (OSError, UnicodeDecodeError) as exc:
         raise WorkStoreError(f"cannot read work item {path}: {exc}") from exc
 
     budget_usd = _coerce_budget_usd(meta.get("budget_usd"))
-    item = {
+    item = cast("WorkItem", {
         "id": str(meta.get("id") or path.stem),
         "phase": str(meta.get("phase") or path.parent.name),
         "state": str(meta.get("state") or "todo"),
-        "needs": [str(n) for n in (meta.get("needs") or [])],
-        "surfaces": [str(s) for s in (meta.get("surfaces") or [])],
+        "needs": [str(n) for n in cast("Iterable[object]", meta.get("needs") or [])],
+        "surfaces": [str(s) for s in cast("Iterable[object]", meta.get("surfaces") or [])],
         "patterns": _coerce_patterns(meta.get("patterns")),
         "verify": _coerce_verify(meta.get("verify"), path),
         "tier": _coerce_tier(meta.get("tier"), path),
@@ -390,18 +446,18 @@ def read_item(path: Path | str) -> dict[str, Any]:
         "merged_commit": _coerce_merged_commit(meta.get("merged_commit")),
         "body": body,
         "path": str(path),
-    }
+    })
     if item["state"] not in STATES:
         # Opaque on read: in neither _RUNNABLE nor _TERMINAL, so never ready and never satisfies a need.
         logger.warning("%s: unknown state '%s'; kept opaque, not runnable and not complete", path, item["state"])
     return item
 
 
-def write_item(item: Mapping[str, Any], path: Path | str) -> Path:
+def write_item(item: Mapping[str, object], path: Path | str) -> Path:
     """Write one work item, frontmatter first. Round-trips through `read_item`."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    attempts = list(item.get("attempts") or [])
+    attempts = list(cast("Iterable[object]", item.get("attempts") or []))
     budget_usd = _coerce_budget_usd(item.get("budget_usd"))
     patterns = _coerce_patterns(item.get("patterns"))
     verify = _coerce_verify(item.get("verify"), path)
@@ -409,12 +465,12 @@ def write_item(item: Mapping[str, Any], path: Path | str) -> Path:
     priority = _coerce_priority(item.get("priority"))
     merged = _coerce_merged(item.get("merged"))
     merged_commit = _coerce_merged_commit(item.get("merged_commit"))
-    meta = {
+    meta: dict[str, object] = {
         "id": item["id"],
         "phase": item.get("phase", ""),
         "state": item.get("state", "todo"),
-        "needs": list(item.get("needs") or []),
-        "surfaces": list(item.get("surfaces") or []),
+        "needs": list(cast("Iterable[object]", item.get("needs") or [])),
+        "surfaces": list(cast("Iterable[object]", item.get("surfaces") or [])),
         **({"patterns": patterns} if patterns else {}),
         **({"verify": verify} if verify else {}),
         **({"tier": tier} if tier else {}),
@@ -428,7 +484,7 @@ def write_item(item: Mapping[str, Any], path: Path | str) -> Path:
     if meta["state"] not in STATES:
         raise WorkStoreError(f"unknown state '{meta['state']}'; expected one of {list(STATES)}")
     front = yaml.safe_dump(meta, sort_keys=False, default_flow_style=None).strip()
-    path.write_text(f"{_FRONTMATTER}\n{front}\n{_FRONTMATTER}\n\n{item.get('body', '').strip()}\n", encoding="utf-8")
+    path.write_text(f"{_FRONTMATTER}\n{front}\n{_FRONTMATTER}\n\n{cast('str', item.get('body', '')).strip()}\n", encoding="utf-8")
     return path
 
 
@@ -437,10 +493,10 @@ def body_sha(body: str) -> str:
     return hashlib.sha256(body.strip().encode("utf-8")).hexdigest()[:12]
 
 
-def attempts_on_current_body(item: Mapping[str, Any]) -> list[dict[str, Any]]:
+def attempts_on_current_body(item: Mapping[str, object]) -> list[Attempt]:
     """Attempts made on the item's current text. An attempt with no `body_sha` predates stamping and counts."""
-    current = body_sha(item["body"])
-    return [a for a in item["attempts"] if a.get("body_sha", current) == current]
+    current = body_sha(cast("str", item["body"]))
+    return [a for a in cast("list[Attempt]", item["attempts"]) if a.get("body_sha", current) == current]
 
 
 def record_attempt(
@@ -452,7 +508,7 @@ def record_attempt(
     ts: str,
     kind: str | None = None,
     patch_kept: bool = False,
-) -> dict[str, Any]:
+) -> WorkItem:
     """Append one attempt to an item's history, preserving everything else.
 
     The caller supplies `ts`; this module reads no clock.
@@ -460,7 +516,7 @@ def record_attempt(
     if kind is not None and kind not in ATTEMPT_KINDS:
         raise WorkStoreError(f"unknown attempt kind '{kind}'; expected one of {list(ATTEMPT_KINDS)}")
     item = read_item(path)
-    entry = {
+    entry: dict[str, object] = {
         "run": str(run),
         "phase": str(phase),
         "reason": str(reason),
@@ -475,7 +531,7 @@ def record_attempt(
     return read_item(path)
 
 
-def set_state(path: Path | str, state: str) -> dict[str, Any]:
+def set_state(path: Path | str, state: str) -> WorkItem:
     """Move one item's state, preserving everything else. The single writer's move."""
     if state not in STATES:
         raise WorkStoreError(f"unknown state '{state}'; expected one of {list(STATES)}")
@@ -492,7 +548,7 @@ def set_state(path: Path | str, state: str) -> dict[str, Any]:
     return item
 
 
-def read_initiative(root: Path | str) -> dict[str, Any]:
+def read_initiative(root: Path | str) -> Initiative:
     """Read an initiative and every task under it, validating the DAG before returning.
 
     Validation happens HERE, not at execution: a cycle discovered halfway
@@ -504,10 +560,10 @@ def read_initiative(root: Path | str) -> dict[str, Any]:
         raise WorkStoreError(f"no initiative at {root}")
 
     overview = root / "initiative.md"
-    meta: dict[str, Any] = {}
+    meta: dict[str, object] = {}
     body = ""
     if overview.is_file():
-        meta, body = _split_frontmatter(overview.read_text(encoding="utf-8"), overview)
+        meta, body = split_frontmatter(overview.read_text(encoding="utf-8"), overview)
     land_at = _coerce_land_at(meta.get("land_at"), overview)
     epic = _coerce_epic(meta.get("epic"), overview)
     target_branch = _coerce_target_branch(meta.get("target_branch"), overview)
@@ -519,7 +575,7 @@ def read_initiative(root: Path | str) -> dict[str, Any]:
     foreign = foreign_states(root.parent, root.name) if dangling else {}
     validate_dag(items, foreign)
 
-    return {
+    return cast("Initiative", {
         "id": str(meta.get("id") or root.name),
         "title": str(meta.get("title") or root.name),
         "body": body,
@@ -531,7 +587,7 @@ def read_initiative(root: Path | str) -> dict[str, Any]:
         "phases": phases(items),
         "items": items,
         "foreign": foreign,
-    }
+    })
 
 
 def foreign_states(store_root: Path | str, own_initiative: str) -> dict[str, str]:
@@ -552,17 +608,17 @@ def foreign_states(store_root: Path | str, own_initiative: str) -> dict[str, str
     return states
 
 
-def phases(items: Sequence[Mapping[str, Any]]) -> list[str]:
+def phases(items: Sequence[Mapping[str, object]]) -> list[str]:
     """Phase names, in order. Ordering is the phase name's job — prefixes stay short."""
     return sorted({str(item.get("phase") or "") for item in items} - {""})
 
 
-def phase_complete(items: Sequence[Mapping[str, Any]], phase: str) -> bool:
+def phase_complete(items: Sequence[Mapping[str, object]], phase: str) -> bool:
     """A phase is complete once every one of its items is done or dropped."""
     return all(item.get("state") in _TERMINAL for item in items if item.get("phase") == phase)
 
 
-def validate_dag(items: Iterable[Mapping[str, Any]], foreign: Mapping[str, str] | None = None) -> None:
+def validate_dag(items: Iterable[Mapping[str, object]], foreign: Mapping[str, str] | None = None) -> None:
     """Refuse a dangling edge or a cycle. Loudly, and listing every problem.
 
     `foreign` maps ids of tasks in other initiatives to their state. A need
@@ -582,10 +638,10 @@ def validate_dag(items: Iterable[Mapping[str, Any]], foreign: Mapping[str, str] 
         if need in dropped
         else f"'{item['id']}' needs '{need}', which does not exist"
         for item in live.values()
-        for need in item.get("needs") or []
+        for need in cast("Sequence[str]", item.get("needs") or [])
         if (need in dropped and item.get("state") != DONE) or (need not in by_id and need not in foreign)
     ]
-    duplicates = sorted({i["id"] for i in items if sum(1 for j in items if j["id"] == i["id"]) > 1})
+    duplicates = sorted({cast("str", i["id"]) for i in items if sum(1 for j in items if j["id"] == i["id"]) > 1})
     problems.extend(f"duplicate work item id '{dup}'" for dup in duplicates)
 
     # Depth-first cycle detection. A cycle is not a scheduling inconvenience —
@@ -596,7 +652,7 @@ def validate_dag(items: Iterable[Mapping[str, Any]], foreign: Mapping[str, str] 
 
     def visit(node: str, trail: list[str]) -> None:
         colour[node] = GREY
-        for need in live[node].get("needs") or []:
+        for need in cast("Sequence[str]", live[node].get("needs") or []):
             if need not in live:
                 continue
             if colour[need] == GREY:
@@ -617,12 +673,12 @@ def validate_dag(items: Iterable[Mapping[str, Any]], foreign: Mapping[str, str] 
 
 
 def ready_tasks(
-    items: Sequence[Mapping[str, Any]],
+    items: Sequence[Mapping[str, object]],
     *,
     phase: str | None = None,
     foreign: Mapping[str, str] | None = None,
     land_at: str = DEFAULT_LAND_AT,
-) -> list[dict[str, Any]]:
+) -> list[dict[str, object]]:
     """Every task in state `ready` whose dependencies are all met.
 
     `todo`, `blocked`, `approved` and `in_progress` are held. `in_progress` is
@@ -648,7 +704,7 @@ def ready_tasks(
             for item in items
             if item.get("state") in _RUNNABLE
             and (phase is None or item.get("phase") == phase)
-            and all(need in done for need in item.get("needs") or [])
+            and all(need in done for need in cast("Sequence[str]", item.get("needs") or []))
         ),
         key=lambda item: (_coerce_priority(item.get("priority")), str(item["id"])),
     )

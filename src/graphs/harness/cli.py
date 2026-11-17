@@ -410,7 +410,7 @@ _COS_PRINCIPAL = "coxswain(dispatch)"
 _LEASE_TTL = 120  # seconds; the heartbeat renews every 30
 
 
-def _read_profile(path: Path | str) -> Mapping[str, Any]:
+def read_provider_profile(path: Path | str) -> Mapping[str, Any]:
     """The provider profile's mapping; empty when unreadable, since the scripted path may name no real file."""
     try:
         data = yaml.safe_load(Path(path).expanduser().read_text(encoding="utf-8"))
@@ -425,7 +425,7 @@ def _parallel_cap(parser: argparse.ArgumentParser, args: argparse.Namespace, fre
     from core.profile import parse_max_parallel
 
     path = getattr(args, "provider_profile", None)
-    from_profile = parse_max_parallel(_read_profile(path).get("max_parallel")) if path else None
+    from_profile = parse_max_parallel(read_provider_profile(path).get("max_parallel")) if path else None
     if isinstance(from_profile, str):
         parser.error(from_profile)
     return resolve_max_parallel(args.max_parallel, from_profile, free_lanes)
@@ -445,7 +445,7 @@ def _usage_bound(
 ) -> tuple[Callable[[], float | None], float]:
     """`(headroom_usd, est_task_usd)` from the profile's run_ceiling_usd and task_estimate_usd. A bad value is a usage error."""
     path = getattr(args, "provider_profile", None)
-    profile = _read_profile(path) if path else {}
+    profile = read_provider_profile(path) if path else {}
     ceiling = _positive_number("run_ceiling_usd", profile.get("run_ceiling_usd"), None)
     estimate = _positive_number("task_estimate_usd", profile.get("task_estimate_usd"), 6.0)
     for parsed in (ceiling, estimate):
@@ -460,7 +460,7 @@ def _usage_bound(
     return headroom_usd, estimate
 
 
-def _storage_url(profile: Mapping[str, Any], runs_dir: Path | str) -> str:
+def profile_storage_url(profile: Mapping[str, Any], runs_dir: Path | str) -> str:
     """The profile's `storage_url`; without one, the sqlite file inside the runs directory."""
     url = profile.get("storage_url")
     return url if isinstance(url, str) and url else default_url(runs_dir)
@@ -511,7 +511,7 @@ def _begin_store_run(
     host: str,
 ) -> Store | None:
     """Open the run-record store, register the graph and write the run row; None (after one line) if any of it fails."""
-    url = _storage_url(_read_profile(args.provider_profile), args.runs_dir)
+    url = profile_storage_url(read_provider_profile(args.provider_profile), args.runs_dir)
     conn = None
     try:
         if url == default_url(args.runs_dir):
@@ -1114,7 +1114,7 @@ def _launch(
         reporting = threading.Event()
         progress_lock = threading.Lock()
         heartbeat = run_lease.Heartbeat(
-            _storage_url(_read_profile(args.provider_profile), args.runs_dir),
+            profile_storage_url(read_provider_profile(args.provider_profile), args.runs_dir),
             name,
             run_id,
             lease.epoch,
@@ -1228,7 +1228,7 @@ def _launch(
             close()
         # Compaction only reads the store and moves files, so it never changes the exit code.
         try:
-            profile = _read_profile(args.provider_profile)
+            profile = read_provider_profile(args.provider_profile)
             _compact_traces(
                 store,
                 run_id,
@@ -1668,7 +1668,7 @@ def _run_rescue(
         print(f"task {args.task} is not in {args.initiative}", file=sys.stderr)
         return 1, "failed"
     try:
-        work_state = work_state_of(_read_profile(args.provider_profile))
+        work_state = work_state_of(read_provider_profile(args.provider_profile))
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 1, "failed"
@@ -1764,7 +1764,7 @@ def _run_graph(
             print(str(exc), file=sys.stderr)
             return 1
         try:
-            work_state = work_state_of(_read_profile(args.provider_profile))
+            work_state = work_state_of(read_provider_profile(args.provider_profile))
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 1
@@ -1982,7 +1982,7 @@ def _run_graph(
             graph_args.setdefault("checkout", str(Path(args.repo).expanduser()))  # the readable repo the seats get
         if graph_name == _DECOMPOSE_GRAPH_NAME:
             trees = _decompose_repo_trees(
-                _read_profile(args.provider_profile) if getattr(args, "provider_profile", None) else {},
+                read_provider_profile(args.provider_profile) if getattr(args, "provider_profile", None) else {},
                 Path(getattr(runner, "cwd", None) or Path.cwd()),
                 graph_args.get("checkout"),
             )

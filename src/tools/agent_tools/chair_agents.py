@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 
 from agent_tools.stats_chair import chair_cost
@@ -70,7 +71,7 @@ def _state(assistants: list[tuple[str, dict]], last: datetime, now: datetime) ->
     return "running" if now - last <= _RUNNING_WINDOW else "failed"
 
 
-def _row(agent: dict, prices: dict, now: datetime) -> dict | None:
+def _row(agent: Mapping, prices: dict, now: datetime) -> dict | None:
     lines = agent["lines"]
     parsed = [(line, _entry(line)) for line in lines]
     moments = [m for m in (_when(e.get("timestamp")) for _, e in parsed) if m is not None]
@@ -91,7 +92,7 @@ def _row(agent: dict, prices: dict, now: datetime) -> dict | None:
     }
 
 
-def agent_rows(agents: list[dict], prices: dict, now: datetime, limit: int = 12) -> list[dict]:
+def agent_rows(agents: Sequence[Mapping], prices: dict, now: datetime, limit: int = 12) -> list[dict]:
     """At most `limit` rows, newest `started_at` first; an agent with no parsable timestamp is dropped."""
     rows = [row for row in (_row(agent, prices, now) for agent in agents) if row is not None]
     return sorted(rows, key=lambda row: row["started_at"], reverse=True)[:limit]

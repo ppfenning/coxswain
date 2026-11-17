@@ -17,7 +17,7 @@ DESCRIPTION = "id_sequence table; work_items and runs gain short_id"
 Column = tuple[str, str]
 
 # Name, columns, key.
-_TABLES: tuple[tuple[str, tuple[Column, ...], tuple[str, ...]], ...] = (
+TABLES: tuple[tuple[str, tuple[Column, ...], tuple[str, ...]], ...] = (
     (
         "id_sequence",
         (
@@ -37,7 +37,7 @@ _COLUMNS: tuple[AlterColumn, ...] = (
 )
 
 # Table and column that the ALTERs append; store_copy reads this 2-tuple shape, matching ddl2/ddl3/ddl5/ddl9/ddl10.
-_ADDED: tuple[tuple[str, str], ...] = tuple((t, c) for t, c, _ in _COLUMNS)
+ADDED: tuple[tuple[str, str], ...] = tuple((t, c) for t, c, _ in _COLUMNS)
 
 
 def _table(name: str, columns: tuple[Column, ...], key: tuple[str, ...]) -> str:
@@ -52,6 +52,6 @@ def _alter(table: str, column: str, kind: str) -> str:
 def statements(dialect: Dialect) -> tuple[str, ...]:
     """The id_sequence CREATE TABLE, then one ALTER per added column, the same on both dialects."""
     return (
-        *(_table(n, c, k) for n, c, k in _TABLES),
+        *(_table(n, c, k) for n, c, k in TABLES),
         *(_alter(t, c, k) for t, c, k in _COLUMNS),
     )

@@ -14,7 +14,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Protocol
 
 from harness.store_dialect import Connection, insert_ignore, json_text
 
@@ -30,7 +30,7 @@ class LoadedNode(Protocol):
     role: str
     default_tier: str
     default_class: str
-    output_schema: Mapping[str, Any] | None
+    output_schema: Mapping[str, object] | None
 
 
 class LoadedGraph(Protocol):
