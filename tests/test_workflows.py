@@ -9,6 +9,8 @@ from pathlib import Path
 
 import yaml
 
+from smoke import plan
+
 WORKFLOW = Path(__file__).parent.parent / ".github" / "workflows" / "docs.yml"
 CI = Path(__file__).parent.parent / ".github" / "workflows" / "ci.yml"
 
@@ -25,10 +27,12 @@ def _pytest_steps(workflow: dict) -> list[tuple[str, str]]:
 
 # The extras job runs the Postgres store tests, which back the test database up with pg_dump and fail under xdist.
 _SERIAL_JOBS = {"extras"}
+# The smoke suite installs cox once and opens one Postgres per run, so it runs serial (docs/smoke.md).
+_SMOKE = "uv run pytest -q -rs smoke"
 
 
 def _missing_xdist(steps: list[tuple[str, str]]) -> list[str]:
-    return [f"{job}: {run}" for job, run in steps if job not in _SERIAL_JOBS and "-n auto" not in run]
+    return [f"{job}: {run}" for job, run in steps if job not in _SERIAL_JOBS and run != _SMOKE and "-n auto" not in run]
 
 
 def _runs() -> list[str]:
@@ -50,7 +54,7 @@ def test_the_pull_runs_before_the_cli_reference_and_the_deploy():
 
 def test_every_ci_pytest_step_runs_in_parallel():
     steps = _pytest_steps(yaml.safe_load(CI.read_text()))
-    assert len(steps) == 9
+    assert len(steps) == 10
     missing = _missing_xdist(steps)
     assert not missing, "pytest steps without -n auto:\n" + "\n".join(missing)
 
@@ -58,10 +62,22 @@ def test_every_ci_pytest_step_runs_in_parallel():
 def test_every_pytest_step_in_the_test_job_is_named_after_its_suite():
     """The land's rerun rule parses `pytest <suite>` from the check run name."""
     steps = yaml.safe_load(CI.read_text())["jobs"]["test"]["steps"]
-    pytest_steps = [step for step in steps if step.get("run", "").startswith("uv run pytest")]
+    pytest_steps = [step for step in steps if step.get("run", "").startswith("uv run pytest") and step["run"] != _SMOKE]
     matches = [re.fullmatch(r"pytest (root|tools|graphs|cartridges)", step.get("name", "")) for step in pytest_steps]
     assert len(pytest_steps) == 4 and all(matches)
     assert {match.group(1) for match in matches} == {"root", "tools", "graphs", "cartridges"}
+
+
+def test_the_required_test_job_runs_the_smoke_suite_against_its_own_postgres():
+    """`test` is the one required check, so the smoke suite runs there, required to run rather than skip (H10)."""
+    job = yaml.safe_load(CI.read_text())["jobs"]["test"]
+    (smoke,) = [step for step in job["steps"] if step.get("run") == _SMOKE]
+    assert smoke["name"] == "smoke"
+    assert smoke["env"]["COX_SMOKE_REQUIRED"] == "1"
+    assert "job.services.postgres.ports['5432']" in smoke["env"]["COX_SMOKE_POSTGRES_URL"]
+    # pinned by digest, the same image the suite's own container fixture runs
+    assert job["services"]["postgres"]["image"] == plan.POSTGRES_IMAGE
+    assert "@sha256:" in plan.POSTGRES_IMAGE
 
 
 def test_the_extras_job_runs_each_suite_as_its_own_serial_job():

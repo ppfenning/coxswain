@@ -6,6 +6,20 @@ on:
 jobs:
   test:
     runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
+    # The smoke step's Postgres. The suite gives each test a database of its own on it (docs/smoke.md).
+    services:
+      postgres:
+        image: postgres:16@sha256:dd2bf3ce2dc83a81674cf7f217fcfd8a5009a4b325dda5b843bfee82a06cff6f # smoke/plan.py POSTGRES_IMAGE; bump together
+        env:
+          POSTGRES_PASSWORD: smoke
+        # a random host port, so two jobs can share a self-hosted runner's host
+        ports:
+          - 5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -22,6 +36,13 @@ jobs:
       - name: pytest cartridges
         run: uv run pytest -q -n auto
         working-directory: src/cartridges
+      # Real `cox`, installed from this checkout, against real git and the service's Postgres; nothing is stubbed.
+      # Serial: one install and one server per run. REQUIRED turns a missing uv or Postgres into a failure, not a skip.
+      - name: smoke
+        run: uv run pytest -q -rs smoke
+        env:
+          COX_SMOKE_POSTGRES_URL: postgresql://postgres:smoke@localhost:${{ job.services.postgres.ports['5432'] }}/postgres
+          COX_SMOKE_REQUIRED: "1"
       - name: ruff (rules in pyproject.toml, tools adds src/tools/ruff.toml)
         run: uv run ruff check .
       # no person, host or home path ships; the names rule's regex lives only in the secret (unset on fork PRs: skipped)

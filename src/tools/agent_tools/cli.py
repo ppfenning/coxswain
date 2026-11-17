@@ -4613,7 +4613,11 @@ def _runs_recover(a: argparse.Namespace) -> int:
     """Merge one approved task's commit into its phase branch, the remedy for
     a merge the harness escalated to `self_modification` and so never
     applied. Never runs the repo's checks, never pushes: this only lands one
-    commit on a local phase branch, and the gate to `main` stays a person's."""
+    commit on a local phase branch, and the gate to `main` stays a person's.
+
+    The task is then recorded as the epic records a merge it made itself: `approved`, with `merged` and the merge
+    commit, never `done` (it is on a phase branch, not landed). Whether it may be is decided before any merge
+    (`land.recover_gate`), from the store row and from whether the work is already on the default branch."""
     repo = Path(a.repo).expanduser()
     runs_dir, reason = _runs_dir_for_land(a)
     if runs_dir is None:
@@ -4628,6 +4632,7 @@ def _runs_recover(a: argparse.Namespace) -> int:
     if initiative is None:
         print(f"recover: {a.task_id}: no single initiative under {work_root} holds this task")
         return 2
+    record_path = searched
     record = land.recover_record(searched, record.get("ticket"), initiative)
     if record.get("kind") == "refuse":
         print(f"recover: {record['reason']}")
@@ -4638,24 +4643,51 @@ def _runs_recover(a: argparse.Namespace) -> int:
         print(f"recover: phase branch {phase_branch} does not exist in {repo}")
         return 2
     item_path = str(work_root / initiative / phase / f"{a.task_id}.md")
-    mark_done_step = {"kind": "mark_done", "item": item_path, "from": "approved", "to": "done"}
-    branches = _recover_branches(repo, record, phase_branch)
-    step = land.recover_plan(record, branches)[0]
-    if step["kind"] == "already_recovered":
-        print(f"recover: {step['branch']} already contains the commit ({step['reason']}); nothing to do")
-        if a.dry_run:
-            print(json.dumps(mark_done_step))
-            return 0
-        _close_approved_item(item_path, runs_dir=runs_dir, by=_holder_label(a))
-        return 0
+    reopen = bool(getattr(a, "reopen", False))
+    step = land.recover_plan(record, _recover_branches(repo, record, phase_branch))[0]
     if step["kind"] == "refuse":
         print(f"refused: {step['reason']}")
         return 2
-    source, target, subject = step["source"], step["target"], step["commit_subject"]
+    source = step["source"]
+    default, why = _recover_default_ref(repo)
+    if default is None:
+        print(f"refused: {why}")
+        return 2
+    if step["kind"] == "already_recovered":
+        listed = bounded_run.completed(["git", "-C", str(repo), "rev-list", f"{default}..{source}"], capture_output=True, text=True)
+        if listed.returncode != 0:
+            print(f"refused: cannot count the commits of {source} off {default}: {listed.stderr.strip()}")
+            return 2
+        if (refusal := land.recover_contained_refusal(len(listed.stdout.split()), source, default)) is not None:
+            print(f"refused: {refusal}")
+            return 2
+    row = run_store.task_merge_row(runs_dir, initiative, a.task_id)
+    landed = False
+    if reopen and row is not None and row[0] == "done" and not row[1]:
+        # Only a done row may have landed: an approved one is what an escalated merge leaves, and its work may well
+        # conflict with a default branch that moved on, which the phase merge below does not care about.
+        landed, why, conflicted = _recover_landed(repo, default, source)
+        if landed is None:
+            print(f"refused: {a.task_id}: {why}")
+            if conflicted:
+                print(land.reopen_conflict_next_step(default, source, phase_branch, _recover_set_state_argv(runs_dir, initiative, a), _recover_argv(a)))
+            return 2
+    if (refusal := land.recover_gate(row, reopen=reopen, landed=bool(landed))) is not None:
+        print(f"refused: {a.task_id}: {refusal}")
+        return 2
+    mark_step = {"kind": "mark_merged", "item": item_path, "state": "approved", **({"reopen": "done -> approved"} if reopen else {})}
+    if step["kind"] == "already_recovered":
+        print(f"recover: {step['branch']} already contains the commit ({step['reason']}); nothing to merge")
+        commit = _git_out(repo, "rev-parse", "--verify", source) or ""
+        if a.dry_run:
+            print(json.dumps({**mark_step, "commit": commit}))
+            return 0
+        return _record_recovered(a, runs_dir, initiative, item_path, record_path, commit, row)
+    target, subject = step["target"], step["commit_subject"]
     message = f"Merge branch '{source}' into {target}"
     if a.dry_run:
         print(f"recover: would merge {source} into {target} --no-ff -m {message!r} ({subject!r})")
-        print(json.dumps(mark_done_step))
+        print(json.dumps({**mark_step, "commit": f"the new tip of {target}"}))
         return 0
     before = bounded_run.completed(["git", "-C", str(repo), "rev-parse", target], capture_output=True, text=True).stdout.strip()
     wt = Path(tempfile.mkdtemp(prefix="recover-"))
@@ -4675,7 +4707,86 @@ def _runs_recover(a: argparse.Namespace) -> int:
     diff = bounded_run.completed(["git", "-C", str(repo), "diff", "--stat", before, after], capture_output=True, text=True)
     print(f"recover: {target} {before[:8]} -> {after[:8]}")
     print(diff.stdout.strip())
-    _close_approved_item(item_path, runs_dir=runs_dir, by=_holder_label(a))
+    return _record_recovered(a, runs_dir, initiative, item_path, record_path, after, row)
+
+
+def _recover_default_ref(repo: Path) -> tuple[str | None, str]:
+    """Edge. (the default branch's ref, "") or (None, why not). With an `origin`, its HEAD's branch, fetched first as
+    `_phase_adds_nothing` fetches, so a landing made elsewhere is seen; a fetch that fails refuses. With no `origin`,
+    a local `main` or `master`; with neither, refuses."""
+    if _git_out(repo, "remote", "get-url", "origin") is None:
+        local = next((b for b in ("main", "master") if _branch_exists(repo, f"refs/heads/{b}")), None)
+        return (local, "") if local else (None, f"cannot tell the default branch of {repo}: no origin, main or master")
+    head = _git_out(repo, "symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD")
+    if not head or not head.startswith("origin/"):
+        return None, f"cannot tell origin's default branch in {repo}: origin/HEAD is not set (git remote set-head origin --auto)"
+    name = head.removeprefix("origin/")
+    ref = f"refs/remotes/origin/{name}"
+    fetched = bounded_run.completed(["git", "-C", str(repo), "fetch", "--quiet", "origin", f"+refs/heads/{name}:{ref}"], capture_output=True, text=True)
+    if fetched.returncode != 0:
+        return None, f"cannot fetch origin's {name} to tell whether the task landed: {fetched.stderr.strip()}"
+    return ref, ""
+
+
+def _recover_landed(repo: Path, default: str, source: str) -> tuple[bool | None, str, bool]:
+    """Edge. Whether `source`'s work is on `default` already, by the tree test `_phase_adds_nothing` uses: merging it
+    changes nothing. That holds for a merge, a cherry-pick and a squash alike. (None, why, conflicted) when git cannot
+    tell; `conflicted` is true when the reason is that the work conflicts with `default`."""
+    merged = bounded_run.completed(["git", "-C", str(repo), "merge-tree", "--write-tree", default, source], capture_output=True, text=True)
+    tree = bounded_run.completed(["git", "-C", str(repo), "rev-parse", f"{default}^{{tree}}"], capture_output=True, text=True)
+    landed, why = land.landed_by_tree(merged.returncode, merged.stdout, tree.returncode, tree.stdout, default, source)
+    return landed, why, merged.returncode == 1
+
+
+def _recover_set_state_argv(runs_dir: Path, initiative: str, a: argparse.Namespace) -> list[str]:
+    """Edge. The harness store command that moves the task's row from done back to approved: the store the routing
+    profile's provider profile names when it has a storage_url (so no store URL is printed), else cox.db in `runs_dir`."""
+    named = store_url.read_provider_profile(_profile_path(a)).get("provider_profile")
+    # Both: the provider profile's storage_url when it names one, else cox.db in the runs dir.
+    where = [*(["--provider-profile", str(Path(named).expanduser())] if isinstance(named, str) and named else []), "--runs-dir", str(runs_dir)]
+    python = run_store._harness_python()
+    return [str(python or "python"), *store_cli._MODULE, "set-state", initiative, a.task_id, "approved",
+            "--by", _holder_label(a), "--expect", "done", *where]
+
+
+def _recover_argv(a: argparse.Namespace) -> list[str]:
+    """The same recover without --reopen or --dry-run."""
+    return ["cox", "runs", "recover", a.run_id, a.task_id, "--repo", str(a.repo),
+            *(["--runs-dir", str(a.runs_dir)] if a.runs_dir else []), *(["--profile", str(a.profile)] if a.profile else [])]
+
+
+def _record_recovered(
+    a: argparse.Namespace, runs_dir: Path, initiative: str, item_path: str, record_path: str, commit: str,
+    row: tuple[str, str | None] | None,
+) -> int:
+    """Edge. Record the recovered task as merged into its phase branch at `commit`, its state `approved`. The store
+    moves first (a `done` row `land.recover_gate` let through goes back to approved, then the merge commit is
+    stamped), and is read back: only a row that reads (approved, commit) lets the task record and the work item follow.
+    Anything else stops with exit 1 and both left as they were."""
+    task, by = a.task_id, _holder_label(a)
+    if not commit:
+        print(f"recover: {task}: no commit to record")
+        return 1
+    if row is not None and row[0] == "done":
+        moved = store_cli.set_state(runs_dir, initiative, task, "approved", by, expected="done")
+        if not isinstance(moved, store_cli.StateSet):
+            print(f"recover: store did not move {task} back to approved: {moved}")
+            return 1
+    stored = store_cli.mark_merged(runs_dir, initiative, task, commit, by)
+    now = run_store.task_merge_row(runs_dir, initiative, task)
+    if now != ("approved", commit):
+        print(f"recover: store did not record {task} as merged at {commit[:12]} ({stored}; the row reads {now}); "
+              "the task record and the work item are left as they were")
+        return 1
+    path = Path(record_path)
+    if path.exists():
+        found = json.loads(path.read_text(encoding="utf-8"))
+        path.write_text(json.dumps({**found, "merged": True, "merged_commit": commit}, indent=2), encoding="utf-8")
+    item = Path(item_path)
+    if item.exists() and (new_text := land.recovered_text(item.read_text(encoding="utf-8"), commit)) is not None:
+        item.write_text(new_text, encoding="utf-8")
+        queue_export.record_written_paths(runs_dir.parent, [item.absolute()])
+    print(f"recover: {task} recorded merged into its phase branch at {commit[:12]}, state approved")
     return 0
 
 
@@ -11902,7 +12013,8 @@ RUNS_COMMANDS = [
         (
             commands.Arg(("run_id",)), commands.Arg(("task_id",)), commands.Arg(("--repo",), {"required": True}),
             commands.Arg(("--runs-dir",), {"help": "override: resolve task records here instead of the profile's workspace_dir"}), commands.Arg(("--profile",)),
-            commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the merge that would be made and exit without touching anything"}),
+            commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the merge and the record that would be made; writes no branch, row or file, but fetches origin's default branch first"}),
+            commands.Arg(("--reopen",), {"action": "store_true", "help": "put a task an earlier recover closed as done (no merge commit recorded) back to approved, then record the merge"}),
         ),
         "agent_tools.cli:_runs_recover", False, (),
     ),
