@@ -21,10 +21,10 @@ AGENT_TOOLS_DIR = Path(__file__).resolve().parent.parent / "agent_tools"
 UNEXPANDED = re.compile(r'"-C",\s*(?:repo|repo_dir|home_repo|where|host_repo)\b(?![.(\[])')
 
 FACTS = "repo is the land trigger's or revert action's repo, expanded upstream by chair_facts.read_initiative_repos"
-PRUNED = "repo is `where` from _pruned: _local_repo for the local clear, _host_repo for the host run (chair_exec.py:690, 695)"
+PRUNED = "repo is `where` from _pruned: _local_repo for the local clear, _host_repo for the host run (chair_exec_land.py:753, 758)"
 HOME_REPO = (
     "home_repo is set once in _carry_forward: _local_repo here, _host_repo over ssh, host-relative while deps.home is set"
-    " (production sets it, chair_exec.py:1893) and the recorded repo unchanged when it is empty"
+    " (production sets it, chair_exec_edge.py:485) and the recorded repo unchanged when it is empty"
 )
 ORIGIN_HEAD = (
     "DEFECT: cox runs stranded passes base_name to runs_stranded as base_of, which gets the recorded repo from initiative"
@@ -37,7 +37,7 @@ SSH_CHAIR_PATH = (
 )
 SWEEP_OVER_SSH = (
     "DEFECT: _over_ssh binds delete_branches_with to the ssh door and chair_apply_review passes step.repo unconverted,"
-    " so the host gets the chair's path, not repo_path.host_form; the local door expands at chair_exec.py:1880"
+    " so the host gets the chair's path, not repo_path.host_form; the local door expands at chair_exec_land.py:753"
 )
 BASE_CALLERS = (
     "reached only through base_ref, whose callers pass an expanded path: chair_exec home_repo, cli expanduser and"
@@ -57,7 +57,7 @@ SITES: Sequence[tuple[str, str, int, str]] = [
     ("chair_exec_land.py", 'outcomes = [(name, deps.run(["git", "-C", repo, "branch", "-D", name])) for name in names]', 1, PRUNED),
     ("chair_exec_land.py", 'code, listing = deps.run(["git", "-C", where, "worktree", "list", "--porcelain"])', 1, PRUNED),
     ("chair_exec_land.py", 'code, output = deps.run(["git", "-C", where, *argv[1:]])', 1, PRUNED),
-    ("chair_exec_land.py", 'on_host, host_out = at_home(["git", "-C", host_repo or repo, "rev-parse", "--verify", "--quiet", ref])', 1, "host_repo is home_repo, host-relative over ssh while deps.home is set (chair_exec.py:1893); the `or repo` fallback and an empty deps.home send the recorded repo unchanged"),
+    ("chair_exec_land.py", 'on_host, host_out = at_home(["git", "-C", host_repo or repo, "rev-parse", "--verify", "--quiet", ref])', 1, "host_repo is home_repo, host-relative over ssh while deps.home is set (chair_exec_edge.py:485); the `or repo` fallback and an empty deps.home send the recorded repo unchanged"),
     ("chair_exec_land.py", 'code, out = at_home(["git", "-C", home_repo, "worktree", "add", tmp, branch])', 1, HOME_REPO),
     ("chair_exec_land.py", 'at_home(["git", "-C", home_repo, "worktree", "remove", "--force", tmp])', 1, HOME_REPO),
     ("chair_exec_land.py", 'rcode, rout = at_home(["git", "-C", home_repo, "worktree", "remove", "--force", tmp])', 2, HOME_REPO),
