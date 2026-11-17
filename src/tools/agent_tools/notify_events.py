@@ -158,7 +158,9 @@ def alarm_event(action: Mapping) -> Event:
 def events_from_tick(facts: Mapping, actions: Sequence[Mapping]) -> list[Event]:
     """Events in first-seen key order, one per key, the first action that carries a remedy winning; then the stall
     alarm's raises and all-clears; queue_empty comes last, when facts show nothing left to run."""
-    alarms = list({e.key: e for e in (alarm_event(a) for a in actions if a.get("kind") in ALARM_KINDS)}.values())
+    alarms = list({
+        e.key: e for e in (alarm_event(a) for a in actions if a.get("kind") in ALARM_KINDS and not a.get("quiet"))
+    }.values())
     chosen: dict[str, tuple[Mapping, Event]] = {}
     # A held file clears itself once its edit is kept or restored, but the edit is reported once, so it is exempt here.
     pushed = (

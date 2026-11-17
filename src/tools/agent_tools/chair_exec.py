@@ -1201,11 +1201,13 @@ def _stall_alarm(action: Action, deps: Deps) -> Result:
     """Edge. One courier entry for a stall the chair raised (`stall_raised`) or saw clear (`stall_cleared`), H7.1.
 
     The recorded row of this action is what marks the stall raised or cleared: the next tick's facts read it back
-    (`chair_stall_alarm.open_alarms`), so a stall is raised once and cleared once. A failed write records `failed`, and
-    the next tick plans it again."""
+    (`chair_stall_alarm.open_alarms`), so a stall is raised once and cleared once. A `quiet` clear writes no entry. A
+    failed write records `failed`, and the next tick plans it again."""
     raised = action["kind"] == "stall_alarm"
     stall, subject = action.get("stall", ""), action.get("subject", "")
     detail = action.get("detail", "")
+    if action.get("quiet"):  # a streak that went quiet: its recorded row closes the stall, and no one is told
+        return _result(action, "done", f"expired: {stall}")
     note = f"{'stall' if raised else 'all clear'}: {detail}"
     entry = courier.send(
         courier.Reference("initiative", subject or stall), deps.label or "chair", deps.note_to, note, uuid.uuid4().hex,

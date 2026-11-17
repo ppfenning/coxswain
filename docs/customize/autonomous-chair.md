@@ -920,25 +920,39 @@ timer files for this platform and prints the lines that activate them;
 
 Each tick, the chair checks three things that mean the loop has stopped moving:
 
-- **No land.** Initiatives are open (a landing record that is neither
-  `landed` nor `draft`), and nothing has landed for `land_hours`. A phase
-  merged into its initiative branch counts as a land, and so does an
-  initiative landed on its parent. The clock starts at the last land, or at
-  the oldest open initiative's creation if that is later.
-- **No launch.** Lanes are free and work is ready, but the chair has not
-  launched anything for `launch_minutes` and does not launch anything this
-  tick. Under a hard stop, nothing launches on purpose, so this check does
-  not apply.
+- **No land.** Initiatives are open, and nothing has landed for
+  `land_hours`. An initiative is open when its landing record is neither
+  `landed` nor `draft` and it is not held for a person. A phase merged into
+  its initiative branch counts as a land, and so does an initiative landed
+  on its parent. The clock starts at the latest of three times: the last
+  land, the oldest open initiative's creation, and the chair's first
+  recorded action.
+- **No launch.** Lanes are free and work is ready, but no launch has
+  completed for `launch_minutes`. If nothing has ever launched, the clock
+  starts at the chair's first recorded action. A planned launch does not
+  count, so a launch that is refused every tick does not hide the stall.
+  This check stays quiet while the chair's own idle-lanes line
+  (`idle_stall`, `idle_ready`) is raised for the same condition.
 - **The same failure.** One action on one target failed or was refused for
   the same reason `repeat_ticks` times in a row, and the last attempt was
-  less than an hour ago. Numbers in the reason are ignored, so a changing PR
-  number or count does not hide a repeat.
+  less than an hour ago. Numbers in the reason are ignored, so a changing
+  PR number or count does not hide a repeat. The alarm shows the newest
+  attempt's own reason.
+
+Under a hard stop, nothing launches or lands on purpose, so only the
+same-failure check runs. A no-land or no-launch alarm that is already
+raised is neither raised again nor cleared until the stop lifts.
 
 When a stall starts, the chair writes one `stall_raised` courier entry and
 pushes one `stall` notification. When the stall ends, it writes one
-`stall_cleared` entry and pushes one `all_clear`. The alarm records its
-own actions, and the next tick reads them back. A stall is never raised
-twice while it stands.
+`stall_cleared` entry and pushes one `all_clear`. A same-failure stall
+ends only when its streak breaks: the action succeeds, or fails for
+another reason. If the chair stops attempting the action and an hour
+passes with no attempt, the stall expires instead. It is closed without a
+message, because nothing showed that the failure was fixed. The alarm
+records its own actions, and the next tick reads them back. These rows are
+kept at any age, so a stall is never raised twice while it stands, however
+long it lasts.
 
 ```yaml
 chair:

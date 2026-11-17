@@ -130,3 +130,15 @@ prove less.
 
 A forge-neutral flow should be tested once, through Forgejo. Only argv building and output parsing are specific to
 `gh`, and those already sit in pure functions that unit tests cover.
+
+## Known fakes
+
+Each fake below stands in for a boundary that no real test covers yet. Each one names the test that will retire it.
+
+- `tests/devtools/gh_stub.py` is a `gh` executable put on PATH by `tests/devtools/test_release_rerun_e2e.py`. The
+  release rerun test runs the real `python -m devtools release` against real git repositories with bare origins. The
+  stub stores pull requests and releases in a JSON file and merges into the bare origin with real git. It cannot
+  notice a change in `gh`'s argv or JSON. It is retired by the scheduled contract tests against a sandbox GitHub
+  repository (option C above). Those tests cover each `gh` command the release uses: `pr create`, `pr list`,
+  `pr checks`, `pr merge`, `release create`, `release edit`, `release view`, `run list`, `run view`, `workflow run`,
+  and the `api` read of the branch protection's required checks.

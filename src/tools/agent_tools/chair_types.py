@@ -814,6 +814,7 @@ class Action(TypedDict, total=False):
     stall: str  # a stall_alarm or stall_clear: the stall's key (chair_stall_alarm.Stall)
     subject: str  # a stall_alarm or stall_clear: the initiative or task its courier entry points at
     detail: str  # a stall_alarm or stall_clear: what stalled, in words; the recorded reason is the executor's own
+    quiet: bool  # a stall_clear for a same-failure streak that went quiet: it closes the stall and tells no one
     carry: list[str]  # the phases a clear_branches keeps and merges main into
     url: str  # a review_landed names the review PR
     merged_at: str | None  # a review_landed names when that PR merged
