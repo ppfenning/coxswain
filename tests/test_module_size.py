@@ -17,7 +17,7 @@ OVER_LIMIT: dict[str, int] = {
     "src/graphs/harness/epic.py": 6669,
     "src/tools/agent_tools/chair_exec.py": 2633,
     "src/tools/agent_tools/chair_facts.py": 2224,
-    "src/tools/agent_tools/cli.py": 9104,
+    "src/tools/agent_tools/cli.py": 3552,
     "src/tools/agent_tools/dash_feed.py": 2384,
     "src/tools/agent_tools/route.py": 3016,
 }

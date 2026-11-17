@@ -22,7 +22,6 @@ from pathlib import Path
 from agent_tools.cli import (
     _LAZY_MODULES,
     _dev_moved,
-    _leader_runs_dir_or_refuse,
     _now_iso,
     _profile_path,
     _read_text_or_none,
@@ -53,6 +52,7 @@ from agent_tools.cli_chair_service import (
     _ChairUnitRefusal,
     _write_private,
 )
+from agent_tools.cli_runs import _leader_runs_dir_or_refuse
 
 
 def _migrate_kind(path: Path) -> str:

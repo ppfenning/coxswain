@@ -22,7 +22,6 @@ from agent_tools.cli import (
     STORE_DOUBLE_ENV,
     _lake_provider,
     _now_iso,
-    _profile_lane_hosts,
     _read_text_or_none,
     bounded_run,
     chair_read_lease,
@@ -60,6 +59,7 @@ from agent_tools.cli_doctor import (
 from agent_tools.cli_host import _origin_url
 from agent_tools.cli_install import _checkout_facts, _load_lazy_modules, _migrate_kind, _offered_tags
 from agent_tools.cli_route import _paths_apply_files, _paths_apply_rows
+from agent_tools.cli_runs_fetch import _profile_lane_hosts
 
 
 def _migrate_worktrees(checkout: Path) -> list[str] | None:

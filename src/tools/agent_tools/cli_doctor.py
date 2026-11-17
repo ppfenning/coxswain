@@ -21,8 +21,6 @@ from pathlib import Path
 import yaml
 
 from agent_tools.cli import (
-    _lane_host_candidates,
-    _profile_lane_hosts,
     _profile_path,
     _read_text_or_none,
     bounded_run,
@@ -54,6 +52,7 @@ from agent_tools.cli import (
 from agent_tools.cli_chair_service import _chair_default_environment_file, _write_private
 from agent_tools.cli_host import _run_ssh
 from agent_tools.cli_install import _load_lazy_modules, _migrate_kind, _schema_versions
+from agent_tools.cli_runs_fetch import _lane_host_candidates, _profile_lane_hosts
 from agent_tools.cli_setup_store import _doctor_profile, _probe_store
 from agent_tools.cli_views import _dash_dirs
 
