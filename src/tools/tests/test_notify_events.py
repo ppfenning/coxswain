@@ -105,7 +105,7 @@ def test_a_workspace_only_edit_planned_by_the_chair_pushes_one_needs_attention_w
     (event,) = events_from_tick({}, actions)
     assert event.kind == "needs_attention" and event.key.startswith("needs_attention:work/a.md|")
     assert "changed with no matching store change (state changed)" in event.body
-    assert plan_held_files({"held_files": [row], "held_reported": ["work/a.md|b1"]}) == []
+    assert plan_held_files({"held_files": [row], "held_reported": ["work/a.md|state changed"]}) == []
 
 
 def test_a_remedy_command_is_carried_in_the_body():

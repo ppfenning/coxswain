@@ -567,9 +567,16 @@ def _held_reason(held: dict) -> str:
     return f"{held['path']}: {what}; keep it with `cox route import`, or restore the export"
 
 
+def held_key(path: str, diff_summary: str) -> str:
+    """`<path>|<diff summary>`: what a person acts on. The summary names the fields and body lines that differ, never
+    their values, so a writer that rewrites a timestamp in the file on every tick is reported once."""
+    return f"{path}|{diff_summary}"
+
+
 def plan_held_files(facts: Facts) -> list[Action]:
-    """One needs_chair per file the last board export held, naming its path, unless the same held text (`path|blob`)
-    was already reported: a hand edit reaches the chair once, never silently, and a new edit to the file again."""
+    """One needs_chair per file the last board export held, naming its path, unless the same difference
+    (`held_key`) was already reported: a hand edit reaches the chair once, never silently, and an edit that changes
+    other fields or lines again. The blob still rides on the action, for the saved copy it names."""
     reported = set(facts.get("held_reported", []))
     return [
         {
@@ -578,10 +585,11 @@ def plan_held_files(facts: Facts) -> list[Action]:
             "cause": HELD_FILE_CAUSE,
             "path": held["path"],
             "blob": held["blob"],
+            "diff_summary": held.get("diff_summary") or "",
             "reason": _held_reason(held),
         }
         for held in facts.get("held_files", [])
-        if f"{held['path']}|{held['blob']}" not in reported
+        if held_key(held["path"], held.get("diff_summary") or "") not in reported
     ]
 
 

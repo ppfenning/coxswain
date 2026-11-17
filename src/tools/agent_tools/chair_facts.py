@@ -1177,12 +1177,23 @@ def decompose_misses_reported_keys(actions: Sequence[Row]) -> list[str]:
 
 
 def held_file_keys(actions: Sequence[Row]) -> list[str]:
-    """`<path>|<blob>` of each held_file needs_chair row, in row order."""
+    """`chair_plan.held_key` (`<path>|<diff summary>`) of each held_file needs_chair row, in row order. A row recorded
+    before the summary rode on the action reads as an empty summary."""
     docs = [_action_doc(row) for row in actions]
     return [
-        f"{d['path']}|{d.get('blob', '')}"
+        f"{d['path']}|{d.get('diff_summary') or ''}"
         for d in docs
         if d.get("kind") == "needs_chair" and d.get("cause") == HELD_FILE_CAUSE and d.get("path")
+    ]
+
+
+def stale_draft_keys(actions: Sequence[Row]) -> list[str]:
+    """`chair_plan_stale.draft_key` of each stale_to_draft row, done or refused, in row order."""
+    docs = [_action_doc(row) for row in actions]
+    return [
+        f"{d['initiative']}|{','.join(sorted(str(t) for t in d.get('stale_tasks') or []))}"
+        for d in docs
+        if d.get("kind") == "stale_to_draft" and d.get("initiative")
     ]
 
 
@@ -2067,6 +2078,7 @@ def gather_facts(
         "env_stale_reported": stale_checkout_keys(action_rows),
         "held_files": [dict(h) for h in deps.held_files()],  # type: ignore[misc]
         "held_reported": held_file_keys(action_rows),
+        "stale_drafts_reported": stale_draft_keys(action_rows),
         "held_initiatives": sorted(held_initiatives(rows)) if rows else [],
         "deferred_initiatives": deferred_initiatives(rows, current) if rows and current is not None else {},
         "host_env": host_env_from_rows(login_hosts),

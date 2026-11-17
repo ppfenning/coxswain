@@ -19,6 +19,16 @@ def _already_drafted(facts: Facts) -> frozenset[str]:
     return frozenset(i["id"] for i in facts["initiatives"] if i.get("draft", False))
 
 
+def _held(facts: Facts) -> frozenset[str]:
+    """Initiatives a person already decides: drafting one moves nothing, and the board export restores its files."""
+    return frozenset(facts.get("held_initiatives", []))
+
+
+def draft_key(initiative: str, stale_tasks: list[str]) -> str:
+    """`<initiative>|<sorted stale task ids>`: one stale_to_draft per stale set, however many ticks it stays stale."""
+    return f"{initiative}|{','.join(sorted(stale_tasks))}"
+
+
 def _reason(row: StaleCandidate, stale_days: int, now_iso: str) -> str | None:
     return stale_reason(
         row["state"],
@@ -32,8 +42,11 @@ def _reason(row: StaleCandidate, stale_days: int, now_iso: str) -> str | None:
 
 
 def plan_stale(facts: Facts, now: datetime) -> list[Action]:
-    """One stale_to_draft per initiative with at least one stale row, in the order first seen."""
-    excluded = _already_drafted(facts)
+    """One stale_to_draft per initiative with at least one stale row, in the order first seen. None for a held
+    initiative, nor for one whose stale set already has a stale_to_draft in the action log, done or refused: a refused
+    one is refused again on every tick, and a done one the board export reverted would be rewritten on every tick."""
+    excluded = _already_drafted(facts) | _held(facts)
+    reported = frozenset(facts.get("stale_drafts_reported", []))
     now_iso = now.isoformat()
     stale_days = facts.get("stale_days", 7)
     candidates = [row for row in facts.get("stale_candidates", []) if row["initiative"] not in excluded]
@@ -44,13 +57,15 @@ def plan_stale(facts: Facts, now: datetime) -> list[Action]:
         if reason is not None
     ]
     order = list(dict.fromkeys(initiative for initiative, _, _ in stale_rows))
+    stale_sets = {initiative: [task_id for i, task_id, _ in stale_rows if i == initiative] for initiative in order}
     return [
         {
             "kind": "stale_to_draft",
             "initiative": initiative,
-            "stale_tasks": [task_id for i, task_id, _ in stale_rows if i == initiative],
+            "stale_tasks": stale_sets[initiative],
             "reason": next(reason for i, _, reason in stale_rows if i == initiative),
             "since": now_iso,
         }
         for initiative in order
+        if draft_key(initiative, stale_sets[initiative]) not in reported
     ]

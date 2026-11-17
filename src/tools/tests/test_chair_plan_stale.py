@@ -57,3 +57,18 @@ def test_two_initiatives_each_with_a_stale_row_give_two_actions():
     facts = _facts(stale_candidates=[_row("a", "a-1"), _row("b", "b-1")])
     actions = plan_stale(facts, _NOW)
     assert [(a["kind"], a["initiative"]) for a in actions] == [("stale_to_draft", "a"), ("stale_to_draft", "b")]
+
+
+def test_an_initiative_already_drafted_for_the_same_stale_tasks_gives_no_action():
+    facts = _facts(stale_candidates=[_row("a", "a-1"), _row("a", "a-2")], stale_drafts_reported=["a|a-1,a-2"])
+    assert plan_stale(facts, _NOW) == []
+
+
+def test_a_changed_stale_task_set_gives_a_new_action():
+    facts = _facts(stale_candidates=[_row("a", "a-1"), _row("a", "a-3")], stale_drafts_reported=["a|a-1,a-2"])
+    assert [a["stale_tasks"] for a in plan_stale(facts, _NOW)] == [["a-1", "a-3"]]
+
+
+def test_a_held_initiative_gives_no_action():
+    facts = _facts(stale_candidates=[_row("a", "a-1"), _row("b", "b-1")], held_initiatives=["a"])
+    assert [a["initiative"] for a in plan_stale(facts, _NOW)] == ["b"]

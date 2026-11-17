@@ -1348,12 +1348,21 @@ def _propose_tiers(action: Action, deps: Deps) -> Result:
     return _result(action, "done", "proposed tiers to the inbox")
 
 
+def export_restores(planned: Mapping[str, str], rows: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Pure. The paths of `planned` (workspace-relative path to text) the board export would write back over, sorted:
+    each one a store row renders to other text. A path no row renders is the workspace's own and stays written."""
+    rendered = queue_export.export_rows([dict(r) for r in rows])
+    return sorted(path for path, text in planned.items() if path in rendered and rendered[path] != text)
+
+
 def _stale_to_draft(action: Action, deps: Deps) -> Result:
     """Edge. Reads the initiative and its tickets, asks `stale_draft.plan_stale_draft` to turn the stale ones into
     a draft, and on success writes the rewritten files and tells `deps.note_to` by courier.
 
     A Refusal (an initiative already a draft, no stale task, an unknown ticket) writes nothing and sends no
-    note; it is reported as an ordinary refusal, the same as any other action's precondition failure.
+    note; it is reported as an ordinary refusal, the same as any other action's precondition failure. So is a plan
+    the board export would undo: the store carries no draft flag, so under a store every rewritten file would be
+    restored on the next export, saved as a hand edit, and drafted again on the next tick.
     """
     initiative = action.get("initiative", "")
     initiative_path = deps.work_dir / "work" / initiative / "initiative.md"
@@ -1373,6 +1382,13 @@ def _stale_to_draft(action: Action, deps: Deps) -> Result:
     plan = stale_draft.plan_stale_draft(initiative_text, ticket_texts, stale_tasks, reason, action.get("since", ""), deps.now())
     if isinstance(plan, stale_draft.Refusal):
         return _result(action, "refused", plan.reason)
+    planned = {
+        f"work/{initiative}/initiative.md": plan.initiative_text,
+        **{str(ticket_paths[t].relative_to(deps.work_dir)): plan.tickets[t] for t in stale_tasks},
+    }
+    rows = [r for r in deps.initiative_rows() if r.get("initiative") == initiative]
+    if restored := export_restores(planned, rows):
+        return _result(action, "refused", f"the store does not hold the draft, so the board export would restore {', '.join(restored)}")
     initiative_path.write_text(plan.initiative_text, encoding="utf-8")
     for task_id in stale_tasks:
         ticket_paths[task_id].write_text(plan.tickets[task_id], encoding="utf-8")

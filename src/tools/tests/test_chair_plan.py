@@ -1578,11 +1578,12 @@ def test_a_held_row_with_an_empty_or_missing_diff_summary_keeps_the_export_reaso
     ]
 
 
-def test_a_held_edit_is_reported_once_and_a_new_edit_to_the_file_again():
+def test_a_held_edit_is_reported_once_per_diff_summary_whatever_its_blob():
     row = {**_HELD, "diff_summary": "state changed"}
-    reported = ["work/a/p1/t1.md|b1"]
+    reported = ["work/a/p1/t1.md|state changed"]
     assert plan_held_files({"held_files": [row], "held_reported": reported}) == []
-    assert len(plan_held_files({"held_files": [{**row, "blob": "b2"}], "held_reported": reported})) == 1
+    assert plan_held_files({"held_files": [{**row, "blob": "b2"}], "held_reported": reported}) == []
+    assert len(plan_held_files({"held_files": [{**row, "diff_summary": "title changed"}], "held_reported": reported})) == 1
 
 
 def test_a_steward_key_in_the_facts_is_ignored_and_plans_no_merge_gate_or_steward_event():

@@ -83,6 +83,8 @@ def plan_stale_draft(
 ) -> Plan | Refusal:
     if _is_draft(initiative_text):
         return Refusal("initiative is already a draft")
+    if (_field(initiative_text, "held") or "").lower() == "true":
+        return Refusal("initiative is held; a person already decides it")
     if not stale_task_ids:
         return Refusal("no stale task to draft")
     missing = [task_id for task_id in stale_task_ids if task_id not in ticket_texts]
