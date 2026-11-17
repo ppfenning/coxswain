@@ -24,6 +24,7 @@ from agent_tools.chair_idle_stall import IDLE_STALL_MINUTES
 from agent_tools.chair_land_backoff import LandRefusal, aligned
 from agent_tools.chair_land_freeze import LandFreeze, read_freeze
 from agent_tools.chair_launch_budget import DEFAULT_MAX_LAUNCHES_PER_HOUR, WINDOW
+from agent_tools.chair_no_progress import NoProgress, RunOutcome, no_progress_facts, resolve_no_progress_after
 from agent_tools.chair_phases import launchable_phases
 from agent_tools.chair_plan import initiative_homes
 from agent_tools.chair_plan_land import planned_tasks
@@ -281,6 +282,9 @@ class FactsDeps:
     stale_days: Callable[[], object] | None = None  # raw profile chair.stale_days; absent means 7 days
     max_launches_per_hour: Callable[[], object] | None = None  # raw profile chair.max_launches_per_hour; absent means the default
     quarantine_hold_after: Callable[[], object] | None = None  # raw profile chair.quarantine_hold_after; absent means 3
+    no_progress_after: Callable[[], object] | None = None  # raw profile chair.no_progress_after; absent means 2
+    # (initiative ids, how many) -> each initiative's newest ended runs, newest first (chair_read_run_outcomes); absent means no no-progress hold
+    run_outcomes: Callable[[Sequence[str], int], Mapping[str, Sequence[RunOutcome]]] | None = None
     shared_file_limit: Callable[[], object] | None = None  # raw profile chair.max_shared_file_initiatives; absent means 2
     serial_files: Callable[[], object] | None = None  # raw profile top-level serial_files; absent means none
     host_load_ceiling: Callable[[], object] | None = None  # raw profile chair.host_load_ceiling; absent means no ceiling
@@ -1821,6 +1825,23 @@ def resolve_max_launches_per_hour(value: object) -> int:
     return limit if limit > 0 and not isinstance(value, bool) else DEFAULT_MAX_LAUNCHES_PER_HOUR
 
 
+def _no_progress(deps: FactsDeps, rows: Sequence[Row], started: Sequence[str]) -> dict[str, NoProgress]:
+    """The no-progress fact for the started initiatives; {} without a run reader or with the guard off."""
+    after = resolve_no_progress_after(deps.no_progress_after() if deps.no_progress_after is not None else None)
+    if deps.run_outcomes is None or after == 0 or not started:
+        return {}
+    return no_progress_from(rows, deps.run_outcomes(started, after), after)
+
+
+def no_progress_from(rows: Sequence[Row], outcomes: Mapping[str, Sequence[RunOutcome]], after: int) -> dict[str, NoProgress]:
+    """`chair_no_progress.no_progress_facts` with each initiative's fresh-start mark read off its queue row, so the runs
+    up to the last `cox route release` do not count."""
+    from core.workstore import fresh_cutoff  # lazy: core sits beside agent_tools in one venv
+
+    cutoffs = {str(r.get("initiative") or r.get("task_id")): fresh_cutoff(r.get("extra")) for r in rows if r.get("kind") == "initiative"}
+    return no_progress_facts(outcomes, cutoffs, after)
+
+
 def resolve_quarantine_hold_after(value: object) -> int:
     """The profile's raw `chair.quarantine_hold_after`: a whole number of at least 0 (0 never holds on the count), else 3.
     A bool, a fraction, a negative number and text all read as the default."""
@@ -2114,6 +2135,7 @@ def gather_facts(
             deps.quarantine_hold_after() if deps.quarantine_hold_after is not None else None
         ),
         "held_tasks": held_tasks_from_rows(rows),
+        "no_progress": _no_progress(deps, rows, [i["id"] for i in initiatives if i.get("started")]),
         "newest_run_host": newest_run_host,
         "run_hosts": run_host_facts(deps.run_hosts()),
         "login_hosts": login_hosts,

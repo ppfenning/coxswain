@@ -773,6 +773,36 @@ keeps its earlier failures. A stoppage and a failed rescue do not count.
 The chair also holds a task that comes back quarantined in the same run it
 already asked triage for. This happens when triage itself could not run.
 
+### The no-progress hold
+
+The chair holds an initiative for you when its last runs all ended the same
+way. Two runs end the same way when every phase has the same state (such as
+`partial` or `blocked`) and the runs recorded no new task state. Another run
+would end the same way, so the chair stops relaunching it.
+
+The number of runs is `chair.no_progress_after` in the profile. It defaults
+to 2. Setting it to 0 turns the hold off.
+
+```yaml
+chair:
+  no_progress_after: 2
+```
+
+The held initiative's reason starts with `needs you: no progress:`. It names
+the runs and the outcome they repeated, with the reason of the first phase
+that did not complete. The inbox gets one `needs_attention` entry on the
+courier for the hold.
+
+Fix the cause, then release the initiative:
+
+```sh
+cox route release <initiative>
+```
+
+The release marks the initiative's newest run. Runs up to that mark no longer
+count, so the chair relaunches the initiative and holds it again only if the
+next runs also end the same way.
+
 ### A held task
 
 A held task is in state `blocked`, and its row in the store carries a reason

@@ -115,6 +115,29 @@ def _initiative_held_text(text: str, reason: str, by: str, date: str) -> str:
     return _join(eol, _with_line(_with_line(lines, "held", "held: true"), "hold_reason", reason_line), rest)
 
 
+def initiative_held_as(text: str, value: str) -> str:
+    """The initiative text with `held: true` and `hold_reason` set to `value` as it is: the chair's own hold, whose
+    reason starts with the `needs you:` mark rather than a person's name and date."""
+    line = f"hold_reason: {json.dumps(value, ensure_ascii=False)}"
+    split = _split(text)
+    if split is None:
+        return f"---\nheld: true\n{line}\n---\n{text}"
+    eol, lines, rest = split
+    return _join(eol, _with_line(_with_line(lines, "held", "held: true"), "hold_reason", line), rest)
+
+
+def initiative_row_held_as(row: Mapping, value: str) -> dict:
+    return _initiative_row_held(row, value)
+
+
+def initiative_row_of(rows: Sequence[Mapping], initiative: str) -> Mapping | None:
+    return _initiative_row(rows, initiative)
+
+
+def is_held_initiative(row: Mapping) -> bool:
+    return _was_held(row)
+
+
 def _initiative_released_text(text: str) -> str:
     split = _split(text)
     if split is None:
