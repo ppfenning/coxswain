@@ -2275,6 +2275,17 @@ Coxswain is in beta — versions may change between releases
 </li>
         
           <li class="md-nav__item">
+  <a href="#the-no-progress-hold" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The no-progress hold
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#a-held-task" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -7074,6 +7085,17 @@ Coxswain is in beta — versions may change between releases
 </li>
         
           <li class="md-nav__item">
+  <a href="#the-no-progress-hold" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The no-progress hold
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#a-held-task" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -7757,6 +7779,30 @@ the profile. It defaults to 3. Setting it to 0 turns the limit off.</p>
 keeps its earlier failures. A stoppage and a failed rescue do not count.</p>
 <p>The chair also holds a task that comes back quarantined in the same run it
 already asked triage for. This happens when triage itself could not run.</p>
+<h3 id="the-no-progress-hold">The no-progress hold</h3>
+<p>The chair holds an initiative for you when its last runs all ended the same
+way. Two runs end the same way when every phase has the same state (such as
+<code>partial</code> or <code>blocked</code>) and the runs recorded no new task state. Another run
+would end the same way, so the chair stops relaunching it.</p>
+<p>The number of runs is <code>chair.no_progress_after</code> in the profile. It defaults
+to 2. Setting it to 0 turns the hold off.</p>
+<div class="highlight"><pre><span></span><code><span class="nt">chair</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">no_progress_after</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+</code></pre></div>
+<p>The held initiative's reason starts with <code>needs you: no progress:</code>. It names
+the runs and the outcome they repeated, with the reason of the first phase
+that did not complete. The inbox gets one <code>needs_attention</code> entry on the
+courier for the hold.</p>
+<p>Fix the cause, then release the initiative:</p>
+<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>route<span class="w"> </span>release<span class="w"> </span>&lt;initiative&gt;
+</code></pre></div>
+<p>The release marks the initiative's newest run. Runs up to that mark no longer
+count, so the chair relaunches the initiative and holds it again only if the
+next runs also end the same way.</p>
+<p>The chair does not judge an initiative while its newest run is still going.
+If the hold is cleared some other way, without a release, the chair
+relaunches the initiative and holds it again only after a newer run ends the
+same way.</p>
 <h3 id="a-held-task">A held task</h3>
 <p>A held task is in state <code>blocked</code>, and its row in the store carries a reason
 that starts with <code>needs you:</code>. You see it in three places:</p>
