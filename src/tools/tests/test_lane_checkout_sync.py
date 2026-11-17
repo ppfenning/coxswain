@@ -149,6 +149,31 @@ def test_two_hosts_one_dirty_one_clean_yield_one_action() -> None:
     assert run.merges == []
 
 
+def test_host_path_equal_to_install_path_is_skipped_with_no_ssh_call() -> None:
+    run = FakeRunner({})
+    action = lcs.sync_host_checkout(ALPHA, "/chair/ws/repo", CHAIR_WS, run, install_paths={"alpha": ALPHA_PATH})
+    assert action is None
+    assert run.calls == []
+
+
+def test_host_path_differing_from_install_path_syncs_as_before() -> None:
+    install_paths = {"alpha": "/srv/install/repo"}
+    run = FakeRunner({"me@alpha": (0, facts_out())})
+    assert lcs.sync_host_checkout(ALPHA, "/chair/ws/repo", CHAIR_WS, run, install_paths=install_paths) is None
+    assert len(run.merges) == 1
+    dirty = FakeRunner({"me@alpha": (0, facts_out(clean=False))})
+    action = lcs.sync_host_checkout(ALPHA, "/chair/ws/repo", CHAIR_WS, dirty, install_paths=install_paths)
+    assert action is not None
+    assert action["cause"] == "lane_checkout_dirty"
+
+
+def test_lane_sync_skips_only_the_host_whose_path_is_its_install() -> None:
+    run = FakeRunner({"me@beta": (0, facts_out(at_tip=True))})
+    actions = lcs.sync_lane_checkouts([ALPHA, BETA], ["/chair/ws/repo"], CHAIR_WS, run, {"alpha": ALPHA_PATH})
+    assert actions == []
+    assert [call[-2] for call in run.calls] == ["me@beta"]
+
+
 def test_every_host_and_repo_is_visited() -> None:
     run = FakeRunner({"me@alpha": (0, facts_out(at_tip=True)), "me@beta": (0, facts_out(at_tip=True))})
     repos = ["/chair/ws/one", "/chair/ws/two"]

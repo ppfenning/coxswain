@@ -8,7 +8,7 @@ invocation fetches origin's default branch and reads the five facts, and a secon
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Literal
 
 from agent_tools import checkout_sync, remote_argv, remote_fetch
@@ -95,13 +95,23 @@ def _call(run: Runner, argv: Sequence[str]) -> tuple[int, str]:
         return _RAISED_CODE, f"{type(exc).__name__}: {exc}"
 
 
-def sync_host_checkout(host: LaneHost, chair_repo: str, chair_workspace: str, run: Runner) -> dict[str, str] | None:
+def sync_host_checkout(
+    host: LaneHost,
+    chair_repo: str,
+    chair_workspace: str,
+    run: Runner,
+    install_paths: Mapping[str, str] | None = None,
+) -> dict[str, str] | None:
     """Edge. Fetch and read, decide, and fast-forward only on fast_forward.
 
     Unreadable facts, an unreachable host and a fast-forward git refuses are all the unreachable cause: the
-    checkout is left as it was and nothing is retried another way.
+    checkout is left as it was and nothing is retried another way. A host path equal to the host's entry in
+    install_paths is skipped with no ssh call.
     """
     host_path = remote_fetch.host_repo_path(chair_workspace, host.workspace_dir, chair_repo)
+    # The install checkout moves only through the edge upgrade; the lane sync must not read or fast-forward it.
+    if install_paths is not None and install_paths.get(host.name) == host_path:
+        return None
     code, out = _call(run, _read_argv(host, host_path))
     facts = parse_facts(out) if code == 0 else None
     if facts is None:
@@ -118,12 +128,16 @@ def sync_host_checkout(host: LaneHost, chair_repo: str, chair_workspace: str, ru
 
 
 def sync_lane_checkouts(
-    hosts: Sequence[LaneHost], repos: Sequence[str], chair_workspace: str, run: Runner
+    hosts: Sequence[LaneHost],
+    repos: Sequence[str],
+    chair_workspace: str,
+    run: Runner,
+    install_paths: Mapping[str, str] | None = None,
 ) -> list[dict[str, str]]:
     """Every repo on every host; the needs_chair actions for the checkouts left alone, empty when all are current."""
     return [
         action
         for host in hosts
         for repo in repos
-        if (action := sync_host_checkout(host, repo, chair_workspace, run)) is not None
+        if (action := sync_host_checkout(host, repo, chair_workspace, run, install_paths)) is not None
     ]
