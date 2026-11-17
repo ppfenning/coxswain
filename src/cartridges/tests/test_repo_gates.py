@@ -169,7 +169,26 @@ EXCLUDE_BASELINE = frozenset({
 })
 
 
+# H9 (docs/hardening.md): a module split out of an excluded one takes its place on the list, and only that: each part
+# named here may be excluded because the code it holds was excluded before the move, never as a net new entry. The old
+# module stays listed only while it still holds unmoved code, and leaves (here and in the baseline) once it passes.
+SPLIT_FROM: dict[str, frozenset[str]] = {
+    "src/tools/agent_tools/cli.py": frozenset({
+        "src/tools/agent_tools/cli_doctor.py",
+        "src/tools/agent_tools/cli_install.py",
+        "src/tools/agent_tools/cli_migrate.py",
+        "src/tools/agent_tools/cli_setup_store.py",
+    }),
+}
+
+
+def allowed_excludes(baseline: frozenset[str], split_from: dict[str, frozenset[str]]) -> frozenset[str]:
+    """The baseline, plus each part of a module split out of a baseline module or out of one that has since left it."""
+    return baseline.union(*split_from.values())
+
+
 def test_the_exclude_list_only_shrinks():
     excluded = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["pyright"].get("exclude", [])
-    assert set(excluded) <= EXCLUDE_BASELINE, sorted(set(excluded) - EXCLUDE_BASELINE)
+    allowed = allowed_excludes(EXCLUDE_BASELINE, SPLIT_FROM)
+    assert set(excluded) <= allowed, sorted(set(excluded) - allowed)
     assert [path for path in excluded if not (ROOT / path).is_file()] == []  # a moved or deleted module leaves the list
