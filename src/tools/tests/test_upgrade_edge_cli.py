@@ -266,7 +266,7 @@ def test_upgrade_to_a_commit_moves_the_checkout_by_the_release_path(tmp_path: Pa
         ["git", "-C", checkout, "fetch", "--tags"],
         ["git", "-C", checkout, "checkout", B],
         ["uv", "sync", "--frozen", "--all-extras", "--inexact", "-q"],
-        ["uv", "tool", "install", "--force", "-q", "--editable", checkout],
+        ["uv", "tool", "install", "--force", "-q", "--editable", f"{checkout}[parquet,postgres]"],
         [f"{checkout}/crew/install.sh"],
     ]
     assert calls[-1] == ["cox", "setup", "doctor"]

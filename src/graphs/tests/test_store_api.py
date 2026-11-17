@@ -6,6 +6,8 @@ same `open_store` production uses. Postgres itself is covered by the smoke suite
 
 from typing import get_args
 
+import pytest
+
 from core.workstore import STATES
 from harness import store_api, store_cli
 from harness.store_api import (
@@ -30,7 +32,9 @@ from harness.store_api import (
     TableStamp,
     Upserted,
 )
-from harness.store_migrate import open_store
+from harness.store_dialect import POSTGRES, SQLITE
+from harness.store_migrate import PG_DUMP_TIMEOUT_S, exempt_from_bounds, open_store
+from harness.store_work_state import set_state
 from harness.store_write import Store
 
 NOW = "2026-11-17T12:00:00Z"
@@ -251,3 +255,41 @@ def test_a_state_write_that_names_no_one_is_refused_and_opens_no_store(tmp_path)
         2, "who made the change (by) must not be empty"
     )
     assert not (tmp_path / "cox.db").exists()
+
+
+def test_a_state_that_is_not_a_work_state_is_named():
+    assert store_api.state_problem("ready", None) is None
+    assert store_api.state_problem("ready", "done") is None
+    assert store_api.state_problem("finished", None).startswith("unknown work state 'finished'; expected one of todo,")
+    assert store_api.state_problem("ready", "Ready").startswith("unknown work state 'Ready'")
+
+
+def test_an_unknown_state_or_expect_is_failed_and_opens_no_store(tmp_path):
+    for state, expected in (("finished", None), ("ready", "nope")):
+        found = store_api.set_work_state(_url(tmp_path), "i", "t1", state, "me", NOW, phase="p1", expected=expected)
+        assert isinstance(found, Failed) and "unknown work state" in found.detail
+    assert not (tmp_path / "cox.db").exists()
+
+
+def test_the_low_level_setter_refuses_an_unknown_state_and_writes_nothing(tmp_path):
+    url = _url(tmp_path)
+    conn = open_store(url, NOW)
+    try:
+        with pytest.raises(ValueError, match="unknown work state 'finished'"):
+            set_state(conn, "i", "t1", "finished", "me", "p1", NOW)
+    finally:
+        conn.close()
+    assert store_api.work_item_rows(url, "i") == []
+
+
+def test_a_row_that_will_not_encode_is_failed_not_raised(tmp_path):
+    extra = {"x": object()}
+    row = {"initiative": "i", "task_id": "t1", "kind": "task", "phase": "p1", "state": "ready", "needs": [], "extra": extra}
+    found = store_api.upsert_queue_row(_url(tmp_path), row, NOW)
+    assert isinstance(found, Failed) and found.detail.startswith("the store call failed: TypeError")
+
+
+def test_a_migration_lifts_the_statement_and_lock_bounds_for_its_own_transaction_only():
+    assert exempt_from_bounds(POSTGRES) == ("SET LOCAL statement_timeout = 0", "SET LOCAL lock_timeout = 0")
+    assert exempt_from_bounds(SQLITE) == ()
+    assert PG_DUMP_TIMEOUT_S > 0

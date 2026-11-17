@@ -36,3 +36,16 @@ def test_an_install_editable_from_another_checkout_warns_and_never_fails_the_doc
     assert (row["ok"], row["warn"]) == (True, True)
     assert "editable from /home/user/repos/other, outside the install checkout" in row["detail"]
     assert doctor.row_tier(row) == "advisory" and doctor.exit_code([row]) == 0
+
+
+def test_the_extras_row_is_ok_when_nothing_is_missing():
+    assert doctor.extras_row("/usr/bin/python3", []) == {
+        "check": "extras", "ok": True, "detail": "/usr/bin/python3: postgres, parquet",
+    }
+
+
+def test_a_missing_extra_warns_by_name_with_the_fix_and_never_fails_the_doctor():
+    row = doctor.extras_row("/usr/bin/python3", ["postgres"])
+    assert (row["ok"], row["warn"]) == (True, True)
+    assert "lacks the postgres extra(s)" in row["detail"] and "cox setup install" in row["detail"]
+    assert doctor.row_tier(row) == "advisory"

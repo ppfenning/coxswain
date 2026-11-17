@@ -63,7 +63,7 @@ REFUSED = [
 ]
 NEEDS_CHAIR_ID = item_id("needs-chair", "T-9")
 REFUSED_ID = item_id("refused-command", "run-2\0T-4")
-DROP_ARGV = ("python", "-m", "harness.store_cli", "set-state", "run-2", "T-4", "dropped", "--by", "chair")
+DROP_ARGV = ("cox", "route", "edit", "T-4", "--state", "dropped")
 
 
 class FakeRun:
@@ -244,7 +244,7 @@ def test_deny_on_a_refused_id_runs_its_drop_argv(capsys):
     run = FakeRun(0)
     assert invoke_new_sources(["deny", REFUSED_ID], run) == 0
     assert run.calls == [DROP_ARGV]
-    assert capsys.readouterr().out == "python -m harness.store_cli set-state run-2 T-4 dropped --by chair\n"
+    assert capsys.readouterr().out == "cox route edit T-4 --state dropped\n"
 
 
 @pytest.fixture

@@ -9382,6 +9382,12 @@ def _doctor_running_install_rows(profile: dict | None) -> list[dict]:
     return [doctor.running_install_row(checkout, sys.executable, doctor.editable_source(record))]
 
 
+def _doctor_extras_rows() -> list[dict]:
+    """Edge. The `extras` row: which of the extras `cox` needs this interpreter cannot import. Finds, never imports."""
+    missing = [extra for extra, module in doctor.EXTRA_MODULES if importlib.util.find_spec(module) is None]
+    return [doctor.extras_row(sys.executable, missing)]
+
+
 def _doctor_steward_rows(profile: dict | None) -> list[dict]:
     """Edge. The steward row; skipped without a profile. A missing or malformed `chair` reads as off."""
     if profile is None:
@@ -9421,6 +9427,7 @@ def _setup_doctor(a: argparse.Namespace) -> int:
         *_doctor_store_rows(profile),
         *_doctor_dash_build_rows(profile),
         *_doctor_running_install_rows(profile),
+        *_doctor_extras_rows(),
         *_doctor_steward_rows(profile),
         *_doctor_log_rows(profile, fix=getattr(a, "fix", False), out=sys.stderr if a.json else sys.stdout),
     ]

@@ -768,7 +768,7 @@ def test_apply_loads_the_lazy_modules_then_swaps_the_component_tools_for_coxswai
         ["uv", "sync", "--frozen", "--all-extras", "--inexact", "-q"],
         ["uv", "tool", "uninstall", "coxswain-tools"],
         ["uv", "tool", "uninstall", "agent-cartridges"],
-        ["uv", "tool", "install", "--force", "-q", "--editable", f"{layout.checkout}[lake]"],
+        ["uv", "tool", "install", "--force", "-q", "--editable", f"{layout.checkout}[lake,parquet,postgres]"],
     ]
 
 

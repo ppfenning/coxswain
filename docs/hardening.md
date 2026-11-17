@@ -56,11 +56,18 @@ API's enums; a lane check imports only its worktree's code (a test proves it wit
 **Status.** `harness.store_api` is the typed store API: `*_on` functions over an open connection, which
 `harness.store_cli` wraps, and url-level functions that `agent_tools` calls in process (`store_cli`, `run_store`).
 Its values are frozen dataclasses and TypedDicts; `WorkState` is the one enum and `core.workstore.STATES` must equal
-it. What stays a command line, and why: the next-step hints `cox runs recover --reopen` and the chair's remedies print
-for a person (`-m harness.store_cli set-state`), and `store_switch` copies a store with `-m harness.store_copy`, which
-needs the sqlite double set in its own environment. The chair's trace prune (`-m harness.store_backfill_traces
-prune`) still runs as a child of the profile's harness python: it is file maintenance, not a store row, and moves
-when the chair's housekeeping does.
+it. The chair's remedies, which `cox inbox` accept and deny run, are `cox route edit <task> --state <state>`. What stays a
+command line, and why: the `cox runs recover --reopen` hint prints `-m harness.store_cli set-state` for a person, and
+`store_switch` copies a store with `-m harness.store_copy`, which needs the sqlite double set in its own environment.
+The chair's trace prune (`-m harness.store_backfill_traces prune`) still runs as a child of the profile's harness
+python: it is file maintenance, not a store row, and moves when the chair's housekeeping does.
+
+**Bounds.** An in-process store call is bounded by its connection, every value in `harness.store_dialect`: a statement
+runs at most 60 s (`statement_timeout`), a lock wait at most 30 s (`lock_timeout`, and sqlite's busy timeout in the
+suites), a silent peer surfaces in 60 s (`tcp_user_timeout`), a connect in 10 s. A migration lifts the statement and
+lock bounds for its own transaction (`SET LOCAL`); the `pg_dump` backup before it is bounded at 30 minutes. A call past
+a bound comes back as `Failed`, as does any other error under the API, so the chair's tick reports it instead of
+crashing. `smoke/test_contract_store_bounds.py` holds a row lock on a real Postgres store and proves it.
 
 **One install per machine (item 3).** `cox setup install` installs `coxswain` editable from the install checkout
 (`<home>/installs/coxswain`) into that checkout's `.venv` and as the `coxswain` uv tool, and into nothing else. A
@@ -68,7 +75,9 @@ development venv for another checkout installs from that checkout or not at all;
 install, since each suite's `pytest.ini` puts its own tree first and the store is called in process. `cox setup
 doctor` checks both: `install bins` (required) fails when the checkout's venv or the uv tool is editable from anywhere
 else, and `running install` (advisory, so a person running the doctor from a development venv never rolls an upgrade
-back) warns when the interpreter running `cox` is editable from outside the install checkout.
+back) warns when the interpreter running `cox` is editable from outside the install checkout. The tool always installs with the `postgres` and `parquet` extras (`setup_install.TOOL_EXTRAS`), since `cox`
+opens the store in process; the doctor's advisory `extras` row names either one when the interpreter running `cox`
+cannot import it.
 
 ## H2. Types on the core
 

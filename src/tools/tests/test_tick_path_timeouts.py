@@ -163,3 +163,15 @@ def test_helper_check_reports_missing_unbounded_and_none() -> None:
         ("x.py", 1, "a defaults timeout to None"),
         ("x.py", 5, "b called with timeout=None"),
     ]
+
+
+def test_the_store_path_is_bounded_by_the_connection_itself():
+    """A store call on the tick path runs in process, so its bounds live on the connection: a statement, a lock wait and
+    a silent peer each end in a store error the API returns as Failed (smoke: test_contract_store_bounds.py)."""
+    from harness import store_dialect
+
+    kwargs = store_dialect._pg_connect_kwargs("postgresql://h/db")
+    assert f"statement_timeout={store_dialect.STATEMENT_TIMEOUT_MS}" in kwargs["options"]
+    assert f"lock_timeout={store_dialect.LOCK_TIMEOUT_MS}" in kwargs["options"]
+    assert kwargs["tcp_user_timeout"] == store_dialect.TCP_USER_TIMEOUT_MS
+    assert kwargs["connect_timeout"] > 0 and store_dialect.SQLITE_BUSY_TIMEOUT_MS > 0

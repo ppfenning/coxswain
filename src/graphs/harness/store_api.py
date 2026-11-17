@@ -256,6 +256,13 @@ def no_row_detail(initiative: str, task: str) -> str:
     return f"no work item {task} in initiative {initiative} and --phase was not given"
 
 
+def state_problem(state: str, expected: str | None) -> str | None:
+    """Pure. Why a state write is refused before it reaches the store: a target or an expected state that is not a work
+    state. None when both are (`expected` may be None). The type says WorkState; a caller's `str(...)` can still lie."""
+    unknown = [s for s in (state, expected) if s is not None and s not in WORK_STATES]
+    return f"unknown work state {unknown[0]!r}; expected one of {', '.join(WORK_STATES)}" if unknown else None
+
+
 def stamp_of(rows: Sequence[Sequence[Json]], updated_at_index: int) -> TableStamp:
     """Pure: the stamp of rows read in key order; the digest covers every column, since a queue upsert keeps an older
     updated_at on a changed row, so count and greatest updated_at alone miss ordinary writes."""
@@ -480,7 +487,12 @@ def set_export_hash_on(conn: Connection, initiative: str, task: str, digest: str
 def _with_store[T](
     url: str, opener: Callable[[str], Connection], act: Callable[[Connection], T]
 ) -> T | Failed | NotAvailable:
-    """Edge. `act` on a connection `opener` gives for `url`; an open error is NotAvailable, a statement error Failed."""
+    """Edge. `act` on a connection `opener` gives for `url`; an open error is NotAvailable, a statement error Failed.
+
+    Any other error `act` raises (a row that will not encode, a stored value that will not decode) is Failed too, with
+    its type and message: an in-process caller such as the chair's tick gets a value it can report, never a crash.
+    A statement that outlives `store_dialect.STATEMENT_TIMEOUT_MS` or a lock wait past `LOCK_TIMEOUT_MS` is a store
+    error like any other, so every call here returns within those bounds."""
     try:
         conn = opener(url)
     except open_errors() as exc:
@@ -489,6 +501,8 @@ def _with_store[T](
         return act(conn)
     except db_errors() as exc:
         return Failed(EXIT_STORE_ERROR, f"cannot read the store: {type(exc).__name__}: {exc}")
+    except Exception as exc:
+        return Failed(EXIT_STORE_ERROR, f"the store call failed: {type(exc).__name__}: {exc}")
     finally:
         conn.close()
 
@@ -509,6 +523,9 @@ def set_work_state(
     CLI's `--by` is: every state write names who made it."""
     if not by.strip():
         return Failed(EXIT_STORE_ERROR, "who made the change (by) must not be empty")
+    problem = state_problem(state, expected)
+    if problem is not None:
+        return Failed(EXIT_STORE_ERROR, problem)
     return _write(url, now, lambda c: set_state_on(c, initiative, task, state, by, now, phase=phase, expected=expected))
 
 

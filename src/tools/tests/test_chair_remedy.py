@@ -48,5 +48,5 @@ def test_remedy_for_carry():
 def test_remedy_for_reground():
     assert remedy_for("ticket", "run-1", "task-a", "/repo") == {
         "kind": "re-ground",
-        "command": ["python", "-m", "harness.store_cli", "set-state", "run-1", "task-a", "ready", "--by", "chair"],
+        "command": ["cox", "route", "edit", "task-a", "--state", "ready"],
     }

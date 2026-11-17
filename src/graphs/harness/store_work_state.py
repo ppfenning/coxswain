@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from core.workstore import STATES
 from harness.store_dialect import Connection, insert_ignore, json_text
 from harness.store_read import work_items
 from harness.store_write import upsert_work_item, work_item_row
@@ -62,7 +63,12 @@ def set_state(
     *,
     expected: str | None = None,
 ) -> dict[str, Any] | Mismatch | None:
-    """The row as written; with `expected`, only if the state equals it, else Mismatch, and a missing row is Mismatch(None) unless expected is ABSENT."""
+    """The row as written; with `expected`, only if the state equals it, else Mismatch, and a missing row is Mismatch(None) unless expected is ABSENT.
+
+    Raises ValueError, writing nothing, for a `state` or an `expected` that is not a work state (`core.workstore.STATES`)."""
+    unknown = [s for s in (state, expected) if s is not None and s != ABSENT and s not in STATES]
+    if unknown:
+        raise ValueError(f"unknown work state {unknown[0]!r}; expected one of {', '.join(STATES)}")
     if expected is not None:
         return _cas(conn, initiative, task, state, by, phase, now, expected)
     current = _current(conn, initiative, task)

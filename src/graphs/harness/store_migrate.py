@@ -157,6 +157,18 @@ def _sqlite_backup(conn: Connection, dest: Path) -> None:
         target.close()
 
 
+# A backup before a migration may take minutes on a large store, but never forever.
+PG_DUMP_TIMEOUT_S = 1800
+
+
+def exempt_from_bounds(dialect: Dialect) -> tuple[str, ...]:
+    """Pure. The statements that lift the connection's statement and lock bounds (`store_dialect`) for one migration's
+    own transaction: a schema change may wait for the tables it alters and may run longer than a row write."""
+    if dialect.name != "postgres":
+        return ()
+    return ("SET LOCAL statement_timeout = 0", "SET LOCAL lock_timeout = 0")
+
+
 def _pg_dump(url: str, dest: Path, safe_url: str) -> None:
     """`pg_dump -Fc` the store at `url` into `dest`. Never puts `url` or the process's own output in a message."""
     if shutil.which("pg_dump") is None:
@@ -164,9 +176,16 @@ def _pg_dump(url: str, dest: Path, safe_url: str) -> None:
             f"pg_dump is not on PATH; cannot back up {safe_url} before migrating. "
             f"Install pg_dump, or set {_WITHOUT_BACKUP}=1 to migrate without a backup."
         )
-    result = subprocess.run(
-        ["pg_dump", "-Fc", f"--dbname={url}", "-f", str(dest)], capture_output=True, check=False
-    )
+    try:
+        result = subprocess.run(
+            ["pg_dump", "-Fc", f"--dbname={url}", "-f", str(dest)], capture_output=True, check=False,
+            timeout=PG_DUMP_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        raise MigrationError(
+            f"pg_dump did not finish backing up {safe_url} in {PG_DUMP_TIMEOUT_S} s. "
+            f"Set {_WITHOUT_BACKUP}=1 to migrate without a backup."
+        ) from None
     if result.returncode != 0:
         raise MigrationError(
             f"pg_dump exited {result.returncode} backing up {safe_url}. "
@@ -205,6 +224,8 @@ def migrate(conn: Connection, applied_at: str, modules: Sequence[ModuleType | st
     record = f"INSERT INTO schema_version (version, applied_at, description) VALUES ({p}, {p}, {p})"
     for m in ordered[before:]:
         with conn.transaction():
+            for sql in exempt_from_bounds(conn.dialect):
+                conn.execute(sql)
             for sql in _lock_versions(conn.dialect):
                 conn.execute(sql)
             for sql, params in _steps(m, conn.dialect, record, applied_at, _current_version(conn)):

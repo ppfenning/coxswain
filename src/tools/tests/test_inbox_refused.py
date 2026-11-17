@@ -24,7 +24,7 @@ def test_one_full_item_from_a_refused_land_row():
             what="land of t1 in run-1 was refused",
             evidence="tests failed on main",
             accept_cmd=("cox", "runs", "land", "run-1", "--repo", "/r/app", "--task", "t1", "--apply"),
-            deny_cmd=("python", "-m", "harness.store_cli", "set-state", "run-1", "t1", "dropped", "--by", "chair"),
+            deny_cmd=("cox", "route", "edit", "t1", "--state", "dropped"),
         ),
     )
 

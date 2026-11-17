@@ -3,7 +3,7 @@ import posixpath
 
 import pytest
 
-from agent_tools import home, route
+from agent_tools import home, route, setup_install
 from agent_tools.setup_install import (
     _agent_steps,
     catalog_link_step,
@@ -53,7 +53,7 @@ def test_the_one_checkout_is_synced_then_installed_as_the_cox_tool():
     runs = [s for s in _plan() if s["op"] == "run" and s["argv"][0] == "uv"]
     assert [(r["argv"], r.get("cwd")) for r in runs] == [
         (["uv", "sync", "--frozen", "--all-extras", "--inexact", "-q"], CHECKOUT),
-        (["uv", "tool", "install", "--force", "-q", "--editable", CHECKOUT], None),
+        (["uv", "tool", "install", "--force", "-q", "--editable", f"{CHECKOUT}[parquet,postgres]"], None),
     ]
 
 
@@ -297,7 +297,7 @@ def test_no_user_project_folder_appears_for_an_ordinary_home(plugins, registered
 
 def test_tool_install_target_carries_the_receipts_extras():
     argvs = [s["argv"] for s in _plan(tool_extras=("traces", "postgres")) if s.get("argv", [])[:2] == ["uv", "tool"]]
-    assert argvs == [["uv", "tool", "install", "--force", "-q", "--editable", f"{CHECKOUT}[traces,postgres]"]]
+    assert argvs == [["uv", "tool", "install", "--force", "-q", "--editable", f"{CHECKOUT}[parquet,postgres,traces]"]]
 
 
 def test_assume_flows_into_the_written_profile():
@@ -486,3 +486,10 @@ def test_root_plan_has_neither_the_mkdir_steps_nor_the_record_write():
     assert not [s for s in steps if s["op"] == "mkdir"]
     assert all(s["path"] != LOC.record for s in steps if s["op"] == "write")
     assert "mkdir" not in render_plan(steps)
+
+
+def test_the_tool_always_installs_the_store_driver_and_parquet_extras():
+    assert setup_install.tool_extras(()) == ("parquet", "postgres")
+    assert setup_install.tool_extras(("lake", "postgres")) == ("lake", "parquet", "postgres")
+    argv = setup_install.tool_step("/home/user/installs/coxswain")["argv"]
+    assert argv[-1] == "/home/user/installs/coxswain[parquet,postgres]"

@@ -16,7 +16,7 @@ from agent_tools.setup_migrate import cartridge_link_target
 from agent_tools.setup_migrate_hosts import ObservedHost, is_migrated
 from agent_tools.store_probe import OBJECT_STORE, POSTGRES, ProbeResult
 
-__all__ = ["checks", "editable_source", "exit_code", "freshness_rows", "home_rows", "lane_host_paths_row", "parquet_line", "render", "running_install_row", "store_rows", "unit_path_entries"]
+__all__ = ["checks", "editable_source", "exit_code", "extras_row", "freshness_rows", "home_rows", "lane_host_paths_row", "parquet_line", "render", "running_install_row", "store_rows", "unit_path_entries"]
 
 _MISSING = object()
 _SKIPPED = "skipped: no profile"
@@ -467,6 +467,24 @@ def running_install_row(checkout: str, interpreter: str, source: str | None) -> 
         RUNNING_INSTALL,
         f"{interpreter} imports coxswain editable from {source}, outside the install checkout {checkout}: anything run"
         " with it imports that checkout's code; reinstall it from the install checkout (`cox setup install`)",
+    )
+
+
+EXTRAS = "extras"
+# The module each extra `cox` needs brings, by extra (`setup_install.TOOL_EXTRAS`).
+EXTRA_MODULES = (("postgres", "psycopg"), ("parquet", "pyarrow"))
+
+
+def extras_row(interpreter: str, missing: Sequence[str]) -> dict:
+    """Whether the interpreter running `cox` has the extras it needs: the store's driver and the Parquet reader.
+    Advisory, so it never rolls an upgrade back by itself; a store it cannot open already fails the `store` row. It
+    names each missing extra and the one command that installs them."""
+    if not missing:
+        return {"check": EXTRAS, "ok": True, "detail": f"{interpreter}: {', '.join(e for e, _ in EXTRA_MODULES)}"}
+    return _home_warn_row(
+        EXTRAS,
+        f"{interpreter} lacks the {', '.join(missing)} extra(s): `cox` cannot open the store or read Parquet traces"
+        " without them; run `cox setup install`, which installs the tool with them",
     )
 
 

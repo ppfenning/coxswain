@@ -13,9 +13,9 @@ _REMEDY_BY_CAUSE = {
     "superseded": "drop",
 }
 
-# cli.py has no cox verb for set-state, so these argvs use the store_cli set-state shape. `run` stands in for the
-# initiative, `chair` is the --by label and `python` is the interpreter; the four inputs carry none of them.
-_SET_STATE = ("python", "-m", "harness.store_cli", "set-state")
+# A drop or a retry moves the ticket with `cox route edit --state`, which writes the file and the store together through
+# the store API. `cox inbox` runs these argvs as they are. They once ran `python -m harness.store_cli set-state` with the
+# run in place of the initiative and no store named, so every accept and deny failed (H1).
 
 
 def trim_reason(text: str | None) -> str:
@@ -28,8 +28,8 @@ def choose_remedy(cause: str | None) -> str:
     return _REMEDY_BY_CAUSE.get(cause or "", "re-ground")
 
 
-def _set_state(run: str, task: str, state: str) -> list[str]:
-    return [*_SET_STATE, run, task, state, "--by", "chair"]
+def _set_state(task: str, state: str) -> list[str]:
+    return ["cox", "route", "edit", task, "--state", state]
 
 
 def remedy_command(kind: str, run: str, task: str, repo: str) -> list[str]:
@@ -38,9 +38,9 @@ def remedy_command(kind: str, run: str, task: str, repo: str) -> list[str]:
         return ["cox", "runs", "land", run, "--repo", repo, "--task", task, "--apply"]
     if kind == "drop":
         # No dedicated drop verb exists: the nearest set-state argv marks the ticket dropped.
-        return _set_state(run, task, "dropped")
+        return _set_state(task, "dropped")
     # Retry has no dedicated verb either: the nearest set-state argv puts the ticket ready. Re-ground and unknown kinds too.
-    return _set_state(run, task, "ready")
+    return _set_state(task, "ready")
 
 
 def remedy_for(cause: str | None, run: str, task: str, repo: str) -> dict:

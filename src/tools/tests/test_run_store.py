@@ -1083,3 +1083,11 @@ def test_runs_started_reads_every_launched_at_in_one_map(tmp_path):
     runs_table(tmp_path, RUN)
     assert run_store.runs_started(tmp_path) == {"storage-sqlite-run-records-14": "2026-09-25T04:30:00.123456+00:00"}
     assert run_store.runs_started(tmp_path / "missing") == {}
+
+
+def test_a_queue_row_value_json_cannot_hold_is_written_as_its_text():
+    from datetime import date
+    from pathlib import PurePosixPath
+
+    row = {"task_id": "t1", "extra": {"path": PurePosixPath("/home/user/x"), "on": date(2026, 11, 17)}}
+    assert run_store.plain_row(row) == {"extra": {"on": "2026-11-17", "path": "/home/user/x"}, "task_id": "t1"}

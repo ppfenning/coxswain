@@ -142,3 +142,13 @@ def test_a_claim_or_release_changes_the_queue_stamp(runs):
     assert run_store.release_row(runs, "i1", "t1", "me")
     released = run_store.queue_stamp(runs)
     assert len({before, claimed, released}) == 3
+
+
+def test_a_good_probe_followed_by_a_failed_read_is_not_cached_under_the_good_stamp():
+    # The probe said (2, 7); the full read then failed. That failure reads as [] and is never stored, so the next read
+    # under the same stamp reads again instead of serving an empty table until a write moves the stamp.
+    cache, stamp, key = StampCache(4), (2, 7), ("queue", "/runs", None, None)
+    reads = iter([None, [{"task_id": "t1"}]])
+    assert run_store._versioned(cache, key, stamp, lambda: next(reads)) == []
+    assert run_store._versioned(cache, key, stamp, lambda: next(reads)) == [{"task_id": "t1"}]
+    assert run_store._versioned(cache, key, stamp, lambda: [{"task_id": "never read"}]) == [{"task_id": "t1"}]

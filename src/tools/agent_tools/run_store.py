@@ -1238,9 +1238,15 @@ def upsert_row(runs_dir: Path, row: Mapping[str, Any]) -> bool:
     return upsert_row_detail(runs_dir, row) == ""
 
 
+def plain_row(row: Mapping[str, Any]) -> dict:
+    """Pure: the row as JSON holds it. A value JSON cannot hold (a Path, a datetime) becomes its text, as it did when
+    the row crossed to the store as one JSON argument."""
+    return json.loads(json.dumps(dict(row), sort_keys=True, default=str))
+
+
 def upsert_row_detail(runs_dir: Path, row: Mapping[str, Any]) -> str:
     """Edge: "" only when the store took the row (or already held it); otherwise a non-empty reason."""
-    done = _api().upsert_queue_row(_store_url(Path(runs_dir)), dict(row), _now())
+    done = _api().upsert_queue_row(_store_url(Path(runs_dir)), plain_row(row), _now())
     if isinstance(done, _api().Failed):
         return done.detail or f"exit {done.code}"
     if isinstance(done, _api().NotAvailable):
