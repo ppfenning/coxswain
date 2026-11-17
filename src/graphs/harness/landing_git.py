@@ -25,7 +25,8 @@ Checks = Callable[[Path], tuple[bool, str]]
 
 @dataclass(frozen=True)
 class Merge:
-    """The outcome of one merge onto a branch. `status` is merged, up_to_date, conflict, checks_failed, guard or error."""
+    """The outcome of one merge onto a branch. `status` is merged, up_to_date, conflict, checks_failed, guard, busy (another
+    worker holds the branch lease) or error."""
 
     status: str
     tip: str = ""  # the branch's tip afterwards (unchanged unless merged)

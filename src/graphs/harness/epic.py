@@ -61,7 +61,7 @@ from urllib.parse import urlencode
 
 import yaml
 
-from core import ledger, workstore
+from core import landing_record, ledger, workstore
 from core.cartridge import integration_checks_setting, test_database_setting
 from core.landing import (
     DEFAULT_LAND_AT,
@@ -456,7 +456,10 @@ def _take_parent_forward(ctx: _Ctx) -> tuple[str, str, landing_git.Merge] | None
         return None
     branch = ctx.initiative_branch
     record = landing_store.get_record(ctx.store.conn, ctx.initiative_id) or {}
-    parent = str(record.get("parent") or ctx.default_ref.removeprefix("origin/"))
+    # A stacked initiative's recorded parent is the branch of the initiative below; once that one landed, its branch is
+    # gone and its own parent is the one to take forward.
+    stacked = landing_record.stack_resolved_parent(record, landing_store.list_records(ctx.store.conn)) if record else ""
+    parent = stacked or ctx.default_ref.removeprefix("origin/")
     parent_ref = f"origin/{parent}" if landing_git.rev(ctx.repo, f"refs/remotes/origin/{parent}") else parent
     if landing_git.is_ancestor(ctx.repo, parent_ref, branch):
         return parent, parent_ref, landing_git.Merge("up_to_date")
@@ -482,8 +485,8 @@ def behind_parent(
 ) -> str | None:
     """Pure. Why every phase but `integrate` waits this run, from the merge of the parent into the initiative branch;
     None when the branch holds its parent. `integrate` is the rectify task filed for a conflict, `unfiled` why none was."""
-    if status in ("merged", "up_to_date"):
-        return None
+    if status in ("merged", "up_to_date", "busy"):
+        return None  # `busy`: another worker is moving the branch right now; the next run takes the parent forward
     if status == "conflict":
         where = ", ".join(paths) or "files git did not name"
         then = (
@@ -519,7 +522,11 @@ def _file_integrate(
     tip, _, why = landing_git.ensure_branch(ctx.repo, integrate, branch)
     if tip is None:
         return None, why
-    landing_git.merge_into(ctx.repo, branch=integrate, source=branch, message=f"{ctx.initiative_id}: bring {integrate} up to {branch}")
+    brought = landing_git.merge_into(
+        ctx.repo, branch=integrate, source=branch, message=f"{ctx.initiative_id}: bring {integrate} up to {branch}",
+    )
+    if not brought.ok:
+        return None, f"{integrate} could not be brought up to {branch}: {brought.detail or brought.status}"
     marked = landing_git.conflict_commit(
         ctx.repo, branch=integrate, source=parent_ref,
         message=f"{ctx.initiative_id}: merge {parent} into {integrate} (conflicted, to rectify)",
@@ -561,6 +568,8 @@ def _bring_forward(ctx: _Ctx, items: list[dict[str, Any]]) -> str | None:
     )
     if reason is not None:
         print(f"  {reason}")
+    elif merged.status == "busy":
+        print(f"  {parent} not taken forward this run: {merged.detail}; the next run takes it forward")
     return reason
 
 
@@ -4555,9 +4564,6 @@ def _run_phase(
     # Under work_state store no work file holds an attempt: a task's attempts are its runs' task records, as the chair
     # reads them. So the cap below counts them, and a rebuild resumes from the newest one's kept patch, which another
     # lane's record carries in the store when this machine has no file of it.
-    recorded = {str(item["id"]): _caused_records(ctx, phase, str(item["id"])) for item in all_ready} if _store_authoritative(ctx) else {}
-    all_ready = [with_record_attempts(item, [a for a, _ in recorded.get(str(item["id"]), [])]) for item in all_ready]
-    record_patches = {task_id: rescue_select.patch_of(found[-1][1]) for task_id, found in recorded.items() if found}
 
     # A third run of the same task is refused outright rather than tried
     # again — quarantined here, plainly, never through `_quarantine_task`,
@@ -4566,7 +4572,6 @@ def _run_phase(
     # An `infra` attempt is the apply arm's own failure, not the task's, so it
     # must not grow the count the cap enforces. Nor does a `rescue_failed` one:
     # a rescue checks work already built and is not a build.
-    attempts_by_id = {str(item["id"]): _build_attempts(item.get("attempts") or []) for item in all_ready}
     read_rows = _queue_rows(ctx)
     queue_rows = read_rows or {}
     # A task a person readied by hand, or whose initiative a person released, starts fresh: no attempt and no triage
@@ -4576,6 +4581,17 @@ def _run_phase(
     cutoff_by_id = {
         str(item["id"]): workstore.fresh_cutoff(_row_extra(queue_rows.get(str(item["id"]))), initiative_extra) for item in all_ready
     }
+    # Under work_state store no work file holds an attempt: a task's attempts are its runs' task records, as the chair
+    # reads them. So the cap below counts them, and a rebuild resumes from the newest one's kept patch, which another
+    # lane's record carries in the store when this machine has no file of it. A record from a run at or before the
+    # task's fresh start is history: it is neither an attempt nor a patch to resume from.
+    recorded = {
+        str(item["id"]): records_after(_caused_records(ctx, phase, str(item["id"])), cutoff_by_id[str(item["id"])])
+        for item in all_ready
+    } if _store_authoritative(ctx) else {}
+    all_ready = [with_record_attempts(item, [a for a, _ in recorded.get(str(item["id"]), [])]) for item in all_ready]
+    record_patches = {task_id: rescue_select.patch_of(found[-1][1]) for task_id, found in recorded.items() if found}
+    attempts_by_id = {str(item["id"]): _build_attempts(item.get("attempts") or []) for item in all_ready}
     # A rewritten ticket starts a fresh count. Triage still gets the whole history for its repeat guard.
     # An item with no `body` cannot be matched, so all its attempts count.
     counted_by_id = {
@@ -6273,6 +6289,11 @@ def _rescue_failed(ctx: _Ctx, item: Mapping[str, Any], *, phase: str, reason: st
     )
     _record_tasks(ctx, phase, [], [entry])
     return {"status": "rescue_failed", "reason": reason, "cause": cause}
+
+
+def records_after(found: Sequence[tuple[Mapping[str, Any], Any]], cutoff: Any) -> list[tuple[Mapping[str, Any], Any]]:
+    """Pure. The (attempt, record) pairs whose run counts after the fresh-start `cutoff` (`workstore.counts_after`)."""
+    return [(attempt, record) for attempt, record in found if workstore.counts_after(attempt.get("run"), cutoff)]
 
 
 def with_record_attempts(item: Mapping[str, Any], recorded: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:

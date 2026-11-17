@@ -238,4 +238,4 @@ def test_the_parent_is_taken_forward_by_a_merge_and_a_conflict_leaves_the_branch
     assert (clash.status, clash.paths) == ("conflict", ("shared.txt",)) and run(repo, "rev-parse", "init/i") == tip
     assert store_lease.acquire(conn, ops.branch_lease("i"), "someone-else", T1, 900).ok, "the lease was released each time"
     busy = ops.take_parent_forward(conn, repo, initiative="i", parent_ref="main", worker="w", now=T1)
-    assert (busy.status, busy.detail) == ("error", "someone-else is moving the branch of i")
+    assert (busy.status, busy.detail) == ("busy", "someone-else is moving the branch of i")

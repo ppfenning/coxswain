@@ -11,7 +11,7 @@ from __future__ import annotations
 import shutil
 from datetime import UTC, datetime
 
-from harness import epic, store_work_state
+from harness import epic, store_queue, store_work_state
 from harness.store_write import Store
 from tests.test_epic_driver import (  # noqa: F401 -- cart and repo are fixtures
     REVISE,
@@ -100,4 +100,27 @@ def test_with_record_attempts_fills_only_an_item_with_none_of_its_own() -> None:
     assert epic.with_record_attempts(own, recorded) is own
     bare = {"id": "t"}
     assert epic.with_record_attempts(bare, []) is bare
+
+
+def test_a_rebuild_after_a_fresh_start_mark_does_not_resume_or_cite_the_attempt_before_it(repo, cart, tmp_path) -> None:  # noqa: F811
+    """Regression (review of #1198): the cap left out records at or before `fresh_after_run`, but the resume did not, so a
+    task a person readied by hand was rebuilt from the attempt the person had just set aside."""
+    store = _store(_work(), flagged=())
+    _run(repo, cart, tmp_path, store, 1, _revised(new_file_patch("t1-probe.txt")))
+    _ready_again(store)
+    row = _row(store, "t1-probe")
+    store_queue.upsert(store.conn, {**row, "extra": {**row["extra"], "fresh_after_run": {INITIATIVE: 1}}})
+
+    second = TriageClassRunner({"t1-probe": new_file_patch("t1-probe.txt")}, _answer("hold"))
+    _run(repo, cart, tmp_path, store, 2, second)
+    (build,) = _built(second, "t1-probe")
+    assert "Your previous attempt is in the tree you are working in" not in build["prompt"]
+    assert f"{INITIATIVE}-1" not in build["prompt"]
+
+
+def test_records_after_keeps_only_the_runs_after_the_mark() -> None:
+    found = [({"run": "demo-1"}, "r1"), ({"run": "demo-2"}, "r2"), ({"run": "demo.p1-1"}, "r3")]
+    assert epic.records_after(found, {}) == found
+    assert epic.records_after(found, {"demo": 1}) == [({"run": "demo-2"}, "r2"), ({"run": "demo.p1-1"}, "r3")]
+    assert epic.records_after(found, {"demo": 2, "demo.p1": 1}) == []
 

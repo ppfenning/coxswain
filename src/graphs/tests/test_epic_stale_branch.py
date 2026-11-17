@@ -11,9 +11,10 @@ Every run here is a real `run_epic` on a real repository and one throwaway sqlit
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
-from harness import epic, landing_store, store_queue
+from harness import epic, landing_ops, landing_store, store_lease, store_queue
 from harness.store_migrate import open_store
 from harness.store_write import Store
 from tests.test_epic_driver import (  # noqa: F401 -- cart and repo are fixtures
@@ -161,6 +162,76 @@ def test_behind_parent_names_the_conflict_and_the_task_that_resolves_it() -> Non
     assert "no integrate task could be filed (cannot cut)" in epic.behind_parent(
         "conflict", "", ("a.py",), parent="main", branch="init/x", integrate=None, unfiled="cannot cut",
     )
-    assert epic.behind_parent("error", "lease held by lander-1", (), parent="main", branch="init/x", integrate=None) == (
-        "main was not merged into init/x: lease held by lander-1; no phase builds on the old base"
+    assert epic.behind_parent("error", "origin has diverged", (), parent="main", branch="init/x", integrate=None) == (
+        "main was not merged into init/x: origin has diverged; no phase builds on the old base"
     )
+    assert epic.behind_parent("busy", "lander-1 is moving the branch", (), parent="main", branch="init/x", integrate=None) is None
+
+
+# ── review of #1198: a stacked initiative, a held branch lease, an integrate branch that will not take the tip ──
+
+
+def _commit_on(repo: Path, branch: str, name: str, text: str) -> None:  # noqa: F811
+    git("checkout", "-q", branch, cwd=repo)
+    _commit_on_main(repo, name, text)
+    git("checkout", "-q", "main", cwd=repo)
+
+
+def test_a_stacked_initiative_whose_lower_layer_landed_and_lost_its_branch_refreshes_onto_main_and_builds(repo, cart, tmp_path) -> None:  # noqa: F811
+    """Regression: the record's parent was the lower initiative's branch. Once that landed and its branch was deleted,
+    every run merged a name that was no commit, blocked every phase, and the initiative never assembled, so the lander's
+    restack, which moves the parent down, never ran."""
+    store = _store()
+    lower, why = landing_ops.start_record(store.conn, repo, initiative="lower", branch="init/lower", parent="main",
+                                          parent_ref="main", now="2026-11-17T09:00:00Z", epic="x")
+    assert lower is not None, why
+    _commit_on(repo, "init/lower", "lower.md", "lower\n")
+    upper, why = landing_ops.start_record(store.conn, repo, initiative=INITIATIVE, branch=INIT, parent="init/lower",
+                                          parent_ref="init/lower", now="2026-11-17T09:01:00Z", epic="x")
+    assert upper is not None, why
+    # The lower layer lands: its branch merges into main, its record reads landed, and its branch is deleted.
+    git("merge", "-q", "--no-ff", "-m", "land lower", "init/lower", cwd=repo)
+    landing_store.put_record(store.conn, {**landing_store.get_record(store.conn, "lower"), "state": "landed"})
+    git("branch", "-D", "init/lower", cwd=repo)
+    _commit_on_main(repo, "moved.md", "moved\n")
+
+    first, _ = _first_then()
+    result, runner = drive(repo, cart, tmp_path, store=store, run_id=f"{INITIATIVE}-1", work=first)
+
+    (phase,) = result["phases"]
+    assert phase["status"] == "complete", phase.get("reason")
+    assert len(_builds(runner)) == 1
+    assert is_ancestor(repo, "main", INIT) and git("show", f"{INIT}:moved.md", cwd=repo) == "moved"
+    assert landing_store.get_record(store.conn, INITIATIVE)["parent"] == "init/lower", "the lander's restack moves the record"
+
+
+def test_a_branch_lease_another_worker_holds_is_retried_next_run_and_blocks_no_phase(repo, cart, tmp_path, capsys) -> None:  # noqa: F811
+    store = _store()
+    first, second = _first_then()
+    drive(repo, cart, tmp_path, store=store, run_id=f"{INITIATIVE}-1", work=first)
+    _commit_on_main(repo, "moved.md", "moved\n")
+    assert store_lease.acquire(store.conn, landing_ops.branch_lease(INITIATIVE), "lander-1", datetime.now(UTC).isoformat(), 3600).ok
+    capsys.readouterr()
+
+    result, runner = drive(repo, cart, tmp_path, store=store, run_id=f"{INITIATIVE}-2", work=second)
+    (phase,) = result["phases"]
+    assert phase["status"] != "blocked" and len(_builds(runner)) == 1
+    assert "main not taken forward this run: lander-1 is moving the branch" in capsys.readouterr().out
+    assert not is_ancestor(repo, "main", INIT)
+
+
+def test_an_integrate_branch_that_will_not_take_the_initiative_tip_files_no_task(repo, cart, tmp_path) -> None:  # noqa: F811
+    store = _store()
+    first, second = _first_then()
+    drive(repo, cart, tmp_path, store=store, run_id=f"{INITIATIVE}-1", work=first)
+    # A leftover integrate branch, from before p1 merged, wrote the same file p1 did.
+    git("branch", INTEGRATE, git("rev-list", "--max-parents=0", "main", cwd=repo), cwd=repo)
+    _commit_on(repo, INTEGRATE, "t1-probe.txt", "stale\n")
+    stale = git("rev-parse", INTEGRATE, cwd=repo)
+    _commit_on_main(repo, "t1-probe.txt", "main wrote this too\n")
+
+    result, runner = drive(repo, cart, tmp_path, store=store, run_id=f"{INITIATIVE}-2", work=second)
+    reason = next(p for p in result["phases"] if p["phase"] == "p1-foundations")["reason"]
+    assert f"no integrate task could be filed ({INTEGRATE} could not be brought up to {INIT}: conflict in t1-probe.txt)" in reason
+    assert not [r for r in store_queue.read(store.conn, INITIATIVE) if r["phase"] == "integrate"]
+    assert git("rev-parse", INTEGRATE, cwd=repo) == stale and _builds(runner) == []

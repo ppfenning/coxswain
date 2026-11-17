@@ -114,14 +114,15 @@ def take_parent_forward(conn: Connection, repo: Path | str, *, initiative: str, 
 
     Under the branch lease, after `fetch`, with the guard: a merge that would drop a recorded sha is refused. A
     conflict leaves the branch where it was and names the paths; resolving it is build work (the `integrate` phase),
-    never this function's. `up_to_date` when the branch already holds the parent."""
+    never this function's. `up_to_date` when the branch already holds the parent; `busy` when another worker holds the
+    branch lease."""
     record = ls.get_record(conn, initiative)
     if record is None:
         return lg.Merge("error", detail=f"{initiative} has no landing record")
     branch = str(record["branch"])
     held = store_lease.acquire(conn, branch_lease(initiative), worker, now, lease_seconds)
     if not held.ok:
-        return lg.Merge("error", detail=f"{held.holder or 'another worker'} is moving the branch of {initiative}")
+        return lg.Merge("busy", detail=f"{held.holder or 'another worker'} is moving the branch of {initiative}")
     try:
         if fetch is not None and (refused := fetch(branch)):
             return lg.Merge("error", detail=refused)
