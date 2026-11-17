@@ -117,17 +117,17 @@ def test_a_quarantine_the_store_refused_is_named_in_the_needs_chair_and_the_resu
         resolve_land=lambda *args: None,
     )
     results = perform([REVERT], deps, lambda: 0, False)
-    release = "quarantined t2; once main is green, release each: cox route edit t2 --state ready"
+    release = "quarantined t2; once main is green, release each: cox route edit t2 --initiative init --state ready"
     line = "quarantine not recorded: warning: store did not record init/t1 as quarantined: refused: {}"
     assert results[0]["needs_chair"]["reason"] == f"main went red after PR #12; reverted abc123 in {URL}; {release}; {line}"
     assert results[0]["reason"].endswith(line)
 
 
 def test_revert_reason_names_how_to_release_each_quarantined_task_and_each_refused_write():
-    assert revert_reason("why", Quarantined()) == "why"
-    assert revert_reason("why", Quarantined(("t1", "t2"), ("a",))) == (
+    assert revert_reason("why", Quarantined(), "init") == "why"
+    assert revert_reason("why", Quarantined(("t1", "t2"), ("a",)), "init") == (
         "why; quarantined t1, t2; once main is green, release each: "
-        "cox route edit t1 --state ready; cox route edit t2 --state ready; quarantine not recorded: a"
+        "cox route edit t1 --initiative init --state ready; cox route edit t2 --initiative init --state ready; quarantine not recorded: a"
     )
 
 

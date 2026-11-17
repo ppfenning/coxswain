@@ -201,8 +201,9 @@ def _driver_free_url(url: str) -> str:
 
 # Every bound on a store call, in one place. A store call runs in process (`harness.store_api`), so these are what keep
 # a chair tick from hanging on the store: a dead peer fails a connect in seconds, a silent drop surfaces in about a
-# minute, a statement runs at most a minute and waits at most half that for a lock. Migrations lift the statement and
-# lock bounds for their own transactions only (`store_migrate.migrate`, SET LOCAL). sqlite, the suites' double, waits
+# minute, a statement runs at most a minute and waits at most half that for a lock. Migrations lift the statement bound
+# and widen the lock wait to minutes for their own transactions only (`store_migrate.exempt_from_bounds`, SET LOCAL).
+# A URL's own `options` adds to the bounds rather than replacing them (`merged_options`). sqlite, the suites' double, waits
 # on a locked file as long as Postgres waits on a lock.
 _PG_CONNECT_TIMEOUT_S = 10
 _PG_KEEPALIVES_IDLE_S = 30
@@ -214,8 +215,20 @@ TCP_USER_TIMEOUT_MS = 60_000
 SQLITE_BUSY_TIMEOUT_MS = LOCK_TIMEOUT_MS
 
 
+BOUND_OPTIONS = f"-c statement_timeout={STATEMENT_TIMEOUT_MS} -c lock_timeout={LOCK_TIMEOUT_MS}"
+
+
+def merged_options(bounds: str, in_url: Sequence[str]) -> str:
+    """Pure. The libpq `options` for a URL whose query carries its own: the bounds first, then the URL's values in
+    order. Postgres applies `-c` settings left to right, so a URL that sets `statement_timeout` itself still wins for
+    that setting, and one that sets only `search_path` keeps every bound."""
+    return " ".join([bounds, *(value.strip() for value in in_url if value.strip())])
+
+
 def _pg_connect_kwargs(pg_url: str, extra: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """Keyword arguments for psycopg.connect. A key in `extra` or in the URL query beats the default."""
+    """Keyword arguments for psycopg.connect. A key in `extra` or in the URL query beats the default, except `options`,
+    which merges with the bounds (`merged_options`): a URL setting its own options must not drop the lock bound."""
+    in_url = parse_qs(urlsplit(pg_url).query)
     defaults = {
         "connect_timeout": _PG_CONNECT_TIMEOUT_S,
         "keepalives": 1,
@@ -223,11 +236,10 @@ def _pg_connect_kwargs(pg_url: str, extra: Mapping[str, Any] | None = None) -> d
         "keepalives_interval": _PG_KEEPALIVES_INTERVAL_S,
         "keepalives_count": _PG_KEEPALIVES_COUNT,
         "tcp_user_timeout": TCP_USER_TIMEOUT_MS,
-        "options": f"-c statement_timeout={STATEMENT_TIMEOUT_MS} -c lock_timeout={LOCK_TIMEOUT_MS}",
+        "options": merged_options(BOUND_OPTIONS, in_url.get("options", [])),
         "autocommit": True,
     }
-    in_url = parse_qs(urlsplit(pg_url).query)
-    return {**{k: v for k, v in defaults.items() if k not in in_url}, **(extra or {})}
+    return {**{k: v for k, v in defaults.items() if k not in in_url or k == "options"}, **(extra or {})}
 
 
 # The one store is Postgres. sqlite stays in this module only as the test suites' stand-in for it, and opens only

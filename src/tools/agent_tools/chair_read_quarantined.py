@@ -154,12 +154,14 @@ def read_work_files(root: Path, cache: StampCache | None = None) -> WorkFiles:
 
 def task_files(root: Path, files: WorkFiles) -> dict[Path, str]:
     """The `work/<initiative>/<phase>/<task>.md` entries of `files`; `work/<initiative>/initiative.md` is not one."""
-    return {p: t for p, t in files.items() if len(p.relative_to(root).parts) == 4}
+    depth = len(root.parts) + 4  # every key is under `root`: a part count, not `relative_to`, which cost seconds a tick
+    return {p: t for p, t in files.items() if len(p.parts) == depth}
 
 
 def initiative_files(root: Path, files: WorkFiles) -> dict[Path, str]:
     """The `work/<initiative>/initiative.md` entries of `files`."""
-    return {p: t for p, t in files.items() if len(p.relative_to(root).parts) == 3}
+    depth = len(root.parts) + 3
+    return {p: t for p, t in files.items() if len(p.parts) == depth}
 
 
 def read_work_items(

@@ -99,7 +99,7 @@ def _quarantine_action(q: QuarantineFacts, kind: Recovery) -> Action:
         return {"kind": "needs_chair", "initiative": q["initiative"], "task_id": q["task_id"], "cause": q["cause"]}
     if kind == "needs_chair":
         cause = _first_cause(q)
-        remedy = remedy_for(cause, q.get("run", ""), q["task_id"], q.get("repo", ""))
+        remedy = remedy_for(cause, q.get("run", ""), q["task_id"], q.get("repo", ""), q["initiative"])
         return {
             "kind": "needs_chair",
             "initiative": q["initiative"],

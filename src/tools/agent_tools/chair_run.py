@@ -6,7 +6,7 @@ import json
 import signal
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +17,7 @@ from agent_tools import (
     chair_exec,
     chair_land,
     chair_report,
+    chair_tick_cache,
     chair_tick_status,
     chair_timing,
     courier,
@@ -292,6 +293,9 @@ class RunDeps:
     reason_state: ReasonState = field(default_factory=ReasonState)
     # The chat edges; a live holder tick applies the directives a session sent since the last one. None skips the step.
     chat: ChatDeps | None = None
+    # The store reader cache's (full reads, reuses) by reader so far; the timing line names what one tick re-read. None
+    # adds nothing to the line.
+    store_reads: Callable[[], tuple[Mapping[str, int], Mapping[str, int]]] | None = None
 
 
 def finished_land(action: Action, outcome: chair_land.LandResult[Result] | None) -> Result:
@@ -797,8 +801,11 @@ def _attempt(deps: RunDeps, dry_run: bool) -> None:
     timing, stage_seconds = None, None
     reasons: list[str] = []
     try:
+        reads_before = deps.store_reads() if deps.store_reads is not None else None
         line, stages, sources = tick_timed(deps, dry_run, now)
         timing, stage_seconds = chair_timing.format_timing(stages, sources), chair_timing.ran(stages)
+        if reads_before is not None and deps.store_reads is not None:
+            timing = f"{timing} | {chair_tick_cache.store_note(reads_before, deps.store_reads())}"
         reasons = list(deps.reason_state.lines)
         deps.overrun_state.consecutive = 0
     except TickOverrun as exc:  # a facts stage that never returned; counted, and not an error line

@@ -473,3 +473,22 @@ def test_check_claim_lets_an_expired_claim_go():
     assert route_edit.check_claim(row, "2026-10-12T11:00:00+00:00") is None
     assert route_edit.check_claim(row, None) is not None
     assert route_edit.check_claim(_ticket_row(), None) is None
+
+
+def test_pick_ticket_with_an_initiative_picks_that_initiatives_task():
+    rows = [
+        {"kind": "task", "initiative": "a", "task_id": "t1"},
+        {"kind": "task", "initiative": "b", "task_id": "t1"},
+        {"kind": "initiative", "initiative": "t1", "task_id": "t1"},
+    ]
+    assert route_edit.pick_ticket(rows, "t1", "b") == rows[1]
+    assert route_edit.pick_ticket(rows, "t1", "c") == "no task 't1' in initiative 'c'"
+    assert "give --initiative" in route_edit.pick_ticket(rows, "t1", None)
+    assert route_edit.pick_ticket(rows[:1], "t1", None) == rows[0]
+
+
+def test_a_task_id_in_two_initiatives_edits_the_named_one(tmp_path, monkeypatch):
+    store = _store(monkeypatch, [_ticket_row(), {**_ticket_row(), "initiative": "other"}])
+    result = route_edit.apply_edit(tmp_path, tmp_path, "t1", title="New", live_runs=(), initiative="other", dry_run=True)
+    assert result.code == route_edit.DONE, result.text
+    assert store.upserts == []

@@ -52,6 +52,7 @@ nav:
   - Methodology:
       - Methodology: methodology/index.md
       - Hardening plan: hardening.md
+      - "Design: the event-driven chair (proposed)": design/event-driven-chair.md
       - Smoke suite: smoke.md
       - Crew and seats: methodology/crew-and-seats.md
       - Cartridges: methodology/cartridges.md

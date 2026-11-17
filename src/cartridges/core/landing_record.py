@@ -161,8 +161,14 @@ def phase_state(record: Mapping[str, Any] | None, phase: str, tasks: Sequence[Ma
     rectify task, an approval the merge did not carry: the entry's `tasks` lists what it did) is not whole on the
     initiative branch, and reads by its tasks again until it merges once more. Otherwise a phase behind an unmerged parent is `waiting`. A stored `blocked` stands while a task is
     quarantined, and a stored `conflicted` while a task is still unsettled (the rectify task). Every task settled is
-    `built`, or `queued` when the queue holds it. Anything else is `open`."""
-    known = parents if parents is not None else phase_parents(tasks)
+    `built`, or `queued` when the queue holds it. Anything else is `open`.
+    A phase whose parents lead back to itself (a cycle in the tasks' needs) waits: no order merges it first."""
+    return _phase_state(record, phase, tasks, parents if parents is not None else phase_parents(tasks), frozenset())
+
+
+def _phase_state(record: Mapping[str, Any] | None, phase: str, tasks: Sequence[Mapping[str, Any]],
+                 known: Mapping[str, Collection[str]], path: frozenset[str]) -> str:
+    """`phase_state`, with `path` the phases already being asked about above this one, so a cycle ends."""
     stored = str(_stored(record, phase).get("state") or "")
     own = phase_tasks(tasks, phase)
     states = [str(t.get("state")) for t in own]
@@ -170,7 +176,11 @@ def phase_state(record: Mapping[str, Any] | None, phase: str, tasks: Sequence[Ma
         return "merged"
     if stored == "merged" and not _gained_work(_stored(record, phase), own):
         return "merged"
-    if any(phase_state(record, parent, tasks, known) != "merged" for parent in known.get(phase, ()) if parent != phase):
+    above = path | {phase}
+    if any(
+        parent in above or _phase_state(record, parent, tasks, known, above) != "merged"
+        for parent in known.get(phase, ()) if parent != phase
+    ):
         return "waiting"
     if stored == "blocked" and "quarantined" in states:
         return "blocked"

@@ -33,7 +33,7 @@ from harness.store_api import (
     Upserted,
 )
 from harness.store_dialect import POSTGRES, SQLITE
-from harness.store_migrate import PG_DUMP_TIMEOUT_S, exempt_from_bounds, open_store
+from harness.store_migrate import MIGRATION_LOCK_TIMEOUT_MS, PG_DUMP_TIMEOUT_S, exempt_from_bounds, open_store
 from harness.store_work_state import set_state
 from harness.store_write import Store
 
@@ -289,7 +289,8 @@ def test_a_row_that_will_not_encode_is_failed_not_raised(tmp_path):
     assert isinstance(found, Failed) and found.detail.startswith("the store call failed: TypeError")
 
 
-def test_a_migration_lifts_the_statement_and_lock_bounds_for_its_own_transaction_only():
-    assert exempt_from_bounds(POSTGRES) == ("SET LOCAL statement_timeout = 0", "SET LOCAL lock_timeout = 0")
+def test_a_migration_lifts_the_statement_bound_and_widens_the_lock_wait_for_its_own_transaction_only():
+    assert exempt_from_bounds(POSTGRES) == ("SET LOCAL statement_timeout = 0", "SET LOCAL lock_timeout = 300000")
+    assert MIGRATION_LOCK_TIMEOUT_MS == 5 * 60 * 1000  # finite: a held lock fails a migration, it never hangs one
     assert exempt_from_bounds(SQLITE) == ()
     assert PG_DUMP_TIMEOUT_S > 0

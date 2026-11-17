@@ -59,3 +59,19 @@ def test_route_context_counts_a_ready_task_from_the_store(sandbox):
     context = sandbox.cox("route", "context", "--json")
     assert context.returncode == 0, context.stderr
     assert {"id": "ship", "phase": "p1", "ready": 1} in json.loads(context.stdout)["initiatives"]
+
+
+def test_route_edit_with_the_initiative_moves_that_initiatives_ticket_when_the_id_repeats(sandbox):
+    # The inbox remedy names the initiative (H1 review): `t1` in two initiatives must move only the named one.
+    ship = _imported(sandbox, TASK)
+    other = sandbox.write("work/dock/p1/t1.md", plan.work_item_text(TASK, "Task body"))
+    imported = sandbox.cox("route", "import")
+    assert imported.returncode == 0, imported.stdout + imported.stderr
+    bare = sandbox.cox("route", "edit", "t1", "--state", "ready")
+    assert bare.returncode == 2 and "--initiative" in bare.stdout, bare.stdout + bare.stderr
+    named = sandbox.cox("route", "edit", "t1", "--initiative", "dock", "--state", "ready")
+    assert named.returncode == 0, named.stdout + named.stderr
+    assert sandbox.store_row("dock", "t1")["state"] == "ready"
+    assert sandbox.store_row("ship", "t1")["state"] == "todo"
+    assert plan.front_matter(other.read_text(encoding="utf-8"))["state"] == "ready"
+    assert plan.front_matter(ship.read_text(encoding="utf-8"))["state"] == "todo"
