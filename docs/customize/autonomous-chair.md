@@ -771,7 +771,9 @@ The count covers every version of the task's ticket, so an amended ticket
 keeps its earlier failures. A stoppage and a failed rescue do not count.
 
 The chair also holds a task that comes back quarantined in the same run it
-already asked triage for. This happens when triage itself could not run.
+already asked triage for. A triage that could not run no longer quarantines
+the task: the epic holds it itself, and the hold reason starts with
+`triage could not run:` and names what failed.
 
 ### The no-progress hold
 
@@ -802,6 +804,11 @@ cox route release <initiative>
 The release marks the initiative's newest run. Runs up to that mark no longer
 count, so the chair relaunches the initiative and holds it again only if the
 next runs also end the same way.
+
+A release is refused while a run of the initiative is live, since that run
+could still record attempts below the mark. The refusal names the run and the
+command that stops it, `cox runs stop <run>`. `cox route edit <task> --state
+ready` on a blocked or quarantined task is refused the same way.
 
 The chair does not judge an initiative while its newest run is still going.
 If the hold is cleared some other way, without a release, the chair

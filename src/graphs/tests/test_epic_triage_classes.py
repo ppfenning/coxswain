@@ -199,11 +199,36 @@ def test_a_combine_folds_the_task_into_its_sibling_and_moves_the_need(repo, cart
     assert "read the vendor schema" in build["prompt"]
 
 
-def test_a_flagged_task_whose_triage_failed_is_quarantined_and_not_built(repo, cart, tmp_path) -> None:  # noqa: F811
-    result, runner, store = _drive(repo, cart, tmp_path, RunnerError("triage is down"))
-    assert any(q["id"] == "t1-probe" for q in result["quarantined"])
+@pytest.mark.parametrize(
+    ("answer", "named"),
+    [
+        (RunnerError("triage is down"), "triage is down"),
+        (_answer("no_such_class"), "triage returned an unknown class 'no_such_class'"),
+        ({**_answer("hold"), "diagnosis": "nothing quoted here"}, "triage answer refused"),
+    ],
+    ids=["graph-errors", "unknown-class-refused", "uncited-answer-refused"],
+)
+def test_a_task_whose_triage_failed_is_held_with_the_failure_named_not_quarantined_again(
+    repo, cart, tmp_path, capsys, answer, named,  # noqa: F811
+) -> None:
+    """H4.4 regression: a failed triage quarantined the task again, so the chair sent it back to triage, which failed the
+    same way. It is held for a person instead, with what failed on the mark, and is not built."""
+    result, runner, store = _drive(repo, cart, tmp_path, answer)
+    row = _row(store, "t1-probe")
+    assert not any(q["id"] == "t1-probe" for q in result["quarantined"])
+    assert row["state"] == "blocked"
+    assert row["extra"][HOLD_REASON].startswith(f"{HOLD_MARK} triage could not run: ")
+    assert named in row["extra"][HOLD_REASON]
+    assert "the chair asked for triage of this quarantine" in row["extra"][HOLD_REASON]
     assert not _built(runner, "t1-probe")
-    assert TRIAGE_FLAG in _row(store, "t1-probe")["extra"]
+    assert "  triage: t1-probe held for a person: " in capsys.readouterr().out
+
+
+def test_triage_failure_hold_names_the_failure_then_why_triage_was_asked() -> None:
+    assert epic_module.triage_failure_hold("t1-probe: triage is down: 503", "the chair asked.") == (
+        "t1-probe", "triage could not run: triage is down: 503. It was asked because: the chair asked.",
+    )
+    assert epic_module.triage_failure_hold("t1-probe", "x") == ("t1-probe", "triage could not run: no detail was recorded. It was asked because: x")
 
 
 # ── the pure parts ──────────────────────────────────────────────────────────

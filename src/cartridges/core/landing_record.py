@@ -94,7 +94,11 @@ def new_record(initiative: str, *, repo: str, branch: str, parent: str, base_sha
 
 
 def phase_parents(tasks: Iterable[Mapping[str, Any]]) -> dict[str, set[str]]:
-    """Phase to the phases it needs: one task of it needs a task of the other. The `integrate` phase needs every other."""
+    """Phase to the phases it needs: one task of it needs a task of the other.
+
+    The `integrate` phase needs none. Its task resolves the parent's conflict with the initiative branch, on a branch cut
+    from that branch's tip: filed when a run starts (no phase builds on the old base meanwhile), it merges first, and
+    filed at land time, every other phase has merged already."""
     rows = list(tasks)
     phase_of = {str(t["id"]): str(t.get("phase") or "") for t in rows}
     parents: dict[str, set[str]] = {phase: set() for phase in phase_of.values()}
@@ -104,8 +108,6 @@ def phase_parents(tasks: Iterable[Mapping[str, Any]]) -> dict[str, set[str]]:
             other = phase_of.get(str(need))
             if other is not None and other != own:
                 parents[own].add(other)
-    if INTEGRATE_PHASE in parents:
-        parents[INTEGRATE_PHASE] = {p for p in parents if p != INTEGRATE_PHASE}
     return parents
 
 
@@ -284,7 +286,10 @@ def blocked_split(parents: Mapping[str, Collection[str]], states: Mapping[str, s
     """What `on_blocked: split` moves: the blocked phase and every phase that depends on it, in merge order.
 
     Refused, with the reason, when a phase that is already merged depends on the blocked one: its work is on the
-    initiative branch and cannot leave."""
+    initiative branch and cannot leave. The `integrate` phase never moves: its task resolves this initiative's own
+    branch with its parent, so a follow-up initiative would only meet the same conflict and file it again."""
+    if blocked == INTEGRATE_PHASE:
+        return [], f"the {INTEGRATE_PHASE} phase resolves this initiative's branch with its parent and cannot move to another"
     moving = {blocked, *dependents(parents, blocked)}
     stuck = sorted((p for p in moving if p != blocked and states.get(p) == "merged"), key=natural_key)
     if stuck:
@@ -299,3 +304,18 @@ def follow_up_id(initiative: str, taken: Collection[str]) -> str:
     while f"{stem}-{number}" in taken or f"{stem}-{number}" == initiative:
         number += 1
     return f"{stem}-{number}"
+
+
+def stack_resolved_parent(record: Mapping[str, Any], records: Sequence[Mapping[str, Any]]) -> str:
+    """The branch `record`'s initiative takes forward now: its recorded parent, or, while that parent is the branch of
+    a lower initiative that has landed, that initiative's own parent, layer by layer down the stack.
+
+    A landed initiative's branch is deleted, so its name is no commit to merge. The lander moves the record down only
+    at land time (`_restack`, which retargets the pull request too); a run reads the same answer and writes nothing."""
+    parent, seen = str(record.get("parent") or ""), {str(record.get("initiative"))}
+    while True:
+        below = next((r for r in records if r.get("branch") == parent and str(r.get("initiative")) not in seen), None)
+        if below is None or below.get("state") != "landed":
+            return parent
+        seen.add(str(below.get("initiative")))
+        parent = str(below.get("parent") or parent)

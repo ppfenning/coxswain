@@ -1139,7 +1139,7 @@ class ClaudeCodeRunner:
         scratch = parent / "tree"
         from harness.worktree import link_venv, registry_lock  # here, not at the top: harness imports this module
 
-        with registry_lock():
+        with registry_lock(self.repo_dir):
             proc = subprocess.run(
                 ["git", "-C", str(self.repo_dir), "worktree", "add", "--detach", str(scratch), "HEAD"],
                 capture_output=True, text=True,
@@ -1154,7 +1154,7 @@ class ClaudeCodeRunner:
     def _drop_scratch(self, parent: Path, scratch: Path) -> None:
         from harness.worktree import registry_lock  # here, not at the top: harness imports this module
 
-        with registry_lock():
+        with registry_lock(self.repo_dir):
             subprocess.run(
                 ["git", "-C", str(self.repo_dir), "worktree", "remove", "--force", str(scratch)],
                 capture_output=True, text=True,

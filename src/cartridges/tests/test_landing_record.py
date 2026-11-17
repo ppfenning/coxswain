@@ -35,9 +35,10 @@ def test_waves_are_depths_and_merge_order_is_parents_first_in_natural_order() ->
     assert lr.dependents(parents, "p1") == {"p3", "p10"}
 
 
-def test_the_integrate_phase_needs_every_other_phase() -> None:
+def test_the_integrate_phase_needs_no_other_phase_so_a_conflict_filed_at_run_start_merges_first() -> None:
     tasks = [task("a", "p1"), task("b", "p2"), task("fix", lr.INTEGRATE_PHASE)]
-    assert lr.phase_parents(tasks)[lr.INTEGRATE_PHASE] == {"p1", "p2"}
+    assert lr.phase_parents(tasks)[lr.INTEGRATE_PHASE] == set()
+    assert lr.placeable_phases(record(), tasks) == ["integrate", "p1", "p2"]
 
 
 def test_a_new_initiative_has_wave_one_open_and_the_rest_waiting() -> None:
@@ -158,6 +159,29 @@ def test_split_moves_the_blocked_phase_and_its_dependents_and_refuses_when_a_mer
     states = {"p1": "merged", "p2": "merged", "p3": "blocked", "p10": "waiting"}
     assert lr.blocked_split(parents, states, "p3") == (["p3", "p10"], None)
     assert lr.blocked_split(parents, {**states, "p10": "merged"}, "p3") == ([], "merged phase(s) p10 depend on blocked phase p3")
+
+
+def test_split_never_moves_the_integrate_phase() -> None:
+    parents = lr.phase_parents([task("a", "p1"), task("fix", lr.INTEGRATE_PHASE)])
+    assert lr.blocked_split(parents, {"p1": "open", "integrate": "blocked"}, lr.INTEGRATE_PHASE) == (
+        [], "the integrate phase resolves this initiative's branch with its parent and cannot move to another",
+    )
+
+
+def _layer(initiative: str, branch: str, parent: str, state: str = "building") -> dict:
+    return {"initiative": initiative, "branch": branch, "parent": parent, "state": state}
+
+
+def test_a_stacked_record_takes_forward_the_parent_of_each_landed_layer_below_it() -> None:
+    a = _layer("a", "init/a", "main")
+    b = _layer("b", "init/b", "init/a")
+    c = _layer("c", "init/c", "init/b")
+    assert lr.stack_resolved_parent(c, [a, b, c]) == "init/b", "the layer below has not landed: its branch is the parent"
+    assert lr.stack_resolved_parent(c, [a, {**b, "state": "landed"}, c]) == "init/a"
+    assert lr.stack_resolved_parent(c, [{**a, "state": "landed"}, {**b, "state": "landed"}, c]) == "main"
+    assert lr.stack_resolved_parent(a, [a, b, c]) == "main"
+    loop = [_layer("x", "init/x", "init/y", "landed"), _layer("y", "init/y", "init/x", "landed")]
+    assert lr.stack_resolved_parent(_layer("z", "init/z", "init/x"), loop) in ("init/x", "init/y"), "a cycle ends"
 
 
 def test_follow_up_ids_take_the_first_free_number() -> None:

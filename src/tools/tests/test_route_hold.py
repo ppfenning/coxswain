@@ -150,7 +150,7 @@ def test_release_readies_the_row_and_the_file(tmp_path, monkeypatch):
     ws = make_ws(tmp_path, HELD)
     calls = spy(monkeypatch, ws)
     held_rows = [{**ROWS[0], "extra": {"title": "Idea", "stage": "draft", "hold_reason": "r"}}]
-    assert route_hold.release(ws, ws / "runs", "idea", held_rows) == 0
+    assert route_hold.release(ws, ws / "runs", "idea", held_rows, initiative_live=()) == 0
     assert calls[0][2]["extra"] == {"title": "Idea", "stage": "ready"}
     assert (ws / "intake" / "idea.md").read_text() == READY
 
@@ -159,7 +159,7 @@ def test_releasing_a_ready_intake_writes_nothing(tmp_path, monkeypatch):
     ws = make_ws(tmp_path, READY)
     calls = spy(monkeypatch, ws)
     ready_rows = [{**ROWS[0], "extra": {"title": "Idea", "stage": "ready"}}]
-    assert route_hold.release(ws, ws / "runs", "idea", ready_rows) == 0
+    assert route_hold.release(ws, ws / "runs", "idea", ready_rows, initiative_live=()) == 0
     assert calls == []
 
 
@@ -208,7 +208,7 @@ def test_a_refusal_writes_nothing_and_names_the_id(tmp_path, monkeypatch, capsys
     ws = make_ws(tmp_path)
     calls = spy(monkeypatch, ws)
     assert route_hold.hold(ws, ws / "runs", "nope", "why", "pat", NOW, ROWS) == 2
-    assert route_hold.release(ws, ws / "runs", "old", ROWS) == 2
+    assert route_hold.release(ws, ws / "runs", "old", ROWS, initiative_live=()) == 2
     assert capsys.readouterr().out == "hold: refused: no queued intake named nope\nrelease: refused: no queued intake named old\n"
     assert calls == [] and (ws / "intake" / "idea.md").read_text() == FREE
 
@@ -258,7 +258,7 @@ def test_holding_then_releasing_an_initiative_round_trips_the_file_and_the_row(t
     assert calls[0][1] == INIT_FREE and calls[1][1] == INIT_HELD
     held = {"id": "demo", "repo": "r", "held": "true", "hold_reason": "held by pat on 2026-11-03: waiting on design"}
     assert calls[0][2]["extra"] == held and calls[1][2] == [path]
-    assert route_hold.release(tmp_path, tmp_path / "runs", "demo", [ROWS[2], {**ROWS[3], "extra": held}]) == 0
+    assert route_hold.release(tmp_path, tmp_path / "runs", "demo", [ROWS[2], {**ROWS[3], "extra": held}], initiative_live=()) == 0
     assert calls[2][2]["extra"] == {"id": "demo", "repo": "r"}
     assert path.read_text() == INIT_FREE
 
@@ -268,7 +268,7 @@ def test_releasing_a_held_initiative_marks_its_newest_run_so_its_tasks_start_fre
     calls = spy_initiative(monkeypatch, path)
     monkeypatch.setattr(route_hold.run_store, "run_ids", lambda runs_dir: {"demo-9", "demo-10", "demo.p1-2", "demo-x-40"})
     held = {"id": "demo", "repo": "r", "held": "true", "hold_reason": "held by pat on 2026-11-03: waiting on design"}
-    assert route_hold.release(tmp_path, tmp_path / "runs", "demo", [ROWS[2], {**ROWS[3], "extra": held}]) == 0
+    assert route_hold.release(tmp_path, tmp_path / "runs", "demo", [ROWS[2], {**ROWS[3], "extra": held}], initiative_live=()) == 0
     assert calls[0][2]["extra"] == {"id": "demo", "repo": "r", "fresh_after_run": {"demo": 10, "demo.p1": 2}}
     assert path.read_text() == INIT_FREE
 
@@ -278,7 +278,7 @@ def test_releasing_a_held_initiative_with_no_run_found_says_no_mark_was_written(
     calls = spy_initiative(monkeypatch, path)
     monkeypatch.setattr(route_hold.run_store, "run_ids", lambda runs_dir: set())
     held = {"id": "demo", "repo": "r", "held": "true", "hold_reason": "held by pat on 2026-11-03: waiting on design"}
-    assert route_hold.release(tmp_path, tmp_path / "runs", "demo", [ROWS[2], {**ROWS[3], "extra": held}]) == 0
+    assert route_hold.release(tmp_path, tmp_path / "runs", "demo", [ROWS[2], {**ROWS[3], "extra": held}], initiative_live=()) == 0
     assert calls[0][2]["extra"] == {"id": "demo", "repo": "r"}
     assert "release: warning: no run of demo found in the store; no fresh_after_run mark written" in capsys.readouterr().out
 
@@ -287,7 +287,7 @@ def test_releasing_an_initiative_that_is_not_held_writes_nothing(tmp_path, monke
     path = make_initiative(tmp_path)
     calls = spy_initiative(monkeypatch, path)
     monkeypatch.setattr(route_hold.run_store, "run_ids", lambda runs_dir: {"demo-9"})
-    assert route_hold.release(tmp_path, tmp_path / "runs", "demo", ROWS) == 0
+    assert route_hold.release(tmp_path, tmp_path / "runs", "demo", ROWS, initiative_live=()) == 0
     assert calls == [] and path.read_text() == INIT_FREE
 
 
@@ -301,7 +301,7 @@ def test_a_missing_initiative_file_is_refused(tmp_path, monkeypatch, capsys):
 def test_an_initiative_with_no_store_row_is_refused(tmp_path, monkeypatch, capsys):
     path = make_initiative(tmp_path, "ghost")
     calls = spy_initiative(monkeypatch, path)
-    assert route_hold.release(tmp_path, tmp_path / "runs", "ghost", ROWS) == 2
+    assert route_hold.release(tmp_path, tmp_path / "runs", "ghost", ROWS, initiative_live=()) == 2
     assert capsys.readouterr().out == "release: refused: no initiative row for ghost in the store\n"
     assert calls == []
 

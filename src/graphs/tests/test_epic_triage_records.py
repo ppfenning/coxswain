@@ -125,8 +125,10 @@ def test_only_the_records_of_this_initiative_that_name_a_cause_are_attempts(repo
     assert "attempt-1|" in prompt and "attempt-2|" not in prompt and "elsewhere" not in prompt
 
 
-def test_a_flagged_task_with_no_record_still_fails_triage_and_stays_quarantined(repo, cart, tmp_path) -> None:  # noqa: F811
+def test_a_flagged_task_with_no_record_still_fails_triage_and_is_held_with_the_refusal_named(repo, cart, tmp_path) -> None:  # noqa: F811
     result, runner, store = _drive_records(repo, cart, tmp_path)
-    assert any(q["id"] == "t1-probe" for q in result["quarantined"])
-    assert TRIAGE_FLAG in _row(store, "t1-probe")["extra"]
+    row = _row(store, "t1-probe")
+    assert not any(q["id"] == "t1-probe" for q in result["quarantined"])
+    assert row["state"] == "blocked" and TRIAGE_FLAG in row["extra"]
+    assert row["extra"][HOLD_REASON].startswith(f"{HOLD_MARK} triage could not run: ") and "refused" in row["extra"][HOLD_REASON]
     assert not _built(runner, "t1-probe")

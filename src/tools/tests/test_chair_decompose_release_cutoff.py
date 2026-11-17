@@ -136,7 +136,7 @@ def test_release_records_released_at_in_the_row_and_the_file(tmp_path, monkeypat
     monkeypatch.setattr(route_hold.run_store, "upsert_row", lambda runs_dir, row: sent.append(row) or True)
     monkeypatch.setattr(route_hold.queue_export, "record_written_paths", lambda w, paths: None)
     rows = [{"kind": "intake", "state": "queued", "task_id": "idea", "initiative": "intake", "extra": {"title": "Idea", "stage": "ready"}}]
-    assert route_hold.release(tmp_path, tmp_path / "runs", "idea", rows, now=RELEASED) == 0
+    assert route_hold.release(tmp_path, tmp_path / "runs", "idea", rows, initiative_live=(), now=RELEASED) == 0
     assert sent[0]["extra"]["released_at"] == "2026-11-16T12:00:00+00:00"
     assert (tmp_path / "intake" / "idea.md").read_text() == STAMPED
     assert chair_decompose_runs.read_released_at(tmp_path, "intake/idea.md") == RELEASED

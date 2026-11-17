@@ -1,6 +1,7 @@
 """A reused phase branch is brought up to the initiative branch before any of its tasks builds.
 
-The initiative branch is a phase's only parent, and it does not float: it moves when a sibling phase merges into it.
+The initiative branch is a phase's only parent. It moves when a sibling phase merges into it, and when a run takes
+its own parent forward first (tests/test_epic_stale_branch.py).
 At `task` there is no initiative branch and a phase is never refreshed."""
 
 from __future__ import annotations
@@ -87,26 +88,6 @@ def test_a_reused_phase_takes_what_a_sibling_merged_and_builds_on_it_then_merges
     assert pb["status"] == "complete" and pb["initiative_merge"]["status"] == "merged"
     assert git("show", f"{INIT}:shared.md", cwd=repo) == "two"
     assert landing_store.get_record(store.conn, "demo-initiative")["phases"]["pb"]["tasks"] == ["tb-one", "tb-two"]
-
-
-def test_a_moved_default_ref_moves_neither_the_initiative_branch_nor_a_phase(repo, cart, tmp_path) -> None:  # noqa: F811
-    """The parent is recorded when the branch is cut. Taking it forward is the lander's step, before the pull request."""
-    store = one_store()
-    one = initiative(two_phases=False)
-    drive(repo, cart, tmp_path, store=store, run_id="epic-1", work={**one, "items": one["items"][:1]})
-    cut_at = git("merge-base", INIT, "main", cwd=repo)
-    commit_on_main(repo, "moved.md", "moved\n")
-
-    t1, t2 = one["items"]
-    work = {**one, "items": [{**t1, "state": "approved", "merged": True}, t2]}
-    result, runner = drive(repo, cart, tmp_path, store=store, run_id="epic-2", work=work)
-
-    record = result["phases"][0]
-    assert record["status"] == "complete" and len(builds(runner)) == 1
-    assert not is_ancestor(repo, "main", INIT) and not is_ancestor(repo, "main", P1)
-    assert git("merge-base", INIT, "main", cwd=repo) == cut_at
-    assert landing_store.get_record(store.conn, "demo-initiative")["base_sha"] == cut_at
-    assert [p for p in result["proposals"] if p["kind"] == "stack_rebase"] == []
 
 
 def test_a_refresh_that_conflicts_blocks_the_phase_names_the_path_and_builds_nothing(repo, cart, tmp_path) -> None:  # noqa: F811

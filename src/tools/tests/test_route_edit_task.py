@@ -453,7 +453,7 @@ def test_a_hand_ready_while_a_run_of_the_initiative_is_live_is_refused(tmp_path,
     _file(tmp_path, "work/ship/p1/t1.md", TICKET_FILE.replace("state: todo", "state: blocked"))
     result = route_edit.apply_edit(tmp_path, tmp_path, "t1", state="ready", live_runs=(), initiative_live=(live, "other-3"))
     assert result.code == route_edit.REFUSED
-    assert f"{live} is live on ship" in result.text
+    assert result.text == f"{live} is live on ship; stop it with `cox runs stop {live}`, or let it finish, before readying t1"
     assert store.states == [] and store.upserts == []
 
 

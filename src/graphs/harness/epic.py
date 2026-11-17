@@ -61,7 +61,7 @@ from urllib.parse import urlencode
 
 import yaml
 
-from core import ledger, workstore
+from core import landing_record, ledger, workstore
 from core.cartridge import integration_checks_setting, test_database_setting
 from core.landing import (
     DEFAULT_LAND_AT,
@@ -74,6 +74,7 @@ from core.landing import (
     resolve_land_at,
     resolve_push_initiative,
 )
+from core.landing_record import INTEGRATE_PHASE
 from core.manifest import append_ledger, build_manifest, gate_diff
 from core.phase_hold import phase_holds
 from core.workstore import WorkStoreError, record_attempt
@@ -290,7 +291,7 @@ def _attempt_tree(ctx: _Ctx, phase: str, task: str, patch: str) -> tuple[Path, s
     gets the attempt as a reference patch, as before. The tree lives under the run directory and goes with it."""
     tree = ctx.worktree_root / ctx.run_id / f"{phase}--attempt--{task}"
     tree.parent.mkdir(parents=True, exist_ok=True)
-    with registry_lock():
+    with registry_lock(ctx.repo):
         ok, _ = _git("-C", str(ctx.repo), "worktree", "add", "--detach", str(tree), ctx.phase_branch(phase))
     if not ok:
         return None
@@ -445,30 +446,23 @@ def _start_initiative(ctx: _Ctx, initiative: Mapping[str, Any]) -> str:
     return str(record["branch"])
 
 
-def _foreign_needs(items: Sequence[Mapping[str, Any]], phase: str | None = None) -> list[str]:
-    """The needs that name a task of another initiative, of every task or of one phase's unsettled tasks."""
-    own = {str(i["id"]) for i in items}
-    return sorted({
-        str(n) for i in items
-        if phase is None or (i.get("phase") == phase and i.get("state") not in ("approved", "done", "dropped"))
-        for n in i.get("needs") or [] if str(n) not in own
-    })
+def _take_parent_forward(ctx: _Ctx) -> tuple[str, str, landing_git.Merge] | None:
+    """Edge. Bring the initiative branch up to its parent, under the branch lease: (parent, parent ref, what happened).
 
-
-def _take_parent_forward(ctx: _Ctx) -> str | None:
-    """Edge. Bring the initiative branch up to its parent, for an initiative that needs another initiative's work.
-
-    That work reaches this initiative only through the parent it landed on, and the initiative branch was cut before
-    it landed. So the parent is merged forward here, under the branch lease, when it merges cleanly. Why it could not
-    be, else None: the phases that need the foreign work then stop, and every other phase builds as it is."""
+    The branch was cut from the parent and the parent has moved since: other initiatives landed on it. Before any phase
+    builds, the parent is merged forward here when it merges cleanly, so no phase builds on an old base. A conflict, or
+    a merge that could not be made, leaves the branch where it was. None without a store or an initiative branch."""
     if ctx.store is None or ctx.initiative_branch is None:
         return None
     branch = ctx.initiative_branch
     record = landing_store.get_record(ctx.store.conn, ctx.initiative_id) or {}
-    parent = str(record.get("parent") or ctx.default_ref.removeprefix("origin/"))
+    # A stacked initiative's recorded parent is the branch of the initiative below; once that one landed, its branch is
+    # gone and its own parent is the one to take forward.
+    stacked = landing_record.stack_resolved_parent(record, landing_store.list_records(ctx.store.conn)) if record else ""
+    parent = stacked or ctx.default_ref.removeprefix("origin/")
     parent_ref = f"origin/{parent}" if landing_git.rev(ctx.repo, f"refs/remotes/origin/{parent}") else parent
     if landing_git.is_ancestor(ctx.repo, parent_ref, branch):
-        return None
+        return parent, parent_ref, landing_git.Merge("up_to_date")
     early = resolve_push_initiative(ctx.cartridge) == "early"
     try:
         merged = ctx.retry.write(
@@ -480,11 +474,103 @@ def _take_parent_forward(ctx: _Ctx) -> str | None:
             _END_WRITE_WINDOW_S,
         )
     except Exception as exc:
-        return f"{parent} was not merged into {branch}: {type(exc).__name__}: {exc}"
-    if merged.ok:
-        print(f"  {branch} brought up to {parent}: this initiative needs work that landed there")
+        merged = landing_git.Merge("error", detail=f"{type(exc).__name__}: {exc}")
+    if merged.status == "merged":
+        print(f"  {branch} brought up to {parent} before any phase builds")
+    return parent, parent_ref, merged
+
+
+def behind_parent(
+    status: str, detail: str, paths: Sequence[str], *, parent: str, branch: str, integrate: str | None, unfiled: str = ""
+) -> str | None:
+    """Pure. Why every phase but `integrate` waits this run, from the merge of the parent into the initiative branch;
+    None when the branch holds its parent. `integrate` is the rectify task filed for a conflict, `unfiled` why none was."""
+    if status in ("merged", "up_to_date", "busy"):
+        return None  # `busy`: another worker is moving the branch right now; the next run takes the parent forward
+    if status == "conflict":
+        where = ", ".join(paths) or "files git did not name"
+        then = (
+            f"integrate task {integrate} resolves it first" if integrate
+            else f"no integrate task could be filed ({unfiled or 'no reason was given'})"
+        )
+        return f"{branch} is behind {parent}, and merging {parent} into it conflicts in {where}; {then}, so no phase builds on the old base"
+    return f"{parent} was not merged into {branch}: {detail or status}; no phase builds on the old base"
+
+
+def _integrate_path(items: Sequence[Mapping[str, Any]], task: str) -> Path | None:
+    """The work file for a new integrate task, beside the initiative's others (`<work>/<initiative>/<phase>/<task>.md`);
+    None when no task of it has a file."""
+    found = next((Path(str(i["path"])) for i in items if i.get("path")), None)
+    return found.parent.parent / INTEGRATE_PHASE / f"{task}.md" if found is not None else None
+
+
+def _file_integrate(
+    ctx: _Ctx, items: list[dict[str, Any]], parent: str, parent_ref: str, paths: Sequence[str]
+) -> tuple[str | None, str]:
+    """Edge. A ready rectify task in the `integrate` phase, as the lander files one: (its id, "") or (None, why not).
+
+    The `integrate` branch is cut from the initiative tip and the conflicted merge of the parent is committed on it,
+    markers and all, so the task builds on the conflict and nothing already built is redone. A rectify task of the
+    phase still open is the one this conflict needs too: no second one is filed. The task goes to the store row, to
+    a work file beside the others when they have files, and to this run's items, so this run builds it."""
+    with ctx.items_lock:
+        rows = [{"id": i["id"], "phase": i.get("phase"), "state": i.get("state")} for i in items]
+    ident, still_open = landing_ops.rectify_task(INTEGRATE_PHASE, rows)
+    if still_open:
+        return ident, ""
+    branch, integrate = str(ctx.initiative_branch), ctx.phase_branch(INTEGRATE_PHASE)
+    tip, _, why = landing_git.ensure_branch(ctx.repo, integrate, branch)
+    if tip is None:
+        return None, why
+    brought = landing_git.merge_into(
+        ctx.repo, branch=integrate, source=branch, message=f"{ctx.initiative_id}: bring {integrate} up to {branch}",
+    )
+    if not brought.ok:
+        return None, f"{integrate} could not be brought up to {branch}: {brought.detail or brought.status}"
+    marked = landing_git.conflict_commit(
+        ctx.repo, branch=integrate, source=parent_ref,
+        message=f"{ctx.initiative_id}: merge {parent} into {integrate} (conflicted, to rectify)",
+    )
+    if marked.status == "error":
+        return None, f"the integrate base could not be prepared: {marked.detail}"
+    item: dict[str, Any] = {
+        "id": ident, "phase": INTEGRATE_PHASE, "state": "ready", "needs": [], "surfaces": [],
+        "title": f"Integrate with {parent}: resolve the conflicts",
+        "body": landing_ops.rectify_body(parent, INTEGRATE_PHASE, paths or marked.paths, ""),
+    }
+    path = _integrate_path(items, ident)
+    try:
+        from harness import store_queue  # not module level: see `_mirror_read`
+
+        if path is not None:
+            workstore.write_item(item, path)
+        store_queue.upsert(ctx.store.conn, {
+            "kind": "task", "initiative": ctx.initiative_id, "task_id": ident, "phase": INTEGRATE_PHASE, "state": "ready",
+            "needs": [], "surfaces": [], "title": item["title"], "body": item["body"], "extra": {"id": ident, "phase": INTEGRATE_PHASE},
+            "updated_at": _now(), "updated_by": f"run:{ctx.run_id}",
+        })
+    except Exception as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+    with ctx.items_lock:
+        items.append({**item, **({"path": str(path)} if path is not None else {})})
+    return ident, ""
+
+
+def _bring_forward(ctx: _Ctx, items: list[dict[str, Any]]) -> str | None:
+    """Edge. Take the parent forward before any phase; why every phase but `integrate` waits this run, else None."""
+    forward = _take_parent_forward(ctx)
+    if forward is None:
         return None
-    return f"{parent} was not merged into {branch}: {merged.detail or merged.status}"
+    parent, parent_ref, merged = forward
+    integrate, unfiled = _file_integrate(ctx, items, parent, parent_ref, merged.paths) if merged.status == "conflict" else (None, "")
+    reason = behind_parent(
+        merged.status, merged.detail, merged.paths, parent=parent, branch=str(ctx.initiative_branch), integrate=integrate, unfiled=unfiled,
+    )
+    if reason is not None:
+        print(f"  {reason}")
+    elif merged.status == "busy":
+        print(f"  {parent} not taken forward this run: {merged.detail}; the next run takes it forward")
+    return reason
 
 
 def _merge_checks(ctx: _Ctx, phase: str) -> landing_git.Checks | None:
@@ -1107,7 +1193,7 @@ def _open_phase_worktree(
         listed, listing = _git("-C", str(ctx.repo), "worktree", "list", "--porcelain")
         if listed and _registered_on_branch(listing, worktree, branch):
             return _Opened(True, "", True, cleared)
-        with registry_lock():
+        with registry_lock(ctx.repo):
             ok, detail = _git("-C", str(ctx.repo), "worktree", "add", str(worktree), branch)
         return _Opened(ok, detail, True, cleared)
     ok, detail = create_worktree(ctx.repo, worktree, branch=branch, base=base_ref)
@@ -2229,8 +2315,8 @@ def run_epic(
         if is_initiative(ctx.land_at):
             # Before any phase: the initiative branch is cut from its parent and recorded, so every phase forks from it.
             ctx = replace(ctx, initiative_branch=_start_initiative(ctx, initiative))
-            if _foreign_needs(items):
-                ctx = replace(ctx, parent_behind=_take_parent_forward(ctx))
+            # Then the branch takes its parent forward, so no phase builds on an old base (H4.2).
+            ctx = replace(ctx, parent_behind=_bring_forward(ctx, items))
 
         parents = phase_parents(items)
         named = None if only_phases is None else frozenset(only_phases)
@@ -3976,6 +4062,14 @@ def _attempt_cap_reason(attempts: Sequence[Mapping[str, Any]]) -> str:
     )
 
 
+def triage_failure_hold(failure: str, asked: str) -> tuple[str, str]:
+    """Pure. (task id, hold reason) for one failed triage invocation, `<task>: <what failed>` as `invoke_graphs` names it.
+
+    The reason names the failure first, then why triage was asked; a person reads it on the held task."""
+    task_id, _, what = failure.partition(":")
+    return task_id, f"triage could not run: {what.strip() or 'no detail was recorded'}. It was asked because: {asked}"
+
+
 def _attempt_cap_for(attempts: Sequence[Mapping[str, Any]]) -> int:
     """1 when the newest attempt by `ts` (ties keep list order) was caused by the ticket or the code, else `ATTEMPT_CAP`."""
     newest = sorted(attempts, key=lambda a: str(a.get("ts") or ""))[-1:]
@@ -4314,14 +4408,10 @@ def _run_phase(
                 return _missing_branch_phase(record, missing, reason)
             record.update(status="blocked", reason=reason)
             return record
-        with ctx.items_lock:
-            foreign_needs = _foreign_needs(items, phase)
-        if ctx.parent_behind and foreign_needs:
-            # The needed work landed on the parent, and this branch could not take the parent forward.
-            record.update(
-                status="blocked",
-                reason=f"phase {phase} needs {', '.join(foreign_needs)} of another initiative, and {ctx.parent_behind}",
-            )
+        if ctx.parent_behind and phase != INTEGRATE_PHASE:
+            # The branch could not take its parent forward: building now would build on the old base. Nothing is
+            # quarantined, and the integrate phase, which resolves a conflict, builds.
+            record.update(status="blocked", reason=f"phase {phase} waits: {ctx.parent_behind}")
             return record
 
     opened = _open_phase_worktree(ctx, phase, cut_ref, parents, cut_from)
@@ -4422,7 +4512,7 @@ def _run_phase(
         if stale_recreate:
             return _stale_phase(record, stale_recreate)
         _git("-C", str(ctx.phase_worktree(phase)), "checkout", "--detach", "-q")
-        with registry_lock():
+        with registry_lock(ctx.repo):
             _git("-C", str(ctx.repo), "worktree", "remove", "--force", str(ctx.phase_worktree(phase)))
         _git("-C", str(ctx.repo), "branch", "-D", branch)
         reopened = _open_phase_worktree(ctx, phase, cut_ref, parents, cut_from)
@@ -4478,6 +4568,9 @@ def _run_phase(
     # re-reviewed, and never blocks the phase behind it.
     with ctx.items_lock:
         all_ready = _buildable(items, phase, foreign, only, ctx.land_at)
+    # Under work_state store no work file holds an attempt: a task's attempts are its runs' task records, as the chair
+    # reads them. So the cap below counts them, and a rebuild resumes from the newest one's kept patch, which another
+    # lane's record carries in the store when this machine has no file of it.
 
     # A third run of the same task is refused outright rather than tried
     # again — quarantined here, plainly, never through `_quarantine_task`,
@@ -4486,7 +4579,6 @@ def _run_phase(
     # An `infra` attempt is the apply arm's own failure, not the task's, so it
     # must not grow the count the cap enforces. Nor does a `rescue_failed` one:
     # a rescue checks work already built and is not a build.
-    attempts_by_id = {str(item["id"]): _build_attempts(item.get("attempts") or []) for item in all_ready}
     read_rows = _queue_rows(ctx)
     queue_rows = read_rows or {}
     # A task a person readied by hand, or whose initiative a person released, starts fresh: no attempt and no triage
@@ -4496,6 +4588,17 @@ def _run_phase(
     cutoff_by_id = {
         str(item["id"]): workstore.fresh_cutoff(_row_extra(queue_rows.get(str(item["id"]))), initiative_extra) for item in all_ready
     }
+    # Under work_state store no work file holds an attempt: a task's attempts are its runs' task records, as the chair
+    # reads them. So the cap below counts them, and a rebuild resumes from the newest one's kept patch, which another
+    # lane's record carries in the store when this machine has no file of it. A record from a run at or before the
+    # task's fresh start is history: it is neither an attempt nor a patch to resume from.
+    recorded = {
+        str(item["id"]): records_after(_caused_records(ctx, phase, str(item["id"])), cutoff_by_id[str(item["id"])])
+        for item in all_ready
+    } if _store_authoritative(ctx) else {}
+    all_ready = [with_record_attempts(item, [a for a, _ in recorded.get(str(item["id"]), [])]) for item in all_ready]
+    record_patches = {task_id: rescue_select.patch_of(found[-1][1]) for task_id, found in recorded.items() if found}
+    attempts_by_id = {str(item["id"]): _build_attempts(item.get("attempts") or []) for item in all_ready}
     # A rewritten ticket starts a fresh count. Triage still gets the whole history for its repeat guard.
     # An item with no `body` cannot be matched, so all its attempts count.
     counted_by_id = {
@@ -4517,8 +4620,7 @@ def _run_phase(
     cap_by_id = {task_id: _attempt_cap_for(caused) for task_id, caused in caused_by_id.items()}
     # A capped task is launched into `triage` (docs/design/triage.md §1) rather
     # than quarantined outright: the graph classifies the attempt record and
-    # emits by class, and only a triage that could not run still ends up
-    # quarantined here, plainly, never through `_quarantine_task`.
+    # emits by class; a triage that could not run holds the task for a person, never through `_quarantine_task`.
     # A task the chair flagged for triage (its row's `TRIAGE_FLAG`) is triaged too, whatever its attempt count: a
     # failure that needs a tweak gets its instruction before any rebuild.
     triage_batch: list[dict[str, Any]] = []
@@ -4578,20 +4680,17 @@ def _run_phase(
             run_id=f"{ctx.run_id}:{phase}",
             max_parallel=ctx.max_parallel,
         )
-        for failure in triage_failures:
-            task_id = failure.split(":", 1)[0]
-            reason = f"{asked(task_id)} triage itself failed: {failure}"
-            quarantined.append({"id": task_id, "phase": phase, "grain": "task", "reason": reason, "kind": "no_work"})
-            _quarantine_row(ctx, phase, task_id)
-            print(
-                f"  attempt cap: {task_id} refused; triage could not run ({failure}); "
-                f"{_newest_attempt_text(attempts_by_id[task_id])}"
-            )
-
         def hold(task_id: str, reason: str) -> None:
             """Leave the task for a person with the mark; it is not built in this run either way."""
             text, why = _hold_task(ctx, shared.get(task_id) or dict(all_ready_by_id[task_id]), reason)
             print(f"  triage: {task_id} held for a person: {text}" + (f" (the hold was not written: {why})" if why else ""))
+
+        # A triage that could not run (its graph raised, or every answer it gave was refused) is not the task's
+        # failure: quarantining again would only send it back to triage, which fails the same way. A person decides.
+        for failure in triage_failures:
+            task_id, reason = triage_failure_hold(failure, asked(failure.split(":", 1)[0]))
+            print(f"  attempt cap: {task_id} not built; triage could not run; {_newest_attempt_text(attempts_by_id[task_id])}")
+            hold(task_id, reason)
 
         for result in triaged:
             task_id = str(result.get("run_id", "")).rsplit(":", 1)[-1]
@@ -4821,7 +4920,7 @@ def _run_phase(
     # Offered as a reference; nothing here approves it.
     patches_for_attempt: dict[str, str | None] = {
         str(task["id"]): ((load_result(ctx.runs_dir, task["attempts"][-1]["run"], phase, str(task["id"])) or {})
-                           .get("build") or {}).get("patch")
+                           .get("build") or {}).get("patch") or record_patches.get(str(task["id"]))
         for task in runnable
         if task.get("attempts")
     }
@@ -6197,6 +6296,17 @@ def _rescue_failed(ctx: _Ctx, item: Mapping[str, Any], *, phase: str, reason: st
     )
     _record_tasks(ctx, phase, [], [entry])
     return {"status": "rescue_failed", "reason": reason, "cause": cause}
+
+
+def records_after(found: Sequence[tuple[Mapping[str, Any], Any]], cutoff: Any) -> list[tuple[Mapping[str, Any], Any]]:
+    """Pure. The (attempt, record) pairs whose run counts after the fresh-start `cutoff` (`workstore.counts_after`)."""
+    return [(attempt, record) for attempt, record in found if workstore.counts_after(attempt.get("run"), cutoff)]
+
+
+def with_record_attempts(item: Mapping[str, Any], recorded: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    """Pure. `item` with `recorded` (its runs' task records as attempts, oldest first) as its attempts, when it holds
+    none of its own; an item whose work file holds attempts, or with nothing recorded, is returned as it is."""
+    return {**item, "attempts": [dict(a) for a in recorded]} if recorded and not item.get("attempts") else item
 
 
 def with_stored_causes(item: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:

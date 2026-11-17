@@ -127,7 +127,18 @@ branch, and nothing is assembled from several parents. A wave is the set of phas
 initiative branch, not a branch.
 
 The landing record, one per initiative in the store, names the branch, the parent it was cut from, and each phase's
-state, tip and merge commit. The parent is resolved once, when the branch is cut, and no longer floats.
+state, tip and merge commit. The parent is resolved once, when the branch is cut.
+
+Before a run builds anything, it merges the parent's current tip into the initiative branch, so no phase builds on an
+old base. A reused phase branch then merges the new initiative tip in, and a new one is cut from it. When the parent
+merges cleanly, that is all. When it conflicts, the run files a rectify task in the `integrate` phase, on
+`epic/<id>/integrate`, which holds the conflicted merge, markers and all. Every other phase waits, blocked with the
+reason and not quarantined, until that task is built and its phase has merged into the initiative branch. The
+`integrate` phase needs no other phase, so it merges first, and `on_blocked: split` never moves it to a follow-up
+initiative. A merge that fails for another reason (origin has diverged, say) also holds every phase, with the reason,
+until a run can take the parent forward. A branch lease another worker holds is not such a failure: the run builds on
+the branch as it is and the next run takes the parent forward. A stacked initiative whose lower layer has landed takes
+forward that layer's own parent, since the lower branch is deleted; the lander moves the record itself at land time.
 
 ### What the words mean
 

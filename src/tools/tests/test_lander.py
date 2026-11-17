@@ -381,6 +381,19 @@ def test_with_hold_the_built_phases_merge_and_free_their_files_and_the_operator_
     assert world.forge.calls == [] and world.splits == []
 
 
+def test_with_split_a_quarantined_integrate_task_is_held_and_never_moved_to_a_follow_up(tmp_path: Path) -> None:
+    """Regression (review of #1198): a run files `integrate-rectify` when the parent conflicts. Split would move it to a
+    follow-up initiative, whose run meets the same conflict and files another, each cycle. It is held instead."""
+    world = World(tmp_path, cartridge={"landing_areas": {"on_blocked": "split"}})
+    world.start("i", [task("a", "p1"), task("integrate-rectify", lr.INTEGRATE_PHASE, "quarantined")])
+    world.build("i", "p1")
+    lander.run_once(world.ports)
+    lander.sweep(world.ports)
+    assert world.splits == []
+    assert lr.phase_states(world.record("i"), world.rows["i"])["integrate"] == "blocked"
+    assert "the integrate phase resolves this initiative's branch with its parent" in world.notes[-1][1]["reason"]
+
+
 def test_split_is_refused_and_held_when_a_merged_phase_depends_on_the_blocked_one(tmp_path: Path) -> None:
     world = World(tmp_path, cartridge={"landing_areas": {"on_blocked": "split"}})
     world.start("i", [task("a", "p1"), task("b", "p2", needs=("a",))])

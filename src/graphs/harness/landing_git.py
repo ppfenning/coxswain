@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from harness import bounded_proc
+from harness.worktree import registry_lock
 
 # Mechanical commits: the lander joins branches, it never authors.
 IDENTITY = ("-c", "user.email=lander@invalid", "-c", "user.name=lander")
@@ -24,7 +25,8 @@ Checks = Callable[[Path], tuple[bool, str]]
 
 @dataclass(frozen=True)
 class Merge:
-    """The outcome of one merge onto a branch. `status` is merged, up_to_date, conflict, checks_failed, guard or error."""
+    """The outcome of one merge onto a branch. `status` is merged, up_to_date, conflict, checks_failed, guard, busy (another
+    worker holds the branch lease) or error."""
 
     status: str
     tip: str = ""  # the branch's tip afterwards (unchanged unless merged)
@@ -84,12 +86,14 @@ def ensure_branch(repo: Path | str, branch: str, parent_ref: str) -> tuple[str |
 
 def _scratch(repo: Path | str, at: str) -> tuple[Path | None, str]:
     path = Path(tempfile.mkdtemp(prefix="lander-"))
-    ok, out = git(repo, "worktree", "add", "--detach", str(path), at)
+    with registry_lock(repo):
+        ok, out = git(repo, "worktree", "add", "--detach", str(path), at)
     return (path, "") if ok else (None, out)
 
 
 def _drop(repo: Path | str, path: Path) -> None:
-    git(repo, "worktree", "remove", "--force", str(path))
+    with registry_lock(repo):
+        git(repo, "worktree", "remove", "--force", str(path))
 
 
 def _move(repo: Path | str, branch: str, new: str, old: str) -> tuple[bool, str]:

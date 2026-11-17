@@ -23,7 +23,7 @@ keeps them. With a differing file and `--body` or `--body-file` the edit is refu
 `--state ready` on a blocked or quarantined ticket, or on one the chair flagged for triage, drops the flag and marks the
 row `fresh_after_run` with the newest number of each of the initiative's run series (`fresh_start_extra`): the next run
 builds it fresh, counting no attempt and honouring no triage request from a run at or below its series' number. It is
-refused while a run of the initiative is live (`initiative_live`, every live run; `live_on` picks the initiative's), and
+refused while a run of the initiative is live (`initiative_live`, every live run; `route_guard.live_on` picks the initiative's), and
 it says so when the store names no run to mark.
 `--surfaces` and `--state` apply to a task ticket only.
 `--epic` takes an epic id or `none` and applies to an initiative only: it sets or removes the `epic` frontmatter key and
@@ -448,13 +448,6 @@ def fresh_start_extra(extra: dict | None, mark: dict[str, int]) -> dict:
     return {**kept, FRESH_AFTER_RUN: dict(mark)} if mark else kept
 
 
-def live_on(initiative: str, live: Collection[str]) -> list[str]:
-    """Pure: the runs in `live` of `initiative`'s own series or one of its phase series (`<initiative>.<phase>-N`), sorted."""
-    from core.workstore import run_series  # lazy: core sits beside agent_tools in one venv
-
-    return sorted(r for r in live if (series := run_series(r)[0]) == initiative or series.startswith(f"{initiative}."))
-
-
 def _restarts(row: dict, state: str | None) -> bool:
     """Pure: a hand move to ready of a task a run or the chair stopped, or one that still carries a triage request."""
     from core.workstore import TRIAGE_FLAG  # lazy: core sits beside agent_tools in one venv
@@ -522,10 +515,8 @@ def _edit_task(
     if _restarts(row, state):
         # The person fixed what stopped it: the next run builds it fresh, not from the old attempts or their triage.
         # A run in flight could still record an attempt or a request numbered below the mark, so the move waits for it.
-        if running := live_on(row["initiative"], initiative_live):
-            return EditResult(
-                f"{running[0]} is live on {row['initiative']}; stop it or let it finish before readying {row['task_id']}", REFUSED
-            )
+        if running := route_guard.live_on(row["initiative"], initiative_live):
+            return EditResult(route_guard.live_refusal(running[0], row["initiative"], f"readying {row['task_id']}"), REFUSED)
         from core.workstore import fresh_mark  # lazy: core sits beside agent_tools in one venv
 
         mark = fresh_mark(row["initiative"], run_store.run_ids(runs_dir))
