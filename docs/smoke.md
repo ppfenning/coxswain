@@ -44,21 +44,26 @@ without mocks in `tests/test_smoke_plan.py`.
   `cox` starts. `sandbox.store_rows()` reads the store back through `harness.store_queue`.
 - **`repo`** (per test): a clone at `~/src/app` of a bare origin in the test's temporary directory, with one
   commit on `main` pushed.
-- **`forge`** (once per session): a Forgejo container (`plan.FORGEJO_IMAGE`, Forgejo 11 pinned by digest) published
-  on one loopback port only, with sqlite on tmpfs, no ssh, no sign-up and Actions off. The fixture creates one admin
+- **`forge`** (once per session): a Forgejo container (`plan.FORGEJO_IMAGE`, Forgejo 11 from Forgejo's own registry,
+  data.forgejo.org, pinned by digest; the pull is retried up to three times) published on one loopback port only, with sqlite on tmpfs, no ssh, no sign-up and Actions off. The fixture creates one admin
   user and a token with `forgejo admin` inside the container. It is labelled and reaped like the Postgres container.
 - **`forge_sandbox`** (per test): the sandbox with `forge: auto` in its profile and `FORGEJO_BASE_URL` and
   `FORGEJO_TOKEN` in its environment, so `cox` lands a repository whose origin is on the forge through
   `forge_forgejo`, chosen by `forge_auto` as on a person's machine.
 - **`forge_repo`** (per test): a new repository on the forge with one commit on `main`, cloned at `~/src/app` with
   the forge as its http origin. `forge_repo.report(sha, state)` reports a commit status, as a CI job would.
-  `forge_repo.pull(n)` and `forge_repo.branch_tip(branch)` read back what the forge holds.
+  `forge_repo.pull(n)` and `forge_repo.branch_tip(branch)` read back what the forge holds. A branch answer is read
+  by the forge's own `forge_forgejo.parse_branch_tip`, imported from this tree: the one exception to the rule below
+  that a smoke test does not import the code under test, so there is one reader of that answer, not two.
 - **`edge_machine`** (per test): an edge machine laid out as `cox setup install` lays a home out. Its checkout at
   `~/.local/share/coxswain/installs/coxswain` is this tree, cloned from the forge (`edge_origin`, once per module:
-  this tree as one commit, plus one newer commit, both reported green). The checkout sits at the older commit, its
+  this tree's tracked files as one commit, so an untracked local file never reaches it, plus one newer commit, both reported green). The checkout sits at the older commit, its
   venv is synced with `uv sync`, and `cox` is a uv tool editable from it, first on PATH. The profile says
-  `upgrade_channel: edge`. The sandboxed uv reads through the caller's uv cache and managed interpreters
-  (`plan.uv_env`), so a sync links what the caller already has instead of downloading it again.
+  `upgrade_channel: edge`. The sandboxed uv uses the caller's uv cache and managed-interpreter folders
+  (`plan.uv_env`), so a sync links what the caller already has instead of downloading it again. It **reads and
+  writes** both: a sync adds the packages it fetched to the caller's cache, and when no Python 3.14 is there uv may
+  install one into the caller's interpreter folder. Everything else of uv's stays in the sandbox, and a user
+  `uv.toml` (under the real `~/.config/uv`) is not read, since HOME and XDG_CONFIG_HOME point into the sandbox.
 
 ## Contract tests
 
@@ -167,3 +172,15 @@ which sit in pure functions that unit tests cover. **C** covers the rest, as fol
   workflow runs.
 - The test repository is reset to one commit on `main` at the start of each run, and every branch and pull request a
   run creates carries the run id, so a killed run's leftovers are found and closed by the next.
+
+## Known fakes
+
+Each fake below stands in for a boundary that no real test covers yet. Each one names the test that will retire it.
+
+- `tests/devtools/gh_stub.py` is a `gh` executable put on PATH by `tests/devtools/test_release_rerun_e2e.py`. The
+  release rerun test runs the real `python -m devtools release` against real git repositories with bare origins. The
+  stub stores pull requests and releases in a JSON file and merges into the bare origin with real git. It cannot
+  notice a change in `gh`'s argv or JSON. It is retired by the scheduled contract tests against a sandbox GitHub
+  repository (option C above). Those tests cover each `gh` command the release uses: `pr create`, `pr list`,
+  `pr checks`, `pr merge`, `release create`, `release edit`, `release view`, `run list`, `run view`, `workflow run`,
+  and the `api` read of the branch protection's required checks.

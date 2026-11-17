@@ -31,6 +31,11 @@ import pytest
 from smoke import plan
 
 ROOT = Path(__file__).resolve().parents[1]
+# One reader of a Forgejo branch answer, shared with the code under test: the forge's own parser, imported from this
+# tree (not from whatever checkout the runner's venv installed), since the fixtures poll the same endpoint it does.
+sys.path.insert(0, str(ROOT / "src" / "tools"))
+from agent_tools.forge_forgejo import parse_branch_tip  # noqa: E402
+
 SYSTEM_PATH = "/usr/local/bin:/usr/bin:/bin"
 READY_TIMEOUT_S = 120
 # Every command the fixtures run is bounded: a hung git, docker or uv fails the test that waited on it.
@@ -359,6 +364,17 @@ def _forge_ready(base_url: str) -> None:
         time.sleep(0.25)
 
 
+def _pull(image: str) -> None:
+    """`docker pull`, tried `plan.PULL_ATTEMPTS` times with a short pause, so one registry error does not fail the run."""
+    for attempt in range(1, plan.PULL_ATTEMPTS + 1):
+        done = _run(plan.docker_pull_argv(image))
+        if done.returncode == 0:
+            return
+        if attempt == plan.PULL_ATTEMPTS:
+            raise RuntimeError(f"docker pull {image} failed {attempt} times: {done.stderr.strip() or done.stdout.strip()}")
+        time.sleep(5 * attempt)
+
+
 @pytest.fixture(scope="session")
 def forge() -> Iterator[Forge]:
     """A Forgejo container on a loopback port, with one admin user and a token, removed at the end of the session."""
@@ -368,6 +384,7 @@ def forge() -> Iterator[Forge]:
     if isinstance(decision, plan.Skip | plan.Fail):
         _unavailable(decision)
     _reap_stale()
+    _pull(plan.FORGEJO_IMAGE)
     port = _free_port()
     container = _must(plan.forgejo_run_argv(SESSION, int(time.time()), port)).stdout.strip()
     try:  # from the moment the container exists, every way out of this fixture removes it
@@ -403,7 +420,7 @@ class ForgeRepo:
     def branch_tip(self, branch: str) -> str | None:
         """The commit `branch` points at on the forge, or None when the forge has no such branch."""
         status, body = self.forge.api("GET", f"/repos/{self.owner}/{self.name}/branches/{quote(branch, safe='')}")
-        return plan.branch_tip(status, body)
+        return parse_branch_tip(status, body)
 
     def file_text(self, ref: str, path: str) -> str | None:
         """`path` at `ref` on the forge, or None when it is not there."""
@@ -437,7 +454,7 @@ def _publish(forge: Forge, env: dict[str, str], name: str, path: Path) -> None:
     _git(env, path, "remote", "set-head", "origin", "main")
     sha, tail = _git(env, path, "rev-parse", "main"), f"/repos/{forge.user}/{name}/branches/main"
     deadline = time.monotonic() + READY_TIMEOUT_S
-    while plan.branch_tip(*forge.api("GET", tail)) != sha:
+    while parse_branch_tip(*forge.api("GET", tail)) != sha:
         if time.monotonic() > deadline:
             raise RuntimeError(f"the forge did not show main of {name} at {sha[:12]} after {READY_TIMEOUT_S}s")
         time.sleep(0.1)
@@ -475,8 +492,8 @@ class EdgeOrigin:
 
 
 def _copy_tree(target: Path) -> None:
-    """This tree's files, as a checkout of this change would hold them, copied into `target`."""
-    listing = _must(["git", "-C", str(ROOT), "ls-files", "-z", "--cached", "--others", "--exclude-standard"]).stdout
+    """This tree's tracked files, as a clone of this change would hold them, copied into `target`."""
+    listing = _must(["git", "-C", str(ROOT), "ls-files", "-z"]).stdout
     for name in plan.tree_files(listing):
         source, dest = ROOT / name, target / name
         if not source.is_symlink() and not source.is_file():

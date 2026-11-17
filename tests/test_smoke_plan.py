@@ -206,6 +206,12 @@ def test_the_forge_container_is_pinned_loopback_only_labelled_and_runs_its_hooks
     assert argv[argv.index("--tmpfs") + 1] == "/data:exec"
 
 
+def test_the_image_is_pulled_from_forgejos_registry_by_digest():
+    assert plan.FORGEJO_IMAGE.startswith("data.forgejo.org/forgejo/forgejo:11@sha256:")
+    assert plan.docker_pull_argv(plan.FORGEJO_IMAGE) == ["docker", "pull", "--quiet", plan.FORGEJO_IMAGE]
+    assert plan.PULL_ATTEMPTS > 1
+
+
 def test_the_admin_commands_run_as_the_forge_user():
     assert plan.forgejo_user_argv("c1", "pw")[:7] == ["docker", "exec", "--user", plan.FORGEJO_UID, "c1", "forgejo", "admin"]
     token = plan.forgejo_token_argv("c1", "smoke-s1")
@@ -239,9 +245,7 @@ def test_a_commit_status_is_one_of_the_forge_states():
         plan.commit_status_body("green", "ci")
 
 
-def test_branch_and_pull_answers_are_read_by_their_shape():
-    assert plan.branch_tip(200, {"commit": {"id": "a" * 40}}) == "a" * 40
-    assert plan.branch_tip(404, {"message": "not found"}) is None
+def test_a_pull_answer_is_read_by_its_shape():
     pull = {"state": "closed", "merged": True, "head": {"ref": "pr/t1", "sha": "b" * 40}, "base": {"ref": "main"}}
     assert plan.pull_summary(pull) == {"state": "closed", "merged": True, "head": "pr/t1", "sha": "b" * 40, "base": "main"}
     assert plan.pull_summary(None) == {}

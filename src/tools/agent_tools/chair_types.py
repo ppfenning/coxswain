@@ -665,6 +665,9 @@ class Facts(TypedDict):
     held_tasks: NotRequired[list[HeldTask]]  # tasks held for a person with the `needs you:` mark; absent means none
     # chair_no_progress.no_progress_facts: initiative to its repeated runs (newest first) and `needs you:` hold reason. Absent means {}.
     no_progress: NotRequired[dict[str, Any]]
+    # chair_stall_alarm.stall_facts: the land, launch and failure-streak facts the stall alarm reads, and the stalls it
+    # has raised and not cleared. Absent means no alarm is planned.
+    stall_alarm: NotRequired[dict[str, Any]]
     merge_queue: NotRequired[MergeQueueFacts]  # the profile's enabled merge queue; absent means the queue is off
     # `<run1>|<run2>` of each relaunch_loop needs_chair already in the action log. Absent means [].
     relaunch_loop_reported: NotRequired[list[str]]
@@ -740,6 +743,8 @@ ActionKind = Literal[
     "hold_task",
     "announce_hold",
     "hold_initiative",
+    "stall_alarm",
+    "stall_clear",
 ]
 
 
@@ -805,7 +810,11 @@ class Action(TypedDict, total=False):
     objection: str  # an annotate_objection's review objection text
     key: str  # a rebuild_quarantined, annotate_objection, request_triage, hold_task or announce_hold's chair_sort handled key
     stale_tasks: list[str]  # a stale_to_draft names the task ids found stale
-    since: str  # a stale_to_draft names the ISO timestamp the staleness was detected
+    since: str  # a stale_to_draft names the ISO timestamp the staleness was detected; a stall_alarm or stall_clear, when its stall began
+    stall: str  # a stall_alarm or stall_clear: the stall's key (chair_stall_alarm.Stall)
+    subject: str  # a stall_alarm or stall_clear: the initiative or task its courier entry points at
+    detail: str  # a stall_alarm or stall_clear: what stalled, in words; the recorded reason is the executor's own
+    quiet: bool  # a stall_clear for a same-failure streak that went quiet: it closes the stall and tells no one
     carry: list[str]  # the phases a clear_branches keeps and merges main into
     url: str  # a review_landed names the review PR
     merged_at: str | None  # a review_landed names when that PR merged

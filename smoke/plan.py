@@ -291,8 +291,9 @@ def package_dirs(packages: Sequence[str], package_dir: Mapping[str, str]) -> dic
 
 # Forgejo 11 (the LTS line), pinned by the digest of its multi-arch index so a re-pushed tag cannot change what the
 # suite lands through. `cox` reaches it through `agent_tools.forge_forgejo`, the forge `forge_auto` picks for an origin
-# on the host `FORGEJO_BASE_URL` names. Bump the digest on purpose, never by pulling the tag.
-FORGEJO_IMAGE = "codeberg.org/forgejo/forgejo:11@sha256:946243edbab116d5bb78b73ea68af6f3d69229ba1b1ed958dd82c3481167f3e0"
+# on the host `FORGEJO_BASE_URL` names. Pulled from data.forgejo.org, Forgejo's own registry (the same index digest
+# codeberg.org serves). Bump the digest on purpose, never by pulling the tag.
+FORGEJO_IMAGE = "data.forgejo.org/forgejo/forgejo:11@sha256:946243edbab116d5bb78b73ea68af6f3d69229ba1b1ed958dd82c3481167f3e0"
 FORGEJO_PORT = 3000  # the HTTP port inside the container
 FORGEJO_UID = "1000:1000"  # the image's `git` user, which owns its data and runs its admin commands
 FORGEJO_USER = "smoke"
@@ -354,6 +355,15 @@ def forgejo_run_argv(session: str, started: int, port: int, image: str = FORGEJO
     ]
 
 
+def docker_pull_argv(image: str) -> list[str]:
+    """`docker pull` of a pinned image; the forge fixture retries it (`PULL_ATTEMPTS`) before the run, so a registry
+    hiccup costs a retry rather than the job."""
+    return ["docker", "pull", "--quiet", image]
+
+
+PULL_ATTEMPTS = 3
+
+
 def forgejo_admin_argv(container: str, *args: str) -> list[str]:
     """`forgejo admin ...` inside the container, as the user that owns its data."""
     return ["docker", "exec", "--user", FORGEJO_UID, container, "forgejo", "admin", *args]
@@ -411,8 +421,8 @@ def uv_env(cache_dir: str, python_dir: str) -> dict[str, str]:
 
 
 def tree_files(listing: str) -> list[str]:
-    """The paths of `git ls-files -z --cached --others --exclude-standard`: the tree as committed plus what is new and
-    not ignored, which is what a checkout of this change would hold. Sorted, empty names dropped."""
+    """The paths of `git ls-files -z`: the tracked files, as a clone of this change holds them. An untracked file stays
+    out, so a stray local file cannot make the edge tests pass. Sorted, empty names dropped."""
     return sorted({path for path in listing.split("\0") if path})
 
 
@@ -422,14 +432,6 @@ def closed_port_url(url: str, port: int) -> str:
     credentials, _, _host = parts.netloc.rpartition("@")
     netloc = f"{credentials}@127.0.0.1:{port}" if credentials else f"127.0.0.1:{port}"
     return parts._replace(netloc=netloc).geturl()
-
-
-def branch_tip(status: int, body: object) -> str | None:
-    """The commit id of a `GET /repos/{owner}/{repo}/branches/{branch}` answer; None for a missing branch (404) or a
-    body without one."""
-    commit = body.get("commit") if status == 200 and isinstance(body, dict) else None
-    sha = commit.get("id") if isinstance(commit, dict) else None
-    return sha if isinstance(sha, str) and sha else None
 
 
 def pull_summary(pull: object) -> dict:

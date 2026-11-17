@@ -781,8 +781,15 @@ def _initiative_phases(
     order `_initiative_progress` uses) and tasks in row order. Dropped tasks stay listed, marked `dropped`; a task
     with no feed state is left out (`_task_states`)."""
     states = _task_states(rows, initiative, live_phases, stranded)
+    row_of = {(row.get("phase"), row.get("task_id")): row for row in _own_tasks(rows, initiative)}
     return [
-        {"id": phase, "tasks": [{"id": task, "state": state} for p, task, state in states if p == phase]}
+        {
+            "id": phase,
+            "tasks": [
+                dash_board.with_needs_you({"id": task, "state": state}, row_of[(p, task)])
+                for p, task, state in states if p == phase
+            ],
+        }
         for phase in sorted({row.get("phase") for row in _own_tasks(rows, initiative)})
     ]
 

@@ -101,9 +101,10 @@ def test_after_the_loop_exits_the_beat_stops_and_the_lease_goes_stale(tmp_path, 
     holder = chair.lease_holder("a", 1, HOST)
     run(True, 60, False, _loop_deps(tmp_path, "a", 1, lambda: time.sleep(INTERVAL * 3)))
     time.sleep(INTERVAL * 3)  # a beat already past its wait may still land
-    settled = store.renewals[holder]
+    # On a loaded runner no beat may land before the loop exits; the property is that beats stop, not that one landed.
+    settled = store.renewals.get(holder, 0)
     time.sleep(TTL * 2)
-    assert store.renewals[holder] == settled
+    assert store.renewals.get(holder, 0) == settled
     assert not store.live()
 
 
