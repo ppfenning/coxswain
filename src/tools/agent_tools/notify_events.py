@@ -142,8 +142,23 @@ def _queue_is_empty(facts: Mapping, events: Sequence[Event]) -> bool:
     )
 
 
+ALARM_KINDS = frozenset({"stall_alarm", "stall_clear"})
+
+
+def alarm_event(action: Mapping) -> Event:
+    """A stall alarm's push (chair_stall_alarm): keyed on the stall and when it began, so one stall pushes once when it
+    is raised and once when it clears, and a later stall of the same kind pushes again."""
+    stall, since = str(action.get("stall") or ""), str(action.get("since") or "")
+    detail = str(action.get("detail") or "")
+    if action.get("kind") == "stall_alarm":
+        return Event("stall", f"stall_alarm:{stall}:{since}", f"Stalled: {stall.partition(':')[0]}", detail)
+    return Event("all_clear", f"stall_clear:{stall}:{since}", f"All clear: {stall.partition(':')[0]}", detail)
+
+
 def events_from_tick(facts: Mapping, actions: Sequence[Mapping]) -> list[Event]:
-    """Events in first-seen key order, one per key, the first action that carries a remedy winning; queue_empty comes last, when facts show nothing left to run."""
+    """Events in first-seen key order, one per key, the first action that carries a remedy winning; then the stall
+    alarm's raises and all-clears; queue_empty comes last, when facts show nothing left to run."""
+    alarms = list({e.key: e for e in (alarm_event(a) for a in actions if a.get("kind") in ALARM_KINDS)}.values())
     chosen: dict[str, tuple[Mapping, Event]] = {}
     # A held file clears itself once its edit is kept or restored, but the edit is reported once, so it is exempt here.
     pushed = (
@@ -155,5 +170,5 @@ def events_from_tick(facts: Mapping, actions: Sequence[Mapping]) -> list[Event]:
         held = chosen.get(e.key)
         if held is None or (_remedy_line(a) and not _remedy_line(held[0])):
             chosen[e.key] = (a, e)
-    built = [e for _, e in chosen.values()]
+    built = [*(e for _, e in chosen.values()), *alarms]
     return [*built, QUEUE_EMPTY] if _queue_is_empty(facts, built) else built

@@ -12,6 +12,20 @@ NO_EPIC_TITLE = "no epic"
 SETTLED = ("landed", "dropped")
 
 
+def needs_you(row: Mapping) -> str:
+    """A held task's `needs you:` reason (`core.workstore.is_held`), else "". The feed sends it beside the task's
+    `blocked` state as `needs_you`, so a reader that knows the field shows the hold as its own state (H7.2)."""
+    from core.workstore import HOLD_REASON, is_held  # lazy: core sits beside agent_tools in one venv
+
+    return str(row["extra"][HOLD_REASON]) if is_held(row) else ""
+
+
+def with_needs_you(task: dict, row: Mapping) -> dict:
+    """`task` with `needs_you` added when `row` is held; unchanged otherwise, so a feed without holds reads as before."""
+    reason = needs_you(row)
+    return {**task, "needs_you": reason} if reason else task
+
+
 def task_costs(
     attempts_by_task: Mapping[str, Sequence[Mapping]], calls_by_run: Mapping[str, Sequence[Mapping]],
 ) -> dict[str, float]:
@@ -98,9 +112,12 @@ def build_board(
         if (row["initiative"], row.get("phase") or "", row["task_id"]) in states
     ]
 
+    row_of = {(row["initiative"], row.get("phase") or "", row["task_id"]): row for row in task_rows}
+
     def task(key: tuple[str, str, str]) -> dict:
         run, host = runs.get(key[2], ("", ""))
-        return {"id": key[2], "status": states[key], "run": run, "host": host, "cost_usd": costs.get(key[2], 0.0)}
+        own = {"id": key[2], "status": states[key], "run": run, "host": host, "cost_usd": costs.get(key[2], 0.0)}
+        return with_needs_you(own, row_of[key])
 
     def initiative(slug: str) -> dict:
         own = [key for key in keys if key[0] == slug]

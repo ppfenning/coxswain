@@ -38,6 +38,7 @@ from agent_tools.chair_read_quarantined import quarantined_from_rows
 from agent_tools.chair_read_stranded import stranded_from_rows
 from agent_tools.chair_read_tuning import current_lanes, tuning_facts
 from agent_tools.chair_schedule_durations import END_KEY, MIX_KEY, SIZE_KEY, START_KEY
+from agent_tools.chair_stall_alarm import resolve_settings, stall_facts
 from agent_tools.chair_types import (
     DEFAULT_QUARANTINE_HOLD_AFTER,
     EASTERN,
@@ -284,6 +285,7 @@ class FactsDeps:
     max_launches_per_hour: Callable[[], object] | None = None  # raw profile chair.max_launches_per_hour; absent means the default
     quarantine_hold_after: Callable[[], object] | None = None  # raw profile chair.quarantine_hold_after; absent means 3
     no_progress_after: Callable[[], object] | None = None  # raw profile chair.no_progress_after; absent means 2
+    stall_alarm: Callable[[], object] | None = None  # raw profile chair.stall_alarm mapping; absent means every default
     # (initiative ids, how many) -> each initiative's newest ended runs, newest first (chair_read_run_outcomes); absent means no no-progress hold
     run_outcomes: Callable[[Sequence[str], int], Mapping[str, Sequence[RunOutcome]]] | None = None
     shared_file_limit: Callable[[], object] | None = None  # raw profile chair.max_shared_file_initiatives; absent means 2
@@ -2001,10 +2003,12 @@ def gather_facts(
     rows = list(deps.queue()) if deps.queue is not None else []
     now_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     items = list(deps.tickets()) if deps.tickets is not None else []
+    # Read once: the merged flags below and the stall alarm's land facts both read the landing records.
+    landing_records = list(deps.landing_records()) if deps.landing_records is not None else []
     if deps.landing_records is not None and items:
         # The one place the merged flag takes its landing-model meaning for the tick: everything below reads `items`.
         item_land_at = land_at_facts(deps.cartridge(), deps.land_at_values(), sorted({str(i["initiative"]) for i in items}))
-        items = with_landing_merged(items, list(deps.landing_records()), item_land_at)
+        items = with_landing_merged(items, landing_records, item_land_at)
     # `items` carry the store's `updated_at`, which the queue rows lack, so the docket's age tie-break holds here too.
     # Each initiative is judged by its own land_at, as `docket_by_land_at` does for the file docket.
     ready = (
@@ -2197,6 +2201,10 @@ def gather_facts(
         "phase_branches": phase_branch_facts(list(deps.branch_counts())),
         "landing": list(deps.landing()) if deps.landing is not None else [],
         "idle_stall": deps.idle_stall(now),
+        "stall_alarm": stall_facts(
+            resolve_settings(deps.stall_alarm() if deps.stall_alarm is not None else None),
+            landing_records, [_action_doc(row) for row in action_rows],
+        ),
         "tuning": tuning_facts(
             *deps.tuning(now),
             weekly_fraction(weekly),

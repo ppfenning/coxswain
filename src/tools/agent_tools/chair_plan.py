@@ -59,6 +59,7 @@ from agent_tools.chair_rebase import plan_rebase
 from agent_tools.chair_revert import revert_check
 from agent_tools.chair_runnable import Blocking, TaskView, WaitingInitiative, runnable_verdict
 from agent_tools.chair_schedule import Schedule, schedule_feed
+from agent_tools.chair_stall_alarm import plan_stall_alarm
 from agent_tools.chair_steer import steer_heads
 from agent_tools.chair_types import (
     DEADLOCK_CAUSE,
@@ -1169,7 +1170,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
             for a in _unlaunched_actions(facts, [], {}, {}, 0, False, 0, now, [])
         ]
         idle_ready = plan_idle_ready(facts, recovered, now) if now is not None else []
-        return [
+        stopped_plan = [
             *reverts,  # a revert starts no run, so a red main is healed under the hard stop too
             *lands,
             *fetch_exits,
@@ -1196,6 +1197,8 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
             *stopped,
             *schedule_update,
         ]
+        # H7.1: the hard stop means no launch on purpose, so only the land and repeated-failure checks stand.
+        return [*stopped_plan, *(plan_stall_alarm(facts, stopped_plan, now, launch_paused=True) if now is not None else [])]
     cap = _launch_cap(facts["limits"])
     host_free = host_free_slots(facts)
     capped_actions, consumed = _cap_launches(
@@ -1262,7 +1265,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     relaunching = frozenset(a["initiative"] for a in [*recovered, *launches] if _is_launch(a))
     rebases = plan_rebase(facts.get("phase_branches", []), relaunching)
     idle_ready = plan_idle_ready(facts, [*launches, *stuck_heads, *unlaunched], now) if now is not None else []
-    return [
+    planned = [
         *reverts,
         *lands,
         *fetch_exits,
@@ -1290,6 +1293,9 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         *closes,
         *schedule_update,
     ]
+    # H7.1: one alarm per stall the tick sees and one all-clear per raised stall that no longer stands; a launch planned
+    # this tick means the lanes are not idle.
+    return [*planned, *(plan_stall_alarm(facts, planned, now) if now is not None else [])]
 
 
 def _parse_utc(ts: str | None) -> datetime | None:
