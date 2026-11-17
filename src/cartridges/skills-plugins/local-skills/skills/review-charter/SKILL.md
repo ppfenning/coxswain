@@ -62,14 +62,16 @@ however well its own unit test passes.
 
 1. **Is the logic pure, and tested without mocks?** A unit test passes example
    inputs to a pure function and checks its output. A mock, `monkeypatch`,
-   stub or fake in a new or changed unit test means the logic is tangled with
+   stub or fake the patch adds to a unit test means the logic is tangled with
    an effect: **revise**, and name the function to split out of the glue.
 2. **Which smoke or end-to-end test runs the entry point that reaches this
    change?** Name it: a test under `smoke/`, or one that runs the real command
    against a real repository, that calls the entry point whose path reaches
    the new code. A public function, class or module the patch adds with no
    caller outside tests (the `check_unwired` row fails, or you find no caller
-   in the patch) is unwired: **revise**. No such test is also **revise**.
+   in the patch) is unwired: **revise**. No such test is also **revise**. That rule applies as the smoke suite
+   (docs/smoke.md) grows: where the entry point has no smoke case yet, the
+   patch that changes it adds one.
 
 A patch that changes no runtime behaviour (documents, skill text, a test on
 its own) answers "none needed" to the second question and says why.

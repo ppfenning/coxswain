@@ -43,7 +43,7 @@ no running code calls (docs/hardening.md, H10). Attack it with both questions,
 and answer each in the review with the file that proves the answer.
 
 1. **Is the logic pure, and tested without mocks?** A mock, `monkeypatch`,
-   stub or fake in a new or changed unit test proves only that the mock was
+   stub or fake the patch adds to a unit test proves only that the mock was
    called; the logic it reaches is tangled with an effect. That test cannot
    fail for the reason it claims to cover: **revise**.
 2. **Which smoke or end-to-end test runs the entry point that reaches this
@@ -51,7 +51,9 @@ and answer each in the review with the file that proves the answer.
    command against a real repository, whose entry point reaches the new code.
    A public function, class or module the patch adds with no caller outside
    tests (the `check_unwired` row fails, or you find no caller in the patch)
-   is unwired: **revise**. No such test is also **revise**.
+   is unwired: **revise**. No such test is also **revise**. That rule applies as the smoke suite
+   (docs/smoke.md) grows: where the entry point has no smoke case yet, the
+   patch that changes it adds one.
 
 A patch that changes no runtime behaviour (documents, skill text, a test on
 its own) answers "none needed" to the second question and says why.

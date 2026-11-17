@@ -201,10 +201,13 @@ New code follows this, and code a change touches is moved toward it.
 4. **A done-when names a runtime behaviour at an entry point,** proven by a smoke test from item 2, not a helper's
    return value.
 5. **Unwired code is a finding.** A check lists the public symbols a diff adds and fails when one has no caller
-   outside tests.
+   outside tests (`.github/check_unwired.py`; an epic lane diffs against its phase branch, `COX_LANE_BASE`). It
+   catches a name nothing calls, not a caller that passes the wrong arguments (the lane-sync guard that was never
+   passed its paths): that is the smoke suite's to prove.
 6. **Review asks two questions.** Task review, arbitration and `validate_phase` ask: is the logic pure and tested
-   without mocks, and which smoke test runs the entry point that reaches this change? A mock in a new unit test, or
-   no such smoke test, means revise.
+   without mocks, and which smoke test runs the entry point that reaches this change? A mock the patch adds to a
+   unit test, or no such smoke test, means revise. The smoke half applies as the smoke suite grows: where an entry
+   point has no smoke case yet, the patch that changes it adds one.
 7. **Decompose keeps a helper and its wiring together,** in one task or one phase, so a phase cannot complete with
    library code alone.
 8. **Prune.** Tests that only exercise mocks, stubs or fakes are retired once a pure-function test or a smoke test

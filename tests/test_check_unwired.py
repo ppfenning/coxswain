@@ -15,6 +15,7 @@ _SPEC.loader.exec_module(check_unwired)
 
 Change = check_unwired.Change
 Symbol = check_unwired.Symbol
+Ref = check_unwired.Ref
 
 CORE = "src/pkg/core.py"
 CLI = "src/pkg/cli.py"
@@ -99,7 +100,11 @@ def test_tests_deletions_and_private_modules_add_nothing():
     assert check_unwired.added_symbols(changes, {}, new) == ()
 
 
-def test_python_references_cover_names_attributes_imports_and_dotted_strings():
+def names(refs):
+    return {ref.name for ref in refs}
+
+
+def test_python_refs_cover_names_attributes_imports_and_dotted_strings():
     source = (
         "import pkg.window\n"
         "from pkg.core import helper\n"
@@ -107,74 +112,123 @@ def test_python_references_cover_names_attributes_imports_and_dotted_strings():
         "run(plan)\n"
         "TABLE = {'go': 'pkg.handlers:on_go', 'note': 'not a path at all'}\n"
     )
-    names = check_unwired.python_references(CLI, source)
-    assert {"pkg", "window", "core", "helper", "build", "run", "plan", "handlers", "on_go"} <= names
-    assert "value" not in names
-    assert "path" not in names
+    found = names(check_unwired.python_refs(CLI, source))
+    assert {"pkg", "window", "core", "helper", "build", "run", "plan", "handlers", "on_go"} <= found
+    assert not {"value", "path", "go", "note"} & found
 
 
-def test_a_def_does_not_reference_itself_when_skipped():
-    source = "def helper(n):\n    return helper(n - 1)\n"
-    assert "helper" not in check_unwired.python_references(CORE, source, skip_def="helper")
-    assert "helper" in check_unwired.python_references(CORE, source)
+def test_a_bare_name_string_counts_only_as_the_name_getattr_or_hasattr_looks_up():
+    keyed = "ROW = {'quarantine_blocks_dependents': True}\nfield('status')\n"
+    assert not {"quarantine_blocks_dependents", "status"} & names(check_unwired.python_refs(CLI, keyed))
+    looked_up = "handler = getattr(module, 'on_go')\nready = hasattr(module, 'on_stop')\n"
+    assert {"on_go", "on_stop"} <= names(check_unwired.python_refs(CLI, looked_up))
+
+
+def test_each_ref_carries_its_line_and_its_top_level_owner():
+    source = "def run():\n    return helper()\n\n\nhelper()\n"
+    refs = [ref for ref in check_unwired.python_refs(CORE, source) if ref.name == "helper"]
+    assert sorted(refs, key=lambda ref: ref.line) == [Ref("helper", 2, "run"), Ref("helper", 5, None)]
 
 
 def test_dunder_all_and_init_reexports_are_not_references():
-    assert "helper" not in check_unwired.python_references(CORE, "__all__ = ['helper']\n")
-    assert "helper" not in check_unwired.python_references("src/pkg/__init__.py", "from .core import helper\n")
+    assert "helper" not in names(check_unwired.python_refs(CORE, "__all__ = ['helper']\n"))
+    assert "helper" not in names(check_unwired.python_refs("src/pkg/__init__.py", "from .core import helper\n"))
 
 
-def test_text_references_take_the_parts_of_dotted_paths():
+def test_text_refs_take_the_parts_of_dotted_paths_with_their_lines():
     toml = '[project.scripts]\ncox = "agent_tools.cli:main"\n# a helper word in prose\n'
-    names = check_unwired.text_references(toml)
-    assert {"agent_tools", "cli", "main"} <= names
-    assert "helper" not in names
+    refs = check_unwired.text_refs(toml)
+    assert {Ref("agent_tools", 2, None), Ref("cli", 2, None), Ref("main", 2, None)} <= set(refs)
+    assert "helper" not in names(refs)
+
+
+def test_added_lines_come_from_the_new_side_of_each_hunk():
+    diff = (
+        "diff --git a/src/pkg/cli.py b/src/pkg/cli.py\n--- a/src/pkg/cli.py\n+++ b/src/pkg/cli.py\n"
+        "@@ -1 +1,2 @@\n-x\n+y\n+z\n@@ -9,0 +11 @@\n+w\n"
+        "diff --git a/src/pkg/gone.py b/src/pkg/gone.py\n--- a/src/pkg/gone.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n"
+        "diff --git a/src/pkg/cut.py b/src/pkg/cut.py\n--- a/src/pkg/cut.py\n+++ b/src/pkg/cut.py\n@@ -3 +2,0 @@\n-x\n"
+    )
+    assert check_unwired.parse_added_lines(diff) == {CLI: frozenset({1, 2, 11}), "src/pkg/cut.py": frozenset()}
+
+
+def test_the_base_is_the_lanes_phase_branch_when_the_harness_exports_one():
+    assert check_unwired.default_base({"COX_LANE_BASE": "epic/demo/p3-rollout"}) == "epic/demo/p3-rollout"
+    assert check_unwired.default_base({"COX_LANE_BASE": ""}) == "origin/main"
+    assert check_unwired.default_base({}) == "origin/main"
+
+
+HELPER = Symbol(CORE, "helper", "function", 1)
+NONE: frozenset = frozenset()
+
+
+def wired(sources, added_lines, private=NONE, symbol=HELPER):
+    return check_unwired.unwired((symbol,), sources, added_lines, private, NONE) == ()
 
 
 def test_a_helper_only_a_test_calls_is_unwired():
-    helper = Symbol(CORE, "helper", "function", 2)
-    sources = {
-        CORE: "def helper():\n    return helper()\n",
-        "src/pkg/tests/test_core.py": "from pkg.core import helper\nhelper()\n",
-    }
-    assert check_unwired.unwired((helper,), sources, frozenset()) == (helper,)
+    sources = {CORE: "def helper():\n    return helper()\n", "src/pkg/tests/test_core.py": "helper()\n"}
+    assert not wired(sources, {"src/pkg/tests/test_core.py": frozenset({1})})
 
 
-def test_a_caller_in_another_module_or_the_same_module_wires_it():
-    helper = Symbol(CORE, "helper", "function", 1)
-    assert check_unwired.unwired((helper,), {CORE: "def helper(): ...\n", CLI: "from pkg.core import helper\n"},
-                                 frozenset()) == ()
-    assert check_unwired.unwired((helper,), {CORE: "def helper(): ...\ndef run():\n    helper()\n"},
-                                 frozenset()) == ()
+def test_a_caller_on_a_line_the_diff_adds_wires_it():
+    sources = {CORE: "def helper(): ...\n", CLI: "import os\nfrom pkg.core import helper\n"}
+    assert wired(sources, {CLI: frozenset({2})})
 
 
-def test_a_new_module_needs_an_import_from_another_file():
+def test_a_use_on_a_line_the_diff_did_not_touch_is_a_coincidence():
+    sources = {CORE: "def status(): ...\n", CLI: "status()\n"}
+    assert not wired(sources, {CLI: NONE}, symbol=Symbol(CORE, "status", "function", 1))
+
+
+def test_its_own_file_counts_on_any_line_outside_its_own_body():
+    assert wired({CORE: "def helper(): ...\ndef run():\n    helper()\n"}, {})
+    assert not wired({CORE: "def helper():\n    helper()\n"}, {})
+
+
+def test_a_new_private_caller_counts_only_when_it_is_called():
+    source = "def helper(): ...\ndef _wrap():\n    return helper()\n"
+    private = frozenset({(CORE, "_wrap")})
+    assert not wired({CORE: source}, {}, private)
+    assert wired({CORE: source + "def run():\n    _wrap()\n"}, {}, private)
+    looping = "def helper(): ...\ndef _a():\n    helper(); _b()\ndef _b():\n    _a()\n"
+    assert not wired({CORE: looping}, {}, frozenset({(CORE, "_a"), (CORE, "_b")}))
+
+
+def test_an_existing_private_caller_counts_as_any_caller():
+    assert wired({CORE: "def helper(): ...\ndef _old():\n    helper()\n"}, {})
+
+
+def test_a_new_module_needs_an_added_import_from_another_file():
     module = Symbol("src/pkg/window.py", "window", "module", 1)
     alone = {"src/pkg/window.py": "import window\n"}
-    assert check_unwired.unwired((module,), alone, frozenset()) == (module,)
-    imported = dict(alone, **{CLI: "from pkg import window\n"})
-    assert check_unwired.unwired((module,), imported, frozenset()) == ()
+    assert not wired(alone, {}, symbol=module)
+    assert wired(dict(alone, **{CLI: "from pkg import window\n"}), {CLI: frozenset({1})}, symbol=module)
 
 
 def test_an_allowlisted_entry_point_passes():
     hook = Symbol(CORE, "on_start", "function", 1)
-    assert check_unwired.unwired((hook,), {CORE: "def on_start(): ...\n"}, frozenset({(CORE, "on_start")})) == ()
+    allow = frozenset({(CORE, "on_start")})
+    assert check_unwired.unwired((hook,), {CORE: "def on_start(): ...\n"}, {}, NONE, allow) == ()
 
 
-def test_the_allowlist_requires_a_reason_and_an_existing_path():
+def test_the_allowlist_requires_a_reason_and_an_existing_path_and_name():
     text = (
         "# entry points nothing calls by name\n"
         f"{CORE}::on_start  # plugin hook, called by the host by name\n"
         f"{CORE}::on_stop\n"
         "src/pkg/gone.py::old  # removed module\n"
+        f"{CORE}::renamed  # the hook was renamed\n"
         "no separator  # reason\n"
+        f"{CORE}::core  # the module itself\n"
     )
-    allow = check_unwired.parse_allowlist(text, [CORE])
-    assert allow.entries == frozenset({(CORE, "on_start")})
-    assert len(allow.errors) == 3
+    allow = check_unwired.parse_allowlist(text, {CORE: "def on_start(): ...\n"})
+    assert allow.entries == frozenset({(CORE, "on_start"), (CORE, "core")})
+    assert len(allow.errors) == 4
     assert "has no reason" in allow.errors[0]
     assert "does not exist" in allow.errors[1]
-    assert "expected `path::name" in allow.errors[2]
+    assert "defines no renamed" in allow.errors[2]
+    assert "expected `path::name" in allow.errors[3]
 
 
 def test_the_report_names_each_unwired_symbol_with_its_line():
@@ -206,9 +260,12 @@ def write(repo: Path, path: str, text: str) -> None:
     target.write_text(text, encoding="utf-8")
 
 
-def check(repo: Path, *args: str) -> subprocess.CompletedProcess:
+def check(repo: Path, *args: str, lane_base: str | None = None) -> subprocess.CompletedProcess:
+    """The script as a lane runs it; the suite's own lane base, if it runs inside one, is never inherited."""
+    env = {key: value for key, value in os.environ.items() if key != "COX_LANE_BASE"}
+    env.update({"COX_LANE_BASE": lane_base} if lane_base else {})
     return subprocess.run([sys.executable, str(SCRIPT), "--root", str(repo), *args],
-                          capture_output=True, text=True, timeout=60)
+                          capture_output=True, text=True, timeout=60, env=env)
 
 
 @pytest.fixture
@@ -272,3 +329,37 @@ def test_end_to_end_the_base_branch_itself_adds_nothing(repo: Path):
     result = check(repo)
     assert result.returncode == 0
     assert "0 added public symbol(s)" in result.stdout
+
+
+def test_end_to_end_a_lane_judges_its_own_diff_against_its_phase_branch(repo: Path):
+    """A sibling task's unwired helper, already merged into the phase branch, is not this lane's finding."""
+    git(repo, "switch", "-q", "-c", "epic/demo/p1", "main")
+    git(repo, "switch", "-q", "-c", "sibling")
+    add_unwired_helper(repo)
+    git(repo, "switch", "-q", "epic/demo/p1")
+    git(repo, "merge", "-q", "--no-ff", "-m", "merge sibling", "sibling")
+    git(repo, "switch", "-q", "-c", "task")
+    write(repo, "src/pkg/span.py", "def width(text):\n    return len(text)\n")
+    write(repo, CLI, "from pkg.core import parse\nfrom pkg.span import width\n\n\n"
+                     "def main(argv):\n    return parse(argv[0]), width(argv[0])\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "add and wire width")
+
+    lane = check(repo, lane_base="epic/demo/p1")
+    assert lane.returncode == 0, lane.stdout + lane.stderr
+    assert "2 added public symbol(s)" in lane.stdout  # the span module and width, both wired
+
+    whole = check(repo)
+    assert whole.returncode == 1
+    assert "function count" in whole.stdout and "width" not in whole.stdout
+
+    flag = check(repo, "--base", "origin/main", lane_base="epic/demo/p1")
+    assert flag.returncode == 1  # an explicit --base wins over the lane's
+
+
+def test_end_to_end_a_private_wrapper_nothing_calls_does_not_wire_its_callee(repo: Path):
+    write(repo, CORE, "def parse(text):\n    return text.split()\n\n\ndef count(text):\n    return len(parse(text))\n"
+                      "\n\ndef _report(text):\n    return count(text)\n")
+    assert check(repo).returncode == 1
+    write(repo, CLI, "from pkg.core import _report, parse\n\n\ndef main(argv):\n    return parse(argv[0]), _report(argv[0])\n")
+    assert check(repo).returncode == 0

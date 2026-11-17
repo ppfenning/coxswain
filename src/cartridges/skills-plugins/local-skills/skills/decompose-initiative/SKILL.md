@@ -33,7 +33,7 @@ before what it depends on exists.
 - **A task's tests ride with its code.** Never split tests into a task of
   their own — a separate tests task doubles the reviews and lands code
   without its evidence.
-- **A helper and its wiring are one task, or one phase.** The task that adds
+- **A helper and its wiring are one task.** The task that adds
   a function, class or module also adds the call from the entry point that
   runs it, and its surfaces name both files (docs/hardening.md, H10). The
   lane's unwired check fails a task whose patch adds a public symbol with no

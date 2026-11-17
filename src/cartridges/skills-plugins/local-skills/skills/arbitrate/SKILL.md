@@ -32,11 +32,12 @@ Both reviews answer two questions (docs/hardening.md, H10); check each answer
 against the patch yourself, since a fact beats either reviewer's word for it.
 
 1. **Is the logic pure, and tested without mocks?** A mock, `monkeypatch`,
-   stub or fake in a new or changed unit test means **revise**.
+   stub or fake the patch adds to a unit test means **revise**.
 2. **Which smoke or end-to-end test runs the entry point that reaches this
    change?** A public function, class or module the patch adds with no caller
    outside tests (the `check_unwired` row fails, or no caller is in the patch)
-   means **revise**, and so does no such test.
+   means **revise**, and so does no such test, as the smoke suite
+   (docs/smoke.md) grows to cover the entry point.
 
 These are not risks you may price into an approve: unwired code does not run,
 and a mocked unit test does not prove what it claims. An approve that leaves
