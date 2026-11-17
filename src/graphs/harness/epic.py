@@ -4479,6 +4479,12 @@ def _run_phase(
     # re-reviewed, and never blocks the phase behind it.
     with ctx.items_lock:
         all_ready = _buildable(items, phase, foreign, only, ctx.land_at)
+    # Under work_state store no work file holds an attempt: a task's attempts are its runs' task records, as the chair
+    # reads them. So the cap below counts them, and a rebuild resumes from the newest one's kept patch, which another
+    # lane's record carries in the store when this machine has no file of it.
+    recorded = {str(item["id"]): _caused_records(ctx, phase, str(item["id"])) for item in all_ready} if _store_authoritative(ctx) else {}
+    all_ready = [with_record_attempts(item, [a for a, _ in recorded.get(str(item["id"]), [])]) for item in all_ready]
+    record_patches = {task_id: rescue_select.patch_of(found[-1][1]) for task_id, found in recorded.items() if found}
 
     # A third run of the same task is refused outright rather than tried
     # again — quarantined here, plainly, never through `_quarantine_task`,
@@ -4818,7 +4824,7 @@ def _run_phase(
     # Offered as a reference; nothing here approves it.
     patches_for_attempt: dict[str, str | None] = {
         str(task["id"]): ((load_result(ctx.runs_dir, task["attempts"][-1]["run"], phase, str(task["id"])) or {})
-                           .get("build") or {}).get("patch")
+                           .get("build") or {}).get("patch") or record_patches.get(str(task["id"]))
         for task in runnable
         if task.get("attempts")
     }
@@ -6194,6 +6200,12 @@ def _rescue_failed(ctx: _Ctx, item: Mapping[str, Any], *, phase: str, reason: st
     )
     _record_tasks(ctx, phase, [], [entry])
     return {"status": "rescue_failed", "reason": reason, "cause": cause}
+
+
+def with_record_attempts(item: Mapping[str, Any], recorded: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    """Pure. `item` with `recorded` (its runs' task records as attempts, oldest first) as its attempts, when it holds
+    none of its own; an item whose work file holds attempts, or with nothing recorded, is returned as it is."""
+    return {**item, "attempts": [dict(a) for a in recorded]} if recorded and not item.get("attempts") else item
 
 
 def with_stored_causes(item: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
