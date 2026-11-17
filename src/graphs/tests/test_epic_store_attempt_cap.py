@@ -21,7 +21,16 @@ from tests.test_epic_driver import (  # noqa: F401 -- cart and repo are fixtures
     new_file_patch,
     repo,
 )
-from tests.test_epic_triage_classes import INITIATIVE, TRIAGE_SPECS, TriageClassRunner, _answer, _built, _row, _store, _triage_calls
+from tests.test_epic_triage_classes import (
+    INITIATIVE,
+    TRIAGE_SPECS,
+    TriageClassRunner,
+    _answer,
+    _built,
+    _row,
+    _store,
+    _triage_calls,
+)
 
 PHASE = "p1-foundations"
 

@@ -148,7 +148,7 @@ def _send_back(ports: Ports, record: Mapping[str, Any], phase: str, done: ops.Ph
             ports.notify("needs_chair", {"initiative": initiative, "phase": phase, "reason": marked.detail})
             return [f"phase {phase} of {initiative}: could not prepare the rectify base: {marked.detail}"]
         title = f"Rectify phase {phase}: resolve its merge with {branch}"
-        body = rectify_body(branch, phase, done.paths, "")
+        body = ops.rectify_body(branch, phase, done.paths, "")
     else:
         title = f"Rectify phase {phase}: its checks fail once merged with {branch}"
         merged = lg.merge_into(repo, branch=ops.phase_branch(initiative, phase), source=branch,
@@ -156,34 +156,12 @@ def _send_back(ports: Ports, record: Mapping[str, Any], phase: str, done: ops.Ph
         if not merged.ok:
             ports.notify("needs_chair", {"initiative": initiative, "phase": phase, "reason": merged.detail})
             return [f"phase {phase} of {initiative}: could not prepare the rectify base: {merged.detail}"]
-        body = rectify_body(branch, phase, (), done.detail)
+        body = ops.rectify_body(branch, phase, (), done.detail)
     task = ports.file_rectify(initiative, phase, title, body)
     if task is None:
         ports.notify("needs_chair", {"initiative": initiative, "phase": phase, "reason": done.detail})
         return [f"phase {phase} of {initiative} is conflicted and no rectify task could be filed: {done.detail}"]
     return [f"phase {phase} of {initiative} sent back to build: rectify task {task} ({done.detail})"]
-
-
-def rectify_body(branch: str, phase: str, paths: Sequence[str], check_output: str) -> str:
-    """The body of a rectify task. It names what to fix and says, first, that nothing already built is to be redone."""
-    keep = (
-        f"The work of phase `{phase}` is already built, reviewed and on this phase's branch, and the tip of `{branch}` "
-        "has been merged into it. Start from this tree. Change only what the problem below needs: do not rebuild, "
-        "rewrite or remove work that is already here."
-    )
-    if paths:
-        listed = "\n".join(f"- `{p}`" for p in paths)
-        return (
-            f"{keep}\n\n**Problem**\n\nMerging `{branch}` into this phase conflicted. The files below hold conflict markers "
-            f"(`<<<<<<<`, `=======`, `>>>>>>>`), with both sides present:\n\n{listed}\n\n**Wanted**\n\nResolve each conflict so "
-            "both sides' intent holds, remove every marker, and keep the checks passing.\n\n**Checks**\n\nNo conflict marker "
-            "is left in the tree, and the phase's checks pass."
-        )
-    return (
-        f"{keep}\n\n**Problem**\n\nThis phase merges cleanly with `{branch}`, but the checks fail on the merged tree:\n\n"
-        f"```\n{check_output.strip()[:4000]}\n```\n\n**Wanted**\n\nFix what the merge broke, so the checks pass on this tree.\n\n"
-        "**Checks**\n\nThe checks above pass."
-    )
 
 
 # -- initiative_land ----------------------------------------------------------------------------------------------
@@ -423,9 +401,9 @@ def _send_back_initiative(ports: Ports, record: Mapping[str, Any], cause: str, d
         if marked.status == "error":
             ports.notify("needs_chair", {"initiative": initiative, "reason": marked.detail})
             return [f"{initiative}: could not prepare the integrate base: {marked.detail}"]
-        title, body = f"Integrate with {parent}: resolve the conflicts", rectify_body(parent, phase, paths or marked.paths, "")
+        title, body = f"Integrate with {parent}: resolve the conflicts", ops.rectify_body(parent, phase, paths or marked.paths, "")
     else:
-        title, body = f"Integrate with {parent}: the gate checks fail", rectify_body(parent, phase, (), detail)
+        title, body = f"Integrate with {parent}: the gate checks fail", ops.rectify_body(parent, phase, (), detail)
     task = ports.file_rectify(initiative, phase, title, body)
     if task is None:
         ports.notify("needs_chair", {"initiative": initiative, "reason": detail})

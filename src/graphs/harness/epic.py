@@ -74,6 +74,7 @@ from core.landing import (
     resolve_land_at,
     resolve_push_initiative,
 )
+from core.landing_record import INTEGRATE_PHASE
 from core.manifest import append_ledger, build_manifest, gate_diff
 from core.phase_hold import phase_holds
 from core.workstore import WorkStoreError, record_attempt
@@ -445,22 +446,12 @@ def _start_initiative(ctx: _Ctx, initiative: Mapping[str, Any]) -> str:
     return str(record["branch"])
 
 
-def _foreign_needs(items: Sequence[Mapping[str, Any]], phase: str | None = None) -> list[str]:
-    """The needs that name a task of another initiative, of every task or of one phase's unsettled tasks."""
-    own = {str(i["id"]) for i in items}
-    return sorted({
-        str(n) for i in items
-        if phase is None or (i.get("phase") == phase and i.get("state") not in ("approved", "done", "dropped"))
-        for n in i.get("needs") or [] if str(n) not in own
-    })
+def _take_parent_forward(ctx: _Ctx) -> tuple[str, str, landing_git.Merge] | None:
+    """Edge. Bring the initiative branch up to its parent, under the branch lease: (parent, parent ref, what happened).
 
-
-def _take_parent_forward(ctx: _Ctx) -> str | None:
-    """Edge. Bring the initiative branch up to its parent, for an initiative that needs another initiative's work.
-
-    That work reaches this initiative only through the parent it landed on, and the initiative branch was cut before
-    it landed. So the parent is merged forward here, under the branch lease, when it merges cleanly. Why it could not
-    be, else None: the phases that need the foreign work then stop, and every other phase builds as it is."""
+    The branch was cut from the parent and the parent has moved since: other initiatives landed on it. Before any phase
+    builds, the parent is merged forward here when it merges cleanly, so no phase builds on an old base. A conflict, or
+    a merge that could not be made, leaves the branch where it was. None without a store or an initiative branch."""
     if ctx.store is None or ctx.initiative_branch is None:
         return None
     branch = ctx.initiative_branch
@@ -468,7 +459,7 @@ def _take_parent_forward(ctx: _Ctx) -> str | None:
     parent = str(record.get("parent") or ctx.default_ref.removeprefix("origin/"))
     parent_ref = f"origin/{parent}" if landing_git.rev(ctx.repo, f"refs/remotes/origin/{parent}") else parent
     if landing_git.is_ancestor(ctx.repo, parent_ref, branch):
-        return None
+        return parent, parent_ref, landing_git.Merge("up_to_date")
     early = resolve_push_initiative(ctx.cartridge) == "early"
     try:
         merged = ctx.retry.write(
@@ -480,11 +471,97 @@ def _take_parent_forward(ctx: _Ctx) -> str | None:
             _END_WRITE_WINDOW_S,
         )
     except Exception as exc:
-        return f"{parent} was not merged into {branch}: {type(exc).__name__}: {exc}"
-    if merged.ok:
-        print(f"  {branch} brought up to {parent}: this initiative needs work that landed there")
+        merged = landing_git.Merge("error", detail=f"{type(exc).__name__}: {exc}")
+    if merged.status == "merged":
+        print(f"  {branch} brought up to {parent} before any phase builds")
+    return parent, parent_ref, merged
+
+
+def behind_parent(
+    status: str, detail: str, paths: Sequence[str], *, parent: str, branch: str, integrate: str | None, unfiled: str = ""
+) -> str | None:
+    """Pure. Why every phase but `integrate` waits this run, from the merge of the parent into the initiative branch;
+    None when the branch holds its parent. `integrate` is the rectify task filed for a conflict, `unfiled` why none was."""
+    if status in ("merged", "up_to_date"):
         return None
-    return f"{parent} was not merged into {branch}: {merged.detail or merged.status}"
+    if status == "conflict":
+        where = ", ".join(paths) or "files git did not name"
+        then = (
+            f"integrate task {integrate} resolves it first" if integrate
+            else f"no integrate task could be filed ({unfiled or 'no reason was given'})"
+        )
+        return f"{branch} is behind {parent}, and merging {parent} into it conflicts in {where}; {then}, so no phase builds on the old base"
+    return f"{parent} was not merged into {branch}: {detail or status}; no phase builds on the old base"
+
+
+def _integrate_path(items: Sequence[Mapping[str, Any]], task: str) -> Path | None:
+    """The work file for a new integrate task, beside the initiative's others (`<work>/<initiative>/<phase>/<task>.md`);
+    None when no task of it has a file."""
+    found = next((Path(str(i["path"])) for i in items if i.get("path")), None)
+    return found.parent.parent / INTEGRATE_PHASE / f"{task}.md" if found is not None else None
+
+
+def _file_integrate(
+    ctx: _Ctx, items: list[dict[str, Any]], parent: str, parent_ref: str, paths: Sequence[str]
+) -> tuple[str | None, str]:
+    """Edge. A ready rectify task in the `integrate` phase, as the lander files one: (its id, "") or (None, why not).
+
+    The `integrate` branch is cut from the initiative tip and the conflicted merge of the parent is committed on it,
+    markers and all, so the task builds on the conflict and nothing already built is redone. A rectify task of the
+    phase still open is the one this conflict needs too: no second one is filed. The task goes to the store row, to
+    a work file beside the others when they have files, and to this run's items, so this run builds it."""
+    with ctx.items_lock:
+        rows = [{"id": i["id"], "phase": i.get("phase"), "state": i.get("state")} for i in items]
+    ident, still_open = landing_ops.rectify_task(INTEGRATE_PHASE, rows)
+    if still_open:
+        return ident, ""
+    branch, integrate = str(ctx.initiative_branch), ctx.phase_branch(INTEGRATE_PHASE)
+    tip, _, why = landing_git.ensure_branch(ctx.repo, integrate, branch)
+    if tip is None:
+        return None, why
+    landing_git.merge_into(ctx.repo, branch=integrate, source=branch, message=f"{ctx.initiative_id}: bring {integrate} up to {branch}")
+    marked = landing_git.conflict_commit(
+        ctx.repo, branch=integrate, source=parent_ref,
+        message=f"{ctx.initiative_id}: merge {parent} into {integrate} (conflicted, to rectify)",
+    )
+    if marked.status == "error":
+        return None, f"the integrate base could not be prepared: {marked.detail}"
+    item: dict[str, Any] = {
+        "id": ident, "phase": INTEGRATE_PHASE, "state": "ready", "needs": [], "surfaces": [],
+        "title": f"Integrate with {parent}: resolve the conflicts",
+        "body": landing_ops.rectify_body(parent, INTEGRATE_PHASE, paths or marked.paths, ""),
+    }
+    path = _integrate_path(items, ident)
+    try:
+        from harness import store_queue  # not module level: see `_mirror_read`
+
+        if path is not None:
+            workstore.write_item(item, path)
+        store_queue.upsert(ctx.store.conn, {
+            "kind": "task", "initiative": ctx.initiative_id, "task_id": ident, "phase": INTEGRATE_PHASE, "state": "ready",
+            "needs": [], "surfaces": [], "title": item["title"], "body": item["body"], "extra": {"id": ident, "phase": INTEGRATE_PHASE},
+            "updated_at": _now(), "updated_by": f"run:{ctx.run_id}",
+        })
+    except Exception as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+    with ctx.items_lock:
+        items.append({**item, **({"path": str(path)} if path is not None else {})})
+    return ident, ""
+
+
+def _bring_forward(ctx: _Ctx, items: list[dict[str, Any]]) -> str | None:
+    """Edge. Take the parent forward before any phase; why every phase but `integrate` waits this run, else None."""
+    forward = _take_parent_forward(ctx)
+    if forward is None:
+        return None
+    parent, parent_ref, merged = forward
+    integrate, unfiled = _file_integrate(ctx, items, parent, parent_ref, merged.paths) if merged.status == "conflict" else (None, "")
+    reason = behind_parent(
+        merged.status, merged.detail, merged.paths, parent=parent, branch=str(ctx.initiative_branch), integrate=integrate, unfiled=unfiled,
+    )
+    if reason is not None:
+        print(f"  {reason}")
+    return reason
 
 
 def _merge_checks(ctx: _Ctx, phase: str) -> landing_git.Checks | None:
@@ -2222,8 +2299,8 @@ def run_epic(
         if is_initiative(ctx.land_at):
             # Before any phase: the initiative branch is cut from its parent and recorded, so every phase forks from it.
             ctx = replace(ctx, initiative_branch=_start_initiative(ctx, initiative))
-            if _foreign_needs(items):
-                ctx = replace(ctx, parent_behind=_take_parent_forward(ctx))
+            # Then the branch takes its parent forward, so no phase builds on an old base (H4.2).
+            ctx = replace(ctx, parent_behind=_bring_forward(ctx, items))
 
         parents = phase_parents(items)
         named = None if only_phases is None else frozenset(only_phases)
@@ -4315,14 +4392,10 @@ def _run_phase(
                 return _missing_branch_phase(record, missing, reason)
             record.update(status="blocked", reason=reason)
             return record
-        with ctx.items_lock:
-            foreign_needs = _foreign_needs(items, phase)
-        if ctx.parent_behind and foreign_needs:
-            # The needed work landed on the parent, and this branch could not take the parent forward.
-            record.update(
-                status="blocked",
-                reason=f"phase {phase} needs {', '.join(foreign_needs)} of another initiative, and {ctx.parent_behind}",
-            )
+        if ctx.parent_behind and phase != INTEGRATE_PHASE:
+            # The branch could not take its parent forward: building now would build on the old base. Nothing is
+            # quarantined, and the integrate phase, which resolves a conflict, builds.
+            record.update(status="blocked", reason=f"phase {phase} waits: {ctx.parent_behind}")
             return record
 
     opened = _open_phase_worktree(ctx, phase, cut_ref, parents, cut_from)

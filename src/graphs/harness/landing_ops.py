@@ -222,3 +222,48 @@ def _merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: 
     ls.put_record(conn, updated)
     ls.fail(conn, ident, worker, now=now, error=merged.detail)
     return PhaseMerge("conflicted", initiative, phase, tip=merged.merged, paths=merged.paths, detail=merged.detail, cause=cause)
+
+
+# -- rectify tasks: what the lander and the epic file when a merge conflicts or fails its checks -----------------
+
+
+RECTIFY_OPEN_STATES = frozenset({"todo", "ready", "in_progress", "blocked", "quarantined"})
+
+
+def rectify_task(phase: str, tasks: Sequence[Mapping[str, Any]]) -> tuple[str, bool]:
+    """Pure. (the rectify task's id for `phase`, whether it is one already open).
+
+    A phase has at most one open rectify task: a merge that fails again before it is built names the same task.
+    A new one is `<phase>-rectify`, then `-2`, `-3`: the first id no task of the initiative has."""
+    stem = f"{phase}-rectify"
+    mine = [t for t in tasks if str(t.get("phase")) == phase and (str(t["id"]) == stem or str(t["id"]).startswith(f"{stem}-"))]
+    still_open = [str(t["id"]) for t in mine if str(t.get("state")) in RECTIFY_OPEN_STATES]
+    if still_open:
+        return sorted(still_open)[-1], True
+    taken = {str(t["id"]) for t in tasks}
+    number = 1
+    while (ident := stem if number == 1 else f"{stem}-{number}") in taken:
+        number += 1
+    return ident, False
+
+
+def rectify_body(branch: str, phase: str, paths: Sequence[str], check_output: str) -> str:
+    """The body of a rectify task. It names what to fix and says, first, that nothing already built is to be redone."""
+    keep = (
+        f"The work of phase `{phase}` is already built, reviewed and on this phase's branch, and the tip of `{branch}` "
+        "has been merged into it. Start from this tree. Change only what the problem below needs: do not rebuild, "
+        "rewrite or remove work that is already here."
+    )
+    if paths:
+        listed = "\n".join(f"- `{p}`" for p in paths)
+        return (
+            f"{keep}\n\n**Problem**\n\nMerging `{branch}` into this phase conflicted. The files below hold conflict markers "
+            f"(`<<<<<<<`, `=======`, `>>>>>>>`), with both sides present:\n\n{listed}\n\n**Wanted**\n\nResolve each conflict so "
+            "both sides' intent holds, remove every marker, and keep the checks passing.\n\n**Checks**\n\nNo conflict marker "
+            "is left in the tree, and the phase's checks pass."
+        )
+    return (
+        f"{keep}\n\n**Problem**\n\nThis phase merges cleanly with `{branch}`, but the checks fail on the merged tree:\n\n"
+        f"```\n{check_output.strip()[:4000]}\n```\n\n**Wanted**\n\nFix what the merge broke, so the checks pass on this tree.\n\n"
+        "**Checks**\n\nThe checks above pass."
+    )

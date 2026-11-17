@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from agent_tools import lander_ports
-from harness import store_work_state
+from harness import landing_ops, store_work_state
 
 ID = ("-c", "user.email=t@invalid", "-c", "user.name=t")
 NOW = "2026-11-12T10:00:00+00:00"
@@ -148,11 +148,11 @@ def test_a_phase_has_one_open_rectify_task_and_a_new_one_takes_the_first_free_id
     def row(ident: str, state: str, phase: str = "p1") -> dict:
         return {"id": ident, "phase": phase, "state": state}
 
-    assert lander_ports.rectify_task("p1", [row("a", "approved")]) == ("p1-rectify", False)
-    assert lander_ports.rectify_task("p1", [row("a", "approved"), row("p1-rectify", "ready")]) == ("p1-rectify", True)
-    assert lander_ports.rectify_task("p1", [row("p1-rectify", "approved")]) == ("p1-rectify-2", False)
-    assert lander_ports.rectify_task("p1", [row("p1-rectify", "approved"), row("p1-rectify-2", "quarantined")]) == ("p1-rectify-2", True)
-    assert lander_ports.rectify_task("p2", [row("p1-rectify", "ready")]) == ("p2-rectify", False)
+    assert landing_ops.rectify_task("p1", [row("a", "approved")]) == ("p1-rectify", False)
+    assert landing_ops.rectify_task("p1", [row("a", "approved"), row("p1-rectify", "ready")]) == ("p1-rectify", True)
+    assert landing_ops.rectify_task("p1", [row("p1-rectify", "approved")]) == ("p1-rectify-2", False)
+    assert landing_ops.rectify_task("p1", [row("p1-rectify", "approved"), row("p1-rectify-2", "quarantined")]) == ("p1-rectify-2", True)
+    assert landing_ops.rectify_task("p2", [row("p1-rectify", "ready")]) == ("p2-rectify", False)
 
 
 def test_a_rectify_task_is_filed_once_as_a_ready_work_file_and_a_store_row(ws: Path, ports) -> None:

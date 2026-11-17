@@ -94,7 +94,11 @@ def new_record(initiative: str, *, repo: str, branch: str, parent: str, base_sha
 
 
 def phase_parents(tasks: Iterable[Mapping[str, Any]]) -> dict[str, set[str]]:
-    """Phase to the phases it needs: one task of it needs a task of the other. The `integrate` phase needs every other."""
+    """Phase to the phases it needs: one task of it needs a task of the other.
+
+    The `integrate` phase needs none. Its task resolves the parent's conflict with the initiative branch, on a branch cut
+    from that branch's tip: filed when a run starts (no phase builds on the old base meanwhile), it merges first, and
+    filed at land time, every other phase has merged already."""
     rows = list(tasks)
     phase_of = {str(t["id"]): str(t.get("phase") or "") for t in rows}
     parents: dict[str, set[str]] = {phase: set() for phase in phase_of.values()}
@@ -104,8 +108,6 @@ def phase_parents(tasks: Iterable[Mapping[str, Any]]) -> dict[str, set[str]]:
             other = phase_of.get(str(need))
             if other is not None and other != own:
                 parents[own].add(other)
-    if INTEGRATE_PHASE in parents:
-        parents[INTEGRATE_PHASE] = {p for p in parents if p != INTEGRATE_PHASE}
     return parents
 
 

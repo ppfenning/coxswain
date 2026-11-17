@@ -102,26 +102,6 @@ def task_rows(store_rows: Sequence[Mapping[str, Any]], files: Mapping[str, Mappi
     return rows
 
 
-OPEN_STATES = frozenset({"todo", "ready", "in_progress", "blocked", "quarantined"})
-
-
-def rectify_task(phase: str, tasks: Sequence[Mapping[str, Any]]) -> tuple[str, bool]:
-    """Pure. (the rectify task's id for `phase`, whether it is one already open).
-
-    A phase has at most one open rectify task: a merge that fails again before it is built names the same task.
-    A new one is `<phase>-rectify`, then `-2`, `-3`: the first id no task of the initiative has."""
-    stem = f"{phase}-rectify"
-    mine = [t for t in tasks if str(t.get("phase")) == phase and (str(t["id"]) == stem or str(t["id"]).startswith(f"{stem}-"))]
-    still_open = [str(t["id"]) for t in mine if str(t.get("state")) in OPEN_STATES]
-    if still_open:
-        return sorted(still_open)[-1], True
-    taken = {str(t["id"]) for t in tasks}
-    number = 1
-    while (ident := stem if number == 1 else f"{stem}-{number}") in taken:
-        number += 1
-    return ident, False
-
-
 def pr_merged_verdict(listed: Sequence[Mapping[str, Any]] | str) -> tuple[bool, str]:
     """Pure. Whether the branch's pull request merged, from the forge's listing of every PR whose head it is."""
     if isinstance(listed, str):
@@ -416,8 +396,9 @@ def build(ws: Path, profile: Mapping[str, Any], *, worker: str | None = None, lo
     def file_rectify(initiative: str, phase: str, title: str, body: str) -> str | None:
         """One ready task in `phase`, as a work file and a store row. The phase's branch is the tree it builds on."""
         from agent_tools import queue_export
+        from harness import landing_ops
 
-        ident, exists = rectify_task(phase, tasks(initiative))
+        ident, exists = landing_ops.rectify_task(phase, tasks(initiative))
         if exists:
             return ident
         path = work / initiative / phase / f"{ident}.md"

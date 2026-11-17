@@ -35,9 +35,10 @@ def test_waves_are_depths_and_merge_order_is_parents_first_in_natural_order() ->
     assert lr.dependents(parents, "p1") == {"p3", "p10"}
 
 
-def test_the_integrate_phase_needs_every_other_phase() -> None:
+def test_the_integrate_phase_needs_no_other_phase_so_a_conflict_filed_at_run_start_merges_first() -> None:
     tasks = [task("a", "p1"), task("b", "p2"), task("fix", lr.INTEGRATE_PHASE)]
-    assert lr.phase_parents(tasks)[lr.INTEGRATE_PHASE] == {"p1", "p2"}
+    assert lr.phase_parents(tasks)[lr.INTEGRATE_PHASE] == set()
+    assert lr.placeable_phases(record(), tasks) == ["integrate", "p1", "p2"]
 
 
 def test_a_new_initiative_has_wave_one_open_and_the_rest_waiting() -> None:

@@ -197,27 +197,5 @@ def test_work_of_another_initiative_that_landed_after_the_cut_is_on_the_branch_b
     assert landing_store.get_record(store.conn, INITIATIVE)["state"] == "assembled"
 
 
-def test_a_parent_that_conflicts_stops_only_the_phase_that_needs_the_foreign_work(repo, cart, tmp_path, store) -> None:  # noqa: F811
-    drive(repo, cart, tmp_path, store=store, run_id="epic-1", work=_needing_foreign("ready"))
-    before = git("rev-parse", INIT, cwd=repo)
-    _land_on_main(repo, "t1-probe.txt", "main wrote this too\n")
-
-    result, runner = drive(repo, cart, tmp_path, store=store, run_id="epic-2", work=_needing_foreign("done", t1="approved"))
-
-    by = {p["phase"]: p for p in result["phases"]}
-    assert by["p1-foundations"]["status"] == "complete", "a phase with no foreign need is not held"
-    assert by["p2-rollout"]["status"] == "blocked"
-    assert by["p2-rollout"]["reason"] == (
-        f"phase p2-rollout needs {FOREIGN} of another initiative, and main was not merged into {INIT}: conflict in t1-probe.txt"
-    )
-    assert result["quarantined"] == [] and not any(c["role"] == "build" for c in runner.calls)
-    assert git("rev-parse", INIT, cwd=repo) == before, "the branch is left where it was; nothing is resolved here"
-
-
-def test_an_initiative_with_no_foreign_need_never_takes_its_parent_forward_in_a_run(repo, cart, tmp_path, store) -> None:  # noqa: F811
-    one = initiative(two_phases=False)
-    drive(repo, cart, tmp_path, store=store, run_id="epic-1", work={**one, "items": one["items"][:1]})
-    _land_on_main(repo, "foreign.md", "landed\n")
-    t1, t2 = one["items"]
-    drive(repo, cart, tmp_path, store=store, run_id="epic-2", work={**one, "items": [{**t1, "state": "approved", "merged": True}, t2]})
-    assert not is_ancestor(repo, "main", INIT)
+# A parent that conflicts, and an initiative with no foreign need, are covered by tests/test_epic_stale_branch.py:
+# every run now takes the parent forward first (H4.2).
