@@ -14,6 +14,7 @@ from typing import Any, NamedTuple
 
 import yaml
 
+from core.workstore import STATES
 from harness.cli import _read_profile, _storage_url
 from harness.store_cli_lease import lease_acquire, lease_release, lease_renew
 from harness.store_dialect import Connection, StoreDriverMissing, insert_ignore, json_text
@@ -33,11 +34,11 @@ from harness.work_mirror import set_frontmatter_state
 EXIT_OK = 0
 EXIT_BAD_INPUT = 2
 EXIT_PRECONDITION = 3
-# The states a caller may move a work item to. `blocked` is the chair's hold for a person (a reason in `extra`);
-# `quarantined` is written only by the epic driver, never through this command.
-WORK_STATES = ("ready", "approved", "done", "dropped", "blocked")
-# Every state a row can be in, so a compare-and-set can name the one the caller saw (`core.workstore.STATES`).
-EXPECT_STATES = ("todo", "ready", "in_progress", "approved", "blocked", "done", "dropped", "quarantined")
+# The states a caller may move a work item to, and the states a compare-and-set may name: every state a row can be in,
+# read from the one enum (`core.workstore.STATES`) so the parser cannot drift from what callers send. A hand-written
+# list here once refused `quarantined`, and the chair's revert of a phase never reached the store (smoke contract).
+WORK_STATES = STATES
+EXPECT_STATES = STATES
 
 _DB_ERRORS: tuple[type[BaseException], ...] = (sqlite3.Error,)
 try:  # the postgres driver is an optional extra

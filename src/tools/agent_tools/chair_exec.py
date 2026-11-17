@@ -195,7 +195,7 @@ class Deps:
     set_lanes: Callable[[str, int], int] | None = None  # a tune_lanes's (host, count) -> exit code; None refuses it
     revert_ports: Callable[[Action], tuple[RevertGitPort, RevertForgePort]] | None = None  # a revert_land's ports; None refuses it
     home: str = ""  # this machine's home directory, read once at the edge; "" leaves a repo path unmapped for a lane host
-    quarantine_phase: Callable[[str, str, str, str], None] | None = None  # (initiative, phase, cause, reason): quarantines that phase's tasks
+    quarantine_phase: Callable[[str, str, str, str], Sequence[str] | None] | None = None  # (initiative, phase, cause, reason): quarantines that phase's tasks, answering one line per write the store refused
     resolve_land: Callable[[str, str, str], None] | None = None  # (initiative, phase, outcome): the store's resolve write for a land
     rerun_main: Callable[[str, str], tuple[str, str]] | None = None  # a rerun_main's (repo, commit) -> chair_revert_ports.rerun_infra's (state, line); None refuses it
     rev_parse: Callable[[str, str], str | None] = rev_parse  # (repo, ref) -> the ref's tip, None when it does not resolve; the only door to a land_phase's head
@@ -1437,23 +1437,24 @@ def _stale_to_draft(action: Action, deps: Deps) -> Result:
 
 def _check_login(action: Action, deps: Deps) -> Result:
     """Runs the injected check_login edge against the action's host; the row it prints becomes the reason.
-    Never touches the attempts table, so its outcome is always "recorded", the same status standby and
-    mark_lost carry."""
+    Never touches the attempts table, so its outcome is "recorded", the same status standby and mark_lost
+    carry, unless the store refused the write: then it is "failed", the store's answer as the reason."""
     host = action.get("host", "")
     if not host or deps.check_login is None:
         return _result(action, "refused", "check_login needs a host and a wired check_login edge")
     row = deps.check_login(host)
-    return _result(action, "recorded", json.dumps(row, sort_keys=True))
+    return _result(action, "failed" if store_cli.STORE_ERROR in row else "recorded", json.dumps(row, sort_keys=True))
 
 
 def _probe_host(action: Action, deps: Deps) -> Result:
     """Runs the injected probe_host edge against the action's host; the row it returns becomes the reason.
-    Its outcome is always "recorded", and it sends no notice: the planner's host_back action does."""
+    Its outcome is "recorded", or "failed" when the store refused a write, and it sends no notice: the planner's
+    host_back action does."""
     host = action.get("host", "")
     if not host or deps.probe_host is None:
         return _result(action, "refused", "probe_host needs a host and a wired probe_host edge")
     row = deps.probe_host(host)
-    return _result(action, "recorded", json.dumps(row, sort_keys=True))
+    return _result(action, "failed" if store_cli.STORE_ERROR in row else "recorded", json.dumps(row, sort_keys=True))
 
 
 def _stalled(action: Action, deps: Deps, sig: int) -> Result:
@@ -1534,6 +1535,11 @@ def revert_outcome(action: Action, reverted: RevertResult) -> tuple[str, str]:
     return "revert_failed", f"{reverted.detail}; main is still red after the revert of {action.get('commit', '')}"
 
 
+def with_store_failures(reason: str, failures: Sequence[str]) -> str:
+    """Pure. `reason`, then each quarantine write the store did not take, so the needs_chair names a phase left runnable."""
+    return "; ".join([reason, *(f"quarantine not recorded: {line}" for line in failures)])
+
+
 def _revert_land(action: Action, deps: Deps) -> Result:
     """Edge. `perform_revert` over the wired ports, then quarantine the phase whatever the status, so no relaunch stacks onto
     a red main. The land is resolved as reverted only when the revert merged; a failed one is planned again next tick."""
@@ -1545,10 +1551,11 @@ def _revert_land(action: Action, deps: Deps) -> Result:
         reverted = perform_revert(action.get("repo", ""), action.get("pr", 0), action.get("commit", ""), action.get("reason", ""), git, forge)
     except Exception as exc:  # the edge: a port failure is a failed revert, and main is still red
         reverted = RevertResult("failed", "", f"revert raised {type(exc).__name__}: {exc}")
-    deps.quarantine_phase(initiative, phase, "main_red", action.get("reason", ""))
+    failures = deps.quarantine_phase(initiative, phase, "main_red", action.get("reason", "")) or ()
     if reverted.status == MERGED:
         deps.resolve_land(initiative, phase, "reverted")
-    cause, reason = revert_outcome(action, reverted)
+    cause, outcome = revert_outcome(action, reverted)
+    reason = with_store_failures(outcome, failures)
     raised: Action = {
         "kind": "needs_chair", "initiative": initiative, "phase": phase, "cause": cause,
         "epoch": action.get("epoch", 0), "reason": reason,
@@ -2211,14 +2218,8 @@ def _host_row(runs_dir: Path, host: str) -> dict:
 
 
 def _cli_run(runs_dir: Path, argv: list[str]) -> dict:
-    """Edge. Runs `argv` through `store_cli.runner(runs_dir)` and parses its stdout as the row it printed;
-    an unparseable or non-object reply reads as an empty row, never an exception."""
-    _, output = store_cli.runner(runs_dir)(argv)
-    try:
-        parsed = json.loads(output)
-    except ValueError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
+    """Edge. Runs `argv` through `store_cli.runner(runs_dir)`; `store_cli.reply_row` of what it answers."""
+    return store_cli.reply_row(*store_cli.runner(runs_dir)(argv))
 
 
 def _login_runner_and_env(profile: dict) -> tuple[str, tuple[str, ...]]:
@@ -2247,16 +2248,18 @@ def _check_login_edge(runs_dir: Path, ssh_run: Callable[[list[str]], ArgvResult]
 def _probe_host_edge(runs_dir: Path, ssh_run: Callable[[list[str]], ArgvResult], host: str) -> dict:
     """Edge. One `probe_argv` ssh to `host`, its ssh read from the hosts table, "now" read at call time. Always
     merges probe_checked_at through `cox host login`. Exit 0 also sets the host active and clears the unreachable
-    fields; any other exit changes nothing else. Never writes beat_at."""
+    fields; any other exit changes nothing else. Never writes beat_at. A write the store refuses is answered in place of
+    the row, as `store_cli.reply_row` gives it."""
     ssh = str(_host_row(runs_dir, host).get("ssh", ""))
     now = datetime.now(UTC).isoformat()
     reachable = ssh_run(probe_argv(ssh)).returncode == 0
     login = {"probe_checked_at": now}
     if reachable:
         login = {**login, "unreachable_failures": 0, "unreachable_since": None, "host_back_at": now}
-        _cli_run(runs_dir, host_cmd.set_state_argv(host, "active", "probe"))
-    _cli_run(runs_dir, ["host", "login", host, "--login-json", json.dumps(login, sort_keys=True)])
-    return _host_row(runs_dir, host)
+    writes = [host_cmd.set_state_argv(host, "active", "probe")] if reachable else []
+    replies = [_cli_run(runs_dir, argv) for argv in [*writes, ["host", "login", host, "--login-json", json.dumps(login, sort_keys=True)]]]
+    failed = next((r for r in replies if store_cli.STORE_ERROR in r), None)
+    return failed if failed is not None else _host_row(runs_dir, host)
 
 
 _CHECKS_TIMEOUT_S = 600.0

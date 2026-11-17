@@ -14261,16 +14261,43 @@ def _revert_ports(
 
 
 def _quarantine_phase_with(
-    items: Callable[[], list[dict]], set_state: Callable[[str, str, str, str], object], by: str,
-) -> Callable[[str, str, str, str], None]:
-    """Quarantines every task of the phase. The reason rides the needs_chair `_revert_land` raises, not the store."""
+    items: Callable[[], list[dict]], set_state: Callable[[str, str, str, str], str | None], by: str,
+) -> Callable[[str, str, str, str], list[str]]:
+    """Quarantines every task of the phase and returns one line per write the store did not take, so `_revert_land`
+    reports it. `set_state` answers None or that line (`store_cli.mirror_state`). The reason rides the needs_chair
+    `_revert_land` raises, not the store."""
 
-    def quarantine(initiative: str, phase: str, cause: str, reason: str) -> None:
-        for item in items():
-            if item.get("initiative") == initiative and item.get("phase") == phase:
-                set_state(initiative, item["id"], "quarantined", by)
+    def quarantine(initiative: str, phase: str, cause: str, reason: str) -> list[str]:
+        written = (
+            set_state(initiative, item["id"], "quarantined", by)
+            for item in items()
+            if item.get("initiative") == initiative and item.get("phase") == phase
+        )
+        return [line for line in written if line is not None]
 
     return quarantine
+
+
+def _store_quarantine(runs_dir: Path, ws: Path, mode: str, by: str) -> Callable[[str, str, str, str], list[str]]:
+    """Edge. The chair's quarantine of a reverted phase: every ticket under `ws/work`, each moved through the store CLI."""
+    return _quarantine_phase_with(
+        lambda: chair_facts.read_ticket_items(ws, mode),
+        lambda initiative, task, state, by: store_cli.mirror_state(runs_dir, initiative, task, state, by),
+        by,
+    )
+
+
+def _revert_land_deps(
+    runs_dir: Path, ws: Path, mode: str, holder: str, runner: Callable[[list[str]], tuple[int, str]],
+    actions: Callable[[], Sequence[Mapping]], record: Callable[[Mapping], None],
+) -> dict[str, object]:
+    """Edge. The `chair_exec.Deps` fields a revert_land runs on: its git and forge ports, the store quarantine of the
+    reverted phase, and the resolve of its land watch. `cox chair run` wires exactly these."""
+    return {
+        "revert_ports": _revert_ports(runner),
+        "quarantine_phase": _store_quarantine(runs_dir, ws, mode, holder),
+        "resolve_land": _resolve_land_with(actions, record),
+    }
 
 
 def _resolve_land_with(
@@ -14874,13 +14901,7 @@ def _chair_run_deps(
     exec_deps = dataclasses.replace(
         exec_deps,
         label=session,
-        revert_ports=_revert_ports(runner),
-        quarantine_phase=_quarantine_phase_with(
-            lambda: chair_facts.read_ticket_items(ws, mode),
-            lambda i, t, s, b: store_cli.set_state(runs_dir, i, t, s, b),
-            holder,
-        ),
-        resolve_land=_resolve_land_with(actions, record),
+        **_revert_land_deps(runs_dir, ws, mode, holder, runner, actions, record),
         rerun_main=lambda repo, commit: chair_revert_ports.rerun_infra(runner, _gh_repo(repo), commit),
         launch_stagger_s=chair_exec.stagger_seconds((profile.get("chair") or {}).get("launch_stagger_s")),
         mark_handled=None if dry_run else (lambda key: _mark_handled_key(runs_dir, key)),

@@ -19,11 +19,9 @@ TARGETS = {
     "blocked": "the chair's hold for a person",
     "quarantined": "the chair's revert of a phase, cli._quarantine_phase_with",
 }
-# Drift this suite found and has not closed. strict, so whoever closes it must delete the entry.
-KNOWN_DRIFT = {
-    "quarantined": "set-state refuses quarantined (store_cli.WORK_STATES leaves it to the epic driver), but the chair's "
-    "revert sends it and drops the failure",
-}
+# Drift this suite found and has not closed. Each entry is a strict xfail, so whoever closes it must delete the entry.
+# `quarantined`, the chair's revert of a phase, was the first: set-state now takes every state in core.workstore.STATES.
+KNOWN_DRIFT: dict[str, str] = {}
 
 
 def _set_state(sandbox, state, *extra):

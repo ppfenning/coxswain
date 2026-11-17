@@ -133,8 +133,14 @@ def test_quarantine_phase_sets_state_once_per_matching_item_only() -> None:
     ]
     seen: list[tuple[str, str, str, str]] = []
     quarantine = cli._quarantine_phase_with(lambda: items, lambda *args: seen.append(args), "holder")
-    quarantine("i1", "p1", "main_red", "why")
+    assert quarantine("i1", "p1", "main_red", "why") == []
     assert seen == [("i1", "a", "quarantined", "holder"), ("i1", "b", "quarantined", "holder")]
+
+
+def test_quarantine_phase_answers_one_line_per_write_the_store_refused() -> None:
+    items = [{"id": "a", "initiative": "i1", "phase": "p1"}, {"id": "b", "initiative": "i1", "phase": "p1"}]
+    quarantine = cli._quarantine_phase_with(lambda: items, lambda i, t, s, b: None if t == "a" else f"warning: {t}", "holder")
+    assert quarantine("i1", "p1", "main_red", "why") == ["warning: b"]
 
 
 def _watch_row(initiative: str, phase: str, commit: str) -> dict:

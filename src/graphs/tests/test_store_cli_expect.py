@@ -65,3 +65,21 @@ def test_every_work_store_state_can_be_expected():
     from harness import store_cli
 
     assert set(store_cli.EXPECT_STATES) == set(STATES)
+
+
+def _set_state_choices() -> dict[str, tuple[str, ...]]:
+    """The choices the parser itself gives set-state's positional `state` and its `--expect`, read off argparse."""
+    import argparse
+
+    from harness import store_cli
+
+    commands = next(a for a in store_cli.build_parser()._actions if isinstance(a, argparse._SubParsersAction))
+    actions = commands.choices["set-state"]._actions
+    return {a.dest: tuple(a.choices) for a in actions if a.dest in ("state", "expect")}
+
+
+def test_the_parser_s_set_state_choices_are_the_work_store_enum():
+    # H1: a hand-written list here refused `quarantined`, and the chair's revert of a phase never reached the store.
+    from core.workstore import STATES
+
+    assert _set_state_choices() == {"state": STATES, "expect": STATES}

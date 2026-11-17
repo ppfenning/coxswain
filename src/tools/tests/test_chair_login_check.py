@@ -371,3 +371,17 @@ def test_a_pass_after_one_unreachable_check_clears_the_streak() -> None:
     check_login_on_host("shed", "user@shed", captured[0], NOW, run, cli_run)
 
     assert captured[1] == {"login_ok": True, "login_checked_at": NOW, "check": "claude_auth", "login_failures": 0}
+
+
+def test_a_refused_unreachable_login_write_is_the_answer_and_no_state_is_set_over_it() -> None:
+    run, _ = _fake([_reply(124, "", TIMED_OUT)])
+    argvs: list = []
+
+    def refusing(argv: list[str]) -> dict:
+        argvs.append(argv)
+        return {"store_error": "store_cli exit 3: {}"}
+
+    row = check_login_on_host("shed", "user@shed", {"unreachable_failures": 1}, NOW, run, refusing)
+
+    assert row == {"store_error": "store_cli exit 3: {}"}
+    assert _set_states(argvs) == []
