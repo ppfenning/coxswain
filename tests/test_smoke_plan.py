@@ -1,0 +1,121 @@
+"""The smoke suite's pure core (smoke/plan.py): example inputs in, outputs checked. No I/O, no mocks."""
+
+import pytest
+
+from smoke import plan
+
+
+@pytest.mark.parametrize(("value", "expected"), [(None, False), ("", False), ("0", False), ("false", False), ("No", False), ("1", True), ("yes", True)])
+def test_is_required_reads_a_flag(value, expected):
+    assert plan.is_required(value) is expected
+
+
+def test_a_missing_prerequisite_skips_unless_the_run_requires_the_suite():
+    assert plan.unavailable("no docker", required=False) == plan.Skip("no docker")
+    assert plan.unavailable("no docker", required=True) == plan.Fail("no docker")
+
+
+def test_an_environment_url_on_loopback_is_used_as_is():
+    url = "postgresql://postgres:pw@127.0.0.1:5432/postgres"
+    assert plan.postgres_source(url, None, False, required=True) == plan.UseUrl(url)
+    assert plan.postgres_source("postgres://u@localhost/db", None, False, required=False) == plan.UseUrl("postgres://u@localhost/db")
+
+
+@pytest.mark.parametrize("url", ["postgresql://u:p@db.example.com:5432/x", "postgresql://u:p@10.0.0.5/x", "sqlite:///x.db", "nonsense"])
+def test_an_environment_url_off_loopback_or_not_postgres_fails_even_when_not_required(url):
+    decision = plan.postgres_source(url, "/usr/bin/docker", True, required=False)
+    assert isinstance(decision, plan.Fail)
+    assert plan.URL_ENV in decision.reason
+
+
+def test_without_a_url_docker_decides():
+    assert plan.postgres_source(None, "/usr/bin/docker", True, required=False) == plan.StartContainer()
+    assert isinstance(plan.postgres_source(None, None, False, required=False), plan.Skip)
+    assert isinstance(plan.postgres_source(None, None, False, required=True), plan.Fail)
+    no_daemon = plan.postgres_source(None, "/usr/bin/docker", False, required=False)
+    assert isinstance(no_daemon, plan.Skip) and "daemon" in no_daemon.reason
+
+
+def test_the_container_is_throwaway_and_published_on_loopback_only():
+    argv = plan.docker_run_argv()
+    assert argv[:2] == ["docker", "run"]
+    assert "--rm" in argv and "127.0.0.1::5432" in argv and plan.POSTGRES_IMAGE in argv
+    assert argv[argv.index("--label") + 1] == plan.CONTAINER_LABEL
+    assert plan.docker_remove_argv("abc") == ["docker", "rm", "--force", "abc"]
+    assert plan.docker_ready_argv("abc")[-2:] == ["--host", "127.0.0.1"]
+
+
+@pytest.mark.parametrize(("output", "port"), [("127.0.0.1:32768\n", 32768), ("0.0.0.0:5001\n[::]:5001\n", 5001)])
+def test_parse_published_port(output, port):
+    assert plan.parse_published_port(output) == port
+
+
+def test_parse_published_port_refuses_output_with_no_port():
+    with pytest.raises(ValueError, match="no published port"):
+        plan.parse_published_port("")
+
+
+def test_urls():
+    assert plan.postgres_url(5432) == "postgresql://postgres:smoke@127.0.0.1:5432/postgres"
+    assert plan.postgres_url(1, password="a/b", database="d") == "postgresql://postgres:a%2Fb@127.0.0.1:1/d"
+    assert plan.with_database("postgresql://u:p@localhost:5/postgres?sslmode=disable", "other") == "postgresql://u:p@localhost:5/other?sslmode=disable"
+
+
+def test_database_names_are_valid_and_distinct():
+    long_id = "smoke/test_contract_route_edit.py::test_" + "x" * 200
+    names = {plan.database_name(i) for i in ("a::b", "a::c", "A::B[x-y]", long_id)}
+    assert len(names) == 4
+    for name in names:
+        assert len(name) <= 63
+        assert name.replace("_", "").isalnum() and name == name.lower()
+
+
+def test_the_sandbox_env_keeps_only_what_it_names():
+    inherited = {"HOME": "/home/user", "PYTHONPATH": "/elsewhere", "AGENT_TOOLS_PROFILE": "/p", "VIRTUAL_ENV": "/v", "LANG": "C.UTF-8"}
+    env = plan.sandbox_env(inherited, home="/tmp/sandbox/h", bin_dirs=["/tmp/i/bin"], system_path="/usr/bin:/bin", extra={"X": "1"})
+    assert env["HOME"] == "/tmp/sandbox/h"
+    assert env["XDG_CONFIG_HOME"] == "/tmp/sandbox/h/.config" and env["XDG_DATA_HOME"] == "/tmp/sandbox/h/.local/share"
+    assert env["GIT_CONFIG_GLOBAL"] == "/tmp/sandbox/h/.gitconfig" and env["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert env["PATH"] == "/tmp/i/bin:/usr/bin:/bin"
+    assert env["LANG"] == "C.UTF-8" and env["X"] == "1"
+    assert not {"PYTHONPATH", "AGENT_TOOLS_PROFILE", "VIRTUAL_ENV"} & env.keys()
+
+
+def test_profiles_name_the_sandbox():
+    text = plan.routing_profile_text(team="t", workspace="/w", harness_dir="/h", provider_profile="/p.yaml")
+    assert text == "team: t\nworkspace_dir: /w\nharness_dir: /h\nprovider_profile: /p.yaml\n"
+    assert plan.provider_profile_text("postgresql://x") == "storage_url: postgresql://x\n"
+    assert "defaultBranch = main" in plan.gitconfig_text()
+
+
+def test_a_work_item_round_trips_through_its_front_matter():
+    text = plan.work_item_text({"state": "todo", "id": "t1"}, "Body\n\n")
+    assert text == "---\nstate: todo\nid: t1\n---\n\nBody\n"
+    assert plan.front_matter(text) == {"state": "todo", "id": "t1"}
+
+
+@pytest.mark.parametrize("text", ["", "no front matter", "---\nstate: todo\n"])
+def test_front_matter_of_a_file_without_one_is_empty(text):
+    assert plan.front_matter(text) == {}
+
+
+def test_front_matter_skips_nested_lines():
+    assert plan.front_matter("---\nneeds:\n- a\nid: t\n---\n") == {"needs": "", "id": "t"}
+
+
+def test_install_drift_names_every_difference():
+    assert plan.install_drift({"a.py": "1", "b.py": "2"}, {"a.py": "1", "b.py": "2"}) == []
+    assert plan.install_drift({"a.py": "1", "b.py": "2"}, {"a.py": "9", "c.py": "3"}) == ["a.py", "b.py", "c.py"]
+
+
+def test_python_sources_skip_caches():
+    assert plan.python_sources(["b.py", "a.py", "x/__pycache__/a.py", "c.txt"]) == ["a.py", "b.py"]
+
+
+def test_package_dirs_follow_package_dir():
+    dirs = plan.package_dirs(["agent_tools", "graphs.ops", "coxswain"], {"agent_tools": "src/tools/agent_tools", "graphs": "src/graphs/graphs"})
+    assert dirs == {
+        "agent_tools": ("src/tools/agent_tools", "agent_tools"),
+        "graphs.ops": ("src/graphs/graphs/ops", "graphs/ops"),
+        "coxswain": ("coxswain", "coxswain"),
+    }

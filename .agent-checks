@@ -6,4 +6,7 @@
 cd src/tools && pytest -q -n auto
 cd src/graphs && pytest -q -n auto
 cd src/cartridges && pytest -q -n auto
+# The smoke suite (docs/smoke.md): real cox from this worktree against real git and a throwaway Postgres container.
+# Where the lane host has no docker it skips and says why (-rs); CI's required test job runs it with COX_SMOKE_REQUIRED.
+pytest -q -rs smoke
 python .github/check_clean.py . --require-names
