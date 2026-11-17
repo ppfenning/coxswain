@@ -6521,6 +6521,23 @@ Coxswain is in beta — versions may change between releases
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="The edge upgrade channel">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#check-the-schedule-on-a-macos-host" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Check the schedule on a macOS host
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
         
       </ul>
@@ -6791,10 +6808,38 @@ a checkout with uncommitted changes. <code>--to</code> also takes a commit SHA.<
 default: <code>cox upgrade</code> moves to the newest release tag, as above. <code>edge</code>
 follows <code>main</code>, but only commits whose CI passed:</p>
 <div class="highlight"><pre><span></span><code>cox<span class="w"> </span>settings<span class="w"> </span><span class="nb">set</span><span class="w"> </span>profile<span class="w"> </span>upgrade_channel<span class="w"> </span>edge
+cox<span class="w"> </span>setup<span class="w"> </span>unit-env<span class="w">               </span><span class="c1"># writes ~/.config/agent-tools/garage.env with the stored token</span>
 cox<span class="w"> </span>upgrade<span class="w"> </span>--install-timer<span class="w">      </span><span class="c1"># writes coxswain-upgrade.service and .timer</span>
 systemctl<span class="w"> </span>--user<span class="w"> </span>daemon-reload
 systemctl<span class="w"> </span>--user<span class="w"> </span><span class="nb">enable</span><span class="w"> </span>--now<span class="w"> </span>coxswain-upgrade.timer
 </code></pre></div>
+<p>On macOS the same <code>cox upgrade --install-timer</code> writes a launchd agent,
+<code>~/Library/LaunchAgents/coxswain-upgrade.plist</code>, that runs the same command on
+the same interval, and prints the <code>launchctl bootstrap</code> line that loads it.
+The agent stores no secret. At each launch it reads the env file described
+below, so a new token takes effect on the next run without a reinstall. The
+plist is written with mode 0600.</p>
+<h4 id="check-the-schedule-on-a-macos-host">Check the schedule on a macOS host</h4>
+<p>The test suite cannot run launchd, so check a macOS host by hand after you
+install or change the schedule:</p>
+<div class="highlight"><pre><span></span><code><span class="nv">plist</span><span class="o">=</span>~/Library/LaunchAgents/coxswain-upgrade.plist
+plutil<span class="w"> </span>-lint<span class="w"> </span><span class="s2">"</span><span class="nv">$plist</span><span class="s2">"</span><span class="w">                                  </span><span class="c1"># prints: OK</span>
+launchctl<span class="w"> </span>bootstrap<span class="w"> </span>gui/<span class="k">$(</span>id<span class="w"> </span>-u<span class="k">)</span><span class="w"> </span><span class="s2">"</span><span class="nv">$plist</span><span class="s2">"</span><span class="w">             </span><span class="c1"># once; it fails if already loaded</span>
+launchctl<span class="w"> </span>kickstart<span class="w"> </span>-k<span class="w"> </span>gui/<span class="k">$(</span>id<span class="w"> </span>-u<span class="k">)</span>/coxswain-upgrade<span class="w">  </span><span class="c1"># run it now, not in 30 minutes</span>
+cox<span class="w"> </span>versions<span class="w">                                          </span><span class="c1"># the edge upgrade line: a fresh time and an outcome</span>
+</code></pre></div>
+<p>The check passes when <code>plutil</code> prints <code>OK</code> and <code>cox versions</code> shows an edge
+upgrade from the run you just started (the record is <code>edge-upgrade.json</code> in
+the installs folder). If the machine was already at the newest green commit, no
+record is written; the agent's run is then visible in <code>log show --predicate
+'process == "launchd"' --last 5m</code>. If the record is unchanged, run the command from the
+plist's <code>ProgramArguments</code> by hand. Its output names the step that failed.</p>
+<p><code>cox setup unit-env</code> writes the one environment file that the chair, lander
+and upgrade units all read: systemd units load it with <code>EnvironmentFile=</code>, and
+launchd agents get its values as <code>EnvironmentVariables</code>. It keeps the
+<code>NAME=value</code> lines the file already has and sets <code>CLAUDE_CODE_OAUTH_TOKEN</code>
+from the token that <code>cox setup token</code> stored. Run it again after you change the
+token.</p>
 <p>On an edge machine, <code>cox upgrade</code> with no <code>--to</code> does these steps:</p>
 <ol>
 <li>It finds the newest commit on <code>origin/main</code> whose <code>ci</code> workflow passed on
@@ -6802,10 +6847,23 @@ systemctl<span class="w"> </span>--user<span class="w"> </span><span class="nb">
 <li>It moves the checkout to that commit by the same path as <code>cox upgrade --to</code>.</li>
 <li>If the commit changed, it restarts the chair and lander user units that
    are running.</li>
-<li>It runs <code>cox setup doctor</code>.</li>
-<li>If the move, a restart or the doctor fails, it moves back to the previous
-   commit and restarts the units again.</li>
+<li>It runs <code>cox setup doctor</code> and checks that every unit that was running
+   before is running again.</li>
+<li>If the move or a restart fails, or a required doctor row fails, it moves
+   back to the previous commit and restarts the units again.</li>
 </ol>
+<p>The required doctor rows are the ones an upgrade can break: the profile, the
+workspace, the harness venv, the core import, the install bins, the unit
+PATH, the store, the store schema, and the restarted units. The other rows,
+such as the token file and the plugins, are advisory. An advisory failure
+prints one warning line and does not roll back.</p>
+<p>Every <code>git</code> and <code>gh</code> call has a time limit. A call that hangs is killed, and
+the upgrade stops with a line that names it, for example
+<code>gh run timed out after 120 seconds</code>.</p>
+<p>A lane host's checkout sync never moves the install checkout. The host
+resolves both paths, following symlinks. If the lane's checkout is the
+install, the sync leaves it alone and reports that the lane needs its own
+checkout. The install moves only through <code>cox upgrade</code>.</p>
 <p>The timer runs <code>cox upgrade --scheduled</code> every 30 minutes by default
 (<code>--interval-minutes</code> changes this). On a stable machine the scheduled run does
 nothing. Apart from a rollback, an edge upgrade never moves to an older

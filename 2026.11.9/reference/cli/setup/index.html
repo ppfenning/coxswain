@@ -4157,6 +4157,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#unit-env" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        unit-env
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#token" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6585,6 +6596,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#unit-env" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        unit-env
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#token" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6623,12 +6645,12 @@ Coxswain is in beta — versions may change between releases
 
 <h1 id="setup">setup</h1>
 <div class="highlight"><pre><span></span><code>usage: cox setup [-h] [--profile PROFILE]
-                 {doctor,install,extras,migrate,store,token} ...
+                 {doctor,install,extras,migrate,store,unit-env,token} ...
 
 Does this machine's profile actually work.
 
 positional arguments:
-  {doctor,install,extras,migrate,store,token}
+  {doctor,install,extras,migrate,store,unit-env,token}
     doctor              check this machine's profile against what it needs
     install             sync the checkout's venv, install cox and write a
                         profile for this machine
@@ -6637,6 +6659,8 @@ positional arguments:
     migrate             plan moving this host to the one monorepo checkout;
                         --apply migrates
     store               configure the shared Postgres store for run records
+    unit-env            write the one env file the chair, lander and upgrade
+                        units read, with the stored token
     token               store the long-lived Claude token that coxswain's own
                         claude runs use
 
@@ -6755,6 +6779,15 @@ options:
                         shared: NAME of the variable holding the S3 secret key
   --dry-run             validate and print; write and probe nothing
   --allow-unreachable   exit 0 even when a probe fails
+</code></pre></div>
+<h2 id="unit-env">unit-env</h2>
+<div class="highlight"><pre><span></span><code>usage: cox setup unit-env [-h] [--environment-file ENVIRONMENT_FILE]
+
+options:
+  -h, --help            show this help message and exit
+  --environment-file ENVIRONMENT_FILE
+                        the file to write (default: ~/.config/agent-
+                        tools/garage.env, the one the units read)
 </code></pre></div>
 <h2 id="token">token</h2>
 <div class="highlight"><pre><span></span><code>usage: cox setup token [-h] [--token TOKEN] [--from-file PATH] {status} ...

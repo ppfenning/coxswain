@@ -6475,10 +6475,12 @@ options:
                         $AGENT_TOOLS_PROFILE)
   --scheduled           what the upgrade timer runs: does nothing unless this
                         machine's channel is edge
-  --install-timer       write the systemd user timer that runs the scheduled
-                        upgrade and print the lines that activate it; runs
-                        nothing itself
-  --uninstall-timer     remove the timer files --install-timer wrote
+  --install-timer       write the schedule that runs the scheduled upgrade (a
+                        systemd user timer on Linux, a launchd agent on macOS)
+                        and print the lines that activate it; runs nothing
+                        itself
+  --uninstall-timer     remove the schedule files --install-timer wrote on
+                        this platform
   --interval-minutes INTERVAL_MINUTES
                         minutes between scheduled upgrades in the installed
                         timer (default: 30)
