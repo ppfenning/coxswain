@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from agent_tools import route, run_store
+from agent_tools.chair_phase_quarantine import row_mark
 from agent_tools.chair_read_cache import StampCache, file_stamp
 from agent_tools.stats_chair import frontmatter_item
 
@@ -91,7 +92,10 @@ def quarantined_from_rows(rows: Iterable[Mapping[str, object]]) -> list[Row]:
     A row already names its own quarantine, so no state or attempt-matching gate is needed to find one; the
     newest attempt in `extra["attempts"]` on the row's current `body` supplies `run`, `cause` and `reason`, by the same
     `body_sha`/`attempts_on_current_body` rule `quarantined_rows` uses. A row with no such attempt still gets
-    a fact, with `run`, `cause` and `reason` empty."""
+    a fact, with `run`, `cause` and `reason` empty.
+
+    A row the chair's revert of a phase quarantined carries that quarantine's `mark` (`chair_phase_quarantine.row_mark`):
+    its cause, reason and the initiative's newest run then."""
     facts = []
     for row in rows:
         if row.get("state") != "quarantined":
@@ -109,6 +113,7 @@ def quarantined_from_rows(rows: Iterable[Mapping[str, object]]) -> list[Row]:
                 "body_sha": body_sha(body),
                 "cause": _classify_cause(str(newest.get("cause") or "")),
                 "reason": str(newest.get("reason") or ""),
+                **({"mark": mark} if (mark := row_mark(row.get("extra"))) is not None else {}),
             }
         )
     return facts

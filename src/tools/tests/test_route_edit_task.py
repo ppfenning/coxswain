@@ -83,7 +83,7 @@ def test_a_four_flag_edit_changes_the_store_row_and_the_file_together(tmp_path, 
         tmp_path, tmp_path, "t1", title="New title", body_file=str(body_file), surfaces="a.py, b/c.py", state="ready", live_runs=()
     )
     assert result.code == route_edit.DONE
-    assert store.states == [("ship", "t1", "ready", route_edit.EDITED_BY, None)]
+    assert store.states == [("ship", "t1", "ready", route_edit.EDITED_BY, "todo")]  # compare-and-set on the state the edit read
     assert store.upserts == [
         {"initiative": "ship", "task_id": "t1", "title": "New title", "body": "\nNew body\n", "surfaces": ["a.py", "b/c.py"]}
     ]

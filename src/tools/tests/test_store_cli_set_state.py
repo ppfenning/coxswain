@@ -97,3 +97,17 @@ def test_mirror_state_turns_a_raise_into_a_warning(monkeypatch, tmp_path):
     monkeypatch.setattr(store_cli, "set_state", boom)
     assert store_cli.mirror_state(tmp_path, "init", "t1", "done", "me") == (
         "warning: store did not record init/t1 as done: RuntimeError: kaboom")
+
+
+def test_a_timed_out_write_is_a_failure_while_a_missing_harness_is_not():
+    timed_out = store_cli.state_write_failure("init", "t1", "quarantined", NotAvailable("set-state timed out after 30 s"))
+    assert timed_out == "warning: store did not record init/t1 as quarantined: set-state timed out after 30 s"
+    assert store_cli.state_write_failure("init", "t1", "quarantined", NotAvailable()) is None
+    assert store_cli.state_write_failure("init", "t1", "quarantined", StateSet({"state": "quarantined"})) is None
+
+
+def test_reply_row_is_the_printed_row_on_exit_0_and_the_store_error_otherwise():
+    assert store_cli.reply_row(0, '{"name": "shed"}') == {"name": "shed"}
+    assert store_cli.reply_row(0, "not json") == {}
+    assert store_cli.reply_row(3, "{}\n") == {store_cli.STORE_ERROR: "store_cli exit 3: {}"}
+    assert store_cli.reply_row(2, "usage: ...\ninvalid choice") == {store_cli.STORE_ERROR: "store_cli exit 2: usage: ... invalid choice"}

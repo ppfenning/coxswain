@@ -55,8 +55,10 @@ def _recovery(
     # another phase of the same initiative still matches.
     if q["cause"] == STRANDED_CAUSE and (q["initiative"], q["task_id"]) in approved:
         return "none"
-    # A main_red quarantine recovers by the ordinary relaunch pair until two reverts in a row. Then it plans
-    # nothing and still blocks its initiative (_blocks): relaunching onto a main that keeps going red stacks work on it.
+    # A main_red quarantine does not block its initiative's relaunch pair until two reverts in a row; then it plans
+    # nothing and blocks it (_blocks): relaunching onto a main that keeps going red stacks work on it. Either way the
+    # reverted tasks themselves stay quarantined, so the relaunch builds the initiative's other ready work, never them:
+    # a person releases each one (`cox route edit <task> --state ready`), which the revert's needs_chair names.
     if q["cause"] == MAIN_RED_CAUSE:
         return "none" if revert_stopped(outcomes.get(q["initiative"], [])) else "relaunch"
     # A failure that needs a tweak is never rebuilt as it was: the next run triages it first. A fact that names no run
@@ -505,8 +507,9 @@ def plan_recover(facts: Facts, now: datetime | None = None) -> list[Action]:
     An initiative with a `dag_problem` is never relaunched. It reaches the chair once, as `invalid_dag (<problem>)`.
 
     Every open quarantine blocks its initiative's relaunch except one whose recovery is "none", "relaunch", "triage" or "hold".
-    A main_red quarantine recovers by relaunch until `land_outcomes` for its initiative ends in two reverts.
-    Then its recovery is "none" and it keeps blocking.
+    A main_red quarantine leaves its initiative's relaunch pair alone until `land_outcomes` for it ends in two reverts.
+    Then its recovery is "none" and it keeps blocking. The reverted tasks stay quarantined either way: the relaunch
+    builds the initiative's other ready work, and a person releases each reverted task.
     A failure that needs a tweak (code, review, ticket, unknown) plans one request_triage per task state (`triage:<task>:<run>`):
     the next run triages the task before any rebuild. Once the task's own failures reach `quarantine_hold_after` (default 3,
     0 never), or a requested triage left it quarantined in the same state, it plans one hold_task instead, which marks it

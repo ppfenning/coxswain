@@ -26,7 +26,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
-from agent_tools import chair_login_watch, host_cmd
+from agent_tools import chair_login_watch, host_cmd, store_cli
 from agent_tools.remote_argv import env_check_argv, json_object_in, ssh_argv, token_status_argv
 
 BLOCK_AFTER_FAILURES = 2
@@ -170,7 +170,8 @@ def check_login_on_host(
         count = _failure_count(current_versions, chair_login_watch.UNREACHABLE_FAILURES_KEY) + 1
         payload = _unreachable_login(count, now, check.reason)
         row = cli_run(["host", "login", host_name, "--login-json", json.dumps(payload, sort_keys=True)])
-        if count < chair_login_watch.UNREACHABLE_AFTER:
+        # A login write the store refused is the answer: setting the host unreachable after it would hide the failure.
+        if count < chair_login_watch.UNREACHABLE_AFTER or store_cli.STORE_ERROR in row:
             return row
         return cli_run(host_cmd.set_state_argv(host_name, chair_login_watch.UNREACHABLE_STATE, "chair"))
     streak_cleared = {k: v for k, v in current_versions.items() if k != chair_login_watch.UNREACHABLE_FAILURES_KEY}

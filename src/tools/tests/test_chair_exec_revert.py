@@ -1,4 +1,5 @@
-from agent_tools.chair_exec import Deps, perform
+from agent_tools.chair_exec import Deps, perform, revert_reason
+from agent_tools.chair_phase_quarantine import Quarantined
 
 REVERT = {
     "kind": "revert_land", "initiative": "init", "phase": "p1", "repo": "repo", "pr": 12, "commit": "abc123",
@@ -101,6 +102,33 @@ def test_unwired_revert_land_is_refused_and_writes_nothing():
     assert results[0]["status"] == "refused"
     assert "needs_chair" not in results[0]
     assert (quarantined, resolved) == ([], [])
+
+
+def test_a_quarantine_the_store_refused_is_named_in_the_needs_chair_and_the_result():
+    deps = Deps(
+        run=lambda argv: (0, ""),
+        delete_branches=lambda repo, pattern: ([], ""),
+        acquire_lease=lambda holder, host: "",
+        record=lambda action: None,
+        run_id=lambda a: "run-1",
+        repo_for=lambda a: "r",
+        revert_ports=lambda a: (FakeGit(), FakeForge()),
+        quarantine_phase=lambda *args: Quarantined(("t2",), ("warning: store did not record init/t1 as quarantined: refused: {}",)),
+        resolve_land=lambda *args: None,
+    )
+    results = perform([REVERT], deps, lambda: 0, False)
+    release = "quarantined t2; once main is green, release each: cox route edit t2 --state ready"
+    line = "quarantine not recorded: warning: store did not record init/t1 as quarantined: refused: {}"
+    assert results[0]["needs_chair"]["reason"] == f"main went red after PR #12; reverted abc123 in {URL}; {release}; {line}"
+    assert results[0]["reason"].endswith(line)
+
+
+def test_revert_reason_names_how_to_release_each_quarantined_task_and_each_refused_write():
+    assert revert_reason("why", Quarantined()) == "why"
+    assert revert_reason("why", Quarantined(("t1", "t2"), ("a",))) == (
+        "why; quarantined t1, t2; once main is green, release each: "
+        "cox route edit t1 --state ready; cox route edit t2 --state ready; quarantine not recorded: a"
+    )
 
 
 def test_other_kinds_are_untouched():

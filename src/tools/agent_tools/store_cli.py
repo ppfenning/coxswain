@@ -265,6 +265,19 @@ def parse_set_state(code: int, stdout: str, stderr: str = "") -> StateSet | Stat
     return Failed(code, detail or "no JSON object on stdout")
 
 
+# The key `reply_row` answers a non-zero exit under, in place of a row.
+STORE_ERROR = "store_error"
+
+
+def reply_row(code: int, output: str) -> dict:
+    """Pure. The row a store CLI call printed. A non-zero exit is `{STORE_ERROR: "store_cli exit N: <output>"}`, never a
+    row, so a write the store did not take is reported; an unparseable or non-object reply on exit 0 is an empty row."""
+    if code != 0:
+        return {STORE_ERROR: " ".join(f"store_cli exit {code}: {output}".split())}
+    record = _json_object(output)
+    return {} if record is None else record
+
+
 def parse_lease(code: int, stdout: str) -> LeaseGranted | LeaseReleased | LeaseRefused | LeaseError:
     """Exit 0 is granted, or released when epoch and holder are both present and null; exit 3 is refused; the rest are errors."""
     body = _json_object(stdout)
@@ -390,17 +403,26 @@ def _warning(initiative: str, task: str, state: str, reason: str) -> str:
     return " ".join(f"warning: store did not record {initiative}/{task} as {state}: {reason}".split())
 
 
+def state_write_failure(initiative: str, task: str, state: str, result: SetStateResult) -> str | None:
+    """Pure. None when the store took the state or there is no harness to ask; else one `warning:` line naming why.
+
+    A timeout is NotAvailable with a reason, and is a failure: the write may or may not have landed."""
+    if isinstance(result, StateRefused):
+        return _warning(initiative, task, state, f"refused: {result.detail or 'no detail'}")
+    if isinstance(result, Failed):
+        return _warning(initiative, task, state, f"exit {result.code}: {result.detail}")
+    if isinstance(result, NotAvailable) and result.reason:
+        return _warning(initiative, task, state, result.reason)
+    return None
+
+
 def mirror_state(runs_dir: Path, initiative: str, task: str, state: str, by: str) -> str | None:
     """Never raises. None when the store took the state or is absent; else one `warning:` line for the caller to print."""
     try:
         result = set_state(runs_dir, initiative, task, state, by)
     except Exception as exc:
         return _warning(initiative, task, state, f"{type(exc).__name__}: {exc}")
-    if isinstance(result, StateRefused):
-        return _warning(initiative, task, state, f"refused: {result.detail or 'no detail'}")
-    if isinstance(result, Failed):
-        return _warning(initiative, task, state, f"exit {result.code}: {result.detail}")
-    return None
+    return state_write_failure(initiative, task, state, result)
 
 
 def lease_acquire(runs_dir: Path, name: str, holder: str, ttl: int, steal: bool = False) -> LeaseResult:

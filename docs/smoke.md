@@ -45,21 +45,24 @@ without mocks in `tests/test_smoke_plan.py`.
 
 ## Contract tests
 
-Each contract test fails if its boundary drifts. I checked the three contract files by putting a drift back into a
-scratch copy of the tree and confirming that they fail.
+Each contract test fails if its boundary drifts. The first three contract files were checked by putting a drift back
+into a scratch copy of the tree and confirming that they fail.
 
 | Test | Boundary | What it would have caught |
 | --- | --- | --- |
-| `test_contract_store_cli.py` | `cox` to `harness.store_cli set-state` | #1174: `--expect quarantined` and the target `blocked` were refused with "invalid choice". Also a live drift (below). |
+| `test_contract_store_cli.py` | `cox` to `harness.store_cli set-state` | #1174: `--expect quarantined` and the target `blocked` were refused with "invalid choice". Also the target `quarantined` (below). |
+| `test_contract_chair_quarantine.py` | the chair's revert of a phase to the store | A quarantine the store refuses and the chair drops, a task outside the reverted land moved, or a quarantine with no `main_red` cause on its row. |
 | `test_contract_route_edit.py` | `cox route import` and `cox route edit` to the store | A move the store refuses, or a file and a store row that disagree. Its unit tests replace the store with a double. |
 | `test_contract_runs_recover.py` | `cox runs recover` to git and the store | The git argv, the worktree add and remove, and the close. The repo is passed as `~/src/app`, so recover's own handling of a tilde path is covered. That is the kind of bug #572 fixed in the partial land (`cox runs land`). That path is not covered here. |
 | `test_sandbox.py` | the harness itself | A child interpreter importing another checkout. It also checks that `cox` resolves the profile the sandbox HOME names, and that every path `cox route context` reports is under the sandbox or the install. It does not prove that `cox` opens no other file; the environment the sandbox builds is what keeps the real home out of reach. |
 
-**A drift found while building this suite.** The chair's revert of a phase quarantines its tasks with
-`set-state <initiative> <task> quarantined` (`cli._quarantine_phase_with`). The store CLI refuses that target, because
-only the epic driver writes `quarantined`. The caller ignores the result, so the store never records the quarantine.
-The case is marked `xfail(strict=True)` in `test_contract_store_cli.py`. Whoever fixes it deletes the mark, and the
-test then has to pass.
+**A drift found while building this suite, now closed.** The chair's revert of a phase quarantines its tasks with
+`set-state <initiative> <task> quarantined` (`cli._quarantine_phase_with`). The store CLI refused that target with
+"invalid choice", and the caller ignored the exit, so the store never recorded the quarantine. The store CLI now takes
+its choices from `core.workstore.STATES`, and a unit test holds the parser's choices equal to it. The chair quarantines
+only the approved and done tasks of the reverted land, each by a compare-and-set on the state it read, and marks each
+row with the `main_red` cause. A write the store refuses is named in the chair's needs_chair. A new drift goes into
+`KNOWN_DRIFT` in `test_contract_store_cli.py` as a strict xfail; whoever fixes it deletes the entry.
 
 ## Where it runs
 
