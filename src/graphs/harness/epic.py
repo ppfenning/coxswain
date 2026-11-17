@@ -190,6 +190,9 @@ PRINCIPAL = "epic-swarm(lifecycle-propose)"
 # machine with no global git config, needs no setup to run this.
 _IDENTITY = ("-c", "user.email=epic-swarm@invalid", "-c", "user.name=epic-swarm")
 
+# Seconds a `gh pr` call may run. The graphs package does not import the tools package, so this is local.
+_GH_TIMEOUT_SECONDS = 120
+
 def opens_pr(land_at: str, grain: str) -> bool:
     """A review PR is opened per `task` only at land_at `task`. No phase ever opens one: the retired `level` reads as
     `initiative`, where the one pull request is the initiative's and the lander opens it."""
@@ -666,10 +669,10 @@ def _open_review_pr(ctx: _Ctx, *, title: str, body: str, head: str, base: str) -
     try:
         proc = subprocess.run(
             ["gh", "pr", "create", "--title", title, "--body", body, "--head", head, "--base", base],
-            cwd=ctx.repo, capture_output=True, text=True, timeout=120,
+            cwd=ctx.repo, capture_output=True, text=True, timeout=_GH_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
-        return False, "gh pr create timed out after 120s"
+        return False, f"gh pr create timed out after {_GH_TIMEOUT_SECONDS}s"
     return proc.returncode == 0, (proc.stdout if proc.returncode == 0 else proc.stderr or proc.stdout).strip()
 
 
@@ -678,9 +681,11 @@ def _existing_pr(ctx: _Ctx, head: str) -> tuple[bool, str]:
     try:
         proc = subprocess.run(
             ["gh", "pr", "view", head, "--json", "url", "--jq", ".url"],
-            cwd=ctx.repo, capture_output=True, text=True, timeout=120,
+            cwd=ctx.repo, capture_output=True, text=True, timeout=_GH_TIMEOUT_SECONDS,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired:
+        return False, f"gh pr view timed out after {_GH_TIMEOUT_SECONDS}s"
+    except OSError as exc:
         return False, f"{type(exc).__name__}: {exc}"
     if proc.returncode == 0:
         return True, proc.stdout.strip()
