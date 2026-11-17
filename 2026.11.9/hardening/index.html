@@ -6950,6 +6950,19 @@ cannot import it.</p>
 </ol>
 <p><strong>Done when.</strong> The strict job passes with no ignores in those modules, and no <code>dict[str, Any]</code> remains in their
 signatures.</p>
+<p><strong>Status (first part).</strong> Pyright 1.1.414 is configured in <code>pyproject.toml</code>'s <code>[tool.pyright]</code> and run by
+<code>.github/check_types.py</code>: a step of CI's required <code>test</code> job, with <code>COX_TYPES_REQUIRED=1</code>, and a line of
+<code>.agent-checks</code>, which skips and names <code>uv sync --frozen --all-extras --group dev</code> when pyright or the extras are
+missing. Strict, with no ignores and no <code>Any</code>: <code>core/</code>, <code>harness/store*</code> and <code>chair_types.py</code> (<code>Facts</code> and <code>Action</code>
+carry no <code>Any</code>; <code>Result</code> had none); a test proves the store glob is strict. <code>ActionKind</code> is a <code>StrEnum</code>, and
+<code>chair_exec._execute</code> matches every member and ends in <code>assert_never</code>, so a kind without a case fails the check.
+At the basic level and passing: every other <code>chair_*</code> module, <code>lander*</code> and <code>harness/epic.py</code>, which still carry
+<code>dict[str, Any]</code> and are the next to go strict. The basic level warns, rather than fails, on a maybe-missing key of
+a TypedDict, because <code>Action</code> is one total=False dict for every kind until it becomes a union per kind. Not yet at
+the basic level, and listed under <code>exclude</code>: the CLIs, <code>land*</code>, <code>route*</code> and the other modules that failed it when
+the check went in; <code>test_repo_gates</code> freezes that list, so it only shrinks. The types reach the store's rows through
+about 300 casts, which H2's validating constructors replace. Still open: those constructors, Action as a union per
+kind, and the strict set's remaining modules.</p>
 <h2 id="h3-the-lander-does-not-block">H3. The lander does not block</h2>
 <p><strong>Evidence.</strong> A repo with no CI held every land for 30 minutes, again and again (#1167). A repo with CI still holds
 the lander for the length of its run.</p>
