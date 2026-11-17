@@ -13,7 +13,7 @@ VERSION = 12
 DESCRIPTION = "work_items gains priority"
 
 # Table and column that the ALTER appends; store_copy reads this 2-tuple shape, matching ddl2/ddl3/ddl5/ddl9/ddl10/ddl11.
-_ADDED: tuple[tuple[str, str], ...] = (("work_items", "priority"),)
+ADDED: tuple[tuple[str, str], ...] = (("work_items", "priority"),)
 
 
 def statements(dialect: Dialect) -> tuple[str, ...]:

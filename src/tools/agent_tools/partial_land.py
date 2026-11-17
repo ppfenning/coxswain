@@ -10,7 +10,7 @@ import os
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Literal, TypedDict
 
-from agent_tools.chair_types import Action
+from agent_tools.chair_types import Action, ActionKind
 from agent_tools.repo_path import git_argv
 
 Run = Callable[[list[str]], tuple[int, str]]  # argv -> (exit code, output); the edge's only door to git
@@ -46,7 +46,7 @@ def backup_ref(run: str, task: str) -> str:
 def land_action(action: Action, task_id: str) -> Action:
     """The task land one approved task of the partial_land takes: the run that holds its record, the action's repo."""
     land: Action = {
-        "kind": "land",
+        "kind": ActionKind.LAND,
         "initiative": action.get("initiative", ""),
         "phase": action.get("phase", ""),
         "task_id": task_id,
@@ -176,7 +176,7 @@ def conflicting_paths(result: Mapping[str, Any]) -> list[str]:
 def conflict_needs_chair(action: Action, task: str, paths: Sequence[str], raised: Mapping[str, Any]) -> Action:
     """The one needs_chair a cherry_pick conflict raises: the land's own (cause `conflict`), naming the task and paths."""
     base: Action = {
-        "kind": "needs_chair", "initiative": action.get("initiative", ""), "task_id": task, "epoch": action.get("epoch", 0),
+        "kind": ActionKind.NEEDS_CHAIR, "initiative": action.get("initiative", ""), "task_id": task, "epoch": action.get("epoch", 0),
     }
     return {  # type: ignore[return-value]
         **base, **raised, "cause": "conflict",

@@ -33,9 +33,8 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Any
 
-from core.workstore import WorkStoreError, _split_frontmatter
+from core.workstore import WorkStoreError, split_frontmatter
 
 __all__ = ["IntakeError", "consume", "read_queue"]
 
@@ -46,7 +45,7 @@ class IntakeError(Exception):
     """A queued item could not be read, or a consume could not complete safely."""
 
 
-def _read_item(path: Path) -> dict[str, Any]:
+def _read_item(path: Path) -> dict[str, str]:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -55,7 +54,7 @@ def _read_item(path: Path) -> dict[str, Any]:
     lines = text.splitlines()
     if lines and lines[0].strip() == _FRONTMATTER:
         try:
-            meta, body = _split_frontmatter(text, path)
+            meta, body = split_frontmatter(text, path)
         except WorkStoreError as exc:
             raise IntakeError(str(exc)) from exc
     else:
@@ -70,7 +69,7 @@ def _read_item(path: Path) -> dict[str, Any]:
     }
 
 
-def read_queue(root: Path | str) -> list[dict[str, Any]]:
+def read_queue(root: Path | str) -> list[dict[str, str]]:
     """Every queued item, top-level only, in filename order. A missing queue is empty.
 
     Top-level only (no rglob): `consumed/` sits one level down specifically so

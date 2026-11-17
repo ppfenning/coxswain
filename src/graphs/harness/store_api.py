@@ -17,19 +17,17 @@ import hashlib
 import sqlite3
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Literal, TypedDict, cast, get_args
+from typing import Literal, cast, get_args
 
 from harness import store_lease, store_queue
-from harness.store_dialect import Connection, StoreDriverMissing, json_load, json_text
+from harness.store_dialect import Cell, Connection, Json, JsonObject, StoreDriverMissing, json_load, json_text
 from harness.store_landed import mark_landed
 from harness.store_migrate import MigrationError, open_store
 from harness.store_pause import clear_paused, set_paused
 from harness.store_read import StoreVersionError, connect_readonly
+from harness.store_types import Claim, QueueRow, WorkItemRecord, WorkItemRow
 from harness.store_work_state import Mismatch, set_state
 from harness.store_write import record_merge
-
-type Json = bool | int | float | str | list[Json] | dict[str, Json] | None
-type JsonObject = dict[str, Json]
 
 # Every state a work item can be in, the one enum `core.workstore.STATES` spells out (a test holds them equal).
 WorkState = Literal["todo", "ready", "in_progress", "approved", "blocked", "done", "dropped", "quarantined"]
@@ -54,60 +52,6 @@ def open_errors() -> tuple[type[BaseException], ...]:
     """What opening raises: ValueError on an unknown scheme (or a sqlite store outside the suites), OSError on a bad
     path. Caught around opening only, so a handler bug still raises with its traceback."""
     return (*db_errors(), ValueError, OSError, StoreDriverMissing, MigrationError, StoreVersionError)
-
-
-class WorkItemRecord(TypedDict):
-    """A work item as a state write left it."""
-
-    initiative: str
-    task_id: str
-    phase: str
-    state: str
-    needs: list[str]
-    updated_at: str
-    updated_by: str
-
-
-class WorkItemRow(TypedDict):
-    """One `work_items` row as stored; `needs_json` is the cell as the driver returns it."""
-
-    initiative: str
-    task_id: str
-    phase: str | None
-    state: str
-    needs_json: Json
-    updated_at: str | None
-    updated_by: str | None
-
-
-class QueueRow(TypedDict):
-    """One `work_items` row with its queue and claim columns, the JSON columns decoded."""
-
-    initiative: str
-    task_id: str
-    kind: str | None
-    phase: str | None
-    state: str
-    needs: Json
-    title: str | None
-    surfaces: Json
-    body: str | None
-    extra: Json
-    priority: int | None
-    issue_number: int | None
-    project_item_id: str | None
-    parent_item: str | None
-    updated_at: str | None
-    updated_by: str | None
-    holder: str | None
-    epoch: int | None
-    expires_at: str | None
-
-
-class Claim(TypedDict):
-    holder: str
-    epoch: int
-    expires_at: str
 
 
 @dataclass(frozen=True)
@@ -263,7 +207,7 @@ def state_problem(state: str, expected: str | None) -> str | None:
     return f"unknown work state {unknown[0]!r}; expected one of {', '.join(WORK_STATES)}" if unknown else None
 
 
-def stamp_of(rows: Sequence[Sequence[Json]], updated_at_index: int) -> TableStamp:
+def stamp_of(rows: Sequence[Sequence[Cell]], updated_at_index: int) -> TableStamp:
     """Pure: the stamp of rows read in key order; the digest covers every column, since a queue upsert keeps an older
     updated_at on a changed row, so count and greatest updated_at alone miss ordinary writes."""
     newest = max((str(r[updated_at_index]) for r in rows if r[updated_at_index] is not None), default=None)
@@ -325,7 +269,7 @@ def record_phase_done_on(conn: Connection, run_id: str, phase: str, branch: str)
         row = conn.query_one(f"SELECT record_json FROM phases WHERE run_id = {mark} AND phase_id = {mark}", (run_id, phase))
         if row is None:
             return StateRefused(f"no phase row {run_id}:{phase}")
-        record = phase_done_record(json_load(row[0]) or {}, branch)
+        record = phase_done_record(cast(JsonObject, json_load(row[0]) or {}), branch)
         sql = f"UPDATE phases SET record_json = {mark} WHERE run_id = {mark} AND phase_id = {mark}"
         conn.execute(sql, (json_text(record), run_id, phase))
     return MergeRecorded(1)
@@ -387,12 +331,12 @@ def work_item_rows_on(conn: Connection, initiative: str | None = None) -> list[W
         WorkItemRow(
             initiative=r[0], task_id=r[1], phase=r[2], state=r[3], needs_json=r[4], updated_at=r[5], updated_by=r[6]
         )
-        for r in rows
+        for r in (cast("tuple[str, str, str | None, str, Json, str | None, str | None]", row) for row in rows)
     ]
 
 
 def queue_rows_on(conn: Connection, initiative: str | None = None, kind: str | None = None) -> list[QueueRow]:
-    return [cast(QueueRow, row) for row in store_queue.read(conn, initiative, kind)]
+    return store_queue.read(conn, initiative, kind)
 
 
 def work_items_stamp_on(conn: Connection, filters: Sequence[tuple[str, str | None]]) -> TableStamp:

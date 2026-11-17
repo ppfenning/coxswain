@@ -18,14 +18,14 @@ import json
 import sys
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Any, NamedTuple
+from typing import NamedTuple, cast
 
 from harness.cause_model import cause_evidence, classify_with_model
 from harness.runners import build_runner
 from harness.store_dialect import json_load
 from harness.store_migrate import open_store
 from harness.store_write import Store
-from runner.protocol import LimitStop
+from runner.protocol import LimitStop, NodeRunner
 
 PRINCIPAL = "store_classify"
 FAILED_WHYS = ("model call failed%", "classifier failed%")  # parameters: a literal `%` breaks the postgres driver
@@ -51,14 +51,17 @@ def pending(store: Store, limit: int) -> list[Pending]:
         f"SELECT run_id, task_id, seq, kind, reason FROM attempts WHERE {_pending_where(mark)} "
         f"ORDER BY ts, run_id, task_id, seq LIMIT {mark}"
     )
-    return [Pending(*row) for row in store.conn.query_all(sql, ("unknown", *FAILED_WHYS, limit))]
+    return [
+        Pending(*cast("tuple[str, str, int, str | None, str | None]", row))
+        for row in store.conn.query_all(sql, ("unknown", *FAILED_WHYS, limit))
+    ]
 
 
-def _task_record(store: Store, run_id: str, task_id: str) -> Mapping[str, Any] | None:
+def _task_record(store: Store, run_id: str, task_id: str) -> Mapping[str, object] | None:
     mark = store.conn.dialect.placeholder
     sql = f"SELECT record_json FROM task_records WHERE run_id = {mark} AND task_id = {mark} ORDER BY phase_id"
     rows = store.conn.query_all(sql, (run_id, task_id))
-    record = json_load(rows[0][0]) if rows else None
+    record = json_load(cast(str | None, rows[0][0])) if rows else None
     return record if isinstance(record, Mapping) else None
 
 
@@ -73,10 +76,10 @@ def _write(store: Store, row: Pending, cause: str, why: str) -> int:
         return store.conn.execute(sql, (cause, why, row.run_id, row.task_id, row.seq, "unknown", *FAILED_WHYS))
 
 
-def classify_pending(store: Store, runner: Any, limit: int) -> dict[str, Any]:
+def classify_pending(store: Store, runner: NodeRunner, limit: int) -> dict[str, int | str | None]:
     """Classify up to `limit` pending attempts. Counts rows written per cause; `stopped` is "limit" or None."""
     rows = pending(store, limit)
-    report: dict[str, Any] = {"considered": len(rows), "still_unknown": 0, "stopped": None}
+    report: dict[str, int | str | None] = {"considered": len(rows), "still_unknown": 0, "stopped": None}
     for row in rows:
         reasoning, claims = cause_evidence(row.reason or "", _task_record(store, row.run_id, row.task_id))
         try:
@@ -85,10 +88,10 @@ def classify_pending(store: Store, runner: Any, limit: int) -> dict[str, Any]:
             return {**report, "stopped": "limit"}
         written = _write(store, row, cause, why)
         if cause == "unknown":
-            report = {**report, "still_unknown": report["still_unknown"] + 1}
+            report = {**report, "still_unknown": cast(int, report["still_unknown"]) + 1}
         elif written:
             key = f"classified_{cause}"
-            report = {**report, key: report.get(key, 0) + 1}
+            report = {**report, key: cast(int, report.get(key, 0)) + 1}
     return report
 
 
@@ -97,7 +100,7 @@ def _dry_run_line(row: Pending) -> str:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m harness.store_classify", description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(prog="python -m harness.store_classify", description=cast(str, __doc__).split("\n\n")[0])
     parser.add_argument("store_url", help="sqlite:///<absolute path> or postgresql://...")
     parser.add_argument("--provider-profile", required=True, help="the provider profile the runner is built from")
     parser.add_argument("--limit", type=int, default=50, help="most attempts to classify in this run")

@@ -57,6 +57,13 @@ jobs:
           COX_SMOKE_REQUIRED: "1"
       - name: ruff (rules in pyproject.toml, tools adds src/tools/ruff.toml)
         run: uv run ruff check .
+      # H2 (docs/hardening.md): pyright, strict on the typed core and basic elsewhere ([tool.pyright] in pyproject.toml).
+      # It resolves the optional extras' imports too, so it syncs them first: after the suites, which run without them.
+      # REQUIRED turns a missing pyright or extra into a failure, not the lane's skip.
+      - name: types (pyright)
+        run: uv run --all-extras python .github/check_types.py
+        env:
+          COX_TYPES_REQUIRED: "1"
       # no person, host or home path ships; the names rule's regex lives only in the secret (unset on fork PRs: skipped)
       - name: clean (no personal reference)
         run: python .github/check_clean.py .

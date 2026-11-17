@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from agent_tools import chair, leader_chat
 
@@ -186,5 +186,5 @@ def takeover(
         if refusal:
             return False, refusal
         taken, _ = chair.take(None, label, pid, host, datetime.datetime.now(datetime.UTC), heartbeat_minutes, False, claude_session=claude_session, cwd=cwd)
-        chair.write(runs_dir, {**taken, **({"taken_over_from": old_label} if old_label else {})})
+        chair.write(runs_dir, {**cast(Mapping[str, Any], taken), **({"taken_over_from": old_label} if old_label else {})})
     return True, f"chair taken over from {old_label}" if old_label else f"chair taken: {label} (pid {pid}) on {host}"

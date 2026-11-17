@@ -17,7 +17,7 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from agent_tools import courier, forge, lander, repo_path, route, run_store, work_state
 from agent_tools.store_url import read_provider_profile
@@ -74,7 +74,7 @@ def read_records(runs_dir: Path, log: Callable[[str], None] | None = None) -> li
             return _sqlite_records(run_store._sqlite_path(url))
         conn = open_url(url)
         try:
-            return landing_store.list_records(conn)
+            return cast(list[dict[str, Any]], landing_store.list_records(conn))
         finally:
             conn.close()
     except Exception as exc:
@@ -239,7 +239,7 @@ def split_initiative(ws: Path, conn: Any, repo: Path, initiative: str, phases: S
                 push(repo, new)
     overview = work / follow / "initiative.md"
     if not overview.is_file():
-        meta, body = workstore._split_frontmatter((work / initiative / "initiative.md").read_text(encoding="utf-8"), overview)
+        meta, body = workstore.split_frontmatter((work / initiative / "initiative.md").read_text(encoding="utf-8"), overview)
         meta = {**meta, "id": follow, "title": f"{meta.get('title') or initiative} (follow-up)", "split_from": initiative}
         note = f"Split from `{initiative}`: phases {', '.join(phases)} were blocked there and moved here with what they had built."
         overview.parent.mkdir(parents=True, exist_ok=True)
@@ -270,7 +270,7 @@ def split_initiative(ws: Path, conn: Any, repo: Path, initiative: str, phases: S
         store_queue.upsert(conn, {
             **{k: v for k, v in head.items() if k not in ("holder", "epoch", "expires_at", "issue_number", "project_item_id")},
             "initiative": follow, "task_id": follow, "title": f"{head.get('title') or initiative} (follow-up)",
-            "extra": {**(head.get("extra") or {}), "id": follow, "split_from": initiative},
+            "extra": {**cast(Mapping[str, Any], head.get("extra") or {}), "id": follow, "split_from": initiative},
             "updated_at": stamp, "updated_by": worker,
         })
     record = landing_store.get_record(conn, initiative)
@@ -370,10 +370,11 @@ def build(ws: Path, profile: Mapping[str, Any], *, worker: str | None = None, lo
         head = next((r for r in rows if r.get("kind") == "initiative"), None)
         if head is None:
             return _frontmatter(work / initiative / "initiative.md"), files_of(initiative)
-        own = {**(head.get("extra") or {}), "title": head.get("title") or (head.get("extra") or {}).get("title") or initiative}
+        extra = cast(Mapping[str, Any], head.get("extra") or {})
+        own = {**extra, "title": head.get("title") or extra.get("title") or initiative}
         return own, {
             str(r["task_id"]): {"title": r.get("title") or r["task_id"], "phase": r.get("phase"), "state": r.get("state"),
-                                "needs": list(r.get("needs") or [])}
+                                "needs": list(cast(list[str], r.get("needs") or []))}
             for r in rows if r.get("kind") == "task"
         }
 

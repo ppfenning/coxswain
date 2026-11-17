@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import cast
 
 from harness.store_dialect import Connection, insert_ignore
 
@@ -22,9 +23,9 @@ def append_many(conn: Connection, rows: Sequence[tuple[str, str, str]]) -> int:
 
 def lines(conn: Connection) -> list[str]:
     """Every line, oldest first; lines written at the same instant keep a stable order."""
-    return [row[0] for row in conn.query_all("SELECT line FROM courier_log ORDER BY at, line_id")]
+    return [cast(str, row[0]) for row in conn.query_all("SELECT line FROM courier_log ORDER BY at, line_id")]
 
 
 def count(conn: Connection) -> int:
     row = conn.query_one("SELECT count(*) FROM courier_log")
-    return int(row[0]) if row else 0
+    return int(cast(int, row[0])) if row else 0

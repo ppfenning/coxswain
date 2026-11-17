@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import re
 from collections.abc import Collection, Iterable, Mapping, Sequence
-from typing import Any
+from typing import TypedDict, Unpack, cast
+
+from core.jsontypes import is_mapping
 
 PHASE_STATES = ("waiting", "open", "built", "queued", "merged", "conflicted", "blocked")
 INITIATIVE_STATES = ("draft", "building", "assembled", "pr_open", "landed", "conflicted", "blocked")
@@ -57,7 +59,69 @@ class RecordError(ValueError):
     """A landing record move the state tables do not allow."""
 
 
-def natural_key(name: str) -> list[Any]:
+class PullRequest(TypedDict, total=False):
+    url: str
+    title: str
+    head: str
+    base: str
+
+
+class PhaseEntry(TypedDict, total=False):
+    state: str
+    updated_at: str
+    tip: str
+    merge_sha: str
+    error: str
+    tasks: list[str]
+    conflict_paths: list[str]
+    cause: str
+    told: bool
+    repaired_at: str  # when the lander's reconcile repaired the phase's merge on the branch
+
+
+class WaveEntry(TypedDict, total=False):
+    green_tip: str | None
+    phases: list[str]
+
+
+class WaveRow(TypedDict):
+    wave: int
+    phases: list[str]
+    state: str
+    green_tip: str | None
+
+
+class LandingRecord(TypedDict, total=False):
+    """One initiative's landing record. Every key is optional on read: a record may predate a field."""
+
+    initiative: str
+    repo: str
+    branch: str
+    parent: str
+    base_sha: str
+    land_at: str
+    state: str
+    phases: dict[str, PhaseEntry]
+    waves: dict[str, WaveEntry]
+    pr: PullRequest | None
+    epic: str | None
+    stack_base: str | None
+    adopted: bool
+    created_at: str
+    updated_at: str
+    error: str
+    landed_pr: str
+
+
+class StateFields(TypedDict, total=False):
+    """The record keys `with_state` sets beside the state."""
+
+    pr: PullRequest | None
+    error: str
+    landed_pr: str
+
+
+def natural_key(name: str) -> list[int | str]:
     """`p10` after `p9`: digit runs compare as numbers."""
     return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", str(name))]
 
@@ -72,28 +136,28 @@ def initiative_move_allowed(old: str, new: str) -> bool:
 
 def new_record(initiative: str, *, repo: str, branch: str, parent: str, base_sha: str, now: str,
                land_at: str = "initiative", epic: str | None = None, stack_base: str | None = None,
-               adopted: bool = False) -> dict[str, Any]:
+               adopted: bool = False) -> LandingRecord:
     """A fresh record: the branch is cut, nothing is merged. `parent` is resolved here and no longer floats."""
-    return {
-        "initiative": initiative,
-        "repo": repo,
-        "branch": branch,
-        "parent": parent,
-        "base_sha": base_sha,
-        "land_at": land_at,
-        "state": "building",
-        "phases": {},
-        "waves": {},
-        "pr": None,
-        "epic": epic,
-        "stack_base": stack_base,
-        "adopted": adopted,
-        "created_at": now,
-        "updated_at": now,
-    }
+    return LandingRecord(
+        initiative=initiative,
+        repo=repo,
+        branch=branch,
+        parent=parent,
+        base_sha=base_sha,
+        land_at=land_at,
+        state="building",
+        phases={},
+        waves={},
+        pr=None,
+        epic=epic,
+        stack_base=stack_base,
+        adopted=adopted,
+        created_at=now,
+        updated_at=now,
+    )
 
 
-def phase_parents(tasks: Iterable[Mapping[str, Any]]) -> dict[str, set[str]]:
+def phase_parents(tasks: Iterable[Mapping[str, object]]) -> dict[str, set[str]]:
     """Phase to the phases it needs: one task of it needs a task of the other.
 
     The `integrate` phase needs none. Its task resolves the parent's conflict with the initiative branch, on a branch cut
@@ -104,7 +168,7 @@ def phase_parents(tasks: Iterable[Mapping[str, Any]]) -> dict[str, set[str]]:
     parents: dict[str, set[str]] = {phase: set() for phase in phase_of.values()}
     for task in rows:
         own = phase_of[str(task["id"])]
-        for need in task.get("needs") or ():
+        for need in cast("Iterable[object]", task.get("needs") or ()):
             other = phase_of.get(str(need))
             if other is not None and other != own:
                 parents[own].add(other)
@@ -165,17 +229,17 @@ def dependents(parents: Mapping[str, Collection[str]], phase: str) -> set[str]:
     return found
 
 
-def _stored(record: Mapping[str, Any] | None, phase: str) -> Mapping[str, Any]:
+def _stored(record: LandingRecord | None, phase: str) -> PhaseEntry:
     phases = (record or {}).get("phases")
-    entry = phases.get(phase) if isinstance(phases, Mapping) else None
-    return entry if isinstance(entry, Mapping) else {}
+    entry = phases.get(phase) if is_mapping(phases) else None
+    return cast("PhaseEntry", entry) if is_mapping(entry) else {}
 
 
-def phase_tasks(tasks: Iterable[Mapping[str, Any]], phase: str) -> list[Mapping[str, Any]]:
+def phase_tasks(tasks: Iterable[Mapping[str, object]], phase: str) -> list[Mapping[str, object]]:
     return [t for t in tasks if str(t.get("phase") or "") == phase]
 
 
-def phase_state(record: Mapping[str, Any] | None, phase: str, tasks: Sequence[Mapping[str, Any]],
+def phase_state(record: LandingRecord | None, phase: str, tasks: Sequence[Mapping[str, object]],
                 parents: Mapping[str, Collection[str]] | None = None) -> str:
     """The state of one phase, from its stored entry and its tasks.
 
@@ -189,7 +253,7 @@ def phase_state(record: Mapping[str, Any] | None, phase: str, tasks: Sequence[Ma
     return _phase_state(record, phase, tasks, parents if parents is not None else phase_parents(tasks), frozenset())
 
 
-def _phase_state(record: Mapping[str, Any] | None, phase: str, tasks: Sequence[Mapping[str, Any]],
+def _phase_state(record: LandingRecord | None, phase: str, tasks: Sequence[Mapping[str, object]],
                  known: Mapping[str, Collection[str]], path: frozenset[str]) -> str:
     """`phase_state`, with `path` the phases already being asked about above this one, so a cycle ends."""
     stored = str(_stored(record, phase).get("state") or "")
@@ -215,7 +279,7 @@ def _phase_state(record: Mapping[str, Any] | None, phase: str, tasks: Sequence[M
     return "open"
 
 
-def _gained_work(entry: Mapping[str, Any], own: Sequence[Mapping[str, Any]]) -> bool:
+def _gained_work(entry: PhaseEntry, own: Sequence[Mapping[str, object]]) -> bool:
     """Has a merged phase work its merge did not carry: a task not settled, or an approved one the merge did not list?
     An entry with no `tasks` list (written before merges recorded it, or by hand) is trusted for approved tasks."""
     carried = entry.get("tasks")
@@ -228,37 +292,37 @@ def _gained_work(entry: Mapping[str, Any], own: Sequence[Mapping[str, Any]]) -> 
     return False
 
 
-def phase_states(record: Mapping[str, Any] | None, tasks: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+def phase_states(record: LandingRecord | None, tasks: Sequence[Mapping[str, object]]) -> dict[str, str]:
     """Every phase's state, in merge order."""
     parents = phase_parents(tasks)
     return {phase: phase_state(record, phase, tasks, parents) for phase in sorted(parents, key=natural_key)}
 
 
-def wave_states(record: Mapping[str, Any] | None, tasks: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def wave_states(record: LandingRecord | None, tasks: Sequence[Mapping[str, object]]) -> list[WaveRow]:
     """One row per wave: its number, phases, `green` once every phase is merged, and the stored green tip."""
     parents = phase_parents(tasks)
-    stored = (record or {}).get("waves") or {}
-    rows = []
+    stored = (record or {}).get("waves")
+    rows: list[WaveRow] = []
     for number, members in enumerate(waves(parents), 1):
         green = all(phase_state(record, phase, tasks, parents) == "merged" for phase in members)
         entry = stored.get(str(number)) if isinstance(stored, Mapping) else None
-        rows.append({"wave": number, "phases": members, "state": "green" if green else "open",
-                     "green_tip": (entry or {}).get("green_tip") if green else None})
+        rows.append(WaveRow(wave=number, phases=members, state="green" if green else "open",
+                            green_tip=(entry or {}).get("green_tip") if green else None))
     return rows
 
 
-def placeable_phases(record: Mapping[str, Any] | None, tasks: Sequence[Mapping[str, Any]]) -> list[str]:
+def placeable_phases(record: LandingRecord | None, tasks: Sequence[Mapping[str, object]]) -> list[str]:
     """The phases a build may start in: `open` or `conflicted`, so every parent phase is merged into the initiative branch."""
     return [phase for phase, state in phase_states(record, tasks).items() if state in ("open", "conflicted")]
 
 
-def mergeable_phases(record: Mapping[str, Any] | None, tasks: Sequence[Mapping[str, Any]]) -> list[str]:
+def mergeable_phases(record: LandingRecord | None, tasks: Sequence[Mapping[str, object]]) -> list[str]:
     """The phases ready for the land queue: built, or already queued, in merge order."""
     states = phase_states(record, tasks)
     return [phase for phase in merge_order(phase_parents(tasks)) if states.get(phase) in ("built", "queued")]
 
 
-def initiative_state(record: Mapping[str, Any] | None, tasks: Sequence[Mapping[str, Any]]) -> str:
+def initiative_state(record: LandingRecord | None, tasks: Sequence[Mapping[str, object]]) -> str:
     """The initiative's state: a stored `landed` or `pr_open` stands; else blocked, conflicted, assembled or building.
 
     No task at all is `draft`. Every task done or dropped is `landed`, whatever the record says."""
@@ -278,9 +342,9 @@ def initiative_state(record: Mapping[str, Any] | None, tasks: Sequence[Mapping[s
     return "building"
 
 
-def with_phase(record: Mapping[str, Any], phase: str, now: str, **fields: Any) -> dict[str, Any]:
+def with_phase(record: LandingRecord, phase: str, now: str, **fields: Unpack[PhaseEntry]) -> LandingRecord:
     """`record` with `fields` merged into one phase's entry. A `state` the phase table does not allow raises."""
-    entry = dict(_stored(record, phase))
+    entry = cast("PhaseEntry", dict(_stored(record, phase)))
     new_state = fields.get("state")
     old_state = str(entry.get("state") or "open")
     if new_state is not None and not phase_move_allowed(old_state, str(new_state)):
@@ -290,7 +354,7 @@ def with_phase(record: Mapping[str, Any], phase: str, now: str, **fields: Any) -
     return {**record, "phases": {**(record.get("phases") or {}), phase: entry}, "updated_at": now}
 
 
-def with_state(record: Mapping[str, Any], state: str, now: str, **fields: Any) -> dict[str, Any]:
+def with_state(record: LandingRecord, state: str, now: str, **fields: Unpack[StateFields]) -> LandingRecord:
     """`record` moved to an initiative state, with `fields` set beside it. A move the table does not allow raises."""
     old = str(record.get("state") or "building")
     if not initiative_move_allowed(old, state):
@@ -298,7 +362,7 @@ def with_state(record: Mapping[str, Any], state: str, now: str, **fields: Any) -
     return {**record, **fields, "state": state, "updated_at": now}
 
 
-def recorded_shas(record: Mapping[str, Any]) -> list[str]:
+def recorded_shas(record: LandingRecord) -> list[str]:
     """Every sha the record names on the initiative branch: the base, each phase's tip and each merge commit."""
     phases = record.get("phases") or {}
     found = [record.get("base_sha")]
@@ -309,7 +373,7 @@ def recorded_shas(record: Mapping[str, Any]) -> list[str]:
     return [str(sha) for sha in dict.fromkeys(found) if sha]
 
 
-def merged_tasks(record: Mapping[str, Any] | None, tasks: Sequence[Mapping[str, Any]]) -> list[str]:
+def merged_tasks(record: LandingRecord | None, tasks: Sequence[Mapping[str, object]]) -> list[str]:
     """The ids of approved tasks whose phase is merged into the initiative branch: the tasks that carry the `merged` flag."""
     states = phase_states(record, tasks)
     return [str(t["id"]) for t in tasks if t.get("state") == "approved" and states.get(str(t.get("phase") or "")) == "merged"]
@@ -339,7 +403,7 @@ def follow_up_id(initiative: str, taken: Collection[str]) -> str:
     return f"{stem}-{number}"
 
 
-def stack_resolved_parent(record: Mapping[str, Any], records: Sequence[Mapping[str, Any]]) -> str:
+def stack_resolved_parent(record: LandingRecord, records: Sequence[LandingRecord]) -> str:
     """The branch `record`'s initiative takes forward now: its recorded parent, or, while that parent is the branch of
     a lower initiative that has landed, that initiative's own parent, layer by layer down the stack.
 

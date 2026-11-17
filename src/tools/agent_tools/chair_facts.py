@@ -388,7 +388,7 @@ def lease_facts(record: Row, session: str, pid: int, host: str) -> LeaseFacts:
     holder = str(record.get("holder") or "")
     released = bool(record.get("released", False))
     stale = bool(record.get("stale", False))
-    return {
+    return cast(LeaseFacts, {
         "holder": holder,
         "host": str(record.get("host") or host),
         "epoch": int(record.get("epoch") or 0),
@@ -399,7 +399,7 @@ def lease_facts(record: Row, session: str, pid: int, host: str) -> LeaseFacts:
         "until": str(record.get("until") or ""),
         "lent": bool(record.get("lent", False)),
         **({"session_held": bool(record["session_held"])} if "session_held" in record else {}),
-    }
+    })
 
 
 def weekly_fraction(weekly: pacing.Window | None) -> float:
@@ -455,7 +455,7 @@ def limits_facts(
     month_stopped = month_fraction is not None and month_fraction >= policy.weekly_hard_stop_fraction
     pace = pacing.weekly_pace(weekly, policy, now) if now is not None else None
     lane_fraction = pace.lane_fraction if pace is not None else 1.0
-    return {
+    return cast(LimitsFacts, {
         "hard_stop": fraction >= policy.weekly_hard_stop_fraction or month_stopped,
         "weekly_fraction": fraction,
         "hard_stop_fraction": policy.weekly_hard_stop_fraction,
@@ -470,7 +470,7 @@ def limits_facts(
         "weekly_source": weekly_source,
         "smoke_hold": chair_smoke.read_hold(runs_dir) if runs_dir else None,
         **({} if month is None else {"month_fraction": month_fraction, "month_verdict": month.verdict}),
-    }
+    })
 
 
 Key = tuple[str, str, str]
@@ -753,7 +753,7 @@ def with_landing_merged(items: Sequence[Row], records: Sequence[Mapping[str, Any
     for item in items:
         own.setdefault(str(item["initiative"]), []).append(item)
     merged = {
-        initiative: set(lr.merged_tasks(by_initiative.get(initiative), [
+        initiative: set(lr.merged_tasks(cast("lr.LandingRecord | None", by_initiative.get(initiative)), [
             {"id": str(r["id"]), "phase": str(r.get("phase") or ""), "state": r.get("state"), "needs": list(r.get("needs") or [])}
             for r in rows
         ]))
@@ -794,7 +794,7 @@ def running_initiatives(
             and not (i.get("state") == "approved" and i.get("merged"))
         ]
 
-    return [
+    return cast(list[RunningInitiative], [
         {
             "id": initiative,
             "repo": repos.get(initiative, ""),
@@ -820,7 +820,7 @@ def running_initiatives(
             "state": "running",
         }
         for initiative, phase in sorted(set(live_phases))
-    ]
+    ])
 
 
 SCHEDULE_TERMINAL = frozenset({"done", "dropped"})
@@ -1302,11 +1302,11 @@ def land_refusals_from_actions(
         if not failed:
             return None
         head = failed[-1].get("head")
-        return {
+        return cast(LandRefusal, {
             "initiative": key[0], "phase": key[1], "run": key[2],
             "attempts": len(failed), "last_refused_at": str(failed[-1]["ts"]),
             **({"head": head} if isinstance(head, str) and head else {}),
-        }
+        })
 
     return [r for r in map(refusal, keys) if r is not None]
 
@@ -1423,7 +1423,7 @@ def lease_refusals_from_actions(actions: Sequence[Row], now: datetime) -> dict[s
             return None
         return {"first_at": str(parsed[-1][0]["ts"]), "last_at": str(parsed[0][0]["ts"]), "holder_run": parsed[0][1].holder_run}
 
-    found = {i: streak_of(i) for i in sorted({d.get("initiative") or d.get("target") for d in launches})}
+    found = {i: streak_of(i) for i in sorted(cast("set[str]", {d.get("initiative") or d.get("target") for d in launches}))}
     return {i: s for i, s in found.items() if s is not None}
 
 
@@ -1511,7 +1511,7 @@ def initiative_facts(
         shown = [p for p in listed if p["phase"] not in live_here]
         return {"phases": shown} if shown else {}
 
-    return [
+    return cast(list[InitiativeFacts], [
         {
             "id": i["id"],
             "started": bool(i["started"]),
@@ -1535,7 +1535,7 @@ def initiative_facts(
         }
         for i in docket["initiatives"]
         if i["id"] not in live
-    ]
+    ])
 
 
 def empty_decompose_facts(
@@ -1559,7 +1559,7 @@ def empty_decompose_facts(
     `refusals` maps a run id to its lint-refusal text: only an entry whose run is listed gains a `refusal` key.
     `remote_pending` holds decompose run ids whose remote task items are unfetched or fetched this tick: left out like `alive`."""
     known = states or {}
-    return [
+    return cast(list[EmptyDecomposeFacts], [
         {"initiative": initiative, "run": run, **({"refusal": refusals[run]} if run in refusals else {})}
         for initiative, run in decomposed.items()
         if initiative not in live
@@ -1567,7 +1567,7 @@ def empty_decompose_facts(
         and run not in remote_pending
         and item_counts.get(initiative, 1) == 0
         and known.get(initiative) not in {"done", "dropped"}
-    ]
+    ])
 
 
 def alive_decompose_runs(
@@ -1624,7 +1624,7 @@ def dispatch_facts(
     caps = capacity or {}
     weights = weight or {}
     abilities = capabilities or {}
-    return {
+    return cast(DispatchFacts, {
         "max_in_flight": int(docket["max_in_flight"]),
         "live_runs": live_by_host.get("", 0),
         "hosts": [
@@ -1639,7 +1639,7 @@ def dispatch_facts(
             if name != local
         ],
         **({"local_lanes": local_lanes} if local_lanes != "any" else {}),
-    }
+    })
 
 
 def approved_facts(
@@ -2032,7 +2032,7 @@ def gather_facts(
     live_phase_pairs = [(p[0], p[1]) for p in deps.live_phases()] if deps.live_phases is not None else []
     leased = {(r["initiative"], r["task_id"]) for r in rows if r["kind"] == "task" and chair_read_docket._claimed(r, now_iso)}
     initiatives = [
-        {**i, "dag_problem": problems[i["id"]]} if i["id"] in problems else i
+        cast(InitiativeFacts, {**i, "dag_problem": problems[i["id"]]}) if i["id"] in problems else i
         for i in initiative_facts(
             {"initiatives": ready}, live,
             ticket_surfaces(items, ready_ids) if deps.tickets is not None else None,

@@ -11,9 +11,10 @@ A record that names no cause is no attempt: an approved build, or a run that nev
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any
+from collections.abc import Mapping, Sequence
+from typing import cast
 
+from core.jsontypes import is_mapping
 from core.workstore import body_sha
 
 RULE_MARK = "rule: "  # the driver's mark on a cause a rule made (`harness.epic._cause_of`, `harness.rescue_select`)
@@ -23,8 +24,8 @@ RESCUE_KIND = "rescue_failed"
 _APPROVED_KIND = "draft_pr_create"  # the proposal `lifecycle-propose` emits when, and only when, its reviewers approved
 
 
-def _mapping(value: object) -> Mapping[str, Any]:
-    return value if isinstance(value, Mapping) else {}
+def _mapping(value: object) -> Mapping[str, object]:
+    return value if is_mapping(value) else {}
 
 
 def _text(value: object) -> str:
@@ -44,34 +45,34 @@ def record_kind(cause_why: object) -> str:
     return RESCUE_KIND if why.startswith(_RESCUE_RULE) else ""
 
 
-def _failed_checks(record: Mapping[str, Any]) -> str:
+def _failed_checks(record: Mapping[str, object]) -> str:
     """Each configured check that failed on the build (`change_facts.checks`), with its exit and the last line it printed."""
-    checks = _mapping(record.get("change_facts")).get("checks") or []
-    failing = [c for c in checks if isinstance(c, Mapping) and not c.get("passed")]
+    checks = cast("Sequence[object]", _mapping(record.get("change_facts")).get("checks") or [])
+    failing = [c for c in checks if is_mapping(c) and not c.get("passed")]
     return "; ".join(
         f"check {c.get('name')} failed (exit {c.get('exit_code')})" + (f": {tail}" if (tail := _last_line(c.get("output_tail"))) else "")
         for c in failing
     )
 
 
-def _approved(record: Mapping[str, Any]) -> bool:
-    return any(isinstance(p, Mapping) and p.get("kind") == _APPROVED_KIND for p in record.get("proposals") or [])
+def _approved(record: Mapping[str, object]) -> bool:
+    return any(is_mapping(p) and p.get("kind") == _APPROVED_KIND for p in cast("Sequence[object]", record.get("proposals") or []))
 
 
-def _fix_loop(record: Mapping[str, Any]) -> str:
+def _fix_loop(record: Mapping[str, object]) -> str:
     """Why the fix loop refused the build, in the reviewers' own words: empty for an approved build."""
     if _approved(record):
         return ""
     stopped = _text(_mapping(record.get("fix_loop")).get("stopped"))
-    objections = _mapping(record.get("adversary")).get("objections") or []
-    claim = next((_text(o.get("claim")) for o in objections if isinstance(o, Mapping) and _text(o.get("claim"))), "")
+    objections = cast("Sequence[object]", _mapping(record.get("adversary")).get("objections") or [])
+    claim = next((_text(o.get("claim")) for o in objections if is_mapping(o) and _text(o.get("claim"))), "")
     said = _text(_mapping(record.get("arbitration")).get("reasoning")) or claim or _text(_mapping(record.get("review")).get("rationale"))
     if not stopped and not said:
         return ""
     return f"the fix loop stopped: {stopped or 'the reviewers did not approve the build'}" + (f"; {said}" if said else "")
 
 
-def record_reason(record: Mapping[str, Any]) -> str:
+def record_reason(record: Mapping[str, object]) -> str:
     """Why the attempt failed: the cause's own why when a model or a person gave one, then what the record itself says
     failed (a node that raised, a configured check, the fix loop's refusal). A rule's mark alone when nothing else does."""
     why = _text(record.get("cause_why"))
@@ -84,9 +85,9 @@ def record_reason(record: Mapping[str, Any]) -> str:
     return "; ".join(part for part in (judged, told) if part) or why
 
 
-def record_attempt(record: Mapping[str, Any]) -> dict[str, Any] | None:
+def record_attempt(record: Mapping[str, object]) -> dict[str, str] | None:
     """`{cause, cause_why, reason}` plus `kind` when a rule names it, for a record that names a cause; None otherwise."""
-    if not isinstance(record, Mapping) or not _text(record.get("cause")):
+    if not is_mapping(record) or not _text(record.get("cause")):
         return None
     kind = record_kind(record.get("cause_why"))
     return {
@@ -97,7 +98,7 @@ def record_attempt(record: Mapping[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def record_body_sha(record: Mapping[str, Any]) -> str | None:
+def record_body_sha(record: Mapping[str, object]) -> str | None:
     """The `body_sha` of the ticket body the record was built on, when the record carries it (`body_sha`, or the
     `ticket_body` text); None when it carries neither, so the record cannot be told apart from the current body."""
     stamped = _text(record.get("body_sha"))

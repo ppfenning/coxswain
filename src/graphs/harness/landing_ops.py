@@ -57,7 +57,7 @@ class PhaseMerge:
 
 def start_record(conn: Connection, repo: Path | str, *, initiative: str, branch: str, parent: str, parent_ref: str,
                  now: str, land_at: str = "initiative", epic: str | None = None, stack_base: str | None = None,
-                 adopted: bool = False) -> tuple[dict[str, Any] | None, str]:
+                 adopted: bool = False) -> tuple[lr.LandingRecord | None, str]:
     """The initiative's landing record, made on first use: cut the branch from the parent and record where.
 
     A record that exists is returned as it is: the parent no longer floats, and the branch is never cut twice.

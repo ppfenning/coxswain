@@ -48,7 +48,7 @@ def hold_record(land: LandTrigger, failing: SmokeCommandResult) -> HoldRecord:
     """The HoldRecord for a failing smoke result, tail cut to at most its last 20 lines."""
     lines = failing["tail"].splitlines()
     return {
-        "land": dict(land),
+        "land": land.copy(),
         "failing_command": failing["command"],
         "tail": "\n".join(lines[-_TAIL_LINES:]),
         "cause": "smoke_failed",

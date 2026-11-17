@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol
 
 from agent_tools.chair_rebase import backup_ref
-from agent_tools.chair_types import Action
+from agent_tools.chair_types import Action, ActionKind
 
 if TYPE_CHECKING:
     from agent_tools.chair_exec import Result
@@ -28,7 +28,7 @@ class RebasePort(Protocol):
 def _moved_stop(action: Action, tip: str) -> Action:
     initiative, phase, branch = action["initiative"], action["phase"], action["branch"]
     return {
-        "kind": "needs_chair", "initiative": initiative, "phase": phase, "cause": "rebase_tip_moved",
+        "kind": ActionKind.NEEDS_CHAIR, "initiative": initiative, "phase": phase, "cause": "rebase_tip_moved",
         "epoch": action.get("epoch", 0),
         "reason": f"initiative {initiative} phase {phase}: {branch} is at {tip[:8]}, "
         f"not the planned {action['tip'][:8]}; nothing was changed",

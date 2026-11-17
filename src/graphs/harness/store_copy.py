@@ -16,6 +16,7 @@ import json
 import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from typing import cast
 from urllib.parse import urlsplit
 
 import harness.store_ddl_0001 as ddl1
@@ -85,31 +86,31 @@ def tables() -> tuple[Table, ...]:
     """(name, column names, key) for every table the DDL modules create, migration ALTER columns included."""
     # The list must follow every migration's ALTERs: a column left out is dropped silently and the copy holds NULL.
     alters = (
-        *ddl2._ADDED,
-        *ddl3._ADDED,
-        *ddl5._ADDED,
-        *ddl9._ADDED,
-        *ddl10._ADDED,
-        *ddl11._ADDED,
-        *ddl12._ADDED,
-        *ddl13._ADDED,
-        *ddl14._ADDED,
-        *ddl15._ADDED,
+        *ddl2.ADDED,
+        *ddl3.ADDED,
+        *ddl5.ADDED,
+        *ddl9.ADDED,
+        *ddl10.ADDED,
+        *ddl11.ADDED,
+        *ddl12.ADDED,
+        *ddl13.ADDED,
+        *ddl14.ADDED,
+        *ddl15.ADDED,
     )
     added = {t: tuple(c for u, c in alters if u == t) for t, _ in alters}
     return tuple(
         (name, (*(c for c, _ in columns), *added.get(name, ())), key)
         for name, columns, key in (
-            *ddl1._TABLES,
-            *ddl2._TABLES,
-            *ddl4._TABLES,
-            *ddl6._TABLES,
-            *ddl7._TABLES,
-            *ddl8._TABLES,
-            *ddl11._TABLES,
-            *ddl16._TABLES,
-            *ddl17._TABLES,
-            *ddl18._TABLES,
+            *ddl1.TABLES,
+            *ddl2.TABLES,
+            *ddl4.TABLES,
+            *ddl6.TABLES,
+            *ddl7.TABLES,
+            *ddl8.TABLES,
+            *ddl11.TABLES,
+            *ddl16.TABLES,
+            *ddl17.TABLES,
+            *ddl18.TABLES,
         )
     )
 
@@ -134,7 +135,7 @@ def _safe_url(url: str) -> str:
 
 def _count(conn: Connection, table: str) -> int:
     row = conn.query_one(f"SELECT COUNT(*) FROM {table}")
-    return 0 if row is None else int(row[0])
+    return 0 if row is None else int(cast(int, row[0]))
 
 
 def _copy_table(
@@ -193,7 +194,7 @@ def _lines(report: dict[str, dict[str, int]]) -> list[str]:
 
 
 def main(argv: Sequence[str]) -> int:
-    ap = argparse.ArgumentParser(prog="python -m harness.store_copy", description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(prog="python -m harness.store_copy", description=cast(str, __doc__).split("\n")[0])
     ap.add_argument("src_url")
     ap.add_argument("dst_url")
     ap.add_argument("--json", action="store_true", help="print one JSON object instead of a line per table")

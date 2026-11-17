@@ -10,7 +10,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple, cast
 
 from agent_tools import (
     chair_chat,
@@ -43,7 +43,7 @@ from agent_tools.chair_restart import (
     touches_chair_code,
 )
 from agent_tools.chair_restart_log import with_note
-from agent_tools.chair_types import Action, Facts, PlanTick
+from agent_tools.chair_types import Action, ActionKind, EpicView, Facts, PlanTick
 from agent_tools.ci_gate import DEFAULT_QUEUED_BOUND_SECONDS, CiGate, evaluate_gate
 from agent_tools.forge_status import StatusReader
 from agent_tools.notify_cards import card_events, pending_cards
@@ -107,7 +107,7 @@ def no_queued_lands() -> tuple[float, ...]:
     return ()
 
 
-def sigterm_as_interrupt() -> Callable[[], None]:
+def sigterm_as_interrupt() -> Callable[[], object]:
     """Edge. SIGTERM raises KeyboardInterrupt in the main thread; the callable returned puts the old handler back."""
 
     def interrupt(_signum: int, _frame: object) -> None:
@@ -246,7 +246,7 @@ class RunDeps:
     perform: Perform = chair_exec.perform
     meter_doc: Callable[[], dict | None] = _read_meter_doc
     stop_lands: Callable[[], object] = no_lands_to_stop
-    install_sigterm: Callable[[], Callable[[], None]] = sigterm_as_interrupt
+    install_sigterm: Callable[[], Callable[[], object]] = sigterm_as_interrupt
     runs_dir: Path | None = None  # None writes no tick status to the lease
     read_action: Callable[[Path], dict | None] = dash_chair_action.read_current_action
     write_tick_status: Callable[[Path, int, str], bool] = chair_tick_status.write_tick_status
@@ -260,7 +260,7 @@ class RunDeps:
     pull_workspace: Callable[[], str] | None = None
     pull_state: PullState = field(default_factory=PullState)
     # The needs_chair actions of one lane checkout sync; run by every live tick after the pull. None syncs nothing.
-    lane_checkout_actions: Callable[[], list[dict]] | None = None
+    lane_checkout_actions: Callable[[], list[Action]] | None = None
     lane_sync_state: LaneSyncState = field(default_factory=LaneSyncState)
     facts_bound: float = FACTS_BOUND_SECONDS
     checkout_state: Callable[[], CheckoutState | None] | None = None  # None disables the restart check
@@ -451,10 +451,11 @@ def _publish_meter(deps: RunDeps, dry_run: bool, now: datetime) -> None:
         if meter is None or not usage_meter.fresh(meter, now):
             return
         # `status` is required: the store's record-action refuses a line without ts, epoch, kind and status.
-        deps.exec_deps.record({
+        reading = cast(Mapping[str, Any], doc)  # meter is not None only when doc is not None
+        deps.exec_deps.record(cast(Action, {
             "kind": "meter", "status": "recorded",
-            "five_hour": doc.get("five_hour"), "seven_day": doc["seven_day"], "observed_at": doc["observed_at"],
-        })
+            "five_hour": reading.get("five_hour"), "seven_day": reading["seven_day"], "observed_at": reading["observed_at"],
+        }))
 
 
 def _pull_step(deps: RunDeps, dry_run: bool) -> str:
@@ -472,7 +473,7 @@ def _pull_step(deps: RunDeps, dry_run: bool) -> str:
     if reason and reason != deps.pull_state.last_reason:
         # `status` is required: the store's record-action refuses a line without ts, epoch, kind and status.
         with contextlib.suppress(Exception):
-            deps.exec_deps.record({"kind": "pull_workspace", "status": "recorded", "reason": reason})
+            deps.exec_deps.record({"kind": ActionKind.PULL_WORKSPACE, "status": "recorded", "reason": reason})
             deps.pull_state.last_reason = reason
     elif not reason:
         deps.pull_state.last_reason = ""
@@ -504,12 +505,13 @@ def _lane_checkout_step(deps: RunDeps, dry_run: bool) -> LaneTick:
     seen = deps.lane_sync_state.seen
     if dry_run or deps.lane_checkout_actions is None:
         return LaneTick([], [], seen)
+    found: list[Action]
     try:
         found = [_named_by_checkout(a) for a in deps.lane_checkout_actions()]
         keys = frozenset(_lane_key(a) for a in found)
     except Exception as exc:
         found = [{
-            "kind": "needs_chair", "host": "lane checkouts", "cause": "lane_checkout_error",
+            "kind": ActionKind.NEEDS_CHAIR, "host": "lane checkouts", "cause": "lane_checkout_error",
             "reason": f"lane checkout sync failed: {str(exc) or type(exc).__name__}",
         }]
         keys = seen | {_lane_key(found[0])}
@@ -531,7 +533,7 @@ def _publish_status(deps: RunDeps, dry_run: bool, line: str, now: datetime, stag
         return
     timing = {"stage_seconds": stage_seconds} if stage_seconds else {}
     with contextlib.suppress(Exception):
-        deps.exec_deps.record({"kind": "status", "status": "recorded", "line": line, "at": now.isoformat(), **timing})
+        deps.exec_deps.record(cast(Action, {"kind": "status", "status": "recorded", "line": line, "at": now.isoformat(), **timing}))
 
 
 def _publish_tick_status(deps: RunDeps, dry_run: bool, line: str, now: datetime) -> None:
@@ -561,7 +563,7 @@ def next_gate_record(was_paused: bool, gate: CiGate, held: tuple[str, ...], epoc
     if was_paused or not gate.paused:
         return None
     named = f"; held for CI: {', '.join(held)}" if held else ""
-    return {"kind": "needs_chair", "initiative": "ci-gate", "cause": f"ci_gate_paused: {gate.reason}{named}", "epoch": epoch}
+    return {"kind": ActionKind.NEEDS_CHAIR, "initiative": "ci-gate", "cause": f"ci_gate_paused: {gate.reason}{named}", "epoch": epoch}
 
 
 def _evaluate_gate(deps: RunDeps, now: datetime) -> CiGate:
@@ -631,13 +633,13 @@ def _as_planned_actions(actions: Sequence[Action]) -> list[chair_chat.PlannedAct
                 **{str(k): str(v) for k, v in (a.get("fields") or {}).items()},
             },
             "key": str(a.get("key", "")),
-            **({"event": str(a["event"])} if a.get("event") else {}),
+            **cast(chair_chat.PlannedAction, {"event": str(a["event"])} if a.get("event") else {}),
         }
         for a in actions
     ]
 
 
-def _epic_snapshot(epics: Sequence[dict]) -> list[dict]:
+def _epic_snapshot(epics: Sequence[EpicView]) -> list[dict]:
     return [{"epic_id": e["epic_id"], "levels": e["levels"], "exited": e["exited"]} for e in epics]
 
 
@@ -859,7 +861,7 @@ def start_lease_beat(deps: RunDeps, dry_run: bool) -> threading.Event:
     return stop
 
 
-def _shutdown(deps: RunDeps, beating: threading.Event, restore: Callable[[], None], dry_run: bool) -> None:
+def _shutdown(deps: RunDeps, beating: threading.Event, restore: Callable[[], object], dry_run: bool) -> None:
     beating.set()  # before the release: a beat with no sidecar acquires, and would retake the lease just released
     restore()  # a second SIGTERM during the release below ends the process as it would have
     with contextlib.suppress(Exception):  # a failed land release must not keep the chair lease held

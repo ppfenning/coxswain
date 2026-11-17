@@ -5,7 +5,7 @@ import pytest
 
 import harness.store_read as read
 from core import workstore
-from harness.epic import EXIT_PAUSED, _Ctx, _quarantine_task, _save_result, _without_cause
+from harness.epic import EXIT_PAUSED, StoreMissing, _Ctx, _ctx_store, _quarantine_task, _save_result, _without_cause
 from harness.resume import load_result
 from harness.store_write import Store, task_cause
 from runner.protocol import LimitStop
@@ -264,3 +264,9 @@ def test_a_failed_task_record_mirror_keeps_the_attempt_and_the_file_and_warns(
     assert [tuple(r) for r in rows] == [("review",)]
     assert task_cause(load_result(c.runs_dir, "r1", "p1", "t1")) == ("review", "the verdict was the cause")
     assert any("store is down" in r.getMessage() for r in caplog.records if r.name == "harness.epic")
+
+
+def test_a_store_call_on_a_run_without_a_store_names_the_fault(tmp_path):
+    """A store call reached on a run that opened no store raises StoreMissing naming the run, not an AttributeError."""
+    with pytest.raises(StoreMissing, match="run r1 of i reached a store call without an open store"):
+        _ctx_store(ctx(tmp_path, None, None))

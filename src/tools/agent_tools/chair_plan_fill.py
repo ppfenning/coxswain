@@ -4,13 +4,13 @@ Pure. free_lanes comes from the caller; only host_free_slots reads dispatch and 
 """
 from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import datetime
-from typing import NamedTuple
+from typing import NamedTuple, cast
 
 from agent_tools import chair_login_watch, host_load
 from agent_tools.chair_plan_recover import budget_verdict
 from agent_tools.chair_schedule import Schedule
 from agent_tools.chair_steer import steer_check
-from agent_tools.chair_types import Action, Facts, InitiativeFacts, RunningInitiative, SteerPolicy
+from agent_tools.chair_types import Action, ActionKind, Facts, InitiativeFacts, RunningInitiative, SteerPolicy
 from agent_tools.checkout_env import blocks_launch, host_env_verdict, sync_instruction
 
 # name, weight (a host's share of new placements; its capacity when the hosts table sets none),
@@ -70,11 +70,11 @@ _best_host = best_host  # chair_plan.py still imports this name; it is outside t
 
 
 def _epic_action(initiative_id: str, host: str) -> Action:
-    return {"kind": "launch_epic", "initiative": initiative_id, "host": host}
+    return {"kind": ActionKind.LAUNCH_EPIC, "initiative": initiative_id, "host": host}
 
 
 def _decompose_action(intake_id: str, host: str) -> Action:
-    return {"kind": "launch_decompose", "intake_ids": [intake_id], "host": host}
+    return {"kind": ActionKind.LAUNCH_DECOMPOSE, "intake_ids": [intake_id], "host": host}
 
 
 def _place_on_hosts(
@@ -120,7 +120,7 @@ def _stale_needs_chair(
     repo_dir = initiative.get("repo_dir", "")
     return [
         {
-            "kind": "needs_chair",
+            "kind": ActionKind.NEEDS_CHAIR,
             "initiative": initiative["id"],
             "cause": "stale_checkout",
             "reason": f"{sync_instruction(name, repo_dir)} ({verdict})",
@@ -171,13 +171,13 @@ def _walk_candidates(
         return launches, [*notes, steer, *steers]
     claim: list[RunningInitiative] = [{"id": head["id"], "repo": repo, "surfaces": surfaces}] if repo and surfaces else []
     if placed is None:
-        local: Action = {"kind": "launch_epic", "initiative": head["id"]}
+        local: Action = {"kind": ActionKind.LAUNCH_EPIC, "initiative": head["id"]}
         launches, steers = _walk_candidates(
             tail, [*running, *claim], streaks, local_left - 1, hosts, env, policy, _spent(launch_budget)
         )
         return [local, *launches], steers
     name, next_hosts = placed
-    hosted: Action = {"kind": "launch_epic", "initiative": head["id"], "host": name}
+    hosted: Action = {"kind": ActionKind.LAUNCH_EPIC, "initiative": head["id"], "host": name}
     launches, steers = _walk_candidates(
         tail, [*running, *claim], streaks, local_left, next_hosts, env, policy, _spent(launch_budget)
     )
@@ -275,7 +275,8 @@ def _scheduled_walk(
         launches, steers = _scheduled_walk(tail, by_id, running, streaks, local_left, hosts, env, policy, launch_budget)
         return launches, [steer, *steers]
     claim: list[RunningInitiative] = [{"id": initiative_id, "repo": repo, "surfaces": surfaces}] if repo and surfaces else []
-    action: Action = {"kind": "launch_epic", "initiative": initiative_id, **({} if host is None else {"host": host})}
+    named: Action = {} if host is None else {"host": host}
+    action: Action = {"kind": ActionKind.LAUNCH_EPIC, "initiative": initiative_id, **named}
     launches, steers = _scheduled_walk(
         tail, by_id, [*running, *claim], streaks, local_left - (host is None), _after_placing(hosts, [action]), env, policy,
         _spent(launch_budget),
@@ -332,7 +333,7 @@ def _decompose_launches(
     launch_budget, when not None, keeps only the first that many, local ones before hosted ones."""
     fit = max(0, lanes)
     open_intake = [i for i in facts["intake"] if i not in stalled]
-    local: list[Action] = [{"kind": "launch_decompose", "intake_ids": [i]} for i in open_intake[:fit]]
+    local: list[Action] = [{"kind": ActionKind.LAUNCH_DECOMPOSE, "intake_ids": [i]} for i in open_intake[:fit]]
     overflow = [(intake_id, frozenset[str]()) for intake_id in open_intake[fit:]]
     launches = [*local, *_place_on_hosts(overflow, host_free, _decompose_action)]
     return launches if launch_budget is None else launches[: max(0, launch_budget)]
@@ -346,7 +347,7 @@ def _wants_pull(facts: Facts, lanes_left: int) -> bool:
         and facts["sources_configured"]
         and not has_ready
         and not facts["intake"]
-        and (facts.get("pull_age_s") is None or facts["pull_age_s"] >= PULL_MIN_AGE_S)
+        and (facts.get("pull_age_s") is None or cast(int, facts["pull_age_s"]) >= PULL_MIN_AGE_S)
     )
 
 
@@ -374,7 +375,7 @@ def host_free_slots(facts: Facts) -> list[HostSlot]:
     ]
 
 
-def _less_consumed(host_free: list[HostSlot], consumed_host_lanes: dict[str, int]) -> list[HostSlot]:
+def _less_consumed(host_free: Sequence[HostSlot], consumed_host_lanes: dict[str, int]) -> list[HostSlot]:
     """host_free with each host's free count reduced by the lanes a prior planning step already took."""
     return [
         (name, weight, capabilities, max(0, free - consumed_host_lanes.get(name, 0)), assigned)
@@ -446,5 +447,5 @@ def plan_fill(
     epics = epics_on(_after_placing(host_free, decomposes), epic_budget)
     local_decomposes = [a for a in decomposes if "host" not in a]
     lanes_left = local_lanes - len(local_epics) - len(local_decomposes)
-    pulls: list[Action] = [{"kind": "pull"}] if _wants_pull(facts, lanes_left) else []
+    pulls: list[Action] = [{"kind": ActionKind.PULL}] if _wants_pull(facts, lanes_left) else []
     return [*epics, *decomposes, *pulls]

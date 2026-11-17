@@ -1,5 +1,10 @@
 """Select the previous run's phase worktrees to prune before a relaunch."""
 
+from collections.abc import Sequence
+from collections.abc import Set as AbstractSet
+
+from agent_tools.chair_types import ApprovedTask
+
 _HEADS = "refs/heads/"
 
 
@@ -18,12 +23,12 @@ def worktrees_to_prune(porcelain: str, initiative: str) -> list[dict]:
     return [e for e in map(_entry, blocks[1:]) if e["path"] and e["branch"].startswith(prefix)]
 
 
-def phases_to_carry(approved: list[dict], initiative: str) -> set[str]:
+def phases_to_carry(approved: Sequence[ApprovedTask], initiative: str) -> set[str]:
     """Phases of the initiative's approved rows that are not yet phase_done: partial work a prune must not delete."""
     return {r["phase"] for r in approved if r["initiative"] == initiative and not r["phase_done"]}
 
 
-def prune_argv(entries: list[dict], carry: set[str] = frozenset()) -> list[list[str]]:
+def prune_argv(entries: list[dict], carry: AbstractSet[str] = frozenset()) -> list[list[str]]:
     """Every worktree remove first, then a branch delete for every entry not on a carried phase.
 
     git refuses to delete a branch a worktree holds, so removes go first regardless of carry.

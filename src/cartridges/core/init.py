@@ -9,7 +9,7 @@ imports only the standard library and never opens a file itself.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]*$")
@@ -61,7 +61,7 @@ def init_plan(
     extends: str = "local",
     package_cartridges_dir: str | Path,
     template: Mapping[str, str],
-) -> list[dict]:
+) -> list[dict[str, str]]:
     """Return the ordered steps that would build `<cartridges_dir>/<team>`."""
     root = Path(cartridges_dir)
     package_root = Path(package_cartridges_dir)
@@ -103,7 +103,7 @@ def init_plan(
     return mkdir_steps + symlink_steps + write_steps + print_step
 
 
-def _render_step(step: dict) -> str:
+def _render_step(step: Mapping[str, str]) -> str:
     op = step["op"]
     if op == "mkdir":
         return f"mkdir {step['path']}"
@@ -121,6 +121,6 @@ def _render_step(step: dict) -> str:
     raise ValueError(f"unknown step op: {op!r}")
 
 
-def render_plan(steps: list[dict]) -> str:
+def render_plan(steps: Sequence[Mapping[str, str]]) -> str:
     """One line per step, for `--dry-run`."""
     return "\n".join(_render_step(step) for step in steps)

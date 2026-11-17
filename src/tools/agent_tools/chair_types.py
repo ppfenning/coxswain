@@ -6,13 +6,16 @@ filled in by the facts edge and consumed by the stale planner; `stall_candidates
 consumed by the stall planner. `tuning` likewise, consumed by the lane-tuning and tier-proposal planners.
 """
 from datetime import datetime
-from typing import Any, Literal, NotRequired, Protocol, TypedDict
+from enum import StrEnum
+from typing import Literal, NotRequired, Protocol, TypedDict
 from zoneinfo import ZoneInfo
 
 from agent_tools.chair_decompose_miss import DecomposeMiss
 from agent_tools.chair_decompose_streak import DecomposeStreak
 from agent_tools.chair_land_backoff import LandRefusal
 from agent_tools.chair_land_conflict import LandConflict
+from agent_tools.chair_no_progress import NoProgress
+from agent_tools.chair_stall_alarm import StallFacts
 
 EASTERN = ZoneInfo("America/New_York")  # every time the chair prints for an operator is shown in this zone
 STALE_CHECKOUT_CAUSE = "stale_checkout"  # the needs_chair cause for a lane host whose checkout environment is stale
@@ -21,6 +24,28 @@ DEADLOCK_CAUSE = "deferred_land_deadlock"  # the needs_chair cause for a task wa
 HELD_FILE_CAUSE = "held_file"  # the needs_chair cause for a ticket or intake file the export held as edited by hand
 QUARANTINED_CAUSE = "quarantined"  # the cause an open quarantine reports when no attempt names one
 DEFAULT_QUARANTINE_HOLD_AFTER = 3  # `chair.quarantine_hold_after` when the profile does not set it
+
+
+# The chair conversation's view of one initiative (`chair_chat`), which the facts carry as `chat_epics`.
+TaskState = Literal["ready", "approved", "done", "quarantined", "dropped", "building"]
+
+
+class ViewTask(TypedDict):
+    id: str
+    state: TaskState
+
+
+class ViewLevel(TypedDict):
+    phase: str
+    tasks: list[ViewTask]
+
+
+class EpicView(TypedDict):
+    """One initiative as an answer reads it: its tasks by phase, and whether its last run has exited."""
+
+    epic_id: str
+    levels: list[ViewLevel]
+    exited: bool
 
 
 class LeaseFacts(TypedDict):
@@ -239,6 +264,7 @@ class QuarantineFacts(TypedDict):
     rescue_failed: bool  # an earlier rescue_failed attempt exists for this task on the current ticket version
     reason: NotRequired[str]  # the newest attempt's stored reason, uncut; absent means none
     causes: NotRequired[list[str]]  # every quarantine cause on the current body, oldest attempt first; absent means just `cause`
+    reasons: NotRequired[list[str]]  # each of those attempts' stored reason, in the same order; absent means just `reason`
     run: NotRequired[str]  # the run the remedy command names; absent means unknown
     repo: NotRequired[str]  # the repository the remedy command names; absent means unknown
     task_state_key: NotRequired[str]  # names the harness state the task was quarantined in; absent leaves the quarantine unsorted
@@ -531,7 +557,7 @@ class ScheduleUpdatedAction(TypedDict):
     """The `action` of `dash_feed_schedule_v1.json`: `schedule` is `chair_schedule._body`."""
 
     kind: Literal["schedule_updated"]
-    schedule: dict[str, Any]
+    schedule: dict[str, object]
 
 
 class LandFailStreak(TypedDict):
@@ -612,7 +638,7 @@ class Facts(TypedDict):
     # `<intake path>|<fingerprint>` of each decompose_missing_idea needs_chair already in the action log. Absent means [].
     decompose_misses_reported: NotRequired[list[str]]
     # Host name to the checkout_env record in that host's versions_json; {} for a host whose beat lacks it. Absent means {}.
-    host_env: NotRequired[dict[str, dict]]
+    host_env: NotRequired[dict[str, dict[str, object]]]
     # `<host>|<repo>` of each stale_checkout needs_chair already in the action log. Absent means [].
     env_stale_reported: NotRequired[list[str]]
     # Each initiative's newest run's host, "" meaning the local machine; an initiative absent here has no run yet.
@@ -664,10 +690,10 @@ class Facts(TypedDict):
     quarantine_hold_after: NotRequired[int]
     held_tasks: NotRequired[list[HeldTask]]  # tasks held for a person with the `needs you:` mark; absent means none
     # chair_no_progress.no_progress_facts: initiative to its repeated runs (newest first) and `needs you:` hold reason. Absent means {}.
-    no_progress: NotRequired[dict[str, Any]]
+    no_progress: NotRequired[dict[str, NoProgress]]
     # chair_stall_alarm.stall_facts: the land, launch and failure-streak facts the stall alarm reads, and the stalls it
     # has raised and not cleared. Absent means no alarm is planned.
-    stall_alarm: NotRequired[dict[str, Any]]
+    stall_alarm: NotRequired[StallFacts]
     merge_queue: NotRequired[MergeQueueFacts]  # the profile's enabled merge queue; absent means the queue is off
     # `<run1>|<run2>` of each relaunch_loop needs_chair already in the action log. Absent means [].
     relaunch_loop_reported: NotRequired[list[str]]
@@ -686,66 +712,67 @@ class Facts(TypedDict):
     phase_records: NotRequired[list[str]]
     # Each initiative row in state todo with its task rows' states, in row order; absent means none. `plan_close_initiatives` plans a close_initiative for each finished one.
     todo_initiatives: NotRequired[list[TodoInitiative]]
-    chat_epics: NotRequired[list[dict[str, Any]]]  # each open initiative's tasks by phase, for the chair's answers; absent means none
+    chat_epics: NotRequired[list[EpicView]]  # each open initiative's tasks by phase, for the chair's answers; absent means none
     schedule_inputs: NotRequired[ScheduleInputs]  # the scheduler's inputs; absent means the edge did not read them
     # The previous tick's `chair_schedule.schedule_feed` form; absent means none was read, so the schedule is announced.
-    previous_schedule_feed: NotRequired[dict[str, Any]]
+    previous_schedule_feed: NotRequired[dict[str, object]]
 
 
-ActionKind = Literal[
-    "standby",
-    "take_lease",
-    "fetch",
-    "fetch_exit",
-    "land",
-    "land_phase",
-    "clear_branches",
-    "relaunch",
-    "retry",
-    "rescue",
-    "needs_chair",
-    "launch_epic",
-    "launch_decompose",
-    "pull",
-    "housekeeping",
-    "stale_to_draft",
-    "release_approvals",
-    "restore_approvals",
-    "mark_lost",
-    "check_login",
-    "probe_host",
-    "stalled_usr1",
-    "stalled_stop",
-    "review_landed",
-    "steer_clear",
-    "carry_phase",
-    "rebase_phase",
-    "tune_lanes",
-    "propose_tiers",
-    "revert_land",
-    "rerun_main",
-    "widen_ticket",
-    "partial_land",
-    "land_batch",
-    "pull_workspace",
-    "waiting",
-    "deferred",
-    "unlaunched",
-    "close_initiative",
-    "finish_task",
-    "close_merged_task",
-    "unlaunched",
-    "schedule_updated",
-    "requeue_task",
-    "rebuild_quarantined",
-    "annotate_objection",
-    "request_triage",
-    "hold_task",
-    "announce_hold",
-    "hold_initiative",
-    "stall_alarm",
-    "stall_clear",
-]
+class ActionKind(StrEnum):
+    """Every kind of action a planner returns. A member equals its value as a string, so an action read back from
+    the JSON action log, whose kind is a plain string, compares and dispatches the same as one a planner built."""
+
+    STANDBY = "standby"
+    TAKE_LEASE = "take_lease"
+    FETCH = "fetch"
+    FETCH_EXIT = "fetch_exit"
+    LAND = "land"
+    LAND_PHASE = "land_phase"
+    CLEAR_BRANCHES = "clear_branches"
+    RELAUNCH = "relaunch"
+    RETRY = "retry"
+    RESCUE = "rescue"
+    NEEDS_CHAIR = "needs_chair"
+    LAUNCH_EPIC = "launch_epic"
+    LAUNCH_DECOMPOSE = "launch_decompose"
+    PULL = "pull"
+    HOUSEKEEPING = "housekeeping"
+    STALE_TO_DRAFT = "stale_to_draft"
+    RELEASE_APPROVALS = "release_approvals"
+    RESTORE_APPROVALS = "restore_approvals"
+    MARK_LOST = "mark_lost"
+    CHECK_LOGIN = "check_login"
+    PROBE_HOST = "probe_host"
+    STALLED_USR1 = "stalled_usr1"
+    STALLED_STOP = "stalled_stop"
+    REVIEW_LANDED = "review_landed"
+    STEER_CLEAR = "steer_clear"
+    CARRY_PHASE = "carry_phase"
+    REBASE_PHASE = "rebase_phase"
+    TUNE_LANES = "tune_lanes"
+    PROPOSE_TIERS = "propose_tiers"
+    REVERT_LAND = "revert_land"
+    RERUN_MAIN = "rerun_main"
+    WIDEN_TICKET = "widen_ticket"
+    PARTIAL_LAND = "partial_land"
+    LAND_BATCH = "land_batch"
+    PULL_WORKSPACE = "pull_workspace"
+    WAITING = "waiting"
+    DEFERRED = "deferred"
+    UNLAUNCHED = "unlaunched"
+    CLOSE_INITIATIVE = "close_initiative"
+    FINISH_TASK = "finish_task"
+    CLOSE_MERGED_TASK = "close_merged_task"
+    SCHEDULE_UPDATED = "schedule_updated"
+    REQUEUE_TASK = "requeue_task"
+    REBUILD_QUARANTINED = "rebuild_quarantined"
+    ANNOTATE_OBJECTION = "annotate_objection"
+    REQUEST_TRIAGE = "request_triage"
+    HOLD_TASK = "hold_task"
+    ANNOUNCE_HOLD = "announce_hold"
+    HOLD_INITIATIVE = "hold_initiative"
+    STALL_ALARM = "stall_alarm"
+    STALL_CLEAR = "stall_clear"
 
 
 class Action(TypedDict, total=False):
@@ -790,7 +817,8 @@ class Action(TypedDict, total=False):
     (`no_progress:<initiative>:<newest run>`): the initiative row and file are held with the reason, and one courier entry goes out."""
 
     kind: ActionKind
-    epoch: int
+    epoch: int | None
+    status: str  # a recorded action line carries the outcome the executor wrote
     task_id: str
     repo: str
     run: str  # a land or fetch names the run that holds the approved record; a fetch_exit or mark_lost names the lost run; a land_phase names the run whose phase-mode land command performs it
@@ -848,6 +876,11 @@ class Action(TypedDict, total=False):
     event: str  # the event an action publishes, for example needs_attention
     fields: dict[str, str]  # the fields of a published event
     topic: str  # the topic a published event is filed under
+    back_at: str  # a host_back needs_chair names when the host came back
+    signature: str  # a needs_chair for an idle stall or a deferred-land deadlock names the open signature it reports
+    path: str  # a needs_chair for a held file names the file
+    blob: str  # a needs_chair for a held file names the file's blob, so the same hand edit is reported once
+    schedule: dict[str, object]  # a schedule_updated carries `chair_schedule._body`, written whole to the schedule file
 
 
 class PlanLands(Protocol):

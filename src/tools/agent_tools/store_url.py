@@ -22,7 +22,7 @@ def storage_url(value: object, runs_dir: str | Path) -> str:
 
 
 def profile_store_url(profile: Mapping[str, Any], runs_dir: str | Path) -> str:
-    """graphs `_storage_url`: the profile's `storage_url` key through storage_url."""
+    """graphs `profile_storage_url`: the profile's `storage_url` key through storage_url."""
     return storage_url(profile.get("storage_url"), runs_dir)
 
 
@@ -64,7 +64,7 @@ def describe_store(url: str) -> str:
 
 def read_provider_profile(path: Path | str) -> Mapping[str, Any]:
     """Edge. The provider profile YAML as a mapping; unreadable, malformed or non-mapping yields `{}`."""
-    # cli.py reads the provider profile inline in several places and has no reusable loader; this mirrors graphs `_read_profile`.
+    # cli.py reads the provider profile inline in several places and has no reusable loader; this mirrors graphs `read_provider_profile`.
     try:
         data = yaml.safe_load(Path(path).expanduser().read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError):

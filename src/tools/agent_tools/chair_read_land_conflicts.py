@@ -9,12 +9,13 @@ import os
 import re
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 from agent_tools import bounded_run, repo_path
 from agent_tools.chair_land_conflict import LandConflict
 from agent_tools.jsonl_log import parse_log
 
-Row = Mapping[str, object]
+Row = Mapping[str, Any]
 Key = tuple[str, str, str]  # (initiative, phase, run)
 Commits = tuple[str, str]  # (phase branch tip, main tip)
 

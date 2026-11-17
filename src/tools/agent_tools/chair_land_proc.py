@@ -14,8 +14,12 @@ import signal
 import subprocess
 import sys
 import tempfile
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any, cast
+
+from agent_tools.chair_types import Action
 
 TIMEOUT_CODE = 124
 
@@ -23,7 +27,7 @@ TIMEOUT_CODE = 124
 @dataclass(frozen=True)
 class LandSpec:
     key: str
-    action: dict
+    action: Action
     argv: list[str]
     repo: str
     timeout_s: float
@@ -80,7 +84,7 @@ def parse_spec(text: str) -> LandSpec | None:
     )
     if not well_formed:
         return None
-    return LandSpec(d["key"], d["action"], argv, d["repo"], d["timeout_s"], d["started_at"], d["host"], d["pid"])
+    return LandSpec(d["key"], d["action"], cast(list[str], argv), d["repo"], d["timeout_s"], d["started_at"], d["host"], d["pid"])
 
 
 def parse_outcome(text: str) -> LandOutcome | None:
@@ -90,7 +94,7 @@ def parse_outcome(text: str) -> LandOutcome | None:
     return LandOutcome(d["code"], d["output"])
 
 
-def land_key(action: dict) -> str:
+def land_key(action: Mapping[str, Any]) -> str:
     """Readable slug of run plus task_id, else phase, then a hash of the raw identity so distinct actions never collide."""
     run, task, phase = (str(action.get(k, "")) for k in ("run", "task_id", "phase"))
     identity = (

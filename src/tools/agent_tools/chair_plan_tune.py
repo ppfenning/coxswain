@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 from agent_tools.chair_tune_lanes import HostLanes, LaneChange, WeeklyFractions, lane_targets
 from agent_tools.chair_tune_tiers import TierRow, render_proposals, tier_proposals
-from agent_tools.chair_types import Action, Facts
+from agent_tools.chair_types import Action, ActionKind, Facts
 
 _INTERVAL = timedelta(hours=24)
 _ROW_KEYS = tuple(f.name for f in fields(TierRow))
@@ -35,7 +35,7 @@ def _tier_row(row: dict[str, object]) -> TierRow | None:
 
 def _tune_lanes(change: LaneChange, meter: WeeklyFractions) -> Action:
     return {
-        "kind": "tune_lanes",
+        "kind": ActionKind.TUNE_LANES,
         "host": change.host,
         "from_lanes": change.from_lanes,
         "to_lanes": change.to_lanes,
@@ -58,7 +58,7 @@ def plan_tune(facts: Facts, now: datetime) -> list[Action]:
     rows = [r for r in (_tier_row(row) for row in tuning["stats"]) if r is not None]
     proposals = tier_proposals(rows)
     tiers: list[Action] = (
-        [{"kind": "propose_tiers", "proposals": [asdict(p) for p in proposals], "body": render_proposals(proposals)}]
+        [{"kind": ActionKind.PROPOSE_TIERS, "proposals": [asdict(p) for p in proposals], "body": render_proposals(proposals)}]
         if proposals
         else []
     )

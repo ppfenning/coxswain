@@ -19,6 +19,9 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import cast
+
+from core.jsontypes import is_dict, is_list
 
 ANTHROPIC_MODELS_URL = "https://api.anthropic.com/v1/models"
 ANTHROPIC_VERSION = "2023-06-01"
@@ -37,6 +40,10 @@ CLAUDE_MODELS_ARGV = (
 _CLAUDE_ID = re.compile(r"(?=.*\d)claude(?:-[a-z0-9.]+)+")
 
 
+# `get(url, headers, params)` returns the JSON body.
+HttpGet = Callable[[str, dict[str, str], dict[str, str | int]], object]
+
+
 @dataclass(frozen=True)
 class FetchError:
     reason: str
@@ -44,24 +51,24 @@ class FetchError:
 
 def parse_anthropic_page(body: object) -> tuple[list[str], str | None] | FetchError:
     """Ids on one /v1/models page and the `after_id` cursor for the next, None on the last page."""
-    if not isinstance(body, dict):
+    if not is_dict(body):
         return FetchError("anthropic models body is not an object")
     if body.get("type") == "error":
         err = body.get("error")
-        return FetchError(f"anthropic error body: {err.get('type') if isinstance(err, dict) else 'unknown'}")
+        return FetchError(f"anthropic error body: {err.get('type') if is_dict(err) else 'unknown'}")
     data, has_more, last_id = body.get("data"), body.get("has_more"), body.get("last_id")
     ids = (
-        [m["id"] for m in data if isinstance(m, dict) and isinstance(m.get("id"), str)]
-        if isinstance(data, list)
+        cast("list[str]", [m["id"] for m in data if is_dict(m) and isinstance(m.get("id"), str)])
+        if is_list(data)
         else []
     )
-    if not isinstance(data, list) or len(ids) != len(data):
+    if not is_list(data) or len(ids) != len(data):
         return FetchError("anthropic models page has no data list, or an entry without a string id")
     if not isinstance(has_more, bool):
         return FetchError("anthropic models page has no boolean has_more")
     if has_more and not (isinstance(last_id, str) and last_id):
         return FetchError("anthropic models page says has_more but gives no last_id; the list would be truncated")
-    return ids, last_id if has_more else None
+    return ids, cast("str | None", last_id) if has_more else None
 
 
 def parse_claude_models(output: str) -> list[str] | FetchError:
@@ -74,19 +81,17 @@ def parse_claude_models(output: str) -> list[str] | FetchError:
     )
 
 
-def list_anthropic_models(api_key: str, get: Callable[[str, dict, dict], object]) -> list[str] | FetchError:
+def list_anthropic_models(api_key: str, get: HttpGet) -> list[str] | FetchError:
     """GET /v1/models, following `after_id` until `has_more` is false. `get(url, headers, params)` returns the JSON body."""
     headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
     result = _fetch_pages(get, headers, None, MAX_PAGES)
     return result if isinstance(result, FetchError) else list(dict.fromkeys(result))
 
 
-def _fetch_pages(
-    get: Callable[[str, dict, dict], object], headers: dict, cursor: str | None, left: int
-) -> list[str] | FetchError:
+def _fetch_pages(get: HttpGet, headers: dict[str, str], cursor: str | None, left: int) -> list[str] | FetchError:
     if left == 0:
         return FetchError(f"anthropic models pagination exceeded {MAX_PAGES} pages")
-    params = {"limit": PAGE_LIMIT, **({"after_id": cursor} if cursor else {})}
+    params: dict[str, str | int] = {"limit": PAGE_LIMIT, **({"after_id": cursor} if cursor else {})}
     try:
         body = get(ANTHROPIC_MODELS_URL, headers, params)
     except Exception as exc:  # the edge turns any client failure into a value
@@ -116,6 +121,7 @@ def list_claude_models(
 
 __all__ = [
     "FetchError",
+    "HttpGet",
     "list_anthropic_models",
     "list_claude_models",
     "parse_anthropic_page",

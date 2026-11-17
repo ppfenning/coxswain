@@ -15,6 +15,8 @@ Graphs never imports cartridges, so it mirrors this shape in its own type. The k
 
 from __future__ import annotations
 
+from typing import cast
+
 from core.router import Decision
 
 SCHEMA = 1
@@ -40,7 +42,7 @@ def _is_number(v: object) -> bool:
 
 
 def _is_str_list(v: object) -> bool:
-    return isinstance(v, list) and all(isinstance(x, str) for x in v)
+    return isinstance(v, list) and all(isinstance(x, str) for x in cast("list[object]", v))
 
 
 def _errors(wire: dict[str, object]) -> list[str]:
@@ -56,14 +58,15 @@ def _errors(wire: dict[str, object]) -> list[str]:
 def decision_from_wire(wire: object) -> Decision | list[str]:
     if not isinstance(wire, dict):
         return [f"wire form must be a dict, got {type(wire).__name__}"]
-    errors = _errors(wire)
+    errors = _errors(cast("dict[str, object]", wire))
     if errors:
         return errors
+    fields = cast("dict[str, object]", wire)
     return Decision(
-        model=wire["model"],
-        effort=wire["effort"],
-        budget_usd=float(wire["budget_usd"]),
-        reasons=tuple(wire["reasons"]),
-        clipped_by=tuple(wire["clipped_by"]),
-        chosen_class=wire["chosen_class"],
+        model=cast("str", fields["model"]),
+        effort=cast("str", fields["effort"]),
+        budget_usd=float(cast("float", fields["budget_usd"])),
+        reasons=tuple(cast("list[str]", fields["reasons"])),
+        clipped_by=tuple(cast("list[str]", fields["clipped_by"])),
+        chosen_class=cast("str", fields["chosen_class"]),
     )

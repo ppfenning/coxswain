@@ -1,8 +1,9 @@
 """Pure core: graph, estimates, hosts and a clock value in; one Schedule out; no clock, file or process."""
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 from agent_tools.chair_schedule_durations import Estimate
 from agent_tools.chair_schedule_graph import Key, Node
@@ -209,7 +210,7 @@ def plan_schedule(
         best = min(ready, key=lambda k: (*_weight(k, path.values, nodes), queue[k]))
         group = tuple(
             sorted(
-                (k for k in ready if _weight(k, path.values, nodes) == _weight(best, path.values, nodes)), key=queue.get
+                (k for k in ready if _weight(k, path.values, nodes) == _weight(best, path.values, nodes)), key=cast(Callable[[Key], int], queue.get)
             )
         )
         if len(group) > 1 and not any(set(group) <= set(t.keys) for t in ties):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Collection, Sequence
 
-from agent_tools.chair_types import Action, PhaseBranch
+from agent_tools.chair_types import Action, ActionKind, PhaseBranch
 
 
 def backup_ref(branch: str, tip: str) -> str:
@@ -17,7 +17,7 @@ def plan_rebase(branches: Sequence[PhaseBranch], relaunching: Collection[str], b
     wanted = [b for b in branches if b["initiative"] in relaunching and b["behind"] > 0 and b["ahead"] > 0]
     return [
         Action(
-            kind="rebase_phase",
+            kind=ActionKind.REBASE_PHASE,
             initiative=b["initiative"],
             phase=b["phase"],
             branch=b["branch"],

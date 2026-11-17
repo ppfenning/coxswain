@@ -27,7 +27,25 @@ from typing import TYPE_CHECKING, Any
 
 from agent_tools.run_store import _api, _store_url
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # the names `__getattr__` re-exports at run time, so a checker sees the classes a caller narrows on
+    from harness.store_api import (
+        Failed as Failed,
+    )
+    from harness.store_api import (
+        Landed as Landed,
+    )
+    from harness.store_api import (
+        LeaseError as LeaseError,
+    )
+    from harness.store_api import (
+        LeaseGranted as LeaseGranted,
+    )
+    from harness.store_api import (
+        LeaseRefused as LeaseRefused,
+    )
+    from harness.store_api import (
+        LeaseReleased as LeaseReleased,
+    )
     from harness.store_api import (
         LeaseResult,
         MarkLandedResult,
@@ -36,6 +54,33 @@ if TYPE_CHECKING:
         ResumeResult,
         SetStateResult,
         WorkState,
+    )
+    from harness.store_api import (
+        MergeRecorded as MergeRecorded,
+    )
+    from harness.store_api import (
+        NotAvailable as NotAvailable,
+    )
+    from harness.store_api import (
+        NotInStore as NotInStore,
+    )
+    from harness.store_api import (
+        Paused as Paused,
+    )
+    from harness.store_api import (
+        PauseRefused as PauseRefused,
+    )
+    from harness.store_api import (
+        Resumed as Resumed,
+    )
+    from harness.store_api import (
+        ResumeRefused as ResumeRefused,
+    )
+    from harness.store_api import (
+        StateRefused as StateRefused,
+    )
+    from harness.store_api import (
+        StateSet as StateSet,
     )
 
 # The API's result types, re-exported on first use (PEP 562), so `from agent_tools.store_cli import StateSet` works.
@@ -133,12 +178,13 @@ def _warning(initiative: str, task: str, state: str, reason: str) -> str:
 def state_write_failure(initiative: str, task: str, state: str, result: SetStateResult) -> str | None:
     """Pure. None when the store took the state; else one `warning:` line naming why. A store that could not be opened
     is a failure too: the write did not land."""
-    api = _api()
-    if isinstance(result, api.StateRefused):
+    from harness.store_api import Failed, NotAvailable, StateRefused  # on first use, as `_api` imports it
+
+    if isinstance(result, StateRefused):
         return _warning(initiative, task, state, f"refused: {result.detail or 'no detail'}")
-    if isinstance(result, api.Failed):
+    if isinstance(result, Failed):
         return _warning(initiative, task, state, f"exit {result.code}: {result.detail}")
-    if isinstance(result, api.NotAvailable) and result.reason:
+    if isinstance(result, NotAvailable) and result.reason:
         return _warning(initiative, task, state, result.reason)
     return None
 

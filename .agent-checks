@@ -15,3 +15,7 @@ python .github/check_clean.py . --require-names
 # outside tests fails the lane; entry points nothing calls by name are allowlisted, with a reason, in .github/unwired-allow.txt.
 # An epic lane's base is its phase branch (COX_LANE_BASE, exported by the harness); elsewhere origin/main.
 python .github/check_unwired.py
+# H2 (docs/hardening.md): the type check, strict on the typed core and basic elsewhere ([tool.pyright] in pyproject.toml).
+# Without pyright or the extras in this python it skips and says how to install them, as smoke skips without docker;
+# CI sets COX_TYPES_REQUIRED=1, which makes a missing one a failure.
+python .github/check_types.py

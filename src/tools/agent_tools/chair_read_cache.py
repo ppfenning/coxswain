@@ -12,7 +12,7 @@ import tempfile
 from collections import OrderedDict
 from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 Stamp = tuple[int, int]
 
@@ -117,7 +117,7 @@ def _decode_entry(entry: Any) -> tuple[Any, tuple[Stamp, Any]] | None:
     )
     if not ok or not is_stamp:
         return None
-    return (key, ((stamp[0], stamp[1]), entry["value"]))
+    return (key, ((cast(list[int], stamp)[0], cast(list[int], stamp)[1]), entry["value"]))
 
 
 def dump_entries(cache: StampCache) -> dict[str, Any]:

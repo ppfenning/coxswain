@@ -13911,10 +13911,10 @@ class _TargetBranchRefusal(Exception):
 def _unusable_branch(text: str, path: Path) -> str | None:
     """Pure. Why the `target_branch:` in one epic file's text is set and not a valid branch name, else None."""
     from core.landing import valid_branch  # lazy: core sits beside agent_tools in one venv
-    from core.workstore import WorkStoreError, _split_frontmatter
+    from core.workstore import WorkStoreError, split_frontmatter
 
     try:
-        branch = _split_frontmatter(text, path)[0].get("target_branch")
+        branch = split_frontmatter(text, path)[0].get("target_branch")
     except WorkStoreError:
         return None
     if branch is None:

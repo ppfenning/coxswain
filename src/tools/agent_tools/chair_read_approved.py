@@ -7,7 +7,7 @@ import json
 import os
 from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from agent_tools import epic, land_manual, repo_path, route, run_store
 from agent_tools.chair_facts import run_initiative
@@ -246,7 +246,7 @@ def read_approved(
     record says landed reads `done`, as in `read_phase_tasks`."""
     items = _load_items(ws, files)
     rows = store_rows if store_rows is not None else (run_store.work_items(ws / "runs") if mode == "store" else [])
-    merged = with_store_closed(route.with_store_states(items, list(rows), mode), list(rows))
+    merged = with_store_closed(route.with_store_states(items, cast(list[dict], list(rows)), mode), cast(list[dict], list(rows)))
     return with_land_mode(approved_rows(mark_landed(merged, read_landed_task_ids(ws / "runs"))))
 
 
@@ -280,4 +280,4 @@ def read_phase_tasks(
     land refuses a task another machine landed. A merged approved task reads `merged` unless its record says landed."""
     items = _load_items(ws, files)
     rows = store_rows if store_rows is not None else (run_store.work_items(ws / "runs") if mode == "store" else [])
-    return phase_task_rows(mark_landed(route.with_store_states(items, rows, mode), read_landed_task_ids(ws / "runs")))
+    return phase_task_rows(mark_landed(route.with_store_states(items, cast(list[dict], rows), mode), read_landed_task_ids(ws / "runs")))

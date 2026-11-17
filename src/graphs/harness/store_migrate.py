@@ -21,6 +21,7 @@ import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import ModuleType
+from typing import cast
 from urllib.parse import urlsplit
 
 import harness
@@ -152,7 +153,7 @@ def _sqlite_backup(conn: Connection, dest: Path) -> None:
     """Back up the live connection, not a fresh reconnect: a `sqlite:///:memory:` store has no file to reopen."""
     target = sqlite3.connect(str(dest))
     try:
-        conn.raw.backup(target)
+        cast(sqlite3.Connection, conn.raw).backup(target)
     finally:
         target.close()
 
@@ -262,7 +263,7 @@ def open_store(url: str, now: str) -> Connection:
 
 
 def main(argv: Sequence[str]) -> int:
-    ap = argparse.ArgumentParser(prog="python -m harness.store_migrate", description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(prog="python -m harness.store_migrate", description=cast(str, __doc__).split("\n")[0])
     ap.add_argument("--pending", metavar="URL", required=True, help="list migrations newer than this store's version")
     args = ap.parse_args(argv)
     conn = connect(args.pending)

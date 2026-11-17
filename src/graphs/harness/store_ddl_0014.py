@@ -19,7 +19,7 @@ Column = tuple[str, str, str]  # table, column, type
 _COLUMNS: tuple[Column, ...] = (("leases", "progress", "TEXT"),)
 
 # Table and column that the ALTERs append; store_copy reads this 2-tuple shape, matching ddl2/ddl3/ddl5/ddl9/ddl10.
-_ADDED: tuple[tuple[str, str], ...] = tuple((t, c) for t, c, _ in _COLUMNS)
+ADDED: tuple[tuple[str, str], ...] = tuple((t, c) for t, c, _ in _COLUMNS)
 
 
 def _alter(table: str, column: str, kind: str) -> str:

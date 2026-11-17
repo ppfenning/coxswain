@@ -3,7 +3,7 @@
 Pure. Takes the facts, returns actions. No I/O.
 """
 from agent_tools.chair_remedy import trim_reason
-from agent_tools.chair_types import Action, Facts
+from agent_tools.chair_types import Action, ActionKind, Facts
 from agent_tools.chair_widen import classify_handoff
 
 MAX_WIDENINGS = 2  # a ticket whose body already carries this many widening notes is left to the chair
@@ -17,7 +17,7 @@ def plan_widen(facts: Facts) -> list[Action]:
         if pairs is not None:
             actions.append(
                 {
-                    "kind": "widen_ticket",
+                    "kind": ActionKind.WIDEN_TICKET,
                     "initiative": row["initiative"],
                     "task_id": row["task_id"],
                     "paths": [path for path, _ in pairs],

@@ -5,8 +5,9 @@ largest value among its dependents, so the value says how much work is stuck beh
 Keys must be hashable and mutually sortable: ties resolve by sorted key.
 """
 
-from collections.abc import Hashable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -22,16 +23,16 @@ class PathResult:
     unweighted: tuple = ()
 
 
-def _nodes(weights: Mapping, dependents: Mapping[Hashable, Iterable]) -> list:
+def _nodes(weights: Mapping, dependents: Mapping[Any, Iterable]) -> list:
     named = set(weights) | set(dependents) | {d for ds in dependents.values() for d in ds}
     return sorted(named)
 
 
-def _next(dependents: Mapping[Hashable, Iterable], key) -> list:
+def _next(dependents: Mapping[Any, Iterable], key) -> list:
     return sorted(set(dependents.get(key, ())))
 
 
-def find_cycle(weights: Mapping, dependents: Mapping[Hashable, Iterable]) -> tuple:
+def find_cycle(weights: Mapping, dependents: Mapping[Any, Iterable]) -> tuple:
     """Keys of one cycle, rotated to start at its smallest key, or () when the graph is acyclic."""
     # Iterative three-colour walk: the mutation is local to this function and avoids the recursion limit.
     colour: dict = {}
@@ -59,7 +60,7 @@ def find_cycle(weights: Mapping, dependents: Mapping[Hashable, Iterable]) -> tup
     return ()
 
 
-def critical_values(weights: Mapping, dependents: Mapping[Hashable, Iterable]) -> dict:
+def critical_values(weights: Mapping, dependents: Mapping[Any, Iterable]) -> dict:
     """Own weight plus the largest dependent value. A key with no weight counts as 0. Acyclic input only."""
     nodes = _nodes(weights, dependents)
     waiting = {n: len(_next(dependents, n)) for n in nodes}
@@ -79,7 +80,7 @@ def critical_values(weights: Mapping, dependents: Mapping[Hashable, Iterable]) -
     return values
 
 
-def longest_chain(values: Mapping, dependents: Mapping[Hashable, Iterable]) -> tuple:
+def longest_chain(values: Mapping, dependents: Mapping[Any, Iterable]) -> tuple:
     """The chain from the highest-value root, stepping to the highest-value dependent; ties take the smallest key.
 
     The start is a root, a node no other node precedes, so a zero-weight blocker is never dropped from the head.
@@ -96,7 +97,7 @@ def longest_chain(values: Mapping, dependents: Mapping[Hashable, Iterable]) -> t
         chain.append(min(options, key=lambda k: (-values[k], k)))
 
 
-def critical_paths(weights: Mapping, dependents: Mapping[Hashable, Iterable]) -> PathResult:
+def critical_paths(weights: Mapping, dependents: Mapping[Any, Iterable]) -> PathResult:
     unweighted = tuple(k for k in _nodes(weights, dependents) if k not in weights)
     cycle = find_cycle(weights, dependents)
     if cycle:

@@ -19,13 +19,13 @@ DESCRIPTION = "courier_log table"
 Column = tuple[str, str]
 
 # Name, columns, key.
-_TABLES: tuple[tuple[str, tuple[Column, ...], tuple[str, ...]], ...] = (
+TABLES: tuple[tuple[str, tuple[Column, ...], tuple[str, ...]], ...] = (
     ("courier_log", (("line_id", "TEXT"), ("at", "TEXT"), ("line", "TEXT")), ("line_id",)),
 )
 
 
 def statements(dialect: Dialect) -> tuple[str, ...]:
     """The one CREATE TABLE, the same on both dialects."""
-    name, columns, key = _TABLES[0]
+    name, columns, key = TABLES[0]
     defs = ",\n".join(f"    {c} {t} NOT NULL" for c, t in columns)
     return (f"CREATE TABLE IF NOT EXISTS {name} (\n{defs},\n    PRIMARY KEY ({', '.join(key)})\n)",)

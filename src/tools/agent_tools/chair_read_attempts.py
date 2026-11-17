@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from pathlib import Path
+from typing import cast
 
 from agent_tools import run_store
 from agent_tools.chair_facts import RESCUE_FAILED_CAUSE, Key, run_initiative
@@ -82,7 +83,7 @@ def with_stored_rescues(rows: Iterable[Mapping], store_rows: Iterable[Mapping], 
         for s in store_rows
     ]
     kept = [r for r in rescues if _rescue_key(r) in starts and str(r["ts"] or "") >= starts[_rescue_key(r)]]
-    return sorted([*rows, *kept], key=lambda row: str(row.get("ts") or ""))
+    return cast(list[dict], sorted([*rows, *kept], key=lambda row: str(row.get("ts") or "")))
 
 
 def _rescue_key(row: Mapping) -> Key:

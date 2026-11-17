@@ -8,7 +8,7 @@ Its signature carries no timestamp, so while `open_signature` equals it the rule
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 
-from agent_tools.chair_types import Action
+from agent_tools.chair_types import Action, ActionKind
 
 IDLE_READY_MINUTES = 30
 IDLE_READY_CAUSE = "idle_ready"
@@ -58,7 +58,7 @@ def plan_idle_ready(facts: Mapping, actions: Sequence[Mapping], now: datetime) -
     if (facts.get("idle_stall") or {}).get("open_signature") == signature:
         return []
     return [{
-        "kind": "needs_chair",
+        "kind": ActionKind.NEEDS_CHAIR,
         "initiative": ids[0],
         "cause": IDLE_READY_CAUSE,
         "signature": signature,

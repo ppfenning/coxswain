@@ -337,7 +337,7 @@ def test_a_launch_with_no_record_and_no_phase_imports_as_never_recorded(store, t
 
 def test_a_launch_only_run_imported_before_the_label_existed_is_labelled_never_recorded(store, tree):
     (tree / "runs" / "run-z.launched.json").write_text(json.dumps({"launched_by": "chair", "at": TS}))
-    store._insert("runs", run_row({"run_id": "run-z"}, {"launched_by": "chair", "at": TS}))
+    store.insert_row("runs", run_row({"run_id": "run-z"}, {"launched_by": "chair", "at": TS}))
     report = run(store, tree)
     assert store.conn.query_one("SELECT status FROM runs WHERE run_id = 'run-z'")[0] == "never_recorded"
     assert counts(report, "runs") == (3, 2, 1, 0)
@@ -418,7 +418,7 @@ def test_main_prints_the_report_and_exits_zero_when_it_balances(tree, capsys):
 
 def test_main_exits_non_zero_when_a_row_is_neither_inserted_nor_present(tree, monkeypatch, capsys):
     """A write that is silently dropped is the case the count exists to catch."""
-    monkeypatch.setattr(Store, "_insert", lambda self, table, row: 0)
+    monkeypatch.setattr(Store, "insert_row", lambda self, table, row: 0)
     argv = [str(tree / "runs"), str(tree / "work"), str(tree / "ledger.jsonl"), default_url(tree)]
     assert main(argv) == 1
     assert json.loads(capsys.readouterr().out)["runs"]["inserted"] == 0

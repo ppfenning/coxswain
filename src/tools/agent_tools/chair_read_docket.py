@@ -11,7 +11,7 @@ unknown: `started` is taken as any task in the initiative already in_progress, a
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from agent_tools import epic, queue_rows, route, run_store
 from agent_tools.chair_read_quarantined import WorkFiles, task_files
@@ -107,7 +107,7 @@ _NO_AGE = datetime.max.replace(tzinfo=UTC)
 
 def _by_priority(rows: Sequence[Row], items: Sequence[Row]) -> list[dict[str, Any]]:
     """`rows` by priority descending, then oldest launchable task first with no age last, then id ascending."""
-    return sorted(rows, key=lambda r: (-_initiative_priority(r, items), _ready_age(r, items) or _NO_AGE, r["id"]))
+    return cast(list[dict[str, Any]], sorted(rows, key=lambda r: (-_initiative_priority(r, items), _ready_age(r, items) or _NO_AGE, r["id"])))
 
 
 def _initiative_rows(
@@ -159,7 +159,7 @@ def _claimed(row: Row, now: str) -> bool:
 def _item_of(row: Row) -> dict[str, Any]:
     return {
         "id": row["task_id"], "initiative": row["initiative"], "phase": row["phase"], "state": row["state"],
-        "merged": route.is_merged(row), "needs": list(row["needs"]), "requires": queue_rows.row_requires(row),
+        "merged": route.is_merged(row), "needs": list(row["needs"]), "requires": queue_rows.row_requires(cast(dict[str, Any], row)),
         "priority": row.get("priority", (row.get("extra") or {}).get("priority")),
         "updated_at": row.get("updated_at"),
     }
@@ -239,7 +239,7 @@ def _work_items(
         if p.name != "initiative.md"
     ]
     rows = store_rows if store_rows is not None else (run_store.work_items(ws / "runs") if mode == "store" else [])
-    return _with_store_ages(route.with_store_states(items, rows, mode), rows)
+    return _with_store_ages(route.with_store_states(items, cast(list[dict], rows), mode), rows)
 
 
 def local_runs(runs_dir: Path, now: str) -> tuple[int, set[str]]:

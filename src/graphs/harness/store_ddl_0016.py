@@ -20,7 +20,7 @@ DESCRIPTION = "landing_records and land_queue tables"
 Column = tuple[str, str]
 
 # Name, columns, key.
-_TABLES: tuple[tuple[str, tuple[Column, ...], tuple[str, ...]], ...] = (
+TABLES: tuple[tuple[str, tuple[Column, ...], tuple[str, ...]], ...] = (
     (
         "landing_records",
         (
@@ -64,4 +64,4 @@ def _table(name: str, columns: tuple[Column, ...], key: tuple[str, ...]) -> str:
 
 def statements(dialect: Dialect) -> tuple[str, ...]:
     """The two CREATE TABLEs, the same on both dialects."""
-    return tuple(_table(n, c, k) for n, c, k in _TABLES)
+    return tuple(_table(n, c, k) for n, c, k in TABLES)

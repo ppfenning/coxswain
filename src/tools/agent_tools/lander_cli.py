@@ -14,7 +14,7 @@ from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from agent_tools import lander, lander_ports, unit_env
 
@@ -79,12 +79,12 @@ def status_rows(records: Sequence[Mapping[str, Any]], items: Sequence[Mapping[st
     initiatives = []
     for record in records:
         rows = list(tasks.get(str(record["initiative"])) or [])
-        state = lr.initiative_state(record, rows) if rows else str(record.get("state") or "")
+        state = lr.initiative_state(cast(lr.LandingRecord, record), rows) if rows else str(record.get("state") or "")
         if state == "landed":
             continue
         initiatives.append({
             "initiative": record["initiative"], "state": state, "branch": record.get("branch"), "parent": record.get("parent"),
-            "phases": lr.phase_states(record, rows) if rows else {},
+            "phases": lr.phase_states(cast(lr.LandingRecord, record), rows) if rows else {},
             "pr": (record.get("pr") or {}).get("url"),
             "held": (record.get("held") or {}).get("reason") or None,
         })

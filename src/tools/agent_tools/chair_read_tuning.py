@@ -14,10 +14,11 @@ A row is dropped, not guessed, when its role has no registered settings key, or 
 The settings registry has no build-tier key, so the build role yields no row today.
 """
 
+import sqlite3
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from agent_tools import (
     run_store,
@@ -54,7 +55,7 @@ def settings_key_for(role: str) -> str | None:
 def current_tiers(cartridge: dict) -> dict[str, str]:
     """Role to its configured tier, read through the settings model; a role whose key the cartridge lacks is absent."""
     values = {r.key: r.value for rows in settings_model.rows(cartridge, {}, {}).values() for r in rows}
-    return {role: values[key] for role, key in ROLE_KEYS.items() if isinstance(values.get(key), str)}
+    return cast(dict[str, str], {role: values[key] for role, key in ROLE_KEYS.items() if isinstance(values.get(key), str)})
 
 
 def _model_key(row: Mapping[str, Any]) -> str | None:
@@ -131,11 +132,11 @@ def last_tuned_at(rows: Iterable[Mapping[str, Any]]) -> str | None:
 
 
 def tuning_facts(
-    stats: Sequence[Row], last: str | None, used_fraction: float, week_elapsed_fraction: float,
+    stats: Sequence[Mapping[str, Any]], last: str | None, used_fraction: float, week_elapsed_fraction: float,
     lanes: Mapping[str, int], bounds: Mapping[str, tuple[int, int]],
 ) -> TuningFacts:
     return {
-        "stats": list(stats), "meter": meter_facts(used_fraction, week_elapsed_fraction),
+        "stats": cast("list[dict[str, object]]", list(stats)), "meter": meter_facts(used_fraction, week_elapsed_fraction),
         "hosts": host_facts(lanes, bounds), "last_tuned_at": last,
     }
 
@@ -158,7 +159,7 @@ def read_stats(stats_db: str, current: Mapping[str, str], now: datetime) -> list
     try:
         if path is None or not path.exists():
             return []
-        conn = connect_readonly_url(stats_db)
+        conn = cast(sqlite3.Connection, connect_readonly_url(stats_db))  # sqlite_path is not None, so the url is sqlite
         try:
             joined = stats_query.tier_call_rows(conn, since)
             tasks, calls = stats_query.gates_inputs(conn, since)

@@ -9,14 +9,14 @@ import sys
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, NamedTuple, TextIO
+from typing import NamedTuple, TextIO, cast
 
 import yaml
 
 from harness import store_api
-from harness.cli import _read_profile, _storage_url
+from harness.cli import profile_storage_url, read_provider_profile
 from harness.store_api import db_errors, open_errors
-from harness.store_dialect import Connection, insert_ignore, json_text
+from harness.store_dialect import Connection, Json, JsonObject, insert_ignore, json_text
 from harness.store_hosts import HOST_STATES, host_beat, host_list, host_set_state, host_upsert, update_host_login
 from harness.store_migrate import open_store
 from harness.store_read import work_items
@@ -35,10 +35,13 @@ EXIT_PRECONDITION = 3
 WORK_STATES = store_api.WORK_STATES
 EXPECT_STATES = store_api.WORK_STATES
 
+# What a command prints as its one JSON object: a mapping, or (for `host list`) an array of them.
+type Payload = Mapping[str, object] | Sequence[Mapping[str, object]]
 
-def resolve_store_url(flag: str | None, profile: Mapping[str, Any], runs_dir: Path | str) -> str:
+
+def resolve_store_url(flag: str | None, profile: Mapping[str, object], runs_dir: Path | str) -> str:
     """The flag, else what `harness cli` resolves: the profile's storage_url, else cox.db in the runs dir."""
-    return flag or _storage_url(profile, runs_dir)
+    return flag or profile_storage_url(profile, runs_dir)
 
 
 def _positive_seconds(text: str) -> int:
@@ -66,9 +69,9 @@ def _non_empty(text: str) -> str:
     return text
 
 
-def _versions(text: str) -> dict[str, Any]:
+def _versions(text: str) -> JsonObject:
     try:
-        value = json.loads(text)
+        value: Json = json.loads(text)
     except ValueError:
         raise argparse.ArgumentTypeError(f"not JSON: {text!r}") from None
     if not isinstance(value, dict):
@@ -76,10 +79,10 @@ def _versions(text: str) -> dict[str, Any]:
     return value
 
 
-def _common(parser: argparse.ArgumentParser, *, top: bool) -> None:
+def add_common_args(parser: argparse.ArgumentParser, *, top: bool) -> None:
     """Leaf parsers default to SUPPRESS so a flag given before the subcommand survives."""
 
-    def default(value: Any) -> Any:
+    def default(value: str | None) -> str | None:
         return value if top else argparse.SUPPRESS
 
     parser.add_argument("--store-url", default=default(None), help="database URL; required unless --runs-dir is given")
@@ -92,19 +95,19 @@ def _common(parser: argparse.ArgumentParser, *, top: bool) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(prog="python -m harness.store_cli", description=__doc__.splitlines()[0])
-    _common(ap, top=True)
+    ap = argparse.ArgumentParser(prog="python -m harness.store_cli", description=cast(str, __doc__).splitlines()[0])
+    add_common_args(ap, top=True)
     commands = ap.add_subparsers(dest="command", required=True)
 
     landed = commands.add_parser("mark-landed", help="stamp the landed fields on a task record")
-    _common(landed, top=False)
+    add_common_args(landed, top=False)
     for name in ("run_id", "phase", "task"):
         landed.add_argument(name)
     landed.add_argument("--pr", required=True, help="pull request URL")
     landed.add_argument("--at", required=True, type=_iso_time, help="landed time, ISO 8601")
 
     state = commands.add_parser("set-state", help="upsert one work item's state")
-    _common(state, top=False)
+    add_common_args(state, top=False)
     state.add_argument("initiative")
     state.add_argument("task")
     state.add_argument("state", choices=WORK_STATES)
@@ -116,21 +119,21 @@ def build_parser() -> argparse.ArgumentParser:
     actions = lease.add_subparsers(dest="action", required=True)
 
     acquire = actions.add_parser("acquire")
-    _common(acquire, top=False)
+    add_common_args(acquire, top=False)
     acquire.add_argument("name")
     acquire.add_argument("holder")
     acquire.add_argument("--ttl", type=_positive_seconds, required=True, help="seconds")
     acquire.add_argument("--steal", action="store_true", help="take a lease another holder still holds, at epoch + 1")
 
     renew = actions.add_parser("renew")
-    _common(renew, top=False)
+    add_common_args(renew, top=False)
     renew.add_argument("name")
     renew.add_argument("holder")
     renew.add_argument("epoch", type=int)
     renew.add_argument("--ttl", type=_positive_seconds, required=True, help="seconds")
 
     release = actions.add_parser("release")
-    _common(release, top=False)
+    add_common_args(release, top=False)
     release.add_argument("name")
     release.add_argument("holder")
     release.add_argument("epoch", type=int)
@@ -139,7 +142,7 @@ def build_parser() -> argparse.ArgumentParser:
     host_actions = host.add_subparsers(dest="action", required=True)
 
     upsert_host = host_actions.add_parser("upsert", help="insert or overwrite a host, keeping its last beat")
-    _common(upsert_host, top=False)
+    add_common_args(upsert_host, top=False)
     upsert_host.add_argument("name", type=_non_empty)
     upsert_host.add_argument("--ssh", required=True, type=_non_empty)
     upsert_host.add_argument("--capacity", required=True, type=int)
@@ -147,42 +150,42 @@ def build_parser() -> argparse.ArgumentParser:
     upsert_host.add_argument("--by", required=True, type=_non_empty, help="who made the change")
 
     beat = host_actions.add_parser("beat", help="stamp a host's beat time and what it reports")
-    _common(beat, top=False)
+    add_common_args(beat, top=False)
     beat.add_argument("name")
     beat.add_argument("--versions", required=True, type=_versions, help="a JSON object: what the host reports")
 
     host_state = host_actions.add_parser("set-state", help="change a host's state")
-    _common(host_state, top=False)
+    add_common_args(host_state, top=False)
     host_state.add_argument("name")
     host_state.add_argument("state", choices=HOST_STATES)
     host_state.add_argument("--by", required=True, type=_non_empty, help="who made the change")
 
     host_login = host_actions.add_parser("login", help="merge login fields into a host's versions, leaving its beat")
-    _common(host_login, top=False)
+    add_common_args(host_login, top=False)
     host_login.add_argument("name", type=_non_empty)
     host_login.add_argument("--login-json", required=True, help="a JSON object: the login fields to merge")
 
     listing = host_actions.add_parser("list", help="print every host, by name")
-    _common(listing, top=False)
+    add_common_args(listing, top=False)
 
     pause = commands.add_parser("pause", help="set a run's paused_at to now")
-    _common(pause, top=False)
+    add_common_args(pause, top=False)
     pause.add_argument("run_id")
     pause.add_argument("--reason", help="optional free-text reason, echoed back in the JSON")
 
     resume = commands.add_parser("resume", help="clear a run's paused_at")
-    _common(resume, top=False)
+    add_common_args(resume, top=False)
     resume.add_argument("run_id")
 
     record = commands.add_parser("record-action", help="record one chair action line as a chair_actions row")
-    _common(record, top=False)
+    add_common_args(record, top=False)
     record.add_argument("--holder", required=True, type=_non_empty, help="the lease holder that took the action")
     record.add_argument("action_json", metavar="json", help="the action line: an object with ts, epoch, kind and status")
 
     regen = commands.add_parser(
         "regenerate-states", help="report, or with --apply fix, ticket files whose state: differs from the store"
     )
-    _common(regen, top=False)
+    add_common_args(regen, top=False)
     regen.add_argument("work_dir", type=Path, help="the work root holding <initiative>/<phase>/<task>.md")
     regen.add_argument("--initiative", required=True, type=_non_empty)
     regen.add_argument(
@@ -209,19 +212,22 @@ def ticket_facts(name: str, text: str) -> tuple[str, str] | None:
     if lines[0].rstrip("\r") != "---" or close is None:
         return None
     try:
-        data = yaml.safe_load("\n".join(lines[1:close]))
+        loaded: object = yaml.safe_load("\n".join(lines[1:close]))
     except yaml.YAMLError:
         return None
-    if not isinstance(data, dict) or not isinstance(data.get("state"), str):
+    if not isinstance(loaded, dict):
         return None
-    return (str(data.get("id") or Path(name).stem), data["state"])
+    data = cast("dict[str, object]", loaded)
+    if not isinstance(data.get("state"), str):
+        return None
+    return (str(data.get("id") or Path(name).stem), cast(str, data["state"]))
 
 
-def plan_regenerate(texts: Mapping[str, str], rows: Mapping[str, Mapping[str, Any]]) -> list[Change]:
+def plan_regenerate(texts: Mapping[str, str], rows: Mapping[str, Mapping[str, object]]) -> list[Change]:
     """One Change per file whose state differs from its row, and one per file with no row. rows is keyed by task id."""
     facts = [(name, ticket_facts(name, text)) for name, text in sorted(texts.items())]
     return [
-        Change(name, task_id, state, None if row is None else row["state"])
+        Change(name, task_id, state, None if row is None else cast(str, row["state"]))
         for name, found in facts
         if found is not None
         for task_id, state in [found]
@@ -266,10 +272,10 @@ CHAIR_ACTION_KEY = ("ts", "holder", "kind", "target")
 _ACTION_REQUIRED = ("ts", "epoch", "kind", "status")
 
 
-def parse_action(text: str) -> dict[str, Any] | str:
+def parse_action(text: str) -> JsonObject | str:
     """The action object, or a one-line reason it is refused."""
     try:
-        action = json.loads(text)
+        action: Json = json.loads(text)
     except json.JSONDecodeError as exc:
         return f"the action is not JSON: {exc}"
     if not isinstance(action, dict):
@@ -278,23 +284,23 @@ def parse_action(text: str) -> dict[str, Any] | str:
     return f"the action lacks {', '.join(missing)}" if missing else action
 
 
-def parse_login(text: str) -> dict[str, Any] | str:
+def parse_login(text: str) -> JsonObject | str:
     """The login object, or a one-line reason it is refused."""
     try:
-        login = json.loads(text)
+        login: Json = json.loads(text)
     except json.JSONDecodeError as exc:
         return f"the login is not JSON: {exc}"
     return login if isinstance(login, dict) else "the login must be a JSON object"
 
 
-def action_target(action: Mapping[str, Any]) -> str:
+def action_target(action: Mapping[str, object]) -> str:
     """task_id, else initiative, else the first intake id, else the empty string."""
     intake = action.get("intake_ids")
-    first = intake[0] if isinstance(intake, list) and intake else ""
+    first = cast("list[object]", intake)[0] if isinstance(intake, list) and intake else ""
     return next((str(v) for v in (action.get("task_id"), action.get("initiative"), first) if v), "")
 
 
-def action_row(holder: str, action: Mapping[str, Any]) -> dict[str, Any]:
+def action_row(holder: str, action: Mapping[str, object]) -> dict[str, object]:
     return {
         "ts": action["ts"],
         "epoch": action["epoch"],
@@ -307,7 +313,7 @@ def action_row(holder: str, action: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _record_action(conn: Connection, holder: str, action: Mapping[str, Any], out: TextIO) -> int:
+def _record_action(conn: Connection, holder: str, action: Mapping[str, object], out: TextIO) -> int:
     """Edge: insert the row, skipping one whose key is already there, and print the one line."""
     row = action_row(holder, action)
     sql = insert_ignore(conn.dialect, "chair_actions", CHAIR_ACTION_COLUMNS, CHAIR_ACTION_KEY)
@@ -316,12 +322,12 @@ def _record_action(conn: Connection, holder: str, action: Mapping[str, Any], out
     return EXIT_OK
 
 
-def _host_login(conn: Connection, name: str, login: dict[str, Any], err: TextIO) -> int:
+def _host_login(conn: Connection, name: str, login: JsonObject, err: TextIO) -> int:
     """Edge: write through update_host_login only; silent on success, one stderr line on an unknown host."""
     return EXIT_OK if update_host_login(conn, name, login) else _fail(f"no host {name}", err)
 
 
-def _host(conn: Connection, args: argparse.Namespace, now: str) -> tuple[Any, int]:
+def _host(conn: Connection, args: argparse.Namespace, now: str) -> tuple[Payload, int]:
     """An unknown host is the empty object with exit 3; list is the array of rows."""
     if args.action == "list":
         return host_list(conn), EXIT_OK
@@ -336,7 +342,7 @@ def _host(conn: Connection, args: argparse.Namespace, now: str) -> tuple[Any, in
 
 def lease_payload(
     action: str, result: store_api.LeaseGranted | store_api.LeaseRefused | store_api.LeaseReleased
-) -> dict[str, Any]:
+) -> JsonObject:
     """Pure: the `{ok, epoch, holder}` object a lease command prints. Only an acquire names the epoch it granted; a
     renew keeps the caller's epoch and a release ends it, so both print epoch and holder null."""
     if isinstance(result, store_api.LeaseRefused):
@@ -346,7 +352,7 @@ def lease_payload(
     return {"ok": True, "epoch": None, "holder": None}
 
 
-def _lease(conn: Connection, args: argparse.Namespace, now: str) -> tuple[Any, int]:
+def _lease(conn: Connection, args: argparse.Namespace, now: str) -> tuple[Payload, int]:
     if args.action == "acquire":
         result = store_api.lease_acquire_on(conn, args.name, args.holder, now, args.ttl, steal=args.steal)
     elif args.action == "renew":
@@ -357,7 +363,7 @@ def _lease(conn: Connection, args: argparse.Namespace, now: str) -> tuple[Any, i
     return lease_payload(args.action, result), EXIT_PRECONDITION if refused else EXIT_OK
 
 
-def _set_state(conn: Connection, args: argparse.Namespace, now: str) -> tuple[Any, int]:
+def _set_state(conn: Connection, args: argparse.Namespace, now: str) -> tuple[Payload, int]:
     """A refused compare-and-set prints the state it found; a missing row with no --phase prints the empty object."""
     result = store_api.set_state_on(
         conn, args.initiative, args.task, args.state, args.by, now, phase=args.phase, expected=args.expect
@@ -367,7 +373,7 @@ def _set_state(conn: Connection, args: argparse.Namespace, now: str) -> tuple[An
     return ({"actual": result.current, "expected": args.expect} if args.expect is not None else {}), EXIT_PRECONDITION
 
 
-def dispatch(conn: Connection, args: argparse.Namespace, now: str) -> tuple[Any, int]:
+def dispatch(conn: Connection, args: argparse.Namespace, now: str) -> tuple[Payload, int]:
     """Every row command goes through `store_api`; a missing task record is the empty object with exit 3."""
     if args.command == "mark-landed":
         landed = store_api.mark_landed_on(conn, args.run_id, args.phase, args.task, args.pr, args.at)
@@ -391,13 +397,14 @@ def _now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _refusal(args: argparse.Namespace, payload: Mapping[str, Any]) -> str:
+def _refusal(args: argparse.Namespace, payload: Payload) -> str:
     if args.command == "host":
         return f"no host {args.name}"
     if args.command == "mark-landed":
         return f"no task record for run {args.run_id} phase {args.phase} task {args.task}"
     if args.command == "set-state" and "actual" in payload:
-        return store_api.refusal_detail(args.task, payload["actual"], payload["expected"])
+        found = cast("Mapping[str, str | None]", payload)
+        return store_api.refusal_detail(args.task, found["actual"], cast(str, found["expected"]))
     if args.command == "set-state":
         return store_api.no_row_detail(args.initiative, args.task)
     if args.command in ("pause", "resume"):
@@ -413,7 +420,8 @@ def _fail(message: str, err: TextIO) -> int:
 def main(argv: Sequence[str] | None = None, out: TextIO | None = None, err: TextIO | None = None) -> int:
     """`out` and `err` default to the process's own streams; an in-process caller (`agent_tools.store_cli.runner`)
     passes buffers, so the same command runs without a child interpreter."""
-    out, err = out or sys.stdout, err or sys.stderr
+    out = cast(TextIO, out or sys.stdout)
+    err = cast(TextIO, err or sys.stderr)
     try:
         with contextlib.redirect_stdout(err), contextlib.redirect_stderr(err):
             args = build_parser().parse_args(sys.argv[1:] if argv is None else list(argv))
@@ -430,7 +438,7 @@ def main(argv: Sequence[str] | None = None, out: TextIO | None = None, err: Text
     if isinstance(login, str):
         return _fail(login, err)
     now = _now()
-    profile = {} if args.provider_profile is None else _read_profile(args.provider_profile)
+    profile: Mapping[str, object] = {} if args.provider_profile is None else read_provider_profile(args.provider_profile)
     url = resolve_store_url(args.store_url, profile, args.runs_dir)
     try:
         conn = open_store(url, now)

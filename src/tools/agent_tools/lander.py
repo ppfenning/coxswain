@@ -21,7 +21,7 @@ import re
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from core import landing_record as lr
 from core.landing import (
@@ -183,7 +183,7 @@ def kept_shas(record: Mapping[str, Any], phases: Sequence[str]) -> list[str]:
     """Pure. The recorded shas a repair must not drop: every one but those of the phases being repaired."""
     entries = record.get("phases") or {}
     doubt = {str(sha) for p in phases for sha in ((entries.get(p) or {}).get("tip"), (entries.get(p) or {}).get("merge_sha")) if sha}
-    return [sha for sha in lr.recorded_shas(record) if sha not in doubt]
+    return [sha for sha in lr.recorded_shas(cast(lr.LandingRecord, record)) if sha not in doubt]
 
 
 def unheld_shas(record: Mapping[str, Any], holds: Mapping[str, bool]) -> list[str]:
@@ -516,7 +516,7 @@ def _unheld_at_merge(repo: Path, record: Mapping[str, Any]) -> str | None:
     return f"{name} lacks recorded commit(s) {', '.join(s[:12] for s in missing)}: the merge waits until it holds them"
 
 
-def _restack(ports: Ports, record: dict[str, Any]) -> tuple[dict[str, Any], list[str], str | None]:
+def _restack(ports: Ports, record: lr.LandingRecord) -> tuple[lr.LandingRecord, list[str], str | None]:
     """The stack step of a land. (the record, events, the initiative this one is still stacked on or None).
 
     When the record's parent is another initiative's branch, that initiative is the layer below. While it has not
@@ -531,9 +531,9 @@ def _restack(ports: Ports, record: dict[str, Any]) -> tuple[dict[str, Any], list
     if below.get("state") != "landed":
         return record, [], str(below["initiative"])
     new_parent, initiative = str(below.get("parent") or ""), str(record["initiative"])
-    updated = {**record, "parent": new_parent, "updated_at": ports.now()}
+    updated: lr.LandingRecord = {**record, "parent": new_parent, "updated_at": ports.now()}
     if isinstance(updated.get("pr"), Mapping):
-        updated["pr"] = {**updated["pr"], "base": new_parent}
+        updated["pr"] = {**cast(lr.PullRequest, updated["pr"]), "base": new_parent}
     ls.put_record(ports.conn, updated)
     events = [f"{initiative}: {below['initiative']} landed; its parent is now {new_parent}"]
     if (record.get("pr") or {}).get("url"):
@@ -576,8 +576,8 @@ def land_epics(ports: Ports) -> list[str]:
     return events
 
 
-def _open_pr(ports: Ports, record: dict[str, Any], tasks: Sequence[Mapping[str, Any]], meta: Mapping[str, Any], repo: Path,
-             branch: str, parent: str) -> tuple[dict[str, Any], list[str]] | Outcome:
+def _open_pr(ports: Ports, record: lr.LandingRecord, tasks: Sequence[Mapping[str, Any]], meta: Mapping[str, Any], repo: Path,
+             branch: str, parent: str) -> tuple[lr.LandingRecord, list[str]] | Outcome:
     """Refresh onto the parent, run the gate checks, push, and open the one pull request (or find the one already open)."""
     initiative, ident = str(record["initiative"]), ls.item_id(ls.INITIATIVE_LAND, str(record["initiative"]))
     recorded = lr.recorded_shas(record)
@@ -647,7 +647,7 @@ def _send_back_initiative(ports: Ports, record: Mapping[str, Any], cause: str, d
     if task is None:
         ports.notify("needs_chair", {"initiative": initiative, "reason": detail})
         return [f"{initiative} cannot land and no integrate task could be filed: {detail}"]
-    current = ls.get_record(ports.conn, initiative) or dict(record)
+    current = ls.get_record(ports.conn, initiative) or cast(lr.LandingRecord, dict(record))
     stored = str(current.get("state") or "building")
     if lr.initiative_move_allowed(stored, "conflicted"):
         ls.put_record(ports.conn, lr.with_state(current, "conflicted", ports.now(), error=detail))
@@ -669,7 +669,7 @@ def _finish_landed(ports: Ports, record: Mapping[str, Any], tasks: Sequence[Mapp
                 refused.append(f"{task['id']}: {why}")
     if refused:
         events.append(f"{initiative}: not marked done: {'; '.join(refused)}")
-    current = ls.get_record(ports.conn, initiative) or dict(record)
+    current: lr.LandingRecord = ls.get_record(ports.conn, initiative) or cast(lr.LandingRecord, dict(record))
     if current.get("state") != "landed":
         stored = str(current.get("state") or "building")
         if not lr.initiative_move_allowed(stored, "landed"):
@@ -707,7 +707,7 @@ def _clean(ports: Ports, record: Mapping[str, Any]) -> list[str]:
 
 # -- blocked phases -----------------------------------------------------------------------------------------------
 
-def settle_blocked(ports: Ports, record: Mapping[str, Any], tasks: Sequence[Mapping[str, Any]]) -> list[str]:
+def settle_blocked(ports: Ports, record: lr.LandingRecord, tasks: Sequence[Mapping[str, Any]]) -> list[str]:
     """Apply `on_blocked` to an initiative with a phase whose task is quarantined past repair.
 
     `hold`: the initiative waits, and the operator is told once, with the choices. `split`: the blocked phase and
@@ -723,7 +723,7 @@ def settle_blocked(ports: Ports, record: Mapping[str, Any], tasks: Sequence[Mapp
     policy = resolve_on_blocked(meta.get("cartridge") or {}, (meta.get("initiative") or {}).get("on_blocked"))
     parents = lr.phase_parents(tasks)
     events: list[str] = []
-    current = dict(record)
+    current = cast(lr.LandingRecord, dict(record))
     for phase in blocked:
         entry = (current.get("phases") or {}).get(phase) or {}
         if policy == "split":
@@ -981,7 +981,7 @@ def _repair(ports: Ports, repo: Path, record: Mapping[str, Any], repairs: Sequen
         return Judgement((f"reconcile: {initiative} waits: origin refused the repaired {branch}: {why.splitlines()[0] if why else 'push failed'}",),
                          judged=False)
     lg.git(repo, "update-ref", origin_ref, tip)
-    current = ls.get_record(ports.conn, initiative) or dict(record)
+    current = ls.get_record(ports.conn, initiative) or cast(lr.LandingRecord, dict(record))
     for drift in repairs:
         current = lr.with_phase(current, drift.phase, ports.now(), merge_sha=tip, repaired_at=ports.now())
     ls.put_record(ports.conn, current)
