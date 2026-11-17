@@ -736,6 +736,8 @@ Coxswain is in beta — versions may change between releases
       
         
       
+        
+      
     
     
     
@@ -803,6 +805,34 @@ Coxswain is in beta — versions may change between releases
     
   
     Hardening plan
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../design/event-driven-chair/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design: the event-driven chair (proposed)
   
 
     
@@ -946,10 +976,10 @@ Coxswain is in beta — versions may change between releases
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_6" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_7" >
         
           
-          <label class="md-nav__link" for="__nav_4_6" id="__nav_4_6_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_4_7" id="__nav_4_7_label" tabindex="0">
             
   
   
@@ -967,8 +997,8 @@ Coxswain is in beta — versions may change between releases
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_6_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_4_6">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_7">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -7867,8 +7897,8 @@ count, so the chair relaunches the initiative and holds it again only if the
 next runs also end the same way.</p>
 <p>A release is refused while a run of the initiative is live, since that run
 could still record attempts below the mark. The refusal names the run and the
-command that stops it, <code>cox runs stop &lt;run&gt;</code>. <code>cox route edit &lt;task&gt; --state
-ready</code> on a blocked or quarantined task is refused the same way.</p>
+command that stops it, <code>cox runs stop &lt;run&gt;</code>. <code>cox route edit &lt;task&gt; --initiative
+&lt;initiative&gt; --state ready</code> on a blocked or quarantined task is refused the same way.</p>
 <p>The chair does not judge an initiative while its newest run is still going.
 If the hold is cleared some other way, without a release, the chair
 relaunches the initiative and holds it again only after a newer run ends the
@@ -7885,8 +7915,8 @@ that starts with <code>needs you:</code>. You see it in three places:</p>
 </ul>
 <p>To release the task, edit its ticket if you need to, then set it back to
 ready. To give it up, drop it:</p>
-<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>route<span class="w"> </span>edit<span class="w"> </span>&lt;task&gt;<span class="w"> </span>--body-file<span class="w"> </span>&lt;file&gt;<span class="w"> </span>--state<span class="w"> </span>ready
-cox<span class="w"> </span>route<span class="w"> </span>edit<span class="w"> </span>&lt;task&gt;<span class="w"> </span>--state<span class="w"> </span>dropped
+<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>route<span class="w"> </span>edit<span class="w"> </span>&lt;task&gt;<span class="w"> </span>--initiative<span class="w"> </span>&lt;initiative&gt;<span class="w"> </span>--body-file<span class="w"> </span>&lt;file&gt;<span class="w"> </span>--state<span class="w"> </span>ready
+cox<span class="w"> </span>route<span class="w"> </span>edit<span class="w"> </span>&lt;task&gt;<span class="w"> </span>--initiative<span class="w"> </span>&lt;initiative&gt;<span class="w"> </span>--state<span class="w"> </span>dropped
 </code></pre></div>
 <p>A released task does not go to triage first. If it fails again and its
 count is still at the limit, the chair holds it again.</p>

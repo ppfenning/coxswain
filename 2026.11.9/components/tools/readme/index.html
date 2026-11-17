@@ -736,6 +736,8 @@ Coxswain is in beta — versions may change between releases
       
         
       
+        
+      
     
     
     
@@ -803,6 +805,34 @@ Coxswain is in beta — versions may change between releases
     
   
     Hardening plan
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../design/event-driven-chair/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design: the event-driven chair (proposed)
   
 
     
@@ -946,10 +976,10 @@ Coxswain is in beta — versions may change between releases
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_6" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_7" >
         
           
-          <label class="md-nav__link" for="__nav_4_6" id="__nav_4_6_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_4_7" id="__nav_4_7_label" tabindex="0">
             
   
   
@@ -967,8 +997,8 @@ Coxswain is in beta — versions may change between releases
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_6_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_4_6">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_7">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -6757,7 +6787,7 @@ cox route paths [--profile PROFILE] [--workspace WORKSPACE] [--apply] [--move ('
 cox route store-fill [--profile PROFILE] [--workspace WORKSPACE]   fill the store's work_items from the workspace files
 cox route approve INITIATIVE [--task TASK] [--by BY] [--profile PROFILE]   approve a draft initiative's todo tickets: todo becomes ready
 cox route decline INITIATIVE --reason REASON [--by BY] [--profile PROFILE]   decline a draft initiative: its todo tickets become dropped
-cox route edit ID [--title TITLE] [--body BODY] [--body-file BODY_FILE] [--note NOTE] [--repo REPO] [--surfaces SURFACES] [--state STATE] [--pr PR] [--rebuild] [--force] [--link LINK] [--after AFTER] [--epic EPIC] [--dry-run] [--profile PROFILE]   change a queued intake, an initiative or a task ticket
+cox route edit ID [--title TITLE] [--body BODY] [--body-file BODY_FILE] [--note NOTE] [--repo REPO] [--initiative INITIATIVE] [--surfaces SURFACES] [--state STATE] [--pr PR] [--rebuild] [--force] [--link LINK] [--after AFTER] [--epic EPIC] [--dry-run] [--profile PROFILE]   change a queued intake, an initiative or a task ticket
 cox route epic ACTION ID [--title TITLE] [--target-branch TARGET_BRANCH] [--dry-run] [--profile PROFILE]   create an epic definition file: `route epic new &lt;id&gt;`
 cox route remove [ID...] [--match GLOB] --reason REASON [--by BY] [--dry-run] [--profile PROFILE]   remove queued intakes or initiatives that have no live run
 cox route hold ID --reason REASON [--by BY] [--dry-run] [--profile PROFILE]   hold a queued intake or an initiative so the chair skips it until released; for an intake, an alias for draft with a reason

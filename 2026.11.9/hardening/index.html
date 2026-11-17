@@ -14,7 +14,7 @@
         <link rel="prev" href="../methodology/">
       
       
-        <link rel="next" href="../smoke/">
+        <link rel="next" href="../design/event-driven-chair/">
       
       
         
@@ -738,6 +738,8 @@ Coxswain is in beta — versions may change between releases
       
         
       
+        
+      
     
     
     
@@ -1018,6 +1020,34 @@ Coxswain is in beta — versions may change between releases
   
   
     <li class="md-nav__item">
+      <a href="../design/event-driven-chair/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design: the event-driven chair (proposed)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../smoke/" class="md-nav__link">
         
   
@@ -1141,10 +1171,10 @@ Coxswain is in beta — versions may change between releases
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_6" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_7" >
         
           
-          <label class="md-nav__link" for="__nav_4_6" id="__nav_4_6_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_4_7" id="__nav_4_7_label" tabindex="0">
             
   
   
@@ -1162,8 +1192,8 @@ Coxswain is in beta — versions may change between releases
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_6_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_4_6">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_7">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -6793,7 +6823,7 @@ Coxswain is in beta — versions may change between releases
   <a class="cox-page-nav__prev" href="../methodology/">← Methodology</a>
   
   
-  <a class="cox-page-nav__next" href="../smoke/">Smoke suite →</a>
+  <a class="cox-page-nav__next" href="../design/event-driven-chair/">Design: the event-driven chair (proposed) →</a>
   
 </nav>
 
@@ -6888,7 +6918,7 @@ API's enums; a lane check imports only its worktree's code (a test proves it wit
 <p><strong>Status.</strong> <code>harness.store_api</code> is the typed store API: <code>*_on</code> functions over an open connection, which
 <code>harness.store_cli</code> wraps, and url-level functions that <code>agent_tools</code> calls in process (<code>store_cli</code>, <code>run_store</code>).
 Its values are frozen dataclasses and TypedDicts; <code>WorkState</code> is the one enum and <code>core.workstore.STATES</code> must equal
-it. The chair's remedies, which <code>cox inbox</code> accept and deny run, are <code>cox route edit &lt;task&gt; --state &lt;state&gt;</code>. What stays a
+it. The chair's remedies, which <code>cox inbox</code> accept and deny run, are <code>cox route edit &lt;task&gt; --initiative &lt;initiative&gt; --state &lt;state&gt;</code>, so a task id repeated across initiatives moves the right ticket. What stays a
 command line, and why: the <code>cox runs recover --reopen</code> hint prints <code>-m harness.store_cli set-state</code> for a person, and
 <code>store_switch</code> copies a store with <code>-m harness.store_copy</code>, which needs the sqlite double set in its own environment.
 The chair's trace prune (<code>-m harness.store_backfill_traces prune</code>) still runs as a child of the profile's harness
@@ -6977,6 +7007,16 @@ read one env file; the macOS lane host upgrades on a schedule; a lane sync never
 </ol>
 <p><strong>Done when.</strong> A quiet tick takes under 5 s on the chair machine; a design page for the queues is approved before
 any build.</p>
+<p><strong>Status.</strong> Part 1 was measured on a restored slice: this machine's workspace, with its run records backfilled into a
+throwaway Postgres (2,545 runs, 2,943 work items, 2,773 task records, 9,827 node calls). There, a dry-run
+<code>cox chair run</code> tick went from about 29 s of facts to about 4 s in total. Most of the time was not the store. It was
+one <code>git log</code> per ticket (744 processes), a glob of the 14,000-entry runs directory once per initiative, quadratic row
+lookups, and re-parsing every ticket's YAML. The store readers (<code>work_items</code>, the queue, <code>hosts</code>, the newest run per
+initiative) now keep their rows while the store's change counters for their tables stand (<code>chair_tick_cache</code>). A quiet
+tick sends one counters query instead of about 470 queries, and the timing line ends <code>store: read=… reused=…</code>.
+<code>smoke/test_chair_tick_cache.py</code> proves it against real Postgres: a quiet gather re-reads nothing and scans no
+<code>work_items</code>, and one write re-reads exactly the <code>work_items</code> readers. The chair machine itself is not yet measured.
+Part 2 is the <a href="../design/event-driven-chair/">event-driven chair</a>, proposed and not approved.</p>
 <h2 id="h7-the-operator-is-told">H7. The operator is told</h2>
 <p><strong>Evidence.</strong> The chair sat idle for hours more than once, and only a person looking noticed.</p>
 <p><strong>Change.</strong></p>
@@ -7107,13 +7147,13 @@ step those PRs used: an independent reviewer reads the diff before it merges.</p
         
         
           
-          <a href="../smoke/" class="md-footer__link md-footer__link--next" aria-label="Next: Smoke suite">
+          <a href="../design/event-driven-chair/" class="md-footer__link md-footer__link--next" aria-label="Next: Design: the event-driven chair (proposed)">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 Next
               </span>
               <div class="md-ellipsis">
-                Smoke suite
+                Design: the event-driven chair (proposed)
               </div>
             </div>
             <div class="md-footer__button md-icon">
