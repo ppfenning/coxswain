@@ -7808,7 +7808,9 @@ the profile. It defaults to 3. Setting it to 0 turns the limit off.</p>
 <p>The count covers every version of the task's ticket, so an amended ticket
 keeps its earlier failures. A stoppage and a failed rescue do not count.</p>
 <p>The chair also holds a task that comes back quarantined in the same run it
-already asked triage for. This happens when triage itself could not run.</p>
+already asked triage for. A triage that could not run no longer quarantines
+the task: the epic holds it itself, and the hold reason starts with
+<code>triage could not run:</code> and names what failed.</p>
 <h3 id="the-no-progress-hold">The no-progress hold</h3>
 <p>The chair holds an initiative for you when its last runs all ended the same
 way. Two runs end the same way when every phase has the same state (such as
@@ -7829,6 +7831,10 @@ courier for the hold.</p>
 <p>The release marks the initiative's newest run. Runs up to that mark no longer
 count, so the chair relaunches the initiative and holds it again only if the
 next runs also end the same way.</p>
+<p>A release is refused while a run of the initiative is live, since that run
+could still record attempts below the mark. The refusal names the run and the
+command that stops it, <code>cox runs stop &lt;run&gt;</code>. <code>cox route edit &lt;task&gt; --state
+ready</code> on a blocked or quarantined task is refused the same way.</p>
 <p>The chair does not judge an initiative while its newest run is still going.
 If the hold is cleared some other way, without a release, the chair
 relaunches the initiative and holds it again only after a newer run ends the
