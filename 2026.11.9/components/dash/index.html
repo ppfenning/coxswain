@@ -6456,6 +6456,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#the-feed-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The feed contract
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#installing-it" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6512,6 +6523,19 @@ was coxtop.</p>
 <p>The dash repository owns the <code>towpath</code> binary (Rust and ratatui), its themes
 and its keymap. Every action it offers is a <code>cox</code> verb; it holds no state of
 its own beyond the view you left it on.</p>
+<h2 id="the-feed-contract">The feed contract</h2>
+<p>Every feed and detail snapshot carries the contract version as <code>schema</code>
+(<code>dash_contract.CONTRACT_VERSION</code> in tools). The version moves only on a
+breaking change, a key removed or renamed or a type changed; an added key
+keeps it. Towpath refuses a snapshot at any other version and says which side
+to upgrade.</p>
+<p>The fixtures that fix the contract's shape live in tools at
+<code>tests/fixtures/</code>, listed with the version in <code>dash_contract.json</code>. Towpath
+keeps no hand copies: its <code>coxswain-contract.toml</code> pins one coxswain commit,
+its tests read the fixtures vendored from that commit, and its CI fails when
+the vendored set differs from the set at the pin. Bumping the pin is the only
+way towpath takes a changed fixture, so a changed fixture reaches towpath's
+tests in the same pull request that adapts towpath to it.</p>
 <h2 id="installing-it">Installing it</h2>
 <p>Dash is optional: nothing else needs it. It lives in its own repository and
 is tagged on its own: a Coxswain release tags dash only when dash changed,
