@@ -10,6 +10,8 @@ from core.cartridge import overlay_errors
 ROOT = Path(__file__).resolve().parents[3]
 COMPONENTS = ["cartridges", "graphs", "tools"]
 CLEAN_LINE = "python .github/check_clean.py . --require-names"
+# The smoke suite (docs/smoke.md): real cox against real git and Postgres, run whole from the root.
+SMOKE_LINE = "pytest -q -rs smoke"
 
 
 def overlay() -> dict:
@@ -35,4 +37,4 @@ def test_agent_checks_keeps_task_checks():
         if line.strip() and not line.startswith("#")
     ]
     pytest_lines = [f"cd src/{name} && pytest -q -n auto" for name in ("tools", "graphs", "cartridges")]
-    assert lines == pytest_lines + [CLEAN_LINE]
+    assert lines == pytest_lines + [SMOKE_LINE, CLEAN_LINE]
