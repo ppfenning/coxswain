@@ -1116,7 +1116,9 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     held_needs_chair = plan_held_files(facts)
     # H4.1: an initiative whose last runs ended the same way is held for a person, and not relaunched meanwhile.
     no_progress_holds = plan_no_progress(facts)
-    no_progress = frozenset(facts.get("no_progress") or {})
+    # Only an initiative held this tick is withheld: once its hold is visible the held gate takes over, and a hold a
+    # person cleared by any route lets it launch again.
+    no_progress = frozenset(a["initiative"] for a in no_progress_holds)
     streak_stalled, streak_needs_chair = _decompose_gate(facts)
     missed_intake, miss_needs_chair = _decompose_miss_gate(facts, now)
     # A skipped intake stays in facts["intake"] (so no pull is planned), but plan_fill never launches it.

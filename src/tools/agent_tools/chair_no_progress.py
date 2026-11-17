@@ -4,9 +4,10 @@ An initiative whose last N ended runs (`chair.no_progress_after`, default 2) end
 new task state is held for a person, with a `needs you:` reason that names the repeated outcome. Relaunching it again
 would only end the same way: something outside the run (an approval, a merge, a fix) has to change first.
 
-A run is compared by its phase states (`phases` rows of the run store) and the task states it recorded (its
-`task_records` rows); two runs that built nothing record no task, so their task states are equal. A run with no phase
-record says nothing about its outcome, so it never counts toward a repeat. Only runs after the initiative's
+A run is compared by its phase states (`phases` rows of the run store) and the task states it recorded (its `tasks`
+rows, one per task at its final state in the run); two runs that built nothing record no task, so their task states
+are equal. A run with no phase record says nothing about its outcome, so it never counts toward a repeat, and an
+initiative whose newest run has not ended is not judged (`chair_read_run_outcomes`). Only runs after the initiative's
 fresh-start mark count (`core.workstore.FRESH_AFTER_RUN`, written by `cox route release`), so a release after a fix
 gets N fresh runs before the guard can hold it again. No I/O, no clock.
 """

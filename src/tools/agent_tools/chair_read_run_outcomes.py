@@ -1,9 +1,11 @@
 """Edge reader: the newest ended runs of each initiative, as `chair_no_progress.RunOutcome` rows, from the run store.
 
-A run counts once its `runs` row has an `ended_at`; its phase states come from its `phases` rows and its task states
-from its `task_records` rows. Only an initiative's own series (`<initiative>-N`) is read, the one the chair launches
-and relaunches; a phase run (`<initiative>.<phase>-N`) is a series of its own. A missing or unreadable store reads as
-no runs, so the guard holds nothing.
+A run counts once its `runs` row has an `ended_at`. Its phase states come from its `phases` rows (`record_json`'s
+`status` and `reason`, as the epic's `_record_phase` writes them), and its task states from its `tasks` rows (the
+explicit `state` column the epic's `_record_tasks` writes, one row per task at its final state in the run). Only an
+initiative's own series (`<initiative>-N`) is read, the one the chair launches and relaunches; a phase run
+(`<initiative>.<phase>-N`) is a series of its own. An initiative whose newest run has not ended is left out: what it
+will end with is not known yet. A missing or unreadable store reads as no runs, so the guard holds nothing.
 """
 
 from __future__ import annotations
@@ -19,22 +21,28 @@ from core.workstore import run_series
 READ_ERRORS = (*run_store._DB_ERRORS, RuntimeError, OSError)
 
 
-def newest_runs(run_ids: Sequence[str], initiatives: Collection[str], last: int) -> dict[str, list[str]]:
-    """Pure. Per initiative, its own series' newest `last` run ids, newest first; an initiative with none is left out."""
+def newest_runs(runs: Sequence[tuple[str, bool]], initiatives: Collection[str], last: int) -> dict[str, list[str]]:
+    """Pure. `runs` are (run id, ended). Per initiative, its own series' newest `last` ended run ids, newest first. An
+    initiative with no ended run, or whose newest run has not ended, is left out."""
     wanted = frozenset(initiatives)
-    numbered: dict[str, list[tuple[int, str]]] = {}
-    for run in run_ids:
+    numbered: dict[str, list[tuple[int, str, bool]]] = {}
+    for run, ended in runs:
         series, number = run_series(run)
         if series in wanted and number >= 0:
-            numbered.setdefault(series, []).append((number, run))
-    return {i: [run for _, run in sorted(runs, reverse=True)[:last]] for i, runs in sorted(numbered.items())}
+            numbered.setdefault(series, []).append((number, run, ended))
+    found = {}
+    for initiative, own in sorted(numbered.items()):
+        ordered = sorted(own, reverse=True)
+        if ordered[0][2]:
+            found[initiative] = [run for _, run, ended in ordered if ended][:last]
+    return found
 
 
 def outcomes_from_rows(
     newest: Mapping[str, Sequence[str]], phase_rows: Sequence[Mapping[str, Any]], task_rows: Sequence[Mapping[str, Any]]
 ) -> dict[str, list[RunOutcome]]:
     """Pure. Each initiative's runs in `newest` order, with the status and reason of each of its phase rows and the
-    `status` (else `state`) of each of its task records. A record that does not decode is read as an empty one."""
+    `state` of each of its task rows. A phase record that does not decode reads as one with no status."""
     phases: dict[str, dict[str, str]] = {}
     reasons: dict[str, dict[str, str]] = {}
     tasks: dict[str, dict[str, str]] = {}
@@ -44,9 +52,7 @@ def outcomes_from_rows(
         phases.setdefault(str(row["run_id"]), {})[str(row["phase_id"])] = str(record.get("status") or "")
         reasons.setdefault(str(row["run_id"]), {})[str(row["phase_id"])] = str(record.get("reason") or "")
     for row in task_rows:
-        record = run_store._json_cell(row.get("record_json"))
-        record = record if isinstance(record, dict) else {}
-        tasks.setdefault(str(row["run_id"]), {})[str(row["task_id"])] = str(record.get("status") or record.get("state") or "")
+        tasks.setdefault(str(row["run_id"]), {})[str(row["task_id"])] = str(row.get("state") or "")
     return {
         initiative: [
             {"run_id": run, "phases": phases.get(run, {}), "reasons": reasons.get(run, {}), "tasks": tasks.get(run, {})}
@@ -66,9 +72,9 @@ def read_run_outcomes(runs_dir: Path, initiatives: Collection[str], last: int) -
             return {}
         conn, token = opened
         try:
-            ended = [str(r["run_id"]) for r in conn.execute("SELECT run_id FROM runs WHERE ended_at IS NOT NULL AND ended_at <> ''")]
-            newest = newest_runs(ended, initiatives, last)
-            ids = [run for runs in newest.values() for run in runs]
+            runs = [(str(r["run_id"]), bool(r["ended_at"])) for r in conn.execute("SELECT run_id, ended_at FROM runs")]
+            newest = newest_runs(runs, initiatives, last)
+            ids = [run for own in newest.values() for run in own]
             if not ids:
                 return {}
             marks = ", ".join(["{p}"] * len(ids))
@@ -76,7 +82,7 @@ def read_run_outcomes(runs_dir: Path, initiatives: Collection[str], last: int) -
                 run_store._sql(f"SELECT run_id, phase_id, record_json FROM phases WHERE run_id IN ({marks})", token), ids
             ).fetchall()
             task_rows = conn.execute(
-                run_store._sql(f"SELECT run_id, task_id, record_json FROM task_records WHERE run_id IN ({marks})", token), ids
+                run_store._sql(f"SELECT run_id, task_id, state FROM tasks WHERE run_id IN ({marks})", token), ids
             ).fetchall()
         finally:
             conn.close()

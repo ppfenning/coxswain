@@ -803,6 +803,11 @@ The release marks the initiative's newest run. Runs up to that mark no longer
 count, so the chair relaunches the initiative and holds it again only if the
 next runs also end the same way.
 
+The chair does not judge an initiative while its newest run is still going.
+If the hold is cleared some other way, without a release, the chair
+relaunches the initiative and holds it again only after a newer run ends the
+same way.
+
 ### A held task
 
 A held task is in state `blocked`, and its row in the store carries a reason
