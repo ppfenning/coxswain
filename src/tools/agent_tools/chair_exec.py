@@ -1197,6 +1197,30 @@ def _hold_initiative(action: Action, deps: Deps) -> Result:
     return _result(action, "done", f"{initiative} held: {reason}{note}")
 
 
+def _stall_alarm(action: Action, deps: Deps) -> Result:
+    """Edge. One courier entry for a stall the chair raised (`stall_raised`) or saw clear (`stall_cleared`), H7.1.
+
+    The recorded row of this action is what marks the stall raised or cleared: the next tick's facts read it back
+    (`chair_stall_alarm.open_alarms`), so a stall is raised once and cleared once. A `quiet` clear writes no entry. A
+    failed write records `failed`, and the next tick plans it again."""
+    raised = action["kind"] == "stall_alarm"
+    stall, subject = action.get("stall", ""), action.get("subject", "")
+    detail = action.get("detail", "")
+    if action.get("quiet"):  # a streak that went quiet: its recorded row closes the stall, and no one is told
+        return _result(action, "done", f"expired: {stall}")
+    note = f"{'stall' if raised else 'all clear'}: {detail}"
+    entry = courier.send(
+        courier.Reference("initiative", subject or stall), deps.label or "chair", deps.note_to, note, uuid.uuid4().hex,
+        event="stall_raised" if raised else "stall_cleared",
+        fields={"stall": stall, "since": action.get("since", ""), "subject": subject, "detail": detail}, topic=subject or None,
+    )
+    try:
+        courier.append_file(deps.work_dir / "courier.jsonl", entry)
+    except OSError as exc:
+        return _result(action, "failed", f"the courier entry for {stall} was not written: {exc}")
+    return _result(action, "done", note)
+
+
 def _rescue(action: Action, deps: Deps) -> Result:
     """The rescue launch; once it is out, its task state's key is handled, so the next tick does not launch it again.
 
@@ -1723,6 +1747,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
         return _announce_hold(action, deps)
     if kind == "hold_initiative":
         return _hold_initiative(action, deps)
+    if kind in ("stall_alarm", "stall_clear"):
+        return _stall_alarm(action, deps)
     if kind == "release_approvals":
         return _release_approvals(action, deps)
     if kind == "restore_approvals":

@@ -19,6 +19,7 @@ _KINDS = ("run", "task", "pr", "intake", "proposal", "finding", "initiative")
 EVENTS = (
     "needs_attention", "level_merged", "merge_failed", "relaunched", "stuck", "gate_passed", "gate_failed",
     "epic_complete", "run_exited",
+    "stall_raised", "stall_cleared",  # the chair's stall alarm (chair_stall_alarm): one entry as a stall starts, one as it clears
     "chat_directive", "chat_question", "chat_answer", "directive_applied", "directive_refused",
     "chat_action",  # a record of a write an MCP client already made; nothing acts on it
 )

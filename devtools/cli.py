@@ -41,6 +41,7 @@ from devtools import (
     release_notes_index,
     release_notes_opener,
     release_notes_prs,
+    release_progress,
     release_rehearsal_gate,
     release_required_checks,
     release_resume,
@@ -149,10 +150,26 @@ def _load_manifest(path: Path) -> dict | None:
         return None
 
 
+# `gh pr checks --watch` waits out a whole CI run, so the release's own runner has the longest bound; a git call that
+# only reads a ref or a status has a short one.
+_RUN_SECONDS = 3600
+_GIT_SECONDS = 120
+_ARCHIVE_SECONDS = 600
+
+
+def _bounded(argv: list, cwd: str | None, seconds: float, text: bool = True) -> subprocess.CompletedProcess:
+    """`subprocess.run` with captured output and a `seconds` bound; a call that runs past it exits 124, naming it."""
+    try:
+        return subprocess.run(argv, cwd=cwd, capture_output=True, text=text, timeout=seconds)
+    except subprocess.TimeoutExpired:
+        message = f"timed out after {seconds:.0f}s: {' '.join(map(str, argv))}"
+        return subprocess.CompletedProcess(argv, 124, "" if text else b"", message if text else message.encode())
+
+
 def _real_run(argv: list, cwd: str | None) -> tuple:
     """The subprocess wrapper `install_exec.execute` calls at the edge;
     stdout and stderr are folded together since the caller only prints."""
-    result = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
+    result = _bounded(argv, cwd, _RUN_SECONDS)
     return result.returncode, result.stdout + result.stderr
 
 
@@ -160,8 +177,7 @@ def _remote_tags(repo: str) -> list[str] | None:
     """The tags on `repo`'s GitHub remote, or None when git could not read the
     remote. None is not `[]`: the planner refuses on None, so an unreachable or
     misnamed remote can never look like a clean one."""
-    result = subprocess.run(["git", "ls-remote", "--tags", f"https://github.com/{repo}.git"],
-                             capture_output=True, text=True)
+    result = _bounded(["git", "ls-remote", "--tags", f"https://github.com/{repo}.git"], None, _GIT_SECONDS)
     return None if result.returncode != 0 else release.parse_ls_remote(result.stdout)
 
 
@@ -244,7 +260,7 @@ def parse_counts(out: str) -> tuple[int, int] | None:
 def _stdout_run(argv: list, cwd: str | None) -> tuple:
     """Like `_real_run`, but stdout only: git writes progress and warnings to
     stderr, and a number parsed out of folded output would read them too."""
-    result = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
+    result = _bounded(argv, cwd, _RUN_SECONDS)
     return result.returncode, result.stdout
 
 
@@ -632,29 +648,61 @@ def _same_notes(published: str, notes: str) -> bool:
     return published.replace("\r\n", "\n").rstrip() == notes.replace("\r\n", "\n").rstrip()
 
 
-def _merge_back(step: dict, directory: str, run, sleep, now) -> tuple[bool, str]:
-    """Merges the release branch back into the default branch with a merge commit, so the tag stays an ancestor of it.
-    A branch origin no longer lists is already merged back and deleted."""
-    branch = step["branch"]
+def _holds(directory: str, default: str, sha: str, run) -> bool:
+    """True when `origin/<default>` in `directory` already holds `sha`; False when it does not or git cannot tell."""
+    rc, out = run(["git", "-C", directory, "rev-list", "--count", f"origin/{default}..{sha}"], None)
+    return rc == 0 and release_progress.holds(out)
+
+
+def _open_prs(directory: str, branch: str, base: str, run) -> int | None:
+    """How many open pull requests run from `branch` into `base`; None when `gh` failed or printed something else."""
+    rc, out = run(["gh", "pr", "list", "--head", branch, "--base", base, "--state", "open", "--json", "number"],
+                  directory)
+    return release_progress.open_pull_requests(out) if rc == 0 else None
+
+
+def _merge_back_facts(branch: str, directory: str, run) -> tuple[release_progress.MergeBack | None, str]:
+    """What origin and the checkout say of `branch`'s merge-back, read without changing either; `(None, why)` on a
+    failed ls-remote or fetch."""
     ok, head, detail = _origin_ref_sha(directory, f"refs/heads/{branch}", run)
     if not ok:
-        return False, detail
-    if head is None:
-        return True, f"{branch} already merged back and deleted"
+        return None, detail
     default = _default_branch(directory, run)
-    for argv, cwd in ((release.fetch_argv(directory), None), (release.checkout_tracking_argv(directory, branch), None)):
-        rc, out = run(argv, cwd)
-        if rc != 0:
-            return False, out.strip()
-    list_rc, list_out = run(["gh", "pr", "list", "--head", branch, "--base", default, "--state", "open",
-                              "--json", "number"], directory)
-    if list_rc != 0:
-        return False, list_out.strip()
-    try:
-        open_prs = json.loads(list_out or "[]")
-    except json.JSONDecodeError:
-        return False, f"unreadable gh pr list output: {list_out.strip()}"
-    if not open_prs:
+    rev_rc, current = run(["git", "-C", directory, "rev-parse", "--abbrev-ref", "HEAD"], None)
+    checked_out = current.strip() if rev_rc == 0 else ""
+    if head is None:
+        return release_progress.MergeBack(branch, default, None, checked_out=checked_out), ""
+    fetch_rc, fetch_out = run(release.fetch_argv(directory), None)
+    if fetch_rc != 0:
+        return None, fetch_out.strip()
+    merged = _holds(directory, default, head, run)
+    open_prs = 0 if merged else _open_prs(directory, branch, default, run)
+    return release_progress.MergeBack(branch, default, head, merged, open_prs, checked_out), ""
+
+
+def _merge_back(step: dict, directory: str, run, sleep, now) -> tuple[bool, str]:
+    """Merges the release branch back into the default branch with a merge commit, so the tag stays an ancestor of it.
+    `release_progress.merge_back_next` judges the facts first: a branch origin no longer lists, or one the default
+    branch already holds, is done, and a checkout left on it goes back to the default branch."""
+    branch = step["branch"]
+    facts, detail = _merge_back_facts(branch, directory, run)
+    if facts is None:
+        return False, detail
+    default = facts.default
+    decided = release_progress.merge_back_next(facts)
+    if decided.action == "fail":
+        return False, decided.detail
+    if decided.action == "done":
+        if decided.restore:
+            for argv in (release.checkout_ref_argv(directory, default), release.pull_argv(directory, default)):
+                rc, out = run(argv, None)
+                if rc != 0:
+                    return False, out.strip()
+        return True, decided.detail
+    rc, out = run(release.checkout_tracking_argv(directory, branch), None)
+    if rc != 0:
+        return False, out.strip()
+    if decided.action == "open_and_merge":
         title = f"Merge {branch} back into {default}"
         body = f"Merges {branch} back into {default} so the release tag stays an ancestor of {default}."
         pr_rc, pr_out = run(release.pr_create_argv(title, body, default, branch), directory)
@@ -678,11 +726,143 @@ def _merge_back(step: dict, directory: str, run, sleep, now) -> tuple[bool, str]
     return True, f"{branch} merged into {default}"
 
 
+def _tap_facts(step: dict, version: str, directory: str, run) -> tuple[release_progress.Tap | None, str]:
+    """What the tap clone and its origin hold of this version's formula PR, read after one fetch and without
+    changing either; `(None, why)` when the fetch or ls-remote fails."""
+    fetched, base = _tap_branch_base(directory, run)
+    if not fetched:
+        return None, base
+    default = base.removeprefix("origin/")
+    branch = step["branch"]
+    ok, head, detail = _origin_ref_sha(directory, f"refs/heads/{branch}", run)
+    if not ok:
+        return None, detail
+    _, local = run(["git", "-C", directory, "for-each-ref", "--format=%(refname)", f"refs/heads/{branch}"], None)
+    return release_progress.Tap(
+        version=version, default=default, branch=branch,
+        base_formula=release_resume.file_at(directory, base, step["path"], run),
+        branch_head=head,
+        branch_formula=release_resume.file_at(directory, f"origin/{branch}", step["path"], run) if head else None,
+        open_prs=_open_prs(directory, branch, default, run) if head else 0,
+        local_branch=local.strip() == f"refs/heads/{branch}"), ""
+
+
+def _tap_bumped(step: dict, version: str, umbrella: str, formula: Path, sleep, fetch_index,
+                fetch_text) -> tuple[Callable[[], None] | None, str]:
+    """`(write, "")`, where `write()` rewrites `formula` for `version` from what PyPI and dash's release list, or
+    `(None, why)` naming the first fetch or pin that failed. Nothing in the tap clone is touched here."""
+    try:
+        sdist = release.sdist_from_index(_fetch_with_retry(fetch_index, step["index_url"], sleep))
+    except (OSError, ValueError) as exc:
+        sdist, detail = None, str(exc)
+    else:
+        detail = "the index lists no sdist"
+    if sdist is None:
+        return None, f"{step['index_url']}: {detail}"
+    # A dash pinned by this release keeps its tag, so its tarballs live under that release, not this one.
+    towpath_at = step.get("towpath_version") or version
+    texts = {}
+    for asset_url in release.towpath_asset_urls(towpath_at).values():
+        try:
+            texts[f"{asset_url}.sha256"] = fetch_text(f"{asset_url}.sha256")
+        except (OSError, ValueError):
+            texts[f"{asset_url}.sha256"] = None
+    towpath, reason = release.towpath_assets(towpath_at, texts)
+    if towpath is None:
+        return None, reason
+    # The formula carries pure psycopg on libpq, so only the psycopg pin and release document are read.
+    try:
+        psycopg_version = release.psycopg_pin((Path(umbrella) / _EXTRAS_REQUIREMENTS).read_text())
+    except (OSError, ValueError) as exc:
+        return None, f"psycopg: {exc}"
+    try:
+        psycopg = release.psycopg_assets(_pypi_release("psycopg", psycopg_version, fetch_index, sleep))
+    except (KeyError, OSError, ValueError) as exc:
+        return None, str(exc)
+
+    def write():
+        formula.write_text(release.bumped_formula_text(formula.read_text(), version, *sdist, towpath=towpath,
+                                                       psycopg=psycopg))
+    return write, ""
+
+
+def _tap_formula_pr(step: dict, version: str, root: str, overrides: dict, umbrella: str, run, sleep, now,
+                    fetch_index, fetch_text) -> bool:
+    """The tap step, one printed line per outcome; False when it failed.
+
+    The tap clone is fetched and read first, and `release_progress.tap_next` judges what is left: a formula already
+    at this version on the default branch is done with nothing fetched from PyPI; a branch origin already holds at
+    this version only gets its pull request (when none is open) and the install proof; otherwise the formula is
+    bumped on a branch cut from `origin/<default>` (a stale local branch of the same name is cut again), pushed, put
+    up as a pull request and proved. Every refusal of a fetch from PyPI or dash comes before any branch is cut."""
+    directory = release.component_dir(root, release.TAP_CHECKOUT, overrides)
+    # The tap PR is left for the maintainer, so the checkout goes back to the branch it was on on every path out
+    # of the step: the next cut refuses a tap clone that sits on an old release branch.
+    rev_rc, before = run(["git", "-C", directory, "rev-parse", "--abbrev-ref", "HEAD"], None)
+    facts, detail = _tap_facts(step, version, directory, run)
+    if facts is None:
+        print(f"FAILED tap_formula_pr tap: {detail}")
+        return False
+    action, detail = release_progress.tap_next(facts)
+    if action == "fail":
+        print(f"FAILED tap_formula_pr tap: {detail}")
+        return False
+    if action == "done":
+        print(f"tap_formula_pr tap: {detail}")
+        return True
+    body = f"Bumps the formula to {version} on PyPI.\n\n{release.pr_footer(version)}"
+    if action in ("bump", "recut"):
+        write, reason = _tap_bumped(step, version, umbrella, Path(directory) / step["path"], sleep, fetch_index,
+                                    fetch_text)
+        if write is None:
+            print(f"FAILED tap_formula_pr tap: {reason}")
+            return False
+    try:
+        if action in ("bump", "recut"):
+            if action == "recut":
+                rc, out = run(["git", "-C", directory, "branch", "-D", step["branch"]], None)
+                if rc != 0:
+                    print(f"FAILED tap_formula_pr tap: {out.strip()}")
+                    return False
+            try:
+                ok, detail = _release_bump(directory, step["branch"], step["title"], [step["path"]], write, run,
+                                           start_point=f"origin/{facts.default}")
+            except (ValueError, KeyError) as exc:
+                ok, detail = False, f"the formula could not be bumped: {exc}"
+            if not ok:
+                print(f"FAILED tap_formula_pr tap: {detail}")
+                return False
+            calls = ((release.push_branch_argv(directory, step["branch"]), None),
+                     (release.pr_create_argv(step["title"], body), directory))
+        else:
+            print(f"tap_formula_pr tap: {detail}")
+            calls = (((release.pr_create_argv(step["title"], body, facts.default, step["branch"]), directory),)
+                     if action == "open_and_prove" else ())
+        for argv, cwd in calls:
+            rc, out = run(argv, cwd)
+            if rc != 0:
+                print(f"FAILED tap_formula_pr tap: {out.strip()}")
+                return False
+        # The flow never merges the tap PR, so the proof gates nothing to merge here: a proof that does not
+        # pass fails the release and the PR stays open for the maintainer, who merges it only after a pass.
+        proof_failure = _tap_install_proof(run, umbrella, step["branch"], version, sleep, now)
+        if proof_failure is not None:
+            print(f"FAILED tap_formula_pr tap: {proof_failure}; the tap PR is left open")
+            return False
+    except Exception as exc:  # the edge: any failure becomes a step result, never a traceback
+        print(f"FAILED tap_formula_pr tap: {exc}")
+        return False
+    finally:
+        _checkout_back(directory, rev_rc, before, run)
+    print(f"tap_formula_pr tap: {step['title']}")
+    return True
+
+
 def _release_execute(steps: list[dict], version: str, root: str, overrides: dict, umbrella: str, run,
                       manifest: dict, manifest_path: str, sleep=time.sleep, now=time.monotonic,
                       fetch_index=_fetch_index, fetch_text=_fetch_text,
                       prefetched: frozenset = frozenset(), count_run=None,
-                      rehearsed: Mapping[str, str] | None = None) -> int:
+                      rehearsed: Mapping[str, str] | None = None, merged_back: Collection[str] = ()) -> int:
     """Runs `steps` for real, through `run`. `prefetched` names the checkouts
     `_release` already fetched, which are not fetched again; `count_run` is the
     stdout-only runner for the sync gate's commit counts. Every checkout that will be
@@ -728,14 +908,17 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
     otherwise. A `github_release` whose body equals its notes is done.
     A `merge_back` step merges `branch` into the default branch with a merge
     commit and returns the checkout to the default branch, or is done when
-    origin no longer lists `branch`."""
+    origin no longer lists `branch` or the default branch already holds it.
+    A repo in `merged_back` (`release_progress.merged_back`: its cut is over) prints each of its cut, bump, tag and
+    merge-back steps as done and runs none of them, so a rerun after a finished merge-back recreates no branch."""
     refused = [s for s in steps if s["kind"] == "refuse"]
     if refused:
         for refusal in refused:
             print(f"refuse {refusal['component']}: {refusal['detail']}")
         return 2
 
-    for name, directory in _tagged_checkouts(steps, root, overrides, umbrella):
+    for name, directory in _tagged_checkouts([s for s in steps if not release_progress.skips_cut_step(s, merged_back)],
+                                             root, overrides, umbrella):
         ready, reason = _checkout_ready(directory, run, directory in prefetched, count_run)
         if not ready:
             print(f"refuse {name}: {reason}")
@@ -757,6 +940,9 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
 
     for step in steps:
         kind = step["kind"]
+        if release_progress.skips_cut_step(step, merged_back):
+            print(f"{kind} {step['component']}: already merged back into the default branch")
+            continue
         if kind in ("tag", "rejoin"):
             directory = release.component_dir(root, step["component"], overrides)
             fetched, fetch_out = _fetch_tag_ref(directory, step.get("ref"), run)
@@ -1018,81 +1204,8 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
                 return 2
             print(f"merge_back {step['component']}: {mb_detail}")
         elif kind == "tap_formula_pr":
-            try:
-                sdist = release.sdist_from_index(_fetch_with_retry(fetch_index, step["index_url"], sleep))
-            except (OSError, ValueError) as exc:
-                sdist, detail = None, str(exc)
-            else:
-                detail = "the index lists no sdist"
-            if sdist is None:
-                print(f"FAILED tap_formula_pr tap: {step['index_url']}: {detail}")
+            if not _tap_formula_pr(step, version, root, overrides, umbrella, run, sleep, now, fetch_index, fetch_text):
                 return 2
-            # A dash pinned by this release keeps its tag, so its tarballs live under that release, not this one.
-            towpath_at = step.get("towpath_version") or version
-            texts = {}
-            for asset_url in release.towpath_asset_urls(towpath_at).values():
-                try:
-                    texts[f"{asset_url}.sha256"] = fetch_text(f"{asset_url}.sha256")
-                except (OSError, ValueError):
-                    texts[f"{asset_url}.sha256"] = None
-            towpath, reason = release.towpath_assets(towpath_at, texts)
-            if towpath is None:
-                print(f"FAILED tap_formula_pr tap: {reason}")
-                return 2
-            directory = release.component_dir(root, release.TAP_CHECKOUT, overrides)
-            formula = Path(directory) / step["path"]
-            # The formula carries pure psycopg on libpq, so only the psycopg pin and release document are read;
-            # every refusal here comes before the first git call.
-            try:
-                extras = (Path(umbrella) / _EXTRAS_REQUIREMENTS).read_text()
-                psycopg_version = release.psycopg_pin(extras)
-            except (OSError, ValueError) as exc:
-                print(f"FAILED tap_formula_pr tap: psycopg: {exc}")
-                return 2
-            try:
-                psycopg = release.psycopg_assets(_pypi_release("psycopg", psycopg_version, fetch_index, sleep))
-            except (KeyError, OSError, ValueError) as exc:
-                print(f"FAILED tap_formula_pr tap: {exc}")
-                return 2
-
-            def write_bumped(f=formula, s=sdist, t=towpath, p=psycopg):
-                f.write_text(release.bumped_formula_text(f.read_text(), version, *s, towpath=t, psycopg=p))
-
-            # The tap PR is left for the maintainer, so the checkout goes back to the branch it was on on every
-            # path out of the step: the next cut refuses a tap clone that sits on an old release branch.
-            rev_rc, before = run(["git", "-C", directory, "rev-parse", "--abbrev-ref", "HEAD"], None)
-            fetched, base = _tap_branch_base(directory, run)
-            if not fetched:
-                print(f"FAILED tap_formula_pr tap: {base}")
-                return 2
-            try:
-                try:
-                    ok, detail = _release_bump(
-                        directory, step["branch"], step["title"], [step["path"]],
-                        write_bumped, run, start_point=base)
-                except (ValueError, KeyError) as exc:
-                    ok, detail = False, f"the formula could not be bumped: {exc}"
-                if not ok:
-                    print(f"FAILED tap_formula_pr tap: {detail}")
-                    return 2
-                for argv, cwd in ((release.push_branch_argv(directory, step["branch"]), None),
-                                  (release.pr_create_argv(step["title"], f"Bumps the formula to {version} on PyPI.\n\n{release.pr_footer(version)}"), directory)):
-                    rc, out = run(argv, cwd)
-                    if rc != 0:
-                        print(f"FAILED tap_formula_pr tap: {out.strip()}")
-                        return 2
-                # The flow never merges the tap PR, so the proof gates nothing to merge here: a proof that does not
-                # pass fails the release and the PR stays open for the maintainer, who merges it only after a pass.
-                proof_failure = _tap_install_proof(run, umbrella, step["branch"], version, sleep, now)
-                if proof_failure is not None:
-                    print(f"FAILED tap_formula_pr tap: {proof_failure}; the tap PR is left open")
-                    return 2
-            except Exception as exc:  # the edge: any failure becomes a step result, never a traceback
-                print(f"FAILED tap_formula_pr tap: {exc}")
-                return 2
-            finally:
-                _checkout_back(directory, rev_rc, before, run)
-            print(f"tap_formula_pr tap: {step['title']}")
         else:
             print(f"FAILED {kind} {step.get('component', '')}: no executor for this step kind")
             return 2
@@ -1102,8 +1215,7 @@ def _release_execute(steps: list[dict], version: str, root: str, overrides: dict
 def _maintainer_remote_url(directory: str) -> str | None:
     """`git -C <directory> remote get-url origin`, or None when git could
     not read it — an unreadable remote is not a maintainer's checkout."""
-    result = subprocess.run(["git", "-C", directory, "remote", "get-url", "origin"],
-                             capture_output=True, text=True)
+    result = _bounded(["git", "-C", directory, "remote", "get-url", "origin"], None, _GIT_SECONDS)
     return result.stdout.strip() if result.returncode == 0 else None
 
 
@@ -1127,7 +1239,7 @@ def _tap_state(directory: str) -> str:
     """`clean`, `dirty` or `absent`; a checkout whose status git cannot read is `absent`."""
     if not (Path(directory) / ".git").exists():
         return "absent"
-    result = subprocess.run(["git", "-C", directory, "status", "--porcelain"], capture_output=True, text=True)
+    result = _bounded(["git", "-C", directory, "status", "--porcelain"], None, _GIT_SECONDS)
     return "absent" if result.returncode != 0 else "dirty" if result.stdout.strip() else "clean"
 
 
@@ -1237,8 +1349,8 @@ def _tree_hits(directory: str, ref: str, checker, active) -> list[str] | None:
     when git could not export it."""
     with tempfile.TemporaryDirectory() as tmp:
         archive, tree = Path(tmp) / "tree.tar", Path(tmp) / "tree"
-        result = subprocess.run(["git", "-C", directory, "archive", "--format=tar", "-o", str(archive), ref],
-                                capture_output=True)
+        result = _bounded(["git", "-C", directory, "archive", "--format=tar", "-o", str(archive), ref], None,
+                          _ARCHIVE_SECONDS, text=False)
         if result.returncode != 0:
             return None
         tree.mkdir()
@@ -1326,18 +1438,27 @@ def _rehearsed_shas(plan_steps: list[dict], resuming: Collection[str], version: 
 
 
 def _resuming(manifest: dict, version: str, pinned_commits: dict, umbrella: str, root: str, overrides: dict,
-              run, existing_tags: Mapping[str, Collection[str] | None] | None = None) -> set[str]:
-    """Names of the umbrella (`coxswain`) and tagged components whose origin already lists `release/<version>`.
-    While the umbrella's branch is still listed, a component with `v<version>` and no branch has merged back and
-    deleted it, so it is resuming too. An origin that cannot be read is not resuming: a tag collision there refuses."""
+              run, existing_tags: Mapping[str, Collection[str] | None] | None = None) -> tuple[set[str], set[str]]:
+    """`(resuming, merged_back)` over the umbrella (`coxswain`) and the tagged components, judged by
+    `release_progress`. A repo whose origin lists `release/<version>` is resuming; so is one whose cut is over (no
+    branch, `v<version>` listed and already on `origin/<default>`), which is also in `merged_back`. While the
+    umbrella's branch is still listed, a component with `v<version>` and no branch has merged back and deleted it.
+    An origin that cannot be read is not resuming: a tag collision there refuses."""
     ref = f"refs/heads/{release.release_branch_name(version)}"
     directories = {release.UMBRELLA: umbrella} | {
         name: release.component_dir(root, name, overrides)
         for name in release.tagged_components(manifest, version, pinned_commits)}
     listed = {name for name, directory in directories.items() if _origin_ref_sha(directory, ref, run)[1] is not None}
-    merged_back = {name for name in directories if name not in listed
-                   and f"v{version}" in ((existing_tags or {}).get(name) or ())} if release.UMBRELLA in listed else set()
-    return listed | merged_back
+    tagged = {name for name in directories if f"v{version}" in ((existing_tags or {}).get(name) or ())}
+
+    def finished(name: str) -> bool:
+        directory = directories[name]
+        tag_sha = _origin_ref_sha(directory, f"refs/tags/v{version}", run)[1]
+        in_default = tag_sha is not None and _holds(directory, _default_branch(directory, run), tag_sha, run)
+        return release_progress.merged_back(None, tag_sha, in_default)
+
+    done = {name for name in sorted(tagged - listed) if finished(name)}
+    return release_progress.resuming(listed, tagged, done, release.UMBRELLA), done
 
 
 def _rehearsal_steps(a: argparse.Namespace, plan_steps: list[dict], root: str, overrides: dict, umbrella: str,
@@ -1510,8 +1631,10 @@ def _release(a: argparse.Namespace) -> int:
     repository_url = _repository_url()
     tap_state = _tap_state(release.component_dir(root, release.TAP_CHECKOUT, overrides))
 
-    resuming = set() if a.tap_only else _resuming(manifest, a.version, pinned_commits, umbrella, root, overrides,
-                                                   _real_run, existing_tags)
+    resuming, merged_back = (set(), set()) if a.tap_only else _resuming(
+        manifest, a.version, pinned_commits, umbrella, root, overrides, _real_run, existing_tags)
+    for name in sorted(merged_back):
+        print(f"resume {name}: v{a.version} is on the default branch and release/{a.version} is gone; its cut is done")
 
     def plan_for(index_changed: bool) -> list[dict]:
         return release.release_plan(
@@ -1578,7 +1701,8 @@ def _release(a: argparse.Namespace) -> int:
     printed = _Tee(sys.stdout)
     with contextlib.redirect_stdout(printed):
         # A tap-only resume tags nothing, so it has no sync gate to feed.
-        gate = {} if a.tap_only else {"prefetched": prefetched, "count_run": _stdout_run, "rehearsed": rehearsed}
+        gate = {} if a.tap_only else {"prefetched": prefetched, "count_run": _stdout_run, "rehearsed": rehearsed,
+                                      "merged_back": merged_back}
         rc = _release_execute(steps, a.version, root, overrides, umbrella, _real_run, manifest, str(manifest_path),
                               **gate)
     failed = (_failed_step(printed.text) or f"exit {rc}") if rc != 0 else None

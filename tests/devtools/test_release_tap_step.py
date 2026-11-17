@@ -14,6 +14,12 @@ _MACOS = _URLS[release.TOWPATH_MACOS_ARM]
 _LINUX = _URLS[release.TOWPATH_LINUX_INTEL]
 
 
+
+def _written(calls):
+    """The calls that change the tap clone, its origin or a pull request; reads (fetch, ls-remote, show) are not."""
+    return [c for c in calls if c[3:4] in (["checkout"], ["commit"], ["push"], ["branch"], ["add"])
+            or c[:3] == ["gh", "pr", "create"]]
+
 def test_towpath_asset_urls_name_both_dash_release_tarballs():
     assert f"https://github.com/ppfenning/coxswain-dash/releases/download/v{V0}/towpath-v{V0}-aarch64-apple-darwin.tar.gz" == _MACOS
     assert _LINUX.endswith(f"/towpath-v{V0}-x86_64-unknown-linux-gnu.tar.gz")
@@ -70,7 +76,7 @@ def test_a_full_asset_set_writes_both_towpath_urls_and_digests_beside_the_sdist(
     assert f'url "https://x/coxswain-{V0}.tar.gz"' in text and "b" * 64 in text
 
 
-def test_a_missing_sha256_asset_refuses_naming_it_before_any_git_call(tmp_path, capsys):
+def test_a_missing_sha256_asset_refuses_naming_it_before_any_branch_is_cut(tmp_path, capsys):
     def fetch(url):
         if url == f"{_LINUX}.sha256":
             raise OSError("HTTP Error 404")
@@ -79,14 +85,14 @@ def test_a_missing_sha256_asset_refuses_naming_it_before_any_git_call(tmp_path, 
     rc, calls, _, _, _ = _run(tmp_path, fetch_text=fetch)
     assert rc == 2
     assert f"FAILED tap_formula_pr tap: {_LINUX}.sha256 is missing" in capsys.readouterr().out
-    assert calls == []
+    assert _written(calls) == []
 
 
-def test_an_empty_sha256_asset_refuses_naming_it_before_any_git_call(tmp_path, capsys):
+def test_an_empty_sha256_asset_refuses_naming_it_before_any_branch_is_cut(tmp_path, capsys):
     rc, calls, _, _, _ = _run(tmp_path, fetch_text=lambda url: "" if url == f"{_MACOS}.sha256" else _dash_text(url))
     assert rc == 2
     assert f"FAILED tap_formula_pr tap: {_MACOS}.sha256 is missing, empty or not a 64-hex digest" in capsys.readouterr().out
-    assert calls == []
+    assert _written(calls) == []
 
 
 def test_a_formula_without_the_towpath_anchors_fails_cleanly_and_restores_the_branch(tmp_path, capsys):
@@ -143,22 +149,22 @@ def test_a_full_run_writes_pure_psycopg_on_libpq_with_the_fetched_sdist_and_neve
     assert _PSYCOPG_URL in asked and not [url for url in asked if "psycopg-binary" in url]
 
 
-def test_a_psycopg_payload_with_no_sdist_refuses_before_any_git_call(tmp_path, capsys):
+def test_a_psycopg_payload_with_no_sdist_refuses_before_any_branch_is_cut(tmp_path, capsys):
     rc, calls, _, formula, _ = _run(tmp_path, fetch_index=lambda url: _index(url, psycopg={"urls": []}))
     assert rc == 2
     assert "FAILED tap_formula_pr tap: psycopg release lists no sdist" in capsys.readouterr().out
-    assert calls == []
+    assert _written(calls) == []
     assert formula.read_text() == _PY_FORMULA
 
 
-def test_a_missing_psycopg_pin_refuses_before_any_git_call(tmp_path, capsys):
+def test_a_missing_psycopg_pin_refuses_before_any_branch_is_cut(tmp_path, capsys):
     rc, calls, _, _, _ = _run(tmp_path, pins="psycopg-binary==3.3.6\n")
     assert rc == 2
     assert "FAILED tap_formula_pr tap: psycopg: extras requirements pin no psycopg" in capsys.readouterr().out
-    assert calls == []
+    assert _written(calls) == []
 
 
-def test_an_unreachable_index_for_psycopg_refuses_cleanly_before_any_git_call(tmp_path, capsys):
+def test_an_unreachable_index_for_psycopg_refuses_cleanly_before_any_branch_is_cut(tmp_path, capsys):
     def down(url):
         if url == _PSYCOPG_URL:
             raise OSError("HTTP Error 503")
@@ -167,7 +173,7 @@ def test_an_unreachable_index_for_psycopg_refuses_cleanly_before_any_git_call(tm
     rc, calls, _, _, _ = _run(tmp_path, fetch_index=down)
     assert rc == 2
     assert "FAILED tap_formula_pr tap: psycopg: HTTP Error 503" in capsys.readouterr().out
-    assert calls == []
+    assert _written(calls) == []
 
 
 def test_a_full_run_without_any_pyarrow_fixture_writes_a_formula_with_no_pyarrow_resource_and_no_cmake(tmp_path):

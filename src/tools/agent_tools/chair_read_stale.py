@@ -14,6 +14,7 @@ from agent_tools.chair_facts import HARNESS_CAUSE, LAUNCH_KINDS, Key, _key
 from agent_tools.chair_read_attempts import read_attempts
 from agent_tools.chair_read_quarantined import WorkFiles, attempts_on_current_body, item_body, read_work_items
 from agent_tools.chair_revert_watch import RESOLVED_KIND, WATCH_KIND
+from agent_tools.chair_stall_alarm import ALARM_KINDS
 from agent_tools.chair_types import StaleCandidate
 
 Row = Mapping[str, object]
@@ -21,8 +22,9 @@ Row = Mapping[str, object]
 _EXCLUDED_STATES = frozenset({"done", "dropped", "draft"})
 ACTIONS_WINDOW_DAYS = 7
 # Read at any age: needs_chair dedupes decompose_stalled for good, steer_clear plus launches make the steer streak,
-# and a revert_watch stays pending, and its verdict counts, however long ago it was recorded.
-_KEPT_KINDS = ("needs_chair", "steer_clear", *sorted(LAUNCH_KINDS), WATCH_KIND, RESOLVED_KIND)
+# and a revert_watch stays pending, and its verdict counts, however long ago it was recorded. A stall alarm stays raised
+# until its clear, so a stall standing longer than the window is not raised again (chair_stall_alarm.open_alarms).
+_KEPT_KINDS = ("needs_chair", "steer_clear", *sorted(LAUNCH_KINDS), WATCH_KIND, RESOLVED_KIND, *sorted(ALARM_KINDS))
 
 
 def _iso(value: object) -> str:
