@@ -1,7 +1,7 @@
 """`route hold` and `route release` core: mark a queued intake or an initiative held, or free it again. The edge writes; the name, date and reason come in as arguments."""
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -280,12 +280,15 @@ def _row_released(row: Mapping, at: str) -> dict:
 
 
 def release(
-    ws: Path, runs_dir: Path, id: str, rows: Sequence[Mapping], *, dry_run: bool = False, now: datetime | None = None,
+    ws: Path, runs_dir: Path, id: str, rows: Sequence[Mapping], *, initiative_live: Collection[str], dry_run: bool = False,
+    now: datetime | None = None,
 ) -> int:
     """Edge. Exit codes as `hold`. Releasing an initiative that is not held writes nothing.
 
     A held initiative's row is marked with the initiative's newest run (`core.workstore.FRESH_AFTER_RUN`), so the next run
-    builds its tasks fresh rather than triaging or capping them on the attempts before the release.
+    builds its tasks fresh rather than triaging or capping them on the attempts before the release. So an initiative is
+    refused while one of its runs is live (`initiative_live`, every live run, required so no caller skips the check): that
+    run could still record an attempt numbered below the mark.
 
     With `now`, a released intake's row and file also get `released_at`, so the chair stops counting the intake's earlier
     empty decompose runs; then even an intake that was ready and not held is written. Without it, such an intake writes nothing."""
@@ -293,6 +296,8 @@ def release(
     if isinstance(plan, Refused):
         return _refuse("release", plan.reason)
     if isinstance(plan, route_guard.InitiativeFound):
+        if running := route_guard.live_on(plan.initiative, initiative_live):
+            return _refuse("release", route_guard.live_refusal(running[0], plan.initiative, f"releasing {plan.initiative}"))
         from core.workstore import fresh_mark  # lazy: core sits beside agent_tools in one venv
 
         mark = fresh_mark(plan.initiative, run_store.run_ids(runs_dir))

@@ -805,6 +805,11 @@ The release marks the initiative's newest run. Runs up to that mark no longer
 count, so the chair relaunches the initiative and holds it again only if the
 next runs also end the same way.
 
+A release is refused while a run of the initiative is live, since that run
+could still record attempts below the mark. The refusal names the run and the
+command that stops it, `cox runs stop <run>`. `cox route edit <task> --state
+ready` on a blocked or quarantined task is refused the same way.
+
 The chair does not judge an initiative while its newest run is still going.
 If the hold is cleared some other way, without a release, the chair
 relaunches the initiative and holds it again only after a newer run ends the

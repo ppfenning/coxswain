@@ -5528,7 +5528,8 @@ def _route_release(a: argparse.Namespace) -> int:
         print(f"route: {reason}")
         return 2
     return route_hold.release(
-        runs_dir.parent, runs_dir, a.id, run_store.read_queue(runs_dir), dry_run=a.dry_run, now=datetime.datetime.now(datetime.UTC)
+        runs_dir.parent, runs_dir, a.id, run_store.read_queue(runs_dir), initiative_live=_live_runs(runs_dir, _now_iso()),
+        dry_run=a.dry_run, now=datetime.datetime.now(datetime.UTC),
     )
 
 

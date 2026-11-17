@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_tools import chair_exec, chair_facts, cli, route_hold, run_store, store_cli
+from agent_tools import chair_exec, chair_facts, cli, route_guard, route_hold, run_store, store_cli
 from agent_tools.chair_no_progress import (
     DEFAULT_NO_PROGRESS_AFTER,
     hold_reason,
@@ -21,7 +21,7 @@ from agent_tools.chair_no_progress import (
 )
 from agent_tools.chair_plan import plan_tick
 from agent_tools.chair_read_run_outcomes import newest_runs, outcomes_from_rows
-from harness import epic
+from harness import epic, run_lease, store_lease
 from harness.store_migrate import open_store
 from harness.store_write import Store
 
@@ -244,7 +244,7 @@ def test_end_to_end_two_same_runs_hold_the_initiative_once_and_a_release_waits_f
     assert len((ws / "courier.jsonl").read_text(encoding="utf-8").splitlines()) == 1
     assert "demo" in _gathered(ws)["held_initiatives"]
 
-    assert route_hold.release(ws, ws / "runs", "demo", run_store.read_queue(ws / "runs")) == 0
+    assert route_hold.release(ws, ws / "runs", "demo", run_store.read_queue(ws / "runs"), initiative_live=()) == 0
     assert _gathered(ws, handled)["no_progress"] == {}
     _epic_run(ws, 56)
     assert _gathered(ws, handled)["no_progress"] == {}
@@ -266,3 +266,54 @@ def test_end_to_end_a_newer_run_that_has_not_ended_holds_nothing(ws):
     _epic_run(ws, 55)
     _epic_run(ws, 56, ended=False)
     assert _gathered(ws)["no_progress"] == {}
+
+
+def _held_by_the_chair(ws: Path) -> None:
+    """Runs demo-54 and demo-55 ended the same way, and the chair's own tick and executor held demo."""
+    _epic_run(ws, 54)
+    _epic_run(ws, 55)
+    assert _exec(ws, {"kind": "take_lease", "epoch": 0}, [])["status"] == "done"
+    (hold,) = [a for a in plan_tick(_gathered(ws), _NOW) if a["kind"] == "hold_initiative"]
+    assert _exec(ws, hold, [])["status"] == "done"
+    assert _held(ws)["held"] == "true"
+
+
+def _live_run(ws: Path, run: str) -> None:
+    """A run in flight, as the epic holds one: its runs row and its `runs:` lease, live for an hour from now."""
+    conn = open_store(run_store._store_url(ws / "runs"), "2026-01-01T00:00:00Z")
+    try:
+        Store(conn).record_run({"run_id": run}, {"at": datetime.now(UTC).isoformat(), "launched_by": "chair"})
+        assert store_lease.acquire(conn, run_lease.lease_name(run), f"run:{run}", datetime.now(UTC).isoformat(), 3600).ok
+    finally:
+        conn.close()
+    # `cox route release` is a process of its own: it reads the leases afresh, not this process's two-second snapshot.
+    run_store._lease_rows.cache_clear()
+
+
+@pytest.mark.parametrize("live", ["demo-56", "demo.p1-3"])
+def test_end_to_end_route_release_waits_for_a_live_run_and_names_how_to_stop_it(ws, capsys, live):
+    """Regression: a release while a run was live marked the fresh start below attempts that run had yet to record.
+    `cox route release` is refused, as `route edit --state ready` is, and both name `cox runs stop`."""
+    _held_by_the_chair(ws)
+    _live_run(ws, live)
+    capsys.readouterr()
+
+    assert cli.main(["route", "release", "demo"]) == 2
+    assert (
+        f"release: refused: {live} is live on demo; stop it with `cox runs stop {live}`, or let it finish, before releasing demo"
+    ) in capsys.readouterr().out
+    assert _held(ws)["held"] == "true" and "fresh_after_run" not in _held(ws)
+
+
+def test_end_to_end_route_release_goes_ahead_while_only_another_initiative_runs(ws):
+    _held_by_the_chair(ws)
+    _live_run(ws, "demonstration-4")
+
+    assert cli.main(["route", "release", "demo"]) == 0
+    assert "held" not in _held(ws) and _held(ws)["fresh_after_run"] == {"demo": 55}
+
+
+def test_live_refusal_names_the_run_and_the_command_that_stops_it():
+    assert route_guard.live_refusal("demo-9", "demo", "releasing demo") == (
+        "demo-9 is live on demo; stop it with `cox runs stop demo-9`, or let it finish, before releasing demo"
+    )
