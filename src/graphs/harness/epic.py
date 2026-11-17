@@ -501,6 +501,13 @@ def _merge_checks(ctx: _Ctx, phase: str) -> landing_git.Checks | None:
     return run
 
 
+def unmerged_approved(rows: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Pure. Ids of the approved tasks among `rows` that are not merged into their phase branch, in row order: the tasks
+    that keep a phase from merging into the initiative branch. A task is merged when its row says so (`merged`, which
+    the store reads as a recorded `merged_commit`); a task is never judged merged from branch ancestry here."""
+    return [str(r["id"]) for r in rows if r.get("state") == "approved" and not r.get("merged")]
+
+
 def _merge_into_initiative(ctx: _Ctx, phase: str, items: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
     """Edge. Merge one built phase into the initiative branch, through the land queue's own operation.
 
@@ -522,7 +529,7 @@ def _merge_into_initiative(ctx: _Ctx, phase: str, items: Sequence[Mapping[str, A
     # A phase is built when every task is approved (or dropped) and on the phase branch. Anything else is not whole,
     # so it is not merged, whatever the validator said of its goal: the phases that need it are cut from this branch.
     open_tasks = [str(r["id"]) for r in own if r["state"] not in ("approved", "done", "dropped")]
-    loose = [str(r["id"]) for r in own if r["state"] == "approved" and not r["merged"]]
+    loose = unmerged_approved(own)
     if open_tasks or loose:
         what = (f"task(s) {', '.join(open_tasks)} are not approved" if open_tasks
                 else f"approved task(s) {', '.join(loose)} are not merged into {ctx.phase_branch(phase)}")

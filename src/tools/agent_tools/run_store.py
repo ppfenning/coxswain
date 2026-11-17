@@ -1337,6 +1337,21 @@ def work_items(runs_dir: Path, initiative: str | None = None, cache: StampCache 
     return _versioned(cache, ("work_items", str(runs_dir), initiative), probe, read_rows)
 
 
+def task_merge_row(runs_dir: Path, initiative: str, task: str) -> tuple[str, str | None] | None:
+    """Edge: (state, merged_commit) of the task's `work_items` row; None with no store, no row or an unreadable one."""
+    conn = connect_readonly(Path(runs_dir))
+    if conn is None:
+        return None
+    sql = _sql("SELECT state, merged_commit FROM work_items WHERE initiative = {p} AND task_id = {p}", placeholder(_store_url(Path(runs_dir))))
+    try:
+        row = conn.execute(sql, (initiative, task)).fetchone()
+    except _db_errors():
+        return None
+    finally:
+        conn.close()
+    return None if row is None else (row["state"], row["merged_commit"])
+
+
 def task_state_of(runs_dir: Path, initiative: str, task: str) -> str | None:
     """Edge: one task's state from the store, None when the reader finds nothing, so it never raises."""
     return task_state(work_items(runs_dir, initiative), initiative, task)

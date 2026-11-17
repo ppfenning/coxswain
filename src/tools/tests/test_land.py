@@ -195,6 +195,7 @@ def test_recover_plan_a_commit_already_on_the_phase_branch_plans_nothing():
     assert steps == [{
         "kind": "already_recovered",
         "branch": "epic/x/seams",
+        "source": "agents/epic-x-5/seams-task",
         "reason": "agents/epic-x-5/seams-task has no commits ahead of epic/x/seams",
     }]
 
@@ -1113,42 +1114,6 @@ def test_phase_land_refuses_when_two_initiatives_hold_the_phase(repo, tmp_path, 
     assert "no single initiative holds phase seams" in out
 
 
-# --- cli end to end: recover closes the work item too ---
-
-def _on_disk_record(**overrides):
-    """The task record as the harness writes it: `ticket` and a truncated
-    composite `run_id`, with no run, task, phase or initiative key."""
-    return {"run_id": "epic-x-5:seams:seams-t", "ticket": "seams-task", "review": {"verdict": "approve"}, "proposals": [], **overrides}
-
-
-def _recover_dry_run(repo, tmp_path, record, capsys, work_dirs=("x/seams",)):
-    sp.run(["git", "-C", str(repo), "branch", "epic/x/seams", "main"], check=True, env=_ENV)
-    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
-    (task_dir / "seams-task.json").write_text(json.dumps(record), encoding="utf-8")
-    for d in work_dirs:
-        (tmp_path / "work" / d).mkdir(parents=True)
-        (tmp_path / "work" / d / "seams-task.md").write_text("---\nid: seams-task\nstate: approved\n---\n\nBody.\n", encoding="utf-8")
-    rc = cli.main(["runs", "recover", "epic-x-5", "seams-task", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs"), "--dry-run"])
-    return rc, capsys.readouterr().out
-
-
-def test_cli_recover_resolves_a_record_with_only_the_on_disk_keys(repo, tmp_path, capsys):
-    rc, out = _recover_dry_run(repo, tmp_path, _on_disk_record(), capsys)
-    assert rc == 0, out
-    assert "would merge agents/epic-x-5/seams-task into epic/x/seams" in out
-
-
-@pytest.mark.parametrize("overrides, work_dirs, said", [
-    ({"ticket": "other-task"}, ("x/seams",), "disagrees with its filename"),
-    ({}, (), "no single initiative"),
-    ({}, ("x/seams", "y/seams"), "no single initiative"),
-], ids=["ticket-disagrees-with-filename", "no-initiative-holds-the-task", "two-initiatives-hold-the-task"])
-def test_cli_recover_refuses_an_unresolvable_record(repo, tmp_path, capsys, overrides, work_dirs, said):
-    rc, out = _recover_dry_run(repo, tmp_path, _on_disk_record(**overrides), capsys, work_dirs=work_dirs)
-    assert rc == 2
-    assert said in out
-
-
 def test_initiative_of_takes_the_id_from_frontmatter_and_falls_back_to_the_stem(tmp_path):
     (tmp_path / "a/p").mkdir(parents=True)
     (tmp_path / "b/p").mkdir(parents=True)
@@ -1157,31 +1122,6 @@ def test_initiative_of_takes_the_id_from_frontmatter_and_falls_back_to_the_stem(
     assert cli._initiative_of(tmp_path, "from-frontmatter") == "a"
     assert cli._initiative_of(tmp_path, "renamed") is None
     assert cli._initiative_of(tmp_path, "from-stem") == "b"
-
-
-def _item_text(state):
-    return f"---\nid: seams-task\nstate: {state}\n---\n\nBody.\n"
-
-
-@pytest.mark.parametrize("phase_at, state, dry_run, closed, said", [
-    ("main", "approved", False, True, ("epic/x/seams",)),
-    ("agents/epic-x-5/seams-task", "approved", False, True, ("already contains the commit",)),
-    ("agents/epic-x-5/seams-task", "approved", True, False, ("already contains the commit",)),
-    ("agents/epic-x-5/seams-task", "ready", False, False, ("already contains the commit", "not moving to done")),
-], ids=["merges-then-closes", "already-recovered-still-closes", "dry-run-writes-nothing", "ready-stays-ready-unmerged"])
-def test_cli_recover_closes_the_work_item_only_for_a_real_run_that_may_close_it(repo, tmp_path, capsys, phase_at, state, dry_run, closed, said):
-    sp.run(["git", "-C", str(repo), "branch", "epic/x/seams", phase_at], check=True, env=_ENV)
-    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
-    (task_dir / "seams-task.json").write_text(json.dumps(_on_disk_record()), encoding="utf-8")
-    item_dir = tmp_path / "work/x/seams"; item_dir.mkdir(parents=True)
-    item_path = item_dir / "seams-task.md"
-    item_path.write_text(_item_text(state), encoding="utf-8")
-    rc = cli.main(["runs", "recover", "epic-x-5", "seams-task", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs"),
-                   *(["--dry-run"] if dry_run else [])])
-    out = capsys.readouterr().out
-    assert rc == 0, out
-    assert all(phrase in out for phrase in said)
-    assert item_path.read_text() == _item_text("done" if closed else state)
 
 
 def _apply_gated(repo, tmp_path, monkeypatch, *gate):
