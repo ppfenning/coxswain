@@ -1692,9 +1692,15 @@ def _checks_env(ctx: _Ctx, lane: Mapping[str, str], phase: str, task: str) -> di
     return {**os.environ, **workers, **lane, **lane_tmp_env(scratch)}
 
 
+# The branch a lane's checks diff against: its phase branch, so the unwired check (.github/check_unwired.py)
+# judges this task's patch, not every earlier phase and merged sibling on the way back to main.
+LANE_BASE_VAR = "COX_LANE_BASE"
+
+
 def _lane_checks_env(ctx: _Ctx, phase: str, task: str) -> dict[str, str]:
-    """The child environment for one lane's checks: its database, worker count and own temp directory."""
-    return _checks_env(ctx, lane_env(ctx.test_database, ctx.run_id, phase, task), phase, task)
+    """The child environment for one lane's checks: its database, worker count, own temp directory and base branch."""
+    lane = {**lane_env(ctx.test_database, ctx.run_id, phase, task), LANE_BASE_VAR: ctx.phase_branch(phase)}
+    return _checks_env(ctx, lane, phase, task)
 
 
 def _drop_lane(ctx: _Ctx, phase: str, task: str) -> None:

@@ -34,9 +34,10 @@ the standard you would have written.
   and only where the signature cannot say it — a rule, a unit, an invariant, an
   ordering; no comment narrates what the next lines do; one literal call per
   rule is the test), a departure is worth NOTING and is never grounds to
-  revise. Say it in the rationale and approve. Three things and only these may
-  carry a revise: the diff is wrong, it does not do what the task describes, or
-  a check fails. A line target is a budget signal, not a contract.
+  revise. Say it in the rationale and approve. Four things and only these may
+  carry a revise: the diff is wrong, it does not do what the task describes, a
+  check fails, or one of the two questions below has the wrong answer. A line
+  target is a budget signal, not a contract.
 
   This is a correction, not a preference. Style was a blocking finding "of the
   same class as a rebound name" until 2026-09-06, when three of four
@@ -50,6 +51,30 @@ the standard you would have written.
   Anything a tool can prove is not yours to find: `ruff` and the project's own
   checks run before you do, at no cost, and their output is already in the
   evidence. Do not re-report what a linter caught or would catch.
+
+## Two questions every review answers
+
+The charter's functional-core rule (docs/hardening.md, H10): logic lives in
+pure functions, data in and data out, and side effects live in thin glue at the
+edges. Answer both questions in the rationale, each with the file that proves
+the answer. They are correctness, not style: code nothing runs does not work,
+however well its own unit test passes.
+
+1. **Is the logic pure, and tested without mocks?** A unit test passes example
+   inputs to a pure function and checks its output. A mock, `monkeypatch`,
+   stub or fake the patch adds to a unit test means the logic is tangled with
+   an effect: **revise**, and name the function to split out of the glue.
+2. **Which smoke or end-to-end test runs the entry point that reaches this
+   change?** Name it: a test under `smoke/`, or one that runs the real command
+   against a real repository, that calls the entry point whose path reaches
+   the new code. A public function, class or module the patch adds with no
+   caller outside tests (the `check_unwired` row fails, or you find no caller
+   in the patch) is unwired: **revise**. No such test is also **revise**. That rule applies as the smoke suite
+   (docs/smoke.md) grows: where the entry point has no smoke case yet, the
+   patch that changes it adds one.
+
+A patch that changes no runtime behaviour (documents, skill text, a test on
+its own) answers "none needed" to the second question and says why.
 
 ## What good looks like
 

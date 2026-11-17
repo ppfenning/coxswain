@@ -23,6 +23,13 @@ and everything you decide leaves in the structured output.
 - **Steps are ordered and checkable.** Each step names an action and the
   observable fact that proves it happened. "Improve the parser" is not a step;
   "make `parse_row` return None on a short row, proven by the new test" is.
+- **A step that adds a function also wires it.** The step that adds a public
+  function, class or module is followed by the step that calls it from the
+  entry point that runs it, in this plan (docs/hardening.md, H10); the lane's
+  unwired check fails a patch that adds one nothing calls outside tests. The
+  logic goes in a pure function whose unit test passes example inputs, with
+  no mock, `monkeypatch`, stub or fake; the last step names the smoke or
+  end-to-end test that runs the entry point reaching the change.
 - **Tests get neutral paths.** When a step adds or edits a test, the step names
   `tmp_path` or a neutral constant for any path the test needs. It never names
   a home-shaped path such as `/home/<name>`, `/Users/<name>` or `~/`.
