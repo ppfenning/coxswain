@@ -2362,6 +2362,23 @@ Coxswain is in beta — versions may change between releases
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Watching the loop">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-stall-alarm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The stall alarm
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -7172,6 +7189,23 @@ Coxswain is in beta — versions may change between releases
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Watching the loop">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-stall-alarm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The stall alarm
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -7907,6 +7941,47 @@ only the store and sends an alert when the loop has been idle or has not
 beaten its lease for too long. <code>cox chair watchdog --install</code> writes the
 timer files for this platform and prints the lines that activate them;
 <code>--uninstall</code> removes them.</p>
+<h3 id="the-stall-alarm">The stall alarm</h3>
+<p>Each tick, the chair checks three things that mean the loop has stopped moving:</p>
+<ul>
+<li><strong>No land.</strong> Initiatives are open, and nothing has landed for
+  <code>land_hours</code>. An initiative is open when its landing record is neither
+  <code>landed</code> nor <code>draft</code> and it is not held for a person. A phase merged into
+  its initiative branch counts as a land, and so does an initiative landed
+  on its parent. The clock starts at the latest of three times: the last
+  land, the oldest open initiative's creation, and the chair's first
+  recorded action.</li>
+<li><strong>No launch.</strong> Lanes are free and work is ready, but no launch has
+  completed for <code>launch_minutes</code>. If nothing has ever launched, the clock
+  starts at the chair's first recorded action. A planned launch does not
+  count, so a launch that is refused every tick does not hide the stall.
+  This check stays quiet while the chair's own idle-lanes line
+  (<code>idle_stall</code>, <code>idle_ready</code>) is raised for the same condition.</li>
+<li><strong>The same failure.</strong> One action on one target failed or was refused for
+  the same reason <code>repeat_ticks</code> times in a row, and the last attempt was
+  less than an hour ago. Numbers in the reason are ignored, so a changing
+  PR number or count does not hide a repeat. The alarm shows the newest
+  attempt's own reason.</li>
+</ul>
+<p>Under a hard stop, nothing launches or lands on purpose, so only the
+same-failure check runs. A no-land or no-launch alarm that is already
+raised is neither raised again nor cleared until the stop lifts.</p>
+<p>When a stall starts, the chair writes one <code>stall_raised</code> courier entry and
+pushes one <code>stall</code> notification. When the stall ends, it writes one
+<code>stall_cleared</code> entry and pushes one <code>all_clear</code>. A same-failure stall
+ends only when its streak breaks: the action succeeds, or fails for
+another reason. If the chair stops attempting the action and an hour
+passes with no attempt, the stall expires instead. It is closed without a
+message, because nothing showed that the failure was fixed. The alarm
+records its own actions, and the next tick reads them back. These rows are
+kept at any age, so a stall is never raised twice while it stands, however
+long it lasts.</p>
+<div class="highlight"><pre><span></span><code><span class="nt">chair</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">stall_alarm</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">land_hours</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">6</span><span class="w">       </span><span class="c1"># 0 turns the check off</span>
+<span class="w">    </span><span class="nt">launch_minutes</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">60</span><span class="w">  </span><span class="c1"># 0 turns the check off</span>
+<span class="w">    </span><span class="nt">repeat_ticks</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span><span class="w">     </span><span class="c1"># at least 2; 0 turns the check off</span>
+</code></pre></div>
 <h2 id="what-it-records">What it records</h2>
 <p>Some actions the loop only records, such as a "needs the chair" report.
 Each one is appended to <code>chair.actions.jsonl</code> in the runs directory. The

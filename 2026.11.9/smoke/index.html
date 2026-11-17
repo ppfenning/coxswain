@@ -942,6 +942,17 @@ Coxswain is in beta — versions may change between releases
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#known-fakes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Known fakes
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -6599,6 +6610,17 @@ Coxswain is in beta — versions may change between releases
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#known-fakes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Known fakes
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -6767,6 +6789,17 @@ before a release cut, not on every pull request. Do not build B. It would cost a
 prove less.</p>
 <p>A forge-neutral flow should be tested once, through Forgejo. Only argv building and output parsing are specific to
 <code>gh</code>, and those already sit in pure functions that unit tests cover.</p>
+<h2 id="known-fakes">Known fakes</h2>
+<p>Each fake below stands in for a boundary that no real test covers yet. Each one names the test that will retire it.</p>
+<ul>
+<li><code>tests/devtools/gh_stub.py</code> is a <code>gh</code> executable put on PATH by <code>tests/devtools/test_release_rerun_e2e.py</code>. The
+  release rerun test runs the real <code>python -m devtools release</code> against real git repositories with bare origins. The
+  stub stores pull requests and releases in a JSON file and merges into the bare origin with real git. It cannot
+  notice a change in <code>gh</code>'s argv or JSON. It is retired by the scheduled contract tests against a sandbox GitHub
+  repository (option C above). Those tests cover each <code>gh</code> command the release uses: <code>pr create</code>, <code>pr list</code>,
+  <code>pr checks</code>, <code>pr merge</code>, <code>release create</code>, <code>release edit</code>, <code>release view</code>, <code>run list</code>, <code>run view</code>, <code>workflow run</code>,
+  and the <code>api</code> read of the branch protection's required checks.</li>
+</ul>
 
 
 
