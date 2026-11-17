@@ -807,8 +807,8 @@ next runs also end the same way.
 
 A release is refused while a run of the initiative is live, since that run
 could still record attempts below the mark. The refusal names the run and the
-command that stops it, `cox runs stop <run>`. `cox route edit <task> --state
-ready` on a blocked or quarantined task is refused the same way.
+command that stops it, `cox runs stop <run>`. `cox route edit <task> --initiative
+<initiative> --state ready` on a blocked or quarantined task is refused the same way.
 
 The chair does not judge an initiative while its newest run is still going.
 If the hold is cleared some other way, without a release, the chair
@@ -830,8 +830,8 @@ To release the task, edit its ticket if you need to, then set it back to
 ready. To give it up, drop it:
 
 ```sh
-cox route edit <task> --body-file <file> --state ready
-cox route edit <task> --state dropped
+cox route edit <task> --initiative <initiative> --body-file <file> --state ready
+cox route edit <task> --initiative <initiative> --state dropped
 ```
 
 A released task does not go to triage first. If it fails again and its

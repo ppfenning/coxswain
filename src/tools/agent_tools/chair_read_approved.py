@@ -3,10 +3,8 @@
 `approved_rows` is pure. `read_approved` is the edge: it loads items through the existing work-store readers
 (`route.parse_frontmatter`, `route.work_item`, `route.with_store_states`, `run_store.work_items`) and hands them over.
 """
-import glob
 import json
 import os
-import re
 from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -59,7 +57,8 @@ def approved_rows(items: Sequence[Item]) -> list[ApprovedTask]:
 
 def with_store_closed(items: Sequence[Item], rows: list[dict]) -> list[Item]:
     """Each item whose store row (the one `run_store.task_state` picks) says `done` or `dropped` reads that state, in any mode."""
-    closed = [(i, run_store.task_state(rows, i["initiative"], i["id"])) for i in items]
+    index = run_store.rows_by_task(rows)
+    closed = [(i, index.get((i["initiative"], i["id"]), {}).get("state")) for i in items]
     return [{**i, "state": s} if s in ("done", "dropped") else i for i, s in closed]
 
 
@@ -131,14 +130,25 @@ def land_records(records: Sequence[Mapping[str, Any]], unsettled: Collection[str
     ]
 
 
-def _initiative_runs(runs_dir: Path, initiative: str, suffix: str) -> dict[str, Path]:
-    """Edge. run -> `<run><suffix>` for every `<initiative>-<N><suffix>` file in `runs_dir`."""
-    own = re.compile(re.escape(initiative) + r"-\d+")
-    return {
-        run: p
-        for p in runs_dir.glob(f"{glob.escape(initiative)}-*{suffix}")
-        if own.fullmatch(run := p.name[: -len(suffix)])
-    }
+def run_file_index(names: Collection[str], suffix: str) -> dict[str, dict[str, str]]:
+    """Pure. Initiative to (run -> entry name) for every `<initiative>-<N><suffix>` among a runs directory's `names`,
+    built once a read instead of matching every initiative against every entry."""
+    index: dict[str, dict[str, str]] = {}
+    for name in names:
+        if not name.endswith(suffix):
+            continue
+        run = name[: -len(suffix)]
+        initiative, dash, number = run.rpartition("-")
+        if dash and initiative and number.isdigit() and number.isascii():
+            index.setdefault(initiative, {})[run] = name
+    return index
+
+
+def _entry_names(runs_dir: Path) -> list[str]:
+    try:
+        return os.listdir(runs_dir)
+    except OSError:
+        return []
 
 
 def _pid_live(pidfile: Path) -> bool:
@@ -161,10 +171,14 @@ def read_unsettled_runs(runs_dir: Path, records: Sequence[Mapping[str, Any]]) ->
     initiatives of marked records are read, so a tick with none reads nothing."""
     marked = {str(r["run"]) for r in records if r.get("cause") in SUPERSEDING_CAUSES and r.get("run")}
     unsettled: set[str] = set()
-    for initiative in {run_initiative(run) for run in marked}:
+    initiatives = {run_initiative(run) for run in marked}
+    # One listing for every initiative: a glob each re-read the whole runs directory per initiative and suffix.
+    names = _entry_names(runs_dir) if initiatives else []
+    remote_index, pid_index = run_file_index(names, ".remote.json"), run_file_index(names, ".pid")
+    for initiative in initiatives:
         oldest = min(_run_order(run) for run in marked if run_initiative(run) == initiative)
-        remote = _initiative_runs(runs_dir, initiative, ".remote.json")
-        pids = _initiative_runs(runs_dir, initiative, ".pid")
+        remote = {run: runs_dir / name for run, name in remote_index.get(initiative, {}).items()}
+        pids = {run: runs_dir / name for run, name in pid_index.get(initiative, {}).items()}
         newer = [run for run in sorted(set(remote) | set(pids)) if _run_order(run) > oldest]
         unsettled |= {run for run in newer if run in remote and _remote_unfetched(runs_dir, run)}
         unsettled |= {run for run in newer if run in pids and _pid_live(pids[run])}
@@ -244,7 +258,9 @@ def with_land_mode(rows: Sequence[ApprovedTask], manual_of: Callable[[str], bool
 def _is_landed(path: Path) -> bool:
     """Edge. True when the task record at `path` has `landed: true`; an unreadable or malformed record is not landed."""
     try:
-        record = json.loads(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+        # Most records never landed: skip their parse. The record writers emit the key as plain `"landed"`.
+        record = json.loads(text) if '"landed"' in text else None
     except (OSError, ValueError):
         return False
     return isinstance(record, dict) and record.get("landed") is True

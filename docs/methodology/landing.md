@@ -394,11 +394,11 @@ To finish a task by hand, run the merged-branch check first, then the escape hat
 ```
 git fetch origin <base> <phase>
 git branch -r --merged origin/<base>
-cox route edit <task> --state done
+cox route edit <task> --initiative <initiative> --state done
 ```
 
 Look for the PR branch in that list, or for its squash commit in `git log origin/<base>`, before `cox route edit <task>
---state done` is run.
+--initiative <initiative> --state done` is run.
 
 ## runs clean
 

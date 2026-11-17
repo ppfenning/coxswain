@@ -97,8 +97,9 @@ def _item(record: Mapping) -> InboxItem:
     task = _text(record, "task_id")
     run = (_text(record, "run") or _text(record, "initiative")) if task else ""
     repo = _text(record, "repo") if task else ""
+    initiative = _text(record, "initiative") if task else ""
     command = record.get("command")
-    accept = tuple(command) if command else tuple(remedy_for(_REGROUND_CAUSE, run, task, repo)["command"])
+    accept = tuple(command) if command else tuple(remedy_for(_REGROUND_CAUSE, run, task, repo, initiative)["command"])
     url = _text(record, "url")
     return InboxItem(
         id=item_id("needs-chair", "/".join(_identity(record))),
@@ -107,7 +108,7 @@ def _item(record: Mapping) -> InboxItem:
         what=f"{_label(record)}: {_text(record, 'cause') or '?'}" + (f" {url}" if url else ""),
         evidence=_text(record, "reason") if command else "",
         accept_cmd=accept,
-        deny_cmd=tuple(remedy_for(_DROP_CAUSE, run, task, repo)["command"]),
+        deny_cmd=tuple(remedy_for(_DROP_CAUSE, run, task, repo, initiative)["command"]),
     )
 
 

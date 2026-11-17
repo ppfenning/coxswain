@@ -35,8 +35,9 @@ import tomllib
 import types
 import urllib.parse
 import uuid
-from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Hashable, Iterable, Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -103,6 +104,7 @@ chair_read_approved = _LazyModule("agent_tools.chair_read_approved")
 chair_read_attempts = _LazyModule("agent_tools.chair_read_attempts")
 chair_read_branch_merged = _LazyModule("agent_tools.chair_read_branch_merged")
 chair_read_cache = _LazyModule("agent_tools.chair_read_cache")
+chair_tick_cache = _LazyModule("agent_tools.chair_tick_cache")
 chair_read_decompose_miss = _LazyModule("agent_tools.chair_read_decompose_miss")
 chair_read_docket = _LazyModule("agent_tools.chair_read_docket")
 chair_read_exits = _LazyModule("agent_tools.chair_read_exits")
@@ -5564,7 +5566,7 @@ def _route_edit(a: argparse.Namespace) -> int:
         surfaces=a.surfaces, state=a.state, dry_run=a.dry_run, live_runs=on_target, now=now,
         rebuild=getattr(a, "rebuild", False), force=getattr(a, "force", False), pr=getattr(a, "pr", None),
         link=getattr(a, "link", None), after=_after_ids(getattr(a, "after", None)), epic=getattr(a, "epic", None),
-        note=getattr(a, "note", None), initiative_live=live,
+        note=getattr(a, "note", None), initiative_live=live, initiative=getattr(a, "initiative", None),
     )
     if result.code != route_edit.DONE:
         print(f"edit: {'refused' if result.code == route_edit.REFUSED else 'failed'}: {result.text}")
@@ -13415,6 +13417,7 @@ ROUTE_COMMANDS = [
             commands.Arg(("--body",)), commands.Arg(("--body-file",)),
             commands.Arg(("--note",), {"default": None, "help": "task ticket only: append this text to the body once, with or without --state; not with --body or --body-file"}),
             commands.Arg(("--repo",)),
+            commands.Arg(("--initiative",), {"default": None, "help": "task ticket only: the initiative holding the task, so an id repeated across initiatives picks this one"}),
             commands.Arg(("--surfaces",), {"help": "task ticket only: comma-separated paths that replace the list"}),
             commands.Arg(("--state",), {"help": "task ticket only: ready, approved, done or dropped; never backward"}),
             commands.Arg(("--pr",), {"help": "with --state done: the merged PR url to record on the task, also on a task that is already done; without it the merged PR is looked up with gh"}),
@@ -14546,6 +14549,14 @@ def _chair_run_deps(
             tick_reads[key] = read()
         return tick_reads[key]
 
+    # Process-lifetime, unlike `tick_reads`: each store reader's rows, reused while the store's change counters for the
+    # tables it reads stand, so a quiet tick sends one counters query instead of a read per reader (H6).
+    reader_cache = chair_tick_cache.ReaderCache(time.monotonic)
+
+    def stamped(name: str, tables: tuple[str, ...], read: Callable[[], Any], key: Hashable = ()) -> Any:
+        counters = once("store_counters", lambda: run_store.table_counters(runs_dir))  # one query a tick
+        return reader_cache.get(name, tables, counters, read, key)  # type: ignore[arg-type]
+
     # One windowed chair_actions read per tick, shared by the gather, held() and resolve_land. The window reaches back
     # `chair.stale_days` at least; revert_watch rows are kept at any age by `_KEPT_KINDS`, so an open watch is never lost.
     actions_window = max(
@@ -14597,7 +14608,10 @@ def _chair_run_deps(
         return once("files", lambda: chair_read_quarantined.read_work_files(ws, files_cache))  # type: ignore[return-value]
 
     def store_rows() -> list:
-        return once("store_rows", lambda: run_store.work_items(runs_dir, None, store_cache) if mode == "store" else [])  # type: ignore[return-value]
+        return once(  # type: ignore[return-value]
+            "store_rows",
+            lambda: stamped("work_items", ("work_items",), lambda: run_store.work_items(runs_dir, None, store_cache)) if mode == "store" else [],
+        )
 
     def attempts() -> list[dict]:
         # Under work_state store nothing writes an attempt into a work file: the run task records under runs/ hold the
@@ -14617,7 +14631,10 @@ def _chair_run_deps(
 
     def work_rows() -> list[dict]:
         # `store_rows` (run_store.work_items) carries no `kind` column; the queue read does. Store mode only, once per tick.
-        return once("work_rows", lambda: _takes_cache(run_store.read_queue, queue_cache)(runs_dir) if mode == "store" else [])  # type: ignore[return-value]
+        return once(  # type: ignore[return-value]
+            "work_rows",
+            lambda: stamped("queue", ("work_items",), lambda: _takes_cache(run_store.read_queue, queue_cache)(runs_dir)) if mode == "store" else [],
+        )
 
     def ticket_items() -> list[dict]:
         return once("tickets", lambda: chair_read_docket._work_items(ws, mode, work_files(), store_rows()))  # type: ignore[return-value]
@@ -14750,7 +14767,7 @@ def _chair_run_deps(
         stamp = now_text()
         pidfile_live, pidfiled = chair_read_docket.local_runs(runs_dir, stamp)
         lanes = run_store.remote_lanes(run_store.live_lanes(runs_dir, stamp), pidfiled)
-        host_rows = run_store.hosts(runs_dir)  # per tick: a drain takes effect without a restart
+        host_rows = stamped("hosts", ("hosts",), lambda: run_store.hosts(runs_dir))  # a drain moves the stamp: no restart needed
         candidates = _lane_host_candidates(profile_text, host_rows, host)
         # a host with no workspace_dir is refused by `route launch --on`, so the loop must not plan launches onto it
         host_names = [] if isinstance(candidates, lane_hosts.LaneHostError) else host_cmd.dispatchable(candidates)[0]
@@ -14929,7 +14946,11 @@ def _chair_run_deps(
         decompose_runs=decompose_runs_of,
         decompose_cutoff=lambda path: chair_decompose_runs.read_released_at(ws, path),
         intake_fingerprint=intake_fingerprint,
-        newest_run_host=lambda: run_store.newest_run_hosts(runs_dir, [row["id"] for row in docket()["initiatives"]]),
+        newest_run_host=lambda: stamped(
+            "newest_run_hosts", ("runs",),
+            lambda: run_store.newest_run_hosts(runs_dir, [row["id"] for row in docket()["initiatives"]]),
+            key=tuple(row["id"] for row in docket()["initiatives"]),
+        ),
         history=lambda: chair_read_housekeeping.read_last_housekeeping(runs_dir),
         housekeeping_hours=lambda: (profile.get("chair") or {}).get("housekeeping_hours"),
         stale_days=lambda: (profile.get("chair") or {}).get("stale_days"),
@@ -14949,7 +14970,7 @@ def _chair_run_deps(
         ),
         stall_candidates=lambda n: chair_read_stall.read_stall_candidates(runs_dir, startup_hosts, n),
         idle_stall=idle_stall,
-        hosts=lambda: run_store.hosts(runs_dir),
+        hosts=lambda: stamped("hosts", ("hosts",), lambda: run_store.hosts(runs_dir)),
         pid_probe=lambda: chair_pid_probe.read_pid_probe(
             runs_dir, now_text(), chair_exec.fenced_fetch(_pid_probe_ssh, dry_run), () if isinstance(parsed_hosts, lane_hosts.LaneHostError) else parsed_hosts, host
         ),
@@ -15086,6 +15107,7 @@ def _chair_run_deps(
         restart_note=restart_note,
         record_restart=None if dry_run else record_restart,
         save_cache=None if dry_run else save_caches,
+        store_reads=reader_cache.tick_counts,
     )
 
 

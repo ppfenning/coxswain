@@ -161,12 +161,18 @@ def _sqlite_backup(conn: Connection, dest: Path) -> None:
 PG_DUMP_TIMEOUT_S = 1800
 
 
+# A migration waits this long for the tables it alters, then fails and is retried by the next opener. Long enough for
+# a busy chair's row writes to drain; short enough that a session left holding a lock surfaces as an error, not a hang.
+MIGRATION_LOCK_TIMEOUT_MS = 300_000
+
+
 def exempt_from_bounds(dialect: Dialect) -> tuple[str, ...]:
-    """Pure. The statements that lift the connection's statement and lock bounds (`store_dialect`) for one migration's
-    own transaction: a schema change may wait for the tables it alters and may run longer than a row write."""
+    """Pure. The statements that widen the connection's statement and lock bounds (`store_dialect`) for one
+    migration's own transaction: a schema change may run longer than a row write, so its statements are unbounded,
+    and it may wait for the tables it alters, but only `MIGRATION_LOCK_TIMEOUT_MS`, never forever."""
     if dialect.name != "postgres":
         return ()
-    return ("SET LOCAL statement_timeout = 0", "SET LOCAL lock_timeout = 0")
+    return ("SET LOCAL statement_timeout = 0", f"SET LOCAL lock_timeout = {MIGRATION_LOCK_TIMEOUT_MS}")
 
 
 def _pg_dump(url: str, dest: Path, safe_url: str) -> None:

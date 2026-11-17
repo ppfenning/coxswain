@@ -28,21 +28,32 @@ def choose_remedy(cause: str | None) -> str:
     return _REMEDY_BY_CAUSE.get(cause or "", "re-ground")
 
 
-def _set_state(task: str, state: str) -> list[str]:
-    return ["cox", "route", "edit", task, "--state", state]
+def set_state_argv(initiative: str, task: str, state: str) -> list[str]:
+    """The `route edit` argv that moves one ticket. It names the initiative, so a task id repeated across initiatives
+    moves this initiative's ticket; an empty initiative (a row that carries none) gives the id-only argv, which
+    `route edit` refuses rather than guess when the id repeats."""
+    return ["cox", "route", "edit", task, *(["--initiative", initiative] if initiative else []), "--state", state]
 
 
-def remedy_command(kind: str, run: str, task: str, repo: str) -> list[str]:
+def initiative_of(initiative: str, run: str) -> str:
+    """The initiative a row names, else the one its run id names: `x-3` and the phase run `x.p1-2` are both `x`."""
+    if initiative:
+        return initiative
+    series, _, tail = run.rpartition("-")
+    return series.split(".", 1)[0] if series and tail.isdigit() else ""
+
+
+def remedy_command(kind: str, run: str, task: str, repo: str, initiative: str = "") -> list[str]:
     """Argv of the existing command for a remedy kind; an unknown kind gets the re-ground argv."""
     if kind == "carry":
         return ["cox", "runs", "land", run, "--repo", repo, "--task", task, "--apply"]
     if kind == "drop":
         # No dedicated drop verb exists: the nearest set-state argv marks the ticket dropped.
-        return _set_state(task, "dropped")
+        return set_state_argv(initiative, task, "dropped")
     # Retry has no dedicated verb either: the nearest set-state argv puts the ticket ready. Re-ground and unknown kinds too.
-    return _set_state(task, "ready")
+    return set_state_argv(initiative, task, "ready")
 
 
-def remedy_for(cause: str | None, run: str, task: str, repo: str) -> dict:
+def remedy_for(cause: str | None, run: str, task: str, repo: str, initiative: str = "") -> dict:
     kind = choose_remedy(cause)
-    return {"kind": kind, "command": remedy_command(kind, run, task, repo)}
+    return {"kind": kind, "command": remedy_command(kind, run, task, repo, initiative)}

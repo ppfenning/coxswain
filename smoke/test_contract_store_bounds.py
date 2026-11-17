@@ -41,3 +41,16 @@ def test_a_held_row_lock_makes_a_state_write_fail_within_the_lock_bound(sandbox)
     assert "LockNotAvailable" in detail or "lock timeout" in detail, detail
     assert bound - 1 <= took <= bound + MARGIN_S and waited <= bound + MARGIN_S + 10
     assert sandbox.store_row("ship", "t1")["state"] == "ready"
+
+
+OPTIONS = """import json
+from harness.store_dialect import connect
+conn = connect({url!r} + ("&" if "?" in {url!r} else "?") + "options=-c%20search_path%3Dpublic")
+print(json.dumps([conn.query_one(f"SHOW {{name}}")[0] for name in ("lock_timeout", "statement_timeout", "search_path")]))
+"""
+
+
+def test_a_url_with_its_own_options_keeps_the_lock_and_statement_bounds(sandbox):
+    # A storage URL that sets `options` once replaced the bounds, so its sessions waited on a lock forever (H1 review).
+    lock, statement, path = sandbox.python_json(OPTIONS.format(url=sandbox.store_url))
+    assert (lock, statement, path) == ("30s", "1min", "public")

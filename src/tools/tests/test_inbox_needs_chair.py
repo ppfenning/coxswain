@@ -31,7 +31,7 @@ def test_full_record_gives_one_full_item():
             what="t1: code",
             evidence="tests fail on main",
             accept_cmd=(*EDIT, "t1", "--state", "ready"),
-            deny_cmd=(*EDIT, "t1", "--state", "dropped"),
+            deny_cmd=(*EDIT, "t1", "--initiative", "init", "--state", "dropped"),
         ),
     )
 
@@ -39,7 +39,7 @@ def test_full_record_gives_one_full_item():
 def test_record_without_command_falls_back_to_reground():
     record = {"kind": "needs_chair", "ts": "2026-10-05T12:00:00Z", "initiative": "init", "task_id": "t1", "cause": "stale"}
     (item,) = needs_chair_to_items([record])
-    assert (item.accept_cmd, item.evidence) == ((*EDIT, "t1", "--state", "ready"), "")
+    assert (item.accept_cmd, item.evidence) == ((*EDIT, "t1", "--initiative", "init", "--state", "ready"), "")
 
 
 def test_initiative_grain_record_uses_empty_run_task_and_repo():

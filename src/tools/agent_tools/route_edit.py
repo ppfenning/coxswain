@@ -36,10 +36,10 @@ from __future__ import annotations
 
 import difflib
 import os
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from functools import reduce
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from agent_tools import (
     land_manual,
@@ -579,6 +579,21 @@ def intake_reach_refusal(text: str, new_body: str, title: str | None) -> str | N
     return route_reach.launch_text_refusal(candidate)
 
 
+def pick_ticket(rows: Sequence[Mapping[str, Any]], id: str, initiative: str | None) -> Mapping[str, Any] | str:
+    """Pure. The task row `id` names among queue `rows`, or the refusal. With `initiative`, only that initiative's task
+    counts, so a task id repeated across initiatives picks one; without it a repeated id is refused, never guessed."""
+    tickets = [
+        row for row in rows
+        if row.get("kind", "task") == "task" and row.get("task_id") == id and initiative in (None, row.get("initiative"))
+    ]
+    if not tickets:
+        return f"no task {id!r} in initiative {initiative!r}" if initiative is not None else f"no queued intake or initiative named {id!r}"
+    if len(tickets) > 1:
+        initiatives = ", ".join(sorted(str(row.get("initiative")) for row in tickets))
+        return f"{id!r} names a task in several initiatives ({initiatives}); give --initiative to pick one"
+    return tickets[0]
+
+
 def apply_edit(
     runs_dir: Path,
     ws: Path,
@@ -601,6 +616,7 @@ def apply_edit(
     epic: str | None = None,
     note: str | None = None,
     initiative_live: Collection[str] = (),
+    initiative: str | None = None,
 ) -> EditResult:
     """Edge: edit the queued intake, the initiative or the task ticket named `id`. Exit 0 returns the diff; exit 2 returns the
     reason and writes nothing, whether the options are wrong, the id is unknown, or the guard refuses. With
@@ -611,19 +627,17 @@ def apply_edit(
     it is refused anywhere else.
     `epic` sets an initiative's epic to an id, or removes it with `none`, in the store row and in initiative.md; it is
     refused on an intake and a task ticket. Given alone it skips the initiative guard; see the module docstring.
-    `note` is appended once to a task ticket's body, with or without a state move; it is refused on an intake and an initiative."""
+    `note` is appended once to a task ticket's body, with or without a state move; it is refused on an intake and an initiative.
+    `initiative` makes `id` a task ticket of that initiative (`pick_ticket`), never an intake or an initiative."""
     problem = check_options(title, body, body_file, repo, surfaces, state, rebuild, force, pr, after, link, epic, note)
     if problem is not None:
         return EditResult(problem, REFUSED)
     rows: Sequence[dict] = run_store.read_queue(runs_dir)
-    target = route_guard.resolve_target(rows, id)
+    target = route_guard.NotFound(id) if initiative is not None else route_guard.resolve_target(rows, id)
     if isinstance(target, route_guard.NotFound):
-        tickets = [row for row in rows if row.get("kind", "task") == "task" and row.get("task_id") == id]
-        if not tickets:
-            return EditResult(f"no queued intake or initiative named {id!r}", REFUSED)
-        if len(tickets) > 1:
-            initiatives = ", ".join(sorted(str(row.get("initiative")) for row in tickets))
-            return EditResult(f"{id!r} names a task in several initiatives ({initiatives}); the id alone cannot pick one", REFUSED)
+        ticket = pick_ticket(rows, id, initiative)
+        if isinstance(ticket, str):
+            return EditResult(ticket, REFUSED)
         if repo is not None:
             return EditResult("--repo applies to an intake or an initiative, not a task ticket", REFUSED)
         if after is not None:
@@ -636,7 +650,7 @@ def apply_edit(
         if problem is not None:
             return EditResult(problem, REFUSED)
         return _edit_task(
-            runs_dir, ws, dict(tickets[0]), title=title, body=body, body_file=body_file, surfaces=surfaces, state=state, dry_run=dry_run,
+            runs_dir, ws, dict(ticket), title=title, body=body, body_file=body_file, surfaces=surfaces, state=state, dry_run=dry_run,
             now=now, rebuild=rebuild, force=force, pr=pr, user_note=note, initiative_live=initiative_live,
         )
     if note is not None:

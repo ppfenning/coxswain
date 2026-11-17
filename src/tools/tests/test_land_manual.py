@@ -126,7 +126,7 @@ def test_a_manual_finish_with_no_merged_pr_is_still_done_and_records_none(tmp_pa
     result, writes = finish(make_repo(tmp_path, "squash"), runs_dir_with_record(tmp_path), monkeypatch)
     assert result["status"] == "done", result
     assert writes == [("init", "t1", "done", "chair-loop", "approved")]
-    assert "no merged PR found by gh: record one with `cox route edit t1 --state done --pr <url>`" in result["reason"]
+    assert "no merged PR found by gh: record one with `cox route edit t1 --initiative init --state done --pr <url>`" in result["reason"]
 
 
 def test_a_failed_mirror_leaves_the_finish_done_with_a_warning(tmp_path, monkeypatch):
@@ -183,7 +183,7 @@ def test_a_deleted_pr_branch_is_reported_with_the_escape_hatch_not_left_silent(t
     result, writes = finish(repo, runs_dir_with_record(tmp_path), monkeypatch)
     assert result["status"] == "failed" and writes == []
     assert "no PR branch on origin to check" in result["reason"]
-    assert "cox route edit <task> --state done" in result["reason"]
+    assert "cox route edit <task> --initiative <initiative> --state done" in result["reason"]
 
 
 def test_an_unreachable_origin_names_the_fetch_error(tmp_path, monkeypatch):

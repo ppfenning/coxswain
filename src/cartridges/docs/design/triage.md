@@ -85,7 +85,7 @@ record's review, adversary and arbitration verdicts, `fix_loop` and evidence bes
 the body it was built on (`body_sha`), so an attempt on an earlier body is not one on the current body, and
 records are ordered by run number. A rescue reads its attempts and the kept patch from them too.
 
-A person's fix starts a task fresh. `cox route edit <task> --state ready` on a blocked or quarantined task,
+A person's fix starts a task fresh. `cox route edit <task> --initiative <initiative> --state ready` on a blocked or quarantined task,
 or on one still flagged (a flagged task is already `ready`, so the move cancels its triage request), takes
 `triage_requested` off its row and marks it `fresh_after_run`: the newest number of each of the
 initiative's run series then, `{"<initiative>": 9, "<initiative>.<phase>": 3}`, since a phase run

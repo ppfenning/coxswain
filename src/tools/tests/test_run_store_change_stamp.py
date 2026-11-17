@@ -100,4 +100,5 @@ def test_absent_store_gives_none(stamp_of):
 def test_query_reads_write_counters_not_commits():
     sql = run_store._change_stamp_sql()
     assert all(word in sql for word in ("n_tup_ins", "n_tup_upd", "n_tup_del", "pg_stat_user_tables"))
+    assert "pg_table_is_visible(relid)" in sql  # only the tables the search_path resolves to
     assert "xact_commit" not in sql

@@ -1312,7 +1312,7 @@ def _finish_task(action: Action, deps: Deps) -> Result:
         return _result(action, "skipped", why)
     written = store_cli.set_state(deps.runs_dir, initiative, task, "done", "chair-loop", "approved")
     if isinstance(written, store_cli.StateSet):
-        return _result(action, "done", f"{task} done: {why}{_record_merged_pr(deps, repo, run, phase, task, branches)}")
+        return _result(action, "done", f"{task} done: {why}{_record_merged_pr(deps, repo, run, phase, task, branches, initiative)}")
     return _result(action, "failed", f"set-state done for {task}: {written}")
 
 
@@ -1341,13 +1341,13 @@ def _requeue_task(action: Action, deps: Deps) -> Result:
     return _result(action, "failed", f"set-state ready for {task}: {written}{note}")
 
 
-def _record_merged_pr(deps: Deps, repo: str, run: str, phase: str, task: str, branches: list[str]) -> str:
+def _record_merged_pr(deps: Deps, repo: str, run: str, phase: str, task: str, branches: list[str], initiative: str) -> str:
     """Edge. Mirror the merged PR onto the finished task's record; the text to add to the reason.
     The task is already done, so a PR that cannot be found or recorded changes the reason only, never the status.
     A miss names the `route edit --pr` command that records it later, since the finish is not retried."""
     pr = land_manual.lookup_merged_pr(repo, branches, deps.run)
     if pr is None:
-        return f"; no merged PR found by gh: record one with `cox route edit {task} --state done --pr <url>`"
+        return f"; no merged PR found by gh: record one with `cox route edit {task} --initiative {initiative} --state done --pr <url>`"
     warning = land_manual.record_landed(deps.runs_dir, run, phase, task, pr, deps.now())
     return f"; {warning}" if warning else f"; recorded {pr}"
 
@@ -1560,10 +1560,10 @@ def revert_outcome(action: Action, reverted: RevertResult) -> tuple[str, str]:
     return "revert_failed", f"{reverted.detail}; main is still red after the revert of {action.get('commit', '')}"
 
 
-def revert_reason(reason: str, quarantined: Quarantined) -> str:
+def revert_reason(reason: str, quarantined: Quarantined, initiative: str) -> str:
     """Pure. `reason`, then how a person releases each task the quarantine moved (they stay quarantined: no relaunch
     rebuilds them), then each quarantine write the store did not take, so the needs_chair names a phase left runnable."""
-    release = release_commands(quarantined.moved)
+    release = release_commands(initiative, quarantined.moved)
     released = [f"quarantined {', '.join(quarantined.moved)}; once main is green, release each: {'; '.join(release)}"] if release else []
     return "; ".join([reason, *released, *(f"quarantine not recorded: {line}" for line in quarantined.failures)])
 
@@ -1583,7 +1583,7 @@ def _revert_land(action: Action, deps: Deps) -> Result:
     if reverted.status == MERGED:
         deps.resolve_land(initiative, phase, "reverted")
     cause, outcome = revert_outcome(action, reverted)
-    reason = revert_reason(outcome, quarantined)
+    reason = revert_reason(outcome, quarantined, initiative)
     raised: Action = {
         "kind": "needs_chair", "initiative": initiative, "phase": phase, "cause": cause,
         "epoch": action.get("epoch", 0), "reason": reason,

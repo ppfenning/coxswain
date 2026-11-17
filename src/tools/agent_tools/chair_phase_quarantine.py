@@ -17,6 +17,8 @@ import re
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, NamedTuple
 
+from agent_tools.chair_remedy import set_state_argv
+
 QUARANTINE_FROM = ("approved", "done")
 MARK_KEY = "quarantine_mark"  # extra key: {"cause", "reason", "run"} the chair's own quarantine wrote
 
@@ -54,9 +56,10 @@ def mark_run(run_ids: Iterable[str], initiative: str, attempt_runs: Iterable[str
     return newest_run([*run_ids, *attempt_runs], initiative)
 
 
-def release_commands(tasks: Iterable[str]) -> list[str]:
-    """The hand move that releases each quarantined task to build again, once a person has seen main green."""
-    return [f"cox route edit {task} --state ready" for task in tasks]
+def release_commands(initiative: str, tasks: Iterable[str]) -> list[str]:
+    """The hand move that releases each quarantined task to build again, once a person has seen main green. Each names
+    the initiative, so a task id another initiative also uses releases this one's ticket."""
+    return [" ".join(set_state_argv(initiative, task, "ready")) for task in tasks]
 
 
 def marked_extra(extra: Mapping[str, Any] | None, cause: str, reason: str, run: str) -> dict[str, Any]:

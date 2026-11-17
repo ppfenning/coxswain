@@ -56,7 +56,7 @@ API's enums; a lane check imports only its worktree's code (a test proves it wit
 **Status.** `harness.store_api` is the typed store API: `*_on` functions over an open connection, which
 `harness.store_cli` wraps, and url-level functions that `agent_tools` calls in process (`store_cli`, `run_store`).
 Its values are frozen dataclasses and TypedDicts; `WorkState` is the one enum and `core.workstore.STATES` must equal
-it. The chair's remedies, which `cox inbox` accept and deny run, are `cox route edit <task> --state <state>`. What stays a
+it. The chair's remedies, which `cox inbox` accept and deny run, are `cox route edit <task> --initiative <initiative> --state <state>`, so a task id repeated across initiatives moves the right ticket. What stays a
 command line, and why: the `cox runs recover --reopen` hint prints `-m harness.store_cli set-state` for a person, and
 `store_switch` copies a store with `-m harness.store_copy`, which needs the sqlite double set in its own environment.
 The chair's trace prune (`-m harness.store_backfill_traces prune`) still runs as a child of the profile's harness
@@ -162,6 +162,17 @@ read one env file; the macOS lane host upgrades on a schedule; a lane sync never
 
 **Done when.** A quiet tick takes under 5 s on the chair machine; a design page for the queues is approved before
 any build.
+
+**Status.** Part 1 was measured on a restored slice: this machine's workspace, with its run records backfilled into a
+throwaway Postgres (2,545 runs, 2,943 work items, 2,773 task records, 9,827 node calls). There, a dry-run
+`cox chair run` tick went from about 29 s of facts to about 4 s in total. Most of the time was not the store. It was
+one `git log` per ticket (744 processes), a glob of the 14,000-entry runs directory once per initiative, quadratic row
+lookups, and re-parsing every ticket's YAML. The store readers (`work_items`, the queue, `hosts`, the newest run per
+initiative) now keep their rows while the store's change counters for their tables stand (`chair_tick_cache`). A quiet
+tick sends one counters query instead of about 470 queries, and the timing line ends `store: read=… reused=…`.
+`smoke/test_chair_tick_cache.py` proves it against real Postgres: a quiet gather re-reads nothing and scans no
+`work_items`, and one write re-reads exactly the `work_items` readers. The chair machine itself is not yet measured.
+Part 2 is the [event-driven chair](design/event-driven-chair.md), proposed and not approved.
 
 ## H7. The operator is told
 

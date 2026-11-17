@@ -102,22 +102,43 @@ def read_chair_actions(runs_dir: Path, now: datetime | None = None, window_days:
     return rows
 
 
-def file_changed_at(workspace_dir: Path, initiative: str, phase: str, task: str) -> str | None:
-    """Edge. `git log`'s ISO-8601 author date of the ticket file's newest commit; with no commit history, the file's
-    own modification time, so a ticket written since the last workspace commit reads as fresh; None with neither."""
-    rel = f"work/{initiative}/{phase}/{task}.md"
+GIT_LOG_TIMEOUT_S = 30
+
+
+def newest_changes(log_text: str) -> dict[str, str]:
+    """Pure. Path to the author date of the newest commit that names it, from `git log --format=%x00%aI --name-only`
+    output, newest commit first: each record is a NUL, the date line, then one path per line."""
+    newest: dict[str, str] = {}
+    for record in log_text.split("\0")[1:]:
+        date, *paths = record.split("\n")
+        for path in paths:
+            if path.strip():
+                newest.setdefault(path.strip(), date.strip())
+    return newest
+
+
+def read_file_changes(workspace_dir: Path) -> dict[str, str] | None:
+    """Edge. `newest_changes` for every ticket under `work/`, from one `git log` for the whole board; None when the
+    workspace has no readable history. It replaced one `git log -1` per ticket, about 750 processes a tick."""
     try:
         done = subprocess.run(
-            ["git", "-C", str(workspace_dir), "log", "-1", "--format=%aI", "--", rel],
+            ["git", "-C", str(workspace_dir), "log", "--format=%x00%aI", "--name-only", "--no-renames", "--", "work"],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=GIT_LOG_TIMEOUT_S,
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    out = done.stdout.strip() if done.returncode == 0 else ""
-    if out:
-        return out
+    return newest_changes(done.stdout) if done.returncode == 0 else None
+
+
+def changed_at(changes: Mapping[str, str] | None, workspace_dir: Path, initiative: str, phase: str, task: str) -> str | None:
+    """Edge. The ticket's newest commit date from `changes`; with none there, the file's own modification time, so a
+    ticket written since the last workspace commit reads as fresh; None with neither."""
+    rel = f"work/{initiative}/{phase}/{task}.md"
+    found = (changes or {}).get(rel)
+    if found:
+        return found
     try:
         return datetime.fromtimestamp((workspace_dir / rel).stat().st_mtime, UTC).isoformat()
     except OSError:
@@ -125,14 +146,15 @@ def file_changed_at(workspace_dir: Path, initiative: str, phase: str, task: str)
 
 
 def _candidate(
-    workspace_dir: Path, key: Key, state: str, body: str, attempts: Sequence[Row], actions: Sequence[Row]
+    workspace_dir: Path, key: Key, state: str, body: str, attempts: Sequence[Row], actions: Sequence[Row],
+    changes: Mapping[str, str] | None,
 ) -> StaleCandidate:
     initiative, phase, task = key
     return {
         "initiative": initiative,
         "task_id": task,
         "state": state,
-        "last_file_change": file_changed_at(workspace_dir, initiative, phase, task),
+        "last_file_change": changed_at(changes, workspace_dir, initiative, phase, task),
         "last_run": last_run_at(attempts, key),
         "last_chair_action": last_chair_action_at(actions, key),
         "quarantine_non_harness_count": quarantine_non_harness_count(attempts, body, key),
@@ -152,8 +174,9 @@ def read_stale_candidates(
     holds them. Given `actions`, the caller owns the window; it must reach back at least `stale_days`."""
     attempts = attempts if attempts is not None else read_attempts(workspace_dir, files)
     actions = actions if actions is not None else read_chair_actions(workspace_dir / "runs")
+    candidates = [(p, text, item) for p, text, item in read_work_items(workspace_dir, "files", files) if item["state"] not in _EXCLUDED_STATES]
+    changes = read_file_changes(workspace_dir) if candidates else None
     return [
-        _candidate(workspace_dir, (item["initiative"], p.parts[-2], p.stem), item["state"], item_body(text), attempts, actions)
-        for p, text, item in read_work_items(workspace_dir, "files", files)
-        if item["state"] not in _EXCLUDED_STATES
+        _candidate(workspace_dir, (item["initiative"], p.parts[-2], p.stem), item["state"], item_body(text), attempts, actions, changes)
+        for p, text, item in candidates
     ]

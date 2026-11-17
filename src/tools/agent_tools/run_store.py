@@ -196,14 +196,27 @@ def connect_readonly(runs_dir: Path) -> Any | None:
 
 
 def _change_stamp_sql() -> str:
-    """One row per user table: its name and the rows inserted, updated and deleted since statistics began."""
-    return "SELECT relname, n_tup_ins + n_tup_upd + n_tup_del AS changes FROM pg_stat_user_tables"
+    """One row per user table the connection's `search_path` resolves to: its name and the rows inserted, updated and
+    deleted since statistics began. `pg_table_is_visible` keeps a same-named table in another schema (a `public.work_items`
+    beside the store's own, say) out, so its writes neither move the stamp nor hide the store's."""
+    return (
+        "SELECT relname, n_tup_ins + n_tup_upd + n_tup_del AS changes FROM pg_stat_user_tables "
+        "WHERE pg_table_is_visible(relid)"
+    )
 
 
 def _stamp_of_rows(rows: Sequence[Any]) -> Hashable:
     """Sorted (table, changes) pairs, so row order never moves the stamp. Accepts mapping rows and plain pairs."""
     pairs = ((r["relname"], int(r["changes"])) if isinstance(r, Mapping) else (r[0], int(r[1])) for r in rows)
     return tuple(sorted(pairs))
+
+
+def table_counters(runs_dir: Path) -> dict[str, int] | None:
+    """Edge. Each user table's inserted, updated and deleted row count (`_change_stamp_sql`), one query; None for a
+    SQLite store, an absent store or any failure, which the chair's reader cache reads as "re-read everything".
+    The counters trail a write as `store_change_stamp` says. Never raises."""
+    stamp = store_change_stamp(runs_dir)
+    return None if stamp is None else dict(stamp)  # type: ignore[arg-type]
 
 
 def store_change_stamp(runs_dir: Path) -> Hashable | None:
@@ -1066,6 +1079,15 @@ def resolve_initiative(runs_dir: Path, token: str) -> str:
 def task_state(rows: list[dict], initiative: str, task: str) -> str | None:
     """Pure: the `state` of the row for this initiative and task, or None when no row matches."""
     return next((row.get("state") for row in rows if row.get("initiative") == initiative and row.get("task_id") == task), None)
+
+
+def rows_by_task(rows: Sequence[Mapping[str, Any]]) -> dict[tuple[Any, Any], Mapping[str, Any]]:
+    """Pure: (initiative, task_id) to the first row with that key, the row `task_state` reads, so a caller asking for
+    every item's row does one pass over `rows` instead of one per item."""
+    index: dict[tuple[Any, Any], Mapping[str, Any]] = {}
+    for row in rows:
+        index.setdefault((row.get("initiative"), row.get("task_id")), row)
+    return index
 
 
 class _ReadFailed(Exception):

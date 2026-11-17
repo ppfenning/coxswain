@@ -78,7 +78,7 @@ def _states(ws) -> dict[str, str]:
 def test_a_revert_quarantines_only_the_tasks_of_the_land_and_leaves_the_rest(ws):
     result = _revert(ws)
     assert "quarantine not recorded" not in result["reason"], result["reason"]
-    assert "release each: cox route edit t1 --state ready; cox route edit t2 --state ready" in result["reason"]
+    assert "release each: cox route edit t1 --initiative demo --state ready; cox route edit t2 --initiative demo --state ready" in result["reason"]
     assert _states(ws) == {"t1": "quarantined", "t2": "quarantined", "t3": "dropped", "t4": "in_progress", "t5": "ready"}
 
 

@@ -26,8 +26,10 @@ def test_the_mark_run_is_the_newest_of_the_recorded_runs_and_the_task_s_own_atte
 
 
 def test_release_commands_name_the_hand_move_per_task():
-    assert release_commands(["t1", "t2"]) == ["cox route edit t1 --state ready", "cox route edit t2 --state ready"]
-    assert release_commands([]) == []
+    assert release_commands("init", ["t1", "t2"]) == [
+        "cox route edit t1 --initiative init --state ready", "cox route edit t2 --initiative init --state ready",
+    ]
+    assert release_commands("init", []) == []
 
 
 def _row(task: str, state: str, phase: str = "p1", initiative: str = "i1", kind: str = "task") -> dict:

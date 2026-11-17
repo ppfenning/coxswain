@@ -2919,12 +2919,9 @@ def with_store_states(items: list, rows: list[dict], mode: str) -> list:
     """Under mode "store", each item's `state` is the store row's; an item with no row keeps its file state. Any other mode returns `items` as given."""
     if mode != "store":
         return items
-    stored = [(item, run_store.task_state(rows, item["initiative"], item["id"])) for item in items]
-    return [item if state is None else {**item, "state": state, **_merged_key(_row_of(rows, item))} for item, state in stored]
-
-
-def _row_of(rows: list[dict], item: Mapping) -> dict:
-    return next((r for r in rows if r.get("initiative") == item["initiative"] and r.get("task_id") == item["id"]), {})
+    index = run_store.rows_by_task(rows)
+    found = [(item, index.get((item["initiative"], item["id"]), {})) for item in items]
+    return [item if row.get("state") is None else {**item, "state": row["state"], **_merged_key(row)} for item, row in found]
 
 
 def _initiative_summary(initiative_id: str, own_items: list, land_at: str = DEFAULT_LAND_AT):

@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from agent_tools.chair_remedy import remedy_for, trim_reason
+from agent_tools.chair_remedy import initiative_of, remedy_for, trim_reason
 from agent_tools.inbox import InboxItem, item_id
 
 Row = Mapping[str, Any]
@@ -45,6 +45,7 @@ def open_refusals(rows: Iterable[Row]) -> list[Row]:
 def _item(row: Row) -> InboxItem:
     run, task = _key(row)
     repo = str(row.get("repo") or "")
+    initiative = initiative_of(str(row.get("initiative") or ""), run)
     created = _utc(row.get("ts"))
     assert created is not None  # open_refusals only passes rows with a parseable ts
     return InboxItem(
@@ -53,8 +54,8 @@ def _item(row: Row) -> InboxItem:
         created_at=created,
         what=f"land of {task} in {run} was refused",
         evidence=trim_reason(row.get("reason")),
-        accept_cmd=tuple(remedy_for("stranded", run, task, repo)["command"]),
-        deny_cmd=tuple(remedy_for("stale", run, task, repo)["command"]),
+        accept_cmd=tuple(remedy_for("stranded", run, task, repo, initiative)["command"]),
+        deny_cmd=tuple(remedy_for("stale", run, task, repo, initiative)["command"]),
     )
 
 
