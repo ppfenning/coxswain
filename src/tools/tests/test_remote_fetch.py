@@ -1,9 +1,6 @@
 import json
 import shutil
-import sqlite3
 import subprocess
-import sys
-from pathlib import Path
 
 import pytest
 
@@ -290,18 +287,18 @@ def test_branch_expected_only_when_a_task_is_approved():
 
 
 def _sqlite_store(tmp_path, monkeypatch, rows):
-    """A real sqlite `task_records` table, read through run_store's own scripts run by this interpreter."""
-    db = tmp_path / "store.db"
-    conn = sqlite3.connect(db)
-    conn.execute("CREATE TABLE task_records (run_id TEXT, phase_id TEXT, task_id TEXT, record_json TEXT)")
-    conn.executemany(
-        "INSERT INTO task_records VALUES (?, ?, ?, ?)",
-        [(run, "p1", task, json.dumps(record)) for run, task, record in rows],
-    )
-    conn.commit()
-    conn.close()
-    monkeypatch.setattr(run_store, "_harness_python", lambda: Path(sys.executable))
-    monkeypatch.setattr(run_store, "_store_url", lambda runs_dir: f"sqlite:///{db}")
+    """A real migrated sqlite store under `<tmp_path>/runs`, holding one `task_records` row per entry."""
+    from harness.store_migrate import open_store
+    from harness.store_write import Store
+
+    (tmp_path / "runs").mkdir(exist_ok=True)
+    now = "2026-09-21T00:00:00Z"
+    conn = open_store(run_store._store_url(tmp_path / "runs"), now)
+    try:
+        for run, task, record in rows:
+            Store(conn).record_task_record(run, "p1", task, record, now)
+    finally:
+        conn.close()
 
 
 def _stored_row(approved):

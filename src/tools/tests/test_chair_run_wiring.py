@@ -372,7 +372,7 @@ def test_the_dispatch_facts_fall_back_to_the_profile_host_when_the_table_has_no_
     profile.write_text("lane_hosts:\n  - name: other\n    ssh: other\n    workspace_dir: /w\n", encoding="utf-8")
     runs = tmp_path / "runs"
     _hosts_table(runs)
-    deps = cli._chair_run_deps(runs, {}, "chair", 1, "h", False, print, profile, "files")
+    deps = cli._chair_run_deps(runs, {}, "chair", 1, "h", True, print, profile, "files")  # a dry run registers no host
     assert deps.facts_deps.dispatch({"max_in_flight": 3})["hosts"] == [  # type: ignore[misc]
         {"name": "other", "live_runs": 0, "capabilities": []}
     ]

@@ -153,7 +153,9 @@ def run(dry_run=False, apply=False, hosts=False, finish=False, old_root=None, to
 
 
 def tree(root: Path):
-    return sorted((str(p), os.readlink(p) if p.is_symlink() else p.is_dir()) for p in root.rglob("*") if ".git" not in p.parts)
+    """Every path under root but git's and sqlite's own sidecars: a read of the store opens `-shm`/`-wal` files, which are not a change."""
+    return sorted((str(p), os.readlink(p) if p.is_symlink() else p.is_dir()) for p in root.rglob("*")
+                  if ".git" not in p.parts and not p.name.endswith(("-shm", "-wal")))
 
 
 def retired(layout):
@@ -581,16 +583,6 @@ def test_a_release_that_raises_is_reported_and_the_rest_still_release(layout, mo
     assert len(taken(layout, "release")) == 4
 
 
-def test_the_interpreter_cache_is_cleared_once_before_the_first_release(layout, monkeypatch):
-    order = []
-    monkeypatch.setattr(cli.run_store, "_harness_python_for", types.SimpleNamespace(cache_clear=lambda: order.append("clear")))
-    monkeypatch.setattr(
-        cli.land_repo_lease, "release", lambda runs_dir, repo, holder, epoch: order.append("release") or store_cli.LeaseReleased()
-    )
-    assert run(apply=True) == 0
-    assert order == ["clear", "release", "release", "release", "release"]
-
-
 def test_a_plan_of_only_skip_steps_takes_no_lease(layout):
     assert run(apply=True) == 0
     layout.calls.clear()
@@ -776,7 +768,7 @@ def test_apply_loads_the_lazy_modules_then_swaps_the_component_tools_for_coxswai
         ["uv", "sync", "--frozen", "--all-extras", "--inexact", "-q"],
         ["uv", "tool", "uninstall", "coxswain-tools"],
         ["uv", "tool", "uninstall", "agent-cartridges"],
-        ["uv", "tool", "install", "--force", "-q", "--editable", f"{layout.checkout}[lake]"],
+        ["uv", "tool", "install", "--force", "-q", "--editable", f"{layout.checkout}[lake,parquet,postgres]"],
     ]
 
 

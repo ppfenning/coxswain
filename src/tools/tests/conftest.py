@@ -40,7 +40,7 @@ def _fresh_store_url():
     from agent_tools import console_screen, run_store
 
     caches = (run_store._store_url_for, run_store._lease_table, run_store._lease_rows, run_store._traces_root_for,
-              run_store._harness_python_for, run_store._harness_dump, run_store._found_parquet_rows,
+              run_store._found_parquet_rows,
               run_store._store_ids_by_trace, console_screen._work_items_snapshot)
     for cache in caches:
         cache.cache_clear()
@@ -82,15 +82,6 @@ def _no_host_profile(monkeypatch, tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
-def _no_real_harness(monkeypatch):
-    """No test reaches the machine's real harness: a store_cli call would write leases into a real store. A test that
-    needs a harness monkeypatches `store_cli._harness_python` itself."""
-    from agent_tools import store_cli
-
-    monkeypatch.setattr(store_cli, "_harness_python", lambda: None)
-
-
-@pytest.fixture(autouse=True)
 def _no_real_usage_meter(monkeypatch, request):
     """No test reads the box's real status-line meter or implied-ceiling file: this machine carries a
     live, fresh `~/.local/state/coxswain/rate-limits.json`, so without this a test that never mentions
@@ -112,15 +103,14 @@ def _no_real_usage_meter(monkeypatch, request):
 @pytest.fixture
 def board_store(monkeypatch):
     """The store as the board, for a test that drives a command end to end: queue reads and writes run for real, in
-    this interpreter's environment, against the sqlite file in the test's own runs directory. sqlite is the test
-    double for the Postgres store; nothing here reaches a real one."""
-    import sys
+    process, against the sqlite file in the test's own runs directory, migrated before a direct read opens it. sqlite
+    is the test double for the Postgres store; nothing here reaches a real one."""
     from pathlib import Path
 
     from agent_tools import run_store
 
     migrated: set[str] = set()
-    real_run, real_readonly = run_store._queue_run, run_store.connect_readonly
+    real_readonly = run_store.connect_readonly
 
     def ensure(runs_dir) -> None:
         from harness.store_dialect import connect
@@ -137,17 +127,27 @@ def board_store(monkeypatch):
             conn.close()
         migrated.add(url)
 
-    def run(runs_dir, build):
-        ensure(runs_dir)
-        return real_run(runs_dir, build)
-
     def readonly(runs_dir):
         ensure(runs_dir)
         return real_readonly(runs_dir)
 
-    monkeypatch.setattr(run_store, "_harness_python", lambda: Path(sys.executable))
-    monkeypatch.setattr(run_store, "_queue_run", run)
     monkeypatch.setattr(run_store, "connect_readonly", readonly)
+
+
+@pytest.fixture
+def store_at(monkeypatch, tmp_path_factory):
+    """A function that points every store call at `url` for the rest of the test, through a routing profile whose
+    provider profile carries `storage_url`. `nosuch://x` or an unreachable `postgresql://` makes the store unopenable."""
+
+    def point(url: str) -> None:
+        base = tmp_path_factory.mktemp("store-at")
+        provider = base / "provider.yaml"
+        provider.write_text(f"storage_url: {url}\n", encoding="utf-8")
+        routing = base / "routing.yaml"
+        routing.write_text(f"provider_profile: {provider}\n", encoding="utf-8")
+        monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(routing))
+
+    return point
 
 
 @pytest.fixture(autouse=True)

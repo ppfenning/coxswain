@@ -4,8 +4,6 @@ repo lease, and still refuses one a PR or a worktree holds."""
 import json
 import os
 import subprocess as sp
-import sys
-from pathlib import Path
 
 import pytest
 from test_land import _PRESYNCED, _record
@@ -73,7 +71,6 @@ def _land(repo, tmp_path, monkeypatch, lease, prs=()):
     assert run_store.upsert_row(tmp_path / "runs", {"kind": "task", "initiative": "x", "task_id": "seams-task", "phase": "seams",
                                                     "state": "approved", "needs": [], "surfaces": [], "title": "Add seams",
                                                     "body": "", "extra": {}})
-    monkeypatch.setattr(store_cli, "_harness_python", lambda: Path(sys.executable))  # the land's task lease, in the test store
     ran = []
     monkeypatch.setattr(cli, "_execute_land_step", lambda _repo, step, _forge=None: (ran.append(step["kind"]) or True, "https://x/pull/7"))
     monkeypatch.setattr(cli, "_open_prs_for", lambda _repo, _branch, _forge=None: list(prs))

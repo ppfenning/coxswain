@@ -1091,10 +1091,9 @@ def _runs_notify(a: argparse.Namespace) -> int:
 
 def _resolved_run_id(runs_dir: Path, token: str) -> str:
     """A run command's token, resolved: `token` may already be a short run id or the old run key, and
-    `run_store.resolve_id` maps either to the same run record. Falls back to `token` unchanged when the
+    `run_store.resolve_run_id` maps either to the same run id. Falls back to `token` unchanged when the
     store or the harness cannot resolve it, so an unresolvable token still reaches the command as before."""
-    record = run_store.resolve_id(runs_dir, token)
-    return token if record is None else record.get("run_id", token)
+    return run_store.resolve_run_id(runs_dir, token) or token
 
 
 def _runs_detail(a: argparse.Namespace) -> int:
@@ -1276,7 +1275,7 @@ def _runs_pause_resume_outcome(verbed: str, run_id: str, result, as_json: bool) 
     type: `Paused`/`Resumed` prints `<verbed> <run_id>` and exits 0 (with a `reason:` line
     when `Paused.reason` is set); `PauseRefused`/`ResumeRefused` -- the run is not in the
     store -- prints `refused <run_id>: not in store` and exits 3; `Failed` -- the store ran
-    but refused or errored -- and `NotAvailable` -- no harness to run it -- both print
+    but refused or errored -- and `NotAvailable` -- the store could not be opened -- both print
     `failed <run_id>: ...` to stderr and exit 1, neither is "not in store"."""
     if isinstance(result, store_cli.Paused | store_cli.Resumed):
         outcome, code, stream, message = verbed, 0, sys.stdout, f"{verbed} {run_id}"
@@ -1287,7 +1286,7 @@ def _runs_pause_resume_outcome(verbed: str, run_id: str, result, as_json: bool) 
         message = f"failed {run_id}: {result.detail} (exit {result.code})"
     else:
         outcome, code, stream = "failed", 1, sys.stderr
-        message = f"failed {run_id}: the harness is not installed"
+        message = f"failed {run_id}: the store is not available: {result.reason}"
     if as_json:
         print(json.dumps({"outcome": outcome, "run": run_id, **dataclasses.asdict(result)}))
         return code
@@ -1301,27 +1300,27 @@ def _runs_pause(a: argparse.Namespace) -> int:
     runs_dir = Path(a.runs_dir)
     run_id = _resolved_run_id(runs_dir, a.run_id)
     store_url = run_store._store_url(runs_dir)
-    return _runs_pause_resume_outcome("paused", run_id, store_cli.pause(run_id, reason=a.reason, store_url=store_url), a.json)
+    return _runs_pause_resume_outcome("paused", run_id, store_cli.pause(store_url, run_id, reason=a.reason), a.json)
 
 
 def _runs_resume(a: argparse.Namespace) -> int:
     runs_dir = Path(a.runs_dir)
     run_id = _resolved_run_id(runs_dir, a.run_id)
     store_url = run_store._store_url(runs_dir)
-    return _runs_pause_resume_outcome("resumed", run_id, store_cli.resume(run_id, store_url=store_url), a.json)
+    return _runs_pause_resume_outcome("resumed", run_id, store_cli.resume(store_url, run_id), a.json)
 
 
-def _runs_move_pause(run_id: str, reason: str | None) -> tuple[bool, str]:
+def _runs_move_pause(store_url: str, run_id: str, reason: str | None) -> tuple[bool, str]:
     """Edge: `cox runs move`'s pause step, over the same `store_cli.pause` result types
     `_runs_pause_resume_outcome` already maps."""
-    result = store_cli.pause(run_id, reason=reason)
+    result = store_cli.pause(store_url, run_id, reason=reason)
     if isinstance(result, store_cli.Paused):
         return True, ""
     if isinstance(result, store_cli.PauseRefused):
         return False, "not in store"
     if isinstance(result, store_cli.Failed):
         return False, result.detail
-    return False, "the harness is not installed"
+    return False, f"the store is not available: {result.reason}"
 
 
 def _runs_move_stop(a: argparse.Namespace, run_id: str) -> tuple[bool, str]:
@@ -1420,7 +1419,7 @@ def _runs_move_step(step: dict, a: argparse.Namespace, exec_deps: chair_exec.Dep
     """One `runs_move.move_plan` step through the edge its kind reaches; epoch 0 stamped and matched."""
     kind = step["kind"]
     if kind == "pause":
-        return _runs_move_pause(step["run"], step.get("reason"))
+        return _runs_move_pause(run_store._store_url(Path(a.runs_dir)), step["run"], step.get("reason"))
     if kind == "stop":
         return _runs_move_stop(a, step["run"])
     if kind in ("clear_branches", "relaunch"):
@@ -3558,8 +3557,8 @@ def _lease_standing(result: store_cli.LeaseResult) -> str:
     """Pure. `kept` on a grant, `refused` on any refusal, else `unrenewable`.
 
     A refused renew does not say whether the lease lapsed or another holder took it. The store answers both with no
-    holder and no epoch: harness/store_cli_lease.lease_renew returns `_result(<bool>, None, None)`, and `parse_lease`
-    turns exit 3 into `LeaseRefused(None, None)`, the `held by None at epoch None` of the 2026-10-30 land that waited on CI.
+    holder and no epoch: `harness.store_api.lease_renew_on` answers a refusal `LeaseRefused(None, None)`,
+    the `held by None at epoch None` of the 2026-10-30 land that waited on CI.
     Only an acquire names a holder, and it refuses while another live holder has the lease. So a refused renew is settled
     by acquiring: a grant means the lease had lapsed with no other holder, a refusal names who holds it."""
     if isinstance(result, store_cli.LeaseGranted):
@@ -4746,8 +4745,7 @@ def _recover_set_state_argv(runs_dir: Path, initiative: str, a: argparse.Namespa
     named = store_url.read_provider_profile(_profile_path(a)).get("provider_profile")
     # Both: the provider profile's storage_url when it names one, else cox.db in the runs dir.
     where = [*(["--provider-profile", str(Path(named).expanduser())] if isinstance(named, str) and named else []), "--runs-dir", str(runs_dir)]
-    python = run_store._harness_python()
-    return [str(python or "python"), *store_cli._MODULE, "set-state", initiative, a.task_id, "approved",
+    return [sys.executable, *store_cli._MODULE, "set-state", initiative, a.task_id, "approved",
             "--by", _holder_label(a), "--expect", "done", *where]
 
 
@@ -9244,7 +9242,7 @@ def _parquet_traces_line(profile: dict | None) -> str | None:
     provider = profile.get("provider_profile")
     provider_data = store_url.read_provider_profile(provider) if provider else {}
     root = store_url.profile_traces_root(provider_data, Path(profile["workspace_dir"]).expanduser() / "runs")
-    check = run_store.parquet_readable(root, run_store.harness_python(profile))
+    check = run_store.parquet_readable(root)
     endpoint = root.object_store.get("endpoint") if root.object_store else None
     return doctor.parquet_line(check.readable, check.reason, str(endpoint) if endpoint else None)
 
@@ -9368,6 +9366,28 @@ def _doctor_dash_build_rows(profile: dict | None) -> list[dict]:
     return [doctor.dash_build_row(dev_install, dash_present, shutil.which("cargo") is not None)]
 
 
+def _doctor_running_install_rows(profile: dict | None) -> list[dict]:
+    """Edge. The `running install` row: where this interpreter's `coxswain` distribution is editable from, against the
+    install checkout; none without a profile or a resolvable home."""
+    if profile is None:
+        return []
+    locs = home_paths.resolve_here()
+    if isinstance(locs, home_paths.Refused):
+        return []
+    try:
+        record = importlib.metadata.distribution(setup_install.TOOL).read_text("direct_url.json")
+    except importlib.metadata.PackageNotFoundError:
+        record = None
+    checkout = setup_install.layout(locs.installs).checkout
+    return [doctor.running_install_row(checkout, sys.executable, doctor.editable_source(record))]
+
+
+def _doctor_extras_rows() -> list[dict]:
+    """Edge. The `extras` row: which of the extras `cox` needs this interpreter cannot import. Finds, never imports."""
+    missing = [extra for extra, module in doctor.EXTRA_MODULES if importlib.util.find_spec(module) is None]
+    return [doctor.extras_row(sys.executable, missing)]
+
+
 def _doctor_steward_rows(profile: dict | None) -> list[dict]:
     """Edge. The steward row; skipped without a profile. A missing or malformed `chair` reads as off."""
     if profile is None:
@@ -9406,6 +9426,8 @@ def _setup_doctor(a: argparse.Namespace) -> int:
         *_doctor_home_rows(profile),
         *_doctor_store_rows(profile),
         *_doctor_dash_build_rows(profile),
+        *_doctor_running_install_rows(profile),
+        *_doctor_extras_rows(),
         *_doctor_steward_rows(profile),
         *_doctor_log_rows(profile, fix=getattr(a, "fix", False), out=sys.stderr if a.json else sys.stdout),
     ]
@@ -10188,8 +10210,6 @@ def _release_lines(outcomes) -> list[str]:
 
 def _migrate_release(runs_dir: Path, taken, holder: str) -> None:
     """Edge. Releases every granted lease; one failed release does not stop the rest."""
-    # The release spawns the interpreter the profile names now; the one cached at acquire time may have been moved.
-    run_store._harness_python_for.cache_clear()
     outcomes = []
     for outcome, epoch in taken:
         if outcome.granted and epoch is not None:

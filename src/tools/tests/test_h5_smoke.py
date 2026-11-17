@@ -16,6 +16,7 @@ import pytest
 from agent_tools import chair_service, upgrade_edge
 
 TOOLS = Path(__file__).resolve().parents[1]
+SOURCE_ROOTS = os.pathsep.join(str(TOOLS.parent / name) for name in ("tools", "graphs", "cartridges"))  # this tree, never an older editable install
 SLUG = "example-org/example-repo"
 MANIFEST = f'[coxswain]\nversion = "2026.11.8"\nrepo = "{SLUG}"\n\n[providers.claude-code]\nstatus = "supported"\n'
 
@@ -43,7 +44,7 @@ def machine(tmp_path: Path) -> dict:
     profile = home / ".config" / "agent-tools" / "profile.yaml"
     (home / "ws").mkdir()
     profile.write_text(f"workspace_dir: {home / 'ws'}\nupgrade_channel: edge\n", encoding="utf-8")
-    env = {"HOME": str(home), "PATH": f"{bin_dir}:{os.environ['PATH']}", "PYTHONPATH": str(TOOLS),
+    env = {"HOME": str(home), "PATH": f"{bin_dir}:{os.environ['PATH']}", "PYTHONPATH": SOURCE_ROOTS,
            "AGENT_TOOLS_PROFILE": str(profile), "LANG": "C.UTF-8"}
     return {"home": home, "bin": bin_dir, "profile": profile, "env": env, "tmp": tmp_path}
 

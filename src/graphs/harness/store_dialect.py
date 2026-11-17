@@ -199,11 +199,19 @@ def _driver_free_url(url: str) -> str:
     return "postgresql://" + url[len(prefix) :] if url.startswith(prefix) else url
 
 
-# A dead peer must fail a connect in seconds and a silent drop must surface in about a minute.
+# Every bound on a store call, in one place. A store call runs in process (`harness.store_api`), so these are what keep
+# a chair tick from hanging on the store: a dead peer fails a connect in seconds, a silent drop surfaces in about a
+# minute, a statement runs at most a minute and waits at most half that for a lock. Migrations lift the statement and
+# lock bounds for their own transactions only (`store_migrate.migrate`, SET LOCAL). sqlite, the suites' double, waits
+# on a locked file as long as Postgres waits on a lock.
 _PG_CONNECT_TIMEOUT_S = 10
 _PG_KEEPALIVES_IDLE_S = 30
 _PG_KEEPALIVES_INTERVAL_S = 10
 _PG_KEEPALIVES_COUNT = 3
+STATEMENT_TIMEOUT_MS = 60_000
+LOCK_TIMEOUT_MS = 30_000
+TCP_USER_TIMEOUT_MS = 60_000
+SQLITE_BUSY_TIMEOUT_MS = LOCK_TIMEOUT_MS
 
 
 def _pg_connect_kwargs(pg_url: str, extra: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -214,6 +222,8 @@ def _pg_connect_kwargs(pg_url: str, extra: Mapping[str, Any] | None = None) -> d
         "keepalives_idle": _PG_KEEPALIVES_IDLE_S,
         "keepalives_interval": _PG_KEEPALIVES_INTERVAL_S,
         "keepalives_count": _PG_KEEPALIVES_COUNT,
+        "tcp_user_timeout": TCP_USER_TIMEOUT_MS,
+        "options": f"-c statement_timeout={STATEMENT_TIMEOUT_MS} -c lock_timeout={LOCK_TIMEOUT_MS}",
         "autocommit": True,
     }
     in_url = parse_qs(urlsplit(pg_url).query)
@@ -243,10 +253,12 @@ def connect(url: str) -> Connection:
             raise ValueError(SQLITE_RETIRED)
         # isolation_level=None: no implicit BEGIN, so a failed statement holds no lock.
         # check_same_thread=False: the Connection's own lock serialises the threads that share it.
-        raw = sqlite3.connect(_sqlite_target(url), timeout=30.0, isolation_level=None, check_same_thread=False)
+        raw = sqlite3.connect(
+            _sqlite_target(url), timeout=SQLITE_BUSY_TIMEOUT_MS / 1000, isolation_level=None, check_same_thread=False
+        )
         raw.execute("PRAGMA journal_mode=WAL")
         raw.execute("PRAGMA foreign_keys=ON")
-        raw.execute("PRAGMA busy_timeout=30000")
+        raw.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
         # IMMEDIATE takes the write lock at BEGIN, where the busy timeout applies,
         # instead of a late read-to-write upgrade that fails SQLITE_BUSY at once.
         return Connection(raw, SQLITE, begin="BEGIN IMMEDIATE")

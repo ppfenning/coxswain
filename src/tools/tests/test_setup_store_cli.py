@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -127,7 +128,8 @@ def test_install_plan_starts_no_service(tmp_path):
         profile_exists=False, force_profile=False, plugins=True, hook=True,
         config_dir=str(tmp_path), claude_settings_path=str(tmp_path / "settings.json"),
     )
-    argvs = [" ".join(step["argv"]) for step in steps if step.get("op") == "run"]
+    # An install target's `[extras]` names packages to install (the postgres driver among them), not a service.
+    argvs = [re.sub(r"\[[^\]]*\]", "", " ".join(step["argv"])) for step in steps if step.get("op") == "run"]
     assert argvs
     banned = ("postgres", "garage", "docker", "systemctl", "brew services")
     assert not [argv for argv in argvs if any(word in argv for word in banned)]

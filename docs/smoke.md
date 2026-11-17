@@ -76,6 +76,9 @@ into a scratch copy of the tree and confirming that they fail.
 | `test_contract_chair_quarantine.py` | the chair's revert of a phase to the store | A quarantine the store refuses and the chair drops, a task outside the reverted land moved, or a quarantine with no `main_red` cause on its row. |
 | `test_contract_route_edit.py` | `cox route import` and `cox route edit` to the store | A move the store refuses, or a file and a store row that disagree. Its unit tests replace the store with a double. |
 | `test_contract_runs_recover.py` | `cox runs recover` to git and the store | The git argv, the worktree add and remove, and the close. The repo is passed as `~/src/app`, so recover's own handling of a tilde path is covered. That is the kind of bug #572 fixed in the partial land (`cox runs land`). That path is not covered here. |
+| `test_contract_store_api.py` | `cox runs pause` and `cox runs resume` to the store, in process through `harness.store_api` | A pause that never reaches the store (`cox runs move` once called it with no store at all), or an unknown run read as a failure instead of a refusal. |
+| `test_doctor_running_install.py` | `cox setup doctor` to the interpreter running it | The `running install` row missing, or a plain install read as editable. |
+| `test_contract_store_bounds.py` | an in-process store call to a locked row | A store call with no time bound: a held row lock must end the write as `Failed` within the lock bound. |
 | `test_sandbox.py` | the harness itself | A child interpreter importing another checkout. It also checks that `cox` resolves the profile the sandbox HOME names, and that every path `cox route context` reports is under the sandbox or the install. It does not prove that `cox` opens no other file; the environment the sandbox builds is what keeps the real home out of reach. |
 
 **A drift found while building this suite, now closed.** The chair's revert of a phase quarantines its tasks with

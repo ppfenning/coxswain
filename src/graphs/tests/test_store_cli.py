@@ -278,7 +278,7 @@ def test_a_handler_bug_raises_instead_of_hiding_behind_exit_two(run, tmp_path, m
     def broken(*_):
         raise ValueError("bug")
 
-    monkeypatch.setattr(store_cli, "mark_landed", broken)
+    monkeypatch.setattr(store_cli.store_api, "mark_landed_on", broken)
     with pytest.raises(ValueError, match="bug"):
         run(f"sqlite:///{tmp_path / 'cox.db'}", "mark-landed", "r1", "p1", "t1", "--pr", PR, "--at", AT)
 

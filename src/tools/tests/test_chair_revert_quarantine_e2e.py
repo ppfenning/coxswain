@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from agent_tools import chair_exec, chair_facts, chair_revert_ports, cli, run_store, store_cli
+from agent_tools import chair_exec, chair_facts, chair_revert_ports, cli, run_store
 from agent_tools.chair_plan import plan_tick
 from harness import epic
 from harness.store_migrate import open_store
@@ -36,8 +36,6 @@ def ws(tmp_path, monkeypatch):
     profile = tmp_path / "profile.yaml"
     profile.write_text(f"workspace_dir: {tmp_path}\nharness_dir: {tmp_path / 'harness'}\n", encoding="utf-8")
     monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(profile))
-    # conftest points every test's store_cli at no harness; this one owns a throwaway store, so the real resolver comes back.
-    monkeypatch.setattr(store_cli, "_harness_python", run_store._harness_python)
     (tmp_path / "runs").mkdir()
     open_store(run_store._store_url(tmp_path / "runs"), "2026-01-01T00:00:00Z").close()
     initiative = {"kind": "initiative", "initiative": "demo", "task_id": "demo", "phase": "", "state": "todo"}

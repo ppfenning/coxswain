@@ -20,7 +20,8 @@ from datetime import UTC, datetime
 from typing import Any, NamedTuple
 
 from harness.cli import _read_profile
-from harness.store_cli import _DB_ERRORS, _OPEN_ERRORS, _common, resolve_store_url
+from harness.store_api import db_errors, open_errors
+from harness.store_cli import _common, resolve_store_url
 from harness.store_dialect import Connection, insert_ignore
 from harness.store_migrate import open_store
 
@@ -309,11 +310,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     url = resolve_store_url(args.store_url, profile, args.runs_dir)
     try:
         conn = open_store(url, _now())
-    except _OPEN_ERRORS as exc:
+    except open_errors() as exc:
         return _fail(f"cannot open the store: {exc}")
     try:
         payload, code = _dispatch(conn, args)
-    except _DB_ERRORS as exc:
+    except db_errors() as exc:
         return _fail(f"cannot read the store: {exc}")
     finally:
         conn.close()

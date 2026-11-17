@@ -186,9 +186,7 @@ def test_route_edit_dry_run_on_a_done_task_records_nothing(tmp_path, monkeypatch
 def test_a_task_finished_by_route_edit_shows_its_pr_in_the_feed(tmp_path, monkeypatch):
     """The real `store_cli.mark_landed` builds the harness argv; only the harness process is replaced, by one that
     stamps `landed` the way `harness.store_landed` does. The record it writes then goes through the real feed assembly."""
-    import subprocess
     from datetime import UTC, datetime
-    from pathlib import Path
 
     from agent_tools import dash_feed
 
@@ -196,16 +194,14 @@ def test_a_task_finished_by_route_edit_shows_its_pr_in_the_feed(tmp_path, monkey
     _file(tmp_path, "work/ship/p1/t1.md", TICKET_FILE)
     monkeypatch.setattr(run_store, "task_run_phases", lambda runs_dir, initiative, task: [("ship-2", "p1")])
     records = [{"run_id": "ship-2", "phase_id": "p1", "task_id": "t1", "record_json": "{}"}]
-    argvs: list[list[str]] = []
+    marked: list[tuple[str, str, str]] = []
 
-    def harness(argv, **kwargs):
-        argvs.append(argv)
-        landed = {"pr": argv[argv.index("--pr") + 1], "at": argv[argv.index("--at") + 1]}
-        records[0]["record_json"] = json.dumps({"landed": landed})
-        return subprocess.CompletedProcess(argv, 0, json.dumps({"landed": True}), "")
+    def mark_landed(runs_dir, run_id, phase, task, pr, at):
+        marked.append((run_id, phase, task))
+        records[0]["record_json"] = json.dumps({"landed": {"pr": pr, "at": at}})
+        return store_cli.Landed({"landed": {"pr": pr, "at": at}})
 
-    monkeypatch.setattr("agent_tools.store_cli._harness_python", lambda: Path("/fake/python"))
-    monkeypatch.setattr(subprocess, "run", harness)
+    monkeypatch.setattr(store_cli, "mark_landed", mark_landed)
     result = route_edit.apply_edit(tmp_path, tmp_path, "t1", state="done", pr="https://github.com/o/r/pull/259", live_runs=(), now="2026-11-01T10:00:00Z")
     runs = [{"run_id": "ship-2", "initiative": "ship", "status": "approved", "host": "h", "ended_at": "2026-11-01T10:30:00+00:00"}]
     rows = {"runs": runs, "task_records": records, "node_calls": []}
@@ -213,7 +209,7 @@ def test_a_task_finished_by_route_edit_shows_its_pr_in_the_feed(tmp_path, monkey
     history, _ = dash_feed._history_v1(rows, datetime(2026, 11, 1, 12, tzinfo=UTC), {}, {}, {("ship", "p1", "t1"): "done"})
 
     assert result.code == route_edit.DONE and store.states
-    assert [a[a.index("mark-landed") : a.index("mark-landed") + 4] for a in argvs] == [["mark-landed", "ship-2", "p1", "t1"]]
+    assert marked == [("ship-2", "p1", "t1")]
     assert [row["tasks"] for row in history] == [[{"id": "t1", "state": "done", "pr": 259}]]
 
 

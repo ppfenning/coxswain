@@ -56,17 +56,17 @@ def _drive(tmp_path: Path, mode: str, result):
 
 
 def test_store_success_rewrites_the_file_after_an_expect_approved_call(tmp_path):
-    text, message, calls = _drive(tmp_path, "store", store_cli.parse_set_state(0, '{"state": "done"}'))
+    text, message, calls = _drive(tmp_path, "store", store_cli.StateSet({"state": "done"}))
     assert (text, message, calls) == (DONE, None, ["approved"])
 
 
 def test_store_exit_3_stops_and_leaves_the_file(tmp_path):
-    text, message, calls = _drive(tmp_path, "store", store_cli.parse_set_state(3, '{"state": "done"}'))
+    text, message, calls = _drive(tmp_path, "store", store_cli.StateRefused("state is done", "done"))
     assert text == APPROVED and "another machine landed this task" in message and calls == ["approved"]
 
 
 def test_store_exit_2_stops_and_leaves_the_file(tmp_path):
-    text, message, calls = _drive(tmp_path, "store", store_cli.parse_set_state(2, "", "bad"))
+    text, message, calls = _drive(tmp_path, "store", store_cli.Failed(2, "bad"))
     assert text == APPROVED and "exit 2: bad" in message and calls == ["approved"]
 
 

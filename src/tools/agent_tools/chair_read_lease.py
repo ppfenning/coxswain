@@ -16,7 +16,7 @@ Row = dict[str, Any]
 ABSENT: Mapping[str, Any] = MappingProxyType({"holder": "", "host": "", "epoch": 0, "released": True, "stale": False})
 
 # The released shape in this repo's own fixtures keeps the holder and expires the row at the Unix epoch
-# (tests/test_epic_and_cli.py). A null holder is the shape of `store_cli.parse_lease`'s released reply. Both read as released.
+# (tests/test_epic_and_cli.py). A null holder is the shape of a released lease (`harness.store_api.LeaseReleased`). Both read as released.
 _RELEASED_AT = datetime(1970, 1, 1, tzinfo=UTC)
 
 

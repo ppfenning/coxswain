@@ -1,6 +1,5 @@
 import json
 import subprocess as sp
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -15,7 +14,6 @@ _RECORD = {
     "change_facts": {"fix_loop_attempts": 1, "checks": "pytest -q"}, "build": {"summary": "Added the seams module."},
 }
 _APPROVED = "---\nid: seams-task\nstate: approved\n---\nBody.\n"
-_HARNESS = Path("/h/.venv/bin/python")
 
 
 @pytest.fixture(autouse=True)
@@ -212,26 +210,16 @@ def test_the_lease_is_held_until_mark_done_has_finished_then_released(repo, tmp_
     assert "state: done" in store.seen_at_release
 
 
-def test_exit_3_at_mark_done_stops_with_the_landed_elsewhere_reason(repo, tmp_path, monkeypatch, store, capsys):
+def test_a_missed_expectation_at_mark_done_stops_with_the_landed_elsewhere_reason(repo, tmp_path, monkeypatch, store, capsys):
     monkeypatch.delenv("COX_SESSION_LABEL", raising=False)  # a chair session exports it, and `--by` reads it
-    real_run, harness = sp.run, []
-    monkeypatch.delenv("COX_SESSION_LABEL", raising=False)
-
-    def fake_run(argv, **kwargs):
-        if argv[0] != str(_HARNESS):
-            return real_run(argv, **kwargs)
-        harness.append(argv)
-        return sp.CompletedProcess(argv, 3, stdout='{"state": "done"}', stderr="")
-
-    monkeypatch.delenv("COX_SESSION_LABEL", raising=False)  # `--by` falls back to the ambient label, so pin it to "unlabeled"
+    (tmp_path / "runs").mkdir()
+    # The store really holds the row as done, so the compare-and-set from approved misses and names the current state.
+    assert run_store.upsert_row(tmp_path / "runs", {"kind": "task", "initiative": "x", "task_id": "seams-task", "phase": "seams",
+                                                    "state": "done", "needs": [], "surfaces": [], "title": "T", "body": ""})
     monkeypatch.setattr(store_cli, "set_state", store.real_set_state)
-    monkeypatch.setattr(store_cli, "_harness_python", lambda: _HARNESS)
-    monkeypatch.setattr(store_cli.subprocess, "run", fake_run)
     rc, ran = _land(repo, tmp_path, monkeypatch, store)
     assert (rc, ran[-1]) == (1, "mark_done")
     assert "another machine landed this task; the store state is no longer approved (now 'done')" in capsys.readouterr().out
-    assert [argv[3:] for argv in harness] == [["set-state", "x", "seams-task", "done", "--by", "unlabeled", "--expect", "approved",
-                                               "--store-url", store_cli._store_url(tmp_path / "runs")]]
     assert store.item.read_text(encoding="utf-8") == _APPROVED
     assert store.calls[-1][0] == "release"
 

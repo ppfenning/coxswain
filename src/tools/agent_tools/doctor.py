@@ -16,7 +16,7 @@ from agent_tools.setup_migrate import cartridge_link_target
 from agent_tools.setup_migrate_hosts import ObservedHost, is_migrated
 from agent_tools.store_probe import OBJECT_STORE, POSTGRES, ProbeResult
 
-__all__ = ["checks", "exit_code", "freshness_rows", "home_rows", "lane_host_paths_row", "parquet_line", "render", "store_rows", "unit_path_entries"]
+__all__ = ["checks", "editable_source", "exit_code", "extras_row", "freshness_rows", "home_rows", "lane_host_paths_row", "parquet_line", "render", "running_install_row", "store_rows", "unit_path_entries"]
 
 _MISSING = object()
 _SKIPPED = "skipped: no profile"
@@ -436,6 +436,56 @@ def _unmigrated_row(row: dict) -> dict:
 def _home_warn_row(check: str, detail: str) -> dict:
     """Not checked is not failed: `ok` stays True so `exit_code` ignores the row."""
     return {"check": check, "ok": True, "warn": True, "detail": detail}
+
+
+RUNNING_INSTALL = "running install"
+
+
+def editable_source(direct_url_text: str | None) -> str | None:
+    """The checkout an editable install points at, from its dist-info `direct_url.json` text (PEP 610), without
+    file://; None for a missing or unreadable record, or an install that is not editable."""
+    try:
+        record = json.loads(direct_url_text or "")
+    except ValueError:
+        return None
+    if not isinstance(record, dict) or not (record.get("dir_info") or {}).get("editable"):
+        return None
+    url = record.get("url")
+    return url.removeprefix("file://") if isinstance(url, str) else None
+
+
+def running_install_row(checkout: str, interpreter: str, source: str | None) -> dict:
+    """Whether the interpreter running `cox` imports coxswain from the install checkout. Advisory: a person may run the
+    doctor from a development venv, so this never rolls an upgrade back; `install bins` is the required row for the
+    venv and the tool the units run. One editable install pointing at another checkout is what made a lane's child
+    interpreters import that checkout's `harness` (docs/hardening.md H1)."""
+    if source is None:
+        return {"check": RUNNING_INSTALL, "ok": True, "detail": f"{interpreter}: not an editable install"}
+    if posixpath.normpath(source) == posixpath.normpath(checkout):
+        return {"check": RUNNING_INSTALL, "ok": True, "detail": f"{interpreter}: editable from the install checkout"}
+    return _home_warn_row(
+        RUNNING_INSTALL,
+        f"{interpreter} imports coxswain editable from {source}, outside the install checkout {checkout}: anything run"
+        " with it imports that checkout's code; reinstall it from the install checkout (`cox setup install`)",
+    )
+
+
+EXTRAS = "extras"
+# The module each extra `cox` needs brings, by extra (`setup_install.TOOL_EXTRAS`).
+EXTRA_MODULES = (("postgres", "psycopg"), ("parquet", "pyarrow"))
+
+
+def extras_row(interpreter: str, missing: Sequence[str]) -> dict:
+    """Whether the interpreter running `cox` has the extras it needs: the store's driver and the Parquet reader.
+    Advisory, so it never rolls an upgrade back by itself; a store it cannot open already fails the `store` row. It
+    names each missing extra and the one command that installs them."""
+    if not missing:
+        return {"check": EXTRAS, "ok": True, "detail": f"{interpreter}: {', '.join(e for e, _ in EXTRA_MODULES)}"}
+    return _home_warn_row(
+        EXTRAS,
+        f"{interpreter} lacks the {', '.join(missing)} extra(s): `cox` cannot open the store or read Parquet traces"
+        " without them; run `cox setup install`, which installs the tool with them",
+    )
 
 
 _DASH_BUILD = "dash build"

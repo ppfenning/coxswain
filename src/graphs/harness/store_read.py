@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from harness import store_traces
-from harness.store_dialect import SQLITE, Connection, connect, json_load
+from harness.store_dialect import SQLITE, SQLITE_BUSY_TIMEOUT_MS, Connection, connect, json_load
 from harness.store_migrate import check_version
 
 __all__ = [
@@ -135,7 +135,8 @@ def _open(url: str) -> Connection:
     path = Path(target)
     if not path.is_file():
         raise FileNotFoundError(f"no store at {target}: connect_readonly never creates one")
-    return Connection(sqlite3.connect(_sqlite_uri(path), uri=True, timeout=30.0, isolation_level=None), SQLITE)
+    raw = sqlite3.connect(_sqlite_uri(path), uri=True, timeout=SQLITE_BUSY_TIMEOUT_MS / 1000, isolation_level=None)
+    return Connection(raw, SQLITE)
 
 
 def connect_readonly(url: str) -> Connection:

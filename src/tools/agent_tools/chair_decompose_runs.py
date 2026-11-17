@@ -132,10 +132,9 @@ def _log_facts(runs_dir: Path, run_id: str, cache: StampCache | None = None) -> 
 
 
 def _task_items(runs_dir: Path, initiative: str) -> int | None:
-    """None when the harness python is missing, since `run_store.work_items` then reads as empty."""
-    if run_store._harness_python() is None:
-        return None
-    return sum(1 for row in run_store.work_items(runs_dir, initiative) if row.get("kind", "task") == "task")
+    """The initiative's work item count; None when the store cannot say, which `run_store.work_items` would read as empty."""
+    found = run_store._api().work_item_rows(run_store._store_url(runs_dir), initiative)
+    return len(found) if isinstance(found, list) else None
 
 
 def _log_key(runs_dir: Path, run_id: str) -> tuple[str, str, str]:
@@ -173,12 +172,7 @@ def read_decompose_runs(runs_dir: Path, intake_id: str, cache: StampCache | None
     else:
         stamp = _store_stamp(runs_dir)
         exits_key, items_key = ("decompose-exits", str(runs_dir)), ("decompose-items", str(runs_dir), intake_id)
-        # a missing harness python reads as unknown and is judged on every call, never stored
-        items = (
-            None
-            if run_store._harness_python() is None
-            else cache.get(items_key, stamp, lambda: _task_items(runs_dir, intake_id))
-        )
+        items = cache.get(items_key, stamp, lambda: _task_items(runs_dir, intake_id))
         rows = cache.get(exits_key, stamp, lambda: exit_rows(runs_dir))
     out = []
     for row in select_runs(rows, intake_id):

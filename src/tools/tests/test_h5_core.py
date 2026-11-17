@@ -70,7 +70,6 @@ ALLOWED_UNTIMED = {
     ("tools/agent_tools/store_switch.py", "default_copy_store"): "a whole-store copy a person runs; it scales with data",
     ("graphs/harness/checks.py", "_serial_rerun_passes"): "Popen waited with communicate(timeout=limit)",
     ("graphs/harness/serial_tests.py", "pytest_sessionfinish"): "pytest's own serial pass, bounded by the suite",
-    ("graphs/harness/store_migrate.py", "_pg_dump"): "a store backup a migration takes; it scales with data",
 }
 
 

@@ -2,7 +2,6 @@
 import json
 import sqlite3
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -293,7 +292,6 @@ def test_the_store_writes_run_for_real_and_a_store_only_phase_is_recorded(tmp_pa
     upsert_work_item(conn, "x", "a", "seams", "approved", [], now, "t")
     Store(conn).record_phase({"run_id": "epic-x-5:seams", "ts": now, "manifest_record": {"run_id": "epic-x-5:seams", "landed": True}})
     conn.close()
-    monkeypatch.setattr(store_cli, "_harness_python", lambda: Path(sys.executable))
     monkeypatch.setattr(store_cli, "_store_url", lambda runs_dir: url)
     monkeypatch.setattr(store_cli, "mark_merged", REAL_MARK_MERGED)
     monkeypatch.setattr(store_cli, "mark_phase_done", REAL_MARK_PHASE_DONE)

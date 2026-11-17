@@ -308,7 +308,6 @@ def ws(tmp_path, monkeypatch):
     profile = tmp_path / "profile.yaml"
     profile.write_text(f"workspace_dir: {tmp_path}\nharness_dir: {tmp_path / 'harness'}\n", encoding="utf-8")
     monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(profile))
-    monkeypatch.setattr(store_cli, "_harness_python", run_store._harness_python)
     (tmp_path / "runs").mkdir()
     open_store(run_store._store_url(tmp_path / "runs"), "2026-01-01T00:00:00Z").close()
     return tmp_path

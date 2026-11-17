@@ -12,7 +12,6 @@ import datetime
 import json
 import os
 import re
-import subprocess
 import sys
 import zoneinfo
 from collections.abc import Callable, Collection, Mapping, Sequence
@@ -42,7 +41,6 @@ from agent_tools.pacing import Assessment
 __all__ = [
     "Problem",
     "ProfileError",
-    "allocate_intake_id",
     "child_env",
     "context_document",
     "context_from_rows",
@@ -69,7 +67,6 @@ __all__ = [
     "next_priority",
     "next_run_id",
     "overlay",
-    "parse_allocate_id",
     "parse_frontmatter",
     "parse_pid",
     "parse_profile",
@@ -600,36 +597,6 @@ def initiative_text(id: str, title: str, repo: str, intake: str, body: str) -> s
     return _frontmatter([("id", id), ("title", title), ("repo", repo), ("intake", intake)], body)
 
 
-def _allocate_id_argv(python: str) -> list[str]:
-    """argv for the harness id allocation, the `python -m harness.<module>` shape `run_store` uses."""
-    return [python, "-m", "harness.store_ids", "allocate", "--json"]
-
-
-def parse_allocate_id(code: int, stdout: str) -> str:
-    """The `id` of exit 0 with a JSON object holding a non-empty string `id`; otherwise raises naming the exit and output."""
-    parsed = None
-    if code == 0:
-        try:
-            parsed = json.loads(stdout)
-        except ValueError:
-            parsed = None
-    if isinstance(parsed, dict) and isinstance(parsed.get("id"), str) and parsed["id"]:
-        return parsed["id"]
-    raise ValueError(f"id allocation failed (exit {code}): {stdout.strip() or 'no JSON object on stdout'}")
-
-
-def allocate_intake_id() -> str:
-    """Edge: `python -m harness.store_ids allocate --json`; raises when the harness python is missing or the call fails."""
-    python = run_store._harness_python()
-    if python is None:
-        raise ValueError("id allocation failed: harness python is not available")
-    try:
-        done = subprocess.run(_allocate_id_argv(str(python)), capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise ValueError(f"id allocation failed to run: {exc}") from exc
-    return parse_allocate_id(done.returncode, done.stdout or done.stderr)
-
-
 class RepoRefused(NamedTuple):
     """`resolve_repo`'s refusal: the `--repo` value and the path it tried, which the message names."""
 
@@ -722,11 +689,17 @@ def intake_file(
     origin = [("source", source), ("link", link)] if source and link else link_fields(link)
     waits = [("after", _Raw("[" + ", ".join(_yaml_scalar(a) for a in after) + "]"))] if after else []
     if ids == "sequence":
-        id_ = (allocate or allocate_intake_id)()
+        id_ = (allocate or _no_allocator)()
         return {f"intake/{id_}.md": _frontmatter([("id", id_), ("title", title), *staged, *origin, *waits], text)}
     slug = _slug_or_raise(title)
     file_text = _frontmatter([("id", slug), ("title", title), ("repo", repo), *staged, *origin, *waits], text)
     return {f"intake/{date}-{slug}.md": file_text}
+
+
+def _no_allocator() -> str:
+    """`ids: sequence` with no allocator passed. The harness subprocess that stood here asked `store_ids allocate`
+    with no store and read a key it never printed, so it always failed; this says so instead of pretending to try."""
+    raise ValueError("id allocation failed: ids: sequence needs an allocator, and this caller passes none")
 
 
 def _issue_number(link: str) -> str:

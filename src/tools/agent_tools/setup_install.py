@@ -73,9 +73,22 @@ def sync_step(checkout: str) -> dict:
     return {"op": "run", "argv": list(SYNC_ARGV), "cwd": checkout, "why": "sync the checkout's one venv"}
 
 
+# The extras `cox` cannot do its job without: the store's driver and the Parquet traces reader. The checkout's venv gets
+# every extra (`uv sync --all-extras`); the tool gets these whatever its receipt carried, since `cox` calls the store in
+# process (H1) and a tool without psycopg cannot open it.
+TOOL_EXTRAS = ("parquet", "postgres")
+
+
+def tool_extras(carried: tuple[str, ...]) -> tuple[str, ...]:
+    """Pure. The extras the tool installs with: `TOOL_EXTRAS` and every extra it already carried, sorted, each once."""
+    return tuple(sorted({*TOOL_EXTRAS, *carried}))
+
+
 def tool_step(checkout: str, extras: tuple[str, ...] = ()) -> dict:
-    """The editable `cox` tool from the checkout; warn-only, so a failure leaves the tool already on PATH working."""
-    return {"op": "run", "argv": ["uv", "tool", "install", "--force", "-q", "--editable", _tool_target(checkout, extras)],
+    """The editable `cox` tool from the checkout, with `tool_extras(extras)`; warn-only, so a failure leaves the tool
+    already on PATH working."""
+    target = _tool_target(checkout, tool_extras(extras))
+    return {"op": "run", "argv": ["uv", "tool", "install", "--force", "-q", "--editable", target],
             "why": "put cox on PATH", "warn_only": True}
 
 
