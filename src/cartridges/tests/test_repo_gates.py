@@ -86,7 +86,6 @@ EXCLUDE_BASELINE = frozenset({
     "src/graphs/harness/bounded_proc.py",
     "src/graphs/harness/check_scope.py",
     "src/graphs/harness/checks.py",
-    "src/graphs/harness/cli.py",
     "src/graphs/harness/cos.py",
     "src/graphs/harness/escalate.py",
     "src/graphs/harness/landing_ops.py",
@@ -174,6 +173,10 @@ EXCLUDE_BASELINE = frozenset({
 # module stays on the exclude list only while it still holds code that fails; it stays in the baseline above as the
 # record of where its parts' exclusion came from, and a key that is not in the baseline allows nothing.
 SPLIT_FROM: dict[str, frozenset[str]] = {
+    "src/graphs/harness/cli.py": frozenset({
+        "src/graphs/harness/cli_launch.py",
+        "src/graphs/harness/cli_run_graph.py",
+    }),
     "src/tools/agent_tools/cli.py": frozenset({
         "src/tools/agent_tools/cli_board.py",
         "src/tools/agent_tools/cli_chair.py",

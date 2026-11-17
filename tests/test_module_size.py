@@ -13,7 +13,6 @@ LIMIT = 2000
 
 # The modules over LIMIT, each at most this many lines. Empty when H9 is done.
 OVER_LIMIT: dict[str, int] = {
-    "src/graphs/harness/cli.py": 2187,
 }
 
 
