@@ -290,13 +290,20 @@ def test_a_held_file_is_one_needs_chair_naming_its_path() -> None:
     assert needs_chair_items([action]) == [f"needs chair: {TASK_PATH}:held_file"]
 
 
-def test_a_held_file_already_reported_is_not_reported_again_until_its_diff_summary_changes() -> None:
+def test_a_held_file_already_reported_is_not_reported_again_until_its_text_changes() -> None:
+    reported = held_file_keys([{"action_json": {"kind": "needs_chair", "cause": HELD_FILE_CAUSE, "path": TASK_PATH, "blob": "b1"}}])
+    assert reported == [f"{TASK_PATH}|b1"]
+    assert plan_held_files({"held_files": [HELD], "held_reported": reported}) == []
+    assert len(plan_held_files({"held_files": [{**HELD, "blob": "b2"}], "held_reported": reported})) == 1
+
+
+def test_a_second_hand_edit_to_the_same_field_still_reaches_the_chair() -> None:
     row = {**HELD, "diff_summary": "state changed"}
     [first] = plan_held_files({"held_files": [row]})
     reported = held_file_keys([{"action_json": {**first, "reason": "recorded result text"}}])
-    assert reported == [f"{TASK_PATH}|state changed"]
-    assert plan_held_files({"held_files": [{**row, "blob": "b2"}], "held_reported": reported}) == []
-    assert len(plan_held_files({"held_files": [{**row, "diff_summary": "title changed"}], "held_reported": reported})) == 1
+    assert plan_held_files({"held_files": [row], "held_reported": reported}) == []
+    [second] = plan_held_files({"held_files": [{**row, "blob": "b2"}], "held_reported": reported})
+    assert second["blob"] == "b2"
 
 
 def test_an_intake_held_file_is_named_by_its_path_on_the_status_line() -> None:

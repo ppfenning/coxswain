@@ -1388,7 +1388,7 @@ def _stale_to_draft(action: Action, deps: Deps) -> Result:
     }
     rows = [r for r in deps.initiative_rows() if r.get("initiative") == initiative]
     if restored := export_restores(planned, rows):
-        return _result(action, "refused", f"the store does not hold the draft, so the board export would restore {', '.join(restored)}")
+        return _result(action, "refused", f"{stale_draft.EXPORT_RESTORES} {', '.join(restored)}")
     initiative_path.write_text(plan.initiative_text, encoding="utf-8")
     for task_id in stale_tasks:
         ticket_paths[task_id].write_text(plan.tickets[task_id], encoding="utf-8")

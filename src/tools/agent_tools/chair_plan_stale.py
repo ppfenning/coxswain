@@ -43,8 +43,8 @@ def _reason(row: StaleCandidate, stale_days: int, now_iso: str) -> str | None:
 
 def plan_stale(facts: Facts, now: datetime) -> list[Action]:
     """One stale_to_draft per initiative with at least one stale row, in the order first seen. None for a held
-    initiative, nor for one whose stale set already has a stale_to_draft in the action log, done or refused: a refused
-    one is refused again on every tick, and a done one the board export reverted would be rewritten on every tick."""
+    initiative, nor for one whose stale set already has a settled stale_to_draft in the action log (`stale_drafts_reported`):
+    done, or refused as held or as one the board export would restore, which every later tick would only repeat."""
     excluded = _already_drafted(facts) | _held(facts)
     reported = frozenset(facts.get("stale_drafts_reported", []))
     now_iso = now.isoformat()
