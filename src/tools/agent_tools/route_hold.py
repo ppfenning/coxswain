@@ -181,14 +181,18 @@ def _initiative_row_without_held(row: Mapping) -> dict:
     return {**row, "extra": _extra_without(row, _INITIATIVE_KEYS)}
 
 
-def _initiative_row_released(row: Mapping, newest: str | None) -> dict:
-    """The released initiative's row, marked with its newest run when it was held and has one: its tasks' attempts and
-    triage requests from that run or earlier no longer count (`core.workstore.FRESH_AFTER_RUN`)."""
+def _was_held(row: Mapping) -> bool:
+    return any(key in (row.get("extra") or {}) for key in _INITIATIVE_KEYS)
+
+
+def _initiative_row_released(row: Mapping, mark: Mapping[str, int]) -> dict:
+    """The released initiative's row, marked with the newest number of each of its run series when it was held and has
+    a run: its tasks' attempts and triage requests from those runs or earlier no longer count
+    (`core.workstore.FRESH_AFTER_RUN`)."""
     from core.workstore import FRESH_AFTER_RUN  # lazy: core sits beside agent_tools in one venv
 
     freed = _initiative_row_without_held(row)
-    was_held = any(key in (row.get("extra") or {}) for key in _INITIATIVE_KEYS)
-    return {**freed, "extra": {**freed["extra"], FRESH_AFTER_RUN: newest}} if was_held and newest else freed
+    return {**freed, "extra": {**freed["extra"], FRESH_AFTER_RUN: dict(mark)}} if _was_held(row) and mark else freed
 
 
 def _initiative_row_held(row: Mapping, value: str) -> dict:
@@ -266,12 +270,19 @@ def release(
     if isinstance(plan, Refused):
         return _refuse("release", plan.reason)
     if isinstance(plan, route_guard.InitiativeFound):
-        from core.workstore import newest_run  # lazy: core sits beside agent_tools in one venv
+        from core.workstore import fresh_mark  # lazy: core sits beside agent_tools in one venv
 
-        newest = newest_run(plan.initiative, run_store.run_ids(runs_dir))
+        mark = fresh_mark(plan.initiative, run_store.run_ids(runs_dir))
+        row = _initiative_row(rows, plan.initiative)
+        if not mark and row is not None and _was_held(row):
+            print(
+                f"release: warning: no run of {plan.initiative} found in the store; no fresh_after_run mark written, "
+                "so its tasks' attempts from earlier runs still count"
+            )
+        after = ", ".join(f"{series}-{number}" for series, number in sorted(mark.items()))
         return _apply(
-            "release", ws, runs_dir, plan, rows, lambda row: _initiative_row_released(row, newest), _initiative_released_text,
-            "held fields removed" + (f", tasks start fresh after {newest}" if newest else ""), dry_run,
+            "release", ws, runs_dir, plan, rows, lambda row: _initiative_row_released(row, mark), _initiative_released_text,
+            "held fields removed" + (f", tasks start fresh after {after}" if mark else ""), dry_run,
         )
     if now is None:
         return _apply("release", ws, runs_dir, plan, rows, _row_without_held, released_text, "stage ready, hold removed", dry_run)

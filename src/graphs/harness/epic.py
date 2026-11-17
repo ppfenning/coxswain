@@ -4481,7 +4481,8 @@ def _run_phase(
     read_rows = _queue_rows(ctx)
     queue_rows = read_rows or {}
     # A task a person readied by hand, or whose initiative a person released, starts fresh: no attempt and no triage
-    # request from a run at or before that point (`FRESH_AFTER_RUN`, on the task's row or the initiative's) counts.
+    # request from a run at or before that point (`FRESH_AFTER_RUN`, on the task's row or the initiative's) counts. The
+    # mark holds one number per run series, so a phase run (`<initiative>.<phase>-N`) is compared only within its own.
     initiative_extra = _row_extra(queue_rows.get(ctx.initiative_id))
     cutoff_by_id = {
         str(item["id"]): workstore.fresh_cutoff(_row_extra(queue_rows.get(str(item["id"]))), initiative_extra) for item in all_ready

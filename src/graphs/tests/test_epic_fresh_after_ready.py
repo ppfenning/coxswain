@@ -56,7 +56,7 @@ def _drive_flagged(repo, cart, tmp_path, flag_run: str, *, task_mark=None, initi
 
 
 def test_a_triage_flag_from_before_a_hand_ready_is_dropped_and_the_task_builds(repo, cart, tmp_path, capsys) -> None:  # noqa: F811
-    _, runner, store = _drive_flagged(repo, cart, tmp_path, "demo-initiative-9", task_mark="demo-initiative-9")
+    _, runner, store = _drive_flagged(repo, cart, tmp_path, "demo-initiative-9", task_mark={"demo-initiative": 9})
     assert not _triage_calls(runner)
     assert len(_built(runner, "t1-probe")) == 1
     assert TRIAGE_FLAG not in _row(store, "t1-probe")["extra"]
@@ -64,25 +64,40 @@ def test_a_triage_flag_from_before_a_hand_ready_is_dropped_and_the_task_builds(r
 
 
 def test_a_triage_flag_from_before_the_initiative_release_is_dropped(repo, cart, tmp_path) -> None:  # noqa: F811
-    _, runner, _ = _drive_flagged(repo, cart, tmp_path, "demo-initiative-9", initiative_mark="demo-initiative-9")
+    _, runner, _ = _drive_flagged(repo, cart, tmp_path, "demo-initiative-9", initiative_mark={"demo-initiative": 9})
     assert not _triage_calls(runner)
     assert len(_built(runner, "t1-probe")) == 1
 
 
 def test_a_triage_flag_from_a_run_after_the_mark_is_still_triaged(repo, cart, tmp_path) -> None:  # noqa: F811
     _, runner, store = _drive_flagged(
-        repo, cart, tmp_path, "demo-initiative-10", task_mark="demo-initiative-9", initiative_mark="demo-initiative-8",
+        repo, cart, tmp_path, "demo-initiative-10", task_mark={"demo-initiative": 9}, initiative_mark={"demo-initiative": 8},
     )
     assert len(_triage_calls(runner)) == 1
     assert not _built(runner, "t1-probe")
     assert _row(store, "t1-probe")["state"] == "blocked"
 
 
+def test_a_flag_from_a_phase_run_after_the_mark_is_triaged_whatever_its_number(repo, cart, tmp_path) -> None:  # noqa: F811
+    # `route launch --phase` numbers its runs in a series of their own: demo-initiative.p1-foundations-1 ran after the mark.
+    _, runner, _ = _drive_flagged(repo, cart, tmp_path, "demo-initiative.p1-foundations-1", task_mark={"demo-initiative": 9})
+    assert len(_triage_calls(runner)) == 1
+    assert not _built(runner, "t1-probe")
+
+
+def test_a_flag_from_an_old_phase_run_numbered_above_the_initiative_mark_is_dropped(repo, cart, tmp_path) -> None:  # noqa: F811
+    mark = {"demo-initiative": 9, "demo-initiative.p1-foundations": 12}
+    _, runner, store = _drive_flagged(repo, cart, tmp_path, "demo-initiative.p1-foundations-12", task_mark=mark)
+    assert not _triage_calls(runner)
+    assert len(_built(runner, "t1-probe")) == 1
+    assert TRIAGE_FLAG not in _row(store, "t1-probe")["extra"]
+
+
 def test_attempts_before_the_mark_do_not_cap_the_task_and_it_builds(repo, cart, tmp_path) -> None:  # noqa: F811
     wi, _ = _store_with_two_recorded_attempts(tmp_path)  # epic-prior-1 and epic-prior-2, on the current body
     work = workstore.read_initiative(wi)
     store = _store(work, flagged=())
-    _mark(store, "t1-probe", **{FRESH_AFTER_RUN: "epic-prior-2"})
+    _mark(store, "t1-probe", **{FRESH_AFTER_RUN: {"epic-prior": 2}})
     runner = TriageAttemptRunner({"t1-probe": new_file_patch("t1-probe.txt")})
     result, _ = drive(
         repo, _amend_cart(cart), tmp_path, runner=runner, work=work, store=store, work_state="store", specs=TRIAGE_SPECS,

@@ -35,32 +35,46 @@ def test_the_fresh_start_mark_is_an_extra_key_both_sides_read() -> None:
     assert workstore.FRESH_AFTER_RUN == "fresh_after_run"
 
 
-@pytest.mark.parametrize(("run", "number"), [("init-a-9", 9), ("init-a-10", 10), ("init-a", -1), ("", -1), (None, -1)])
-def test_a_run_number_is_the_tail_of_its_id(run, number) -> None:
-    assert workstore.run_number(run) == number
+@pytest.mark.parametrize(
+    ("run", "series"),
+    [("init-a-9", ("init-a", 9)), ("init-a.p1-3", ("init-a.p1", 3)), ("init-a", ("", -1)), ("", ("", -1)), (None, ("", -1))],
+)
+def test_a_run_is_its_series_and_its_number(run, series) -> None:
+    assert workstore.run_series(run) == series
 
 
-def test_the_newest_run_is_the_highest_number_of_that_initiative_only() -> None:
-    runs = {"init-a-9", "init-a-10", "init-a-2", "init-ab-40", "other-77"}
-    assert workstore.newest_run("init-a", runs) == "init-a-10"
-    assert workstore.newest_run("init-c", runs) is None
+def test_the_mark_holds_the_newest_number_of_every_series_of_the_initiative_only() -> None:
+    runs = {"init-a-9", "init-a-10", "init-a-2", "init-a.p1-3", "init-a.p1-1", "init-ab-40", "init-ab.p1-7", "other-77"}
+    assert workstore.fresh_mark("init-a", runs) == {"init-a": 10, "init-a.p1": 3}
+    assert workstore.fresh_mark("init-c", runs) == {}
 
 
-def test_the_cutoff_is_the_later_of_the_task_and_initiative_marks() -> None:
-    task = {workstore.FRESH_AFTER_RUN: "init-a-9"}
-    initiative = {workstore.FRESH_AFTER_RUN: "init-a-7"}
-    assert workstore.fresh_cutoff(task, initiative) == 9
-    assert workstore.fresh_cutoff(None, initiative) == 7
-    assert workstore.fresh_cutoff({}, None) == -1
+def test_the_cutoff_merges_the_task_and_initiative_marks_series_by_series() -> None:
+    task = {workstore.FRESH_AFTER_RUN: {"init-a": 9}}
+    initiative = {workstore.FRESH_AFTER_RUN: {"init-a": 7, "init-a.p1": 2}}
+    assert workstore.fresh_cutoff(task, initiative) == {"init-a": 9, "init-a.p1": 2}
+    assert workstore.fresh_cutoff(None, initiative) == {"init-a": 7, "init-a.p1": 2}
+    assert workstore.fresh_cutoff({}, None) == {}
 
 
-def test_only_a_run_after_the_cutoff_counts() -> None:
-    assert not workstore.counts_after("init-a-9", 9)
-    assert workstore.counts_after("init-a-10", 9)
-    assert not workstore.counts_after("", 9)
-    assert workstore.counts_after("", -1)
+def test_a_run_counts_only_after_the_mark_of_its_own_series() -> None:
+    cutoff = {"init-a": 9, "init-a.p1": 2}
+    assert not workstore.counts_after("init-a-9", cutoff)
+    assert workstore.counts_after("init-a-10", cutoff)
+    # A phase run is numbered in its own series: its number is never compared with the initiative's.
+    assert not workstore.counts_after("init-a.p1-2", cutoff)
+    assert workstore.counts_after("init-a.p1-3", cutoff)
+    # A series the mark never saw began after it.
+    assert workstore.counts_after("init-a.p2-1", {"init-a": 9})
+    assert workstore.counts_after("init-a.p1-1", {"init-a": 9})
+    # An old phase run numbered above the initiative's mark is still before its own series' mark.
+    assert not workstore.counts_after("init-a.p1-12", {"init-a": 9, "init-a.p1": 12})
+    # A run with no number cannot be placed after a mark.
+    assert not workstore.counts_after("", cutoff)
+    assert workstore.counts_after("", {})
 
 
 def test_a_triage_flag_names_its_run() -> None:
     assert workstore.triage_flag_run("triage:init-a-unit:init-a-9") == "init-a-9"
+    assert workstore.triage_flag_run("triage:init-a-unit:init-a.p1-2") == "init-a.p1-2"
     assert workstore.triage_flag_run("triage") == ""

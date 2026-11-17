@@ -171,8 +171,8 @@ def test_the_hold_count_reads_the_records(tmp_path):
     assert [(a["kind"], a["key"]) for a in plan] == [("request_triage", chair_sort.triage_key("t1", "demo-4"))]
 
 
-def _fresh(row: dict, run: str) -> dict:
-    return {**row, "extra": {**row["extra"], FRESH_AFTER_RUN: run}}
+def _fresh(row: dict, mark: dict) -> dict:
+    return {**row, "extra": {**row["extra"], FRESH_AFTER_RUN: mark}}
 
 
 def _initiative_row(**extra: object) -> dict:
@@ -184,7 +184,7 @@ def test_attempts_before_a_task_was_readied_by_hand_are_not_read(tmp_path):
     _record(runs, "demo-8", "t1", CODE_RECORD, date="2026-11-16")
     _record(runs, "demo-9", "t1", CODE_RECORD, date="2026-11-16")
     _record(runs, "demo-10", "t1", REVIEW_RECORD, date="2026-11-16")  # the same day: the run number decides, not the date
-    rows = read_store_attempts(tmp_path, {}, [_fresh(_row("t1"), "demo-9"), _row("t2")])
+    rows = read_store_attempts(tmp_path, {}, [_fresh(_row("t1"), {"demo": 9}), _row("t2")])
     assert [(r["task"], r["run"]) for r in rows] == [("t1", "demo-10")]
 
 
@@ -192,10 +192,29 @@ def test_an_initiative_release_after_the_task_mark_is_the_later_cutoff(tmp_path)
     runs = tmp_path / "runs"
     for run in ("demo-3", "demo-5", "demo-6"):
         _record(runs, run, "t1", CODE_RECORD)
-    rows = [_fresh(_row("t1"), "demo-3"), _initiative_row(**{FRESH_AFTER_RUN: "demo-5"})]
+    rows = [_fresh(_row("t1"), {"demo": 3}), _initiative_row(**{FRESH_AFTER_RUN: {"demo": 5}})]
     assert [r["run"] for r in read_store_attempts(tmp_path, {}, rows)] == ["demo-6"]
-    rows = [_fresh(_row("t1"), "demo-5"), _initiative_row(**{FRESH_AFTER_RUN: "demo-3"})]
+    rows = [_fresh(_row("t1"), {"demo": 5}), _initiative_row(**{FRESH_AFTER_RUN: {"demo": 3}})]
     assert [r["run"] for r in read_store_attempts(tmp_path, {}, rows)] == ["demo-6"]
+
+
+def test_a_phase_run_after_the_mark_counts_whatever_its_number(tmp_path):
+    # `route launch --phase` numbers `demo.p1-N` in a series of its own: demo.p1-1 ran after a mark taken at demo-9.
+    runs = tmp_path / "runs"
+    _record(runs, "demo-8", "t1", CODE_RECORD)
+    _record(runs, "demo.p1-1", "t1", CODE_RECORD)
+    rows = [_fresh(_row("t1"), {"demo": 9})]
+    assert [r["run"] for r in read_store_attempts(tmp_path, {}, rows)] == ["demo.p1-1"]
+    facts = _facts(tmp_path, rows, hold_after=3)
+    assert (_quarantine(facts, "t1")["failures"], _quarantine(facts, "t1")["run"]) == (1, "demo.p1-1")
+
+
+def test_an_old_phase_run_numbered_above_the_initiative_mark_does_not_count(tmp_path):
+    runs = tmp_path / "runs"
+    _record(runs, "demo.p1-12", "t1", CODE_RECORD)
+    _record(runs, "demo-10", "t1", CODE_RECORD)
+    rows = [_fresh(_row("t1"), {"demo": 9, "demo.p1": 12})]
+    assert [r["run"] for r in read_store_attempts(tmp_path, {}, rows)] == ["demo-10"]
 
 
 def test_a_quarantine_older_than_the_release_keeps_only_its_own_attempt_and_is_sent_to_triage(tmp_path):
@@ -204,7 +223,7 @@ def test_a_quarantine_older_than_the_release_keeps_only_its_own_attempt_and_is_s
     runs = tmp_path / "runs"
     for n in (1, 2, 3):
         _record(runs, f"demo-{n}", "t1", CODE_RECORD)
-    rows = [_row("t1"), _initiative_row(**{FRESH_AFTER_RUN: "demo-3"})]
+    rows = [_row("t1"), _initiative_row(**{FRESH_AFTER_RUN: {"demo": 3}})]
     assert [r["run"] for r in read_store_attempts(tmp_path, {}, rows)] == ["demo-3"]
     facts = _facts(tmp_path, rows, hold_after=2)
     assert (_quarantine(facts, "t1")["failures"], _quarantine(facts, "t1")["run"]) == (1, "demo-3")
@@ -212,12 +231,22 @@ def test_a_quarantine_older_than_the_release_keeps_only_its_own_attempt_and_is_s
     assert [(a["kind"], a["key"]) for a in plan] == [("request_triage", chair_sort.triage_key("t1", "demo-3"))]
 
 
+def test_a_quarantine_older_than_the_release_whose_triage_was_already_asked_is_held(tmp_path):
+    runs = tmp_path / "runs"
+    for n in (1, 2, 3):
+        _record(runs, f"demo-{n}", "t1", CODE_RECORD)
+    rows = [_row("t1"), _initiative_row(**{FRESH_AFTER_RUN: {"demo": 3}})]
+    facts = _facts(tmp_path, rows, hold_after=3, handled=[chair_sort.triage_key("t1", "demo-3")])
+    plan = [a for a in plan_recover(facts) if a.get("task_id") == "t1"]
+    assert [(a["kind"], a["key"]) for a in plan] == [("hold_task", chair_sort.hold_key("t1", "demo-3"))]
+
+
 def test_failures_before_a_hand_ready_do_not_count_toward_the_hold(tmp_path):
     runs = tmp_path / "runs"
     for n in (1, 2, 3):
         _record(runs, f"demo-{n}", "t1", CODE_RECORD)
     _record(runs, "demo-4", "t1", CODE_RECORD)
-    facts = _facts(tmp_path, [_fresh(_row("t1"), "demo-3")], hold_after=3)
+    facts = _facts(tmp_path, [_fresh(_row("t1"), {"demo": 3})], hold_after=3)
     assert (_quarantine(facts, "t1")["failures"], _quarantine(facts, "t1")["run"]) == (1, "demo-4")
     plan = [a for a in plan_recover(facts) if a.get("task_id") == "t1"]
     assert [(a["kind"], a["key"]) for a in plan] == [("request_triage", chair_sort.triage_key("t1", "demo-4"))]

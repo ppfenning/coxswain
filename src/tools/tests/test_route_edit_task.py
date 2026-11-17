@@ -396,17 +396,28 @@ def _runs(monkeypatch, *runs):
 
 
 @pytest.mark.parametrize("state", ["blocked", "quarantined", "ready"])
-def test_a_hand_ready_drops_the_triage_request_and_marks_the_newest_run(tmp_path, monkeypatch, state):
+def test_a_hand_ready_drops_the_triage_request_and_marks_every_run_series(tmp_path, monkeypatch, state):
     store = _store(monkeypatch, [{**_ticket_row(), "state": state, "extra": dict(HELD)}])
-    _runs(monkeypatch, "ship-8", "ship-9", "other-12")
+    _runs(monkeypatch, "ship-8", "ship-9", "ship.p1-3", "ship.p1-1", "shipyard-40", "other-12")
     _file(tmp_path, "work/ship/p1/t1.md", TICKET_FILE.replace("state: todo", f"state: {state}"))
     result = route_edit.apply_edit(tmp_path, tmp_path, "t1", state="ready", live_runs=())
     assert result.code == route_edit.DONE
     [row] = store.rows
     assert row["state"] == "ready"
     assert "triage_requested" not in row["extra"]
-    assert row["extra"]["fresh_after_run"] == "ship-9"
+    assert row["extra"]["fresh_after_run"] == {"ship": 9, "ship.p1": 3}
     assert row["extra"]["hold_reason"] == HELD["hold_reason"]
+
+
+def test_a_ready_move_on_a_flagged_ready_task_cancels_its_triage_request_on_purpose(tmp_path, monkeypatch):
+    # The chair flags a quarantine and sends it to ready in one step, so a task waiting for its triage is ready already.
+    # A person who says `--state ready` on it says they dealt with the failure: the request goes and the next run builds.
+    store = _store(monkeypatch, [{**_ticket_row(), "state": "ready", "extra": dict(HELD)}])
+    _runs(monkeypatch, "ship-9")
+    _file(tmp_path, "work/ship/p1/t1.md", TICKET_FILE.replace("state: todo", "state: ready"))
+    result = route_edit.apply_edit(tmp_path, tmp_path, "t1", state="ready", live_runs=())
+    assert result.code == route_edit.DONE and store.states == []
+    assert "triage_requested" not in store.rows[0]["extra"] and store.rows[0]["extra"]["fresh_after_run"] == {"ship": 9}
 
 
 def test_a_ready_task_with_no_request_and_no_hold_is_left_alone(tmp_path, monkeypatch):
@@ -425,19 +436,40 @@ def test_a_todo_task_made_ready_has_no_history_to_mark(tmp_path, monkeypatch):
     assert "fresh_after_run" not in store.rows[0]["extra"]
 
 
-def test_a_hand_ready_with_no_run_yet_still_drops_the_request(tmp_path, monkeypatch):
+def test_a_hand_ready_that_finds_no_run_drops_the_request_and_says_no_mark_was_written(tmp_path, monkeypatch):
     store = _store(monkeypatch, [{**_ticket_row(), "state": "blocked", "extra": dict(HELD)}])
     _runs(monkeypatch)
     _file(tmp_path, "work/ship/p1/t1.md", TICKET_FILE.replace("state: todo", "state: blocked"))
-    route_edit.apply_edit(tmp_path, tmp_path, "t1", state="ready", live_runs=())
+    result = route_edit.apply_edit(tmp_path, tmp_path, "t1", state="ready", live_runs=())
+    assert result.code == route_edit.DONE
     assert "triage_requested" not in store.rows[0]["extra"] and "fresh_after_run" not in store.rows[0]["extra"]
+    assert "warning: no run of ship found in the store; no fresh_after_run mark written" in result.text
+
+
+@pytest.mark.parametrize("live", ["ship-10", "ship.p1-4"])
+def test_a_hand_ready_while_a_run_of_the_initiative_is_live_is_refused(tmp_path, monkeypatch, live):
+    store = _store(monkeypatch, [{**_ticket_row(), "state": "blocked", "extra": dict(HELD)}])
+    _runs(monkeypatch, "ship-9", live)
+    _file(tmp_path, "work/ship/p1/t1.md", TICKET_FILE.replace("state: todo", "state: blocked"))
+    result = route_edit.apply_edit(tmp_path, tmp_path, "t1", state="ready", live_runs=(), initiative_live=(live, "other-3"))
+    assert result.code == route_edit.REFUSED
+    assert f"{live} is live on ship" in result.text
+    assert store.states == [] and store.upserts == []
+
+
+def test_a_live_run_of_another_initiative_does_not_refuse_a_hand_ready(tmp_path, monkeypatch):
+    store = _store(monkeypatch, [{**_ticket_row(), "state": "blocked", "extra": dict(HELD)}])
+    _runs(monkeypatch, "ship-9")
+    _file(tmp_path, "work/ship/p1/t1.md", TICKET_FILE.replace("state: todo", "state: blocked"))
+    result = route_edit.apply_edit(tmp_path, tmp_path, "t1", state="ready", live_runs=(), initiative_live=("shipyard-2", "other-3"))
+    assert result.code == route_edit.DONE and store.rows[0]["state"] == "ready"
 
 
 def test_fresh_start_extra():
-    assert route_edit.fresh_start_extra(HELD, "ship-9") == {
-        **{k: v for k, v in HELD.items() if k != "triage_requested"}, "fresh_after_run": "ship-9",
+    assert route_edit.fresh_start_extra(HELD, {"ship": 9}) == {
+        **{k: v for k, v in HELD.items() if k != "triage_requested"}, "fresh_after_run": {"ship": 9},
     }
-    assert route_edit.fresh_start_extra({"id": "t1"}, None) == {"id": "t1"}
+    assert route_edit.fresh_start_extra({"id": "t1"}, {}) == {"id": "t1"}
 
 
 def test_check_claim_lets_an_expired_claim_go():

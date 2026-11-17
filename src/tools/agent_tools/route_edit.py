@@ -21,8 +21,10 @@ requeue: a move to ready from a state other than todo, or a rebuild. There the f
 keeps them. With a differing file and `--body` or `--body-file` the edit is refused with a diff of the two bodies.
 `--note` appends its text to the body with `append_note`, once; it applies to a task ticket only.
 `--state ready` on a blocked or quarantined ticket, or on one the chair flagged for triage, drops the flag and marks the
-row `fresh_after_run` with the initiative's newest run (`fresh_start_extra`): the next run builds it fresh, counting no
-attempt and honouring no triage request from that run or an earlier one.
+row `fresh_after_run` with the newest number of each of the initiative's run series (`fresh_start_extra`): the next run
+builds it fresh, counting no attempt and honouring no triage request from a run at or below its series' number. It is
+refused while a run of the initiative is live (`initiative_live`, every live run; `live_on` picks the initiative's), and
+it says so when the store names no run to mark.
 `--surfaces` and `--state` apply to a task ticket only.
 `--epic` takes an epic id or `none` and applies to an initiative only: it sets or removes the `epic` frontmatter key and
 the same key in the stored row's `extra`. The chair reads epic membership each tick and it changes no ticket, so an edit
@@ -440,13 +442,21 @@ def kept_refusal(stored: dict, rel: str, kept: dict) -> str:
 _HELD_BACK = frozenset({"blocked", "quarantined"})  # a task a run or the chair stopped: a hand move to ready restarts it
 
 
-def fresh_start_extra(extra: dict | None, newest: str | None) -> dict:
-    """Pure: `extra` without the chair's triage request and, when the initiative has a run, marked with the newest one
-    (`core.workstore.FRESH_AFTER_RUN`): no attempt or request from that run or an earlier one counts any more."""
+def fresh_start_extra(extra: dict | None, mark: dict[str, int]) -> dict:
+    """Pure: `extra` without the chair's triage request and, when the initiative has a run, marked with `mark`, the newest
+    number of each of its run series (`core.workstore.FRESH_AFTER_RUN`): no attempt or request from a run at or below its
+    series' number counts any more."""
     from core.workstore import FRESH_AFTER_RUN, TRIAGE_FLAG  # lazy: core sits beside agent_tools in one venv
 
     kept = {key: value for key, value in (extra or {}).items() if key != TRIAGE_FLAG}
-    return {**kept, FRESH_AFTER_RUN: newest} if newest else kept
+    return {**kept, FRESH_AFTER_RUN: dict(mark)} if mark else kept
+
+
+def live_on(initiative: str, live: Collection[str]) -> list[str]:
+    """Pure: the runs in `live` of `initiative`'s own series or one of its phase series (`<initiative>.<phase>-N`), sorted."""
+    from core.workstore import run_series  # lazy: core sits beside agent_tools in one venv
+
+    return sorted(r for r in live if (series := run_series(r)[0]) == initiative or series.startswith(f"{initiative}."))
 
 
 def _restarts(row: dict, state: str | None) -> bool:
@@ -470,7 +480,7 @@ def _report(text: str, lines: Sequence[str]) -> str:
 def _edit_task(
     runs_dir: Path, ws: Path, row: dict, *, title: str | None, body: str | None, body_file: str | None,
     surfaces: str | None, state: str | None, dry_run: bool, now: str | None, rebuild: bool = False, force: bool = False,
-    pr: str | None = None, user_note: str | None = None,
+    pr: str | None = None, user_note: str | None = None, initiative_live: Collection[str] = (),
 ) -> EditResult:
     """Edge: a state move first, through `store_cli.set_state` with a compare-and-set on the state read; then the changed
     content fields only, as a partial row `upsert_row_detail` merges (never `state`); then the store's row as it now stands,
@@ -515,10 +525,20 @@ def _edit_task(
         new_row = {**new_row, "body": append_note(new_row.get("body") or "", note), "extra": marked}
     if _restarts(row, state):
         # The person fixed what stopped it: the next run builds it fresh, not from the old attempts or their triage.
-        from core.workstore import newest_run  # lazy: core sits beside agent_tools in one venv
+        # A run in flight could still record an attempt or a request numbered below the mark, so the move waits for it.
+        if running := live_on(row["initiative"], initiative_live):
+            return EditResult(
+                f"{running[0]} is live on {row['initiative']}; stop it or let it finish before readying {row['task_id']}", REFUSED
+            )
+        from core.workstore import fresh_mark  # lazy: core sits beside agent_tools in one venv
 
-        newest = newest_run(row["initiative"], run_store.run_ids(runs_dir))
-        new_row = {**new_row, "extra": fresh_start_extra(new_row.get("extra"), newest)}
+        mark = fresh_mark(row["initiative"], run_store.run_ids(runs_dir))
+        if not mark:
+            report.append(
+                f"warning: no run of {row['initiative']} found in the store; no fresh_after_run mark written, "
+                "so attempts from earlier runs still count"
+            )
+        new_row = {**new_row, "extra": fresh_start_extra(new_row.get("extra"), mark)}
     if user_note is not None:
         text = user_note.strip()
         noted = append_note(new_row.get("body") or "", text)
@@ -593,6 +613,7 @@ def apply_edit(
     link: str | None = None,
     epic: str | None = None,
     note: str | None = None,
+    initiative_live: Collection[str] = (),
 ) -> EditResult:
     """Edge: edit the queued intake, the initiative or the task ticket named `id`. Exit 0 returns the diff; exit 2 returns the
     reason and writes nothing, whether the options are wrong, the id is unknown, or the guard refuses. With
@@ -629,7 +650,7 @@ def apply_edit(
             return EditResult(problem, REFUSED)
         return _edit_task(
             runs_dir, ws, dict(tickets[0]), title=title, body=body, body_file=body_file, surfaces=surfaces, state=state, dry_run=dry_run,
-            now=now, rebuild=rebuild, force=force, pr=pr, user_note=note,
+            now=now, rebuild=rebuild, force=force, pr=pr, user_note=note, initiative_live=initiative_live,
         )
     if note is not None:
         return EditResult("--note applies to a task ticket, not an intake or an initiative", REFUSED)

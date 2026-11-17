@@ -119,9 +119,12 @@ def fresh_attempts(attempts: Iterable[Row], store_rows: Iterable[Row]) -> list[d
     initiative row's `fresh_after_run` (`core.workstore.FRESH_AFTER_RUN`). A person who readied the task by hand, or
     released its initiative, has dealt with those failures, so they count toward neither triage nor the hold.
 
+    The mark is per run series (`core.workstore.counts_after`): a phase run's number is compared only with its own series'.
+
     A task still quarantined with no attempt after the cutoff (its initiative was released over it) keeps its newest
-    attempt alone: the quarantine still names its run, so it is sent to triage once rather than to a person, and the
-    epic, seeing that request predates the release, builds it fresh."""
+    attempt alone: the quarantine still names its run, so the chair plans for it as it would have before the release
+    (a triage request the epic answers by building it fresh, or `hold_task` when that run's request was already made),
+    rather than sending it to a person as a quarantine with no run."""
     rows = list(store_rows)
     initiatives = {str(r.get("task_id") or ""): r.get("extra") for r in rows if r.get("kind") == "initiative"}
     tasks = {
@@ -133,7 +136,7 @@ def fresh_attempts(attempts: Iterable[Row], store_rows: Iterable[Row]) -> list[d
     def task(a: Row) -> tuple[str, str]:
         return _key(a)[0], _key(a)[2]
 
-    fresh = [counts_after(a.get("run"), cutoffs.get(task(a), -1)) for a in listed]
+    fresh = [counts_after(a.get("run"), cutoffs.get(task(a), {})) for a in listed]
     counted = {task(a) for a, ok in zip(listed, fresh, strict=True) if ok}
     # The list is oldest first, so the last index seen per task is its newest attempt.
     newest_stale = {
