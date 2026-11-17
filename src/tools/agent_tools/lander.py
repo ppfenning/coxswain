@@ -17,6 +17,7 @@ Every effect goes through `Ports`, so the whole worker runs in tests against a r
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -190,14 +191,30 @@ def unheld_shas(record: Mapping[str, Any], holds: Mapping[str, bool]) -> list[st
     return [sha for _, tip, merge in merged_entries(record) for sha in (tip, merge) if sha and not holds.get(sha, False)]
 
 
+# The parts of a forge's error text that change from one read to the next: times, request ids, hashes, numbers.
+_VARIABLE = re.compile(
+    r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?"  # a timestamp
+    r"|\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"  # a uuid
+    r"|\b[0-9A-Fa-f]+(:[0-9A-Fa-f]+)+\b"  # a request id like 9C1F:2B3A:1A2B3C4
+    r"|\b(?=[0-9A-Fa-f]*\d)[0-9A-Fa-f]{7,}\b"  # a hex id or a sha
+    r"|\d+(\.\d+)?"  # any other number
+)
+
+
+def reason_key(reason: str) -> str:
+    """Pure. A reason with its variable parts replaced by `#`, so the same failure read twice is the same reason."""
+    return " ".join(_VARIABLE.sub("#", reason).split())
+
+
 def tell_unreadable(memo: Mapping[str, Any], state: str) -> tuple[dict[str, Any], str | None]:
     """Pure. Checks unreadable past the limit (`error`) are told to a person once per commit and reason: the reason
-    to tell, or None, and the memo that remembers it was told. The memo is fresh for a new commit (`land.poll_memo`)."""
+    to tell, or None, and the memo that remembers it was told. The memo is fresh for a new commit (`land.poll_memo`).
+    Reasons compare by `reason_key`, so a new request id or time in the same error is not news."""
     after = dict(memo)
     reason = str(after.get("unreadable") or "")
-    if state != "error" or after.get("told") == reason:
+    if state != "error" or after.get("told") == reason_key(reason):
         return after, None
-    return {**after, "told": reason}, reason
+    return {**after, "told": reason_key(reason)}, reason
 
 
 def held_after(held: Mapping[str, Any] | None, reason: str | None, now: str) -> tuple[dict[str, Any] | None, bool]:

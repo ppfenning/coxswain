@@ -1,0 +1,4 @@
+# Entry points .github/check_unwired.py cannot see a caller for, because nothing calls them by a name in the code:
+# a command looked up by a computed name, a hook the host calls by convention.
+# One per line: `src/path/to/module.py::name  # why nothing calls it by name`. The reason is required, and an entry
+# whose path no longer exists fails the check. A helper that is simply not wired yet does not belong here.

@@ -199,6 +199,11 @@ finds the record and origin agree. Whatever reconciliation decided, the land its
 its merge: while the branch that would merge (origin's, or this clone's for a forge that merges locally) lacks a tip
 or merge commit the record names, the land waits.
 
+The record is what decides which phases an initiative carries, not the branch. So do not drop a phase by resetting
+`init/<id>` on origin by hand: the next pass reads that as a lost phase and merges it back in (or, when its tip is
+gone, holds the initiative). To take a phase out, move it to a follow-up initiative (`landing_areas.on_blocked:
+split`, which runs `split_initiative`), or edit the landing record so it no longer calls the phase merged.
+
 Lands on one parent are one at a time by default, since each needs an up-to-date parent. With
 `landing_areas.land_batch` above 1, the lander lands together up to that many initiatives that share a repo and a
 parent and change no file in common. Each keeps its own pull request. They are refreshed onto the same parent so their

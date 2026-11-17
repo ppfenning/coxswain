@@ -50,6 +50,11 @@ A forge is a module that defines these five functions. Each returns
         names, which answer a "not supported" reason or `(False, reason)` for a
         forge without them.
 
+    green_commits(repo: Path, candidates: Sequence[str]) -> tuple[str, ...] | str
+        The commits among `candidates` (newest first) whose CI passed, or why that
+        could not be read. The edge upgrade asks the forge of its checkout's origin
+        (`forge_auto.forge_of`); for a forge without it, it asks `gh run list`.
+
     merge_state(pr: int, *, repo=None) -> str
         GitHub's `mergeStateStatus` for PR `pr`, unchanged and upper case: CLEAN,
         BEHIND, DIRTY, BLOCKED, UNSTABLE and the rest. Raises `ForgeError` when it

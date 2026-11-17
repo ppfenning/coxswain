@@ -222,14 +222,13 @@ def gitconfig_text(name: str = "Smoke Test", email: str = "smoke@example.invalid
     return f"[user]\n\tname = {name}\n\temail = {email}\n[init]\n\tdefaultBranch = main\n[advice]\n\tdetachedHead = false\n"
 
 
-def routing_profile_text(*, team: str, workspace: str, harness_dir: str, provider_profile: str) -> str:
-    """The routing profile `cox` reads at `~/.config/agent-tools/profile.yaml`."""
-    return (
-        f"team: {team}\n"
-        f"workspace_dir: {workspace}\n"
-        f"harness_dir: {harness_dir}\n"
-        f"provider_profile: {provider_profile}\n"
-    )
+def routing_profile_text(
+    *, team: str, workspace: str, harness_dir: str, provider_profile: str, extra: Mapping[str, str] | None = None,
+) -> str:
+    """The routing profile `cox` reads at `~/.config/agent-tools/profile.yaml`; `extra` adds flat `key: value` lines."""
+    lines = {"team": team, "workspace_dir": workspace, "harness_dir": harness_dir, "provider_profile": provider_profile,
+             **(extra or {})}
+    return "".join(f"{key}: {value}\n" for key, value in lines.items())
 
 
 def provider_profile_text(storage_url: str) -> str:
@@ -286,3 +285,160 @@ def package_dirs(packages: Sequence[str], package_dir: Mapping[str, str]) -> dic
         tree_dir = "/".join([package_dir.get(top, top), *rest])
         out[package] = (tree_dir, "/".join([top, *rest]))
     return out
+
+
+# --- the sandbox forge ----------------------------------------------------------------------------------------------
+
+# Forgejo 11 (the LTS line), pinned by the digest of its multi-arch index so a re-pushed tag cannot change what the
+# suite lands through. `cox` reaches it through `agent_tools.forge_forgejo`, the forge `forge_auto` picks for an origin
+# on the host `FORGEJO_BASE_URL` names. Pulled from data.forgejo.org, Forgejo's own registry (the same index digest
+# codeberg.org serves). Bump the digest on purpose, never by pulling the tag.
+FORGEJO_IMAGE = "data.forgejo.org/forgejo/forgejo:11@sha256:946243edbab116d5bb78b73ea68af6f3d69229ba1b1ed958dd82c3481167f3e0"
+FORGEJO_PORT = 3000  # the HTTP port inside the container
+FORGEJO_UID = "1000:1000"  # the image's `git` user, which owns its data and runs its admin commands
+FORGEJO_USER = "smoke"
+FORGEJO_EMAIL = "smoke@example.invalid"
+# The names forge_forgejo and forge_auto read the server's address and the token from.
+FORGEJO_BASE_URL_ENV = "FORGEJO_BASE_URL"
+FORGEJO_TOKEN_ENV = "FORGEJO_TOKEN"
+# The pytest marker on every test that needs the sandbox forge; CI runs those in a step of their own.
+FORGE_MARK = "forge"
+COMMIT_STATES = frozenset({"pending", "success", "error", "failure", "warning"})
+_TOKEN = re.compile(r"^[0-9a-f]{40}$")
+
+
+def forge_source(docker_path: str | None, docker_ok: bool, *, required: bool, broken_docker_ok: bool = False) -> StartContainer | Skip | Fail:
+    """Whether the session can start the Forgejo container. Docker decides, as it does for Postgres, and there is no
+    URL to use instead: the suite creates users, tokens and repositories, which it does only on a server it owns."""
+    if docker_path is None:
+        return unavailable("no docker on PATH for the sandbox forge", required=required)
+    if not docker_ok:
+        reason = "docker is on PATH but its daemon did not answer, so the sandbox forge cannot start"
+        if broken_docker_ok and not required:
+            return Skip(f"{reason} ({BROKEN_DOCKER_OK_ENV} is set)")
+        return Fail(f"{reason}; set {BROKEN_DOCKER_OK_ENV}=1 to skip on this host")
+    return StartContainer()
+
+
+def forgejo_base_url(port: int, host: str = "127.0.0.1") -> str:
+    return f"http://{host}:{port}"
+
+
+def forgejo_run_argv(session: str, started: int, port: int, image: str = FORGEJO_IMAGE) -> list[str]:
+    """`docker run` for a throwaway Forgejo published on `port` of the loopback address only: sqlite on tmpfs, no ssh,
+    no sign-up, offline, and its own address as ROOT_URL so the links it returns are ones the suite can reach. The port
+    is chosen before the start because ROOT_URL must name it. Labelled as the Postgres container is, so a later session
+    reaps it after a killed one."""
+    settings = {
+        "security__INSTALL_LOCK": "true",
+        "database__DB_TYPE": "sqlite3",
+        "server__ROOT_URL": f"{forgejo_base_url(port)}/",
+        "server__HTTP_PORT": str(FORGEJO_PORT),
+        "server__DISABLE_SSH": "true",
+        "server__OFFLINE_MODE": "true",
+        "service__DISABLE_REGISTRATION": "true",
+        # The suite plays the CI through commit statuses; with Actions on, a pushed .github/workflows would add pending
+        # statuses no runner ever finishes.
+        "actions__ENABLED": "false",
+        "repository__DEFAULT_BRANCH": "main",
+        "log__LEVEL": "Warn",
+    }
+    return [
+        "docker", "run", "--detach", "--rm",
+        "--label", CONTAINER_LABEL,
+        "--label", f"{SESSION_LABEL}={session}",
+        "--label", f"{STARTED_LABEL}={started}",
+        *[arg for key, value in settings.items() for arg in ("--env", f"FORGEJO__{key}={value}")],
+        "--publish", f"127.0.0.1:{port}:{FORGEJO_PORT}",
+        "--tmpfs", "/data:exec",  # docker mounts a tmpfs noexec by default, and Forgejo runs git hooks from it
+        image,
+    ]
+
+
+def docker_pull_argv(image: str) -> list[str]:
+    """`docker pull` of a pinned image; the forge fixture retries it (`PULL_ATTEMPTS`) before the run, so a registry
+    hiccup costs a retry rather than the job."""
+    return ["docker", "pull", "--quiet", image]
+
+
+PULL_ATTEMPTS = 3
+
+
+def forgejo_admin_argv(container: str, *args: str) -> list[str]:
+    """`forgejo admin ...` inside the container, as the user that owns its data."""
+    return ["docker", "exec", "--user", FORGEJO_UID, container, "forgejo", "admin", *args]
+
+
+def forgejo_user_argv(container: str, password: str, user: str = FORGEJO_USER, email: str = FORGEJO_EMAIL) -> list[str]:
+    return forgejo_admin_argv(container, "user", "create", "--admin", "--username", user, "--password", password,
+                              "--email", email, "--must-change-password=false")
+
+
+def forgejo_token_argv(container: str, name: str, user: str = FORGEJO_USER) -> list[str]:
+    return forgejo_admin_argv(container, "user", "generate-access-token", "--username", user, "--token-name", name,
+                              "--scopes", "all", "--raw")
+
+
+def parse_token(output: str) -> str:
+    """The token `generate-access-token --raw` printed: the last line of 40 lower-case hex digits. Raises ValueError
+    when there is none, without echoing the output."""
+    found = [line.strip() for line in output.splitlines() if _TOKEN.match(line.strip())]
+    if not found:
+        raise ValueError("generate-access-token printed no token")
+    return found[-1]
+
+
+def forge_remote_url(base_url: str, owner: str, name: str, token: str) -> str:
+    """The http origin git pushes to, with the token as the password. `forge_forgejo.parse_remote` drops the
+    credentials and keeps `scheme://host:port`, so the API address it derives is the server's own."""
+    scheme, _, host = base_url.partition("://")
+    return f"{scheme}://{quote(owner, safe='')}:{quote(token, safe='')}@{host}/{owner}/{name}.git"
+
+
+def forge_env(base_url: str, token: str) -> dict[str, str]:
+    """What a sandboxed `cox` needs to reach the forge: the server, for `forge_auto`'s choice, and the token."""
+    return {FORGEJO_BASE_URL_ENV: base_url, FORGEJO_TOKEN_ENV: token}
+
+
+def forge_repo_name(test_id: str) -> str:
+    """A repository name for one test: lower-case letters, digits and dashes, distinct for distinct test ids."""
+    stem = re.sub(r"[^a-z0-9]+", "-", test_id.lower()).strip("-")[-40:].strip("-")
+    return f"{stem}-{hashlib.sha256(test_id.encode()).hexdigest()[:8]}"
+
+
+def commit_status_body(state: str, context: str, description: str = "") -> dict[str, str]:
+    """The body of `POST /repos/{owner}/{repo}/statuses/{sha}`: what a CI job reports for one commit."""
+    if state not in COMMIT_STATES:
+        raise ValueError(f"not a commit status state: {state!r}")
+    return {"state": state, "context": context, "description": description or f"{context}: {state}"}
+
+
+def uv_env(cache_dir: str, python_dir: str) -> dict[str, str]:
+    """What a sandboxed `uv` keeps from the caller: its cache and its managed interpreters, both content-addressed and
+    read through, so a sync in the sandbox links what the caller already downloaded instead of fetching it again.
+    Its tools and their bin stay in the sandbox (XDG_DATA_HOME, `~/.local/bin`)."""
+    return {"UV_CACHE_DIR": cache_dir, "UV_PYTHON_INSTALL_DIR": python_dir}
+
+
+def tree_files(listing: str) -> list[str]:
+    """The paths of `git ls-files -z`: the tracked files, as a clone of this change holds them. An untracked file stays
+    out, so a stray local file cannot make the edge tests pass. Sorted, empty names dropped."""
+    return sorted({path for path in listing.split("\0") if path})
+
+
+def closed_port_url(url: str, port: int) -> str:
+    """`url` with its port replaced by `port`, a loopback port nothing listens on: a store the doctor cannot reach."""
+    parts = urlsplit(url)
+    credentials, _, _host = parts.netloc.rpartition("@")
+    netloc = f"{credentials}@127.0.0.1:{port}" if credentials else f"127.0.0.1:{port}"
+    return parts._replace(netloc=netloc).geturl()
+
+
+def pull_summary(pull: object) -> dict:
+    """What a smoke test checks of a `GET /repos/{owner}/{repo}/pulls/{n}` body: state, merged, head branch and commit,
+    and base branch. A body that is not a pull request is `{}`."""
+    if not isinstance(pull, dict):
+        return {}
+    head, base = pull.get("head") or {}, pull.get("base") or {}
+    return {"state": pull.get("state"), "merged": pull.get("merged") is True, "head": head.get("ref"),
+            "sha": head.get("sha"), "base": base.get("ref")}

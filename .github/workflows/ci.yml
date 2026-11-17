@@ -22,9 +22,14 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v4
+        # the unwired check diffs from the merge base with the PR's base branch, so it needs the history
+        with: { fetch-depth: 0 }
       - uses: astral-sh/setup-uv@v5
         with: { python-version: "3.14" }
       - run: uv sync --group dev
+      # H10 item 5: a public symbol the change adds under src/ with no reference outside tests fails the job
+      - name: unwired (no added symbol without a caller)
+        run: uv run python .github/check_unwired.py --base "origin/${{ github.base_ref || 'main' }}"
       - name: pytest root
         run: uv run pytest -q -n auto
       - name: pytest tools
@@ -39,7 +44,14 @@ jobs:
       # Real `cox`, installed from this checkout, against real git and the service's Postgres; nothing is stubbed.
       # Serial: one install and one server per run. REQUIRED turns a missing uv or Postgres into a failure, not a skip.
       - name: smoke
-        run: uv run pytest -q -rs smoke
+        run: uv run pytest -q -rs -m "not forge" smoke
+        env:
+          COX_SMOKE_POSTGRES_URL: postgresql://postgres:smoke@localhost:${{ job.services.postgres.ports['5432'] }}/postgres
+          COX_SMOKE_REQUIRED: "1"
+      # The same suite's forge tests: a Forgejo container started with docker (smoke/plan.py FORGEJO_IMAGE, pinned by
+      # digest), a land through it, and the edge upgrade's rollback rule on a real install (docs/smoke.md).
+      - name: smoke (forge)
+        run: uv run pytest -q -rs -m forge smoke
         env:
           COX_SMOKE_POSTGRES_URL: postgresql://postgres:smoke@localhost:${{ job.services.postgres.ports['5432'] }}/postgres
           COX_SMOKE_REQUIRED: "1"

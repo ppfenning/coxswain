@@ -74,11 +74,23 @@ def test_checks_that_stay_unreadable_keep_the_land_waiting_with_the_reason():
 def test_unreadable_checks_are_told_once_per_commit_and_reason():
     memo = {**land.poll_memo(None, "aaa"), "errors": land.POLL_ERROR_LIMIT, "unreadable": "HTTP 401"}
     told, reason = lander.tell_unreadable(memo, "error")
-    assert reason == "HTTP 401" and told["told"] == "HTTP 401"
+    assert reason == "HTTP 401" and told["told"] == "HTTP #"
     assert lander.tell_unreadable(told, "error") == (told, None)
-    assert lander.tell_unreadable({**told, "unreadable": "HTTP 502"}, "error")[1] == "HTTP 502"
+    assert lander.tell_unreadable({**told, "unreadable": "bad gateway"}, "error")[1] == "bad gateway"
     assert lander.tell_unreadable(land.poll_memo(told, "bbb") | {"unreadable": "HTTP 401"}, "error")[1] == "HTTP 401"
     assert lander.tell_unreadable(memo, "pending") == (memo, None)
+
+
+def test_the_same_error_with_a_new_request_id_time_or_count_is_not_told_again():
+    first = "gh: HTTP 401 Bad credentials (request 9C1F:2B3A:1A2B3C4:5D6E7F8 at 2026-11-17T10:00:01Z, try 3 of 5)"
+    later = "gh: HTTP 401 Bad credentials (request 7A2E:1F00:4C5D6E7:8F9A0B1 at 2026-11-17T10:04:59Z, try 5 of 5)"
+    assert lander.reason_key(first) == lander.reason_key(later) == "gh: HTTP # Bad credentials (request # at #, try # of #)"
+    memo = {**land.poll_memo(None, "aaa"), "unreadable": first}
+    told, reason = lander.tell_unreadable(memo, "error")
+    assert reason == first
+    assert lander.tell_unreadable({**told, "unreadable": later}, "error")[1] is None
+    assert lander.tell_unreadable({**told, "unreadable": "origin is not a Forgejo URL"}, "error")[1] is not None
+    assert lander.reason_key("trace 123e4567-e89b-12d3-a456-426614174000 failed") == "trace # failed"
 
 
 def test_a_queued_item_that_keeps_its_first_queueing_alarms_at_the_hour():
