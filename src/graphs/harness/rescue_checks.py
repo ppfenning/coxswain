@@ -102,14 +102,14 @@ def verify_patch(
     workdir.mkdir(parents=True, exist_ok=True)
     worktree = Path(tempfile.mkdtemp(prefix="rescue-", dir=workdir))
     try:
-        with registry_lock():
+        with registry_lock(repo):
             added = _git(repo, "worktree", "add", "--detach", str(worktree), base_ref)
         if added.returncode != 0:
             return _outcome(False, False, [], f"{HARNESS_FAULT_PREFIX} worktree add failed: {added.stderr.strip()}")
         return _verify_in(worktree, patch, checks, apply, env)
     finally:
-        with registry_lock():
+        with registry_lock(repo):
             _git(repo, "worktree", "remove", "--force", str(worktree))
         shutil.rmtree(worktree, ignore_errors=True)
-        with registry_lock():
+        with registry_lock(repo):
             _git(repo, "worktree", "prune")

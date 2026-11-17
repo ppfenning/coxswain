@@ -290,7 +290,7 @@ def _attempt_tree(ctx: _Ctx, phase: str, task: str, patch: str) -> tuple[Path, s
     gets the attempt as a reference patch, as before. The tree lives under the run directory and goes with it."""
     tree = ctx.worktree_root / ctx.run_id / f"{phase}--attempt--{task}"
     tree.parent.mkdir(parents=True, exist_ok=True)
-    with registry_lock():
+    with registry_lock(ctx.repo):
         ok, _ = _git("-C", str(ctx.repo), "worktree", "add", "--detach", str(tree), ctx.phase_branch(phase))
     if not ok:
         return None
@@ -1100,7 +1100,7 @@ def _open_phase_worktree(
         listed, listing = _git("-C", str(ctx.repo), "worktree", "list", "--porcelain")
         if listed and _registered_on_branch(listing, worktree, branch):
             return _Opened(True, "", True, cleared)
-        with registry_lock():
+        with registry_lock(ctx.repo):
             ok, detail = _git("-C", str(ctx.repo), "worktree", "add", str(worktree), branch)
         return _Opened(ok, detail, True, cleared)
     ok, detail = create_worktree(ctx.repo, worktree, branch=branch, base=base_ref)
@@ -4415,7 +4415,7 @@ def _run_phase(
         if stale_recreate:
             return _stale_phase(record, stale_recreate)
         _git("-C", str(ctx.phase_worktree(phase)), "checkout", "--detach", "-q")
-        with registry_lock():
+        with registry_lock(ctx.repo):
             _git("-C", str(ctx.repo), "worktree", "remove", "--force", str(ctx.phase_worktree(phase)))
         _git("-C", str(ctx.repo), "branch", "-D", branch)
         reopened = _open_phase_worktree(ctx, phase, cut_ref, parents, cut_from)

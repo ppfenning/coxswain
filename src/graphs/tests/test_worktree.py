@@ -342,3 +342,39 @@ def test_sync_env_runs_in_the_worktree(tmp_path: Path) -> None:
     ok, detail = sync_env(tmp_path, [sys.executable, "-c", "import os; print(os.getcwd())"])
     assert ok
     assert Path(detail).resolve() == tmp_path.resolve()
+
+
+_ADD_SCRIPT = """
+import sys, time
+from pathlib import Path
+from harness.worktree import create_worktree, remove_worktree
+repo, root, n, go = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], Path(sys.argv[4])
+while not go.exists():
+    time.sleep(0.005)
+for step in range(4):
+    ok, detail = create_worktree(repo, root / f"w{n}-{step}", branch=f"lane/{n}-{step}", base="main")
+    if not ok:
+        sys.exit(detail)
+    removed, detail = remove_worktree(repo, root / f"w{n}-{step}")
+    if not removed:
+        sys.exit(detail)
+"""
+
+
+def test_worktree_adds_and_removes_from_separate_processes_never_overlap(tmp_path: Path) -> None:
+    """Regression: two processes' `worktree add` raced, and one failed reading the other's half-written registration
+    ("failed to read .git/worktrees/slot-2/commondir"). The registry lock holds across processes, so every one succeeds."""
+    repo, _ = _repo_with_worktree(tmp_path)
+    go = tmp_path / "go"
+    graphs = Path(__file__).resolve().parents[1]
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-c", _ADD_SCRIPT, str(repo), str(tmp_path / "pool"), str(n), str(go)],
+            cwd=graphs, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        for n in range(8)
+    ]
+    go.touch()
+    outs = [p.communicate() for p in procs]
+    assert [p.returncode for p in procs] == [0] * 8, outs
+    assert len(_worktree_paths(repo)) == 2  # the main checkout and the fixture's own worktree
