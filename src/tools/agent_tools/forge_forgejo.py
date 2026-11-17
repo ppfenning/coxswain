@@ -367,15 +367,21 @@ def update_branch(pr: int, *, repo: Path | str | None = None) -> None:
         raise ForgeError(f"could not update pull request {pr}: {_message(status, body)}")
 
 
-def poll_checks(repo: Path, *, ref: str = "HEAD", may_rerun: bool = True) -> tuple[str, str]:
-    """One read of `ref`'s combined status, no wait: (`green` | `pending` | `failed`, detail). A read that fails is
-    `pending`, for the caller's next pass. Forgejo has no rerun, so `may_rerun` changes nothing."""
+def poll_checks(repo: Path, *, ref: str = "HEAD", memo: Mapping | None = None) -> tuple[str, str, dict]:
+    """One read of `ref`'s combined status, no wait: (`green` | `pending` | `failed` | `error`, detail, memo). A read
+    that fails is `pending` for the caller's next pass, and `error` after `land.POLL_ERROR_LIMIT` in a row. Forgejo
+    has no rerun."""
     try:
-        code, output = read_checks(_target(repo, os.environ), os.environ, _git(repo, "rev-parse", ref))
+        sha = _git(repo, "rev-parse", ref)
     except ForgeError as exc:
-        return "pending", f"checks unreadable: {exc}"
+        return land.unreadable_step(land.poll_memo(memo, ""), str(exc))
+    seen = land.poll_memo(memo, sha)
+    try:
+        code, output = read_checks(_target(repo, os.environ), os.environ, sha)
+    except ForgeError as exc:
+        return land.unreadable_step(seen, str(exc))
     state = land.check_state(code, output)
-    return state, output or state
+    return state, output or state, {**seen, "errors": 0}
 
 
 def wait_checks(repo: Path, timeout_s: float, sleep=time.sleep, now=time.monotonic, *, ref: str = "HEAD") -> tuple[bool, str]:

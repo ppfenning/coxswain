@@ -66,8 +66,8 @@ def wait_checks(repo: Path | str, timeout_s: float, *, ref: str = "HEAD") -> tup
     return forge_of(repo).wait_checks(Path(repo), timeout_s, ref=ref)
 
 
-def poll_checks(repo: Path | str, *, ref: str = "HEAD", may_rerun: bool = True) -> tuple[str, str]:
-    return forge_of(repo).poll_checks(Path(repo), ref=ref, may_rerun=may_rerun)
+def poll_checks(repo: Path | str, *, ref: str = "HEAD", memo: Mapping[str, Any] | None = None) -> tuple[str, str, dict]:
+    return forge_of(repo).poll_checks(Path(repo), ref=ref, memo=memo)
 
 
 def merge_state(pr: int, *, repo: Path | str | None = None) -> str:

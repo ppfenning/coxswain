@@ -20,11 +20,13 @@ A forge is a module that defines these five functions. Each returns
         `step["branch"]` keeps its checkout; a repo on `step["branch"]` ends on
         the default branch, since git cannot delete a checked-out branch.
 
-    poll_checks(repo: Path, *, ref="HEAD", may_rerun=True) -> (state, detail)
-        One read of `ref`'s checks, no wait: `green`, `pending`, `failed`, or
-        `rerun` when a failure was rerun (only when `may_rerun`). The lander
-        polls once per pass with it. A forge without it is waited on with
-        `wait_checks`, as before.
+    poll_checks(repo: Path, *, ref="HEAD", memo=None) -> (state, detail, memo)
+        One read of `ref`'s checks, no wait: `green`, `pending`, `failed`,
+        `rerun` when a failure was rerun, or `error` when the checks stayed
+        unreadable. `memo` is what earlier polls saw of this commit
+        (`land.poll_memo`), handed back updated, so the bounds `wait_checks`
+        keeps in its loop hold across the lander's passes. A forge without it
+        is waited on with `wait_checks`, as before.
 
     pr_state(url: str) -> dict
         `{"state": "open" | "merged" | "closed" | "unknown", "merged_at": UTC

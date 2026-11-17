@@ -7,6 +7,7 @@ import json
 import re
 import subprocess
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
 from agent_tools import land
@@ -593,37 +594,40 @@ def merge_pr(repo: Path, number: int) -> tuple[bool, str]:
     return merge_verdict(code, text, None if pr is None else {"state": _PR_STATES.get(pr["state"], "unknown")})
 
 
-def poll_checks(repo: Path, *, ref: str = "HEAD", may_rerun: bool = True) -> tuple[str, str]:
-    """One read of `ref`'s checks, no wait: `(state, detail)` with state `green`, `pending`, `rerun` or `failed`.
-
-    A read that fails is `pending`: the caller reads again on its next pass. A failure the forge can rerun is rerun
-    once when `may_rerun` (the caller has not rerun this commit before) and answers `rerun`. A rerun gh refuses, as it
-    does while a sibling job still runs, is `pending`, and is tried again on the next pass."""
+def poll_checks(repo: Path, *, ref: str = "HEAD", memo: Mapping | None = None) -> tuple[str, str, dict]:
+    """One read of `ref`'s checks, no wait: `(state, detail, memo)`, state `green`, `pending`, `rerun`, `failed` or
+    `error`. `memo` is what the caller's earlier passes saw of this commit (`land.poll_memo`), handed back updated: it
+    carries `wait_checks`' bounds across passes. The decisions are `land`'s pure poll steps; this reads and reruns."""
+    try:
+        head = _run(["git", "-C", str(repo), "rev-parse", ref], timeout=READ_TIMEOUT_S)
+    except ForgeError as exc:
+        return land.unreadable_step(land.poll_memo(memo, ""), str(exc))
+    if head.returncode != 0:
+        return land.unreadable_step(land.poll_memo(memo, ""), head.stderr.strip() or f"git rev-parse {ref} failed")
+    sha = head.stdout.strip()
+    seen = land.poll_memo(memo, sha)
     ok, value = _read_checks(repo, ref)
     if not ok:
-        return "pending", f"checks unreadable: {value}"
+        return land.unreadable_step(seen, str(value))
+    seen = {**seen, "errors": 0}
     required = _read_required(repo, ref)
-    suites: tuple[dict, ...] = ()
-    if land.needs_suites(*value, required):
-        try:
-            head = _run(["git", "-C", str(repo), "rev-parse", ref], timeout=READ_TIMEOUT_S)
-            suites = read_check_suites(repo, head.stdout.strip()) if head.returncode == 0 else ()
-        except ForgeError:
-            suites = ()
+    try:
+        suites = read_check_suites(repo, sha) if land.needs_suites(*value, required) else ()
+    except ForgeError:
+        suites = ()  # unreadable suites: the poll follows the check runs alone, as `wait_checks` does
     code, output = land.check_poll_result(*value, required, suites=suites)
     state = land.check_state(code, output)
-    if state != "failed" or not may_rerun or output.startswith(land.WORKFLOW_ISSUE):
-        return state, output or state
-    ids = rerun_run_ids(value[0])
-    if not ids:
-        return state, output
-    scope = read_rerun_scope(repo, ref, ids)  # unknown: an unreadable read falls back to the one rerun
+    if state != "failed":
+        return state, output or state, seen
+    failed = {str(i) for i in failed_check_run_ids(value[0])}
+    step = land.failed_poll_step(seen, failed, rerun_run_ids(value[0]), output)
+    if step.state != "rerun":
+        return step.state, step.detail, step.memo
+    scope = read_rerun_scope(repo, ref, step.todo) if step.todo else None  # unknown: an unreadable read falls back to the one rerun
     if scope is not None and not land.rerun_scope(*scope):
-        return state, f"{output}; not rerun, the change touches the failing suites: {', '.join(scope[0])}"
-    refused = [i for i in ids if _gh_text(["gh", "run", "rerun", i, "--failed"], repo, timeout=WRITE_TIMEOUT_S) is None]
-    if refused:
-        return "pending", f"{output}; rerun refused for runs {', '.join(refused)}, tried again next pass"
-    return "rerun", f"{output}; failed runs rerun once: {', '.join(ids)}"
+        return "failed", f"{output}; not rerun, the change touches the failing suites: {', '.join(scope[0])}", step.memo
+    refused = [i for i in step.todo if _gh_text(["gh", "run", "rerun", i, "--failed"], repo, timeout=WRITE_TIMEOUT_S) is None]
+    return land.rerun_step(step.memo, step.todo, refused, failed, output)
 
 
 def wait_checks(repo: Path, timeout_s: float, sleep=time.sleep, now=time.monotonic, *, ref: str = "HEAD") -> tuple[bool, str]:

@@ -68,9 +68,9 @@ class Forge:
     def pr_merged(self, repo, branch):
         return bool(self.prs.get(branch, {}).get("state") == "merged"), ""
 
-    def poll_checks(self, repo, *, ref, may_rerun=True):
+    def poll_checks(self, repo, *, ref, memo=None):
         self.calls.append(("poll_checks", ref))
-        return self.checks
+        return (*self.checks, dict(memo or {}))
 
     def merge(self, repo, step):
         self.calls.append(("merge", step["branch"]))
@@ -573,11 +573,11 @@ def test_an_epic_stack_gives_one_pull_request_per_initiative_with_the_stack_base
     assert run(world.repo, "ls-tree", "--name-only", "epic-x").split() == ["a-p1.txt", "b-p1.txt", "base.txt", "c-p1.txt", "shared.txt"]
     assert "a-p1.txt" not in run(world.repo, "ls-tree", "--name-only", "main"), "nothing reaches main until the epic lands"
 
-    events = lander.sweep(world.ports)
+    events = lander.land_epics(world.ports)
     assert any(e.startswith("epic x: every initiative has landed; opened ") for e in events)
     assert [c[1:3] for c in world.forge.calls if c[0] == "pr_create"][-1] == ("epic-x", "main")
     assert ls.get_record(world.conn, "epic:x")["state"] == "pr_open"
-    assert not any(e.startswith("epic x") for e in lander.sweep(world.ports)), "opened once"
+    assert not any(e.startswith("epic x") for e in lander.land_epics(world.ports)), "opened once"
 
 
 def test_without_epic_stack_an_initiative_squashes_onto_its_parent_and_no_epic_pull_request_is_opened(world: World) -> None:
@@ -586,7 +586,7 @@ def test_without_epic_stack_an_initiative_squashes_onto_its_parent_and_no_epic_p
     world.build("a", "p1")
     lander.run_once(world.ports)
     assert world.forge.merges == [("init/a", "main", "squash")]
-    assert lander.sweep(world.ports) == [] and ls.get_record(world.conn, "epic:x") is None
+    assert lander.land_epics(world.ports) == [] and ls.get_record(world.conn, "epic:x") is None
 
 
 def _assembled(world: World, initiative: str, file: str, text: str = "x\n") -> None:

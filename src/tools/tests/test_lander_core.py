@@ -66,6 +66,74 @@ def test_one_poll_reads_as_a_state_and_no_check_yet_is_pending(code, output, sta
     assert land.check_state(code, output) == state
 
 
+def test_checks_that_stay_unreadable_fail_the_land_with_the_reason():
+    assert land_step(facts(has_ci=True, checks=("error", "checks unreadable 5 passes in a row: 502"))) == LandStep(
+        "fail", f"checks on {URL} cannot be read: checks unreadable 5 passes in a row: 502")
+
+
+# -- one poll per pass keeps wait_checks' bounds across passes --------------------------------------------------------
+
+LIMIT = land.POLL_ERROR_LIMIT
+
+
+def test_the_poll_memory_is_kept_for_its_commit_and_fresh_for_a_new_one():
+    seen = {**land.poll_memo(None, "aaa"), "errors": 2, "accepted": ["9"]}
+    assert land.poll_memo(seen, "aaa") == seen
+    assert land.poll_memo(seen, "bbb") == land.poll_memo(None, "bbb")
+    assert land.poll_memo(None, "bbb")["errors"] == 0
+
+
+def test_unreadable_reads_are_pending_until_the_limit_then_an_error_with_the_reason():
+    memo = land.poll_memo(None, "aaa")
+    for n in range(1, LIMIT):
+        state, detail, memo = land.unreadable_step(memo, "HTTP 502")
+        assert state == "pending" and f"({n}/{LIMIT})" in detail
+    state, detail, memo = land.unreadable_step(memo, "HTTP 502")
+    assert (state, detail) == ("error", f"checks unreadable {LIMIT} passes in a row: HTTP 502")
+
+
+def test_a_failure_with_runs_to_rerun_asks_for_the_rerun_of_runs_not_yet_taken():
+    memo = {**land.poll_memo(None, "aaa"), "accepted": ["11"]}
+    step = land.failed_poll_step(memo, {"c1", "c2"}, ("11", "12"), "failing checks: test")
+    assert (step.state, step.todo) == ("rerun", ("12",))
+
+
+def test_a_partial_rerun_is_recorded_so_no_run_is_rerun_twice_and_refusals_are_counted():
+    memo = land.poll_memo(None, "aaa")
+    state, detail, memo = land.rerun_step(memo, ("11", "12"), ["12"], {"c1"}, "failing checks: test")
+    assert state == "pending" and memo["accepted"] == ["11"] and memo["rerun_tries"] == 1 and not memo["rerun_of"]
+    assert "rerun refused for runs 12" in detail
+    assert land.failed_poll_step(memo, {"c1"}, ("11", "12"), "failing checks: test").todo == ("12",)
+    state, _, memo = land.rerun_step(memo, ("12",), [], {"c1"}, "failing checks: test")
+    assert state == "rerun" and memo["accepted"] == ["11", "12"] and memo["rerun_of"] == ["c1"]
+
+
+def test_refused_reruns_stop_at_the_limit_and_the_failure_is_final():
+    memo = {**land.poll_memo(None, "aaa"), "rerun_tries": LIMIT}
+    step = land.failed_poll_step(memo, {"c1"}, ("11",), "failing checks: test")
+    assert step.state == "failed" and f"refused {LIMIT} times" in step.detail
+
+
+def test_right_after_a_rerun_the_old_failures_are_pending_for_a_bounded_number_of_polls():
+    memo = {**land.poll_memo(None, "aaa"), "rerun_of": ["c1", "c2"]}
+    for _ in range(LIMIT):
+        step = land.failed_poll_step(memo, {"c1"}, ("11",), "failing checks: test")
+        assert step.state == "pending" and step.detail.startswith("rerun not yet registered")
+        memo = step.memo
+    assert land.failed_poll_step(memo, {"c1"}, ("11",), "failing checks: test").state == "failed"
+
+
+def test_after_the_rerun_a_new_failure_is_final_and_never_rerun_again():
+    memo = {**land.poll_memo(None, "aaa"), "rerun_of": ["c1"]}
+    assert land.failed_poll_step(memo, {"c3"}, ("11",), "failing checks: test").state == "failed"
+
+
+def test_a_startup_failure_or_a_failure_with_nothing_to_rerun_is_final():
+    memo = land.poll_memo(None, "aaa")
+    assert land.failed_poll_step(memo, {"c1"}, ("11",), f"{land.WORKFLOW_ISSUE}ci.yml").state == "failed"
+    assert land.failed_poll_step(memo, {"c1"}, (), "failing checks: test").state == "failed"
+
+
 @pytest.mark.parametrize(("green", "detail", "state"), [
     (True, "green", "green"),
     (False, "checks pending: x", "pending"),
@@ -158,6 +226,17 @@ def test_a_pass_splits_into_one_lane_per_repository_in_queue_order():
         ("/home/user/src/b", ("b1",), ["land:b1"]),
         ("/home/user/src/z", (), ["land:z"]),
     ]
+
+
+@pytest.mark.parametrize(("rec", "judged"), [
+    ({"state": "building"}, False),
+    ({"state": "conflicted"}, False),
+    ({"state": "assembled"}, True),
+    ({"state": "pr_open", "pr": {"url": URL}}, True),
+    ({"state": "conflicted", "pr": {"url": URL}}, True),
+])
+def test_only_a_published_initiative_is_judged_against_origin(rec, judged):
+    assert lander.published(rec) is judged
 
 
 def test_landed_and_per_task_records_are_not_live():

@@ -46,8 +46,8 @@ def wait_checks(repo: Path | str, timeout_s: float, *, ref: str = "HEAD") -> tup
     return True, "local forge: the land's own checks are the gate"
 
 
-def poll_checks(repo: Path | str, *, ref: str = "HEAD", may_rerun: bool = True) -> tuple[str, str]:
-    return "green", "local forge: the land's own checks are the gate"
+def poll_checks(repo: Path | str, *, ref: str = "HEAD", memo: Mapping[str, Any] | None = None) -> tuple[str, str, dict]:
+    return "green", "local forge: the land's own checks are the gate", dict(memo or {})
 
 
 def merge_state(pr: int, *, repo: Path | str | None = None) -> str:

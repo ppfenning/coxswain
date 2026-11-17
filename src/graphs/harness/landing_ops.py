@@ -135,31 +135,6 @@ def take_parent_forward(conn: Connection, repo: Path | str, *, initiative: str, 
         store_lease.release(conn, branch_lease(initiative), worker, int(held.epoch or 0))
 
 
-def remerge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: str, tip: str, kept: Sequence[str],
-                  worker: str, now: str, lease_seconds: int = CLAIM_SECONDS) -> lg.Merge:
-    """Merge a phase the record says is merged, but the initiative branch does not hold, into that branch again.
-
-    Under the branch lease, forward only, with the guard on `kept`: the recorded shas that are not in question. The
-    phase's entry keeps its tip and takes the branch's new tip as its merge commit; a tip the branch already holds
-    only moves the record. No checks run here: the land's gate checks run on the whole branch before it is pushed."""
-    record = ls.get_record(conn, initiative)
-    if record is None:
-        return lg.Merge("error", detail=f"{initiative} has no landing record")
-    branch = str(record["branch"])
-    held = store_lease.acquire(conn, branch_lease(initiative), worker, now, lease_seconds)
-    if not held.ok:
-        return lg.Merge("error", detail=f"{held.holder or 'another worker'} is moving the branch of {initiative}")
-    try:
-        merged = lg.merge_into(repo, branch=branch, source=tip, recorded=kept,
-                               message=f"{initiative}: merge phase {phase} again (the record said merged; {branch} did not hold it)")
-        if merged.ok:
-            current = ls.get_record(conn, initiative) or record
-            ls.put_record(conn, lr.with_phase(current, phase, now, merge_sha=merged.tip, repaired_at=now))
-        return merged
-    finally:
-        store_lease.release(conn, branch_lease(initiative), worker, int(held.epoch or 0))
-
-
 def off_branch(repo: Path | str, source: str, tasks: Sequence[Mapping[str, Any]], phase: str) -> list[str]:
     """The phase's approved tasks whose recorded `merged_commit` the phase tip does not hold: merging the phase now
     would leave their work behind. A task with no recorded commit is not judged here."""
@@ -200,6 +175,10 @@ def _merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: 
     record = ls.get_record(conn, initiative)
     if record is None:
         return PhaseMerge("error", initiative, phase, detail=f"{initiative} has no landing record")
+    if record.get("held"):
+        # The lander holds an initiative whose record and origin's branch disagree: nothing merges into it until they agree.
+        why = (record.get("held") or {}).get("reason") or "its record and its branch disagree"
+        return PhaseMerge("not_ready", initiative, phase, detail=f"{initiative} is held: {why}")
     state = lr.phase_state(record, phase, tasks)
     if state == "merged":
         entry = (record.get("phases") or {}).get(phase) or {}

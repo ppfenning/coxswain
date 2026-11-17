@@ -12,6 +12,7 @@ import os
 import socket
 import sqlite3
 import subprocess
+import threading
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
@@ -22,6 +23,10 @@ from agent_tools import courier, forge, lander, repo_path, route, run_store, wor
 from agent_tools.store_url import read_provider_profile
 
 WAIT_CHECKS_S = 1800.0  # the bound on a wait for a forge that cannot poll its checks once
+# The lander's lanes run on threads of one process. A move of a work file and its record in the workspace's
+# written-paths manifest (`queue_export.record_written`) is a read-modify-write of files every lane shares, so the
+# ports that make one (mark_done, file_rectify, split_blocked) take this lock.
+WORKSPACE_WRITES = threading.Lock()
 GATES = ("level", "ticket")  # check-gate names (harness.check_gate), not `land_at` values
 
 
@@ -135,14 +140,14 @@ class Forge:
     def delete_branch(self, repo: Path, branch: str) -> tuple[bool, str]:
         return forge.delete_branch(self._module, repo, branch)
 
-    def poll_checks(self, repo: Path, *, ref: str, may_rerun: bool = True) -> tuple[str, str]:
-        """One read of `ref`'s checks: (`green` | `pending` | `rerun` | `failed`, detail). A forge with no single read
-        is waited on as before, bounded by `WAIT_CHECKS_S`; that wait holds only its own repository's lane."""
+    def poll_checks(self, repo: Path, *, ref: str, memo: Mapping[str, Any] | None = None) -> tuple[str, str, dict]:
+        """One read of `ref`'s checks: (state, detail, memo), as `forge.py` describes. A forge with no single read is
+        waited on as before, bounded by `WAIT_CHECKS_S`; that wait holds only its own repository's lane."""
         poll = getattr(self._module, "poll_checks", None)
         if poll is not None:
-            return poll(repo, ref=ref, may_rerun=may_rerun)
+            return poll(repo, ref=ref, memo=memo)
         green, detail = self._module.wait_checks(repo, WAIT_CHECKS_S, ref=ref)
-        return waited_state(green, detail), detail
+        return waited_state(green, detail), detail, dict(memo or {})
 
     def has_ci(self, repo: Path, ref: str) -> bool:
         """Whether `ref` carries a GitHub Actions workflow, the only CI this forge can report on. A read that fails
@@ -413,9 +418,14 @@ def build(ws: Path, profile: Mapping[str, Any], *, worker: str | None = None, lo
     def mark_done(initiative: str, task: str, pr: str) -> str | None:
         phase = next((t["phase"] for t in tasks(initiative) if t["id"] == task), "")
         item = work / initiative / phase / f"{task}.md"
-        return cli._close_approved_item(str(item), runs_dir=runs_dir, by=name, merged=True, mode=mode)
+        with WORKSPACE_WRITES:
+            return cli._close_approved_item(str(item), runs_dir=runs_dir, by=name, merged=True, mode=mode)
 
     def file_rectify(initiative: str, phase: str, title: str, body: str) -> str | None:
+        with WORKSPACE_WRITES:
+            return _file_rectify(initiative, phase, title, body)
+
+    def _file_rectify(initiative: str, phase: str, title: str, body: str) -> str | None:
         """One ready task in `phase`, as a work file and a store row. The phase's branch is the tree it builds on."""
         from agent_tools import queue_export
         from harness import landing_ops
@@ -442,7 +452,8 @@ def build(ws: Path, profile: Mapping[str, Any], *, worker: str | None = None, lo
     def split_blocked(initiative: str, phases: Sequence[str]) -> str | None:
         try:
             repo = lander._repo(ports_ref[0], {"initiative": initiative})
-            return split_initiative(ws, conn, repo, initiative, list(phases), worker=name, push=getattr(module, "push", None))
+            with WORKSPACE_WRITES:
+                return split_initiative(ws, conn, repo, initiative, list(phases), worker=name, push=getattr(module, "push", None))
         except Exception as exc:
             log(f"lander: {initiative} was not split: {type(exc).__name__}: {exc}")
             return None

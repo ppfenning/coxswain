@@ -4,13 +4,14 @@ Each initiative is put in flight the way an operator does it (`cox route import`
 writes the landing record and merges the built phase into the initiative branch), and then landed by the lander's own
 entry points. The forge is the local one (`forge_local`, the default): there is no pull-request host, so a repository's
 checks are its gate checks, which the lander runs itself. A gate check that has not finished is a repository whose
-checks are pending.
+checks are pending. The local forge never pushes an initiative branch, so where a test needs one published (a pull
+request open, the branch on origin) it pushes it itself, as the GitHub forge would have.
 
 - Two repositories, one whose checks stay pending: `cox lander run` lands the other one while they do, then lands the
-  first once its checks pass (H3.1, H3.2).
-- The record says a phase merged and the initiative branch does not hold it (H3.3): with the commit gone from the
-  clone, the first `cox lander once` holds the initiative with the reason; with the phase branch still there, it merges
-  the phase again and the initiative lands in the same pass.
+  first once its checks pass (H3.1, H3.2). While that lane is busy, the main thread writes none of its records.
+- A published initiative whose record says a phase merged and whose branch on origin does not hold it (H3.3): with the
+  commit gone, the first `cox lander once` holds it with the reason; with the phase tip here, it merges the phase into
+  origin's branch, pushes it, and the initiative then lands. Two landers at once repair it once. A busy lease waits.
 """
 
 from __future__ import annotations
@@ -23,21 +24,30 @@ from pathlib import Path
 from smoke import plan
 
 PASS_TIMEOUT_S = 120.0
+QUIET_S = 4.0  # passes at a 0.5 s interval: long enough for several of them to run
 
 
 def _git(sandbox, where: Path, *args: str) -> str:
     return sandbox.git(where, *args)
 
 
-def _profile_with_cartridge(sandbox, tmp_path: Path) -> None:
-    """A team cartridge whose ticket gate runs each repository's own `gate.sh`, and gate `full`: the lander merges."""
+def _origin_git(sandbox, origin: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["git", "--git-dir", str(origin), *args], env=sandbox.env, capture_output=True, text=True, timeout=30)
+
+
+def _gate(sandbox, level: str) -> None:
+    sandbox.write("runs/policy.gate.json", json.dumps({"level": level}))
+
+
+def _profile_with_cartridge(sandbox, tmp_path: Path, gate: str = "full") -> None:
+    """A team cartridge whose ticket gate runs each repository's own `gate.sh`, and the gate level `gate`."""
     cartridges = tmp_path / "cartridges"
     (cartridges / "smoke").mkdir(parents=True)
     (cartridges / "smoke" / "cartridge.yaml").write_text(
         "team: smoke\nversion: 1\nlanding_areas:\n  ticket_checks:\n    - name: gate\n      cmd: sh ./gate.sh\n", encoding="utf-8")
     profile = sandbox.home / ".config" / "agent-tools" / "profile.yaml"
     profile.write_text(profile.read_text(encoding="utf-8") + f"cartridges_dir: {cartridges}\n", encoding="utf-8")
-    sandbox.write("runs/policy.gate.json", json.dumps({"level": "full"}))
+    _gate(sandbox, gate)
 
 
 def _repository(sandbox, tmp_path: Path, name: str, gate: str) -> tuple[Path, Path]:
@@ -54,6 +64,16 @@ def _repository(sandbox, tmp_path: Path, name: str, gate: str) -> tuple[Path, Pa
     return path, origin
 
 
+def _work_files(sandbox, name: str, initiative: str, state: str, commit: str = "") -> None:
+    sandbox.write(f"work/{initiative}/initiative.md",
+                  plan.work_item_text({"title": initiative, "repo": f"~/src/{name}", "draft": "false"}, "An initiative."))
+    fields = {"id": f"{initiative}-t1", "title": "The feature", "phase": "p1", "state": state}
+    sandbox.write(f"work/{initiative}/p1/{initiative}-t1.md",
+                  plan.work_item_text({**fields, **({"merged_commit": commit} if commit else {})}, "Task body"))
+    imported = sandbox.cox("route", "import")
+    assert imported.returncode == 0, imported.stdout + imported.stderr
+
+
 def _in_flight(sandbox, repo: Path, name: str, initiative: str) -> str:
     """One initiative with one approved task on its phase branch, imported and adopted. Its phase tip."""
     phase = f"epic/{initiative}/p1"
@@ -63,22 +83,22 @@ def _in_flight(sandbox, repo: Path, name: str, initiative: str) -> str:
     _git(sandbox, repo, "commit", "--quiet", "-m", f"{initiative}: the feature")
     _git(sandbox, repo, "checkout", "--quiet", "main")
     tip = _git(sandbox, repo, "rev-parse", phase)
-    sandbox.write(f"work/{initiative}/initiative.md",
-                  plan.work_item_text({"title": initiative, "repo": f"~/src/{name}", "draft": "false"}, "An initiative."))
-    sandbox.write(f"work/{initiative}/p1/{initiative}-t1.md", plan.work_item_text(
-        {"id": f"{initiative}-t1", "title": "The feature", "phase": "p1", "state": "approved", "merged_commit": tip}, "Task body"))
-    imported = sandbox.cox("route", "import")
-    assert imported.returncode == 0, imported.stdout + imported.stderr
+    _work_files(sandbox, name, initiative, "approved", tip)
     adopted = sandbox.cox("lander", "adopt", "--apply", initiative)
     assert adopted.returncode == 0, adopted.stdout + adopted.stderr
     assert f"phase p1 of {initiative} merged into init/{initiative}" in adopted.stdout, adopted.stdout
     return tip
 
 
+def _record(sandbox, initiative: str) -> dict:
+    """The landing record, read through the lander's own store connection."""
+    return sandbox.python_json(
+        "import json; from pathlib import Path; from agent_tools import lander_ports; from harness import landing_store as ls; "
+        f"print(json.dumps(ls.get_record(lander_ports.connect(Path({str(sandbox.workspace / 'runs')!r})), {initiative!r})))")
+
+
 def _on_origin_main(sandbox, origin: Path, path: str) -> bool:
-    done = subprocess.run(["git", "--git-dir", str(origin), "cat-file", "-e", f"main:{path}"], env=sandbox.env,
-                          capture_output=True, text=True, timeout=30)
-    return done.returncode == 0
+    return _origin_git(sandbox, origin, "cat-file", "-e", f"main:{path}").returncode == 0
 
 
 def _status(sandbox) -> dict:
@@ -98,49 +118,71 @@ def _until(condition, what: str, lander: subprocess.Popen, log: Path) -> None:
     raise AssertionError(f"not within {PASS_TIMEOUT_S:.0f}s: {what}:\n{log.read_text(encoding='utf-8')[-6000:]}")
 
 
+# -- H3.1 and H3.2: lanes ---------------------------------------------------------------------------------------------
+
 def test_a_repository_whose_checks_stay_pending_never_holds_another_ones_land(sandbox, tmp_path):
     _profile_with_cartridge(sandbox, tmp_path)
-    release = tmp_path / "release-slow"
-    slow, slow_origin = _repository(sandbox, tmp_path, "slow", f"while [ ! -e '{release}' ]; do sleep 0.2; done\n")
+    started, release = tmp_path / "slow-started", tmp_path / "release-slow"
+    slow, slow_origin = _repository(sandbox, tmp_path, "slow", f"touch '{started}'\nwhile [ ! -e '{release}' ]; do sleep 0.2; done\n")
     fast, fast_origin = _repository(sandbox, tmp_path, "fast", "exit 0\n")
     _in_flight(sandbox, slow, "slow", "alpha-slow")  # first by name and in the queue: a lander that works one repository after another takes it first
     _in_flight(sandbox, fast, "fast", "beta-fast")
 
     log = tmp_path / "lander.log"
     with log.open("w", encoding="utf-8") as sink:
-        lander = subprocess.Popen([str(sandbox.install.cox), "lander", "run", "--interval", "1"], cwd=sandbox.home,
+        lander = subprocess.Popen([str(sandbox.install.cox), "lander", "run", "--interval", "0.5"], cwd=sandbox.home,
                                   env={**sandbox.env, "PYTHONUNBUFFERED": "1"}, stdout=sink, stderr=subprocess.STDOUT)
         try:
             _until(lambda: _on_origin_main(sandbox, fast_origin, "beta-fast.txt"), "beta-fast landed on fast's origin", lander, log)
+            _until(started.exists, "alpha-slow's checks started", lander, log)
             assert not _on_origin_main(sandbox, slow_origin, "alpha-slow.txt"), "alpha-slow landed with its checks still pending"
             assert [i["initiative"] for i in _status(sandbox)["initiatives"]] == ["alpha-slow"]
 
+            # One writer per record: while its lane is busy, the passes the main thread keeps making do not touch a
+            # record of that repository. A new initiative there, with a quarantined task, is left for its lane.
+            _work_files(sandbox, "slow", "alpha-blocked", "quarantined")
+            adopted = sandbox.cox("lander", "adopt", "--apply", "alpha-blocked")
+            assert adopted.returncode == 0, adopted.stdout + adopted.stderr
+            time.sleep(QUIET_S)
+            untouched = ((_record(sandbox, "alpha-blocked").get("phases") or {}).get("p1") or {}).get("state")
+            assert untouched != "blocked", log.read_text(encoding="utf-8")
+
             release.touch()
             _until(lambda: _on_origin_main(sandbox, slow_origin, "alpha-slow.txt"), "alpha-slow landed once its checks passed", lander, log)
-            _until(lambda: _status(sandbox)["initiatives"] == [], "every record landed", lander, log)
+            _until(lambda: (_record(sandbox, "alpha-blocked").get("phases") or {}).get("p1", {}).get("state") == "blocked",
+                   "alpha-blocked's lane applied on_blocked once the lane was free", lander, log)
         finally:
             lander.kill()
             lander.wait(timeout=30)
     output = log.read_text(encoding="utf-8")
     assert "beta-fast recorded landed" in output and "alpha-slow recorded landed" in output, output
     assert output.index("beta-fast recorded landed") < output.index("alpha-slow recorded landed"), output
+    assert _record(sandbox, "alpha-slow")["state"] == "landed", "the lane's landed write survived the passes made meanwhile"
 
 
-def _break_the_branch(sandbox, repo: Path, initiative: str, *, lose_the_phase: bool) -> None:
-    """The efficiency case: the record still says p1 merged, but the initiative branch is back at main."""
-    _git(sandbox, repo, "branch", "--force", f"init/{initiative}", "main")
+# -- H3.3: the record against origin ----------------------------------------------------------------------------------
+
+def _published_and_lost(sandbox, tmp_path, *, lose_the_phase: bool) -> tuple[Path, Path, str]:
+    """`ship`, published: its pull request open (gate `ticket` stops the land there) and its branch on origin. Then the
+    efficiency case: the record still says p1 merged, but origin's `init/ship`, and this clone's, are back at main."""
+    _profile_with_cartridge(sandbox, tmp_path, gate="ticket")
+    repo, origin = _repository(sandbox, tmp_path, "app", "exit 0\n")
+    tip = _in_flight(sandbox, repo, "app", "ship")
+    opened = sandbox.cox("lander", "once")
+    assert opened.returncode == 0 and "opened the pull request for ship" in opened.stdout, opened.stdout + opened.stderr
+    _git(sandbox, repo, "push", "--quiet", "origin", "init/ship")  # what a forge with pull requests does at the open
+    _git(sandbox, repo, "push", "--quiet", "--force", "origin", "main:refs/heads/init/ship")
+    _git(sandbox, repo, "branch", "--force", "init/ship", "main")
     if lose_the_phase:
-        _git(sandbox, repo, "branch", "--delete", "--force", f"epic/{initiative}/p1")
+        _git(sandbox, repo, "branch", "--delete", "--force", "epic/ship/p1")
         _git(sandbox, repo, "reflog", "expire", "--expire=now", "--all")
         _git(sandbox, repo, "gc", "--quiet", "--prune=now")
+        assert subprocess.run(["git", "-C", str(repo), "cat-file", "-e", tip], env=sandbox.env, capture_output=True, timeout=30).returncode != 0
+    return repo, origin, tip
 
 
 def test_a_record_merged_on_a_branch_missing_the_commit_is_held_with_the_reason_on_the_first_pass(sandbox, tmp_path):
-    _profile_with_cartridge(sandbox, tmp_path)
-    repo, origin = _repository(sandbox, tmp_path, "app", "exit 0\n")
-    tip = _in_flight(sandbox, repo, "app", "ship")
-    _break_the_branch(sandbox, repo, "ship", lose_the_phase=True)
-    assert subprocess.run(["git", "-C", str(repo), "cat-file", "-e", tip], env=sandbox.env, capture_output=True, timeout=30).returncode != 0
+    _, origin, tip = _published_and_lost(sandbox, tmp_path, lose_the_phase=True)
 
     done = sandbox.cox("lander", "once")
 
@@ -160,16 +202,53 @@ def test_a_record_merged_on_a_branch_missing_the_commit_is_held_with_the_reason_
     assert sandbox.cox("courier", "inbox", "--label", "chair").stdout.count(reason) == 1
 
 
-def test_a_record_merged_on_a_branch_missing_the_commit_is_merged_again_when_the_tip_is_here(sandbox, tmp_path):
-    _profile_with_cartridge(sandbox, tmp_path)
-    repo, origin = _repository(sandbox, tmp_path, "app", "exit 0\n")
-    _in_flight(sandbox, repo, "app", "ship")
-    _break_the_branch(sandbox, repo, "ship", lose_the_phase=False)
+def test_an_open_pull_request_missing_a_phase_gets_it_pushed_before_the_land(sandbox, tmp_path):
+    _, origin, tip = _published_and_lost(sandbox, tmp_path, lose_the_phase=False)
+    _gate(sandbox, "full")
 
     done = sandbox.cox("lander", "once")
 
     assert done.returncode == 0, done.stdout + done.stderr
-    assert "is merged again; init/ship is now at" in done.stdout, done.stdout
-    assert "ship recorded landed" in done.stdout, done.stdout
+    pushed = "is merged again; init/ship is pushed at"
+    assert pushed in done.stdout and "ship recorded landed" in done.stdout, done.stdout
+    assert done.stdout.index(pushed) < done.stdout.index("ship recorded landed"), done.stdout
+    assert _origin_git(sandbox, origin, "merge-base", "--is-ancestor", tip, "init/ship").returncode == 0, "origin's branch got the phase"
     assert _on_origin_main(sandbox, origin, "ship.txt")
     assert _status(sandbox)["initiatives"] == []
+
+
+def test_two_landers_at_once_repair_the_branch_once_and_agree_on_the_merge_commit(sandbox, tmp_path):
+    _, origin, tip = _published_and_lost(sandbox, tmp_path, lose_the_phase=False)
+
+    landers = [subprocess.Popen([str(sandbox.install.cox), "lander", "once"], cwd=sandbox.home, env=sandbox.env,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) for _ in range(2)]
+    outputs = [lander.communicate(timeout=PASS_TIMEOUT_S)[0] for lander in landers]
+
+    assert [lander.returncode for lander in landers] == [0, 0], outputs
+    assert sum(out.count("is merged again; init/ship is pushed at") for out in outputs) == 1, outputs
+    subjects = _origin_git(sandbox, origin, "log", "--format=%s", "init/ship").stdout.splitlines()
+    assert sum("merge phase p1 again" in s for s in subjects) == 1, subjects
+    head = _origin_git(sandbox, origin, "rev-parse", "init/ship").stdout.strip()
+    entry = _record(sandbox, "ship")["phases"]["p1"]
+    assert entry["merge_sha"] == head and entry["tip"] == tip, (entry, head)
+    assert not _record(sandbox, "ship").get("held")
+
+
+def test_a_busy_branch_lease_makes_reconciliation_wait_and_change_nothing(sandbox, tmp_path):
+    _, origin, _ = _published_and_lost(sandbox, tmp_path, lose_the_phase=False)
+    before = _record(sandbox, "ship")["phases"]["p1"]
+    held = sandbox.python_json(
+        "import json; from pathlib import Path; from agent_tools import lander_ports; "
+        "from harness import landing_ops as ops, store_lease; "
+        f"conn = lander_ports.connect(Path({str(sandbox.workspace / 'runs')!r})); "
+        "print(json.dumps(store_lease.acquire(conn, ops.branch_lease('ship'), 'another-host', lander_ports.now_stamp(), 600).ok))")
+    assert held is True
+    main = _origin_git(sandbox, origin, "rev-parse", "main").stdout.strip()
+
+    done = sandbox.cox("lander", "once")
+
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "reconcile: ship waits: another-host is moving init/ship" in done.stdout, done.stdout
+    assert _origin_git(sandbox, origin, "rev-parse", "init/ship").stdout.strip() == main
+    after = _record(sandbox, "ship")
+    assert after["phases"]["p1"]["merge_sha"] == before["merge_sha"] and not after.get("held")
