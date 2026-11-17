@@ -24,7 +24,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from agent_tools import events, run_store, runs_detail, runs_top
+from agent_tools import dash_contract, events, run_store, runs_detail, runs_top
 from agent_tools.runs_detail_screen import facts_for
 from agent_tools.runs_top_screen import _read_lines, _session_text
 
@@ -178,7 +178,7 @@ def build_run_detail(raw: dict) -> dict:
         for step in _STEP_ORDER
     ]
     return {
-        "schema": 1,
+        "schema": dash_contract.CONTRACT_VERSION,
         "kind": "run",
         "at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "run": raw.get("run"),

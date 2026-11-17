@@ -19,7 +19,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from agent_tools import run_store
+from agent_tools import dash_contract, run_store
 
 
 def _db_errors() -> tuple[type[BaseException], ...]:
@@ -82,7 +82,7 @@ def build_machine_detail(host_row: Mapping[str, Any] | None, runs: Sequence[Mapp
     never `datetime.now()` here, so this stays a pure function of its arguments."""
     versions = _versions(host_row)
     return {
-        "schema": 1,
+        "schema": dash_contract.CONTRACT_VERSION,
         "kind": "machine",
         "at": now,
         "machine": host_row.get("name") if host_row is not None else None,
