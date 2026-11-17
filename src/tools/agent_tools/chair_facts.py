@@ -25,6 +25,7 @@ from agent_tools.chair_land_backoff import LandRefusal, aligned
 from agent_tools.chair_land_freeze import LandFreeze, read_freeze
 from agent_tools.chair_launch_budget import DEFAULT_MAX_LAUNCHES_PER_HOUR, WINDOW
 from agent_tools.chair_no_progress import NoProgress, RunOutcome, no_progress_facts, resolve_no_progress_after
+from agent_tools.chair_phase_quarantine import marked_cause
 from agent_tools.chair_phases import launchable_phases
 from agent_tools.chair_plan import initiative_homes
 from agent_tools.chair_plan_land import planned_tasks
@@ -643,9 +644,18 @@ def quarantine_facts(
         if k not in opened and k not in landed_now and (in_store is None or (k[0], k[2]) in in_store)
     ]
     return [
-        *(_quarantine(k, newest_cause(attempts, k) or QUARANTINED_CAUSE, attempts, has_patch, by_key[k]) for k in opened if k[0] not in live),
+        *(_opened_quarantine(k, attempts, has_patch, by_key[k]) for k in opened if k[0] not in live),
         *(_stranded_entry(ks, rows, attempts, has_patch, waiting) for ks in _by_run(stuck, rows) if ks[0][0] not in live),
     ]
+
+
+def _opened_quarantine(key: Key, attempts: Sequence[Row], has_patch: Callable[[str, str], bool], row: Row) -> QuarantineFacts:
+    """One open quarantine. Its cause is the chair's own mark on the row while no attempt from a later run outdates it
+    (`chair_phase_quarantine.marked_cause`), with the mark's reason; else the newest attempt's, else `QUARANTINED_CAUSE`."""
+    mark = marked_cause(row.get("mark"), [a for a in attempts if _key(a) == key])
+    if mark is None:
+        return _quarantine(key, newest_cause(attempts, key) or QUARANTINED_CAUSE, attempts, has_patch, row)
+    return _quarantine(key, mark["cause"], attempts, has_patch, {**row, "reason": mark["reason"] or row.get("reason") or ""})
 
 
 def _by_run(keys: Sequence[Key], rows: Mapping[Key, Row]) -> list[list[Key]]:

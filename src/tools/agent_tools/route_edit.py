@@ -254,7 +254,8 @@ def _rewrite(path: Path, runs_dir: Path, is_intake: bool, new_text: str) -> str 
 # that has started or ended. todo and ready share a rank, both unstarted. store_cli's set-state has no override flag.
 _STATE_RANK = {"todo": 0, "ready": 0, "in_progress": 1, "approved": 2, "done": 3}
 _FINAL_STATES = frozenset({"done", "dropped"})
-# The states `harness.store_cli set-state` takes, as its target and as its `--expect`.
+# The states `cox route edit --state` moves a ticket to by hand. `harness.store_cli set-state` itself takes every work
+# state (`core.workstore.STATES`), as its target and as its `--expect`.
 SET_STATES = ("ready", "approved", "done", "dropped")
 _CONTENT_FIELDS = ("title", "body", "needs", "surfaces", "extra")  # needs changes only when a requeue adopts the file's
 EDITED_BY = "cox route edit"
@@ -333,15 +334,10 @@ def _stored_row(runs_dir: Path, row: dict) -> dict | None:
 
 def _set_state(runs_dir: Path, row: dict, state: str) -> EditResult | None:
     """Edge: move the row's state through store_cli's single writer, compare-and-set on the state the edit read.
-    None when the store took it. set-state's `--expect` takes only `SET_STATES`; from any other state (todo, blocked,
-    quarantined, in_progress) the row is re-read just before the write instead, which narrows the race but does not close it."""
+    None when the store took it. set-state's `--expect` takes every work state (`core.workstore.STATES`), so the compare
+    lives in the store's own write whatever state the edit read, todo, blocked, quarantined and in_progress included."""
     read = row.get("state")
-    if read not in SET_STATES:
-        stored = _stored_row(runs_dir, row)
-        if stored is None or stored.get("state") != read:
-            now = "no row" if stored is None else stored.get("state")
-            return EditResult(f"{row['task_id']} moved to {now!r} after the edit read it as {read!r}; nothing written", REFUSED)
-    expected = read if read in SET_STATES else None
+    expected = read if isinstance(read, str) and read else None
     result = store_cli.set_state(runs_dir, row["initiative"], row["task_id"], state, EDITED_BY, expected=expected)
     if isinstance(result, store_cli.StateSet):
         return None

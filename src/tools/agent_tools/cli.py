@@ -35,7 +35,7 @@ import tomllib
 import types
 import urllib.parse
 import uuid
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from pathlib import Path
 
 import yaml
@@ -132,6 +132,7 @@ chair_restart_log = _LazyModule("agent_tools.chair_restart_log")
 chair_revert_green = _LazyModule("agent_tools.chair_revert_green")
 chair_revert_ports = _LazyModule("agent_tools.chair_revert_ports")
 chair_revert_watch = _LazyModule("agent_tools.chair_revert_watch")
+chair_phase_quarantine = _LazyModule("agent_tools.chair_phase_quarantine")
 chair_run = _LazyModule("agent_tools.chair_run")
 chair_service = _LazyModule("agent_tools.chair_service")
 unit_env = _LazyModule("agent_tools.unit_env")
@@ -14261,41 +14262,58 @@ def _revert_ports(
 
 
 def _quarantine_phase_with(
-    items: Callable[[], list[dict]], set_state: Callable[[str, str, str, str], str | None], by: str,
+    rows: Callable[[str], Sequence[Mapping]],
+    run_ids: Callable[[], Iterable[str]],
+    move: Callable[[str, str, str], object],
+    mark: Callable[[str, str, Mapping], str],
+    by: str,
 ) -> Callable[[str, str, str, str], list[str]]:
-    """Quarantines every task of the phase and returns one line per write the store did not take, so `_revert_land`
-    reports it. `set_state` answers None or that line (`store_cli.mirror_state`). The reason rides the needs_chair
-    `_revert_land` raises, not the store."""
+    """Quarantines the tasks of a reverted phase that its land carried (`chair_phase_quarantine.phase_targets`), each by a
+    compare-and-set on the state read (`move`), then marks each moved row with the cause (`mark`), so the next tick reads
+    the quarantine as that cause. Returns one line per write the store did not take, so `_revert_land` reports it.
+
+    `rows` is an initiative's task rows; `move(initiative, task, expected)` answers a `store_cli.SetStateResult`;
+    `mark(initiative, task, extra)` answers "" when the store took the row, else why not."""
 
     def quarantine(initiative: str, phase: str, cause: str, reason: str) -> list[str]:
-        written = (
-            set_state(initiative, item["id"], "quarantined", by)
-            for item in items()
-            if item.get("initiative") == initiative and item.get("phase") == phase
-        )
-        return [line for line in written if line is not None]
+        targets = chair_phase_quarantine.phase_targets(rows(initiative), initiative, phase)
+        run = chair_phase_quarantine.newest_run(run_ids(), initiative) if targets else ""
+        failures: list[str] = []
+        for row in targets:
+            task = str(row["task_id"])
+            written = move(initiative, task, str(row["state"]))
+            line = store_cli.state_write_failure(initiative, task, "quarantined", written)  # type: ignore[arg-type]
+            if line is not None or not isinstance(written, store_cli.StateSet):
+                failures.extend([line] if line is not None else [])
+                continue
+            refused = mark(initiative, task, chair_phase_quarantine.marked_extra(row.get("extra"), cause, reason, run))
+            if refused:
+                failures.append(f"warning: store did not record the {cause} cause on {initiative}/{task}: {refused}")
+        return failures
 
     return quarantine
 
 
-def _store_quarantine(runs_dir: Path, ws: Path, mode: str, by: str) -> Callable[[str, str, str, str], list[str]]:
-    """Edge. The chair's quarantine of a reverted phase: every ticket under `ws/work`, each moved through the store CLI."""
+def _store_quarantine(runs_dir: Path, by: str) -> Callable[[str, str, str, str], list[str]]:
+    """Edge. The chair's quarantine of a reverted phase, read from and written to the store."""
     return _quarantine_phase_with(
-        lambda: chair_facts.read_ticket_items(ws, mode),
-        lambda initiative, task, state, by: store_cli.mirror_state(runs_dir, initiative, task, state, by),
+        lambda initiative: run_store.read_queue(runs_dir, initiative, kind="task"),
+        lambda: run_store.run_ids(runs_dir),
+        lambda initiative, task, expected: store_cli.set_state(runs_dir, initiative, task, "quarantined", by, expected),
+        lambda initiative, task, extra: run_store.upsert_row_detail(runs_dir, {"initiative": initiative, "task_id": task, "extra": extra}),
         by,
     )
 
 
 def _revert_land_deps(
-    runs_dir: Path, ws: Path, mode: str, holder: str, runner: Callable[[list[str]], tuple[int, str]],
+    runs_dir: Path, holder: str, runner: Callable[[list[str]], tuple[int, str]],
     actions: Callable[[], Sequence[Mapping]], record: Callable[[Mapping], None],
 ) -> dict[str, object]:
     """Edge. The `chair_exec.Deps` fields a revert_land runs on: its git and forge ports, the store quarantine of the
     reverted phase, and the resolve of its land watch. `cox chair run` wires exactly these."""
     return {
         "revert_ports": _revert_ports(runner),
-        "quarantine_phase": _store_quarantine(runs_dir, ws, mode, holder),
+        "quarantine_phase": _store_quarantine(runs_dir, holder),
         "resolve_land": _resolve_land_with(actions, record),
     }
 
@@ -14901,7 +14919,7 @@ def _chair_run_deps(
     exec_deps = dataclasses.replace(
         exec_deps,
         label=session,
-        **_revert_land_deps(runs_dir, ws, mode, holder, runner, actions, record),
+        **_revert_land_deps(runs_dir, holder, runner, actions, record),
         rerun_main=lambda repo, commit: chair_revert_ports.rerun_infra(runner, _gh_repo(repo), commit),
         launch_stagger_s=chair_exec.stagger_seconds((profile.get("chair") or {}).get("launch_stagger_s")),
         mark_handled=None if dry_run else (lambda key: _mark_handled_key(runs_dir, key)),
