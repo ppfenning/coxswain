@@ -170,6 +170,51 @@ guard the moves. No behaviour change.
 
 **Done when.** No module in `agent_tools` or `harness` exceeds 2,000 lines.
 
+## H10. Functional core, tests that prove it runs
+
+**Evidence.** H5's first phase, built by the epic on 2026-11-17, passed every task review, arbitration and the full
+lane check, yet four of its five tasks added functions that no running code called: edge still rolled back on the
+full doctor, its `gh` calls stayed unbounded, the lane-sync guard was never passed its paths, and no unit read the
+new environment file (#1191, review). Each task was judged against unit tests of its own helper, with the process
+boundaries stubbed; nothing ran the glue that should have called it. The suites are large (about 12,700 tests in
+`src/tools`) and lean on stubs and fakes, which is also how the store CLI's state choices drifted unseen (#1174).
+
+**Rule: functional core, imperative shell, for all work.** Logic lives in pure functions: no I/O, no clock, no
+environment, no global state; data in, data out. Side effects (subprocesses, `gh`, `git`, the store, files, the
+network, the clock) live in thin glue at the edges that only gathers inputs, calls the core and acts on its result.
+New code follows this, and code a change touches is moved toward it.
+
+**Change.**
+
+1. **Unit tests cover the pure core, with no mocks.** A unit test passes example inputs to a pure function and
+   checks its output. It does no I/O. If a test needs a mock, monkeypatch or fake to reach the logic, the logic is
+   tangled with an effect: split it out instead of mocking. A function that builds a command, a query or a decision
+   is tested; the glue that runs it is not unit-tested.
+2. **The glue is proven by end-to-end smoke tests against real infrastructure.** A small set of tests runs real
+   `cox` commands, as a person or a unit would, against a real git repository, a throwaway Postgres and a sandbox
+   forge, in containers as the release rehearsal already does. Each covers a happy path at an entry point
+   (`cox upgrade` rolls back on a required doctor row and not on an advisory one; a lane sync leaves the install
+   alone; the chair, lander and upgrade units start from one environment file). They replace stubbed boundary tests,
+   and absorb H1.4's contract tests.
+3. **Every real bug gets a regression test,** at the level where it lived: a pure-function case when the logic was
+   wrong, a smoke case when the wiring was. Coverage is not a target.
+4. **A done-when names a runtime behaviour at an entry point,** proven by a smoke test from item 2, not a helper's
+   return value.
+5. **Unwired code is a finding.** A check lists the public symbols a diff adds and fails when one has no caller
+   outside tests.
+6. **Review asks two questions.** Task review, arbitration and `validate_phase` ask: is the logic pure and tested
+   without mocks, and which smoke test runs the entry point that reaches this change? A mock in a new unit test, or
+   no such smoke test, means revise.
+7. **Decompose keeps a helper and its wiring together,** in one task or one phase, so a phase cannot complete with
+   library code alone.
+8. **Prune.** Tests that only exercise mocks, stubs or fakes are retired once a pure-function test or a smoke test
+   covers the same behaviour. The suite gets smaller and each test earns its place.
+
+**Done when.** The smoke suite runs in CI and in the lane check against real git, Postgres and a sandbox forge, and
+covers the H5 done-when lines; the unused-symbol check runs in CI and the lane check; the review, validator and
+decompose skills carry items 6 and 7, and a test shows a review of an unwired helper or a mocked unit test returns
+revise; new code merged after this lands adds no mocks to unit tests.
+
 ## Order
 
 1. **H5** (edge and deploy): small, and every later change ships through it.
@@ -178,6 +223,10 @@ guard the moves. No behaviour change.
 4. **H3** and **H4** (lander, loops, stale work): what stops a hand fold being needed again.
 5. **H7** (operator told).
 6. **H6** (tick cost, then event-driven), **H8** (contracts), **H9** (split).
+
+**H10** (functional core, tests that prove it runs) applies from now on to all work and every review. Its smoke
+suite is built first, alongside **H1**, since H1's boundary work and every later item are proven through it; the
+prune (item 8) runs after **H9**.
 
 Each item is built as its own initiative once the chair is stable on PRs 0–C, and each lands behind the review
 step those PRs used: an independent reviewer reads the diff before it merges.
