@@ -39,7 +39,14 @@ jobs:
       # Real `cox`, installed from this checkout, against real git and the service's Postgres; nothing is stubbed.
       # Serial: one install and one server per run. REQUIRED turns a missing uv or Postgres into a failure, not a skip.
       - name: smoke
-        run: uv run pytest -q -rs smoke
+        run: uv run pytest -q -rs -m "not forge" smoke
+        env:
+          COX_SMOKE_POSTGRES_URL: postgresql://postgres:smoke@localhost:${{ job.services.postgres.ports['5432'] }}/postgres
+          COX_SMOKE_REQUIRED: "1"
+      # The same suite's forge tests: a Forgejo container started with docker (smoke/plan.py FORGEJO_IMAGE, pinned by
+      # digest), a land through it, and the edge upgrade's rollback rule on a real install (docs/smoke.md).
+      - name: smoke (forge)
+        run: uv run pytest -q -rs -m forge smoke
         env:
           COX_SMOKE_POSTGRES_URL: postgresql://postgres:smoke@localhost:${{ job.services.postgres.ports['5432'] }}/postgres
           COX_SMOKE_REQUIRED: "1"

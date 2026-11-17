@@ -163,6 +163,7 @@ draft_apply = _LazyModule("agent_tools.draft_apply")
 draft_list = _LazyModule("agent_tools.draft_list")
 epic = _LazyModule("agent_tools.epic")
 forge = _LazyModule("agent_tools.forge")
+forge_auto = _LazyModule("agent_tools.forge_auto")
 forge_github = _LazyModule("agent_tools.forge_github")
 generate = _LazyModule("agent_tools.generate")
 home_paths = _LazyModule("agent_tools.home")
@@ -11170,14 +11171,28 @@ def _edge_target(checkout: Path, slug: str) -> tuple[str, str, list[str]] | str:
     code, head = _edge_git(checkout, "rev-parse", "HEAD")
     if code != 0:
         return f"git rev-parse HEAD in {checkout} exited {code}: {head.strip()}"
-    code, runs = _edge_run(forge_github.ci_runs_argv(slug, upgrade_edge.WORKFLOW, branch))
-    if code != 0:
-        return f"cannot list the {upgrade_edge.WORKFLOW} runs on {branch} of {slug}: {runs.strip()}"
     first_parent = [line.strip() for line in history.splitlines() if line.strip()]
-    target = upgrade_edge.newest_green(first_parent, forge_github.parse_green_shas(runs))
+    green = _edge_green(checkout, slug, branch, first_parent)
+    if isinstance(green, str):
+        return green
+    target = upgrade_edge.newest_green(first_parent, green)
     if target is None:
         return f"none of the newest {upgrade_edge.HISTORY} commits on origin/{branch} has a passing {upgrade_edge.WORKFLOW} run"
     return head.strip(), target, first_parent
+
+
+def _edge_green(checkout: Path, slug: str, branch: str, first_parent: list[str]) -> tuple[str, ...] | str:
+    """Edge. The commits of `first_parent` whose CI passed, from the forge the checkout's `origin` is on
+    (`forge_auto.forge_of`) when that forge answers `green_commits` (Forgejo, for an origin on the `FORGEJO_BASE_URL`
+    host), else the `upgrade_edge.WORKFLOW` push runs on GitHub by `gh`. A string says why they could not be read."""
+    module = forge_auto.forge_of(checkout)
+    if hasattr(module, "green_commits"):
+        green = module.green_commits(checkout, first_parent)
+        return f"cannot read the commit statuses on {branch} of {checkout}: {green}" if isinstance(green, str) else green
+    code, runs = _edge_run(forge_github.ci_runs_argv(slug, upgrade_edge.WORKFLOW, branch))
+    if code != 0:
+        return f"cannot list the {upgrade_edge.WORKFLOW} runs on {branch} of {slug}: {runs.strip()}"
+    return forge_github.parse_green_shas(runs)
 
 
 def _edge_added_migrations(checkout: Path, head: str, target: str) -> tuple[str, ...] | str:

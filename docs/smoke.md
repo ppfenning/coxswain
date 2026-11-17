@@ -1,7 +1,7 @@
 # Smoke suite
 
-The smoke suite runs real `cox` commands, the way a person or a unit runs them, against a real git repository and a
-real Postgres. Nothing in it is mocked, stubbed or faked. It is the second half of
+The smoke suite runs real `cox` commands, the way a person or a unit runs them, against a real git repository, a
+real Postgres and a sandbox forge (a Forgejo container). Nothing in it is mocked, stubbed or faked. It is the second half of
 [H10](hardening.md#h10-functional-core-tests-that-prove-it-runs): unit tests cover the pure core, and the smoke suite
 proves the glue that calls it. It also holds H1's contract tests, one per process boundary that has broken.
 
@@ -11,8 +11,10 @@ Run it from the repository root:
 pytest -q -rs smoke
 ```
 
-It needs `uv` and either `docker` or a Postgres you point it at. Without them it skips and says why. A first run
-takes about a minute, most of it starting the Postgres container.
+It needs `uv` and either `docker` or a Postgres you point it at. The forge tests (marked `forge`) also need `docker`.
+Without them it skips and says why. On the development machine, with a warm uv cache, `-m "not forge"` took 60 s
+(most of it the install and the Postgres container) and `-m forge` took 96 s (most of it the two edge upgrades). One
+run of both together took 3 min 13 s while other work loaded the machine.
 
 ## What the harness provides
 
@@ -42,6 +44,21 @@ without mocks in `tests/test_smoke_plan.py`.
   `cox` starts. `sandbox.store_rows()` reads the store back through `harness.store_queue`.
 - **`repo`** (per test): a clone at `~/src/app` of a bare origin in the test's temporary directory, with one
   commit on `main` pushed.
+- **`forge`** (once per session): a Forgejo container (`plan.FORGEJO_IMAGE`, Forgejo 11 pinned by digest) published
+  on one loopback port only, with sqlite on tmpfs, no ssh, no sign-up and Actions off. The fixture creates one admin
+  user and a token with `forgejo admin` inside the container. It is labelled and reaped like the Postgres container.
+- **`forge_sandbox`** (per test): the sandbox with `forge: auto` in its profile and `FORGEJO_BASE_URL` and
+  `FORGEJO_TOKEN` in its environment, so `cox` lands a repository whose origin is on the forge through
+  `forge_forgejo`, chosen by `forge_auto` as on a person's machine.
+- **`forge_repo`** (per test): a new repository on the forge with one commit on `main`, cloned at `~/src/app` with
+  the forge as its http origin. `forge_repo.report(sha, state)` reports a commit status, as a CI job would.
+  `forge_repo.pull(n)` and `forge_repo.branch_tip(branch)` read back what the forge holds.
+- **`edge_machine`** (per test): an edge machine laid out as `cox setup install` lays a home out. Its checkout at
+  `~/.local/share/coxswain/installs/coxswain` is this tree, cloned from the forge (`edge_origin`, once per module:
+  this tree as one commit, plus one newer commit, both reported green). The checkout sits at the older commit, its
+  venv is synced with `uv sync`, and `cox` is a uv tool editable from it, first on PATH. The profile says
+  `upgrade_channel: edge`. The sandboxed uv reads through the caller's uv cache and managed interpreters
+  (`plan.uv_env`), so a sync links what the caller already has instead of downloading it again.
 
 ## Contract tests
 
@@ -64,11 +81,38 @@ only the approved and done tasks of the reverted land, each by a compare-and-set
 row with the `main_red` cause. A write the store refuses is named in the chair's needs_chair. A new drift goes into
 `KNOWN_DRIFT` in `test_contract_store_cli.py` as a strict xfail; whoever fixes it deletes the entry.
 
+## Forge and edge tests
+
+These are marked `forge`. Each one fails when what it proves stops being true. I checked the edge tests by putting a
+drift back into the tree and running them: with every doctor row required, the advisory test fails; with the required
+rows dropped from the verdict, the rollback test fails.
+
+| Test | Entry point | What it proves |
+| --- | --- | --- |
+| `test_forge_land.py` | `cox runs land --task t1 --gate full --apply` | On green checks, the land pushes `pr/t1`, opens the pull request, waits for the commit status the test reports, squash-merges and deletes the branch, and the local `main` follows. On failing checks it stops at `wait_checks`, names the failing context, and leaves the pull request open and `main` alone. |
+| `test_edge_upgrade.py` | `cox upgrade` on an edge machine | H5: with no token file (an advisory doctor row), the move to the newer green commit stands, prints the advisory warning, and is recorded `upgraded`. With the store on a closed port (a required row), the move rolls back to the older commit, the record says `rolled_back`, and the next run holds that commit instead of retrying it. The git, `uv sync`, tool reinstall and doctor all run for real. |
+
+`cox upgrade` asks the forge which commits passed CI. For an origin on the `FORGEJO_BASE_URL` host it reads Forgejo's
+commit statuses (`forge_forgejo.green_commits`). For any other origin it asks `gh run list` for the `ci.yml` push
+runs, as before. An edge machine whose checkout comes from Forgejo needs `FORGEJO_BASE_URL` and `FORGEJO_TOKEN` in the
+unit environment file.
+
+**Bugs found while building these tests.** Neither showed against the fake server the unit tests use.
+
+- Forgejo records a pushed branch from a queue after `git push` returns. A pull request opened at once was refused
+  with "The target couldn't be found", so every land through Forgejo stopped at `pr_create`. `forge_forgejo.push` now
+  waits, up to 30 s, until the server shows the branch at the pushed commit.
+- A commit status row names its state `status`; only the combined rollup says `state`. `forge_forgejo` read the rows
+  by `state`, so a failed check was reported as "failing checks: combined status" instead of by its context.
+
+macOS launchd stays an operator check: the suite runs on Linux and starts no launchd agent.
+
 ## Where it runs
 
-- **CI.** The required `test` job has a Postgres service (the pinned image) and a `smoke` step. That step sets
-  `COX_SMOKE_POSTGRES_URL` to the service and `COX_SMOKE_REQUIRED=1`, so a missing `uv` or Postgres fails the job
-  instead of skipping it.
+- **CI.** The required `test` job has a Postgres service (the pinned image) and two steps: `smoke` runs
+  `-m "not forge"` and `smoke (forge)` runs `-m forge`, which starts the Forgejo container with the runner's docker.
+  Both set `COX_SMOKE_POSTGRES_URL` to the service and `COX_SMOKE_REQUIRED=1`, so a missing `uv`, Postgres or docker
+  fails the job instead of skipping it.
 - **Lane checks.** `.agent-checks` runs `pytest -q -rs smoke` after the component suites. A lane host with docker
   runs it against its own container. A host with no docker on PATH skips it and prints the reason. A host whose
   `docker` is on PATH but whose daemon does not answer fails, because that is a host fault a skip would hide. Set
@@ -91,42 +135,35 @@ code, the output, the files, the git refs and the store rows. It does not import
 patch anything. When a test needs a fact from the code, such as an enum, it asks the installed interpreter through
 `sandbox.python_json`, so the fact comes from the same install the commands run.
 
-## Design: a sandbox forge
+## The sandbox forge, and what it leaves to GitHub
 
-This part is not built yet. H10 needs the smoke suite to cover the forge calls (`gh pr create`, checks, merge) as well
-as git and the store. Today they are covered only by stubbed runners. `cox` has three forges, chosen per repository
-by its `origin` (`forge_auto`): `forge_github` shells out to `gh`, `forge_forgejo` calls Forgejo's REST API, and
-`forge_local` uses git alone.
+`cox` has three forges, chosen per repository by its `origin` (`forge_auto`): `forge_github` shells out to `gh`,
+`forge_forgejo` calls Forgejo's REST API, and `forge_local` uses git alone. Three ways to test the forge calls were
+weighed.
 
-**Option A: a Forgejo container.** Start `forgejo` beside the Postgres container, create a user, a token and a
-repository through its API, and push to it over HTTP.
+- **A, a Forgejo container (built).** A real server with real pull request, status and merge behaviour. It runs
+  offline, is hermetic, and starts as cheaply as Postgres does. It drives `forge_forgejo` end to end. It cannot prove
+  the `gh` argv or the JSON `cox` parses from `gh`: Forgejo serves neither GitHub's REST v3 nor its GraphQL, and its
+  merge and check semantics differ from GitHub's in detail.
+- **B, a recorded HTTP replay (rejected).** It would run the real `gh` binary, but a replay returns what GitHub said
+  on the day of the recording, so it cannot notice that GitHub or `gh` changed, which is the drift a contract test
+  exists to catch. Recordings carry tokens to scrub, each new call needs a new recording, and `gh` would need a
+  certificate it trusts for the replay host.
+- **C, a sandbox repository on GitHub (designed, not built).** The only option that proves the `gh` boundary against
+  the real service. It needs the network and a secret, it is slow and rate limited, and fork pull requests cannot run
+  it.
 
-- For: a real server with real pull request, status and merge behaviour. It runs offline, it is hermetic, and it is
-  cheap to start, the same way Postgres is. It drives `forge_forgejo` end to end with no new code in `cox`.
-- Against: Forgejo's API is not GitHub's. `gh` speaks GitHub's REST v3 and GraphQL, and Forgejo serves neither.
-  The `gh` argv and the JSON `cox` parses from it stay unproven. Forgejo's merge and check semantics also differ in
-  detail from GitHub's.
+A forge-neutral flow is tested once, through Forgejo. What is specific to `gh` is argv building and output parsing,
+which sit in pure functions that unit tests cover. **C** covers the rest, as follows, when it is built:
 
-**Option B: a recorded HTTP replay.** Record `gh`'s traffic against github.com once, then serve the recordings to
-`gh` from a local server (`GH_HOST` pointed at it).
-
-- For: it exercises the real `gh` binary and the argv and JSON `cox` uses with it.
-- Against: a replay is a stub with extra steps. It returns what GitHub said on the day of the recording. It cannot
-  notice that GitHub or `gh` changed, which is the drift a contract test exists to catch. Recordings carry tokens and
-  repository names that must be scrubbed. Every new call needs a new recording against a live repository. `gh`
-  talks HTTPS to an enterprise host, so the replay server also needs a certificate that `gh` trusts.
-
-**Option C: a dedicated sandbox repository on GitHub.** Run the `gh` contract tests against a throwaway repository
-with a scoped token.
-
-- For: the only option that proves the `gh` boundary against the real service.
-- Against: it needs the network and a secret, it is slow and rate limited, and fork pull requests cannot run it.
-
-**Recommendation.** Use **A** as the smoke suite's sandbox forge. It is real, hermetic and fits the docker pattern
-this suite already uses, so the land, merge and check-wait flows get end-to-end coverage through `forge_forgejo` in
-every CI run and lane check. Cover the `gh`-only boundary with **C**: a handful of contract tests on a schedule and
-before a release cut, not on every pull request. Do not build B. It would cost as much to keep up as C, and it would
-prove less.
-
-A forge-neutral flow should be tested once, through Forgejo. Only argv building and output parsing are specific to
-`gh`, and those already sit in pure functions that unit tests cover.
+- A throwaway repository the project owns, with a fine-grained token scoped to it alone (contents, pull requests,
+  statuses, actions read), held as a repository secret.
+- A workflow on a weekly schedule, on `workflow_dispatch`, and as a step of the release cut. Never on pull requests:
+  a fork cannot read the secret, and a forge outage must not block a land.
+- Tests marked `github`, skipped without the secret, each one an entry point as the forge tests here are: a land
+  through `forge_github` (`gh pr create`, `gh pr checks`, `gh pr merge --squash --delete-branch`), `merge_state` and
+  `update_branch` on a pull request behind its base, and `cox upgrade` on an edge machine whose checkout comes from
+  the sandbox repository, which runs `gh run list` (`forge_github.ci_runs_argv` and `parse_green_shas`) against real
+  workflow runs.
+- The test repository is reset to one commit on `main` at the start of each run, and every branch and pull request a
+  run creates carries the run id, so a killed run's leftovers are found and closed by the next.

@@ -9,14 +9,14 @@ from __future__ import annotations
 import os
 import re
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
-from agent_tools import bounded_run, land
+from agent_tools import bounded_run, forge_github, land
 from agent_tools.forge import ForgeError
-from agent_tools.forge_github import _update_local_default, push
+from agent_tools.forge_github import _update_local_default
 from agent_tools.forgejo_api import (
     TOKEN_ENV_KEY,
     URL_KEY,
@@ -26,7 +26,7 @@ from agent_tools.forgejo_api import (
     request,
 )
 
-__all__ = ["find_open_prs", "merge", "merge_state", "open_pr", "push", "update_branch", "wait_checks"]
+__all__ = ["find_open_prs", "green_commits", "merge", "merge_state", "open_pr", "push", "update_branch", "wait_checks"]
 
 DEFAULT_TOKEN_ENV = "FORGEJO_TOKEN"
 # Where an ssh origin finds its API address: the origin names a host, not an http(s) server.
@@ -40,6 +40,8 @@ DRAFT_PREFIX = "WIP: "
 PAGE_SIZE = 50
 # A guard on the page loop: a server that ignores `page` would otherwise repeat page one forever.
 MAX_PAGES = 20
+# How long a push waits for the server to show the pushed branch, and how often it asks.
+PUSH_SETTLE_S, PUSH_POLL_S = 30.0, 0.25
 
 
 @dataclass(frozen=True)
@@ -134,8 +136,9 @@ def parse_checks(body: object) -> tuple[int, str]:
 
 
 def _context_names(statuses: list[dict], states: tuple[str, ...]) -> str:
-    """Contexts of the statuses in `states`; `combined status` when none is, as when the server's rollup disagrees with its rows."""
-    return ", ".join(s.get("context") or "status" for s in statuses if s.get("state") in states) or "combined status"
+    """Contexts of the statuses in `states`, by each row's `status` (only the rollup says `state`); `combined status` when
+    none is, as when the server's rollup disagrees with its rows."""
+    return ", ".join(s.get("context") or "status" for s in statuses if s.get("status") in states) or "combined status"
 
 
 def parse_merge_state(body: object) -> str:
@@ -161,6 +164,13 @@ def parse_merge_response(status: int, body: object) -> tuple[bool, str]:
 def parse_delete_response(status: int, body: object) -> tuple[bool, str]:
     """`(True, "deleted")` on 200 or 204, else `(False, Forgejo's message)`."""
     return (True, "deleted") if status in (200, 204) else (False, f"branch not deleted: {_message(status, body)}")
+
+
+def parse_branch_tip(status: int, body: object) -> str | None:
+    """The commit a `GET /branches/{branch}` answer names; None for a branch the server does not show (404) yet."""
+    commit = body.get("commit") if status == 200 and isinstance(body, dict) else None
+    sha = commit.get("id") if isinstance(commit, dict) else None
+    return sha if isinstance(sha, str) and sha else None
 
 
 def _call(target: Target, env: Mapping[str, str], method: str, tail: str, body: object | None = None) -> tuple[int, object | None]:
@@ -243,6 +253,48 @@ def _target(repo: Path | str, env: Mapping[str, str]) -> Target:
         return Target(read_settings({URL_KEY: base, TOKEN_ENV_KEY: DEFAULT_TOKEN_ENV}), owner, name)
     except ForgejoError as exc:
         raise ForgeError(str(exc)) from exc
+
+
+def push(repo: Path, branch: str, expected_tip: str | None = None) -> tuple[bool, str]:
+    """`git push`, then wait until the server shows `branch` at the pushed commit. Forgejo records a pushed branch from
+    a queue after the push returns, and until it has, a pull request from that branch is refused with "The target
+    couldn't be found". Found by the smoke suite against a real Forgejo; a fake server answered at once."""
+    ok, detail = forge_github.push(repo, branch, expected_tip)
+    if not ok:
+        return ok, detail
+    try:
+        target, sha = _target(repo, os.environ), _git(repo, "rev-parse", f"refs/heads/{branch}")
+    except ForgeError as exc:
+        return False, f"pushed {branch}, but cannot ask the server for it: {exc}"
+    deadline, seen = time.monotonic() + PUSH_SETTLE_S, None
+    while True:
+        try:
+            seen = parse_branch_tip(*_call(target, os.environ, "GET", f"/branches/{quote(branch, safe='')}"))
+        except ForgeError as exc:
+            seen = f"unreadable ({exc})"
+        if seen == sha:
+            return True, detail
+        if time.monotonic() >= deadline:
+            return False, f"pushed {branch} at {sha[:12]}, but the server showed {seen or 'no such branch'} after {PUSH_SETTLE_S:.0f}s"
+        time.sleep(PUSH_POLL_S)
+
+
+def first_green(candidates: Sequence[str], read: Callable[[str], tuple[int, str]]) -> tuple[str, ...]:
+    """The first of `candidates` (newest first) whose checks `read` passes (`parse_checks` code 0), as a one-commit
+    tuple, else (). Stops at that commit, so a long history costs one read per commit newer than the green one."""
+    return next(((sha,) for sha in candidates if read(sha)[0] == 0), ())
+
+
+def green_commits(repo: Path, candidates: Sequence[str]) -> tuple[str, ...] | str:
+    """What the edge upgrade asks of a checkout whose origin is on Forgejo: the newest of `candidates` whose combined
+    commit status is success, as `first_green` gives it; or why the statuses could not be read. A commit with no
+    status has not passed. Forgejo Actions and any other CI report through commit statuses, so this needs no
+    workflow name, where `forge_github.ci_runs_argv` asks for one workflow's runs."""
+    try:
+        target = _target(repo, os.environ)
+        return first_green(candidates, lambda sha: read_checks(target, os.environ, sha))
+    except ForgeError as exc:
+        return str(exc)
 
 
 def find_open_prs(repo: Path, branch: str) -> list[int] | str:

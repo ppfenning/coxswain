@@ -13,14 +13,18 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
 import tomllib
+import urllib.error
+import urllib.request
 import uuid
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 
@@ -29,6 +33,8 @@ from smoke import plan
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEM_PATH = "/usr/local/bin:/usr/bin:/bin"
 READY_TIMEOUT_S = 120
+# Every command the fixtures run is bounded: a hung git, docker or uv fails the test that waited on it.
+COMMAND_TIMEOUT_S = 600
 # This session's id, on the label of the container it starts: `docker ps --filter label=coxswain-smoke.session=<id>`
 # finds it. Printed in the report header. The suite runs serial, so a run is one session.
 SESSION = uuid.uuid4().hex[:12]
@@ -39,7 +45,7 @@ def pytest_report_header() -> str:
 
 
 def _run(argv: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(argv, capture_output=True, text=True, **kwargs)
+    return subprocess.run(argv, capture_output=True, text=True, **{"timeout": COMMAND_TIMEOUT_S, **kwargs})
 
 
 def _must(argv: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
@@ -284,3 +290,281 @@ def repo(sandbox: Sandbox, tmp_path: Path) -> Repo:
     # A clone of an empty origin has no origin/HEAD; a clone of a real repository does, and `cox runs recover` reads it.
     sandbox.git(path, "remote", "set-head", "origin", "main")
     return Repo(path=path, origin=origin)
+
+
+# --- the sandbox forge ---------------------------------------------------------------------------------------------
+
+API_TIMEOUT_S = 15
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line("markers", f"{plan.FORGE_MARK}: needs the sandbox forge, a Forgejo container (docs/smoke.md)")
+
+
+def _free_port() -> int:
+    """A loopback port nothing listens on now. Forgejo's ROOT_URL must name its published port, so the port is chosen
+    before the container starts; a process that takes it in between fails the start, loudly."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+@dataclass(frozen=True)
+class Forge:
+    """The session's Forgejo: its address, its one admin user and that user's token."""
+
+    base_url: str
+    user: str
+    token: str = field(repr=False)
+
+    def api(self, method: str, path: str, body: object | None = None, *, raw: bool = False) -> tuple[int, object | None]:
+        """One REST call, as `(status, json)`, or `(status, text)` when `raw`; an HTTP error status is a response,
+        not an exception."""
+        data = None if body is None else json.dumps(body).encode("utf-8")
+        headers = {"Authorization": f"token {self.token}", "Accept": "application/json",
+                   **({"Content-Type": "application/json"} if data is not None else {})}
+        request = urllib.request.Request(f"{self.base_url}/api/v1{path}", data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(request, timeout=API_TIMEOUT_S) as response:
+                status, reply = response.status, response.read()
+        except urllib.error.HTTPError as exc:
+            with exc:
+                status, reply = exc.code, exc.read()
+        if raw:
+            return status, reply.decode("utf-8", errors="replace")
+        return status, (json.loads(reply) if reply else None)
+
+    def must(self, method: str, path: str, body: object | None = None) -> object | None:
+        status, data = self.api(method, path, body)
+        if not 200 <= status < 300:
+            raise RuntimeError(f"{method} {path} answered {status}: {data}")
+        return data
+
+    @property
+    def env(self) -> dict[str, str]:
+        return plan.forge_env(self.base_url, self.token)
+
+
+def _forge_ready(base_url: str) -> None:
+    deadline = time.monotonic() + READY_TIMEOUT_S
+    while True:
+        try:
+            with urllib.request.urlopen(f"{base_url}/api/healthz", timeout=5) as response:
+                if response.status == 200:
+                    return
+        except OSError:  # URLError and a refused or reset connection, while the server starts
+            pass
+        if time.monotonic() > deadline:
+            raise RuntimeError(f"Forgejo at {base_url} was not ready after {READY_TIMEOUT_S}s")
+        time.sleep(0.25)
+
+
+@pytest.fixture(scope="session")
+def forge() -> Iterator[Forge]:
+    """A Forgejo container on a loopback port, with one admin user and a token, removed at the end of the session."""
+    docker = shutil.which("docker")
+    broken_ok = plan.is_required(os.environ.get(plan.BROKEN_DOCKER_OK_ENV))
+    decision = plan.forge_source(docker, _docker_ok(docker), required=_required(), broken_docker_ok=broken_ok)
+    if isinstance(decision, plan.Skip | plan.Fail):
+        _unavailable(decision)
+    _reap_stale()
+    port = _free_port()
+    container = _must(plan.forgejo_run_argv(SESSION, int(time.time()), port)).stdout.strip()
+    try:  # from the moment the container exists, every way out of this fixture removes it
+        base_url = plan.forgejo_base_url(port)
+        _forge_ready(base_url)
+        _must(plan.forgejo_user_argv(container, uuid.uuid4().hex))
+        token = plan.parse_token(_must(plan.forgejo_token_argv(container, f"smoke-{SESSION}")).stdout)
+        yield Forge(base_url=base_url, user=plan.FORGEJO_USER, token=token)
+    finally:
+        _run(plan.docker_remove_argv(container))
+
+
+@dataclass(frozen=True)
+class ForgeRepo:
+    """A repository on the sandbox forge, and its clone at `~/src/app` in the sandbox."""
+
+    forge: Forge
+    owner: str
+    name: str
+    path: Path
+
+    def api(self, method: str, tail: str = "", body: object | None = None) -> object | None:
+        return self.forge.must(method, f"/repos/{self.owner}/{self.name}{tail}", body)
+
+    def pull(self, number: int) -> dict:
+        """Pull request `number`: state, merged, head branch and commit, base branch."""
+        return plan.pull_summary(self.api("GET", f"/pulls/{number}"))
+
+    def report(self, sha: str, state: str, context: str = "ci") -> None:
+        """Report a commit status, as a CI job would."""
+        self.api("POST", f"/statuses/{sha}", plan.commit_status_body(state, context))
+
+    def branch_tip(self, branch: str) -> str | None:
+        """The commit `branch` points at on the forge, or None when the forge has no such branch."""
+        status, body = self.forge.api("GET", f"/repos/{self.owner}/{self.name}/branches/{quote(branch, safe='')}")
+        return plan.branch_tip(status, body)
+
+    def file_text(self, ref: str, path: str) -> str | None:
+        """`path` at `ref` on the forge, or None when it is not there."""
+        status, body = self.forge.api("GET", f"/repos/{self.owner}/{self.name}/raw/{quote(path)}?ref={quote(ref, safe='')}", raw=True)
+        return body if status == 200 and isinstance(body, str) else None
+
+
+@pytest.fixture
+def forge_sandbox(sandbox: Sandbox, forge: Forge) -> Sandbox:
+    """The sandbox with the forge's address and token in its environment and `forge: auto` in its profile, so `cox`
+    lands a repository whose origin is on the forge through `forge_forgejo`, as a person's machine would."""
+    config = sandbox.home / ".config" / "agent-tools"
+    (config / "profile.yaml").write_text(
+        plan.routing_profile_text(team="smoke", workspace=str(sandbox.workspace), harness_dir=str(sandbox.install.root),
+                                  provider_profile=str(config / "provider.yaml"), extra={"forge": "auto"}),
+        encoding="utf-8",
+    )
+    return replace(sandbox, env={**sandbox.env, **forge.env})
+
+
+def _git(env: dict[str, str], repo: Path, *args: str) -> str:
+    return _must(["git", "-C", str(repo), *args], env=env).stdout.strip()
+
+
+def _publish(forge: Forge, env: dict[str, str], name: str, path: Path) -> None:
+    """Create repository `name` on the forge, push main of the repository at `path` to it, and wait until the forge
+    shows it: Forgejo records a pushed branch from a queue after the push returns."""
+    forge.must("POST", "/user/repos", {"name": name, "default_branch": "main", "private": False})
+    _git(env, path, "remote", "add", "origin", plan.forge_remote_url(forge.base_url, forge.user, name, forge.token))
+    _git(env, path, "push", "--quiet", "--set-upstream", "origin", "main")
+    _git(env, path, "remote", "set-head", "origin", "main")
+    sha, tail = _git(env, path, "rev-parse", "main"), f"/repos/{forge.user}/{name}/branches/main"
+    deadline = time.monotonic() + READY_TIMEOUT_S
+    while plan.branch_tip(*forge.api("GET", tail)) != sha:
+        if time.monotonic() > deadline:
+            raise RuntimeError(f"the forge did not show main of {name} at {sha[:12]} after {READY_TIMEOUT_S}s")
+        time.sleep(0.1)
+
+
+def _forge_clone(sandbox: Sandbox, forge: Forge, name: str, path: Path) -> None:
+    """Create repository `name` on the forge and push a first commit on main to it from a new clone at `path`."""
+    _must(["git", "init", "--quiet", str(path)], env=sandbox.env)
+    (path / "README.md").write_text("app\n", encoding="utf-8")
+    _git(sandbox.env, path, "add", "README.md")
+    _git(sandbox.env, path, "commit", "--quiet", "-m", "init")
+    _publish(forge, sandbox.env, name, path)
+
+
+@pytest.fixture
+def forge_repo(forge_sandbox: Sandbox, forge: Forge, request: pytest.FixtureRequest) -> ForgeRepo:
+    """A new repository on the forge with one commit on main, cloned at `~/src/app` with the forge as its origin."""
+    name = plan.forge_repo_name(request.node.nodeid)
+    path = forge_sandbox.home / "src" / "app"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _forge_clone(forge_sandbox, forge, name, path)
+    return ForgeRepo(forge=forge, owner=forge.user, name=name, path=path)
+
+
+# --- an edge machine -----------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class EdgeOrigin:
+    """This tree on the forge at two commits of main, both reported green: `base`, then `newer` on top of it."""
+
+    name: str
+    base: str
+    newer: str
+
+
+def _copy_tree(target: Path) -> None:
+    """This tree's files, as a checkout of this change would hold them, copied into `target`."""
+    listing = _must(["git", "-C", str(ROOT), "ls-files", "-z", "--cached", "--others", "--exclude-standard"]).stdout
+    for name in plan.tree_files(listing):
+        source, dest = ROOT / name, target / name
+        if not source.is_symlink() and not source.is_file():
+            continue  # deleted in the working tree, or a submodule
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, dest, follow_symlinks=False)
+
+
+@pytest.fixture(scope="module")
+def edge_origin(forge: Forge, tmp_path_factory: pytest.TempPathFactory) -> EdgeOrigin:
+    """A coxswain repository on the forge: this tree as one commit, and one commit more that changes one file. CI is
+    reported green on both, through commit statuses, as Forgejo Actions would."""
+    work = tmp_path_factory.mktemp("edge-origin")
+    git_bin = shutil.which("git")
+    if git_bin is None:
+        _unavailable(plan.unavailable("no git on PATH", required=_required()))
+    env = _clean_env(work / "home", [str(Path(git_bin).parent)])
+    (work / "home" / ".gitconfig").write_text(plan.gitconfig_text(), encoding="utf-8")
+    tree = work / "coxswain"
+    _copy_tree(tree)
+    _must(["git", "init", "--quiet", str(tree)], env=env)
+    _git(env, tree, "add", "--all")
+    _git(env, tree, "commit", "--quiet", "-m", "smoke: this tree")
+    base = _git(env, tree, "rev-parse", "HEAD")
+    (tree / "smoke-edge.txt").write_text("one commit newer\n", encoding="utf-8")
+    _git(env, tree, "add", "smoke-edge.txt")
+    _git(env, tree, "commit", "--quiet", "-m", "smoke: one commit newer")
+    newer = _git(env, tree, "rev-parse", "HEAD")
+    name = plan.forge_repo_name(f"edge-{SESSION}")
+    _publish(forge, env, name, tree)
+    for sha in (base, newer):
+        forge.must("POST", f"/repos/{forge.user}/{name}/statuses/{sha}", plan.commit_status_body("success", "ci"))
+    return EdgeOrigin(name=name, base=base, newer=newer)
+
+
+@pytest.fixture(scope="session")
+def uv_shared() -> dict[str, str]:
+    """The caller's uv cache and interpreter folders, which a sandboxed uv reads through (`plan.uv_env`)."""
+    uv = shutil.which("uv")
+    if uv is None:
+        _unavailable(plan.unavailable("no uv on PATH", required=_required()))
+    return plan.uv_env(_must([uv, "cache", "dir"]).stdout.strip(), _must([uv, "python", "dir"]).stdout.strip())
+
+
+@dataclass(frozen=True)
+class EdgeMachine:
+    """A machine on the edge channel, installed the way `cox setup install` lays a home out: the checkout at
+    `<data>/coxswain/installs/coxswain`, cloned from the forge and at `origin.base`, its venv synced, and `cox` a uv
+    tool editable from it, first on PATH. `cox upgrade` here is that checkout's own `cox`."""
+
+    sandbox: Sandbox
+    checkout: Path
+    origin: EdgeOrigin
+
+    @property
+    def record(self) -> Path:
+        return self.checkout.parent / "edge-upgrade.json"
+
+    def cox(self, *args: str, timeout: float = 900) -> subprocess.CompletedProcess[str]:
+        return _run([str(self.sandbox.home / ".local" / "bin" / "cox"), *args], env=self.sandbox.env,
+                    cwd=self.sandbox.home, timeout=timeout)
+
+    def head(self) -> str:
+        return _git(self.sandbox.env, self.checkout, "rev-parse", "HEAD")
+
+
+@pytest.fixture
+def edge_machine(forge_sandbox: Sandbox, forge: Forge, edge_origin: EdgeOrigin, uv_shared: dict[str, str]) -> EdgeMachine:
+    home = forge_sandbox.home
+    # The uv tool's bin first, so `cox` is the checkout's own, and uv's folder, since the upgrade runs uv as a machine would
+    uv_bin = str(Path(shutil.which("uv") or "uv").parent)
+    env = {**forge_sandbox.env, **uv_shared, "PATH": f"{home / '.local' / 'bin'}:{forge_sandbox.env['PATH']}:{uv_bin}"}
+    sandbox = replace(forge_sandbox, env=env)
+    checkout = home / ".local" / "share" / "coxswain" / "installs" / "coxswain"
+    checkout.parent.mkdir(parents=True)
+    (sandbox.workspace / "intake").mkdir()  # the doctor's workspace row, which an upgrade requires, wants it
+    origin = plan.forge_remote_url(forge.base_url, forge.user, edge_origin.name, forge.token)
+    _must(["git", "clone", "--quiet", origin, str(checkout)], env=env)
+    _git(env, checkout, "reset", "--quiet", "--hard", edge_origin.base)
+    # What `cox setup install` runs to lay the checkout down, asked of the installed code rather than restated here.
+    sync = sandbox.python_json("import json; from agent_tools import setup_install as s; print(json.dumps(list(s.SYNC_ARGV)))")
+    _must([*sync], env=env, cwd=checkout)
+    _must(["uv", "tool", "install", "--force", "--quiet", "--editable", f"{checkout}[postgres]"], env=env, cwd=home)
+    config = home / ".config" / "agent-tools"
+    (config / "profile.yaml").write_text(
+        plan.routing_profile_text(team="smoke", workspace=str(sandbox.workspace), harness_dir=str(checkout / "src" / "graphs"),
+                                  provider_profile=str(config / "provider.yaml"),
+                                  extra={"forge": "auto", "upgrade_channel": "edge"}),
+        encoding="utf-8",
+    )
+    return EdgeMachine(sandbox=sandbox, checkout=checkout, origin=edge_origin)
