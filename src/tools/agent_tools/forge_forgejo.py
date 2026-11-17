@@ -26,7 +26,7 @@ from agent_tools.forgejo_api import (
     request,
 )
 
-__all__ = ["find_open_prs", "merge", "merge_state", "open_pr", "push", "update_branch", "wait_checks"]
+__all__ = ["find_open_prs", "merge", "merge_state", "open_pr", "poll_checks", "push", "update_branch", "wait_checks"]
 
 DEFAULT_TOKEN_ENV = "FORGEJO_TOKEN"
 # Where an ssh origin finds its API address: the origin names a host, not an http(s) server.
@@ -365,6 +365,17 @@ def update_branch(pr: int, *, repo: Path | str | None = None) -> None:
     status, body = _call(_target(repo, os.environ), os.environ, "POST", f"/pulls/{pr}/update")
     if not 200 <= status < 300:
         raise ForgeError(f"could not update pull request {pr}: {_message(status, body)}")
+
+
+def poll_checks(repo: Path, *, ref: str = "HEAD", may_rerun: bool = True) -> tuple[str, str]:
+    """One read of `ref`'s combined status, no wait: (`green` | `pending` | `failed`, detail). A read that fails is
+    `pending`, for the caller's next pass. Forgejo has no rerun, so `may_rerun` changes nothing."""
+    try:
+        code, output = read_checks(_target(repo, os.environ), os.environ, _git(repo, "rev-parse", ref))
+    except ForgeError as exc:
+        return "pending", f"checks unreadable: {exc}"
+    state = land.check_state(code, output)
+    return state, output or state
 
 
 def wait_checks(repo: Path, timeout_s: float, sleep=time.sleep, now=time.monotonic, *, ref: str = "HEAD") -> tuple[bool, str]:

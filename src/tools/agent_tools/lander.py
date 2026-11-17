@@ -2,8 +2,11 @@
 
 It reads the land queue and performs two kinds of item. A `phase_merge` merges one built phase into its initiative
 branch, locally: that is "phase complete". An `initiative_land` takes a whole initiative to its parent: refresh onto
-the parent, gate checks, push, the ONE pull request, the wait for its checks, the merge, and the bookkeeping. No phase
-ever gets a pull request.
+the parent, gate checks, push, the ONE pull request, its checks (read once per pass, never waited on), the merge, and
+the bookkeeping. No phase ever gets a pull request. A pass works one lane per repository, and first checks each
+landing record against git (`reconcile`).
+
+The decisions are pure functions (`land_step`, `phase_drift`, `lanes` and their helpers), tested on example inputs.
 
 The lander is a script, not an agent. It never resolves a conflict and never edits code: a conflict or a red check is
 recorded on the item and sent back to build as a rectify task. Everything it does can be run again: each step reads
@@ -15,7 +18,7 @@ Every effect goes through `Ports`, so the whole worker runs in tests against a r
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -58,7 +61,6 @@ class Ports:
     # Bring one branch up to origin's copy, forward only: why it must not be moved here (it diverged), else None.
     fetch: Callable[[Path, str], str | None] = lambda *_: None
     log: Callable[[str], None] = print
-    wait_checks_s: float = 1800.0
 
 
 @dataclass(frozen=True)
@@ -69,6 +71,162 @@ class Outcome:
     item: str
     detail: str = ""
     events: tuple[str, ...] = field(default_factory=tuple)
+
+
+# -- the pure core ------------------------------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class LandFacts:
+    """What one land knows once its pull request is open. `checks` is one poll of the forge, `(state, detail)` with
+    state `green`, `pending`, `rerun` or `failed`; None until it has been read."""
+
+    url: str
+    branch: str
+    merged: bool = False  # the forge says the pull request has merged
+    auto: bool = True  # gate `full`: the lander merges it, not a person
+    prepare_only: bool = False  # a batch's first step: stop once the pull request is open
+    stacked_on: str | None = None  # the layer below, while it has not landed
+    has_ci: bool | None = None  # whether the branch carries CI the forge reports on; None until it has been read
+    checks: tuple[str, str] | None = None
+
+
+@dataclass(frozen=True)
+class LandStep:
+    """What a land does next. `action`: finish (it merged), wait (left queued for the next pass), read_ci (ask
+    whether the branch has CI, then decide again), poll (read the checks once, then decide again), merge, or
+    send_back (red checks: an `integrate` task)."""
+
+    action: str
+    detail: str = ""
+    note: str = ""  # an event to report on the way
+
+
+def land_step(facts: LandFacts) -> LandStep:
+    """Pure. The land's next step. Checks are read once per pass and never waited on: pending is `wait`."""
+    if facts.merged:
+        return LandStep("finish")
+    if facts.stacked_on is not None:
+        return LandStep("wait", f"{facts.url} is stacked on {facts.stacked_on}, which has not landed")
+    if not facts.auto:
+        return LandStep("wait", f"{PERSON_GATE_NOTE}: {facts.url}")
+    if facts.prepare_only:
+        return LandStep("wait", f"{PREPARED_NOTE}: {facts.url}")
+    if facts.has_ci is None:
+        return LandStep("read_ci")
+    if not facts.has_ci:
+        # A branch with no CI workflow has nothing the forge could ever report. Its checks are the gate checks
+        # `_open_pr` ran on this branch before the push.
+        return LandStep("merge", note=f"no CI on {facts.branch}: the gate checks run before the pull request opened are its checks")
+    if facts.checks is None:
+        return LandStep("poll")
+    state, detail = facts.checks
+    if state == "green":
+        return LandStep("merge")
+    if state == "pending":
+        return LandStep("wait", f"checks on {facts.url} have not finished: {detail}")
+    if state == "rerun":
+        return LandStep("wait", f"checks on {facts.url} failed and were rerun once: {detail}")
+    return LandStep("send_back", detail)
+
+
+@dataclass(frozen=True)
+class Drift:
+    """One merged phase the initiative branch does not hold. `action`: remerge (its tip is here to merge again) or
+    hold (it cannot be repaired here: a person decides)."""
+
+    phase: str
+    action: str
+    reason: str
+    tip: str = ""
+
+
+def merged_entries(record: Mapping[str, Any]) -> list[tuple[str, str, str]]:
+    """Pure. (phase, tip, merge commit) for each phase the record says is merged, in natural order."""
+    phases = record.get("phases") or {}
+    found = []
+    for phase in sorted(phases, key=lr.natural_key):
+        entry = phases[phase] or {}
+        if entry.get("state") == "merged":
+            found.append((str(phase), str(entry.get("tip") or ""), str(entry.get("merge_sha") or "")))
+    return found
+
+
+def phase_drift(record: Mapping[str, Any], on_branch: Mapping[str, bool], known: Mapping[str, bool]) -> list[Drift]:
+    """Pure. Each merged phase whose tip or merge commit the initiative branch does not hold, and what to do with it.
+
+    `on_branch[sha]` says whether the branch holds a recorded sha; `known[sha]` whether this clone has the commit at
+    all. A phase whose tip is here is merged again (a tip the branch already holds only moves the record). One whose
+    tip is nowhere here, or that recorded no tip, is held with the reason."""
+    branch = str(record.get("branch") or "")
+    drifts = []
+    for phase, tip, merge in merged_entries(record):
+        missing = [sha for sha in (tip, merge) if sha and not on_branch.get(sha, False)]
+        if not missing:
+            continue
+        said = f"phase {phase} is recorded merged at {(merge or tip)[:12]}, but {branch} does not hold {missing[0][:12]}"
+        if not tip:
+            drifts.append(Drift(phase, "hold", f"{said}, and no phase tip is recorded to merge again"))
+        elif on_branch.get(tip, False) or known.get(tip, False):
+            drifts.append(Drift(phase, "remerge", f"{said}; its tip {tip[:12]} is merged again", tip))
+        else:
+            drifts.append(Drift(phase, "hold", f"{said}, and this clone has no copy of its tip {tip[:12]} to merge again"))
+    return drifts
+
+
+def kept_shas(record: Mapping[str, Any], phases: Sequence[str]) -> list[str]:
+    """Pure. The recorded shas a repair must not drop: every one but those of the phases being repaired."""
+    entries = record.get("phases") or {}
+    doubt = {str(sha) for p in phases for sha in ((entries.get(p) or {}).get("tip"), (entries.get(p) or {}).get("merge_sha")) if sha}
+    return [sha for sha in lr.recorded_shas(record) if sha not in doubt]
+
+
+def held_after(held: Mapping[str, Any] | None, reason: str | None, now: str) -> tuple[dict[str, Any] | None, bool]:
+    """Pure. The record's `held` once reconciliation found `reason` (None: the record and the branch agree), and
+    whether that is news to tell: a new hold, a changed reason, or a hold lifted. An unchanged hold is not told twice."""
+    old = str((held or {}).get("reason") or "")
+    if reason is None:
+        return None, bool(old)
+    if reason == old:
+        return dict(held or {}), False
+    return {"reason": reason, "since": now}, True
+
+
+@dataclass(frozen=True)
+class Lane:
+    """One repository's work for a pass: the initiatives to reconcile and the queue items to perform."""
+
+    repo: str
+    initiatives: tuple[str, ...]
+    items: tuple[Mapping[str, Any], ...]
+
+
+def lanes(records: Sequence[Mapping[str, Any]], items: Sequence[Mapping[str, Any]], where: Mapping[str, str]) -> list[Lane]:
+    """Pure. A pass's work split per repository, so one repository's slow checks never hold another's.
+
+    `where[initiative]` is the repository that initiative lands in on this machine; an item of an initiative not in it
+    goes by the repo it names. Lanes come in the order their first record or item does, and keep the queue's order."""
+    order: list[str] = []
+    initiatives: dict[str, list[str]] = {}
+    queued: dict[str, list[Mapping[str, Any]]] = {}
+
+    def lane_of(initiative: str, named: Any) -> str:
+        key = where.get(initiative) or str(named or "")
+        if key not in initiatives:
+            order.append(key)
+            initiatives[key], queued[key] = [], []
+        return key
+
+    for record in records:
+        initiative = str(record["initiative"])
+        initiatives[lane_of(initiative, record.get("repo"))].append(initiative)
+    for item in items:
+        queued[lane_of(str(item["initiative"]), item.get("repo"))].append(item)
+    return [Lane(key, tuple(initiatives[key]), tuple(queued[key])) for key in order]
+
+
+def live(record: Mapping[str, Any]) -> bool:
+    """Pure. A record the lander still works: not landed, and landing as an initiative (not per task, not an epic)."""
+    return record.get("state") != "landed" and record.get("land_at") not in ("task", "epic")
 
 
 def _repo(ports: Ports, record: Mapping[str, Any]) -> Path:
@@ -100,6 +258,8 @@ def merge_phase(ports: Ports, initiative: str, phase: str) -> Outcome:
     record = ls.get_record(ports.conn, initiative)
     if record is None:
         return Outcome("skipped", ident, f"{initiative} has no landing record")
+    if record.get("held"):
+        return Outcome("waiting", ident, held_note(record))
     repo, tasks = _repo(ports, record), ports.tasks(initiative)
     # The phase was built on another host as often as not: its branch, and the initiative's, come from origin first.
     diverged = ports.fetch(repo, ops.phase_branch(initiative, phase))
@@ -219,6 +379,8 @@ def land_initiative(ports: Ports, initiative: str, *, merge: bool = True, refres
     record = ls.get_record(ports.conn, initiative)
     if record is None:
         return close("failed", f"{initiative} has no landing record")
+    if record.get("held"):
+        return close("waiting", held_note(record))
     record, stack_events, below = _restack(ports, record)
     first = _other_land_on_parent(ports, ls.get_item(ports.conn, ident) or {})
     if first is not None:
@@ -248,24 +410,20 @@ def land_initiative(ports: Ports, initiative: str, *, merge: bool = True, refres
     url = str((record.get("pr") or {}).get("url") or "")
     if not merged:
         merged, _ = ports.forge.pr_merged(repo, branch)
-    if not merged and below is not None:
-        # A layer of a stack: its pull request is open against the layer below, and merges only once that has landed.
-        return close("waiting", f"{url} is stacked on {below}, which has not landed", events)
-    if not merged:
-        if not auto:
-            return close("waiting", f"{PERSON_GATE_NOTE}: {url}", events)
-        if not merge:
-            return close("waiting", f"{PREPARED_NOTE}: {url}", events)
-        # A branch with no CI workflow has nothing the forge could ever report, so waiting on it would hold this land,
-        # and every land behind it, for good. Its checks are the gate checks `_open_pr` ran on this branch before the push.
-        if not ports.forge.has_ci(repo, branch):
-            events.append(f"no CI on {branch}: the gate checks run before the pull request opened are its checks")
-        else:
-            green, detail = ports.forge.wait_checks(repo, ports.wait_checks_s, ref=branch)
-            if not green:
-                if "pending" in detail or "timed out" in detail:
-                    return close("waiting", f"checks on {url} have not finished: {detail}", events)
-                return close("failed", f"checks failed on {url}: {detail}", [*events, *_send_back_initiative(ports, record, "checks", detail)])
+    facts = LandFacts(url=url, branch=branch, merged=merged, auto=auto, prepare_only=not merge, stacked_on=below)
+    step = land_step(facts)
+    while step.action in ("read_ci", "poll"):
+        facts = (replace(facts, has_ci=ports.forge.has_ci(repo, branch)) if step.action == "read_ci"
+                 else replace(facts, checks=_poll_checks(ports, repo, initiative, branch)))
+        step = land_step(facts)
+    if step.note:
+        events.append(step.note)
+    if step.action == "wait":
+        return close("waiting", step.detail, events)
+    if step.action == "send_back":
+        return close("failed", f"checks failed on {url}: {step.detail}",
+                     [*events, *_send_back_initiative(ports, record, "checks", step.detail)])
+    if step.action == "merge":
         # Into an epic branch an initiative merges with a merge commit, so the layers above it retarget cleanly; the
         # squash happens once, from the epic branch to its parent.
         ok, detail = ports.forge.merge(repo, {"kind": "merge", "squash": not stacked, "delete_branch": True, "branch": branch,
@@ -275,6 +433,21 @@ def land_initiative(ports: Ports, initiative: str, *, merge: bool = True, refres
         events.append(f"merged {url} into {parent}")
     events += _finish_landed(ports, record, tasks, url)
     return close("done", f"{initiative} landed on {parent}", events)
+
+
+def held_note(record: Mapping[str, Any]) -> str:
+    """Pure. Why a held initiative waits, for its queue item."""
+    return f"{record.get('initiative')} is held: {(record.get('held') or {}).get('reason') or 'its record and its branch disagree'}"
+
+
+def _poll_checks(ports: Ports, repo: Path, initiative: str, branch: str) -> tuple[str, str]:
+    """Read the branch's checks once. A failure is rerun at most once per commit: the record keeps the commit it reran."""
+    head = lg.rev(repo, f"refs/heads/{branch}") or ""
+    current = ls.get_record(ports.conn, initiative) or {}
+    state, detail = ports.forge.poll_checks(repo, ref=branch, may_rerun=current.get("checks_rerun") != head)
+    if state == "rerun" and current:
+        ls.put_record(ports.conn, {**current, "checks_rerun": head, "updated_at": ports.now()})
+    return state, detail
 
 
 def _restack(ports: Ports, record: dict[str, Any]) -> tuple[dict[str, Any], list[str], str | None]:
@@ -519,7 +692,7 @@ def sweep(ports: Ports) -> list[str]:
     events: list[str] = []
     events += land_epics(ports)
     for record in ls.list_records(ports.conn):
-        if record.get("state") == "landed" or record.get("land_at") in ("task", "epic"):
+        if not live(record):
             continue
         initiative = str(record["initiative"])
         tasks = ports.tasks(initiative)
@@ -672,19 +845,95 @@ def perform(ports: Ports, item: Mapping[str, Any]) -> Outcome:
     return land_initiative(ports, str(item["initiative"]))
 
 
-def run_once(ports: Ports, *, phase_cap: int = 2, land_cap: int = 1, land_batch_size: int = 1) -> list[Outcome]:
-    """One pass: sweep, then perform what can be claimed, oldest first, within the two caps.
+# -- reconciliation -----------------------------------------------------------------------------------------------
 
-    Phase merges and initiative lands have separate caps and neither counts against the build cap. An item that is
-    waiting stays queued for the next pass. With `land_batch_size` above 1, lands on one parent that change no file
-    in common are landed together (`land_batch`); the land cap then counts batches."""
+def _drift_here(repo: Path, record: Mapping[str, Any]) -> list[Drift] | None:
+    """The record's merged phases against its branch as this clone has it; None when the branch is not here at all."""
+    ref = lg.branch_ref(repo, str(record["branch"]))
+    if ref is None:
+        return None
+    shas = [sha for _, tip, merge in merged_entries(record) for sha in (tip, merge) if sha]
+    on_branch = {sha: lg.is_ancestor(repo, sha, ref) for sha in shas}
+    known = {sha: on_branch[sha] or lg.rev(repo, sha) is not None for sha in shas}
+    return phase_drift(record, on_branch, known)
+
+
+def reconcile(ports: Ports, initiative: str) -> list[str]:
+    """Check what the landing record says merged against the initiative branch, and act on what disagrees.
+
+    A phase recorded merged whose tip this clone has is merged into the branch again. One that cannot be repaired here
+    holds the initiative, with the reason, and the chair is told once: nothing more merges into it or lands from it
+    until the record and the branch agree again, which lifts the hold on the pass that sees it. When they agree (the
+    common case) this reads local git only; a fetch is made only to look for what is missing."""
+    record = ls.get_record(ports.conn, initiative)
+    if record is None or not live(record) or not merged_entries(record):
+        return []
+    try:
+        repo = _repo(ports, record)
+    except LookupError:
+        return []
+    branch = str(record["branch"])
+    drifts = _drift_here(repo, record)
+    if drifts:
+        # The branch may be ahead on origin, and a tip may still be on origin's copy of its phase branch.
+        diverged = ports.fetch(repo, branch)
+        for drift in drifts:
+            ports.fetch(repo, ops.phase_branch(initiative, drift.phase))
+        if diverged:
+            return [f"reconcile: {initiative}: {diverged}"]
+        drifts = _drift_here(repo, record)
+    if drifts is None:
+        return []  # the branch is on no copy here: there is nothing to judge the record against
+    events, holds = [], [d.reason for d in drifts if d.action == "hold"]
+    kept = kept_shas(record, [d.phase for d in drifts])
+    for drift in (d for d in drifts if d.action == "remerge"):
+        merged = ops.remerge_phase(ports.conn, repo, initiative=initiative, phase=drift.phase, tip=drift.tip, kept=kept,
+                                   worker=ports.worker, now=ports.now())
+        if merged.ok:
+            events.append(f"reconcile: {initiative}: {drift.reason}; {branch} is now at {merged.tip[:12]}")
+        else:
+            holds.append(f"{drift.reason}, but that merge failed: {merged.detail}")
+    current = ls.get_record(ports.conn, initiative) or record
+    held, news = held_after(current.get("held"), "; ".join(holds) or None, ports.now())
+    if news:
+        ls.put_record(ports.conn, {**current, "held": held, "updated_at": ports.now()})
+        if held is None:
+            events.append(f"reconcile: {initiative}: the record and {branch} agree again; the hold is lifted")
+        else:
+            ports.notify("needs_chair", {"initiative": initiative, "reason": f"held: {held['reason']}"})
+            events.append(f"reconcile: {initiative} is held: {held['reason']}")
+    return events
+
+
+# -- the pass -----------------------------------------------------------------------------------------------------
+
+def plan_pass(ports: Ports) -> list[Lane]:
+    """The shared start of a pass: the sweep, the queue alarm, then the pass's work split into one lane per repository."""
     for line in [*sweep(ports), *queue_alarm(ports)]:
         ports.log(line)
-    items = ls.claimable(ls.list_items(ports.conn), ports.now())
+    records = [r for r in ls.list_records(ports.conn) if live(r)]
+    where: dict[str, str] = {}
+    for record in records:
+        try:
+            where[str(record["initiative"])] = str(_repo(ports, record))
+        except LookupError:
+            continue
+    return lanes(records, ls.claimable(ls.list_items(ports.conn), ports.now()), where)
+
+
+def run_lane(ports: Ports, lane: Lane, *, phase_cap: int = 2, land_cap: int = 1, land_batch_size: int = 1) -> list[Outcome]:
+    """One repository's share of a pass: reconcile its initiatives, then perform its items, oldest first, within the
+    two caps. The caps count per repository, so no repository waits on another's turn.
+
+    An item that is waiting stays queued for the next pass. With `land_batch_size` above 1, lands on one parent that
+    change no file in common are landed together (`land_batch`); the land cap then counts batches."""
+    for initiative in lane.initiatives:
+        for line in reconcile(ports, initiative):
+            ports.log(line)
+    mine = set(lane.initiatives) | {str(i["initiative"]) for i in lane.items}
     outcomes: list[Outcome] = []
 
-    def do(item: Mapping[str, Any]) -> Outcome:
-        outcome = perform(ports, item)
+    def report(outcome: Outcome) -> Outcome:
         outcomes.append(outcome)
         for line in outcome.events or ((f"{outcome.item}: {outcome.status}: {outcome.detail}",) if outcome.detail else ()):
             ports.log(line)
@@ -694,24 +943,34 @@ def run_once(ports: Ports, *, phase_cap: int = 2, land_cap: int = 1, land_batch_
     # does not use the cap, as a waiting land does not: the oldest items would otherwise sit at the head of the queue
     # every pass and no later phase would ever be reached.
     worked = 0
-    for item in [i for i in items if i["kind"] == ls.PHASE_MERGE]:
+    for item in [i for i in lane.items if i["kind"] == ls.PHASE_MERGE]:
         if worked >= max(phase_cap, 0):
             break
-        if do(item).status != "waiting":
+        if report(perform(ports, item)).status != "waiting":
             worked += 1
     # Read again: a phase merged just now may have assembled its initiative, which then lands in this same pass.
-    lands = [i for i in ls.claimable(ls.list_items(ports.conn), ports.now()) if i["kind"] == ls.INITIATIVE_LAND]
+    lands = [i for i in ls.claimable(ls.list_items(ports.conn), ports.now())
+             if i["kind"] == ls.INITIATIVE_LAND and str(i["initiative"]) in mine]
     worked = 0
     for batch in disjoint_batches(lands, _land_paths(ports, lands) if land_batch_size > 1 else {}, max(land_batch_size, 1)):
         if worked >= land_cap:
             break
         results = land_batch(ports, batch) if len(batch) > 1 else [perform(ports, batch[0])]
         for outcome in results:
-            outcomes.append(outcome)
-            for line in outcome.events or ((f"{outcome.item}: {outcome.status}: {outcome.detail}",) if outcome.detail else ()):
-                ports.log(line)
+            report(outcome)
         # A land left waiting (a pull request a person has yet to merge, checks still running, another land ahead
         # of it) did no work, so it does not use the cap: the next one gets its turn. A batch uses the cap once.
         if any(o.status != "waiting" for o in results):
             worked += 1
     return outcomes
+
+
+def run_once(ports: Ports, *, phase_cap: int = 2, land_cap: int = 1, land_batch_size: int = 1,
+             run_lanes: Callable[[Sequence[Lane]], list[Outcome]] | None = None) -> list[Outcome]:
+    """One pass: plan it, then run its lanes. `run_lanes` runs them side by side (`cox lander` gives each repository
+    a thread of its own); without it they run here, one after another."""
+    planned = plan_pass(ports)
+    if run_lanes is not None:
+        return run_lanes(planned)
+    caps = {"phase_cap": phase_cap, "land_cap": land_cap, "land_batch_size": land_batch_size}
+    return [outcome for lane in planned for outcome in run_lane(ports, lane, **caps)]

@@ -44,7 +44,7 @@ class Forge:
     def __init__(self) -> None:
         self.calls: list[tuple] = []
         self.prs: dict[str, dict] = {}
-        self.checks: tuple[bool, str] = (True, "all checks passed")
+        self.checks: tuple[str, str] = ("green", "all checks passed")
         self.ci = True  # whether the branch carries any CI workflow the forge could report
 
     def has_ci(self, repo, ref):
@@ -68,8 +68,8 @@ class Forge:
     def pr_merged(self, repo, branch):
         return bool(self.prs.get(branch, {}).get("state") == "merged"), ""
 
-    def wait_checks(self, repo, timeout, ref):
-        self.calls.append(("wait_checks", ref))
+    def poll_checks(self, repo, *, ref, may_rerun=True):
+        self.calls.append(("poll_checks", ref))
         return self.checks
 
     def merge(self, repo, step):
@@ -258,7 +258,7 @@ def test_behind_a_person_gate_the_pull_request_opens_and_waits_and_nothing_merge
     world.build("i", "p1")
     outcomes = lander.run_once(world.ports)
     assert outcomes[-1].status == "waiting" and lander.PERSON_GATE_NOTE in outcomes[-1].detail
-    assert "merge" not in world.forge.kinds() and "wait_checks" not in world.forge.kinds()
+    assert "merge" not in world.forge.kinds() and "poll_checks" not in world.forge.kinds()
     assert world.record("i")["state"] == "pr_open" and world.rows["i"][0]["state"] == "approved"
     lander.run_once(world.ports)
     assert world.forge.kinds().count("pr_create") == 1 and world.forge.kinds().count("push") == 1
@@ -271,10 +271,10 @@ def test_behind_a_person_gate_the_pull_request_opens_and_waits_and_nothing_merge
 def test_checks_still_running_leave_the_land_queued_and_red_checks_send_it_back(world: World) -> None:
     world.start("i", [task("a", "p1")])
     world.build("i", "p1")
-    world.forge.checks = (False, "pending: test")
+    world.forge.checks = ("pending", "checks pending: test")
     assert lander.run_once(world.ports)[-1].status == "waiting"
     assert ls.get_item(world.conn, "initiative_land:i")["state"] == "queued"
-    world.forge.checks = (False, "failing checks: test")
+    world.forge.checks = ("failed", "failing checks: test")
     out = lander.run_once(world.ports)[-1]
     assert out.status == "failed" and "checks failed" in out.detail
     assert world.rectified[-1][1] == lr.INTEGRATE_PHASE
@@ -286,9 +286,9 @@ def test_a_repo_with_no_ci_merges_on_the_gate_checks_without_waiting_for_the_for
     world.start("i", [task("a", "p1")])
     world.build("i", "p1")
     world.forge.ci = False
-    world.forge.checks = (False, "no checks reported")  # what a forge with nothing to run says, for ever
+    world.forge.checks = ("pending", "no checks reported")  # what a forge with nothing to run says, for ever
     out = lander.run_once(world.ports)[-1]
-    assert out.status == "done" and "wait_checks" not in world.forge.kinds()
+    assert out.status == "done" and "poll_checks" not in world.forge.kinds()
     assert any("no CI" in event for event in out.events)
     assert world.forge.prs["init/i"]["state"] == "merged" and world.record("i")["state"] == "landed"
 
@@ -296,9 +296,9 @@ def test_a_repo_with_no_ci_merges_on_the_gate_checks_without_waiting_for_the_for
 def test_a_repo_with_ci_still_waits_for_its_checks(world: World) -> None:
     world.start("i", [task("a", "p1")])
     world.build("i", "p1")
-    world.forge.checks = (False, "pending: test")
+    world.forge.checks = ("pending", "checks pending: test")
     assert lander.run_once(world.ports)[-1].status == "waiting"
-    assert "wait_checks" in world.forge.kinds() and "merge" not in world.forge.kinds()
+    assert "poll_checks" in world.forge.kinds() and "merge" not in world.forge.kinds()
 
 
 def test_two_phases_editing_one_line_a_rectify_task_is_filed_built_and_the_phase_merges(world: World) -> None:

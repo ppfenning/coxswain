@@ -593,6 +593,39 @@ def merge_pr(repo: Path, number: int) -> tuple[bool, str]:
     return merge_verdict(code, text, None if pr is None else {"state": _PR_STATES.get(pr["state"], "unknown")})
 
 
+def poll_checks(repo: Path, *, ref: str = "HEAD", may_rerun: bool = True) -> tuple[str, str]:
+    """One read of `ref`'s checks, no wait: `(state, detail)` with state `green`, `pending`, `rerun` or `failed`.
+
+    A read that fails is `pending`: the caller reads again on its next pass. A failure the forge can rerun is rerun
+    once when `may_rerun` (the caller has not rerun this commit before) and answers `rerun`. A rerun gh refuses, as it
+    does while a sibling job still runs, is `pending`, and is tried again on the next pass."""
+    ok, value = _read_checks(repo, ref)
+    if not ok:
+        return "pending", f"checks unreadable: {value}"
+    required = _read_required(repo, ref)
+    suites: tuple[dict, ...] = ()
+    if land.needs_suites(*value, required):
+        try:
+            head = _run(["git", "-C", str(repo), "rev-parse", ref], timeout=READ_TIMEOUT_S)
+            suites = read_check_suites(repo, head.stdout.strip()) if head.returncode == 0 else ()
+        except ForgeError:
+            suites = ()
+    code, output = land.check_poll_result(*value, required, suites=suites)
+    state = land.check_state(code, output)
+    if state != "failed" or not may_rerun or output.startswith(land.WORKFLOW_ISSUE):
+        return state, output or state
+    ids = rerun_run_ids(value[0])
+    if not ids:
+        return state, output
+    scope = read_rerun_scope(repo, ref, ids)  # unknown: an unreadable read falls back to the one rerun
+    if scope is not None and not land.rerun_scope(*scope):
+        return state, f"{output}; not rerun, the change touches the failing suites: {', '.join(scope[0])}"
+    refused = [i for i in ids if _gh_text(["gh", "run", "rerun", i, "--failed"], repo, timeout=WRITE_TIMEOUT_S) is None]
+    if refused:
+        return "pending", f"{output}; rerun refused for runs {', '.join(refused)}, tried again next pass"
+    return "rerun", f"{output}; failed runs rerun once: {', '.join(ids)}"
+
+
 def wait_checks(repo: Path, timeout_s: float, sleep=time.sleep, now=time.monotonic, *, ref: str = "HEAD") -> tuple[bool, str]:
     required = _read_required(repo, ref)
     started = now()

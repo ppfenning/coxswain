@@ -1202,6 +1202,13 @@ def wait_decision(returncode: int, output: str, elapsed_s: float, timeout_s: flo
     return "failed"
 
 
+def check_state(returncode: int, output: str) -> str:
+    """Pure. One poll's `(returncode, output)` as a state a caller that does not wait reads: `green`, `pending` or
+    `failed`. No check reported yet is `pending`: the caller polls again on its next pass instead of sleeping here."""
+    decision = wait_decision(returncode, output, 0.0, float("inf"))
+    return "pending" if decision == "retry" else decision
+
+
 def merge_expects_check(output: str) -> bool:
     """Whether a refused merge's output is GitHub's `Required status check "<name>" is expected`; the check name is never matched."""
     return "Required status check" in output and "is expected" in output

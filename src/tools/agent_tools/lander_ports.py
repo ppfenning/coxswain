@@ -21,6 +21,7 @@ from typing import Any
 from agent_tools import courier, forge, lander, repo_path, route, run_store, work_state
 from agent_tools.store_url import read_provider_profile
 
+WAIT_CHECKS_S = 1800.0  # the bound on a wait for a forge that cannot poll its checks once
 GATES = ("level", "ticket")  # check-gate names (harness.check_gate), not `land_at` values
 
 
@@ -110,6 +111,14 @@ def pr_merged_verdict(listed: Sequence[Mapping[str, Any]] | str) -> tuple[bool, 
     return (True, f"#{merged[0]['number']}") if merged else (False, "")
 
 
+def waited_state(green: bool, detail: str) -> str:
+    """Pure. A blocking `wait_checks` answer as a poll state: one that ran out of time, or saw only pending checks, is
+    `pending`; anything else not green is `failed`."""
+    if green:
+        return "green"
+    return "pending" if "pending" in detail or "timed out" in detail or "no checks reported" in detail else "failed"
+
+
 class Forge:
     """The forge module the profile names, plus the one question the lander adds: whether a branch's PR merged."""
 
@@ -120,7 +129,20 @@ class Forge:
         return getattr(self._module, name)
 
     def pr_merged(self, repo: Path, branch: str) -> tuple[bool, str]:
-        return pr_merged_verdict(self._module.find_branch_prs(repo, branch))
+        # Through the registry's dispatcher: the local forge has no pull requests to list, and says so.
+        return pr_merged_verdict(forge.branch_prs(self._module, repo, branch))
+
+    def delete_branch(self, repo: Path, branch: str) -> tuple[bool, str]:
+        return forge.delete_branch(self._module, repo, branch)
+
+    def poll_checks(self, repo: Path, *, ref: str, may_rerun: bool = True) -> tuple[str, str]:
+        """One read of `ref`'s checks: (`green` | `pending` | `rerun` | `failed`, detail). A forge with no single read
+        is waited on as before, bounded by `WAIT_CHECKS_S`; that wait holds only its own repository's lane."""
+        poll = getattr(self._module, "poll_checks", None)
+        if poll is not None:
+            return poll(repo, ref=ref, may_rerun=may_rerun)
+        green, detail = self._module.wait_checks(repo, WAIT_CHECKS_S, ref=ref)
+        return waited_state(green, detail), detail
 
     def has_ci(self, repo: Path, ref: str) -> bool:
         """Whether `ref` carries a GitHub Actions workflow, the only CI this forge can report on. A read that fails

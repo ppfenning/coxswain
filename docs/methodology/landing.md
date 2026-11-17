@@ -162,12 +162,25 @@ The lander works a queue in the store with two kinds of item:
 | Item | What it does |
 | --- | --- |
 | `phase_merge` | Merges one built phase into the initiative branch, locally, after the level checks pass on the merged tree. A build run performs this merge itself the moment it finishes a phase; the lander performs whatever is left queued. |
-| `initiative_land` | Merges the parent into the initiative branch, runs the gate checks, pushes, opens the one pull request, waits for its checks, merges it at gate `full` (or leaves the merge to a person), then marks every task done and cleans the branches. |
+| `initiative_land` | Merges the parent into the initiative branch, runs the gate checks, pushes, opens the one pull request, reads its checks once per pass until they finish, merges it at gate `full` (or leaves the merge to a person), then marks every task done and cleans the branches. |
 
 Every move of an initiative branch is made under one store lease per initiative, after a fetch, so two hosts never fork
 it. The two kinds have separate caps (`landing_areas.phase_cap`, default 2, and `landing_areas.land_cap`, default 1)
 and neither counts against the launch cap. An item open for an hour is told to the chair once; a pull request waiting
 for a person never is. `cox lander status` shows every initiative in flight and every item with its age.
+
+The lander never waits inside a pass. A land reads its pull request's checks once: green merges, red goes back to
+build, and pending leaves the item `waiting` for the next pass to read again. A failure the forge can rerun is rerun
+once per commit, and that pass waits too. Each pass splits its work into one lane per repository, and each lane runs
+on a thread of its own. The caps count per repository. A repository whose gate checks are still running, or whose
+lane is still busy from an earlier pass, holds only itself: under `cox lander run` the other repositories keep
+landing, and the busy one rejoins the passes once its lane is done.
+
+Each pass also checks every live landing record against git. A phase the record calls merged must be on the
+initiative branch, both its tip and its merge commit. When it is not and the phase tip is still in the clone (or on
+origin's phase branch), the lander merges the phase into the branch again and records the new merge commit. When the
+tip is gone, the initiative is held: `cox lander status` shows the reason, the chair is told once, and nothing merges
+into the initiative or lands from it. The hold lifts on the first pass that finds the record and the branch agree.
 
 Lands on one parent are one at a time by default, since each needs an up-to-date parent. With
 `landing_areas.land_batch` above 1, the lander lands together up to that many initiatives that share a repo and a
