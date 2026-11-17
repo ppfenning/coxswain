@@ -24,7 +24,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from agent_tools import chair, dash_feed, lake_config, lake_doctor, route, route_drift, run_store, store_url
+from agent_tools import (
+    chair,
+    dash_contract,
+    dash_feed,
+    lake_config,
+    lake_doctor,
+    route,
+    route_drift,
+    run_store,
+    store_url,
+)
 from agent_tools.chair_read_housekeeping import read_last_housekeeping
 from agent_tools.chair_read_lease import lease_record
 
@@ -228,7 +238,7 @@ def schema_1(
     read's result and milliseconds, the last housekeeping stamp, and the snapshot time `at`, the one clock."""
     now = _parse_now(at)
     return {
-        "schema": 1,
+        "schema": dash_contract.CONTRACT_VERSION,
         "kind": "health",
         "at": at,
         "hosts": _hosts(machines),

@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from agent_tools import chair_facts, records, run_store
+from agent_tools import chair_facts, dash_contract, records, run_store
 
 __all__ = ["build", "build_initiative_detail", "shape"]
 
@@ -173,7 +173,7 @@ def build_initiative_detail(raw: dict, initiative_id: str) -> dict:
     as `build` already receives it.
     """
     return {
-        "schema": 1,
+        "schema": dash_contract.CONTRACT_VERSION,
         "kind": "initiative",
         "at": raw["generated_at"],
         "initiative": initiative_id,

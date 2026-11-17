@@ -39,7 +39,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from agent_tools import dash_feed, route, run_store, usage_meter, usage_window
+from agent_tools import dash_contract, dash_feed, route, run_store, usage_meter, usage_window
 from agent_tools.dash_spend_series import spend_series
 
 __all__ = ["build", "group_spend", "project_to_hard_stop", "schema1_keys"]
@@ -223,7 +223,7 @@ def schema1_keys(
     per_day = _totals_by([{"day": str(row["ts"])[:10], "cost_usd": row.get("cost_usd")} for _, row in in_week], "day")
     points = [(at, _parse_ts(at)) for at, _ in series]
     return {
-        "schema": 1,
+        "schema": dash_contract.CONTRACT_VERSION,
         "kind": "spend",
         "at": now,
         "five_hour": _window_v1(spend.get("five_hour_fraction"), five_hour_ceiling, spend.get("five_hour_resets_at")),

@@ -33,6 +33,7 @@ from agent_tools import (
     console_screen,
     courier,
     dash_board,
+    dash_contract,
     dash_feed_cost,
     dash_feed_inputs,
     dash_feed_memo,
@@ -141,11 +142,11 @@ def snapshot(
     when it is None. `schedule` is the published schedule object, passed through unchanged; the key is absent when it
     is None. `health` is the skipped-line counts per damaged log; it reads the zero block, 0 and an empty list,
     when not given."""
-    # coxswain-dash carries its own copy of tests/fixtures/dash_feed_v1.json and will need these two fields too.
+    # coxswain-dash reads tests/fixtures/dash_feed_v1.json from this repository at a pinned commit (dash_contract).
     # `queue[].phases` is additive and the schema stays 1: a coxtop that does not know the field ignores it.
     # So are `runs[].tasks`, `runs[].landed` and `runs[].quarantined`, which `_runs_v1` adds to each run row.
     return {
-        "schema": 1,
+        "schema": dash_contract.CONTRACT_VERSION,
         "at": at,
         "chair": chair,
         "spend": spend,
