@@ -6664,8 +6664,8 @@ without mocks in <code>tests/test_smoke_plan.py</code>.</p>
   commit on <code>main</code> pushed.</li>
 </ul>
 <h2 id="contract-tests">Contract tests</h2>
-<p>Each contract test fails if its boundary drifts. I checked the three contract files by putting a drift back into a
-scratch copy of the tree and confirming that they fail.</p>
+<p>Each contract test fails if its boundary drifts. The first three contract files were checked by putting a drift back
+into a scratch copy of the tree and confirming that they fail.</p>
 <table>
 <thead>
 <tr>
@@ -6678,7 +6678,12 @@ scratch copy of the tree and confirming that they fail.</p>
 <tr>
 <td><code>test_contract_store_cli.py</code></td>
 <td><code>cox</code> to <code>harness.store_cli set-state</code></td>
-<td>#1174: <code>--expect quarantined</code> and the target <code>blocked</code> were refused with "invalid choice". Also a live drift (below).</td>
+<td>#1174: <code>--expect quarantined</code> and the target <code>blocked</code> were refused with "invalid choice". Also the target <code>quarantined</code> (below).</td>
+</tr>
+<tr>
+<td><code>test_contract_chair_quarantine.py</code></td>
+<td>the chair's revert of a phase to the store</td>
+<td>A quarantine the store refuses and the chair drops, a task outside the reverted land moved, or a quarantine with no <code>main_red</code> cause on its row.</td>
 </tr>
 <tr>
 <td><code>test_contract_route_edit.py</code></td>
@@ -6697,11 +6702,13 @@ scratch copy of the tree and confirming that they fail.</p>
 </tr>
 </tbody>
 </table>
-<p><strong>A drift found while building this suite.</strong> The chair's revert of a phase quarantines its tasks with
-<code>set-state &lt;initiative&gt; &lt;task&gt; quarantined</code> (<code>cli._quarantine_phase_with</code>). The store CLI refuses that target, because
-only the epic driver writes <code>quarantined</code>. The caller ignores the result, so the store never records the quarantine.
-The case is marked <code>xfail(strict=True)</code> in <code>test_contract_store_cli.py</code>. Whoever fixes it deletes the mark, and the
-test then has to pass.</p>
+<p><strong>A drift found while building this suite, now closed.</strong> The chair's revert of a phase quarantines its tasks with
+<code>set-state &lt;initiative&gt; &lt;task&gt; quarantined</code> (<code>cli._quarantine_phase_with</code>). The store CLI refused that target with
+"invalid choice", and the caller ignored the exit, so the store never recorded the quarantine. The store CLI now takes
+its choices from <code>core.workstore.STATES</code>, and a unit test holds the parser's choices equal to it. The chair quarantines
+only the approved and done tasks of the reverted land, each by a compare-and-set on the state it read, and marks each
+row with the <code>main_red</code> cause. A write the store refuses is named in the chair's needs_chair. A new drift goes into
+<code>KNOWN_DRIFT</code> in <code>test_contract_store_cli.py</code> as a strict xfail; whoever fixes it deletes the entry.</p>
 <h2 id="where-it-runs">Where it runs</h2>
 <ul>
 <li><strong>CI.</strong> The required <code>test</code> job has a Postgres service (the pinned image) and a <code>smoke</code> step. That step sets
