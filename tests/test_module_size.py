@@ -14,7 +14,6 @@ LIMIT = 2000
 # The modules over LIMIT, each at most this many lines. Empty when H9 is done.
 OVER_LIMIT: dict[str, int] = {
     "src/graphs/harness/cli.py": 2187,
-    "src/graphs/harness/epic.py": 6669,
     "src/tools/agent_tools/chair_exec.py": 2633,
     "src/tools/agent_tools/chair_facts.py": 2224,
     "src/tools/agent_tools/dash_feed.py": 2384,
