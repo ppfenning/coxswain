@@ -1160,3 +1160,71 @@ def test_dash_build_warning_contributes_to_exit_code_like_a_freshness_warning():
 def test_a_token_kept_in_the_environment_passes_the_row_and_names_its_source():
     assert _token_row(present=True, mode=None, source="CLAUDE_CODE_OAUTH_TOKEN") == {
         "check": "claude token", "ok": True, "detail": "token from CLAUDE_CODE_OAUTH_TOKEN in the environment"}
+
+
+def _tier_row(check, ok=True):
+    return {"check": check, "ok": ok, "detail": "x"}
+
+
+def _shared_store_rows(*results):
+    return doctor.store_rows("shared", "postgresql://db.example/runs", "s3://traces", list(results))
+
+
+def test_a_required_check_has_the_required_tier():
+    assert doctor.row_tier(_tier_row("harness venv")) == "required"
+
+
+def test_the_token_and_plugin_rows_have_the_advisory_tier():
+    assert doctor.row_tier(_tier_row("claude token")) == doctor.row_tier(_tier_row("plugins")) == "advisory"
+
+
+def test_failing_required_returns_only_the_required_rows_that_are_not_ok_in_order():
+    rows = [_tier_row("claude token", False), _tier_row("store", False), _tier_row("harness venv"),
+            _tier_row("chair unit PATH", False)]
+    assert doctor.failing_required(rows) == [rows[1], rows[3]]
+
+
+def test_an_advisory_failure_leaves_the_upgrade_exit_code_at_zero():
+    rows = [_tier_row("harness venv"), _tier_row("claude token", False), _tier_row("plugins", False)]
+    assert (doctor.upgrade_exit_code(rows), doctor.exit_code(rows)) == (0, 1)
+
+
+def test_a_required_failure_makes_the_upgrade_exit_code_one():
+    assert doctor.upgrade_exit_code([_tier_row("harness venv", False), _tier_row("plugins")]) == 1
+
+
+def test_all_good_facts_give_an_upgrade_exit_code_of_zero():
+    assert doctor.upgrade_exit_code(doctor.checks(_good_facts())) == 0
+
+
+def test_an_unreachable_postgres_probe_makes_the_upgrade_exit_code_one():
+    rows = _shared_store_rows(doctor.ProbeResult("postgres", False, "refused"),
+                              doctor.ProbeResult("object_store", True, "reachable"))
+    assert (rows[0]["check"], doctor.upgrade_exit_code(rows)) == ("shared store postgres", 1)
+
+
+def test_an_unreachable_object_store_probe_makes_the_upgrade_exit_code_one():
+    rows = _shared_store_rows(doctor.ProbeResult("postgres", True, "accepted"),
+                              doctor.ProbeResult("object_store", False, "refused"))
+    assert (rows[0]["check"], doctor.upgrade_exit_code(rows)) == ("shared store object_store", 1)
+
+
+def test_an_unprobed_shared_store_makes_the_upgrade_exit_code_one():
+    assert doctor.upgrade_exit_code(_shared_store_rows()) == 1
+
+
+def test_a_reachable_shared_store_leaves_the_upgrade_exit_code_at_zero():
+    rows = _shared_store_rows(doctor.ProbeResult("postgres", True, "accepted"),
+                              doctor.ProbeResult("object_store", True, "reachable"))
+    assert (rows[0]["check"], doctor.upgrade_exit_code(rows)) == ("shared store", 0)
+
+
+def test_a_core_import_error_makes_the_upgrade_exit_code_one():
+    rows = doctor.checks({**_good_facts(), "core_import": "ImportError: no module named core"})
+    assert doctor.upgrade_exit_code(rows) == 1
+
+
+def test_a_missing_profile_cascade_skips_required_rows_and_makes_the_upgrade_exit_code_one():
+    rows = doctor.checks({**_good_facts(), "profile_text": None})
+    assert [r["detail"] for r in rows if r["check"] == "harness venv"] == ["skipped: no profile"]
+    assert doctor.upgrade_exit_code(rows) == 1

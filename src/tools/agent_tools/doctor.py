@@ -732,6 +732,28 @@ def exit_code(rows: list[dict]) -> int:
     return 0 if all(row["ok"] for row in rows) else 1
 
 
+# Rows an upgrade needs: the harness venv, the core import probe, the unit PATH and the store. `checks` labels the store
+# "store"; `store_rows` labels a reachable or misconfigured one "shared store" and a failed or unprobed component
+# "shared store <component>". Every other row is advisory.
+UPGRADE_REQUIRED_CHECKS = frozenset(
+    {"harness venv", "core importable", "chair unit PATH", "store", _STORE_CHECK}
+    | {f"{_STORE_CHECK} {component}" for component in _REQUIRED_PROBES}
+)
+
+
+def row_tier(row: dict) -> str:
+    return "required" if row["check"] in UPGRADE_REQUIRED_CHECKS else "advisory"
+
+
+def failing_required(rows: list[dict]) -> list[dict]:
+    return [row for row in rows if row_tier(row) == "required" and not row["ok"]]
+
+
+def upgrade_exit_code(rows: list[dict]) -> int:
+    """0 unless a required row is not ok; an advisory failure never blocks an upgrade."""
+    return 1 if failing_required(rows) else 0
+
+
 _PARQUET_FIXES = {
     "pyarrow missing": "install the parquet extra",
     # Only reported after pyarrow imported, so installing the extra would change nothing.
