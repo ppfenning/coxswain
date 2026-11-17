@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import posixpath
 import re
+from collections.abc import Mapping
 from itertools import pairwise
 from pathlib import PurePath
 from xml.sax.saxutils import escape
 
 from agent_tools.chair_restart import RESTART_EXIT_CODE
+
+# cli.py and setup_install.py still call these through chair_service; the rules now live in unit_env.
+from agent_tools.unit_env import environment_file_line, export_lines, unsafe_values  # noqa: F401
 
 UNIT_NAME = "coxswain-chair.service"
 WATCHDOG_SERVICE_NAME = "coxswain-chair-watchdog.service"
@@ -18,8 +22,6 @@ CHAIR_PLIST_NAME = "coxswain-chair.plist"
 WATCHDOG_PLIST_LABEL = "coxswain-chair-watchdog"
 WATCHDOG_PLIST_NAME = "coxswain-chair-watchdog.plist"
 
-# systemd splits ExecStart on whitespace and expands `%`, `$` and `\`; a value outside this set reaches the chair changed.
-_UNIT_SAFE = re.compile(r"[A-Za-z0-9._@+:,/=-]+")
 _EXEC_START = re.compile(r"^ExecStart=(.*)$", re.MULTILINE)
 _ENV_FILE = re.compile(r"^EnvironmentFile=-(\S+)\s*$", re.MULTILINE)
 
@@ -36,16 +38,6 @@ def systemctl_lines() -> list[str]:
     ]
 
 
-def unsafe_values(values: dict[str, str]) -> list[str]:
-    """The names whose value systemd would split or expand, in the order given."""
-    return [name for name, value in values.items() if not _UNIT_SAFE.fullmatch(value)]
-
-
-def export_lines(env_text: str) -> list[int]:
-    """1-based numbers of `export NAME=value` lines; systemd's EnvironmentFile= does not document that prefix."""
-    return [n for n, line in enumerate(env_text.splitlines(), start=1) if line.lstrip().startswith("export ")]
-
-
 def path_value(cox: str, tools_bin: str, graphs_bin: str, default_path: str) -> str:
     """The unit's PATH: cox's directory, then the two venv bins, then the default; empties dropped, first duplicate kept."""
     entries = [posixpath.dirname(cox), tools_bin, graphs_bin, *default_path.split(":")]
@@ -57,7 +49,7 @@ def unit_text(
     path: str | None = None,
 ) -> str:
     """`EnvironmentFile=-` keeps a missing file from failing the unit; `path` becomes the one `Environment=PATH=` line."""
-    env_lines = [f"EnvironmentFile=-{environment_file}"] if environment_file is not None else []
+    env_lines = [environment_file_line(environment_file)] if environment_file is not None else []
     path_lines = [f"Environment=PATH={path}"] if path is not None else []
     profile_args = f" --profile {profile}" if profile is not None else ""
     lines = [
@@ -81,7 +73,7 @@ def unit_text(
 
 def watchdog_service_text(cox: str, profile: str, path: str, environment_file: str | None) -> str:
     """`EnvironmentFile=-` is written only when a file is given; the oneshot is fired by the timer."""
-    env_lines = [f"EnvironmentFile=-{environment_file}"] if environment_file is not None else []
+    env_lines = [environment_file_line(environment_file)] if environment_file is not None else []
     lines = [
         "[Unit]",
         "Description=Coxswain chair watchdog",
@@ -111,8 +103,19 @@ def watchdog_timer_text(minutes: int) -> str:
     return "\n".join(lines) + "\n"
 
 
-def watchdog_plist_text(cox: str, profile: str, path: str, minutes: int) -> str:
-    """StartInterval is in seconds; every interpolated value is XML-escaped."""
+def _environment_variable_lines(path: str, environment: Mapping[str, str] | None) -> list[str]:
+    """The EnvironmentVariables dict: the parsed env file, then PATH, whose value wins on a clash.
+    Raises ValueError for a value systemd would split or expand, so both platforms accept the same file."""
+    unsafe = unsafe_values(dict(environment or {}))
+    if unsafe:
+        raise ValueError(f"environment value would be split or expanded by systemd: {', '.join(unsafe)}")
+    merged = {**(environment or {}), "PATH": path}
+    entries = [(f"    <key>{escape(name)}</key>", f"    <string>{escape(value)}</string>") for name, value in merged.items()]
+    return ["  <key>EnvironmentVariables</key>", "  <dict>", *(line for entry in entries for line in entry), "  </dict>"]
+
+
+def watchdog_plist_text(cox: str, profile: str, path: str, minutes: int, environment: Mapping[str, str] | None = None) -> str:
+    """StartInterval is in seconds; every interpolated value is XML-escaped; `environment` is the parsed env file."""
     arguments = [cox, "chair", "watchdog", "--profile", profile]
     lines = [
         '<?xml version="1.0" encoding="UTF-8"?>',
@@ -127,11 +130,7 @@ def watchdog_plist_text(cox: str, profile: str, path: str, minutes: int) -> str:
         "  </array>",
         "  <key>StartInterval</key>",
         f"  <integer>{minutes * 60}</integer>",
-        "  <key>EnvironmentVariables</key>",
-        "  <dict>",
-        "    <key>PATH</key>",
-        f"    <string>{escape(path)}</string>",
-        "  </dict>",
+        *_environment_variable_lines(path, environment),
         "</dict>",
         "</plist>",
     ]
@@ -147,7 +146,10 @@ def service_file[Home: PurePath](platform: str, home: Home) -> Home | None:
     return {"linux": unit_path, "darwin": chair_plist_path}.get(platform, lambda _home: None)(home)
 
 
-def chair_plist_text(cox: str, workspace_dir: str, label: str, interval: int, path: str, profile: str) -> str:
+def chair_plist_text(
+    cox: str, workspace_dir: str, label: str, interval: int, path: str, profile: str,
+    environment: Mapping[str, str] | None = None,
+) -> str:
     """KeepAlive true restarts the chair on any exit, including RESTART_EXIT_CODE; every interpolated value is XML-escaped."""
     arguments = [cox, "chair", "run", "--label", label, "--interval", str(interval), "--profile", profile]
     lines = [
@@ -167,11 +169,7 @@ def chair_plist_text(cox: str, workspace_dir: str, label: str, interval: int, pa
         "  <true/>",
         "  <key>WorkingDirectory</key>",
         f"  <string>{escape(workspace_dir)}</string>",
-        "  <key>EnvironmentVariables</key>",
-        "  <dict>",
-        "    <key>PATH</key>",
-        f"    <string>{escape(path)}</string>",
-        "  </dict>",
+        *_environment_variable_lines(path, environment),
         "</dict>",
         "</plist>",
     ]
