@@ -175,10 +175,15 @@ EXCLUDE_BASELINE = frozenset({
 # record of where its parts' exclusion came from, and a key that is not in the baseline allows nothing.
 SPLIT_FROM: dict[str, frozenset[str]] = {
     "src/tools/agent_tools/cli.py": frozenset({
+        "src/tools/agent_tools/cli_chair.py",
+        "src/tools/agent_tools/cli_chair_service.py",
         "src/tools/agent_tools/cli_doctor.py",
+        "src/tools/agent_tools/cli_host.py",
         "src/tools/agent_tools/cli_install.py",
+        "src/tools/agent_tools/cli_leader.py",
         "src/tools/agent_tools/cli_migrate.py",
         "src/tools/agent_tools/cli_setup_store.py",
+        "src/tools/agent_tools/cli_views.py",
     }),
 }
 

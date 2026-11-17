@@ -20,11 +20,8 @@ import yaml
 
 from agent_tools.cli import (
     STORE_DOUBLE_ENV,
-    _chair_unit_text,
-    _ChairUnitRefusal,
     _lake_provider,
     _now_iso,
-    _origin_url,
     _paths_apply_files,
     _paths_apply_rows,
     _profile_lane_hosts,
@@ -49,6 +46,7 @@ from agent_tools.cli import (
     upgrade_plan,
     work_state,
 )
+from agent_tools.cli_chair_service import _chair_unit_text, _ChairUnitRefusal
 from agent_tools.cli_doctor import (
     _doctor_home_rows,
     _install_run,
@@ -61,6 +59,7 @@ from agent_tools.cli_doctor import (
     _migrate_old_root,
     _migrate_profile,
 )
+from agent_tools.cli_host import _origin_url
 from agent_tools.cli_install import _checkout_facts, _load_lazy_modules, _migrate_kind, _offered_tags
 
 

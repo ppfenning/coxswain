@@ -21,14 +21,10 @@ from pathlib import Path
 import yaml
 
 from agent_tools.cli import (
-    _chair_default_environment_file,
-    _dash_dirs,
     _lane_host_candidates,
     _profile_lane_hosts,
     _profile_path,
     _read_text_or_none,
-    _run_ssh,
-    _write_private,
     bounded_run,
     chair_facts,
     chair_service,
@@ -55,8 +51,11 @@ from agent_tools.cli import (
     store_dialect,
     store_url,
 )
+from agent_tools.cli_chair_service import _chair_default_environment_file, _write_private
+from agent_tools.cli_host import _run_ssh
 from agent_tools.cli_install import _load_lazy_modules, _migrate_kind, _schema_versions
 from agent_tools.cli_setup_store import _doctor_profile, _probe_store
+from agent_tools.cli_views import _dash_dirs
 
 
 def _core_freshness(provider_profile: str | None) -> list[str] | None:
