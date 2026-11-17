@@ -1,4 +1,33 @@
-from agent_tools.chair_phase_quarantine import MARK_KEY, marked_cause, marked_extra, newest_run, phase_targets, row_mark
+from agent_tools.chair_phase_quarantine import (
+    MARK_KEY,
+    mark_run,
+    marked_cause,
+    marked_extra,
+    newest_run,
+    phase_targets,
+    release_commands,
+    row_mark,
+)
+
+
+def test_a_mark_made_with_no_recorded_run_is_not_outdated_by_an_attempt_that_already_existed():
+    existing = [{"run": "i1-2", "cause": "code"}]
+    run = mark_run([], "i1", [a["run"] for a in existing])
+    assert run == "i1-2"
+    mark = {"cause": "main_red", "reason": "why", "run": run}
+    assert marked_cause(mark, existing) == mark
+    assert marked_cause(mark, [*existing, {"run": "i1-3", "cause": "code"}]) is None
+
+
+def test_the_mark_run_is_the_newest_of_the_recorded_runs_and_the_task_s_own_attempts():
+    assert mark_run(["i1-7", "i2-9"], "i1", ["i1-3"]) == "i1-7"
+    assert mark_run(["i1-2"], "i1", ["i1-5", "other-8"]) == "i1-5"
+    assert mark_run([], "i1", []) == ""
+
+
+def test_release_commands_name_the_hand_move_per_task():
+    assert release_commands(["t1", "t2"]) == ["cox route edit t1 --state ready", "cox route edit t2 --state ready"]
+    assert release_commands([]) == []
 
 
 def _row(task: str, state: str, phase: str = "p1", initiative: str = "i1", kind: str = "task") -> dict:

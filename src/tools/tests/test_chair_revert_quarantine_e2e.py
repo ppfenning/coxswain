@@ -1,9 +1,10 @@
 """The chair's revert of a phase, end to end: the quarantine the revert writes, read back by the next tick's real facts.
 
 A land that turned main red is reverted and its phase quarantined, so no relaunch stacks onto a red main. The next tick
-must see that quarantine as main_red (the relaunch pair, stopped after two reverts in a row), never as a task to triage:
-a triage request moves the task back to ready while main may still be red. And the quarantine takes only the tasks that
-were part of the land; a dropped task, or one still building under a live lane, is left as it was.
+must see that quarantine as main_red, never as a task to triage: a triage request moves the task back to ready while
+main may still be red. The reverted tasks stay quarantined until a person releases them, which the revert's needs_chair
+names; the initiative's relaunch pair (until two reverts in a row) builds its other ready work only. And the quarantine
+takes only the tasks that were part of the land; a dropped task, or one still building under a live lane, is left as it was.
 """
 
 import dataclasses
@@ -79,6 +80,7 @@ def _states(ws) -> dict[str, str]:
 def test_a_revert_quarantines_only_the_tasks_of_the_land_and_leaves_the_rest(ws):
     result = _revert(ws)
     assert "quarantine not recorded" not in result["reason"], result["reason"]
+    assert "release each: cox route edit t1 --state ready; cox route edit t2 --state ready" in result["reason"]
     assert _states(ws) == {"t1": "quarantined", "t2": "quarantined", "t3": "dropped", "t4": "in_progress", "t5": "ready"}
 
 
@@ -119,8 +121,8 @@ def test_the_next_tick_reads_the_reverted_phase_as_main_red_and_never_sends_it_b
 
     assert causes == {"t1": "main_red", "t2": "main_red"}, causes
     demo = [(a["kind"], a.get("task_id")) for a in planned if a.get("initiative") == "demo"]
-    # main_red recovers by the initiative's relaunch pair, which builds p2's ready task; the quarantine itself plans
-    # no triage (back to ready) and no needs_chair.
+    # main_red leaves the initiative's relaunch pair alone, and it builds p2's ready task; t1 and t2 stay quarantined
+    # for a person to release. The quarantine itself plans no triage (back to ready) and no needs_chair.
     assert ("request_triage", "t1") not in demo and ("request_triage", "t2") not in demo, planned
     assert not [k for k, t in demo if k == "needs_chair" and t in ("t1", "t2")], planned
     assert [k for k, _ in demo if k in ("clear_branches", "relaunch")] == ["clear_branches", "relaunch"], planned

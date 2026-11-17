@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Any
+from typing import Any, NamedTuple
 
 QUARANTINE_FROM = ("approved", "done")
 MARK_KEY = "quarantine_mark"  # extra key: {"cause", "reason", "run"} the chair's own quarantine wrote
@@ -35,10 +35,28 @@ def phase_targets(rows: Iterable[Mapping[str, Any]], initiative: str, phase: str
     ]
 
 
+class Quarantined(NamedTuple):
+    """What the quarantine of a reverted phase did: the tasks it moved, and one line per write the store refused."""
+
+    moved: tuple[str, ...] = ()
+    failures: tuple[str, ...] = ()
+
+
 def newest_run(run_ids: Iterable[str], initiative: str) -> str:
     """The highest-numbered `<initiative>-N` run id; "" when the initiative has none."""
     own = [r for r in run_ids if re.fullmatch(rf"{re.escape(initiative)}-\d+", r)]
     return max(own, key=_run_number, default="")
+
+
+def mark_run(run_ids: Iterable[str], initiative: str, attempt_runs: Iterable[str]) -> str:
+    """The run a task's mark names: the newest of the initiative's recorded runs and the task's own attempts' runs, so an
+    attempt that already existed when the mark was made never outdates it, even with no run recorded in the store."""
+    return newest_run([*run_ids, *attempt_runs], initiative)
+
+
+def release_commands(tasks: Iterable[str]) -> list[str]:
+    """The hand move that releases each quarantined task to build again, once a person has seen main green."""
+    return [f"cox route edit {task} --state ready" for task in tasks]
 
 
 def marked_extra(extra: Mapping[str, Any] | None, cause: str, reason: str, run: str) -> dict[str, Any]:

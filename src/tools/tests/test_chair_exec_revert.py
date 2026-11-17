@@ -1,4 +1,5 @@
-from agent_tools.chair_exec import Deps, perform, with_store_failures
+from agent_tools.chair_exec import Deps, perform, revert_reason
+from agent_tools.chair_phase_quarantine import Quarantined
 
 REVERT = {
     "kind": "revert_land", "initiative": "init", "phase": "p1", "repo": "repo", "pr": 12, "commit": "abc123",
@@ -112,18 +113,22 @@ def test_a_quarantine_the_store_refused_is_named_in_the_needs_chair_and_the_resu
         run_id=lambda a: "run-1",
         repo_for=lambda a: "r",
         revert_ports=lambda a: (FakeGit(), FakeForge()),
-        quarantine_phase=lambda *args: ["warning: store did not record init/t1 as quarantined: refused: {}"],
+        quarantine_phase=lambda *args: Quarantined(("t2",), ("warning: store did not record init/t1 as quarantined: refused: {}",)),
         resolve_land=lambda *args: None,
     )
     results = perform([REVERT], deps, lambda: 0, False)
+    release = "quarantined t2; once main is green, release each: cox route edit t2 --state ready"
     line = "quarantine not recorded: warning: store did not record init/t1 as quarantined: refused: {}"
-    assert results[0]["needs_chair"]["reason"] == f"main went red after PR #12; reverted abc123 in {URL}; {line}"
+    assert results[0]["needs_chair"]["reason"] == f"main went red after PR #12; reverted abc123 in {URL}; {release}; {line}"
     assert results[0]["reason"].endswith(line)
 
 
-def test_with_store_failures_leaves_a_reason_alone_when_every_write_landed():
-    assert with_store_failures("why", []) == "why"
-    assert with_store_failures("why", ["a", "b"]) == "why; quarantine not recorded: a; quarantine not recorded: b"
+def test_revert_reason_names_how_to_release_each_quarantined_task_and_each_refused_write():
+    assert revert_reason("why", Quarantined()) == "why"
+    assert revert_reason("why", Quarantined(("t1", "t2"), ("a",))) == (
+        "why; quarantined t1, t2; once main is green, release each: "
+        "cox route edit t1 --state ready; cox route edit t2 --state ready; quarantine not recorded: a"
+    )
 
 
 def test_other_kinds_are_untouched():

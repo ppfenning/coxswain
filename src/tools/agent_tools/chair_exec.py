@@ -58,6 +58,7 @@ from agent_tools import (
 )
 from agent_tools.chair_carry_exec import ForgePort, GitPort, StorePort, perform_carry
 from agent_tools.chair_facts import STRANDED_CAUSE
+from agent_tools.chair_phase_quarantine import Quarantined, release_commands
 from agent_tools.chair_read_land_conflicts import _rev_parse as rev_parse
 from agent_tools.chair_rebase_exec import RebasePort, perform_rebase
 from agent_tools.chair_revert_exec import MERGED, RevertResult, perform_revert
@@ -195,7 +196,7 @@ class Deps:
     set_lanes: Callable[[str, int], int] | None = None  # a tune_lanes's (host, count) -> exit code; None refuses it
     revert_ports: Callable[[Action], tuple[RevertGitPort, RevertForgePort]] | None = None  # a revert_land's ports; None refuses it
     home: str = ""  # this machine's home directory, read once at the edge; "" leaves a repo path unmapped for a lane host
-    quarantine_phase: Callable[[str, str, str, str], Sequence[str] | None] | None = None  # (initiative, phase, cause, reason): quarantines that phase's tasks, answering one line per write the store refused
+    quarantine_phase: Callable[[str, str, str, str], Quarantined | None] | None = None  # (initiative, phase, cause, reason): quarantines that phase's tasks, answering those it moved and one line per write the store refused
     resolve_land: Callable[[str, str, str], None] | None = None  # (initiative, phase, outcome): the store's resolve write for a land
     rerun_main: Callable[[str, str], tuple[str, str]] | None = None  # a rerun_main's (repo, commit) -> chair_revert_ports.rerun_infra's (state, line); None refuses it
     rev_parse: Callable[[str, str], str | None] = rev_parse  # (repo, ref) -> the ref's tip, None when it does not resolve; the only door to a land_phase's head
@@ -1535,9 +1536,12 @@ def revert_outcome(action: Action, reverted: RevertResult) -> tuple[str, str]:
     return "revert_failed", f"{reverted.detail}; main is still red after the revert of {action.get('commit', '')}"
 
 
-def with_store_failures(reason: str, failures: Sequence[str]) -> str:
-    """Pure. `reason`, then each quarantine write the store did not take, so the needs_chair names a phase left runnable."""
-    return "; ".join([reason, *(f"quarantine not recorded: {line}" for line in failures)])
+def revert_reason(reason: str, quarantined: Quarantined) -> str:
+    """Pure. `reason`, then how a person releases each task the quarantine moved (they stay quarantined: no relaunch
+    rebuilds them), then each quarantine write the store did not take, so the needs_chair names a phase left runnable."""
+    release = release_commands(quarantined.moved)
+    released = [f"quarantined {', '.join(quarantined.moved)}; once main is green, release each: {'; '.join(release)}"] if release else []
+    return "; ".join([reason, *released, *(f"quarantine not recorded: {line}" for line in quarantined.failures)])
 
 
 def _revert_land(action: Action, deps: Deps) -> Result:
@@ -1551,11 +1555,11 @@ def _revert_land(action: Action, deps: Deps) -> Result:
         reverted = perform_revert(action.get("repo", ""), action.get("pr", 0), action.get("commit", ""), action.get("reason", ""), git, forge)
     except Exception as exc:  # the edge: a port failure is a failed revert, and main is still red
         reverted = RevertResult("failed", "", f"revert raised {type(exc).__name__}: {exc}")
-    failures = deps.quarantine_phase(initiative, phase, "main_red", action.get("reason", "")) or ()
+    quarantined = deps.quarantine_phase(initiative, phase, "main_red", action.get("reason", "")) or Quarantined()
     if reverted.status == MERGED:
         deps.resolve_land(initiative, phase, "reverted")
     cause, outcome = revert_outcome(action, reverted)
-    reason = with_store_failures(outcome, failures)
+    reason = revert_reason(outcome, quarantined)
     raised: Action = {
         "kind": "needs_chair", "initiative": initiative, "phase": phase, "cause": cause,
         "epoch": action.get("epoch", 0), "reason": reason,

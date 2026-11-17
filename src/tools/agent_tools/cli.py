@@ -14264,20 +14264,24 @@ def _revert_ports(
 def _quarantine_phase_with(
     rows: Callable[[str], Sequence[Mapping]],
     run_ids: Callable[[], Iterable[str]],
+    attempt_runs: Callable[[str, str, str], Iterable[str]],
     move: Callable[[str, str, str], object],
     mark: Callable[[str, str, Mapping], str],
-    by: str,
-) -> Callable[[str, str, str, str], list[str]]:
+) -> Callable[[str, str, str, str], chair_phase_quarantine.Quarantined]:
     """Quarantines the tasks of a reverted phase that its land carried (`chair_phase_quarantine.phase_targets`), each by a
     compare-and-set on the state read (`move`), then marks each moved row with the cause (`mark`), so the next tick reads
-    the quarantine as that cause. Returns one line per write the store did not take, so `_revert_land` reports it.
+    the quarantine as that cause. Answers the tasks it moved and one line per write the store did not take, so
+    `_revert_land` names both.
 
-    `rows` is an initiative's task rows; `move(initiative, task, expected)` answers a `store_cli.SetStateResult`;
-    `mark(initiative, task, extra)` answers "" when the store took the row, else why not."""
+    `rows` is an initiative's task rows; `attempt_runs(initiative, phase, task)` the runs of the task's own recorded
+    attempts, which with `run_ids` set the mark's run (`chair_phase_quarantine.mark_run`); `move(initiative, task,
+    expected)` answers a `store_cli.SetStateResult`; `mark(initiative, task, extra)` answers "" when the store took the
+    row, else why not."""
 
-    def quarantine(initiative: str, phase: str, cause: str, reason: str) -> list[str]:
+    def quarantine(initiative: str, phase: str, cause: str, reason: str) -> chair_phase_quarantine.Quarantined:
         targets = chair_phase_quarantine.phase_targets(rows(initiative), initiative, phase)
-        run = chair_phase_quarantine.newest_run(run_ids(), initiative) if targets else ""
+        recorded = list(run_ids()) if targets else []
+        moved: list[str] = []
         failures: list[str] = []
         for row in targets:
             task = str(row["task_id"])
@@ -14286,22 +14290,30 @@ def _quarantine_phase_with(
             if line is not None or not isinstance(written, store_cli.StateSet):
                 failures.extend([line] if line is not None else [])
                 continue
+            moved.append(task)
+            run = chair_phase_quarantine.mark_run(recorded, initiative, attempt_runs(initiative, phase, task))
             refused = mark(initiative, task, chair_phase_quarantine.marked_extra(row.get("extra"), cause, reason, run))
             if refused:
                 failures.append(f"warning: store did not record the {cause} cause on {initiative}/{task}: {refused}")
-        return failures
+        return chair_phase_quarantine.Quarantined(tuple(moved), tuple(failures))
 
     return quarantine
 
 
-def _store_quarantine(runs_dir: Path, by: str) -> Callable[[str, str, str, str], list[str]]:
-    """Edge. The chair's quarantine of a reverted phase, read from and written to the store."""
+def _store_quarantine(runs_dir: Path, by: str) -> Callable[[str, str, str, str], chair_phase_quarantine.Quarantined]:
+    """Edge. The chair's quarantine of a reverted phase, read from and written to the store. A task's attempt runs are
+    the run task records the chair's own attempts reader opens (`chair_read_run_records.read_run_records`)."""
+
+    def attempt_runs(initiative: str, phase: str, task: str) -> list[str]:
+        records = chair_read_run_records.read_run_records(runs_dir, {(phase, task)})
+        return [run for run, *_ in records]
+
     return _quarantine_phase_with(
         lambda initiative: run_store.read_queue(runs_dir, initiative, kind="task"),
         lambda: run_store.run_ids(runs_dir),
+        attempt_runs,
         lambda initiative, task, expected: store_cli.set_state(runs_dir, initiative, task, "quarantined", by, expected),
         lambda initiative, task, extra: run_store.upsert_row_detail(runs_dir, {"initiative": initiative, "task_id": task, "extra": extra}),
-        by,
     )
 
 

@@ -128,7 +128,7 @@ def _task(task_id: str, phase: str, state: str, initiative: str = "i1") -> dict:
     return {"kind": "task", "initiative": initiative, "task_id": task_id, "phase": phase, "state": state, "extra": {"k": "v"}}
 
 
-def _quarantine(rows: list[dict], answers: dict | None = None, refused_marks: dict | None = None):
+def _quarantine(rows: list[dict], answers: dict | None = None, refused_marks: dict | None = None, attempts: dict | None = None):
     moved: list[tuple[str, str, str]] = []
     marked: list[tuple[str, str, dict]] = []
 
@@ -140,8 +140,18 @@ def _quarantine(rows: list[dict], answers: dict | None = None, refused_marks: di
         marked.append((initiative, task, extra))
         return (refused_marks or {}).get(task, "")
 
-    quarantine = cli._quarantine_phase_with(lambda i: [r for r in rows if r["initiative"] == i], lambda: ["i1-2", "i1-7", "i2-9"], move, mark, "holder")
+    quarantine = cli._quarantine_phase_with(
+        lambda i: [r for r in rows if r["initiative"] == i],
+        lambda: ["i1-2", "i1-7", "i2-9"],
+        lambda i, p, t: (attempts or {}).get(t, []),
+        move,
+        mark,
+    )
     return quarantine("i1", "p1", "main_red", "why"), moved, marked
+
+
+def _mark(run: str) -> dict:
+    return {"k": "v", "quarantine_mark": {"cause": "main_red", "reason": "why", "run": run}}
 
 
 def test_quarantine_phase_moves_only_the_tasks_its_land_carried_each_on_the_state_read() -> None:
@@ -149,21 +159,22 @@ def test_quarantine_phase_moves_only_the_tasks_its_land_carried_each_on_the_stat
         _task("a", "p1", "approved"), _task("b", "p1", "done"), _task("c", "p1", "dropped"), _task("d", "p1", "in_progress"),
         _task("e", "p1", "ready"), _task("f", "p2", "approved"), _task("g", "p1", "approved", initiative="i2"),
     ]
-    failures, moved, marked = _quarantine(rows)
-    assert failures == []
+    done, moved, marked = _quarantine(rows, attempts={"b": ["i1-9"]})
+    assert done == cli.chair_phase_quarantine.Quarantined(("a", "b"), ())
     assert moved == [("i1", "a", "approved"), ("i1", "b", "done")]
-    mark = {"k": "v", "quarantine_mark": {"cause": "main_red", "reason": "why", "run": "i1-7"}}
-    assert marked == [("i1", "a", mark), ("i1", "b", mark)]
+    # b's own attempt in i1-9 is newer than any recorded run, so its mark names that run and the attempt never outdates it.
+    assert marked == [("i1", "a", _mark("i1-7")), ("i1", "b", _mark("i1-9"))]
 
 
 def test_quarantine_phase_answers_one_line_per_write_the_store_refused_and_marks_no_row_it_did_not_move() -> None:
     rows = [_task("a", "p1", "approved"), _task("b", "p1", "approved"), _task("c", "p1", "done")]
     refused = {"a": cli.store_cli.StateRefused('{"actual": "in_progress", "expected": "approved"}', None)}
-    failures, _, marked = _quarantine(rows, answers=refused, refused_marks={"c": "exit 1"})
-    assert failures == [
+    done, _, marked = _quarantine(rows, answers=refused, refused_marks={"c": "exit 1"})
+    assert done.moved == ("b", "c")
+    assert done.failures == (
         'warning: store did not record i1/a as quarantined: refused: {"actual": "in_progress", "expected": "approved"}',
         "warning: store did not record the main_red cause on i1/c: exit 1",
-    ]
+    )
     assert [t for _, t, _ in marked] == ["b", "c"]
 
 
