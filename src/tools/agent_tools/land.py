@@ -70,6 +70,7 @@ __all__ = [
     "issue_closes",
     "land_log_row",
     "land_plan",
+    "landed_by_tree",
     "last_command",
     "mark_done",
     "merge_pages",
@@ -80,10 +81,14 @@ __all__ = [
     "phase_pr_title",
     "poll_backoff_s",
     "pr_body",
+    "recover_contained_refusal",
+    "recover_gate",
     "recover_plan",
     "recover_record",
+    "recovered_text",
     "renew_due",
     "renewal_stop",
+    "reopen_conflict_next_step",
     "resolve_block_conflicts",
     "rest_checks_argvs",
     "set_state_stop",
@@ -1074,13 +1079,97 @@ def recover_plan(record: dict[str, Any], branches: dict[str, list[str]]) -> list
             continue
         subjects = branches[candidate]
         if not subjects:
-            return [{"kind": "already_recovered", "branch": phase_branch,
+            return [{"kind": "already_recovered", "branch": phase_branch, "source": candidate,
                      "reason": f"{candidate} has no commits ahead of {phase_branch}"}]
         if len(subjects) == 1:
             return [{"kind": "merge", "source": candidate, "target": phase_branch, "commit_subject": subjects[0]}]
         return [{"kind": "refuse",
                  "reason": f"{candidate} is {len(subjects)} commits ahead of {phase_branch}, expected exactly one"}]
     return [{"kind": "refuse", "reason": f"no candidate branch found for {task}: tried {', '.join(candidates)}"}]
+
+
+def recover_gate(row: tuple[str, str | None] | None, *, reopen: bool, landed: bool) -> str | None:
+    """Why `cox runs recover` may not record this task as merged into its phase branch, or None when it may. Decided
+    before any merge, so a refusal leaves the phase branch as it was.
+
+    `row` is the task's store row as (state, merged_commit), None when the store has none. `landed` is true when the
+    task's commit, or a commit with the same patch, is on the default branch: the work landed, whatever the row says.
+    The epic, at land_at initiative, counts a task merged into its phase only while it is `approved` with a merge
+    commit. An earlier recover wrote `done` with no merge commit instead; `reopen` puts such a row back. A `done` row
+    with a merge commit, or whose work is on the default branch, landed and stays done."""
+    if row is None:
+        return "the store has no row for it"
+    state, merged_commit = row
+    if landed:
+        return f"its commit is already on the default branch, so it landed; it stays {state}"
+    if state == "approved":
+        return None
+    if state != "done":
+        return f"its state is {state!r}, not approved"
+    if not reopen:
+        return "it is done; pass --reopen to put a task an earlier recover closed back to approved"
+    if merged_commit:
+        return f"it is done with merge commit {merged_commit[:12]} recorded, so it landed; it stays done"
+    return None
+
+
+def landed_by_tree(merge_rc: int, merge_out: str, tree_rc: int, tree_out: str, default: str, source: str) -> tuple[bool | None, str]:
+    """Whether `source`'s work is on `default`, from `git merge-tree --write-tree <default> <source>` (exit code and
+    output, whose first line is the merged tree) and `git rev-parse <default>^{tree}`: landed exactly when the merge
+    leaves the tree as it is, which a merge, a cherry-pick and a squash all do. Fails closed: a conflict (exit 1) or a
+    git error is (None, why), never "not landed"."""
+    if merge_rc == 1:
+        return None, f"cannot tell whether {source} landed: merging it into {default} conflicts"
+    if merge_rc != 0 or tree_rc != 0 or not merge_out.strip() or not tree_out.strip():
+        return None, f"cannot tell whether {source} landed: git could not compare it with {default}"
+    return merge_out.splitlines()[0].strip() == tree_out.strip(), ""
+
+
+def reopen_conflict_next_step(
+    default: str, source: str, phase_branch: str, set_state_argv: Sequence[str], recover_argv: Sequence[str]
+) -> str:
+    """What to do when `--reopen` cannot tell whether a done task landed because its work conflicts with `default`:
+    check by hand (the task's pull request, or the commits on `default` that touch its files), and if it did not land,
+    put the row back to approved with the harness store command, then recover again without --reopen, which merges
+    into the phase branch and records it."""
+    files = f"$(git diff --name-only {default}...{source})"
+    return (
+        f"recover: the task's work conflicts with {default}, so recover cannot tell whether it landed. To check, look "
+        f"for the task's pull request, or for its change among the commits on {default} that touch its files:\n"
+        f"  git log --oneline {default} -- {files}\n"
+        f"If it did not land, put its row back to approved:\n  {shlex.join(set_state_argv)}\n"
+        f"then run recover again without --reopen; it merges the task into {phase_branch} and records it:\n  {shlex.join(recover_argv)}"
+    )
+
+
+def recover_contained_refusal(own_commits: int, source: str, default: str) -> str | None:
+    """Why a phase branch that holds `source` does not count as holding the task's work: `source` has no commit of its
+    own off `default`: an attempt that built nothing, or work that is on `default` already. None when it has one."""
+    return None if own_commits > 0 else f"{source} has no commit of its own off {default}: it built nothing, or its work is on {default} already"
+
+
+def recovered_text(text: str, commit: str) -> str | None:
+    """The work item with the recover's merge recorded: `state: approved`, `merged: true` and a quoted `merged_commit`;
+    None when it has no front matter or already reads so. Only those header lines change; every other byte stays."""
+    if not text.startswith("---\n"):
+        return None
+    close = text.find("\n---\n", 3)
+    if close == -1:
+        return None
+    lines, rest = text[4:close].split("\n"), text[close:]
+    keys = {line.split(":", 1)[0].strip(): i for i, line in enumerate(lines) if line[:1] not in (" ", "-", "") and ":" in line}
+    value = lambda key: lines[keys[key]].split(":", 1)[1].strip().strip("'\"") if key in keys else None  # noqa: E731
+    wanted = {"state": "approved", "merged": "true", "merged_commit": commit}
+    if all(value(k) == v for k, v in wanted.items()):
+        return None
+    for key, v in wanted.items():
+        line = f'{key}: "{v}"' if key == "merged_commit" else f"{key}: {v}"  # quoted: a hex sha can read as a YAML number
+        if key in keys:
+            lines[keys[key]] = line
+        else:
+            keys[key] = len(lines)
+            lines.append(line)
+    return "---\n" + "\n".join(lines) + rest
 
 
 _NO_CHECKS = "no checks reported"
