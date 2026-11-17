@@ -15,13 +15,12 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 import tomllib
 from datetime import UTC, datetime
 from importlib import metadata
 from pathlib import Path
 
-from agent_tools import route
+from agent_tools import bounded_run, route
 from agent_tools.version_info import DISTRIBUTION
 
 __all__ = ["build", "formula_paths", "release_facts"]
@@ -95,7 +94,7 @@ def _umbrella_dir() -> str | None:
 
 def _tag_line(umbrella: Path) -> str | None:
     try:
-        result = subprocess.run(
+        result = bounded_run.completed(
             [
                 "git",
                 "-C",

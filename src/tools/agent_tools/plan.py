@@ -7,13 +7,15 @@ import subprocess
 import time
 from pathlib import Path
 
+from agent_tools import bounded_run
+
 __all__ = ["check", "serve"]
 
 BRIDGE = ["npx", "-y", "@agent-native/core@latest", "plan", "local"]
 
 
 def check(plan_dir: Path | str) -> str:
-    return subprocess.run([*BRIDGE, "check", "--dir", str(plan_dir)], capture_output=True, text=True).stdout
+    return bounded_run.completed([*BRIDGE, "check", "--dir", str(plan_dir)], capture_output=True, text=True).stdout
 
 
 def serve(plan_dir: Path | str, *, kind: str = "plan", open_browser: bool = True, wait: float = 90) -> str:

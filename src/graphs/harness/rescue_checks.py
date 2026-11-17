@@ -9,6 +9,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from harness import bounded_proc
 from harness.checks import HARNESS_FAULT_PREFIX, all_passed, quarantine_reason, run_checks
 from harness.worktree import registry_lock
 
@@ -56,7 +57,7 @@ def _outcome(applied: bool, passed: bool, rows: list[dict[str, str]], reason: st
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    return bounded_proc.completed(["git", "-C", str(repo), *args], capture_output=True, text=True)
 
 
 def _verify_in(

@@ -18,7 +18,7 @@ import re
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, NamedTuple
 
-from agent_tools import chair_service
+from agent_tools import chair_service, unit_env
 
 if TYPE_CHECKING:
     from agent_tools.home import Locations
@@ -238,7 +238,9 @@ def chair_service_steps(
             cox_path, workspace, CHAIR_LABEL, CHAIR_INTERVAL, env_file or None, profile_file, path)
         activate = "\n".join(chair_service.systemctl_lines())
     else:
-        text = chair_service.chair_plist_text(cox_path, workspace, CHAIR_LABEL, CHAIR_INTERVAL, path, profile_file)
+        text = chair_service.chair_plist_text(
+            cox_path, workspace, CHAIR_LABEL, CHAIR_INTERVAL, path, profile_file,
+            env_file or unit_env.env_file_path(home))
         activate = f"launchctl bootstrap gui/$(id -u) {target}"
     return [
         {"op": "write", "path": target, "text": text, "why": "start the chair service with the machine"},

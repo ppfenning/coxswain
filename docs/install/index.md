@@ -214,10 +214,45 @@ follows `main`, but only commits whose CI passed:
 
 ```sh
 cox settings set profile upgrade_channel edge
+cox setup unit-env               # writes ~/.config/agent-tools/garage.env with the stored token
 cox upgrade --install-timer      # writes coxswain-upgrade.service and .timer
 systemctl --user daemon-reload
 systemctl --user enable --now coxswain-upgrade.timer
 ```
+
+On macOS the same `cox upgrade --install-timer` writes a launchd agent,
+`~/Library/LaunchAgents/coxswain-upgrade.plist`, that runs the same command on
+the same interval, and prints the `launchctl bootstrap` line that loads it.
+The agent stores no secret. At each launch it reads the env file described
+below, so a new token takes effect on the next run without a reinstall. The
+plist is written with mode 0600.
+
+#### Check the schedule on a macOS host
+
+The test suite cannot run launchd, so check a macOS host by hand after you
+install or change the schedule:
+
+```sh
+plist=~/Library/LaunchAgents/coxswain-upgrade.plist
+plutil -lint "$plist"                                  # prints: OK
+launchctl bootstrap gui/$(id -u) "$plist"             # once; it fails if already loaded
+launchctl kickstart -k gui/$(id -u)/coxswain-upgrade  # run it now, not in 30 minutes
+cox versions                                          # the edge upgrade line: a fresh time and an outcome
+```
+
+The check passes when `plutil` prints `OK` and `cox versions` shows an edge
+upgrade from the run you just started (the record is `edge-upgrade.json` in
+the installs folder). If the machine was already at the newest green commit, no
+record is written; the agent's run is then visible in `log show --predicate
+'process == "launchd"' --last 5m`. If the record is unchanged, run the command from the
+plist's `ProgramArguments` by hand. Its output names the step that failed.
+
+`cox setup unit-env` writes the one environment file that the chair, lander
+and upgrade units all read: systemd units load it with `EnvironmentFile=`, and
+launchd agents get its values as `EnvironmentVariables`. It keeps the
+`NAME=value` lines the file already has and sets `CLAUDE_CODE_OAUTH_TOKEN`
+from the token that `cox setup token` stored. Run it again after you change the
+token.
 
 On an edge machine, `cox upgrade` with no `--to` does these steps:
 
@@ -226,9 +261,25 @@ On an edge machine, `cox upgrade` with no `--to` does these steps:
 2. It moves the checkout to that commit by the same path as `cox upgrade --to`.
 3. If the commit changed, it restarts the chair and lander user units that
    are running.
-4. It runs `cox setup doctor`.
-5. If the move, a restart or the doctor fails, it moves back to the previous
-   commit and restarts the units again.
+4. It runs `cox setup doctor` and checks that every unit that was running
+   before is running again.
+5. If the move or a restart fails, or a required doctor row fails, it moves
+   back to the previous commit and restarts the units again.
+
+The required doctor rows are the ones an upgrade can break: the profile, the
+workspace, the harness venv, the core import, the install bins, the unit
+PATH, the store, the store schema, and the restarted units. The other rows,
+such as the token file and the plugins, are advisory. An advisory failure
+prints one warning line and does not roll back.
+
+Every `git` and `gh` call has a time limit. A call that hangs is killed, and
+the upgrade stops with a line that names it, for example
+`gh run timed out after 120 seconds`.
+
+A lane host's checkout sync never moves the install checkout. The host
+resolves both paths, following symlinks. If the lane's checkout is the
+install, the sync leaves it alone and reports that the lane needs its own
+checkout. The install moves only through `cox upgrade`.
 
 The timer runs `cox upgrade --scheduled` every 30 minutes by default
 (`--interval-minutes` changes this). On a stable machine the scheduled run does

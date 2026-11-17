@@ -6,9 +6,11 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from agent_tools import bounded_run
+
 
 def _git(wt: Path | str, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(wt), *args], capture_output=True, text=True)
+    return bounded_run.completed(["git", "-C", str(wt), *args], capture_output=True, text=True)
 
 
 def _out(r: subprocess.CompletedProcess) -> str:

@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from agent_tools import bounded_run
 from agent_tools.chair_read_review_prs import read_review_prs
 from agent_tools.inbox import InboxItem, item_id
 
@@ -76,7 +76,7 @@ def pr_errors(records: Sequence[Record]) -> tuple[str, ...]:
 def view_pr(url: str) -> dict:
     """Edge. `gh pr view <url> --json` as forge_github.pr_state does it; `{"error": reason}` when gh fails."""
     try:
-        r = subprocess.run(["gh", "pr", "view", url, "--json", _FIELDS], capture_output=True, text=True)
+        r = bounded_run.completed(["gh", "pr", "view", url, "--json", _FIELDS], capture_output=True, text=True)
     except OSError as exc:
         return {"error": str(exc)}
     if r.returncode != 0:

@@ -11,6 +11,7 @@ import json
 import subprocess
 from pathlib import Path
 
+from agent_tools import bounded_run
 from agent_tools.chair_types import HoldRecord, LandTrigger, SmokeCommandResult
 from agent_tools.land import pr_footer
 
@@ -126,4 +127,4 @@ def run_revert_pr(argv: dict) -> None:
     """Edge. Runs the four commands in order and raises CalledProcessError at the first failure, so a
     failed checkout never lets revert commit onto whatever branch is checked out. Never merges the PR."""
     for key in _REVERT_STEPS:
-        subprocess.run(argv[key], check=True, cwd=argv.get("cwd"))
+        bounded_run.completed(argv[key], check=True, cwd=argv.get("cwd"))

@@ -122,7 +122,7 @@ def test_revert_pr_body_ends_with_footer() -> None:
 
 
 def _fake_run(calls: list[list[str]], fail_on: str | None) -> Callable[..., None]:
-    def run(argv: list[str], check: bool, cwd: str | None = None) -> None:
+    def run(argv: list[str], check: bool, cwd: str | None = None, timeout: float | None = None) -> None:
         calls.append(argv)
         if fail_on is not None and fail_on in argv:
             raise subprocess.CalledProcessError(1, argv)

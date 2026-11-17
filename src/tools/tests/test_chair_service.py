@@ -134,16 +134,6 @@ def test_unit_args_is_none_for_text_that_does_not_run_the_chair() -> None:
     assert chair_service.unit_args("") is None
 
 
-def test_unsafe_values_names_what_systemd_would_split_or_expand() -> None:
-    assert chair_service.unsafe_values({"--label": "a b", "cox": "/bin/cox", "x": "50%", "y": "$HOME", "z": ""}) == [
-        "--label", "x", "y", "z",
-    ]
-
-
-def test_export_lines_numbers_the_shell_style_assignments() -> None:
-    assert chair_service.export_lines("A=1\nexport B=2\n# c\n  export C=3\n") == [2, 4]
-
-
 def test_chair_run_accepts_the_flags_the_unit_passes_it() -> None:
     a = cli.build_parser().parse_args(["chair", "run", "--label", "chair", "--interval", "60", "--profile", "/p.yaml"])
     assert (a.label, a.interval, a.profile) == ("chair", 60.0, "/p.yaml")

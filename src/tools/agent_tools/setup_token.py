@@ -6,9 +6,9 @@ import getpass
 import json
 import os
 import stat
-import subprocess
 from collections.abc import Callable, Mapping
 
+from agent_tools import bounded_run
 from agent_tools.claude_token import (
     TOKEN_ENV,
     claude_env,
@@ -44,7 +44,7 @@ def read_file_text(path: str) -> str | None:
 
 def run_command(argv: list[str], env: Mapping[str, str]) -> tuple[int, str]:
     """Returns stdout, so stderr noise never lands in front of JSON. stderr stands in only when stdout is empty."""
-    done = subprocess.run(argv, env=dict(env), capture_output=True, text=True, check=False)
+    done = bounded_run.completed(argv, env=dict(env), capture_output=True, text=True, check=False)
     return done.returncode, done.stdout if done.stdout.strip() else done.stderr
 
 

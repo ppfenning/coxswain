@@ -30,7 +30,7 @@ def test_gh_pr_create_times_out_after_120(monkeypatch):
     monkeypatch.setattr(epic.subprocess, "run", _timing_out(calls))
     ctx = SimpleNamespace(repo=Path("/r"))
     result = epic._open_review_pr(ctx, title="t", body="b", head="h", base="main")
-    assert result == (False, "gh pr create timed out after 120s")
+    assert result == (False, "gh pr timed out after 120 seconds")
     assert calls[0]["timeout"] == 120
 
 

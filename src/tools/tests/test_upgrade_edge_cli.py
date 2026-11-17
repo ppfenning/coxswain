@@ -9,13 +9,14 @@ from pathlib import Path
 
 import pytest
 
-from agent_tools import cli, forge_github, upgrade_edge
+from agent_tools import cli, doctor, forge_github, upgrade_edge
 
 A, B, C = ("a" * 40, "b" * 40, "c" * 40)  # newest first on main: A is the tip, B the newest green, C installed
 SLUG = "example-org/example-repo"
 MANIFEST = f'[coxswain]\nversion = "2026.11.8"\nrepo = "{SLUG}"\n\n[providers.claude-code]\nstatus = "supported"\n'
 BASE_LISTING = "src/graphs/harness/store_ddl_0001.py\nsrc/graphs/harness/store_ddl_0002.py\nsrc/graphs/harness/cli.py\n"
 COX = "/opt/example/bin/cox"
+DOCTOR = ["cox", "setup", "doctor", "--json"]
 
 
 class World:
@@ -27,13 +28,16 @@ class World:
         self.history = [A, B, C]
         self.green = {B, C}
         self.listings = {A: BASE_LISTING, B: BASE_LISTING, C: BASE_LISTING}
-        self.doctor_fails_at: set[str] = set()
+        self.doctor_fails_at: set[str] = set()  # a required row (the store) fails at these commits
+        self.advisory_fails_at: set[str] = set()  # only an advisory row (the token file) fails at these commits
+        self.down_after_restart: set[str] = set()  # units that are not active once restarted
+        self.restarted = False
         self.calls: list[list[str]] = []
         self.moves: list[tuple[str | None, bool]] = []
         self.move_exits: dict[str, int] = {}  # a failing move still moved the checkout unless `stuck`
         self.stuck = False
 
-    def run(self, argv: list, cwd: str | None) -> tuple[int, str]:
+    def run(self, argv: list, cwd: str | None = None) -> tuple[int, str]:
         self.calls.append(list(argv))
         git = ["git", "-C", self.checkout]
         if argv[:3] == git and argv[3:5] == ["fetch", "origin"]:
@@ -48,10 +52,19 @@ class World:
             runs = [{"headSha": sha, "status": "completed", "conclusion": "success" if sha in self.green else "failure"}
                     for sha in self.history]
             return 0, json.dumps(runs)
-        if argv[:2] == ["systemctl", "--user"]:
+        if argv[:3] == ["systemctl", "--user", "is-active"]:
+            states = ["inactive" if self.restarted and unit in self.down_after_restart else "active" for unit in argv[3:]]
+            return (0 if set(states) == {"active"} else 3), "".join(f"{state}\n" for state in states)
+        if argv[:3] == ["uv", "sync", "--check"]:
             return 0, ""
-        if argv == ["cox", "setup", "doctor"]:
-            return (1, "store  FAIL") if self.head in self.doctor_fails_at else (0, "all ok")
+        if argv[:3] == ["systemctl", "--user", "try-restart"]:
+            self.restarted = True
+            return 0, ""
+        if argv == DOCTOR:
+            rows = [{"check": "store", "ok": self.head not in self.doctor_fails_at, "detail": "store FAIL"},
+                    {"check": "claude token", "ok": self.head not in self.advisory_fails_at, "detail": "no token file"},
+                    *({"check": c, "ok": True} for c in doctor.UPGRADE_EXPECTED_CHECKS if c != "store")]
+            return int(not all(r["ok"] for r in rows)), json.dumps({"rows": rows, "ok": all(r["ok"] for r in rows)})
         raise AssertionError(f"unexpected command: {argv}")
 
     def move(self, a) -> int:
@@ -61,10 +74,10 @@ class World:
         return self.move_exits.get(a.to, 0)
 
     def restarts(self) -> list[list[str]]:
-        return [argv for argv in self.calls if argv[:2] == ["systemctl", "--user"]]
+        return [argv for argv in self.calls if argv[:3] == ["systemctl", "--user", "try-restart"]]
 
     def doctors(self) -> int:
-        return sum(argv == ["cox", "setup", "doctor"] for argv in self.calls)
+        return sum(argv == DOCTOR for argv in self.calls)
 
 
 @pytest.fixture
@@ -80,7 +93,7 @@ def world(tmp_path: Path, monkeypatch) -> World:
     (root / "coxswain" / "manifest.toml").write_text(MANIFEST)
     (tmp_path / "profile.yaml").write_text("upgrade_channel: edge\n")
     w = World(root)
-    monkeypatch.setattr(cli, "_real_run", w.run)
+    monkeypatch.setattr(cli, "_edge_run", w.run)
     monkeypatch.setattr(cli, "_upgrade_move", w.move)
     return w
 
@@ -104,7 +117,7 @@ def test_edge_moves_to_the_newest_green_commit_not_the_tip_then_restarts_both_un
     assert world.moves == [(B, False)]
     assert world.restarts() == [["systemctl", "--user", "try-restart", "coxswain-chair.service", "coxswain-lander.service"]]
     assert world.doctors() == 1
-    assert world.calls.index(world.restarts()[0]) < world.calls.index(["cox", "setup", "doctor"])
+    assert world.calls.index(world.restarts()[0]) < world.calls.index(DOCTOR)
     assert _record(tmp_path) | {"at": "t"} == {"at": "t", "previous": C, "chosen": B, "outcome": "upgraded", "detail": ""}
     assert f"upgraded {C[:12]} -> {B[:12]}" in out
 
@@ -132,7 +145,7 @@ def test_a_failing_doctor_moves_back_restarts_again_and_records_the_rollback(wor
     assert len(world.restarts()) == 2 and world.head == C
     record = _record(tmp_path)
     assert (record["previous"], record["chosen"], record["outcome"]) == (C, B, "rolled_back")
-    assert "cox setup doctor exited 1" in record["detail"]
+    assert record["detail"] == "doctor required rows failed: store: store FAIL"
     assert f"rolled back {B[:12]} -> {C[:12]}" in out
 
 
@@ -298,13 +311,6 @@ def test_install_timer_on_a_stable_machine_says_the_timer_moves_nothing_yet(unit
     assert cli.main(["upgrade", "--install-timer", "--profile", str(unit_home / "profile.yaml")]) == 0
     assert capsys.readouterr().out.splitlines()[-1].startswith("note: this machine's channel is stable")
     assert "OnUnitActiveSec=30min" in (unit_home / ".config" / "systemd" / "user" / upgrade_edge.TIMER_NAME).read_text()
-
-
-def test_install_timer_refuses_off_linux(unit_home: Path, monkeypatch, capsys):
-    monkeypatch.setattr(sys, "platform", "darwin")
-    assert cli.main(["upgrade", "--install-timer", "--profile", str(unit_home / "profile.yaml")]) == 2
-    assert not (unit_home / ".config" / "systemd").exists()
-    assert "refusing" in capsys.readouterr().out
 
 
 def _export_garage(home: Path) -> None:

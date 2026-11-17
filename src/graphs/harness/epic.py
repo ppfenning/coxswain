@@ -83,6 +83,7 @@ from graphs.delivery.budget_estimate import estimate_budget
 from graphs.delivery.lifecycle_propose import DEFAULT_FIX_ATTEMPTS
 from graphs.delivery.repo_layout import repo_key
 from harness import (
+    bounded_proc,
     landing_git,
     landing_ops,
     landing_store,
@@ -189,6 +190,9 @@ PRINCIPAL = "epic-swarm(lifecycle-propose)"
 # branches, it never authors. The identity is passed with -c so a test, or a
 # machine with no global git config, needs no setup to run this.
 _IDENTITY = ("-c", "user.email=epic-swarm@invalid", "-c", "user.name=epic-swarm")
+
+# Seconds a `gh pr` call may run: the one value bounded_proc and the tools bounded_run share.
+_GH_TIMEOUT_SECONDS = bounded_proc.GH_TIMEOUT_SECONDS
 
 def opens_pr(land_at: str, grain: str) -> bool:
     """A review PR is opened per `task` only at land_at `task`. No phase ever opens one: the retired `level` reads as
@@ -663,24 +667,22 @@ def _note_push_failure(record: dict[str, Any], warning: str | None) -> None:
 
 def _open_review_pr(ctx: _Ctx, *, title: str, body: str, head: str, base: str) -> tuple[bool, str]:
     """Open a PR for `head` against `base`; the detail is its URL on success."""
-    try:
-        proc = subprocess.run(
-            ["gh", "pr", "create", "--title", title, "--body", body, "--head", head, "--base", base],
-            cwd=ctx.repo, capture_output=True, text=True, timeout=120,
-        )
-    except subprocess.TimeoutExpired:
-        return False, "gh pr create timed out after 120s"
+    # A hung gh is exit 124 with `gh pr timed out after 120 seconds` as stderr, reported as any failed create.
+    proc = bounded_proc.completed(
+        ["gh", "pr", "create", "--title", title, "--body", body, "--head", head, "--base", base],
+        _GH_TIMEOUT_SECONDS, cwd=ctx.repo, capture_output=True, text=True,
+    )
     return proc.returncode == 0, (proc.stdout if proc.returncode == 0 else proc.stderr or proc.stdout).strip()
 
 
 def _existing_pr(ctx: _Ctx, head: str) -> tuple[bool, str]:
     """(known, url): known is False when the forge could not be asked, so "no PR" is never guessed from an error."""
     try:
-        proc = subprocess.run(
+        proc = bounded_proc.completed(
             ["gh", "pr", "view", head, "--json", "url", "--jq", ".url"],
-            cwd=ctx.repo, capture_output=True, text=True, timeout=120,
+            _GH_TIMEOUT_SECONDS, cwd=ctx.repo, capture_output=True, text=True,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except OSError as exc:
         return False, f"{type(exc).__name__}: {exc}"
     if proc.returncode == 0:
         return True, proc.stdout.strip()

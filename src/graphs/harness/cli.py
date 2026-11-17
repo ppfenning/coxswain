@@ -22,7 +22,6 @@ import shlex
 import shutil
 import signal
 import socket
-import subprocess
 import sys
 import tempfile
 import threading
@@ -53,7 +52,7 @@ from graphs.delivery.initiative_decompose import (
     unexecuted_item_create_reason,
     withdrawal,
 )
-from harness import CORE_SCHEMA, node_progress, run_lease, store_traces
+from harness import CORE_SCHEMA, bounded_proc, node_progress, run_lease, store_traces
 from harness.autonomy import split_by_policy
 from harness.check_gate import gate_commands
 from harness.checks import all_passed, checks_evidence, repo_checks, run_checks
@@ -864,7 +863,7 @@ def pgrep_pids(text: str) -> list[int]:
 def _pgrep_children(pid: int) -> str | None:
     """`pgrep -P <pid>` output; "" when exit 1 says no children, None when pgrep is missing or fails."""
     try:
-        done = subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True, check=False)
+        done = bounded_proc.completed(["pgrep", "-P", str(pid)], capture_output=True, text=True, check=False)
     except OSError:
         return None
     return {0: done.stdout, 1: ""}.get(done.returncode)

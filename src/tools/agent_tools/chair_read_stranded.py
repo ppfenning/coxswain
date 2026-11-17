@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from collections import Counter
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
-from agent_tools import epic, land_manual, remote_lane, repo_path, runs_stranded
+from agent_tools import bounded_run, epic, land_manual, remote_lane, repo_path, runs_stranded
 
 KEYS = ("run", "task", "phase", "branch", "remedy", "expected")
 
@@ -35,7 +34,7 @@ def _repo_exists(repo: str) -> bool:
 
 def _branch_exists(repo: str, branch: str) -> bool:
     """A real, git-backed check: whether `branch` is present as a local branch of `repo`, expanded to this machine's home."""
-    r = subprocess.run(["git", "-C", _local_path(repo), "branch", "--list", branch], capture_output=True, text=True)
+    r = bounded_run.completed(["git", "-C", _local_path(repo), "branch", "--list", branch], capture_output=True, text=True)
     return bool(r.stdout.strip())
 
 

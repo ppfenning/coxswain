@@ -13,6 +13,10 @@ from __future__ import annotations
 
 import re
 from collections.abc import Collection, Mapping, Sequence
+from pathlib import PurePath
+from xml.sax.saxutils import escape
+
+from agent_tools import chair_service, unit_env
 
 CHANNELS = ("stable", "edge")
 DEFAULT_CHANNEL = "stable"
@@ -30,6 +34,10 @@ _MIGRATION = re.compile(r"(?:^|/)store_ddl_(\d{4})\.py$")
 
 SERVICE_NAME = "coxswain-upgrade.service"
 TIMER_NAME = "coxswain-upgrade.timer"
+PLIST_LABEL = "coxswain-upgrade"
+PLIST_NAME = "coxswain-upgrade.plist"
+# systemd kills a scheduled upgrade still running after this long; each git and gh call inside has its own bound too.
+SERVICE_TIMEOUT = "30min"
 
 MOVE, UNCHANGED, AHEAD, HELD = "move", "unchanged", "ahead", "held"
 UPGRADED, ROLLED_BACK, ROLLBACK_FAILED, NOT_ROLLED_BACK = "upgraded", "rolled_back", "rollback_failed", "not_rolled_back"
@@ -60,6 +68,12 @@ def decide(head: str, target: str, first_parent: Sequence[str], record: Mapping 
     if record and record.get("chosen") == target and record.get("outcome") in _FAILED:
         return HELD
     return MOVE
+
+
+def needs_resync(verdict: str, venv_check_code: int) -> bool:
+    """Whether a run that moves nothing must still sync the venv: `uv sync --check` said the venv does not match the
+    checkout (exit 1). A check that timed out (124) or could not run (127) is not evidence either way."""
+    return verdict != MOVE and venv_check_code == 1
 
 
 def verdict_line(verdict: str, head: str, target: str, record: Mapping | None = None) -> str:
@@ -106,13 +120,14 @@ def record_line(rec: Mapping) -> str:
 
 def service_text(cox: str, profile: str, path: str, environment_file: str | None) -> str:
     """The oneshot the timer fires. It runs outside the chair, so restarting the chair does not kill it mid-upgrade."""
-    env_lines = [f"EnvironmentFile=-{environment_file}"] if environment_file is not None else []
+    env_lines = [unit_env.environment_file_line(environment_file)] if environment_file is not None else []
     lines = [
         "[Unit]",
         "Description=Coxswain edge upgrade: move to the newest green commit on main",
         "",
         "[Service]",
         "Type=oneshot",
+        f"TimeoutStartSec={SERVICE_TIMEOUT}",
         f"ExecStart={cox} upgrade --scheduled --profile {profile}",
         f"Environment=PATH={path}",
         *env_lines,
@@ -134,3 +149,55 @@ def timer_text(minutes: int) -> str:
         "WantedBy=timers.target",
     ]
     return "\n".join(lines) + "\n"
+
+
+def plist_text(cox: str, profile: str, path: str, minutes: int, environment_file: str) -> str:
+    """The launchd agent a macOS host upgrades on: the same command as the systemd service, every `minutes`, run
+    through `unit_env.launchd_arguments` so it sources the one env file at launch. Every value is XML-escaped."""
+    arguments = chair_service.program_arguments(environment_file, [cox, "upgrade", "--scheduled", "--profile", profile])
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+        '<plist version="1.0">',
+        "<dict>",
+        "  <key>Label</key>",
+        f"  <string>{escape(PLIST_LABEL)}</string>",
+        "  <key>ProgramArguments</key>",
+        "  <array>",
+        *(f"    <string>{escape(argument)}</string>" for argument in arguments),
+        "  </array>",
+        "  <key>StartInterval</key>",
+        f"  <integer>{minutes * 60}</integer>",
+        *chair_service.environment_variable_lines(path),
+        "</dict>",
+        "</plist>",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def schedule_paths[Home: PurePath](platform: str, home: Home) -> list[Home]:
+    """Where the upgrade schedule lives on `platform`: the launchd agent on darwin, the service and timer elsewhere."""
+    if platform == "darwin":
+        return [home / "Library" / "LaunchAgents" / PLIST_NAME]
+    unit_dir = home / ".config" / "systemd" / "user"
+    return [unit_dir / SERVICE_NAME, unit_dir / TIMER_NAME]
+
+
+def schedule_files[Home: PurePath](
+    platform: str, home: Home, cox: str, profile: str, path: str, minutes: int, environment_file: str | None,
+) -> list[tuple[Home, str]]:
+    """Each file `cox upgrade --install-timer` writes, in `schedule_paths` order. Both platforms read the one env
+    file: systemd by its EnvironmentFile= line, launchd by sourcing it at launch (the default file when none is given,
+    so the agent picks it up once `cox setup unit-env` writes it)."""
+    if platform == "darwin":
+        texts = [plist_text(cox, profile, path, minutes, environment_file or unit_env.env_file_path(str(home)))]
+    else:
+        texts = [service_text(cox, profile, path, environment_file), timer_text(minutes)]
+    return list(zip(schedule_paths(platform, home), texts, strict=True))
+
+
+def activation_lines(platform: str, first: PurePath) -> list[str]:
+    """What the operator runs to start the schedule; the install itself runs no launchd or systemd tool."""
+    if platform == "darwin":
+        return [f"launchctl bootstrap gui/$(id -u) {first}"]
+    return ["systemctl --user daemon-reload", f"systemctl --user enable --now {TIMER_NAME}"]
