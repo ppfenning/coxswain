@@ -19,7 +19,6 @@ from agent_tools.cli import (
     _read_text_or_none,
     _resolved_pacing_policy,
     _resolved_run_id,
-    _route_context,
     console_screen,
     dash_detail_health,
     dash_detail_initiative,
@@ -35,6 +34,7 @@ from agent_tools.cli import (
     usage_window,
 )
 from agent_tools.cli_launcher import _launcher
+from agent_tools.cli_route import _route_context
 
 
 def _console_spend(runs_dir: Path, profile: dict, now: datetime.datetime) -> dict:

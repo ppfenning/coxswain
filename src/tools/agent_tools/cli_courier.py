@@ -12,7 +12,8 @@ import sys
 import uuid
 from pathlib import Path
 
-from agent_tools.cli import _courier_profile, _profile_path, _read_epics, chair, chair_attach, courier
+from agent_tools.cli import _profile_path, _read_epics, chair, chair_attach, courier
+from agent_tools.cli_route import _courier_profile
 
 
 def _plugin_root(skills_roots, name: str = "coxswain"):
