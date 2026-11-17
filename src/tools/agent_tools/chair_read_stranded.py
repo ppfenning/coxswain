@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import os
 from collections import Counter
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 from agent_tools import bounded_run, epic, land_manual, remote_lane, repo_path, runs_stranded
 
@@ -106,7 +107,7 @@ def read_missing_repos(records: list[dict], items: list[dict],
     return runs_stranded.missing_repos(records, items, repo_exists)
 
 
-def stranded_from_rows(rows: list[dict], records: list[dict],
+def stranded_from_rows(rows: Sequence[Mapping[str, Any]], records: Sequence[Mapping[str, Any]],
                        manual_of: Callable[[str], bool] = _is_manual) -> list[dict]:
     """The same rule as `read_stranded`, with each task's state taken from `rows` (kind "task") instead of files.
 

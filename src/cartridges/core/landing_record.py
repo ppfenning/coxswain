@@ -253,7 +253,7 @@ def phase_state(record: LandingRecord | None, phase: str, tasks: Sequence[Mappin
     return _phase_state(record, phase, tasks, parents if parents is not None else phase_parents(tasks), frozenset())
 
 
-def _phase_state(record: Mapping[str, Any] | None, phase: str, tasks: Sequence[Mapping[str, Any]],
+def _phase_state(record: LandingRecord | None, phase: str, tasks: Sequence[Mapping[str, object]],
                  known: Mapping[str, Collection[str]], path: frozenset[str]) -> str:
     """`phase_state`, with `path` the phases already being asked about above this one, so a cycle ends."""
     stored = str(_stored(record, phase).get("state") or "")

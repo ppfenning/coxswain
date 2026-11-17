@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any
 
 from agent_tools import land_manual
 from agent_tools.base_branch import DEFAULT_BASE
@@ -123,7 +124,7 @@ def _carried(record: dict, item: dict | None, branch_exists: Callable[[str, str]
             and branch_exists(repo, branch))
 
 
-def stranded(records: list[dict], items: list[dict],
+def stranded(records: Sequence[Mapping[str, Any]], items: list[dict],
              repo_exists: Callable[[str], bool] | None = None,
              branch_exists: Callable[[str, str], bool] | None = None,
              base_of: Callable[[str], str] | None = None,

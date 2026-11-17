@@ -1792,7 +1792,7 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
             return _schedule_updated(action, deps)
         case ActionKind.LAND_BATCH | ActionKind.PULL_WORKSPACE | ActionKind.CLOSE_MERGED_TASK:
             # declared and planned, but no executor runs them yet: refused, as before the match was exhaustive
-            return _result(action, "refused", f"unsupported action kind {raw!r}")
+            return _result(action, "refused", f"unsupported action kind {kind.value!r}")
         case _:
             assert_never(kind)
 

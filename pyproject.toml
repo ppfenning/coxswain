@@ -128,7 +128,6 @@ exclude = [
     "src/tools/agent_tools/analytics_snapshot.py",
     "src/tools/agent_tools/bounded_run.py",
     "src/tools/agent_tools/chair.py",
-    "src/tools/agent_tools/chair_facts.py",
     "src/tools/agent_tools/cleanup.py",
     "src/tools/agent_tools/cli.py",
     "src/tools/agent_tools/console_screen.py",

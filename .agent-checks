@@ -16,6 +16,6 @@ python .github/check_clean.py . --require-names
 # An epic lane's base is its phase branch (COX_LANE_BASE, exported by the harness); elsewhere origin/main.
 python .github/check_unwired.py
 # H2 (docs/hardening.md): the type check, strict on the typed core and basic elsewhere ([tool.pyright] in pyproject.toml).
-# It reads its packages from the `python` on PATH, so the lane host's environment carries the dev group (pyright) and
-# the extras (psycopg, pyarrow, pyiceberg, duckdb), as `uv sync --group dev --all-extras` installs them.
-pyright
+# Without pyright or the extras in this python it skips and says how to install them, as smoke skips without docker;
+# CI sets COX_TYPES_REQUIRED=1, which makes a missing one a failure.
+python .github/check_types.py

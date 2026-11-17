@@ -132,11 +132,11 @@ def last_tuned_at(rows: Iterable[Mapping[str, Any]]) -> str | None:
 
 
 def tuning_facts(
-    stats: Sequence[Row], last: str | None, used_fraction: float, week_elapsed_fraction: float,
+    stats: Sequence[Mapping[str, Any]], last: str | None, used_fraction: float, week_elapsed_fraction: float,
     lanes: Mapping[str, int], bounds: Mapping[str, tuple[int, int]],
 ) -> TuningFacts:
     return {
-        "stats": list(stats), "meter": meter_facts(used_fraction, week_elapsed_fraction),
+        "stats": cast("list[dict[str, object]]", list(stats)), "meter": meter_facts(used_fraction, week_elapsed_fraction),
         "hosts": host_facts(lanes, bounds), "last_tuned_at": last,
     }
 

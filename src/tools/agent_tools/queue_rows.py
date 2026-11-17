@@ -205,7 +205,7 @@ def intake_stamp(intake_row: Row, initiative_id: str) -> Row:
     return {**intake_row, "state": _INTAKE_STAMPED_STATE, "extra": extra}
 
 
-def row_path(row: Row) -> str:
+def row_path(row: Mapping[str, Any]) -> str:
     if row["kind"] == "task":
         return f"work/{row['initiative']}/{row['phase']}/{row['task_id']}.md"
     if row["kind"] == "initiative":

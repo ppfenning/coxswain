@@ -41,6 +41,7 @@ from agent_tools.chair_exec import (
 from agent_tools.chair_facts import STRANDED_CAUSE, stale_draft_keys
 from agent_tools.chair_plan_stale import plan_stale
 from agent_tools.chair_report import format_status
+from agent_tools.chair_types import ActionKind
 from agent_tools.draft_apply import plan_approve
 from agent_tools.remote_argv import probe_argv, ssh_argv, sync_argv
 from agent_tools.store_url import TracesRoot
@@ -2424,3 +2425,17 @@ def test_a_merging_launch_with_no_runs_directory_fails_before_touching_anything(
     assert [r["status"] for r in results] == ["failed"]
     assert "runs directory" in results[0]["reason"]
     assert {name: path.read_text() for name, path in files.items()} == before and set(store) == {("initiative", "init")}
+
+
+@pytest.mark.parametrize("kind", [ActionKind.LAND_BATCH, "land_batch"])
+def test_a_planned_only_kind_is_refused_naming_its_plain_value(kind):
+    """Built with the enum or read back from the log as a string, the refusal names the kind's value, never its repr."""
+    calls: list = []
+    [result] = perform([{"kind": kind, "epoch": 1}], _deps(calls), lambda: 1, False)
+    assert (result["status"], result["reason"]) == ("refused", "unsupported action kind 'land_batch'")
+
+
+def test_an_unknown_kind_is_refused_naming_it():
+    calls: list = []
+    [result] = perform([{"kind": "no_such_kind", "epoch": 1}], _deps(calls), lambda: 1, False)
+    assert (result["status"], result["reason"]) == ("refused", "unsupported action kind 'no_such_kind'")

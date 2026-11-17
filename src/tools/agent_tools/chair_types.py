@@ -264,6 +264,7 @@ class QuarantineFacts(TypedDict):
     rescue_failed: bool  # an earlier rescue_failed attempt exists for this task on the current ticket version
     reason: NotRequired[str]  # the newest attempt's stored reason, uncut; absent means none
     causes: NotRequired[list[str]]  # every quarantine cause on the current body, oldest attempt first; absent means just `cause`
+    reasons: NotRequired[list[str]]  # each of those attempts' stored reason, in the same order; absent means just `reason`
     run: NotRequired[str]  # the run the remedy command names; absent means unknown
     repo: NotRequired[str]  # the repository the remedy command names; absent means unknown
     task_state_key: NotRequired[str]  # names the harness state the task was quarantined in; absent leaves the quarantine unsorted

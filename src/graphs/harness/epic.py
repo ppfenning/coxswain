@@ -433,7 +433,7 @@ def _start_initiative(ctx: _Ctx, initiative: Mapping[str, Any]) -> str:
         return name
     record, why = ctx.retry.write(
         lambda: landing_ops.start_record(
-            cast(Store, ctx.store).conn, ctx.repo, initiative=ctx.initiative_id, branch=name,
+            _ctx_store(ctx).conn, ctx.repo, initiative=ctx.initiative_id, branch=name,
             parent=ctx.default_ref.removeprefix("origin/"), parent_ref=ctx.default_ref, now=_landing_stamp(),
             land_at=ctx.land_at, epic=initiative.get("epic"),
         ),
@@ -458,7 +458,7 @@ def _take_parent_forward(ctx: _Ctx) -> tuple[str, str, landing_git.Merge] | None
     record = landing_store.get_record(ctx.store.conn, ctx.initiative_id) or {}
     # A stacked initiative's recorded parent is the branch of the initiative below; once that one landed, its branch is
     # gone and its own parent is the one to take forward.
-    stacked = landing_record.stack_resolved_parent(record, landing_store.list_records(cast(Store, ctx.store).conn)) if record else ""
+    stacked = landing_record.stack_resolved_parent(record, landing_store.list_records(_ctx_store(ctx).conn)) if record else ""
     parent = stacked or ctx.default_ref.removeprefix("origin/")
     parent_ref = f"origin/{parent}" if landing_git.rev(ctx.repo, f"refs/remotes/origin/{parent}") else parent
     if landing_git.is_ancestor(ctx.repo, parent_ref, branch):
@@ -467,7 +467,7 @@ def _take_parent_forward(ctx: _Ctx) -> tuple[str, str, landing_git.Merge] | None
     try:
         merged = ctx.retry.write(
             lambda: landing_ops.take_parent_forward(
-                cast(Store, ctx.store).conn, ctx.repo, initiative=ctx.initiative_id, parent_ref=parent_ref,
+                _ctx_store(ctx).conn, ctx.repo, initiative=ctx.initiative_id, parent_ref=parent_ref,
                 worker=f"run:{ctx.run_id}", now=_landing_stamp(), fetch=lambda b: _fetch_initiative(ctx, b),
                 publish=(lambda b: _publish_branch(ctx, b)) if early else None,
             ),
@@ -544,7 +544,7 @@ def _file_integrate(
 
         if path is not None:
             workstore.write_item(item, path)
-        store_queue.upsert(cast(Store, ctx.store).conn, {
+        store_queue.upsert(_ctx_store(ctx).conn, {
             "kind": "task", "initiative": ctx.initiative_id, "task_id": ident, "phase": INTEGRATE_PHASE, "state": "ready",
             "needs": [], "surfaces": [], "title": item["title"], "body": item["body"], "extra": {"id": ident, "phase": INTEGRATE_PHASE},
             "updated_at": _now(), "updated_by": f"run:{ctx.run_id}",
@@ -624,7 +624,7 @@ def _merge_into_initiative(ctx: _Ctx, phase: str, items: Sequence[Mapping[str, A
     try:
         done = ctx.retry.write(
             lambda: landing_ops.merge_phase(
-                cast(Store, ctx.store).conn, ctx.repo, initiative=ctx.initiative_id, phase=phase, tasks=rows,
+                _ctx_store(ctx).conn, ctx.repo, initiative=ctx.initiative_id, phase=phase, tasks=rows,
                 worker=f"run:{ctx.run_id}", now=_landing_stamp(), checks=_merge_checks(ctx, phase),
                 fetch=lambda branch: _fetch_initiative(ctx, branch),
                 publish=(lambda branch: _publish_branch(ctx, branch)) if early else None,
@@ -2889,6 +2889,17 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+class StoreMissing(RuntimeError):
+    """A store write or read on a run that opened no store: a wiring fault, named rather than an AttributeError."""
+
+
+def _ctx_store(ctx: _Ctx) -> Store:
+    """The run's open store. Every caller sits behind a check that the run has one, so None is a wiring fault."""
+    if ctx.store is None:
+        raise StoreMissing(f"run {ctx.run_id} of {ctx.initiative_id} reached a store call without an open store")
+    return ctx.store
+
+
 def _mirror_by(ctx: _Ctx) -> str:
     return f"epic-driver:{ctx.run_id}"
 
@@ -2948,7 +2959,7 @@ def _mirror_read_store(ctx: _Ctx, items: Sequence[dict[str, Any]], rows: Sequenc
             item["state"] = row_state
         elif decision == work_mirror.USE_FILE_AND_UPSERT:
             new = work_mirror.item_row(ctx.initiative_id, item, times.get(str(task)) or _now(), _mirror_by(ctx))
-            _upsert_row(cast(Store, ctx.store), new)
+            _upsert_row(_ctx_store(ctx), new)
         if row is not None:
             # A merge and its handoff live only in the row, so `ready_tasks` sees a merged parent in any run.
             item["merged"] = bool(row.get("merged"))
@@ -3001,7 +3012,7 @@ def _read_store_rows(ctx: _Ctx) -> list[Mapping[str, Any]] | None:
     try:
         from harness import store_read  # not module level, for the reason given in `_mirror_read`
 
-        return list(store_read.work_items(cast(Store, ctx.store).conn, ctx.initiative_id))
+        return list(store_read.work_items(_ctx_store(ctx).conn, ctx.initiative_id))
     except Exception as exc:
         _log.warning("work_items not re-read for %s: %s: %s", ctx.initiative_id, type(exc).__name__, exc)
         return None
@@ -3029,7 +3040,7 @@ def _store_first(ctx: _Ctx, item: dict[str, Any], state: str) -> str | None:
     task, expected = item.get("id"), str(item["state"])
     try:
         written = store_work_state.set_state(
-            cast(Store, ctx.store).conn, ctx.initiative_id, str(task), state, _mirror_by(ctx), item.get("phase"), _now(), expected=expected
+            _ctx_store(ctx).conn, ctx.initiative_id, str(task), state, _mirror_by(ctx), item.get("phase"), _now(), expected=expected
         )
     except Exception as exc:
         reason = f"state move refused, store write failed: {type(exc).__name__}: {exc}"
@@ -3218,7 +3229,7 @@ def _write_healed_surfaces(ctx: _Ctx, task: str, surfaces: Sequence[str], notes:
         return
     try:
         store_queue.upsert(
-            cast(Store, ctx.store).conn,
+            _ctx_store(ctx).conn,
             {"initiative": ctx.initiative_id, "task_id": task, "surfaces": list(surfaces), "extra": {**extra, "lint": list(lint)}},
         )
     except Exception as exc:
@@ -3239,7 +3250,7 @@ def _quarantine_row(ctx: _Ctx, phase: str, task: str, *, approved_is_open: bool 
             return
         from harness import store_read  # not module level: see `_mirror_read`
 
-        row = next((r for r in store_read.work_items(cast(Store, ctx.store).conn, ctx.initiative_id) if r["task_id"] == task), None)
+        row = next((r for r in store_read.work_items(_ctx_store(ctx).conn, ctx.initiative_id) if r["task_id"] == task), None)
         current = None if row is None else str(row["state"])
         if row_should_quarantine(ctx.work_state, current, approved_is_open=approved_is_open):
             _store_first(ctx, {"id": task, "phase": phase, "state": current}, "quarantined")
@@ -6269,8 +6280,8 @@ def _record_merge(ctx: _Ctx, state: _Execution, task: str) -> None:
         return
     try:
         handoff = build_handoff(state.builds.get(task) or {}, ctx.scratch_branch(task), commit)
-        record_merge(cast(Store, ctx.store).conn, ctx.initiative_id, task, commit, _now(), _mirror_by(ctx))
-        record_handoff(cast(Store, ctx.store).conn, ctx.initiative_id, task, handoff, _now(), _mirror_by(ctx))
+        record_merge(_ctx_store(ctx).conn, ctx.initiative_id, task, commit, _now(), _mirror_by(ctx))
+        record_handoff(_ctx_store(ctx).conn, ctx.initiative_id, task, handoff, _now(), _mirror_by(ctx))
     except Exception as exc:
         _log.warning("merge and handoff not written to the store row: task=%s: %s: %s", task, type(exc).__name__, exc)
         return

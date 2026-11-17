@@ -2,7 +2,7 @@
 
 An initiative that lands at `initiative` is not planned here at all: the lander owns its phases and its one pull request."""
 import heapq
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from datetime import datetime
 from typing import cast
 
@@ -57,7 +57,7 @@ def _schedule(tasks: list[ApprovedTask], landed: set[str]) -> list[ApprovedTask]
                 heapq.heappush(ready.setdefault(repo_of[d], []), rank[d])
 
 
-def planned_tasks(approved: list[ApprovedTask], initiatives: list[InitiativeFacts]) -> list[ApprovedTask]:
+def planned_tasks(approved: list[ApprovedTask], initiatives: Sequence[InitiativeFacts]) -> list[ApprovedTask]:
     """The approved tasks this tick lands, in landing order; a task `_schedule` defers is not among them."""
     landed = set().union(*(i["landed"] for i in initiatives))
     return _schedule(_first_of_each_id([t for t in approved if t["phase_done"]]), landed)

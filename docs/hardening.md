@@ -94,16 +94,19 @@ cannot import it.
 **Done when.** The strict job passes with no ignores in those modules, and no `dict[str, Any]` remains in their
 signatures.
 
-**Status (first part).** Pyright 1.1.414 runs as a step of CI's required `test` job (`uv run --all-extras pyright`)
-and as a line of `.agent-checks`, configured in `pyproject.toml`'s `[tool.pyright]`. Strict, with no ignores and no
-`Any`: `core/`, `harness/store*` and `chair_types.py` (`Facts` and `Action` carry no `Any`; `Result` had none).
-`ActionKind` is a `StrEnum`, and `chair_exec._execute` matches every member and ends in `assert_never`, so a kind
-without a case fails the check. At the basic level and passing: every other `chair_*` module, `lander*` and
-`harness/epic.py`, which still carry `dict[str, Any]` and are the next to go strict. The basic level warns, rather
-than fails, on a maybe-missing key of a TypedDict, because `Action` is one total=False dict for every kind until it
-becomes a union per kind. Not yet at the basic level, and listed under `exclude`: 91 modules, `chair_facts.py` (H6
-is changing it) and the CLIs among them. Still open: the validating constructors from the store, Action as a union
-per kind, and the strict set's remaining modules.
+**Status (first part).** Pyright 1.1.414 is configured in `pyproject.toml`'s `[tool.pyright]` and run by
+`.github/check_types.py`: a step of CI's required `test` job, with `COX_TYPES_REQUIRED=1`, and a line of
+`.agent-checks`, which skips and names `uv sync --frozen --all-extras --group dev` when pyright or the extras are
+missing. Strict, with no ignores and no `Any`: `core/`, `harness/store*` and `chair_types.py` (`Facts` and `Action`
+carry no `Any`; `Result` had none); a test proves the store glob is strict. `ActionKind` is a `StrEnum`, and
+`chair_exec._execute` matches every member and ends in `assert_never`, so a kind without a case fails the check.
+At the basic level and passing: every other `chair_*` module, `lander*` and `harness/epic.py`, which still carry
+`dict[str, Any]` and are the next to go strict. The basic level warns, rather than fails, on a maybe-missing key of
+a TypedDict, because `Action` is one total=False dict for every kind until it becomes a union per kind. Not yet at
+the basic level, and listed under `exclude`: the CLIs, `land*`, `route*` and the other modules that failed it when
+the check went in; `test_repo_gates` freezes that list, so it only shrinks. The types reach the store's rows through
+about 300 casts, which H2's validating constructors replace. Still open: those constructors, Action as a union per
+kind, and the strict set's remaining modules.
 
 ## H3. The lander does not block
 
