@@ -84,6 +84,21 @@ record's review, adversary and arbitration verdicts, `fix_loop` and evidence bes
 the body it was built on (`body_sha`), so an attempt on an earlier body is not one on the current body, and
 records are ordered by run number. A rescue reads its attempts and the kept patch from them too.
 
+A person's fix starts a task fresh. `cox route edit <task> --state ready` on a blocked or quarantined task,
+or on one still flagged (a flagged task is already `ready`, so the move cancels its triage request), takes
+`triage_requested` off its row and marks it `fresh_after_run`: the newest number of each of the
+initiative's run series then, `{"<initiative>": 9, "<initiative>.<phase>": 3}`, since a phase run
+(`route launch --phase`) is numbered in a series of its own. The edit is refused while a run of the
+initiative is live, and warns when the store names no run to mark. `cox route release <initiative>` on a
+held initiative marks the initiative row the same way. Neither side counts an attempt from a run at or
+below its own series' number in the later of the two marks: not toward the attempt cap, not toward
+`chair.quarantine_hold_after`, and a triage flag that names such a run is dropped and the task built. A
+run of a series the mark never saw began after it and counts. Runs, not a time: a record is dated by day
+only. A task still quarantined when its initiative was released keeps its newest attempt alone, so it
+still names its run and the chair plans for it as before the release, on a failure count of one: a
+triage request when that run's request was never made (the epic, seeing it predates the release, builds
+the task), and `hold_task` when it was, since triage then left it quarantined in the same state.
+
 ## 2. `ticket_amend`: specify, never relax  (cartridges, graphs)
 
 - `cartridges/base/cartridge.yaml` write kinds: `ticket_amend: {risk: low, ramp: eligible}`.

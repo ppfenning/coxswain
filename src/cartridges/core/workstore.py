@@ -127,6 +127,61 @@ TRIAGE_FLAG = "triage_requested"  # set by the chair: triage the task before any
 HOLD_REASON = "hold_reason"  # with state `blocked`, why a person must decide; it starts with HOLD_MARK
 HOLD_MARK = "needs you:"
 TRIAGE_RECORDS = "triage"  # the epic's triage verdicts on the task, oldest first: {class, diagnosis, run}
+# Set by `cox route edit --state ready` on a task row and by `cox route release` on an initiative row: for each run series
+# of the initiative (`<initiative>-N`, and `<initiative>.<phase>-N` for a phase run, each numbered on its own), the newest
+# number at that moment. No attempt and no triage request from a run at or below its series' number counts any more, so
+# a run after it builds the task fresh. A run of a series the mark never saw began after it. Runs, not a time: a run task
+# record is dated by day only, and a number is only comparable within its own series.
+FRESH_AFTER_RUN = "fresh_after_run"
+
+
+def run_series(run: object) -> tuple[str, int]:
+    """(series, number) of a run id: `x-3` is ("x", 3), `x.p1-2` is ("x.p1", 2); ("", -1) for one that ends in no number."""
+    series, _, tail = str(run or "").rpartition("-")
+    return (series, int(tail)) if series and tail.isdigit() else ("", -1)
+
+
+def fresh_mark(initiative: str, run_ids: Iterable[str]) -> dict[str, int]:
+    """The newest number of every run series of `initiative` among `run_ids`: its own and its phase runs'. {} for none."""
+    mark: dict[str, int] = {}
+    for run in run_ids:
+        series, number = run_series(run)
+        if number >= 0 and (series == initiative or series.startswith(f"{initiative}.")):
+            mark[series] = max(mark.get(series, -1), number)
+    return mark
+
+
+def _mark_of(value: object) -> dict[str, int]:
+    """A stored mark as {series: number}; a lone run id reads as that run's series alone."""
+    if isinstance(value, Mapping):
+        return {str(k): v for k, v in value.items() if isinstance(v, int) and not isinstance(v, bool)}
+    series, number = run_series(value)
+    return {series: number} if number >= 0 else {}
+
+
+def fresh_cutoff(*extras: Mapping[str, Any] | None) -> dict[str, int]:
+    """The marks among the row extras given (a task's and its initiative's), merged series by series to the later one."""
+    cutoff: dict[str, int] = {}
+    for extra in extras:
+        if isinstance(extra, Mapping) and extra.get(FRESH_AFTER_RUN):
+            for series, number in _mark_of(extra[FRESH_AFTER_RUN]).items():
+                cutoff[series] = max(cutoff.get(series, -1), number)
+    return cutoff
+
+
+def counts_after(run: object, cutoff: Mapping[str, int]) -> bool:
+    """Whether an attempt or a request from `run` counts under `cutoff`. With no mark everything counts; a run of a
+    series the mark never saw counts; a run with no number does not once there is a mark."""
+    if not cutoff:
+        return True
+    series, number = run_series(run)
+    return number >= 0 and (series not in cutoff or number > cutoff[series])
+
+
+def triage_flag_run(flag: object) -> str:
+    """The run a chair triage flag names: its value is the handled key `triage:<task>:<run>`."""
+    parts = str(flag or "").split(":", 2)
+    return parts[2] if len(parts) == 3 else ""
 
 
 def hold_text(reason: str) -> str:

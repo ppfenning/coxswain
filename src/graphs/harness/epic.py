@@ -3647,6 +3647,16 @@ def _record_triage(ctx: _Ctx, task: str, entry: Mapping[str, Any]) -> None:
         _log.warning("triage of %s not recorded on its row: %s", task, why)
 
 
+def _drop_stale_triage_flag(ctx: _Ctx, task: str) -> None:
+    """The chair's flag comes off a row whose request predates the task's fresh start; nothing else on the row changes."""
+
+    def change(row: dict[str, Any]) -> dict[str, Any]:
+        return {"extra": {k: v for k, v in _row_extra(row).items() if k != workstore.TRIAGE_FLAG}}
+
+    if ctx.store is not None and (why := _update_row(ctx, task, change)) is not None:
+        _log.warning("stale triage request on %s not removed from its row: %s", task, why)
+
+
 def _move_task(ctx: _Ctx, item: dict[str, Any], state: str) -> str | None:
     """Move one task outside the gate; None when moved, else why not. Never called holding `items_lock`.
 
@@ -4468,14 +4478,27 @@ def _run_phase(
     # must not grow the count the cap enforces. Nor does a `rescue_failed` one:
     # a rescue checks work already built and is not a build.
     attempts_by_id = {str(item["id"]): _build_attempts(item.get("attempts") or []) for item in all_ready}
+    read_rows = _queue_rows(ctx)
+    queue_rows = read_rows or {}
+    # A task a person readied by hand, or whose initiative a person released, starts fresh: no attempt and no triage
+    # request from a run at or before that point (`FRESH_AFTER_RUN`, on the task's row or the initiative's) counts. The
+    # mark holds one number per run series, so a phase run (`<initiative>.<phase>-N`) is compared only within its own.
+    initiative_extra = _row_extra(queue_rows.get(ctx.initiative_id))
+    cutoff_by_id = {
+        str(item["id"]): workstore.fresh_cutoff(_row_extra(queue_rows.get(str(item["id"]))), initiative_extra) for item in all_ready
+    }
     # A rewritten ticket starts a fresh count. Triage still gets the whole history for its repeat guard.
     # An item with no `body` cannot be matched, so all its attempts count.
     counted_by_id = {
-        str(item["id"]): (
-            workstore.attempts_on_current_body({**item, "attempts": attempts_by_id[str(item["id"])]})
-            if "body" in item
-            else attempts_by_id[str(item["id"])]
-        )
+        str(item["id"]): [
+            a
+            for a in (
+                workstore.attempts_on_current_body({**item, "attempts": attempts_by_id[str(item["id"])]})
+                if "body" in item
+                else attempts_by_id[str(item["id"])]
+            )
+            if workstore.counts_after(a.get("run"), cutoff_by_id[str(item["id"])])
+        ]
         for item in all_ready
     }
     caused_by_id = {
@@ -4491,15 +4514,22 @@ def _run_phase(
     # failure that needs a tweak gets its instruction before any rebuild.
     triage_batch: list[dict[str, Any]] = []
     amended: dict[str, dict[str, Any]] = {}  # task id -> the item rebuilt on its append-only amended body
-    read_rows = _queue_rows(ctx)
-    queue_rows = read_rows or {}
     # Unread rows hide the chair's flag: a task with any attempt might be one it asked triage for, so it is not built
     # in this run, before or without triage. It stays ready, and the next run reads its row.
     unread = {str(item["id"]) for item in all_ready if item.get("attempts")} if read_rows is None else set()
     for task_id in sorted(unread):
         print(f"  triage: {task_id} not built; its store row could not be read, so a request for triage cannot be ruled out")
     capped = {task_id for task_id, attempts in counted_by_id.items() if len(attempts) >= cap_by_id[task_id]} - unread
-    flagged = {task_id for task_id in counted_by_id if _row_extra(queue_rows.get(task_id)).get(workstore.TRIAGE_FLAG)}
+    flags = {
+        task_id: flag for task_id in counted_by_id if (flag := _row_extra(queue_rows.get(task_id)).get(workstore.TRIAGE_FLAG))
+    }
+    flagged = {t for t, flag in flags.items() if workstore.counts_after(workstore.triage_flag_run(flag), cutoff_by_id[t])}
+    for task_id in sorted(set(flags) - flagged):
+        _drop_stale_triage_flag(ctx, task_id)
+        print(
+            f"  triage: {task_id} not triaged; its request came from run {workstore.triage_flag_run(flags[task_id]) or '(unknown)'}, "
+            "before a person readied it or released its initiative, so it builds fresh"
+        )
     capped_ids = sorted(capped | flagged)
     folded: set[str] = set()  # siblings whose body gained a combined task's scope in this phase
 

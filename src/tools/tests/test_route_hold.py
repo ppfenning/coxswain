@@ -263,9 +263,30 @@ def test_holding_then_releasing_an_initiative_round_trips_the_file_and_the_row(t
     assert path.read_text() == INIT_FREE
 
 
+def test_releasing_a_held_initiative_marks_its_newest_run_so_its_tasks_start_fresh(tmp_path, monkeypatch):
+    path = make_initiative(tmp_path, text=INIT_HELD)
+    calls = spy_initiative(monkeypatch, path)
+    monkeypatch.setattr(route_hold.run_store, "run_ids", lambda runs_dir: {"demo-9", "demo-10", "demo.p1-2", "demo-x-40"})
+    held = {"id": "demo", "repo": "r", "held": "true", "hold_reason": "held by pat on 2026-11-03: waiting on design"}
+    assert route_hold.release(tmp_path, tmp_path / "runs", "demo", [ROWS[2], {**ROWS[3], "extra": held}]) == 0
+    assert calls[0][2]["extra"] == {"id": "demo", "repo": "r", "fresh_after_run": {"demo": 10, "demo.p1": 2}}
+    assert path.read_text() == INIT_FREE
+
+
+def test_releasing_a_held_initiative_with_no_run_found_says_no_mark_was_written(tmp_path, monkeypatch, capsys):
+    path = make_initiative(tmp_path, text=INIT_HELD)
+    calls = spy_initiative(monkeypatch, path)
+    monkeypatch.setattr(route_hold.run_store, "run_ids", lambda runs_dir: set())
+    held = {"id": "demo", "repo": "r", "held": "true", "hold_reason": "held by pat on 2026-11-03: waiting on design"}
+    assert route_hold.release(tmp_path, tmp_path / "runs", "demo", [ROWS[2], {**ROWS[3], "extra": held}]) == 0
+    assert calls[0][2]["extra"] == {"id": "demo", "repo": "r"}
+    assert "release: warning: no run of demo found in the store; no fresh_after_run mark written" in capsys.readouterr().out
+
+
 def test_releasing_an_initiative_that_is_not_held_writes_nothing(tmp_path, monkeypatch):
     path = make_initiative(tmp_path)
     calls = spy_initiative(monkeypatch, path)
+    monkeypatch.setattr(route_hold.run_store, "run_ids", lambda runs_dir: {"demo-9"})
     assert route_hold.release(tmp_path, tmp_path / "runs", "demo", ROWS) == 0
     assert calls == [] and path.read_text() == INIT_FREE
 

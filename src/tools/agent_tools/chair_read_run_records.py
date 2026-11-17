@@ -27,6 +27,7 @@ from agent_tools.chair_read_attempts import read_attempts
 from agent_tools.chair_read_cache import StampCache, file_stamp
 from agent_tools.chair_read_quarantined import WorkFiles, body_sha
 from core.run_record import RESCUE_KIND, record_attempt, record_body_sha
+from core.workstore import counts_after, fresh_cutoff
 
 OPEN_STATES = ("quarantined", "ready", "blocked")
 RECORD_SOURCE = "run_record"  # the `source` of a row read from a run task record, not from a work file
@@ -113,6 +114,37 @@ def merged_attempts(file_rows: Sequence[Row], records: Sequence[Row]) -> list[di
     return sorted([dict(r) for r in (*file_rows, *kept)], key=_order)
 
 
+def fresh_attempts(attempts: Iterable[Row], store_rows: Iterable[Row]) -> list[dict]:
+    """Pure. `attempts` less those from a run at or before its task's fresh start: the later of the task row's and its
+    initiative row's `fresh_after_run` (`core.workstore.FRESH_AFTER_RUN`). A person who readied the task by hand, or
+    released its initiative, has dealt with those failures, so they count toward neither triage nor the hold.
+
+    The mark is per run series (`core.workstore.counts_after`): a phase run's number is compared only with its own series'.
+
+    A task still quarantined with no attempt after the cutoff (its initiative was released over it) keeps its newest
+    attempt alone: the quarantine still names its run, so the chair plans for it as it would have before the release
+    (a triage request the epic answers by building it fresh, or `hold_task` when that run's request was already made),
+    rather than sending it to a person as a quarantine with no run."""
+    rows = list(store_rows)
+    initiatives = {str(r.get("task_id") or ""): r.get("extra") for r in rows if r.get("kind") == "initiative"}
+    tasks = {
+        (str(r.get("initiative") or ""), str(r.get("task_id") or "")): r for r in rows if r.get("kind", "task") == "task"
+    }
+    cutoffs = {k: fresh_cutoff(r.get("extra"), initiatives.get(k[0])) for k, r in tasks.items()}
+    listed = [dict(a) for a in attempts]
+
+    def task(a: Row) -> tuple[str, str]:
+        return _key(a)[0], _key(a)[2]
+
+    fresh = [counts_after(a.get("run"), cutoffs.get(task(a), {})) for a in listed]
+    counted = {task(a) for a, ok in zip(listed, fresh, strict=True) if ok}
+    # The list is oldest first, so the last index seen per task is its newest attempt.
+    newest_stale = {
+        task(a): i for i, a in enumerate(listed) if task(a) not in counted and (tasks.get(task(a)) or {}).get("state") == "quarantined"
+    }
+    return [a for i, a in enumerate(listed) if fresh[i] or newest_stale.get(task(a)) == i]
+
+
 def stale_attempts(rows: Iterable[Row]) -> list[Row]:
     """The rows the stale reader may count: a record row that names no body is left out.
 
@@ -153,6 +185,7 @@ def read_store_attempts(
     workspace: Path, files: WorkFiles, store_rows: Sequence[Row], cache: StampCache | None = None,
 ) -> list[dict]:
     """Edge. The files path's attempts (`chair_read_attempts.read_attempts`) with the attempts the run task records
-    under `workspace/runs` hold for each task `store_rows` (the store's queue rows) holds open, oldest first."""
+    under `workspace/runs` hold for each task `store_rows` (the store's queue rows) holds open, oldest first, less the
+    attempts from before each task's fresh start (`fresh_attempts`)."""
     records = read_run_records(workspace / "runs", open_record_keys(store_rows), cache)
-    return merged_attempts(read_attempts(workspace, files), record_rows(records, store_rows))
+    return fresh_attempts(merged_attempts(read_attempts(workspace, files), record_rows(records, store_rows)), store_rows)

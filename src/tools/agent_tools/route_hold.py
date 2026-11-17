@@ -181,6 +181,20 @@ def _initiative_row_without_held(row: Mapping) -> dict:
     return {**row, "extra": _extra_without(row, _INITIATIVE_KEYS)}
 
 
+def _was_held(row: Mapping) -> bool:
+    return any(key in (row.get("extra") or {}) for key in _INITIATIVE_KEYS)
+
+
+def _initiative_row_released(row: Mapping, mark: Mapping[str, int]) -> dict:
+    """The released initiative's row, marked with the newest number of each of its run series when it was held and has
+    a run: its tasks' attempts and triage requests from those runs or earlier no longer count
+    (`core.workstore.FRESH_AFTER_RUN`)."""
+    from core.workstore import FRESH_AFTER_RUN  # lazy: core sits beside agent_tools in one venv
+
+    freed = _initiative_row_without_held(row)
+    return {**freed, "extra": {**freed["extra"], FRESH_AFTER_RUN: dict(mark)}} if _was_held(row) and mark else freed
+
+
 def _initiative_row_held(row: Mapping, value: str) -> dict:
     return {**row, "extra": {**(row.get("extra") or {}), "held": "true", "hold_reason": value}}
 
@@ -247,13 +261,29 @@ def release(
 ) -> int:
     """Edge. Exit codes as `hold`. Releasing an initiative that is not held writes nothing.
 
+    A held initiative's row is marked with the initiative's newest run (`core.workstore.FRESH_AFTER_RUN`), so the next run
+    builds its tasks fresh rather than triaging or capping them on the attempts before the release.
+
     With `now`, a released intake's row and file also get `released_at`, so the chair stops counting the intake's earlier
     empty decompose runs; then even an intake that was ready and not held is written. Without it, such an intake writes nothing."""
     plan = plan_release(rows, id)
     if isinstance(plan, Refused):
         return _refuse("release", plan.reason)
     if isinstance(plan, route_guard.InitiativeFound):
-        return _apply("release", ws, runs_dir, plan, rows, _initiative_row_without_held, _initiative_released_text, "held fields removed", dry_run)
+        from core.workstore import fresh_mark  # lazy: core sits beside agent_tools in one venv
+
+        mark = fresh_mark(plan.initiative, run_store.run_ids(runs_dir))
+        row = _initiative_row(rows, plan.initiative)
+        if not mark and row is not None and _was_held(row):
+            print(
+                f"release: warning: no run of {plan.initiative} found in the store; no fresh_after_run mark written, "
+                "so its tasks' attempts from earlier runs still count"
+            )
+        after = ", ".join(f"{series}-{number}" for series, number in sorted(mark.items()))
+        return _apply(
+            "release", ws, runs_dir, plan, rows, lambda row: _initiative_row_released(row, mark), _initiative_released_text,
+            "held fields removed" + (f", tasks start fresh after {after}" if mark else ""), dry_run,
+        )
     if now is None:
         return _apply("release", ws, runs_dir, plan, rows, _row_without_held, released_text, "stage ready, hold removed", dry_run)
     at = released_at_value(now)
