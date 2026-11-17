@@ -21,15 +21,11 @@ from pathlib import Path
 
 from agent_tools.cli import (
     _LAZY_MODULES,
-    _chair_service_environment_file,
-    _chair_unit_inputs,
-    _ChairUnitRefusal,
     _dev_moved,
     _leader_runs_dir_or_refuse,
     _now_iso,
     _profile_path,
     _read_text_or_none,
-    _write_private,
     bounded_run,
     chair_service,
     dash_binary,
@@ -50,6 +46,12 @@ from agent_tools.cli import (
     upgrade_edge,
     upgrade_exec,
     upgrade_plan,
+)
+from agent_tools.cli_chair_service import (
+    _chair_service_environment_file,
+    _chair_unit_inputs,
+    _ChairUnitRefusal,
+    _write_private,
 )
 
 
