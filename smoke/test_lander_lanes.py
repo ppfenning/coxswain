@@ -17,6 +17,7 @@ request open, the branch on origin) it pushes it itself, as the GitHub forge wou
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -50,14 +51,17 @@ def _profile_with_cartridge(sandbox, tmp_path: Path, gate: str = "full") -> None
     _gate(sandbox, gate)
 
 
-def _repository(sandbox, tmp_path: Path, name: str, gate: str) -> tuple[Path, Path]:
-    """A clone at `~/src/<name>` of a bare origin, with `gate.sh` and one commit on main pushed."""
+def _repository(sandbox, tmp_path: Path, name: str, gate: str, *, ci: bool = False) -> tuple[Path, Path]:
+    """A clone at `~/src/<name>` of a bare origin, with `gate.sh` (and a CI workflow when `ci`) and one commit on main pushed."""
     origin, path = tmp_path / f"{name}.git", sandbox.home / "src" / name
     _git(sandbox, tmp_path, "init", "--quiet", "--bare", "--initial-branch=main", str(origin))
     _git(sandbox, tmp_path, "clone", "--quiet", str(origin), str(path))
     (path / "README.md").write_text(f"{name}\n", encoding="utf-8")
     (path / "gate.sh").write_text(gate, encoding="utf-8")
-    _git(sandbox, path, "add", "README.md", "gate.sh")
+    if ci:
+        (path / ".github" / "workflows").mkdir(parents=True)
+        (path / ".github" / "workflows" / "ci.yml").write_text("on: push\n", encoding="utf-8")
+    _git(sandbox, path, "add", "--all")
     _git(sandbox, path, "commit", "--quiet", "-m", "init")
     _git(sandbox, path, "push", "--quiet", "origin", "main")
     _git(sandbox, path, "remote", "set-head", "origin", "main")
@@ -95,6 +99,13 @@ def _record(sandbox, initiative: str) -> dict:
     return sandbox.python_json(
         "import json; from pathlib import Path; from agent_tools import lander_ports; from harness import landing_store as ls; "
         f"print(json.dumps(ls.get_record(lander_ports.connect(Path({str(sandbox.workspace / 'runs')!r})), {initiative!r})))")
+
+
+def _item(sandbox, ident: str) -> dict:
+    """One land-queue item, read through the lander's own store connection."""
+    return sandbox.python_json(
+        "import json; from pathlib import Path; from agent_tools import lander_ports; from harness import landing_store as ls; "
+        f"print(json.dumps(ls.get_item(lander_ports.connect(Path({str(sandbox.workspace / 'runs')!r})), {ident!r})))")
 
 
 def _on_origin_main(sandbox, origin: Path, path: str) -> bool:
@@ -160,9 +171,40 @@ def test_a_repository_whose_checks_stay_pending_never_holds_another_ones_land(sa
     assert _record(sandbox, "alpha-slow")["state"] == "landed", "the lane's landed write survived the passes made meanwhile"
 
 
+# -- H3.1: checks that cannot be read ---------------------------------------------------------------------------------
+
+def test_checks_that_cannot_be_read_keep_the_land_waiting_tell_the_chair_once_and_the_item_ages(sandbox, tmp_path):
+    """The pull request opens on the local forge; then the profile names Forgejo, whose checks this origin (a path, no
+    Forgejo URL) can never be read from: what a broken token or a misconfigured forge looks like to the lander."""
+    _profile_with_cartridge(sandbox, tmp_path, gate="ticket")
+    repo, _ = _repository(sandbox, tmp_path, "app", "exit 0\n", ci=True)
+    _in_flight(sandbox, repo, "app", "ship")
+    opened = sandbox.cox("lander", "once")
+    assert opened.returncode == 0 and "opened the pull request for ship" in opened.stdout, opened.stdout + opened.stderr
+    profile = sandbox.home / ".config" / "agent-tools" / "profile.yaml"
+    profile.write_text(profile.read_text(encoding="utf-8") + "forge: forgejo\n", encoding="utf-8")
+    _gate(sandbox, "full")
+    limit = sandbox.python_json("from agent_tools import land; print(land.POLL_ERROR_LIMIT)")
+    queued_at = _item(sandbox, "initiative_land:ship")["queued_at"]
+
+    outputs = []
+    for _ in range(limit + 2):
+        done = sandbox.cox("lander", "once")
+        assert done.returncode == 0, done.stdout + done.stderr
+        outputs.append(done.stdout)
+
+    assert all("initiative_land:ship: waiting: checks on" in out for out in outputs), outputs
+    assert "read again next pass (1/" in outputs[0] and "cannot be read: checks unreadable" in outputs[-1], outputs
+    item = _item(sandbox, "initiative_land:ship")
+    assert (item["state"], item["queued_at"]) == ("queued", queued_at), item
+    inbox = sandbox.cox("courier", "inbox", "--label", "chair").stdout
+    assert inbox.count("cannot be read: origin") == 1, inbox
+    assert _record(sandbox, "ship")["state"] == "pr_open"
+
+
 # -- H3.3: the record against origin ----------------------------------------------------------------------------------
 
-def _published_and_lost(sandbox, tmp_path, *, lose_the_phase: bool) -> tuple[Path, Path, str]:
+def _published_and_lost(sandbox, tmp_path, *, lose_the_phase: bool, publish_the_phase: bool = False) -> tuple[Path, Path, str]:
     """`ship`, published: its pull request open (gate `ticket` stops the land there) and its branch on origin. Then the
     efficiency case: the record still says p1 merged, but origin's `init/ship`, and this clone's, are back at main."""
     _profile_with_cartridge(sandbox, tmp_path, gate="ticket")
@@ -171,6 +213,8 @@ def _published_and_lost(sandbox, tmp_path, *, lose_the_phase: bool) -> tuple[Pat
     opened = sandbox.cox("lander", "once")
     assert opened.returncode == 0 and "opened the pull request for ship" in opened.stdout, opened.stdout + opened.stderr
     _git(sandbox, repo, "push", "--quiet", "origin", "init/ship")  # what a forge with pull requests does at the open
+    if publish_the_phase:
+        _git(sandbox, repo, "push", "--quiet", "origin", "epic/ship/p1")
     _git(sandbox, repo, "push", "--quiet", "--force", "origin", "main:refs/heads/init/ship")
     _git(sandbox, repo, "branch", "--force", "init/ship", "main")
     if lose_the_phase:
@@ -217,25 +261,27 @@ def test_an_open_pull_request_missing_a_phase_gets_it_pushed_before_the_land(san
     assert _status(sandbox)["initiatives"] == []
 
 
-def test_two_landers_at_once_repair_the_branch_once_and_agree_on_the_merge_commit(sandbox, tmp_path):
-    _, origin, tip = _published_and_lost(sandbox, tmp_path, lose_the_phase=False)
+def test_a_repair_merged_here_but_never_pushed_is_pushed_on_the_next_pass_and_lands_with_the_phase(sandbox, tmp_path):
+    """A lander that died between its repair merge and its push: this clone is ahead of origin, with the phase."""
+    repo, origin, tip = _published_and_lost(sandbox, tmp_path, lose_the_phase=False)
+    _git(sandbox, repo, "checkout", "--quiet", "init/ship")
+    _git(sandbox, repo, "merge", "--quiet", "--no-ff", "--no-edit", "-m", "ship: merge phase p1 again (died before the push)", "epic/ship/p1")
+    _git(sandbox, repo, "checkout", "--quiet", "main")
+    _gate(sandbox, "full")
 
-    landers = [subprocess.Popen([str(sandbox.install.cox), "lander", "once"], cwd=sandbox.home, env=sandbox.env,
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) for _ in range(2)]
-    outputs = [lander.communicate(timeout=PASS_TIMEOUT_S)[0] for lander in landers]
+    done = sandbox.cox("lander", "once")
 
-    assert [lander.returncode for lander in landers] == [0, 0], outputs
-    assert sum(out.count("is merged again; init/ship is pushed at") for out in outputs) == 1, outputs
-    subjects = _origin_git(sandbox, origin, "log", "--format=%s", "init/ship").stdout.splitlines()
-    assert sum("merge phase p1 again" in s for s in subjects) == 1, subjects
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "init/ship is pushed at" in done.stdout and "ship recorded landed" in done.stdout, done.stdout
     head = _origin_git(sandbox, origin, "rev-parse", "init/ship").stdout.strip()
-    entry = _record(sandbox, "ship")["phases"]["p1"]
-    assert entry["merge_sha"] == head and entry["tip"] == tip, (entry, head)
-    assert not _record(sandbox, "ship").get("held")
+    assert _origin_git(sandbox, origin, "merge-base", "--is-ancestor", tip, head).returncode == 0
+    assert _record(sandbox, "ship")["phases"]["p1"]["merge_sha"] == head
+    assert _on_origin_main(sandbox, origin, "ship.txt")
 
 
-def test_a_busy_branch_lease_makes_reconciliation_wait_and_change_nothing(sandbox, tmp_path):
-    _, origin, _ = _published_and_lost(sandbox, tmp_path, lose_the_phase=False)
+def test_a_busy_branch_lease_makes_reconciliation_wait_and_the_land_waits_for_the_missing_phase(sandbox, tmp_path):
+    _, origin, tip = _published_and_lost(sandbox, tmp_path, lose_the_phase=False)
+    _gate(sandbox, "full")
     before = _record(sandbox, "ship")["phases"]["p1"]
     held = sandbox.python_json(
         "import json; from pathlib import Path; from agent_tools import lander_ports; "
@@ -249,6 +295,55 @@ def test_a_busy_branch_lease_makes_reconciliation_wait_and_change_nothing(sandbo
 
     assert done.returncode == 0, done.stdout + done.stderr
     assert "reconcile: ship waits: another-host is moving init/ship" in done.stdout, done.stdout
+    assert f"initiative_land:ship: waiting: origin/init/ship lacks recorded commit(s) {tip[:12]}" in done.stdout, done.stdout
     assert _origin_git(sandbox, origin, "rev-parse", "init/ship").stdout.strip() == main
+    assert not _on_origin_main(sandbox, origin, "ship.txt")
     after = _record(sandbox, "ship")
-    assert after["phases"]["p1"]["merge_sha"] == before["merge_sha"] and not after.get("held")
+    assert after["state"] == "pr_open" and after["phases"]["p1"]["merge_sha"] == before["merge_sha"] and not after.get("held")
+
+
+def _second_host(sandbox, tmp_path, origin: Path) -> tuple[dict, Path]:
+    """Another machine: its own home, with the same profile, store and workspace, and its own clone of the origin."""
+    home = tmp_path / "host-b"
+    shutil.copytree(sandbox.home / ".config", home / ".config")
+    shutil.copy(sandbox.home / ".gitconfig", home / ".gitconfig")
+    clone = home / "src" / "app"
+    _git(sandbox, tmp_path, "clone", "--quiet", str(origin), str(clone))
+    env = {**sandbox.env, "HOME": str(home), "XDG_CONFIG_HOME": f"{home}/.config", "XDG_DATA_HOME": f"{home}/.local/share",
+           "XDG_STATE_HOME": f"{home}/.local/state", "XDG_CACHE_HOME": f"{home}/.cache", "GIT_CONFIG_GLOBAL": f"{home}/.gitconfig"}
+    return env, clone
+
+
+def test_two_landers_on_two_clones_repair_the_branch_once_the_second_waits_on_the_lease(sandbox, tmp_path):
+    repo, origin, tip = _published_and_lost(sandbox, tmp_path, lose_the_phase=False, publish_the_phase=True)
+    env_b, clone_b = _second_host(sandbox, tmp_path, origin)
+    pushing, release = tmp_path / "a-pushing", tmp_path / "a-release"
+    hook = repo / ".git" / "hooks" / "pre-push"
+    hook.write_text(f"#!/bin/sh\ntouch '{pushing}'\nwhile [ ! -e '{release}' ]; do sleep 0.2; done\n", encoding="utf-8")
+    hook.chmod(0o755)
+
+    lander_a = subprocess.Popen([str(sandbox.install.cox), "lander", "once"], cwd=sandbox.home, env=sandbox.env,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        deadline = time.monotonic() + PASS_TIMEOUT_S
+        while not pushing.exists():
+            assert time.monotonic() < deadline and lander_a.poll() is None, "lander A never reached its push"
+            time.sleep(0.2)
+        done_b = subprocess.run([str(sandbox.install.cox), "lander", "once"], cwd=env_b["HOME"], env=env_b,
+                                capture_output=True, text=True, timeout=PASS_TIMEOUT_S)
+    finally:
+        release.touch()
+        output_a = lander_a.communicate(timeout=PASS_TIMEOUT_S)[0]
+
+    assert done_b.returncode == 0, done_b.stdout + done_b.stderr
+    assert "reconcile: ship waits: lander:" in done_b.stdout and "is moving init/ship" in done_b.stdout, done_b.stdout
+    b_subjects = subprocess.run(["git", "-C", str(clone_b), "log", "--all", "--format=%s"], env=env_b, capture_output=True,
+                                text=True, timeout=30).stdout
+    assert "merge phase p1 again" not in b_subjects, "lander B made a merge commit while A held the lease"
+    assert lander_a.returncode == 0 and "is merged again; init/ship is pushed at" in output_a, output_a
+    subjects = _origin_git(sandbox, origin, "log", "--format=%s", "init/ship").stdout.splitlines()
+    assert sum("merge phase p1 again" in s for s in subjects) == 1, subjects
+    head = _origin_git(sandbox, origin, "rev-parse", "init/ship").stdout.strip()
+    entry = _record(sandbox, "ship")["phases"]["p1"]
+    assert entry["merge_sha"] == head and entry["tip"] == tip, (entry, head)
+    assert not _record(sandbox, "ship").get("held")

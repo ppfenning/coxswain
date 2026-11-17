@@ -66,9 +66,33 @@ def test_one_poll_reads_as_a_state_and_no_check_yet_is_pending(code, output, sta
     assert land.check_state(code, output) == state
 
 
-def test_checks_that_stay_unreadable_fail_the_land_with_the_reason():
-    assert land_step(facts(has_ci=True, checks=("error", "checks unreadable 5 passes in a row: 502"))) == LandStep(
-        "fail", f"checks on {URL} cannot be read: checks unreadable 5 passes in a row: 502")
+def test_checks_that_stay_unreadable_keep_the_land_waiting_with_the_reason():
+    assert land_step(facts(has_ci=True, checks=("error", "checks unreadable 5 passes in a row: 401"))) == LandStep(
+        "wait", f"checks on {URL} cannot be read: checks unreadable 5 passes in a row: 401")
+
+
+def test_unreadable_checks_are_told_once_per_commit_and_reason():
+    memo = {**land.poll_memo(None, "aaa"), "errors": land.POLL_ERROR_LIMIT, "unreadable": "HTTP 401"}
+    told, reason = lander.tell_unreadable(memo, "error")
+    assert reason == "HTTP 401" and told["told"] == "HTTP 401"
+    assert lander.tell_unreadable(told, "error") == (told, None)
+    assert lander.tell_unreadable({**told, "unreadable": "HTTP 502"}, "error")[1] == "HTTP 502"
+    assert lander.tell_unreadable(land.poll_memo(told, "bbb") | {"unreadable": "HTTP 401"}, "error")[1] == "HTTP 401"
+    assert lander.tell_unreadable(memo, "pending") == (memo, None)
+
+
+def test_a_queued_item_that_keeps_its_first_queueing_alarms_at_the_hour():
+    item = {"id": "initiative_land:ship", "state": "queued", "queued_at": "2026-11-17T10:00:00Z",
+            "last_error": "checks on x cannot be read: HTTP 401"}
+    assert lander.stale_items([item], "2026-11-17T10:59:59Z") == []
+    assert lander.stale_items([item], "2026-11-17T11:00:00Z") == [item]
+
+
+def test_the_merge_guard_names_the_merged_phase_commits_the_branch_lacks():
+    rec = record(p1=MERGED, p2={"state": "merged", "tip": "tip2", "merge_sha": "mrg2"}, p3={"state": "queued", "tip": "t3"})
+    holds = {MERGED["tip"]: True, MERGED["merge_sha"]: True, "tip2": True}
+    assert lander.unheld_shas(rec, holds) == ["mrg2"]
+    assert lander.unheld_shas(rec, {**holds, "mrg2": True}) == []
 
 
 # -- one poll per pass keeps wait_checks' bounds across passes --------------------------------------------------------

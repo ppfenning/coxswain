@@ -172,8 +172,10 @@ for a person never is. `cox lander status` shows every initiative in flight and 
 The lander never waits inside a pass. A land reads its pull request's checks once: green merges, red goes back to
 build, and pending leaves the item `waiting` for the next pass to read again. A failure the forge can rerun is rerun
 once per commit, and that pass waits too. The bounds `wait_checks` keeps hold across passes, on the record as
-`checks_poll`: checks unreadable five passes in a row fail the land with the reason, a rerun refused five times is
-final, and right after a rerun the old failures read as pending for at most five passes. Each pass splits its work
+`checks_poll`: a rerun refused five times is final, and right after a rerun the old failures read as pending for at
+most five passes. Checks unreadable five passes in a row are not the change's fault but the reading's (a token, the
+forge's address), so the land keeps waiting and the chair is told once per commit and reason. A land item that fails
+and is queued again keeps its first `queued_at`, so the queue alarm still sees it after an hour. Each pass splits its work
 into one lane per repository, and each lane runs on a thread of its own. The caps count per repository. A repository
 whose gate checks are still running, or whose lane is still busy from an earlier pass, holds only itself: under
 `cox lander run` the other repositories keep landing, and the busy one rejoins the passes once its lane is done. All
@@ -181,15 +183,21 @@ the per-initiative work of a pass (the sweep, the queue alarm, reconciliation, t
 the initiative, so a busy lane's records are not written by anything else in that process.
 
 Each pass also checks every published landing record against origin. Published means assembled, or with a pull
-request open; before that the host that builds the initiative owns its branch, and a phase it has not pushed yet is
-not a phase lost. Under the initiative's branch lease, the lander fetches origin's initiative branch and reads the
+request URL on the record, whatever the state; before that the host that builds the initiative owns its branch, and
+a phase it has not pushed yet is not a phase lost. So an initiative sent back to build (`conflicted`) after its pull
+request opened is still judged: its open pull request must still hold every phase merged before, while the
+`integrate` work is built on top. Under the initiative's branch lease, the lander fetches origin's initiative branch and reads the
 record again. A phase the record calls merged must be on that branch, both its tip and its merge commit. When it is
 not and the phase tip is in the clone, or on origin's phase branch, the lander merges the phase into origin's branch
 again and pushes it. The push is a plain one, so origin takes it only as a fast-forward, and the open pull request
 gets the repair. The record's merge commit is rewritten only after origin takes the push. When the tip is gone, the
 initiative is held: `cox lander status` shows the reason, the chair is told once, and nothing merges into the
-initiative (a build run's phase merge included) or lands from it. A busy lease, a refused push or an unreadable origin
-waits for the next pass and changes nothing. The hold lifts on the first pass that finds the record and origin agree.
+initiative (a build run's phase merge included) or lands from it. A busy lease, a refused push, an unreadable origin or a
+clone that has diverged from origin waits for the next pass and changes nothing. A clone ahead of origin (a repair
+merged here whose push never happened) is built on, and the push publishes it. The hold lifts on the first pass that
+finds the record and origin agree. Whatever reconciliation decided, the land itself checks once more right before
+its merge: while the branch that would merge (origin's, or this clone's for a forge that merges locally) lacks a tip
+or merge commit the record names, the land waits.
 
 Lands on one parent are one at a time by default, since each needs an up-to-date parent. With
 `landing_areas.land_batch` above 1, the lander lands together up to that many initiatives that share a repo and a

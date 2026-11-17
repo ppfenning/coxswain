@@ -1221,9 +1221,9 @@ def poll_memo(memo: Mapping[str, Any] | None, head: str) -> dict[str, Any]:
 
 def unreadable_step(memo: Mapping[str, Any], detail: str) -> tuple[str, str, dict[str, Any]]:
     """Pure. A read of the checks that failed: `pending` for the next pass, until `POLL_ERROR_LIMIT` passes in a row
-    have failed, which is `error`: the land fails with the reason."""
+    have failed, which is `error`: the land still waits, and the caller tells a person (the memo keeps the reason)."""
     errors = int(memo.get("errors") or 0) + 1
-    after = {**memo, "errors": errors}
+    after = {**memo, "errors": errors, "unreadable": detail}
     if errors >= POLL_ERROR_LIMIT:
         return "error", f"checks unreadable {errors} passes in a row: {detail}", after
     return "pending", f"checks unreadable, read again next pass ({errors}/{POLL_ERROR_LIMIT}): {detail}", after
