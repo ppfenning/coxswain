@@ -113,7 +113,6 @@ EXCLUDE_BASELINE = frozenset({
     "src/tools/agent_tools/dash_detail_release.py",
     "src/tools/agent_tools/dash_detail_run.py",
     "src/tools/agent_tools/dash_detail_spend.py",
-    "src/tools/agent_tools/dash_feed.py",
     "src/tools/agent_tools/dash_feed_tasks.py",
     "src/tools/agent_tools/dash_live_turns_session.py",
     "src/tools/agent_tools/draft_state.py",
@@ -141,7 +140,6 @@ EXCLUDE_BASELINE = frozenset({
     "src/tools/agent_tools/queue_export.py",
     "src/tools/agent_tools/readme_commands.py",
     "src/tools/agent_tools/remote_launch.py",
-    "src/tools/agent_tools/route.py",
     "src/tools/agent_tools/route_drift.py",
     "src/tools/agent_tools/route_edit.py",
     "src/tools/agent_tools/route_sync.py",
@@ -195,6 +193,14 @@ SPLIT_FROM: dict[str, frozenset[str]] = {
         "src/tools/agent_tools/cli_stats.py",
         "src/tools/agent_tools/cli_usage.py",
         "src/tools/agent_tools/cli_views.py",
+    }),
+    "src/tools/agent_tools/dash_feed.py": frozenset({
+        "src/tools/agent_tools/dash_feed_build.py",
+        "src/tools/agent_tools/dash_feed_sections.py",
+    }),
+    "src/tools/agent_tools/route.py": frozenset({
+        "src/tools/agent_tools/route_lint.py",
+        "src/tools/agent_tools/route_plan.py",
     }),
 }
 
