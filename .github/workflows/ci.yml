@@ -9,7 +9,7 @@ jobs:
     # The smoke step's Postgres. The suite gives each test a database of its own on it (docs/smoke.md).
     services:
       postgres:
-        image: postgres:16
+        image: postgres:16@sha256:dd2bf3ce2dc83a81674cf7f217fcfd8a5009a4b325dda5b843bfee82a06cff6f # smoke/plan.py POSTGRES_IMAGE; bump together
         env:
           POSTGRES_PASSWORD: smoke
         # a random host port, so two jobs can share a self-hosted runner's host

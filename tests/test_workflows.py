@@ -9,6 +9,8 @@ from pathlib import Path
 
 import yaml
 
+from smoke import plan
+
 WORKFLOW = Path(__file__).parent.parent / ".github" / "workflows" / "docs.yml"
 CI = Path(__file__).parent.parent / ".github" / "workflows" / "ci.yml"
 
@@ -73,7 +75,9 @@ def test_the_required_test_job_runs_the_smoke_suite_against_its_own_postgres():
     assert smoke["name"] == "smoke"
     assert smoke["env"]["COX_SMOKE_REQUIRED"] == "1"
     assert "job.services.postgres.ports['5432']" in smoke["env"]["COX_SMOKE_POSTGRES_URL"]
-    assert job["services"]["postgres"]["image"] == "postgres:16"
+    # pinned by digest, the same image the suite's own container fixture runs
+    assert job["services"]["postgres"]["image"] == plan.POSTGRES_IMAGE
+    assert "@sha256:" in plan.POSTGRES_IMAGE
 
 
 def test_the_extras_job_runs_each_suite_as_its_own_serial_job():

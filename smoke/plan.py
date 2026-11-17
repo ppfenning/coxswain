@@ -11,17 +11,30 @@ import hashlib
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from urllib.parse import quote, urlsplit
+from urllib.parse import parse_qsl, quote, urlsplit
 
-POSTGRES_IMAGE = "postgres:16"
+# Pinned by digest (the multi-arch index of postgres:16), here and in CI's service, so a re-pushed tag cannot change
+# what the suite runs against. Bump both together.
+POSTGRES_IMAGE = "postgres:16@sha256:dd2bf3ce2dc83a81674cf7f217fcfd8a5009a4b325dda5b843bfee82a06cff6f"
 POSTGRES_PASSWORD = "smoke"
-CONTAINER_LABEL = "coxswain-smoke=1"
+LABEL = "coxswain-smoke"
+CONTAINER_LABEL = f"{LABEL}=1"
+# Each container also carries its session id and its start time (epoch seconds), so a later session reaps only
+# containers a killed session left behind, never one another session is still using.
+SESSION_LABEL = f"{LABEL}.session"
+STARTED_LABEL = f"{LABEL}.started"
+STALE_AFTER_S = 2 * 60 * 60
 # The environment variable a CI job (or a person) sets to point the suite at a Postgres it already runs.
 URL_ENV = "COX_SMOKE_POSTGRES_URL"
 # Set in CI: a missing docker, uv or Postgres fails the suite instead of skipping it, so a required job cannot pass empty.
 REQUIRED_ENV = "COX_SMOKE_REQUIRED"
+# Set on a host whose docker is known not to work: a docker on PATH whose daemon does not answer then skips the
+# suite instead of failing it. Without it that case fails, so a lane cannot pass a broken docker off as no docker.
+BROKEN_DOCKER_OK_ENV = "COX_SMOKE_SKIP_BROKEN_DOCKER"
 # The only hosts the suite will open a store on. The suite never touches a shared or live store.
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+# libpq connection parameters that name or resolve the host, which a URL may carry in its query string.
+HOST_PARAMETERS = frozenset({"host", "hostaddr", "service"})
 # What a sandboxed `cox` inherits from the caller's environment; everything else (HOME, XDG_*, PYTHONPATH,
 # VIRTUAL_ENV, AGENT_TOOLS_PROFILE, COXSWAIN_*) is left behind so the command reads only the sandbox.
 INHERITED_KEYS = ("LANG", "LC_ALL", "TZ", "TERM", "TMPDIR", "SYSTEMROOT")
@@ -69,32 +82,55 @@ def unavailable(reason: str, *, required: bool) -> Skip | Fail:
 def loopback_refusal(url: str) -> str | None:
     """Why the suite refuses `url`, or None. Only a loopback postgres URL is taken, so a typo or a copied profile can
     never point the suite at a shared store."""
-    parts = urlsplit(url)
+    try:
+        parts = urlsplit(url)
+    except ValueError as exc:
+        return f"{URL_ENV} does not parse as a URL: {exc}"
     if parts.scheme not in {"postgres", "postgresql"}:
         return f"{URL_ENV} must be a postgresql:// URL, got scheme {parts.scheme or 'none'!r}"
-    if (parts.hostname or "") not in LOOPBACK_HOSTS:
-        return f"{URL_ENV} must name a loopback host ({', '.join(sorted(LOOPBACK_HOSTS))}), got {parts.hostname!r}"
+    # libpq takes several hosts in the netloc (`a:5432,b:5432`) and lets the query override the netloc's host
+    # (`host=`, `hostaddr=`, or a `service=` resolved from a service file), so each of those is refused outright.
+    if "," in parts.netloc:
+        return f"{URL_ENV} must name one host, got several in {parts.netloc.rpartition('@')[2]!r}"
+    overrides = sorted({key.lower() for key, _ in parse_qsl(parts.query, keep_blank_values=True)} & HOST_PARAMETERS)
+    if overrides:
+        return f"{URL_ENV} must not set its host in the query, got {', '.join(overrides)}"
+    try:
+        host = parts.hostname or ""
+    except ValueError:
+        host = ""
+    if host not in LOOPBACK_HOSTS:
+        return f"{URL_ENV} must name a loopback host ({', '.join(sorted(LOOPBACK_HOSTS))}), got {host or None!r}"
     return None
 
 
-def postgres_source(env_url: str | None, docker_path: str | None, docker_ok: bool, *, required: bool) -> PostgresSource:
-    """Where the session's Postgres comes from: the URL the environment names, else a container, else skip or fail."""
+def postgres_source(
+    env_url: str | None, docker_path: str | None, docker_ok: bool, *, required: bool, broken_docker_ok: bool = False,
+) -> PostgresSource:
+    """Where the session's Postgres comes from: the URL the environment names, else a container, else skip or fail.
+    No docker at all skips (unless required). A docker whose daemon does not answer fails, unless `broken_docker_ok`
+    and the run is not required: it is a host fault, and a skip would hide it."""
     if env_url:
         refusal = loopback_refusal(env_url)
         return Fail(refusal) if refusal else UseUrl(env_url)
     if docker_path is None:
         return unavailable(f"no docker on PATH and {URL_ENV} is not set", required=required)
     if not docker_ok:
-        return unavailable(f"docker is on PATH but its daemon did not answer, and {URL_ENV} is not set", required=required)
+        reason = f"docker is on PATH but its daemon did not answer, and {URL_ENV} is not set"
+        if broken_docker_ok and not required:
+            return Skip(f"{reason} ({BROKEN_DOCKER_OK_ENV} is set)")
+        return Fail(f"{reason}; set {BROKEN_DOCKER_OK_ENV}=1 to skip on this host")
     return StartContainer()
 
 
-def docker_run_argv(image: str = POSTGRES_IMAGE, password: str = POSTGRES_PASSWORD) -> list[str]:
+def docker_run_argv(session: str, started: int, image: str = POSTGRES_IMAGE, password: str = POSTGRES_PASSWORD) -> list[str]:
     """`docker run` for a throwaway Postgres: removed on stop, on a random loopback port, data on tmpfs and no fsync,
-    since nothing in it outlives the session."""
+    since nothing in it outlives the session. Labelled with the session and its start time, for `stale_containers`."""
     return [
         "docker", "run", "--detach", "--rm",
         "--label", CONTAINER_LABEL,
+        "--label", f"{SESSION_LABEL}={session}",
+        "--label", f"{STARTED_LABEL}={started}",
         "--env", f"POSTGRES_PASSWORD={password}",
         "--env", "POSTGRES_INITDB_ARGS=--no-sync",
         "--publish", "127.0.0.1::5432",
@@ -113,8 +149,24 @@ def docker_port_argv(container: str) -> list[str]:
     return ["docker", "port", container, "5432/tcp"]
 
 
-def docker_remove_argv(container: str) -> list[str]:
-    return ["docker", "rm", "--force", container]
+def docker_remove_argv(*containers: str) -> list[str]:
+    return ["docker", "rm", "--force", *containers]
+
+
+def docker_list_argv() -> list[str]:
+    """Every smoke container, running or not, as `<id> <started>` lines."""
+    return ["docker", "ps", "--all", "--filter", f"label={CONTAINER_LABEL}", "--format", f'{{{{.ID}}}} {{{{.Label "{STARTED_LABEL}"}}}}']
+
+
+def stale_containers(listing: str, now: int, stale_after: int = STALE_AFTER_S) -> list[str]:
+    """The ids in `docker_list_argv` output whose start label is more than `stale_after` seconds old. A container with
+    no readable start label is left alone: nothing says it is not some live session's."""
+    stale = []
+    for line in listing.splitlines():
+        container, _, started = line.strip().partition(" ")
+        if container and started.strip().isdigit() and now - int(started) > stale_after:
+            stale.append(container)
+    return stale
 
 
 def parse_published_port(output: str) -> int:
@@ -212,6 +264,17 @@ def install_drift(tree: Mapping[str, str], installed: Mapping[str, str]) -> list
 def python_sources(paths: Iterable[str]) -> list[str]:
     """The `.py` files among `paths`, skipping caches, sorted."""
     return sorted(p for p in paths if p.endswith(".py") and "__pycache__" not in p.split("/"))
+
+
+def package_data(package_data: Mapping[str, Sequence[str]], dirs: Mapping[str, tuple[str, str]]) -> list[tuple[str, str, str]]:
+    """Each `package-data` pattern as (the package's tree folder, its installed folder, the glob), for the packages
+    `dirs` knows. A pattern for a package `dirs` does not list is dropped; setuptools would not install it either."""
+    return [
+        (dirs[package][0], dirs[package][1], pattern)
+        for package, patterns in sorted(package_data.items())
+        if package in dirs
+        for pattern in patterns
+    ]
 
 
 def package_dirs(packages: Sequence[str], package_dir: Mapping[str, str]) -> dict[str, tuple[str, str]]:

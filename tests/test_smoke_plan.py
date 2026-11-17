@@ -32,15 +32,70 @@ def test_without_a_url_docker_decides():
     assert plan.postgres_source(None, "/usr/bin/docker", True, required=False) == plan.StartContainer()
     assert isinstance(plan.postgres_source(None, None, False, required=False), plan.Skip)
     assert isinstance(plan.postgres_source(None, None, False, required=True), plan.Fail)
+
+
+def test_a_docker_whose_daemon_does_not_answer_fails_unless_the_host_opts_out():
     no_daemon = plan.postgres_source(None, "/usr/bin/docker", False, required=False)
-    assert isinstance(no_daemon, plan.Skip) and "daemon" in no_daemon.reason
+    assert isinstance(no_daemon, plan.Fail) and "daemon" in no_daemon.reason and plan.BROKEN_DOCKER_OK_ENV in no_daemon.reason
+    opted_out = plan.postgres_source(None, "/usr/bin/docker", False, required=False, broken_docker_ok=True)
+    assert isinstance(opted_out, plan.Skip) and plan.BROKEN_DOCKER_OK_ENV in opted_out.reason
+    # a required run fails even with the opt-out set
+    assert isinstance(plan.postgres_source(None, "/usr/bin/docker", False, required=True, broken_docker_ok=True), plan.Fail)
 
 
-def test_the_container_is_throwaway_and_published_on_loopback_only():
-    argv = plan.docker_run_argv()
+@pytest.mark.parametrize(
+    "url",
+    [
+        "postgresql://u@localhost/db?host=live.example.com",
+        "postgresql://u@localhost/db?HOST=live.example.com",
+        "postgresql://u@localhost/db?hostaddr=10.1.2.3",
+        "postgresql://u@localhost/db?sslmode=disable&host=%2Fvar%2Frun%2Fpostgresql",
+        "postgresql://u@localhost/db?service=live",
+        "postgresql://u@localhost:5432,live.example.com:5432/db",
+        "postgresql://u@live.example.com:5432,localhost:5432/db",
+        "postgresql://u@localhost,localhost/db",
+        "postgresql:///db",
+        "postgresql://u@[::1/db",
+    ],
+)
+def test_the_loopback_guard_refuses_a_url_that_could_reach_another_host(url):
+    assert plan.loopback_refusal(url) is not None
+    assert isinstance(plan.postgres_source(url, None, False, required=False), plan.Fail)
+
+
+@pytest.mark.parametrize(
+    "url", ["postgresql://u:p@localhost:5432/db?sslmode=disable", "postgresql://u@[::1]:5432/db", "postgres://127.0.0.1/db"]
+)
+def test_the_loopback_guard_takes_a_plain_loopback_url(url):
+    assert plan.loopback_refusal(url) is None
+
+
+def test_the_container_is_throwaway_labelled_pinned_and_published_on_loopback_only():
+    argv = plan.docker_run_argv("s1", 1000)
     assert argv[:2] == ["docker", "run"]
     assert "--rm" in argv and "127.0.0.1::5432" in argv and plan.POSTGRES_IMAGE in argv
-    assert argv[argv.index("--label") + 1] == plan.CONTAINER_LABEL
+    assert "@sha256:" in plan.POSTGRES_IMAGE
+    labels = [argv[i + 1] for i, token in enumerate(argv) if token == "--label"]
+    assert labels == [plan.CONTAINER_LABEL, f"{plan.SESSION_LABEL}=s1", f"{plan.STARTED_LABEL}=1000"]
+    assert plan.docker_remove_argv("a", "b") == ["docker", "rm", "--force", "a", "b"]
+    assert f"label={plan.CONTAINER_LABEL}" in plan.docker_list_argv()
+
+
+def test_only_containers_past_the_threshold_are_stale():
+    listing = "old 1000\nfresh 9000\nunlabelled \nbad notanumber\n\n"
+    assert plan.stale_containers(listing, now=10_000, stale_after=3600) == ["old"]
+    assert plan.stale_containers(listing, now=10_000, stale_after=10_000) == []
+    assert plan.stale_containers("", now=10_000) == []
+
+
+def test_package_data_patterns_follow_their_package_folders():
+    dirs = {"agent_tools": ("src/tools/agent_tools", "agent_tools"), "providers": ("src/cartridges/providers", "providers")}
+    data = {"providers": ["catalog.yaml"], "agent_tools": ["extras-requirements.txt", "*.json"], "elsewhere": ["x.txt"]}
+    assert plan.package_data(data, dirs) == [
+        ("src/tools/agent_tools", "agent_tools", "extras-requirements.txt"),
+        ("src/tools/agent_tools", "agent_tools", "*.json"),
+        ("src/cartridges/providers", "providers", "catalog.yaml"),
+    ]
     assert plan.docker_remove_argv("abc") == ["docker", "rm", "--force", "abc"]
     assert plan.docker_ready_argv("abc")[-2:] == ["--host", "127.0.0.1"]
 

@@ -17,6 +17,7 @@ import subprocess
 import sys
 import time
 import tomllib
+import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,13 @@ from smoke import plan
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEM_PATH = "/usr/local/bin:/usr/bin:/bin"
 READY_TIMEOUT_S = 120
+# This session's id, on the label of the container it starts: `docker ps --filter label=coxswain-smoke.session=<id>`
+# finds it. Printed in the report header. The suite runs serial, so a run is one session.
+SESSION = uuid.uuid4().hex[:12]
+
+
+def pytest_report_header() -> str:
+    return f"smoke session: {SESSION} (container label {plan.SESSION_LABEL}={SESSION})"
 
 
 def _run(argv: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
@@ -63,24 +71,35 @@ class Install:
     python: Path
     bin: Path
     site: Path
+    env: dict[str, str]  # sandboxed, with a home of the install's own: what the fixtures' own harness calls run with
 
     @property
     def cox(self) -> Path:
         return self.bin / "cox"
 
 
-def _hashes(base: Path, folders: list[str]) -> dict[str, str]:
-    found = [f"{folder}/{p.name}" for folder in folders for p in (base / folder).glob("*.py")]
-    return {rel: hashlib.sha256((base / rel).read_bytes()).hexdigest() for rel in plan.python_sources(found)}
+def _files(base: Path, folder: str, pattern: str) -> dict[str, str]:
+    """`<name>: sha256` for each file in `base / folder` matching `pattern`, named relative to the folder."""
+    found = [p.relative_to(base / folder).as_posix() for p in (base / folder).glob(pattern) if p.is_file()]
+    names = plan.python_sources(found) if pattern == "*.py" else sorted(found)
+    return {name: hashlib.sha256((base / folder / name).read_bytes()).hexdigest() for name in names}
 
 
 def _install_drift(site: Path) -> list[str]:
+    """Every module and every `package-data` file, compared between the tree and the install by installed path."""
     tool = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["setuptools"]
     dirs = plan.package_dirs(tool["packages"], tool["package-dir"])
-    # keyed by the installed path, so the two sides compare file for file
-    tree = {inst + rel[len(src):]: digest for src, inst in dirs.values() for rel, digest in _hashes(ROOT, [src]).items()}
-    installed = _hashes(site, [inst for _, inst in dirs.values()])
+    globs = [(src, inst, "*.py") for src, inst in dirs.values()] + plan.package_data(tool.get("package-data", {}), dirs)
+    tree, installed = {}, {}
+    for src, inst, pattern in globs:
+        tree.update({f"{inst}/{name}": digest for name, digest in _files(ROOT, src, pattern).items()})
+        installed.update({f"{inst}/{name}": digest for name, digest in _files(site, inst, pattern).items()})
     return plan.install_drift(tree, installed)
+
+
+def _clean_env(home: Path, bins: list[str]) -> dict[str, str]:
+    home.mkdir(parents=True, exist_ok=True)
+    return plan.sandbox_env(os.environ, home=str(home), bin_dirs=bins, system_path=SYSTEM_PATH)
 
 
 @pytest.fixture(scope="session")
@@ -96,11 +115,12 @@ def install(tmp_path_factory: pytest.TempPathFactory) -> Install:
     # --reinstall-package: uv caches a local build by its pyproject's mtime, so without it an edited .py file would
     # install the previous build. The drift check below proves the install is this tree either way.
     _must([uv, "pip", "install", "--quiet", "--python", str(python), "--reinstall-package", "coxswain", f"{ROOT}[postgres]"])
-    site = Path(_must([str(python), "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"]).stdout.strip())
+    env = _clean_env(root / "home", [str(venv / "bin")])
+    site = Path(_must([str(python), "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"], env=env).stdout.strip())
     drift = _install_drift(site)
     if drift:
         pytest.fail(f"the install is not this tree: {drift[:5]}", pytrace=False)
-    return Install(root=root, python=python, bin=venv / "bin", site=site)
+    return Install(root=root, python=python, bin=venv / "bin", site=site, env=env)
 
 
 # --- Postgres ------------------------------------------------------------------------------------------------------
@@ -110,15 +130,22 @@ def _docker_ok(docker: str | None) -> bool:
     return docker is not None and _run([docker, "info", "--format", "{{.ServerVersion}}"], timeout=30).returncode == 0
 
 
-def _start_container() -> tuple[str, int]:
-    container = _must(plan.docker_run_argv()).stdout.strip()
+def _reap_stale() -> None:
+    """Remove smoke containers a killed session left behind: only those whose start label is older than
+    `plan.STALE_AFTER_S`, so a session that is still running keeps its container."""
+    listing = _run(plan.docker_list_argv())
+    stale = plan.stale_containers(listing.stdout, int(time.time())) if listing.returncode == 0 else []
+    if stale:
+        _run(plan.docker_remove_argv(*stale))
+
+
+def _ready_port(container: str) -> int:
     deadline = time.monotonic() + READY_TIMEOUT_S
     while _run(plan.docker_ready_argv(container)).returncode != 0:
         if time.monotonic() > deadline:
-            _run(plan.docker_remove_argv(container))
             raise RuntimeError(f"Postgres in {container[:12]} was not ready after {READY_TIMEOUT_S}s")
         time.sleep(0.25)
-    return container, plan.parse_published_port(_must(plan.docker_port_argv(container)).stdout)
+    return plan.parse_published_port(_must(plan.docker_port_argv(container)).stdout)
 
 
 @pytest.fixture(scope="session")
@@ -127,15 +154,18 @@ def postgres() -> Iterator[str]:
     and removed at the end of the session."""
     docker = shutil.which("docker")
     url = os.environ.get(plan.URL_ENV)
-    decision = plan.postgres_source(url, docker, url is None and _docker_ok(docker), required=_required())
+    broken_ok = plan.is_required(os.environ.get(plan.BROKEN_DOCKER_OK_ENV))
+    docker_ok = url is None and _docker_ok(docker)
+    decision = plan.postgres_source(url, docker, docker_ok, required=_required(), broken_docker_ok=broken_ok)
     if isinstance(decision, plan.Skip | plan.Fail):
         _unavailable(decision)
     if isinstance(decision, plan.UseUrl):
         yield decision.url
         return
-    container, port = _start_container()
-    try:
-        yield plan.postgres_url(port)
+    _reap_stale()
+    container = _must(plan.docker_run_argv(SESSION, int(time.time()))).stdout.strip()
+    try:  # from the moment the container exists, every way out of this fixture removes it
+        yield plan.postgres_url(_ready_port(container))
     finally:
         _run(plan.docker_remove_argv(container))
 
@@ -154,13 +184,15 @@ def store_url(postgres: str, install: Install, request: pytest.FixtureRequest) -
     """A fresh database for one test, at the newest schema. The harness's own store CLI opens it first, which is
     what applies the migrations (`harness.store_migrate.open_store`)."""
     name = plan.database_name(request.node.nodeid)
-    _must([str(install.python), "-c", _ADMIN, postgres, "create", name])
+    # install.env, not the caller's: no PYTHONPATH, no PG* variables and no real HOME reach these calls
+    admin = [str(install.python), "-c", _ADMIN, postgres]
+    _must([*admin, "create", name], env=install.env, cwd=install.root)
     url = plan.with_database(postgres, name)
-    _must([str(install.python), "-m", "harness.store_cli", "--store-url", url, "host", "list"], cwd=install.root)
+    _must([str(install.python), "-m", "harness.store_cli", "--store-url", url, "host", "list"], env=install.env, cwd=install.root)
     try:
         yield url
     finally:
-        _run([str(install.python), "-c", _ADMIN, postgres, "drop", name])
+        _run([*admin, "drop", name], env=install.env, cwd=install.root)
 
 
 # --- the sandbox ---------------------------------------------------------------------------------------------------

@@ -21,19 +21,23 @@ sandbox environment, the profile text, whether the install is this tree) is a pu
 without mocks in `tests/test_smoke_plan.py`.
 
 - **`install`** (once per session): `cox` installed from this checkout into a venv of its own with `uv pip install`.
-  The install is not editable. Before any test runs, the fixture compares every installed `.py` file with the tree,
-  so a stale build or another checkout cannot stand in for this one (#1184, #1185). The venv sits at
-  `<install>/.venv`, so a profile whose `harness_dir` is `<install>` makes every harness child `cox` starts run the
-  same install.
-- **`postgres`** (once per session): the server named by `COX_SMOKE_POSTGRES_URL`, or else a `postgres:16`
-  container started with `docker` on a random loopback port and removed at the end of the session. The suite opens
-  only a loopback URL. Any other host is refused, so it can never reach a shared or live store.
-- **`store_url`** (per test): a fresh database on that server, opened once by `harness.store_cli` so the schema
-  migrations apply. It is dropped after the test.
+  The install is not editable. Before any test runs, the fixture compares every installed module, and every file
+  `[tool.setuptools.package-data]` lists, with the tree. A stale build or another checkout therefore cannot stand in
+  for this one (#1184, #1185). The venv sits at `<install>/.venv`. A profile whose `harness_dir` is `<install>`
+  therefore makes every harness child that `cox` starts run the same install.
+- **`postgres`** (once per session): the server named by `COX_SMOKE_POSTGRES_URL`, or else a container started with
+  `docker` on a random loopback port and removed at the end of the session. The image is `postgres:16` pinned by
+  digest (`plan.POSTGRES_IMAGE`). CI's service uses the same digest. The suite takes a URL only when it names one
+  loopback host (`localhost`, `127.0.0.1` or `::1`). It refuses a URL that lists several hosts (`a:5432,b:5432`), and
+  one whose query sets `host`, `hostaddr` or `service`, since libpq would connect wherever those say. A URL it
+  refuses fails the run, whether or not the run is required.
+- **`store_url`** (per test): a fresh database on that server. It is created, and opened once by `harness.store_cli`
+  so the schema migrations apply, under the install's own sandboxed environment. The caller's `PYTHONPATH`, `PG*`
+  variables and HOME do not reach it. It is dropped after the test.
 - **`sandbox`** (per test): a temporary home with a routing profile at `~/.config/agent-tools/profile.yaml`, a
   provider profile naming the test's store, a workspace with `work/` and `runs/`, and a git config. Every `cox` runs
-  with HOME, the XDG roots and git's global config inside the sandbox, the install's `bin` first on PATH, and nothing
-  else inherited from the caller except the locale. `sandbox.cox(...)` runs the installed `cox`.
+  with HOME, the XDG roots and git's global config inside the sandbox, and with the install's `bin` first on PATH.
+  Nothing else comes from the caller except the locale. `sandbox.cox(...)` runs the installed `cox`.
   `sandbox.harness(module, ...)` runs `python -m <module>` under the install's interpreter, the same interpreter
   `cox` starts. `sandbox.store_rows()` reads the store back through `harness.store_queue`.
 - **`repo`** (per test): a clone at `~/src/app` of a bare origin in the test's temporary directory, with one
@@ -41,15 +45,15 @@ without mocks in `tests/test_smoke_plan.py`.
 
 ## Contract tests
 
-Each contract test fails if its boundary drifts. The three contract files were checked by putting a drift back into a
-scratch copy of the tree and watching them fail.
+Each contract test fails if its boundary drifts. I checked the three contract files by putting a drift back into a
+scratch copy of the tree and confirming that they fail.
 
 | Test | Boundary | What it would have caught |
 | --- | --- | --- |
 | `test_contract_store_cli.py` | `cox` to `harness.store_cli set-state` | #1174: `--expect quarantined` and the target `blocked` were refused with "invalid choice". Also a live drift (below). |
 | `test_contract_route_edit.py` | `cox route import` and `cox route edit` to the store | A move the store refuses, or a file and a store row that disagree. Its unit tests replace the store with a double. |
-| `test_contract_runs_recover.py` | `cox runs recover` to git and the store | The git argv, the worktree add and remove, and the close. The repo is passed as `~/src/app`; an unexpanded tilde is the bug #572 fixed for a partial land. |
-| `test_sandbox.py` | the harness itself | `cox` reading anything outside the sandbox, or a child interpreter importing another checkout. |
+| `test_contract_runs_recover.py` | `cox runs recover` to git and the store | The git argv, the worktree add and remove, and the close. The repo is passed as `~/src/app`, so recover's own handling of a tilde path is covered. That is the kind of bug #572 fixed in the partial land (`cox runs land`). That path is not covered here. |
+| `test_sandbox.py` | the harness itself | A child interpreter importing another checkout. It also checks that `cox` resolves the profile the sandbox HOME names, and that every path `cox route context` reports is under the sandbox or the install. It does not prove that `cox` opens no other file; the environment the sandbox builds is what keeps the real home out of reach. |
 
 **A drift found while building this suite.** The chair's revert of a phase quarantines its tasks with
 `set-state <initiative> <task> quarantined` (`cli._quarantine_phase_with`). The store CLI refuses that target, because
@@ -59,14 +63,23 @@ test then has to pass.
 
 ## Where it runs
 
-- **CI.** The required `test` job has a `postgres:16` service and a `smoke` step. That step sets
+- **CI.** The required `test` job has a Postgres service (the pinned image) and a `smoke` step. That step sets
   `COX_SMOKE_POSTGRES_URL` to the service and `COX_SMOKE_REQUIRED=1`, so a missing `uv` or Postgres fails the job
   instead of skipping it.
 - **Lane checks.** `.agent-checks` runs `pytest -q -rs smoke` after the component suites. A lane host with docker
-  runs it against its own container. One without docker skips it and prints the reason.
+  runs it against its own container. A host with no docker on PATH skips it and prints the reason. A host whose
+  `docker` is on PATH but whose daemon does not answer fails, because that is a host fault a skip would hide. Set
+  `COX_SMOKE_SKIP_BROKEN_DOCKER=1` on such a host to skip there instead.
 
-The containers are labelled `coxswain-smoke=1`. If a session is killed before its teardown,
-`docker rm -f $(docker ps -q --filter label=coxswain-smoke=1)` removes any container it left behind.
+Every container carries the label `coxswain-smoke=1`. It also carries its session's id (`coxswain-smoke.session`,
+printed in the pytest header as `smoke session: <id>`) and its start time (`coxswain-smoke.started`, epoch
+seconds). A new session first removes smoke containers more than two hours old, which a killed session left behind.
+It never touches a younger container, so it cannot remove one that another live session is using. To remove one
+session's container by hand:
+
+```sh
+docker rm -f $(docker ps -aq --filter label=coxswain-smoke.session=<id>)
+```
 
 ## Adding a smoke test
 

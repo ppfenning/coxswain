@@ -17,11 +17,25 @@ def test_the_interpreter_cox_starts_for_the_harness_imports_the_install(sandbox)
     assert sandbox.env["PATH"].split(":")[0] == str(sandbox.install.bin)
 
 
-def test_cox_reads_the_sandbox_profile_and_nothing_else(sandbox):
+def _paths(value):
+    """Every string in a JSON value that is an absolute path."""
+    if isinstance(value, dict):
+        return [p for v in value.values() for p in _paths(v)]
+    if isinstance(value, list):
+        return [p for v in value for p in _paths(v)]
+    return [value] if isinstance(value, str) and value.startswith("/") else []
+
+
+def test_cox_resolves_its_profile_from_the_sandbox_home(sandbox):
+    # This shows cox resolves the profile the sandbox HOME names, and that every path it reports is the sandbox's or
+    # the install's. It does not prove cox opens no other file; the environment (no real HOME, XDG root or
+    # AGENT_TOOLS_PROFILE reaches it, see plan.sandbox_env) is what keeps the real home out of its reach.
     done = sandbox.cox("route", "context", "--json")
     assert done.returncode == 0, done.stderr
     context = json.loads(done.stdout)
     assert context["team"] == "smoke"
     assert context["workspace_dir"] == str(sandbox.workspace)
     assert context["harness_dir"] == str(sandbox.install.root)
-    assert context["provider_profile"].startswith(str(sandbox.home))
+    assert context["provider_profile"] == str(sandbox.home / ".config" / "agent-tools" / "provider.yaml")
+    roots = (str(sandbox.home.parent), str(sandbox.install.root))
+    assert [p for p in _paths(context) if not p.startswith(roots)] == []
