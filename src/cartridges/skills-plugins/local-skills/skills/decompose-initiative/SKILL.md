@@ -33,6 +33,20 @@ before what it depends on exists.
 - **A task's tests ride with its code.** Never split tests into a task of
   their own — a separate tests task doubles the reviews and lands code
   without its evidence.
+- **A helper and its wiring are one task, or one phase.** The task that adds
+  a function, class or module also adds the call from the entry point that
+  runs it, and its surfaces name both files (docs/hardening.md, H10). The
+  lane's unwired check fails a task whose patch adds a public symbol with no
+  caller outside tests, so a helper-only task cannot pass its own lane. When
+  the work is too big for one task, split it by entry point, each task
+  carrying a helper and its caller, never into a library task and a later
+  wiring task; and every such task sits in the phase whose goal the wiring
+  meets, so no phase can complete with library code alone.
+- **A done-when names a runtime behaviour at an entry point.** "An upgrade
+  rolls back on a required doctor row", proven by the smoke test under
+  `smoke/` that runs it (named by its path, which `pytest` runs), never a
+  helper's return value. The logic sits in pure functions whose unit tests
+  pass example inputs, with no mocks.
 - **`surfaces` are paths, not prose.** Each entry is a file path in the
   checkout — one that already exists, or one marked `(new)` under a
   directory that already exists — never a description of an area. That
@@ -92,6 +106,8 @@ before what it depends on exists.
 - A linear chain — everything needs the previous thing. Almost always a sign
   edges were written from narrative order, not data flow.
 - A fully parallel plan — nothing needs anything. The opposite lie.
+- A library task with its wiring in a later task or phase — every task goes
+  green on its helper's unit tests and the phase ships code nothing runs.
 - Tasks whose bodies say "see initiative".
 - Two tasks in one phase that both create or edit the same file — the runner
   merges phase tasks in parallel, so the second write is a guaranteed merge

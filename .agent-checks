@@ -11,3 +11,6 @@ cd src/cartridges && pytest -q -n auto
 # COX_SMOKE_SKIP_BROKEN_DOCKER=1. CI's required test job runs it with COX_SMOKE_REQUIRED.
 pytest -q -rs smoke
 python .github/check_clean.py . --require-names
+# H10 item 5 (docs/hardening.md): a public function, class or module the patch adds under src/ with no reference
+# outside tests fails the lane; entry points nothing calls by name are allowlisted, with a reason, in .github/unwired-allow.txt.
+python .github/check_unwired.py
