@@ -38,7 +38,8 @@ from agent_tools.chair_exec import (
     smoke_targets,
     tail,
 )
-from agent_tools.chair_facts import STRANDED_CAUSE
+from agent_tools.chair_facts import STRANDED_CAUSE, stale_draft_keys
+from agent_tools.chair_plan_stale import plan_stale
 from agent_tools.chair_report import format_status
 from agent_tools.draft_apply import plan_approve
 from agent_tools.remote_argv import probe_argv, ssh_argv, sync_argv
@@ -1961,6 +1962,62 @@ def test_a_stale_to_draft_for_an_already_draft_initiative_writes_nothing(tmp_pat
     assert (tmp_path / "work" / "demo" / "initiative.md").read_text(encoding="utf-8") == before_initiative
     assert (tmp_path / "work" / "demo" / "phase-1" / "t1.md").read_text(encoding="utf-8") == before_ticket
     assert not (tmp_path / "courier.jsonl").exists()
+
+
+def _store_rows(held: bool) -> list[dict]:
+    extra = {"held": "true"} if held else {}
+    return [
+        {"kind": "initiative", "initiative": "demo", "task_id": "demo", "phase": None, "state": "todo", "needs": [],
+         "title": "Demo", "surfaces": [], "body": "Prose.\n", "extra": extra},
+        {"kind": "task", "initiative": "demo", "task_id": "t1", "phase": "phase-1", "state": "ready", "needs": [],
+         "title": "T1", "surfaces": [], "body": "Ticket body.\n", "extra": {}},
+    ]
+
+
+def _write_exported(tmp_path, rows: list[dict]) -> dict[str, tuple[str, int]]:
+    """Write the files the board export renders for `rows`; return each path's text and mtime."""
+    for rel, text in queue_export.export_rows(rows).items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text, encoding="utf-8")
+    return _snapshot(tmp_path)
+
+
+def _snapshot(tmp_path) -> dict[str, tuple[str, int]]:
+    return {str(p.relative_to(tmp_path)): (p.read_text(encoding="utf-8"), p.stat().st_mtime_ns) for p in sorted((tmp_path / "work").rglob("*.md"))}
+
+
+def test_a_stale_to_draft_the_board_export_would_restore_writes_nothing_and_sends_no_note(tmp_path) -> None:
+    rows = _store_rows(held=False)
+    before = _write_exported(tmp_path, rows)
+    deps = replace(_stale_deps([], tmp_path), initiative_rows=lambda: rows)
+    [result] = perform([_stale_action()], deps, lambda: 1, False)
+    assert result["status"] == "refused"
+    assert "store" in result["reason"]
+    assert _snapshot(tmp_path) == before
+    assert not (tmp_path / "courier.jsonl").exists()
+
+
+def test_a_held_initiative_across_several_ticks_is_never_rewritten_and_is_refused_once(tmp_path) -> None:
+    rows = _store_rows(held=True)
+    before = _write_exported(tmp_path, rows)
+    recorded: list = []
+    deps = replace(_stale_deps([], tmp_path), initiative_rows=lambda: rows, record=recorded.append)
+    candidate = {"initiative": "demo", "task_id": "t1", "state": "ready", "last_file_change": "2026-09-01T00:00:00+00:00",
+                 "last_run": None, "last_chair_action": None, "quarantine_non_harness_count": 0}
+    planned = []
+    for tick in range(4):
+        now = datetime(2026, 9, 27, 12, 3 * tick, tzinfo=UTC)
+        facts = {"stale_days": 7, "initiatives": [], "stale_candidates": [candidate],
+                 "stale_drafts_reported": stale_draft_keys([{"action_json": a} for a in recorded])}
+        actions = [{**a, "epoch": 1} for a in plan_stale(facts, now)]  # type: ignore[arg-type]
+        planned += actions
+        perform(actions, deps, lambda: 1, False)
+    assert len(planned) == 1
+    assert [a["status"] for a in recorded if a["kind"] == "stale_to_draft"] == ["refused"]
+    assert _snapshot(tmp_path) == before
+    assert not (tmp_path / "courier.jsonl").exists()
+    held_facts = {"stale_days": 7, "initiatives": [], "stale_candidates": [candidate], "held_initiatives": ["demo"]}
+    assert plan_stale(held_facts, datetime(2026, 9, 27, 13, tzinfo=UTC)) == []  # type: ignore[arg-type]
 
 
 def _signal_deps(calls: list, tmp_path) -> Deps:

@@ -650,6 +650,9 @@ class Facts(TypedDict):
     deferred_initiatives: NotRequired[dict[str, str]]  # initiative id to target release, while the umbrella is below it; absent means none
     # `<path>|<blob>` of each held_file needs_chair already in the action log, so each held text is reported once. Absent means [].
     held_reported: NotRequired[list[str]]
+    # `<initiative>|<sorted stale task ids>` of each stale_to_draft in the action log that a later tick would only repeat
+    # (done, or refused as held or as one the export restores), so one stale set is drafted or refused once. Absent means [].
+    stale_drafts_reported: NotRequired[list[str]]
     # The launch budget's inputs, keyed by initiative id; absent means no history. The default limit applies when
     # max_launches_per_hour is absent.
     launch_history: NotRequired[dict[str, LaunchHistory]]

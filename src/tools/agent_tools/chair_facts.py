@@ -90,6 +90,7 @@ from agent_tools.host_load import resolve_load_ceiling
 from agent_tools.land_batch_settings import merge_queue_setting
 from agent_tools.release_gate import deferred_initiatives, held_initiatives
 from agent_tools.remote_lane import fetched_record_path, remote_record_path
+from agent_tools.stale_draft import EXPORT_RESTORES, HELD_REFUSAL
 
 HARNESS_CAUSE = "harness"
 RESCUE_FAILED_CAUSE = "rescue_failed"
@@ -1186,6 +1187,23 @@ def held_file_keys(actions: Sequence[Row]) -> list[str]:
     ]
 
 
+def _settled_stale_draft(doc: Row) -> bool:
+    """A stale_to_draft that a later tick would only repeat: done, or refused as held or as one the export restores.
+    Any other refusal (a missing initiative.md, an unknown ticket) or a failure may clear, so it is tried again."""
+    reason = str(doc.get("reason") or "")
+    return doc.get("status") == "done" or (doc.get("status") == "refused" and reason.startswith((HELD_REFUSAL, EXPORT_RESTORES)))
+
+
+def stale_draft_keys(actions: Sequence[Row]) -> list[str]:
+    """`chair_plan_stale.draft_key` of each settled stale_to_draft row (`_settled_stale_draft`), in row order."""
+    docs = [_action_doc(row) for row in actions]
+    return [
+        f"{d['initiative']}|{','.join(sorted(str(t) for t in d.get('stale_tasks') or []))}"
+        for d in docs
+        if d.get("kind") == "stale_to_draft" and d.get("initiative") and _settled_stale_draft(d)
+    ]
+
+
 def stale_checkout_keys(actions: Sequence[Row]) -> list[str]:
     """`<host>|<repo>` of each stale_checkout needs_chair row, in row order."""
     docs = [_action_doc(row) for row in actions]
@@ -2067,6 +2085,7 @@ def gather_facts(
         "env_stale_reported": stale_checkout_keys(action_rows),
         "held_files": [dict(h) for h in deps.held_files()],  # type: ignore[misc]
         "held_reported": held_file_keys(action_rows),
+        "stale_drafts_reported": stale_draft_keys(action_rows),
         "held_initiatives": sorted(held_initiatives(rows)) if rows else [],
         "deferred_initiatives": deferred_initiatives(rows, current) if rows and current is not None else {},
         "host_env": host_env_from_rows(login_hosts),

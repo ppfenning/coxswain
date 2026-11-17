@@ -124,9 +124,17 @@ def test_post_parameter_is_used_and_unchanged_state_is_not_rewritten(tmp_path: P
     assert dispatch([_event()], config, path, NOW, post=post) == ["k1"]
     assert calls == [("http://x/topic", "stall title", "stall body", "https://example.com/stall")]
     before = path.stat().st_ino
-    assert dispatch([_event()], config, path, NOW + 1, post=post) == []
+    assert dispatch([_event()], config, path, NOW, post=post) == []
     assert len(calls) == 1
     assert path.stat().st_ino == before
+
+
+def test_a_standing_key_is_stamped_with_the_latest_tick_it_stood_in(tmp_path: Path) -> None:
+    path = tmp_path / "sent.json"
+    config = NotifyConfig("http://x/topic")
+    assert dispatch([_event()], config, path, NOW, post=lambda *a: True) == ["k1"]
+    assert dispatch([_event()], config, path, NOW + 180, post=lambda *a: True) == []
+    assert json.loads(path.read_text()) == {"k1": NOW + 180}
 
 
 def test_failed_push_of_an_expired_key_is_not_recorded(fake: tuple[_Fake, NotifyConfig], tmp_path: Path) -> None:

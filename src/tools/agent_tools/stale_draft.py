@@ -6,6 +6,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 TODO = "todo"
+# The refusals a later tick would meet again unchanged: the chair records them once per stale set, never per tick.
+HELD_REFUSAL = "initiative is held; a person already decides it"
+EXPORT_RESTORES = "the store does not hold the draft, so the board export would restore"
 _KEY = re.compile(r"^([A-Za-z_][\w-]*):")
 _PLAIN = re.compile(r"^[\w.@/+-]+$")
 
@@ -83,6 +86,8 @@ def plan_stale_draft(
 ) -> Plan | Refusal:
     if _is_draft(initiative_text):
         return Refusal("initiative is already a draft")
+    if (_field(initiative_text, "held") or "").lower() == "true":
+        return Refusal(HELD_REFUSAL)
     if not stale_task_ids:
         return Refusal("no stale task to draft")
     missing = [task_id for task_id in stale_task_ids if task_id not in ticket_texts]
