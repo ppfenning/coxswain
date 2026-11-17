@@ -32,7 +32,7 @@ def _approved_task(sandbox):
     return path
 
 
-def test_runs_recover_merges_the_task_into_its_phase_branch_and_closes_it(sandbox, repo):
+def test_runs_recover_merges_the_task_into_its_phase_branch_and_records_the_merge(sandbox, repo):
     _task_branch(sandbox, repo)
     path = _approved_task(sandbox)
     main_before = sandbox.git(repo.path, "rev-parse", "main")
@@ -44,8 +44,12 @@ def test_runs_recover_merges_the_task_into_its_phase_branch_and_closes_it(sandbo
     assert sandbox.git(repo.path, "show", f"{PHASE}:feature.txt") == "feature"
     assert sandbox.git(repo.path, "rev-parse", "main") == main_before
     assert len(sandbox.git(repo.path, "worktree", "list").splitlines()) == 1
-    assert plan.front_matter(path.read_text(encoding="utf-8"))["state"] == "done"
-    assert sandbox.store_row("ship", "t1")["state"] == "done"
+    # At land_at=initiative the task stays approved with its merge recorded; it is done only when the initiative lands.
+    front = plan.front_matter(path.read_text(encoding="utf-8"))
+    assert front["state"] == "approved"
+    assert front["merged_commit"].strip("\"") == sandbox.git(repo.path, "rev-parse", PHASE)
+    row = sandbox.store_row("ship", "t1")
+    assert row["state"] == "approved"
 
 
 def test_runs_recover_a_second_time_finds_the_commit_already_there(sandbox, repo):
