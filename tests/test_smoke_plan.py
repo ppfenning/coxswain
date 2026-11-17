@@ -141,6 +141,9 @@ def test_profiles_name_the_sandbox():
     assert text == "team: t\nworkspace_dir: /w\nharness_dir: /h\nprovider_profile: /p.yaml\n"
     assert plan.provider_profile_text("postgresql://x") == "storage_url: postgresql://x\n"
     assert "defaultBranch = main" in plan.gitconfig_text()
+    extra = plan.routing_profile_text(team="t", workspace="/w", harness_dir="/h", provider_profile="/p.yaml",
+                                      extra={"forge": "auto", "harness_dir": "/c/src/graphs"})
+    assert extra == "team: t\nworkspace_dir: /w\nharness_dir: /c/src/graphs\nprovider_profile: /p.yaml\nforge: auto\n"
 
 
 def test_a_work_item_round_trips_through_its_front_matter():
@@ -174,3 +177,89 @@ def test_package_dirs_follow_package_dir():
         "graphs.ops": ("src/graphs/graphs/ops", "graphs/ops"),
         "coxswain": ("coxswain", "coxswain"),
     }
+
+
+# --- the sandbox forge ---------------------------------------------------------------------------------------------
+
+
+def test_the_forge_starts_only_where_docker_answers():
+    assert plan.forge_source("/usr/bin/docker", True, required=False) == plan.StartContainer()
+    assert isinstance(plan.forge_source(None, False, required=False), plan.Skip)
+    assert isinstance(plan.forge_source(None, False, required=True), plan.Fail)
+    broken = plan.forge_source("/usr/bin/docker", False, required=False)
+    assert isinstance(broken, plan.Fail) and plan.BROKEN_DOCKER_OK_ENV in broken.reason
+    assert isinstance(plan.forge_source("/usr/bin/docker", False, required=False, broken_docker_ok=True), plan.Skip)
+    assert isinstance(plan.forge_source("/usr/bin/docker", False, required=True, broken_docker_ok=True), plan.Fail)
+
+
+def test_the_forge_container_is_pinned_loopback_only_labelled_and_runs_its_hooks():
+    argv = plan.forgejo_run_argv("s1", 1700000000, 41234)
+    assert argv[:4] == ["docker", "run", "--detach", "--rm"]
+    assert argv[-1] == plan.FORGEJO_IMAGE and "@sha256:" in plan.FORGEJO_IMAGE
+    assert argv[argv.index("--publish") + 1] == "127.0.0.1:41234:3000"
+    labels = [argv[i + 1] for i, arg in enumerate(argv) if arg == "--label"]
+    assert labels == [plan.CONTAINER_LABEL, f"{plan.SESSION_LABEL}=s1", f"{plan.STARTED_LABEL}=1700000000"]
+    env = [argv[i + 1] for i, arg in enumerate(argv) if arg == "--env"]
+    assert "FORGEJO__server__ROOT_URL=http://127.0.0.1:41234/" in env
+    assert "FORGEJO__actions__ENABLED=false" in env and "FORGEJO__security__INSTALL_LOCK=true" in env
+    # docker mounts a tmpfs noexec unless told otherwise, and Forgejo runs the git hooks that record a push from /data
+    assert argv[argv.index("--tmpfs") + 1] == "/data:exec"
+
+
+def test_the_image_is_pulled_from_forgejos_registry_by_digest():
+    assert plan.FORGEJO_IMAGE.startswith("data.forgejo.org/forgejo/forgejo:11@sha256:")
+    assert plan.docker_pull_argv(plan.FORGEJO_IMAGE) == ["docker", "pull", "--quiet", plan.FORGEJO_IMAGE]
+    assert plan.PULL_ATTEMPTS > 1
+
+
+def test_the_admin_commands_run_as_the_forge_user():
+    assert plan.forgejo_user_argv("c1", "pw")[:7] == ["docker", "exec", "--user", plan.FORGEJO_UID, "c1", "forgejo", "admin"]
+    token = plan.forgejo_token_argv("c1", "smoke-s1")
+    assert token[7:] == ["user", "generate-access-token", "--username", plan.FORGEJO_USER, "--token-name", "smoke-s1",
+                         "--scopes", "all", "--raw"]
+
+
+def test_a_token_is_the_last_hex_line_and_never_echoed():
+    assert plan.parse_token("warning: x\n" + "a" * 40 + "\n") == "a" * 40
+    with pytest.raises(ValueError) as refused:
+        plan.parse_token("secret-looking-but-wrong\n")
+    assert "secret-looking" not in str(refused.value)
+
+
+def test_the_remote_carries_the_token_and_the_env_names_the_server():
+    remote = plan.forge_remote_url("http://127.0.0.1:41234", "smoke", "app", "t0k")
+    assert remote == "http://smoke:t0k@127.0.0.1:41234/smoke/app.git"
+    env = plan.forge_env("http://127.0.0.1:41234", "t0k")
+    assert env == {"FORGEJO_BASE_URL": "http://127.0.0.1:41234", "FORGEJO_TOKEN": "t0k"}
+
+
+def test_repository_names_are_distinct_and_safe():
+    first, second = plan.forge_repo_name("smoke/test_a.py::test_x"), plan.forge_repo_name("smoke/test_a.py::test_y")
+    assert first != second
+    assert all(ch.isalnum() or ch == "-" for ch in first) and first == first.lower()
+
+
+def test_a_commit_status_is_one_of_the_forge_states():
+    assert plan.commit_status_body("success", "ci") == {"state": "success", "context": "ci", "description": "ci: success"}
+    with pytest.raises(ValueError):
+        plan.commit_status_body("green", "ci")
+
+
+def test_a_pull_answer_is_read_by_its_shape():
+    pull = {"state": "closed", "merged": True, "head": {"ref": "pr/t1", "sha": "b" * 40}, "base": {"ref": "main"}}
+    assert plan.pull_summary(pull) == {"state": "closed", "merged": True, "head": "pr/t1", "sha": "b" * 40, "base": "main"}
+    assert plan.pull_summary(None) == {}
+
+
+def test_uv_reads_through_the_callers_cache_and_interpreters():
+    assert plan.uv_env("/c/uv", "/d/uv/python") == {"UV_CACHE_DIR": "/c/uv", "UV_PYTHON_INSTALL_DIR": "/d/uv/python"}
+
+
+def test_the_tree_is_every_listed_file_once():
+    assert plan.tree_files("b.py\0a/x.txt\0\0b.py\0") == ["a/x.txt", "b.py"]
+
+
+def test_a_closed_port_store_keeps_its_credentials_and_database():
+    url = "postgresql://postgres:smoke@127.0.0.1:5432/smoke_x?sslmode=disable"
+    assert plan.closed_port_url(url, 1) == "postgresql://postgres:smoke@127.0.0.1:1/smoke_x?sslmode=disable"
+    assert plan.closed_port_url("postgresql://localhost/db", 9) == "postgresql://127.0.0.1:9/db"
