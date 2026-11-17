@@ -281,4 +281,6 @@ def repo(sandbox: Sandbox, tmp_path: Path) -> Repo:
     sandbox.git(path, "add", "README.md")
     sandbox.git(path, "commit", "--quiet", "-m", "init")
     sandbox.git(path, "push", "--quiet", "origin", "main")
+    # A clone of an empty origin has no origin/HEAD; a clone of a real repository does, and `cox runs recover` reads it.
+    sandbox.git(path, "remote", "set-head", "origin", "main")
     return Repo(path=path, origin=origin)
