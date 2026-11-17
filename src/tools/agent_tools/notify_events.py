@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping, Sequence
 
 from agent_tools.chair_types import HELD_FILE_CAUSE
@@ -79,14 +80,13 @@ def _needs_chair(action: Mapping) -> Event:
 
 
 def _held_file(action: Mapping) -> Event:
-    """A hand edit the export held. The key carries the blob, so a new edit to the same file pushes again."""
+    """A hand edit the export held, keyed on its path and its reason, never on its blob. The reason names the fields and
+    body lines that differ, not their values, so a writer that rewrites a timestamp on every tick holds new text each tick
+    without a new push, while an edit to other fields or lines changes the reason and pushes again."""
     path = str(action.get("path") or "")
-    return Event(
-        "needs_attention",
-        f"needs_attention:{path}|{action.get('blob') or ''}",
-        f"Needs attention: {path}",
-        str(action.get("reason") or ""),
-    )
+    reason = str(action.get("reason") or "")
+    digest = hashlib.sha1(reason.encode("utf-8")).hexdigest()[:12]
+    return Event("needs_attention", f"needs_attention:{path}|{digest}", f"Needs attention: {path}", reason)
 
 
 def _event(action: Mapping) -> Event:

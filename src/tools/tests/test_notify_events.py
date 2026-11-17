@@ -1,5 +1,5 @@
 from agent_tools.chair_plan import plan_held_files
-from agent_tools.notify_core import Event, render
+from agent_tools.notify_core import Event, due, render
 from agent_tools.notify_events import SELF_CLEARING_CAUSES, events_from_tick
 
 STRANDED = {"kind": "needs_chair", "initiative": "init-a", "cause": "stranded", "reason": "no patch"}
@@ -66,20 +66,44 @@ def test_two_steer_head_stuck_actions_for_one_initiative_give_one_event():
     assert [e.key for e in events_from_tick({}, [first, second])] == ["stuck:init-s"]
 
 
-def test_a_held_file_gives_one_needs_attention_event_with_its_reason_keyed_by_path_and_blob():
+def test_a_held_file_gives_one_needs_attention_event_with_its_reason_keyed_by_path_and_reason():
     held = {"kind": "needs_chair", "initiative": "init-h", "cause": "held_file", "path": "work/a.md", "blob": "b1",
             "reason": "work/a.md: changed with no matching store change (state changed)"}
     (event,) = events_from_tick({}, [held, dict(held)])
-    assert (event.kind, event.key, event.body) == ("needs_attention", "needs_attention:work/a.md|b1", held["reason"])
-    (again,) = events_from_tick({}, [{**held, "blob": "b2"}])
-    assert again.key == "needs_attention:work/a.md|b2"
+    assert (event.kind, event.body) == ("needs_attention", held["reason"])
+    assert event.key.startswith("needs_attention:work/a.md|") and "b1" not in event.key
+    (new_blob,) = events_from_tick({}, [{**held, "blob": "b2"}])
+    assert new_blob.key == event.key
+    (new_reason,) = events_from_tick({}, [{**held, "reason": "work/a.md: changed with no matching store change (title changed)"}])
+    assert new_reason.key != event.key
+
+
+def _held_tick(blob: str, diff_summary: str) -> list:
+    """One chair tick's needs_attention events for a file the export holds again with new text each tick."""
+    row = {"path": "work/a/initiative.md", "initiative": "a", "reason": "edited by hand", "blob": blob,
+           "diff_summary": diff_summary}
+    return events_from_tick({}, plan_held_files({"held_files": [row]}))
+
+
+def test_a_held_file_whose_volatile_fields_change_every_tick_is_pushed_once_and_again_when_its_reason_changes():
+    summary = "draft, proposed_by, proposed_at changed; body +0/-0 lines"
+    sent: dict = {}
+    pushed = []
+    for tick, blob in enumerate(["b1", "b2", "b3", "b4"]):
+        fresh, sent = due(_held_tick(blob, summary), sent, now=180.0 * tick)
+        pushed += fresh
+    assert len(pushed) == 1
+    fresh, sent = due(_held_tick("b5", "state changed; body +0/-0 lines"), sent, now=720.0)
+    assert len(fresh) == 1 and fresh[0].key != pushed[0].key
+    fresh, _ = due(_held_tick("b6", "state changed; body +0/-0 lines"), sent, now=900.0)
+    assert fresh == []
 
 
 def test_a_workspace_only_edit_planned_by_the_chair_pushes_one_needs_attention_with_the_diff_summary():
     row = {"path": "work/a.md", "initiative": "init-h", "reason": "edited by hand", "blob": "b1", "diff_summary": "state changed"}
     actions = plan_held_files({"held_files": [row]})
     (event,) = events_from_tick({}, actions)
-    assert (event.kind, event.key) == ("needs_attention", "needs_attention:work/a.md|b1")
+    assert event.kind == "needs_attention" and event.key.startswith("needs_attention:work/a.md|")
     assert "changed with no matching store change (state changed)" in event.body
     assert plan_held_files({"held_files": [row], "held_reported": ["work/a.md|b1"]}) == []
 
