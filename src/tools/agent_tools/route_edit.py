@@ -20,6 +20,9 @@ requeue: a move to ready from a state other than todo, or a rebuild. There the f
 `queue_rows.parse_item`, and when they differ from the row they are adopted into the planned row (`file_edit`), so the export
 keeps them. With a differing file and `--body` or `--body-file` the edit is refused with a diff of the two bodies.
 `--note` appends its text to the body with `append_note`, once; it applies to a task ticket only.
+`--state ready` on a blocked or quarantined ticket, or on one the chair flagged for triage, drops the flag and marks the
+row `fresh_after_run` with the initiative's newest run (`fresh_start_extra`): the next run builds it fresh, counting no
+attempt and honouring no triage request from that run or an earlier one.
 `--surfaces` and `--state` apply to a task ticket only.
 `--epic` takes an epic id or `none` and applies to an initiative only: it sets or removes the `epic` frontmatter key and
 the same key in the stored row's `extra`. The chair reads epic membership each tick and it changes no ticket, so an edit
@@ -434,6 +437,25 @@ def kept_refusal(stored: dict, rel: str, kept: dict) -> str:
     return f"{rel} was edited by hand; --body or --body-file would overwrite it. Stored against file:\n{diff}"
 
 
+_HELD_BACK = frozenset({"blocked", "quarantined"})  # a task a run or the chair stopped: a hand move to ready restarts it
+
+
+def fresh_start_extra(extra: dict | None, newest: str | None) -> dict:
+    """Pure: `extra` without the chair's triage request and, when the initiative has a run, marked with the newest one
+    (`core.workstore.FRESH_AFTER_RUN`): no attempt or request from that run or an earlier one counts any more."""
+    from core.workstore import FRESH_AFTER_RUN, TRIAGE_FLAG  # lazy: core sits beside agent_tools in one venv
+
+    kept = {key: value for key, value in (extra or {}).items() if key != TRIAGE_FLAG}
+    return {**kept, FRESH_AFTER_RUN: newest} if newest else kept
+
+
+def _restarts(row: dict, state: str | None) -> bool:
+    """Pure: a hand move to ready of a task a run or the chair stopped, or one that still carries a triage request."""
+    from core.workstore import TRIAGE_FLAG  # lazy: core sits beside agent_tools in one venv
+
+    return state == "ready" and (row.get("state") in _HELD_BACK or TRIAGE_FLAG in (row.get("extra") or {}))
+
+
 def _requeues(row: dict, new_row: dict, *, moves: bool, allowed: bool) -> bool:
     """Pure: True when the edit sends a ticket to ready as a requeue. A rebuild always is. A todo ticket has never been
     launched, so its move to ready keeps writing the stored text over the file."""
@@ -491,6 +513,12 @@ def _edit_task(
         if not superseded and row.get("state") == "approved":
             unmarked = f"note: no run holds {row.get('task_id')}; its old approval is not marked superseded\n"
         new_row = {**new_row, "body": append_note(new_row.get("body") or "", note), "extra": marked}
+    if _restarts(row, state):
+        # The person fixed what stopped it: the next run builds it fresh, not from the old attempts or their triage.
+        from core.workstore import newest_run  # lazy: core sits beside agent_tools in one venv
+
+        newest = newest_run(row["initiative"], run_store.run_ids(runs_dir))
+        new_row = {**new_row, "extra": fresh_start_extra(new_row.get("extra"), newest)}
     if user_note is not None:
         text = user_note.strip()
         noted = append_note(new_row.get("body") or "", text)

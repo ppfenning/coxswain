@@ -387,6 +387,59 @@ def test_check_state_move(current, new, refused):
     assert (route_edit.check_state_move(current, new) is not None) is refused
 
 
+FLAG = "triage:t1:ship-9"
+HELD = {"id": "t1", "phase": "p1", "repo": "r", "hold_reason": "needs you: triage platform_defect", "triage_requested": FLAG}
+
+
+def _runs(monkeypatch, *runs):
+    monkeypatch.setattr(run_store, "run_ids", lambda runs_dir: set(runs))
+
+
+@pytest.mark.parametrize("state", ["blocked", "quarantined", "ready"])
+def test_a_hand_ready_drops_the_triage_request_and_marks_the_newest_run(tmp_path, monkeypatch, state):
+    store = _store(monkeypatch, [{**_ticket_row(), "state": state, "extra": dict(HELD)}])
+    _runs(monkeypatch, "ship-8", "ship-9", "other-12")
+    _file(tmp_path, "work/ship/p1/t1.md", TICKET_FILE.replace("state: todo", f"state: {state}"))
+    result = route_edit.apply_edit(tmp_path, tmp_path, "t1", state="ready", live_runs=())
+    assert result.code == route_edit.DONE
+    [row] = store.rows
+    assert row["state"] == "ready"
+    assert "triage_requested" not in row["extra"]
+    assert row["extra"]["fresh_after_run"] == "ship-9"
+    assert row["extra"]["hold_reason"] == HELD["hold_reason"]
+
+
+def test_a_ready_task_with_no_request_and_no_hold_is_left_alone(tmp_path, monkeypatch):
+    store = _store(monkeypatch, [{**_ticket_row(), "state": "ready"}])
+    _runs(monkeypatch, "ship-9")
+    _file(tmp_path, "work/ship/p1/t1.md", TICKET_FILE.replace("state: todo", "state: ready"))
+    result = route_edit.apply_edit(tmp_path, tmp_path, "t1", state="ready", live_runs=())
+    assert result.code == route_edit.DONE and store.upserts == [] and store.states == []
+
+
+def test_a_todo_task_made_ready_has_no_history_to_mark(tmp_path, monkeypatch):
+    store = _store(monkeypatch, [_ticket_row()])
+    _runs(monkeypatch, "ship-9")
+    _file(tmp_path, "work/ship/p1/t1.md", TICKET_FILE)
+    route_edit.apply_edit(tmp_path, tmp_path, "t1", state="ready", live_runs=())
+    assert "fresh_after_run" not in store.rows[0]["extra"]
+
+
+def test_a_hand_ready_with_no_run_yet_still_drops_the_request(tmp_path, monkeypatch):
+    store = _store(monkeypatch, [{**_ticket_row(), "state": "blocked", "extra": dict(HELD)}])
+    _runs(monkeypatch)
+    _file(tmp_path, "work/ship/p1/t1.md", TICKET_FILE.replace("state: todo", "state: blocked"))
+    route_edit.apply_edit(tmp_path, tmp_path, "t1", state="ready", live_runs=())
+    assert "triage_requested" not in store.rows[0]["extra"] and "fresh_after_run" not in store.rows[0]["extra"]
+
+
+def test_fresh_start_extra():
+    assert route_edit.fresh_start_extra(HELD, "ship-9") == {
+        **{k: v for k, v in HELD.items() if k != "triage_requested"}, "fresh_after_run": "ship-9",
+    }
+    assert route_edit.fresh_start_extra({"id": "t1"}, None) == {"id": "t1"}
+
+
 def test_check_claim_lets_an_expired_claim_go():
     row = {**_ticket_row(), "holder": "chair-mac", "expires_at": "2026-10-12T10:00:00+00:00"}
     assert route_edit.check_claim(row, "2026-10-12T11:00:00+00:00") is None

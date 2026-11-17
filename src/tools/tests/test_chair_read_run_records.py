@@ -27,6 +27,7 @@ from agent_tools.chair_read_run_records import (
 )
 from agent_tools.chair_report import format_status
 from agent_tools.chair_types import QUARANTINED_CAUSE, RemoteUnfetched
+from core.workstore import FRESH_AFTER_RUN
 from tests.test_chair_facts import NOW, _deps
 
 BODY = "\nRead the vendor schema and print its columns.\n"
@@ -167,6 +168,58 @@ def test_the_hold_count_reads_the_records(tmp_path):
     plan = [a for a in plan_recover(facts) if a.get("task_id") == "t1"]
     assert [(a["kind"], a["key"]) for a in plan] == [("hold_task", chair_sort.hold_key("t1", "demo-4"))]
     plan = [a for a in plan_recover(_facts(tmp_path, [_row("t1")], hold_after=4)) if a.get("task_id") == "t1"]
+    assert [(a["kind"], a["key"]) for a in plan] == [("request_triage", chair_sort.triage_key("t1", "demo-4"))]
+
+
+def _fresh(row: dict, run: str) -> dict:
+    return {**row, "extra": {**row["extra"], FRESH_AFTER_RUN: run}}
+
+
+def _initiative_row(**extra: object) -> dict:
+    return {"kind": "initiative", "initiative": "demo", "task_id": "demo", "state": "todo", "extra": {"id": "demo", **extra}}
+
+
+def test_attempts_before_a_task_was_readied_by_hand_are_not_read(tmp_path):
+    runs = tmp_path / "runs"
+    _record(runs, "demo-8", "t1", CODE_RECORD, date="2026-11-16")
+    _record(runs, "demo-9", "t1", CODE_RECORD, date="2026-11-16")
+    _record(runs, "demo-10", "t1", REVIEW_RECORD, date="2026-11-16")  # the same day: the run number decides, not the date
+    rows = read_store_attempts(tmp_path, {}, [_fresh(_row("t1"), "demo-9"), _row("t2")])
+    assert [(r["task"], r["run"]) for r in rows] == [("t1", "demo-10")]
+
+
+def test_an_initiative_release_after_the_task_mark_is_the_later_cutoff(tmp_path):
+    runs = tmp_path / "runs"
+    for run in ("demo-3", "demo-5", "demo-6"):
+        _record(runs, run, "t1", CODE_RECORD)
+    rows = [_fresh(_row("t1"), "demo-3"), _initiative_row(**{FRESH_AFTER_RUN: "demo-5"})]
+    assert [r["run"] for r in read_store_attempts(tmp_path, {}, rows)] == ["demo-6"]
+    rows = [_fresh(_row("t1"), "demo-5"), _initiative_row(**{FRESH_AFTER_RUN: "demo-3"})]
+    assert [r["run"] for r in read_store_attempts(tmp_path, {}, rows)] == ["demo-6"]
+
+
+def test_a_quarantine_older_than_the_release_keeps_only_its_own_attempt_and_is_sent_to_triage(tmp_path):
+    # The initiative was released over a task still quarantined: the quarantine still names its run, so the chair sends it
+    # on rather than to a person, and only that one failure counts. The epic then builds it fresh (its request predates the release).
+    runs = tmp_path / "runs"
+    for n in (1, 2, 3):
+        _record(runs, f"demo-{n}", "t1", CODE_RECORD)
+    rows = [_row("t1"), _initiative_row(**{FRESH_AFTER_RUN: "demo-3"})]
+    assert [r["run"] for r in read_store_attempts(tmp_path, {}, rows)] == ["demo-3"]
+    facts = _facts(tmp_path, rows, hold_after=2)
+    assert (_quarantine(facts, "t1")["failures"], _quarantine(facts, "t1")["run"]) == (1, "demo-3")
+    plan = [a for a in plan_recover(facts) if a.get("task_id") == "t1"]
+    assert [(a["kind"], a["key"]) for a in plan] == [("request_triage", chair_sort.triage_key("t1", "demo-3"))]
+
+
+def test_failures_before_a_hand_ready_do_not_count_toward_the_hold(tmp_path):
+    runs = tmp_path / "runs"
+    for n in (1, 2, 3):
+        _record(runs, f"demo-{n}", "t1", CODE_RECORD)
+    _record(runs, "demo-4", "t1", CODE_RECORD)
+    facts = _facts(tmp_path, [_fresh(_row("t1"), "demo-3")], hold_after=3)
+    assert (_quarantine(facts, "t1")["failures"], _quarantine(facts, "t1")["run"]) == (1, "demo-4")
+    plan = [a for a in plan_recover(facts) if a.get("task_id") == "t1"]
     assert [(a["kind"], a["key"]) for a in plan] == [("request_triage", chair_sort.triage_key("t1", "demo-4"))]
 
 

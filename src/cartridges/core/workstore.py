@@ -127,6 +127,39 @@ TRIAGE_FLAG = "triage_requested"  # set by the chair: triage the task before any
 HOLD_REASON = "hold_reason"  # with state `blocked`, why a person must decide; it starts with HOLD_MARK
 HOLD_MARK = "needs you:"
 TRIAGE_RECORDS = "triage"  # the epic's triage verdicts on the task, oldest first: {class, diagnosis, run}
+# Set by `cox route edit --state ready` on a task row and by `cox route release` on an initiative row: the newest run of
+# the initiative at that moment. No attempt and no triage request from a run numbered at or below it counts any more,
+# so a run after it builds the task fresh. A run, not a time: a run task record is dated by day only.
+FRESH_AFTER_RUN = "fresh_after_run"
+
+
+def run_number(run: object) -> int:
+    """The number a run id ends in, `x-3` is 3; -1 for anything that ends in none."""
+    tail = str(run or "").rsplit("-", 1)[-1]
+    return int(tail) if "-" in str(run or "") and tail.isdigit() else -1
+
+
+def newest_run(initiative: str, run_ids: Iterable[str]) -> str | None:
+    """The highest-numbered `<initiative>-N` among `run_ids`; None when there is none."""
+    own = [r for r in run_ids if r.rsplit("-", 1)[0] == initiative and run_number(r) >= 0]
+    return max(own, key=run_number, default=None)
+
+
+def fresh_cutoff(*extras: Mapping[str, Any] | None) -> int:
+    """The run number at or below which nothing counts: the latest `FRESH_AFTER_RUN` among the row extras given
+    (a task's and its initiative's); -1 when none names one."""
+    return max((run_number(e.get(FRESH_AFTER_RUN)) for e in extras if isinstance(e, Mapping) and e.get(FRESH_AFTER_RUN)), default=-1)
+
+
+def counts_after(run: object, cutoff: int) -> bool:
+    """Whether an attempt or a request from `run` counts under `cutoff`; with no cutoff (-1) everything counts."""
+    return cutoff < 0 or run_number(run) > cutoff
+
+
+def triage_flag_run(flag: object) -> str:
+    """The run a chair triage flag names: its value is the handled key `triage:<task>:<run>`."""
+    parts = str(flag or "").split(":", 2)
+    return parts[2] if len(parts) == 3 else ""
 
 
 def hold_text(reason: str) -> str:
