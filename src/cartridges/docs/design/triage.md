@@ -74,7 +74,8 @@ substantiates.
 The chair asks for triage too. A quarantine that needs a tweak (cause `code`, `review`, `ticket` or
 unknown) gets `extra.triage_requested` on its store row and goes back to `ready`. The epic triages a
 flagged task before any rebuild, whatever its attempt count, and takes the flag off once triage answered.
-A triage that could not run quarantines the task as before.
+A triage that could not run (its graph raised, or it refused every answer it was given) holds the task for a
+person, with the failure named on the mark, rather than quarantining it into another triage that fails the same way.
 
 Under `work_state: store` no work file holds an attempt, so both sides read the attempts from the run task
 records (`runs/<run>/tasks/<phase>/<task>.json`, and the store's `task_records` copy): each record that

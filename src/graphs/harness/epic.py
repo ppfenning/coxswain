@@ -3969,6 +3969,14 @@ def _attempt_cap_reason(attempts: Sequence[Mapping[str, Any]]) -> str:
     )
 
 
+def triage_failure_hold(failure: str, asked: str) -> tuple[str, str]:
+    """Pure. (task id, hold reason) for one failed triage invocation, `<task>: <what failed>` as `invoke_graphs` names it.
+
+    The reason names the failure first, then why triage was asked; a person reads it on the held task."""
+    task_id, _, what = failure.partition(":")
+    return task_id, f"triage could not run: {what.strip() or 'no detail was recorded'}. It was asked because: {asked}"
+
+
 def _attempt_cap_for(attempts: Sequence[Mapping[str, Any]]) -> int:
     """1 when the newest attempt by `ts` (ties keep list order) was caused by the ticket or the code, else `ATTEMPT_CAP`."""
     newest = sorted(attempts, key=lambda a: str(a.get("ts") or ""))[-1:]
@@ -4510,8 +4518,7 @@ def _run_phase(
     cap_by_id = {task_id: _attempt_cap_for(caused) for task_id, caused in caused_by_id.items()}
     # A capped task is launched into `triage` (docs/design/triage.md §1) rather
     # than quarantined outright: the graph classifies the attempt record and
-    # emits by class, and only a triage that could not run still ends up
-    # quarantined here, plainly, never through `_quarantine_task`.
+    # emits by class; a triage that could not run holds the task for a person, never through `_quarantine_task`.
     # A task the chair flagged for triage (its row's `TRIAGE_FLAG`) is triaged too, whatever its attempt count: a
     # failure that needs a tweak gets its instruction before any rebuild.
     triage_batch: list[dict[str, Any]] = []
@@ -4571,20 +4578,17 @@ def _run_phase(
             run_id=f"{ctx.run_id}:{phase}",
             max_parallel=ctx.max_parallel,
         )
-        for failure in triage_failures:
-            task_id = failure.split(":", 1)[0]
-            reason = f"{asked(task_id)} triage itself failed: {failure}"
-            quarantined.append({"id": task_id, "phase": phase, "grain": "task", "reason": reason, "kind": "no_work"})
-            _quarantine_row(ctx, phase, task_id)
-            print(
-                f"  attempt cap: {task_id} refused; triage could not run ({failure}); "
-                f"{_newest_attempt_text(attempts_by_id[task_id])}"
-            )
-
         def hold(task_id: str, reason: str) -> None:
             """Leave the task for a person with the mark; it is not built in this run either way."""
             text, why = _hold_task(ctx, shared.get(task_id) or dict(all_ready_by_id[task_id]), reason)
             print(f"  triage: {task_id} held for a person: {text}" + (f" (the hold was not written: {why})" if why else ""))
+
+        # A triage that could not run (its graph raised, or every answer it gave was refused) is not the task's
+        # failure: quarantining again would only send it back to triage, which fails the same way. A person decides.
+        for failure in triage_failures:
+            task_id, reason = triage_failure_hold(failure, asked(failure.split(":", 1)[0]))
+            print(f"  attempt cap: {task_id} not built; triage could not run; {_newest_attempt_text(attempts_by_id[task_id])}")
+            hold(task_id, reason)
 
         for result in triaged:
             task_id = str(result.get("run_id", "")).rsplit(":", 1)[-1]

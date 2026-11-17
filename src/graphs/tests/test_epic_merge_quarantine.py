@@ -172,19 +172,7 @@ def test_the_over_budget_refusal_quarantines_the_row(repo, cart, tmp_path, store
     assert states["t1-probe"] == "quarantined"
 
 
-@pytest.mark.parametrize(
-    ("triaged", "failures", "reason_part"),
-    [
-        ([], ["t1-probe: triage node raised"], "triage itself failed"),
-    ],
-    ids=["triage-failed"],
-)
-def test_each_attempt_cap_refusal_quarantines_the_row(repo, cart, tmp_path, store_conn, monkeypatch, triaged, failures, reason_part):  # noqa: F811
-    _fake_triage(monkeypatch, triaged, failures)
-    result, states = _drive_store(repo, cart, tmp_path, store_conn, _capped_work())
-    entry = next(q for q in result["quarantined"] if q["id"] == "t1-probe")
-    assert reason_part in entry["reason"] and entry["kind"] == "no_work"
-    assert states["t1-probe"] == "quarantined"
+# A triage that failed is held, not quarantined: tests/test_epic_triage_classes.py drives it through the real graph.
 
 
 # An escalated repeat and a class with no write used to quarantine the row here as well; they now hold it for a

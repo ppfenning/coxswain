@@ -771,7 +771,9 @@ The count covers every version of the task's ticket, so an amended ticket
 keeps its earlier failures. A stoppage and a failed rescue do not count.
 
 The chair also holds a task that comes back quarantined in the same run it
-already asked triage for. This happens when triage itself could not run.
+already asked triage for. A triage that could not run no longer quarantines
+the task: the epic holds it itself, and the hold reason starts with
+`triage could not run:` and names what failed.
 
 ### The no-progress hold
 
