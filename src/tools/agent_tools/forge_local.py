@@ -7,18 +7,18 @@ network use is a push of the default branch to an existing `origin`.
 
 from __future__ import annotations
 
-import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from agent_tools import bounded_run
 from agent_tools.forge import ForgeNotSupported
 
 __all__ = ["find_open_prs", "merge", "merge_state", "open_pr", "push", "update_branch", "wait_checks"]
 
 
 def _git(repo: Path | str, *args: str) -> tuple[int, str]:
-    done = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    done = bounded_run.completed(["git", "-C", str(repo), *args], capture_output=True, text=True)
     return done.returncode, (done.stdout + done.stderr).strip()
 
 

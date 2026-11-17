@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import re
-import subprocess
 from collections.abc import Iterable
 from pathlib import Path
 
+from harness import bounded_proc
 from harness.assembly import git
 
 # A squash or rebase merge puts the number in the subject as "(#N)"; a merge commit says "Merge pull request #N".
@@ -29,7 +29,7 @@ def on_branch(repo: Path, commit: str, branch: str) -> bool:
 
 def patch_ids(repo: Path, log_patches: str) -> dict[str, str]:
     """Map commit id to stable patch-id for `git log -p` text. Commits with an empty patch are absent."""
-    result = subprocess.run(
+    result = bounded_proc.completed(
         ["git", "-C", str(repo), "patch-id", "--stable"], input=log_patches, capture_output=True, text=True
     )
     pairs = (line.split() for line in result.stdout.splitlines())

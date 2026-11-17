@@ -83,6 +83,7 @@ class _LazyHandler:
 
 
 card_keys = _LazyModule("agent_tools.card_keys")
+bounded_run = _LazyModule("agent_tools.bounded_run")
 chair = _LazyModule("agent_tools.chair")
 chair_capacity = _LazyModule("agent_tools.chair_capacity")
 chair_chat = _LazyModule("agent_tools.chair_chat")
@@ -132,6 +133,7 @@ chair_revert_ports = _LazyModule("agent_tools.chair_revert_ports")
 chair_revert_watch = _LazyModule("agent_tools.chair_revert_watch")
 chair_run = _LazyModule("agent_tools.chair_run")
 chair_service = _LazyModule("agent_tools.chair_service")
+unit_env = _LazyModule("agent_tools.unit_env")
 chair_service_host = _LazyModule("agent_tools.chair_service_host")
 chair_smoke = _LazyModule("agent_tools.chair_smoke")
 chair_unit = _LazyModule("agent_tools.chair_unit")
@@ -1661,7 +1663,7 @@ def _land_branches(repo: Path, record: dict, default_branch: str) -> dict[str, l
     candidates = [f"agents/{record['run']}/{record['task']}", f"epic/{record.get('initiative')}/{record['phase']}"]
     branches: dict[str, list[str]] = {}
     for b in candidates:
-        out = subprocess.run(["git", "-C", str(repo), "log", "--no-merges", "--cherry-pick", "--right-only", "--format=%s", f"{default_branch}...{b}"],
+        out = bounded_run.completed(["git", "-C", str(repo), "log", "--no-merges", "--cherry-pick", "--right-only", "--format=%s", f"{default_branch}...{b}"],
                              capture_output=True, text=True)
         if out.returncode == 0:
             branches[b] = [line for line in out.stdout.splitlines() if line]
@@ -1673,7 +1675,7 @@ def _land_branch_counts(repo: Path, record: dict, default_branch: str, branches:
     <base>...<branch>` (raw, patch-equivalent commits included) and `unique`, the commits `_land_branches` kept."""
     counts: dict[str, dict[str, int]] = {}
     for b in branches:
-        out = subprocess.run(["git", "-C", str(repo), "rev-list", "--left-right", "--count", f"{default_branch}...{b}"],
+        out = bounded_run.completed(["git", "-C", str(repo), "rev-list", "--left-right", "--count", f"{default_branch}...{b}"],
                              capture_output=True, text=True)
         behind, _, ahead = out.stdout.partition("\t")
         if out.returncode == 0 and behind.strip().isdigit() and ahead.strip().isdigit():
@@ -1710,7 +1712,7 @@ def _phase_task_facts(repo: Path, phase_branch: str, items: list[dict], task_rec
     of those but a `build.files_touched` counts as reachable. None when
     `phase_branch` does not resolve, so a land with no phase branch to compare against plans as it always did."""
     def git_ok(*args: str) -> bool:
-        return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True).returncode == 0
+        return bounded_run.completed(["git", "-C", str(repo), *args], capture_output=True, text=True).returncode == 0
     if not git_ok("rev-parse", "--verify", "--quiet", f"refs/heads/{phase_branch}"):
         return None
     approved = {i["id"] for i in items if i.get("status") == "approved"}
@@ -1738,20 +1740,20 @@ def _recover_branches(repo: Path, record: dict, phase_branch: str) -> dict[str, 
     candidates = [f"agents/{record['run']}/{record['task']}", f"epic/{record.get('initiative')}/{record['phase']}--{record['task']}"]
     branches: dict[str, list[str]] = {}
     for b in candidates:
-        out = subprocess.run(["git", "-C", str(repo), "log", "--no-merges", "--format=%s", f"{phase_branch}..{b}"], capture_output=True, text=True)
+        out = bounded_run.completed(["git", "-C", str(repo), "log", "--no-merges", "--format=%s", f"{phase_branch}..{b}"], capture_output=True, text=True)
         if out.returncode == 0:
             branches[b] = [line for line in out.stdout.splitlines() if line]
     return branches
 
 
 def _branch_exists(repo: Path, branch: str) -> bool:
-    r = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", branch], capture_output=True, text=True)
+    r = bounded_run.completed(["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", branch], capture_output=True, text=True)
     return r.returncode == 0
 
 
 def _git_out(repo: Path, *args: str) -> str | None:
     """Stripped stdout of `git -C repo <args>`, or `None` when git exits non-zero."""
-    r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    r = bounded_run.completed(["git", "-C", str(repo), *args], capture_output=True, text=True)
     return r.stdout.strip() if r.returncode == 0 else None
 
 
@@ -1762,7 +1764,7 @@ def _open_prs_for(repo: Path, branch: str, forge_module=forge_github) -> list[in
 def _phase_adds_nothing(repo: Path, phase_branch: str, default_branch: str) -> bool:
     """Edge. True when merging `phase_branch` into origin's `default_branch` changes nothing, so its work is already there."""
     ref = f"refs/remotes/origin/{default_branch}"
-    fetched = subprocess.run(["git", "-C", str(repo), "fetch", "--quiet", "origin", f"+refs/heads/{default_branch}:{ref}"], capture_output=True, text=True)
+    fetched = bounded_run.completed(["git", "-C", str(repo), "fetch", "--quiet", "origin", f"+refs/heads/{default_branch}:{ref}"], capture_output=True, text=True)
     tree = _git_out(repo, "merge-tree", "--write-tree", ref, phase_branch) if fetched.returncode == 0 else None
     return tree is not None and tree.splitlines()[0] == _git_out(repo, "rev-parse", f"{ref}^{{tree}}")
 
@@ -1790,7 +1792,7 @@ def _main_subjects_touching(repo: Path, default_branch: str, branch: str, files:
     """Edge. Subjects, newest first, of commits on the fetched default branch that touched `files` and left them as `branch` holds them.
     A later commit that changed those files again does not match, so it cannot lend its PR number to this branch."""
     log = _git_out(repo, "log", "--max-count=20", "--format=%H %s", f"refs/remotes/origin/{default_branch}", "--", *files) if files else None
-    same = lambda sha: subprocess.run(["git", "-C", str(repo), "diff", "--quiet", sha, branch, "--", *files], capture_output=True).returncode == 0  # noqa: E731
+    same = lambda sha: bounded_run.completed(["git", "-C", str(repo), "diff", "--quiet", sha, branch, "--", *files], capture_output=True).returncode == 0  # noqa: E731
     return [line.split(" ", 1)[1] for line in (log or "").splitlines() if " " in line and same(line.split(" ", 1)[0])]
 
 
@@ -1872,7 +1874,7 @@ def _phase_pr_facts(repo: Path, pr_branch: str, forge_module=forge_github) -> di
     The PR head is read as the fetched `origin/<pr_branch>` tip: the forge call returns PR numbers only,
     and a PR from this repo's own branch has exactly that head."""
     local = _git_out(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{pr_branch}")
-    fetched = subprocess.run(["git", "-C", str(repo), "fetch", "--quiet", "origin", f"+refs/heads/{pr_branch}:refs/remotes/origin/{pr_branch}"],
+    fetched = bounded_run.completed(["git", "-C", str(repo), "fetch", "--quiet", "origin", f"+refs/heads/{pr_branch}:refs/remotes/origin/{pr_branch}"],
                              capture_output=True, text=True).returncode == 0
     remote = _git_out(repo, "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{pr_branch}") if fetched else None
     prs = _open_prs_for(repo, pr_branch, forge_module)
@@ -1888,7 +1890,7 @@ def _land_resume(repo: Path, cherry_pick: dict, forge_module=forge_github) -> di
     Open PRs are asked for whenever a branch exists; one is adopted whatever the trees."""
     branch, base = cherry_pick["onto"], cherry_pick["from"]
     local = _git_out(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}^{{tree}}")
-    fetched = subprocess.run(["git", "-C", str(repo), "fetch", "--quiet", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"],
+    fetched = bounded_run.completed(["git", "-C", str(repo), "fetch", "--quiet", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"],
                              capture_output=True, text=True).returncode == 0
     remote = _git_out(repo, "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}^{{tree}}") if fetched else None
     if local is None and remote is None:
@@ -1926,7 +1928,7 @@ def _remote_branch_exists(repo: Path, branch: str) -> bool:
     (reached the remote, no such ref), says absent. A failed fetch is not absence, and absence leads to a delete."""
     if _git_out(repo, "config", "--get", "remote.origin.url") is None:
         return False
-    listed = subprocess.run(["git", "-C", str(repo), "ls-remote", "--exit-code", "--heads", "origin", f"refs/heads/{branch}"],
+    listed = bounded_run.completed(["git", "-C", str(repo), "ls-remote", "--exit-code", "--heads", "origin", f"refs/heads/{branch}"],
                             capture_output=True, text=True)
     return listed.returncode != 2
 
@@ -1950,7 +1952,7 @@ def _leftover_gate_facts(repo: Path, branch: str, base: str, forge_module=forge_
     if isinstance(prs, str) or _branch_checked_out(repo, branch):
         return None
     local_tip = _git_out(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
-    ancestor = (subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", local_tip, base],
+    ancestor = (bounded_run.completed(["git", "-C", str(repo), "merge-base", "--is-ancestor", local_tip, base],
                                capture_output=True, text=True).returncode == 0) if local_tip else None
     count = _git_out(repo, "rev-list", "--count", f"{base}..{local_tip}") if local_tip else None
     return {"local_tip": local_tip, "is_ancestor_of_main": ancestor, "unique_commits": int(count) if count else None,
@@ -1998,7 +2000,7 @@ def _land_leftover(repo: Path, cherry_pick: dict, decision: dict, forge_module=f
 
 def _git_failure(repo: Path, *args: str) -> str | None:
     """Edge. Run a git command that writes; its stderr when it exits non-zero, else None."""
-    done = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    done = bounded_run.completed(["git", "-C", str(repo), *args], capture_output=True, text=True)
     return None if done.returncode == 0 else done.stderr.strip() or f"git {args[0]} exited {done.returncode}"
 
 
@@ -2265,7 +2267,7 @@ def _ticket_items(work_root: Path, initiative: str, runs_dir: Path, land_mode: s
 def _ticket_present(repo: Path, head: str, records: list[dict]) -> set[str]:
     """Edge. Ids of `records` whose work is in `head`: a `Task: <id>` trailer on it, else the task's agent branch an ancestor of it."""
     def git(*args: str) -> subprocess.CompletedProcess:
-        return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+        return bounded_run.completed(["git", "-C", str(repo), *args], capture_output=True, text=True)
     log = git("log", "--format=%B", head)
     trailers = set(re.findall(r"^Task: (.+)$", log.stdout, re.M)) if log.returncode == 0 else set()
     return {r["task"] for r in records if r["task"] in trailers or git("merge-base", "--is-ancestor", f"agents/{r.get('run')}/{r['task']}", head).returncode == 0}
@@ -2394,10 +2396,10 @@ def _generate_and_amend(wt: Path, umbrella: str | None, echo: Callable[[str], No
         return True, ""
     # Not `add -A` with the exclude: git 2.55 refuses an exclude pathspec that names an ignored path. Stage all,
     # then take the linked `.venv` back out, which covers a git that ignores the symlink and one that does not.
-    staged = subprocess.run(["git", "-C", str(wt), "add", "-A", "--", "."], capture_output=True, text=True)
-    subprocess.run(["git", "-C", str(wt), "reset", "-q", "--", ".venv"], capture_output=True, text=True)
+    staged = bounded_run.completed(["git", "-C", str(wt), "add", "-A", "--", "."], capture_output=True, text=True)
+    bounded_run.completed(["git", "-C", str(wt), "reset", "-q", "--", ".venv"], capture_output=True, text=True)
     changed = (_git_out(wt, "diff", "--cached", "--name-only") or "").split()
-    amend = subprocess.run(["git", "-C", str(wt), "commit", "--amend", "--no-edit"], capture_output=True, text=True)
+    amend = bounded_run.completed(["git", "-C", str(wt), "commit", "--amend", "--no-edit"], capture_output=True, text=True)
     failed = next((r for r in (staged, amend) if r.returncode != 0), None)
     if failed is not None:
         return False, f"{_GENERATE_FAILED}{failed.stderr.strip() or failed.stdout.strip()}"
@@ -2408,13 +2410,13 @@ def _generate_and_amend(wt: Path, umbrella: str | None, echo: Callable[[str], No
 def _skip_empty_pick(wt: Path, sha: str, cp: subprocess.CompletedProcess, echo: Callable[[str], None] = print) -> bool:
     """Edge. True when the stopped pick `cp` of `sha` in `wt` was empty, not a conflict and not a commit authored empty:
     git's skip cleared it and the skip line was echoed. False leaves the stopped pick for the caller's handling."""
-    conflicted = subprocess.run(["git", "-C", str(wt), "diff", "--name-only", "--diff-filter=U"], capture_output=True, text=True).stdout
+    conflicted = bounded_run.completed(["git", "-C", str(wt), "diff", "--name-only", "--diff-filter=U"], capture_output=True, text=True).stdout
     if not land.is_empty_pick(cp.stderr, cp.stdout, bool(conflicted.split())):
         return False
     if not _git_out(wt, "diff-tree", "--no-commit-id", "--name-only", "-r", sha):
         return False  # a commit authored empty is not already on the base: it fails as it always did
     subject = _git_out(wt, "log", "-1", "--format=%s", sha) or ""
-    if subprocess.run(["git", "-C", str(wt), "cherry-pick", "--skip"], capture_output=True, text=True).returncode != 0:
+    if bounded_run.completed(["git", "-C", str(wt), "cherry-pick", "--skip"], capture_output=True, text=True).returncode != 0:
         return False
     echo(land.skip_note(sha, subject, land.SKIP_EMPTY))
     return True
@@ -2433,7 +2435,7 @@ def _patch_id_skipped(repo: Path, step: dict) -> str | None:
 def _drop_pr_branch(repo: Path, onto: str) -> None:
     """Edge. An all-skipped pick built nothing to keep: drop its land worktree and the local pr branch, so a rerun can cut it again."""
     _remove_land_worktree(repo, onto)
-    subprocess.run(["git", "-C", str(repo), "branch", "-D", onto], capture_output=True, text=True)
+    bounded_run.completed(["git", "-C", str(repo), "branch", "-D", onto], capture_output=True, text=True)
 
 
 def _range_detail(step: dict, shas: list[str], skipped: list[str]) -> str:
@@ -2447,14 +2449,14 @@ def _cherry_pick_generated(wt: Path, sha: str, umbrella: str | None, echo: Calla
     """Cherry-pick `sha` into `wt`, then regenerate and amend. The real land and the resume check both
     build the pushed tree here, so the tree the resume check expects cannot drift from the tree pushed.
     A pick that stops empty without a conflict is skipped, not failed: it returns `(True, land.SKIP_EMPTY)`."""
-    cp = subprocess.run(
+    cp = bounded_run.completed(
         ["git", "-C", str(wt), "-c", "merge.conflictStyle=diff3", "cherry-pick", sha], capture_output=True, text=True
     )
     regenerated: list[str] = []
     if cp.returncode != 0 and _skip_empty_pick(wt, sha, cp, echo):
         return True, land.SKIP_EMPTY
     if cp.returncode != 0:
-        conflicted = subprocess.run(
+        conflicted = bounded_run.completed(
             ["git", "-C", str(wt), "diff", "--name-only", "--diff-filter=U"], capture_output=True, text=True
         ).stdout.splitlines()
 
@@ -2472,7 +2474,7 @@ def _cherry_pick_generated(wt: Path, sha: str, umbrella: str | None, echo: Calla
         resolved = {} if generated_only else {name: resolve(name) for name in conflicted}
         unresolvable = not generated_only and (not conflicted or any(text is None for text in resolved.values()))
         if failure is not None or unresolvable:
-            subprocess.run(["git", "-C", str(wt), "cherry-pick", "--abort"], capture_output=True, text=True)
+            bounded_run.completed(["git", "-C", str(wt), "cherry-pick", "--abort"], capture_output=True, text=True)
             # The conflicts line leads, so the land prints it as `cherry_pick: ... conflicts in: ...` (what
             # `partial_land.conflicting_paths` reads); git's own "could not apply" line follows for `land_refusal`.
             named = f"cherry-pick of {sha[:8]} conflicts in: {', '.join(sorted(conflicted))}" if conflicted else ""
@@ -2480,13 +2482,13 @@ def _cherry_pick_generated(wt: Path, sha: str, umbrella: str | None, echo: Calla
         for name, text in resolved.items():
             (wt / name).write_text(text)
         staged = sorted(conflicted) if generated_only else sorted(resolved)
-        subprocess.run(["git", "-C", str(wt), "add", *staged], capture_output=True, text=True)
-        cont = subprocess.run(
+        bounded_run.completed(["git", "-C", str(wt), "add", *staged], capture_output=True, text=True)
+        cont = bounded_run.completed(
             ["git", "-C", str(wt), "-c", "core.editor=true", "cherry-pick", "--continue"],
             capture_output=True, text=True,
         )
         if cont.returncode != 0:
-            subprocess.run(["git", "-C", str(wt), "cherry-pick", "--abort"], capture_output=True, text=True)
+            bounded_run.completed(["git", "-C", str(wt), "cherry-pick", "--abort"], capture_output=True, text=True)
             return False, cont.stderr.strip() or cont.stdout.strip()
         if generated_only:
             regenerated = staged
@@ -2532,7 +2534,7 @@ def _generated_tree(repo: Path, branch: str, base: str, sha: str, umbrella: str 
     scratch = _land_worktree(repo, branch)
     _remove_land_worktree(repo, branch)
     try:
-        add = subprocess.run(["git", "-C", str(repo), "worktree", "add", "--detach", str(scratch), base], capture_output=True, text=True)
+        add = bounded_run.completed(["git", "-C", str(repo), "worktree", "add", "--detach", str(scratch), base], capture_output=True, text=True)
         if add.returncode != 0:
             return None, add.stderr.strip() or add.stdout.strip()
         _link_venv(repo, scratch)
@@ -2547,10 +2549,10 @@ def _generated_tree(repo: Path, branch: str, base: str, sha: str, umbrella: str 
 def _remove_land_worktree(repo: Path, branch: str) -> None:
     """Drop `branch`'s land worktree and its registration; the branch itself stays."""
     wt = _land_worktree(repo, branch)
-    subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)], capture_output=True)
+    bounded_run.completed(["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)], capture_output=True)
     # A leftover directory git no longer knows (a crashed land, another repo) would block `worktree add`.
     shutil.rmtree(wt, ignore_errors=True)
-    subprocess.run(["git", "-C", str(repo), "worktree", "prune"], capture_output=True)
+    bounded_run.completed(["git", "-C", str(repo), "worktree", "prune"], capture_output=True)
 
 
 def _scratch_merge_branch(branch: str) -> str:
@@ -2562,7 +2564,7 @@ def _scratch_merge_branch(branch: str) -> str:
 def _remove_scratch_worktree(repo: Path, scratch_branch: str) -> None:
     """Like `_remove_land_worktree`, but the scratch branch is throwaway, so it goes too."""
     _remove_land_worktree(repo, scratch_branch)
-    subprocess.run(["git", "-C", str(repo), "branch", "-D", scratch_branch], capture_output=True, text=True)
+    bounded_run.completed(["git", "-C", str(repo), "branch", "-D", scratch_branch], capture_output=True, text=True)
 
 
 def _resolve_landed_conflicts(repo: Path, scratch_wt: Path, from_ref: str, branch_tip: str,
@@ -2573,15 +2575,15 @@ def _resolve_landed_conflicts(repo: Path, scratch_wt: Path, from_ref: str, branc
     unresolved."""
     unresolved = []
     for path in conflicted:
-        main_show = subprocess.run(["git", "-C", str(repo), "show", f"{from_ref}:{path}"], capture_output=True, text=True)
-        log = subprocess.run(["git", "-C", str(repo), "log", "--format=%H", branch_tip, "--", path], capture_output=True, text=True)
+        main_show = bounded_run.completed(["git", "-C", str(repo), "show", f"{from_ref}:{path}"], capture_output=True, text=True)
+        log = bounded_run.completed(["git", "-C", str(repo), "log", "--format=%H", branch_tip, "--", path], capture_output=True, text=True)
         shas = [s for s in log.stdout.split() if s]
         landed = main_show.returncode == 0 and any(
-            subprocess.run(["git", "-C", str(repo), "show", f"{sha}:{path}"], capture_output=True, text=True).stdout == main_show.stdout
+            bounded_run.completed(["git", "-C", str(repo), "show", f"{sha}:{path}"], capture_output=True, text=True).stdout == main_show.stdout
             for sha in shas)
         if landed:
-            subprocess.run(["git", "-C", str(scratch_wt), "checkout", "--ours", "--", path], capture_output=True, text=True)
-            subprocess.run(["git", "-C", str(scratch_wt), "add", path], capture_output=True, text=True)
+            bounded_run.completed(["git", "-C", str(scratch_wt), "checkout", "--ours", "--", path], capture_output=True, text=True)
+            bounded_run.completed(["git", "-C", str(scratch_wt), "add", path], capture_output=True, text=True)
         else:
             unresolved.append(path)
     return unresolved
@@ -2616,7 +2618,7 @@ def _resolve_append_only(wt: Path, paths: list[str]) -> bool:
         return False
     for name, text in resolved.items():
         (wt / name).write_text(text)
-    staged = subprocess.run(["git", "-C", str(wt), "add", *sorted(resolved)], capture_output=True, text=True)
+    staged = bounded_run.completed(["git", "-C", str(wt), "add", *sorted(resolved)], capture_output=True, text=True)
     if staged.returncode != 0:
         return False
     print(f"resolved: append-only in {', '.join(sorted(resolved))}")
@@ -2628,7 +2630,7 @@ def _gather_worktree(repo: Path, step: dict) -> tuple[Path | None, str]:
     wt = _land_worktree(repo, step["onto"])
     if wt.exists():
         return wt, ""
-    co = subprocess.run(["git", "-C", str(repo), "worktree", "add", step.get("worktree_flag", "-b"), step["onto"], str(wt), step["from"]],
+    co = bounded_run.completed(["git", "-C", str(repo), "worktree", "add", step.get("worktree_flag", "-b"), step["onto"], str(wt), step["from"]],
                         capture_output=True, text=True)
     if co.returncode != 0:
         return None, co.stderr.strip() or co.stdout.strip()
@@ -2646,9 +2648,9 @@ def _commit_count_refusal(step: dict, shas: list[str]) -> str | None:
 
 def _gather_failed(wt: Path, what: str, abort: list[str], result: subprocess.CompletedProcess) -> tuple[bool, str]:
     """Name the unmerged files, run `abort` in `wt`, and report `what conflicts in: ...` like a squash does."""
-    conflicted = subprocess.run(["git", "-C", str(wt), "diff", "--name-only", "--diff-filter=U"],
+    conflicted = bounded_run.completed(["git", "-C", str(wt), "diff", "--name-only", "--diff-filter=U"],
                                 capture_output=True, text=True).stdout.split()
-    subprocess.run(["git", "-C", str(wt), *abort], capture_output=True, text=True)
+    bounded_run.completed(["git", "-C", str(wt), *abort], capture_output=True, text=True)
     return False, f"{what} conflicts in: {', '.join(conflicted)}" if conflicted else result.stderr.strip() or result.stdout.strip()
 
 
@@ -2658,7 +2660,7 @@ def _execute_gather_step(repo: Path, step: dict) -> tuple[bool, str]:
     if wt is None:
         return False, why
     if step["kind"] == "cherry_pick":
-        rev = subprocess.run(["git", "-C", str(repo), "rev-list", "--reverse", "--no-merges", "--cherry-pick", "--right-only",
+        rev = bounded_run.completed(["git", "-C", str(repo), "rev-list", "--reverse", "--no-merges", "--cherry-pick", "--right-only",
                               f"{step['from']}...{step['branch']}"], capture_output=True, text=True)
         shas = rev.stdout.split()
         dropped = _patch_id_skipped(repo, step) if rev.returncode == 0 and not shas else None
@@ -2669,7 +2671,7 @@ def _execute_gather_step(repo: Path, step: dict) -> tuple[bool, str]:
             return False, refusal or rev.stderr.strip()
         skipped: list[str] = []
         for sha in shas:
-            cp = subprocess.run(["git", "-C", str(wt), "cherry-pick", sha], capture_output=True, text=True)
+            cp = bounded_run.completed(["git", "-C", str(wt), "cherry-pick", sha], capture_output=True, text=True)
             if cp.returncode == 0:
                 continue
             if _skip_empty_pick(wt, sha, cp):
@@ -2678,13 +2680,13 @@ def _execute_gather_step(repo: Path, step: dict) -> tuple[bool, str]:
             _, detail = _gather_failed(wt, f"cherry-pick of {sha[:8]}", ["cherry-pick", "--abort"], cp)
             return False, f"{detail}\nstopped at {sha[:8]} on {step['branch']}"
         return True, _range_detail(step, shas, skipped)
-    applied = subprocess.run(["git", "-C", str(wt), "apply", "--3way", "--index", "-"], input=step["patch"],
+    applied = bounded_run.completed(["git", "-C", str(wt), "apply", "--3way", "--index", "-"], input=step["patch"],
                              capture_output=True, text=True)
     if applied.returncode != 0:
         return _gather_failed(wt, f"patch of {step['task']}", ["reset", "--hard"], applied)
-    commit = subprocess.run(["git", "-C", str(wt), "commit", "-qm", step["task"]], capture_output=True, text=True)
+    commit = bounded_run.completed(["git", "-C", str(wt), "commit", "-qm", step["task"]], capture_output=True, text=True)
     if commit.returncode != 0:
-        subprocess.run(["git", "-C", str(wt), "reset", "--hard"], capture_output=True, text=True)
+        bounded_run.completed(["git", "-C", str(wt), "reset", "--hard"], capture_output=True, text=True)
         return False, commit.stderr.strip() or commit.stdout.strip()
     return True, f"applied patch of {step['task']} onto {step['onto']}"
 
@@ -2703,7 +2705,7 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
         # The pr branch is built in its own worktree, so `repo`'s HEAD never moves.
         wt = _land_worktree(repo, step["onto"])
         _remove_land_worktree(repo, step["onto"])
-        co = subprocess.run(["git", "-C", str(repo), "worktree", "add", "-b", step["onto"], str(wt), step["from"]], capture_output=True, text=True)
+        co = bounded_run.completed(["git", "-C", str(repo), "worktree", "add", "-b", step["onto"], str(wt), step["from"]], capture_output=True, text=True)
         if co.returncode != 0:
             return False, co.stderr.strip() or co.stdout.strip()
         _link_venv(repo, wt)
@@ -2711,7 +2713,7 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
         # whose patch `from` already has (a stacked parent that merged as a squash) are left out. The range
         # names them without matching on subject text, and `--reverse` picks them oldest first. A step from
         # an older plan has no `commits` key and accepts any positive count.
-        rev = subprocess.run(["git", "-C", str(repo), "rev-list", "--reverse", "--no-merges", "--cherry-pick", "--right-only",
+        rev = bounded_run.completed(["git", "-C", str(repo), "rev-list", "--reverse", "--no-merges", "--cherry-pick", "--right-only",
                               f"{step['from']}...{step['branch']}"], capture_output=True, text=True)
         shas = [s for s in rev.stdout.split() if s]
         dropped = _patch_id_skipped(repo, step) if rev.returncode == 0 and not shas else None
@@ -2731,8 +2733,8 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
         if not ok and detail.startswith(_GENERATE_FAILED):
             # Keep the worktree, detached, for inspection; free the branch so a rerun starts fresh
             # instead of finding a pr branch that holds the un-generated tree and refusing on it.
-            subprocess.run(["git", "-C", str(wt), "checkout", "-q", "--detach"], capture_output=True, text=True)
-            subprocess.run(["git", "-C", str(repo), "branch", "-D", step["onto"]], capture_output=True, text=True)
+            bounded_run.completed(["git", "-C", str(wt), "checkout", "-q", "--detach"], capture_output=True, text=True)
+            bounded_run.completed(["git", "-C", str(repo), "branch", "-D", step["onto"]], capture_output=True, text=True)
         # The sha and branch follow the detail: `land_conflict_reason` reads a detail that leads with `cherry-pick of`.
         if not ok:
             return False, f"{detail}\nstopped at {sha[:8]} on {step['branch']}"
@@ -2745,16 +2747,16 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
         wt = _land_worktree(repo, step["onto"])
         _remove_land_worktree(repo, step["onto"])
         # `-B` (set by a plan that found a stale local pr branch) resets that branch instead of refusing on it.
-        co = subprocess.run(["git", "-C", str(repo), "worktree", "add", step.get("worktree_flag", "-b"), step["onto"], str(wt), step["from"]],
+        co = bounded_run.completed(["git", "-C", str(repo), "worktree", "add", step.get("worktree_flag", "-b"), step["onto"], str(wt), step["from"]],
                             capture_output=True, text=True)
         if co.returncode != 0:
             return False, co.stderr.strip() or co.stdout.strip()
         _link_venv(repo, wt)
         def drop() -> None:
             # A refused squash leaves neither worktree nor pr branch, so a rerun starts fresh.
-            subprocess.run(["git", "-C", str(wt), "reset", "--hard"], capture_output=True, text=True)
-            subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)], capture_output=True, text=True)
-            subprocess.run(["git", "-C", str(repo), "branch", "-D", step["onto"]], capture_output=True, text=True)
+            bounded_run.completed(["git", "-C", str(wt), "reset", "--hard"], capture_output=True, text=True)
+            bounded_run.completed(["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)], capture_output=True, text=True)
+            bounded_run.completed(["git", "-C", str(repo), "branch", "-D", step["onto"]], capture_output=True, text=True)
         # When a parent phase already squash-landed, `from` (main) and `branch` both carry the same new
         # content and a plain squash conflicts on it for no reason. Unless `from` is already an ancestor
         # of `branch`, merge `from` into a scratch copy of `branch` first, auto-resolving paths where
@@ -2762,45 +2764,45 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
         # commit instead - `branch` itself is never moved.
         squash_source = step["branch"]
         appended: set[str] = set()
-        ancestor = subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", step["from"], step["branch"]],
+        ancestor = bounded_run.completed(["git", "-C", str(repo), "merge-base", "--is-ancestor", step["from"], step["branch"]],
                                   capture_output=True, text=True)
         if ancestor.returncode != 0:
             scratch_branch = _scratch_merge_branch(step["branch"])
             _remove_scratch_worktree(repo, scratch_branch)
             scratch_wt = _land_worktree(repo, scratch_branch)
             branch_tip = _git_out(repo, "rev-parse", step["branch"])
-            sco = subprocess.run(["git", "-C", str(repo), "worktree", "add", "-b", scratch_branch, str(scratch_wt), step["branch"]],
+            sco = bounded_run.completed(["git", "-C", str(repo), "worktree", "add", "-b", scratch_branch, str(scratch_wt), step["branch"]],
                                  capture_output=True, text=True)
             if sco.returncode != 0:
                 drop()
                 return False, sco.stderr.strip() or sco.stdout.strip()
-            smerge = subprocess.run(["git", "-C", str(scratch_wt), "-c", "merge.conflictStyle=diff3", "merge", "--no-edit", step["from"]],
+            smerge = bounded_run.completed(["git", "-C", str(scratch_wt), "-c", "merge.conflictStyle=diff3", "merge", "--no-edit", step["from"]],
                                     capture_output=True, text=True)
             if smerge.returncode != 0:
-                conflicted = subprocess.run(["git", "-C", str(scratch_wt), "diff", "--name-only", "--diff-filter=U"],
+                conflicted = bounded_run.completed(["git", "-C", str(scratch_wt), "diff", "--name-only", "--diff-filter=U"],
                                             capture_output=True, text=True).stdout.split()
                 unresolved = _resolve_landed_conflicts(repo, scratch_wt, step["from"], branch_tip, conflicted)
                 if unresolved and _resolve_append_only(scratch_wt, unresolved):
                     appended |= set(unresolved)
                     unresolved = []
                 if unresolved:
-                    subprocess.run(["git", "-C", str(scratch_wt), "merge", "--abort"], capture_output=True, text=True)
+                    bounded_run.completed(["git", "-C", str(scratch_wt), "merge", "--abort"], capture_output=True, text=True)
                     _remove_scratch_worktree(repo, scratch_branch)
                     drop()
                     return False, f"squash of {step['branch']} conflicts in: {', '.join(unresolved)}"
-                commit = subprocess.run(["git", "-C", str(scratch_wt), "commit", "-qm",
+                commit = bounded_run.completed(["git", "-C", str(scratch_wt), "commit", "-qm",
                                          f"merge {step['from']} into {step['branch']} (land scratch)"], capture_output=True, text=True)
                 if commit.returncode != 0:
                     _remove_scratch_worktree(repo, scratch_branch)
                     drop()
                     return False, commit.stderr.strip() or commit.stdout.strip()
             squash_source = scratch_branch
-        merge = subprocess.run(["git", "-C", str(wt), "-c", "merge.conflictStyle=diff3", "merge", "--squash", squash_source],
+        merge = bounded_run.completed(["git", "-C", str(wt), "-c", "merge.conflictStyle=diff3", "merge", "--squash", squash_source],
                                capture_output=True, text=True)
         if squash_source != step["branch"]:
             _remove_scratch_worktree(repo, squash_source)
         if merge.returncode != 0:
-            conflicted = subprocess.run(["git", "-C", str(wt), "diff", "--name-only", "--diff-filter=U"],
+            conflicted = bounded_run.completed(["git", "-C", str(wt), "diff", "--name-only", "--diff-filter=U"],
                                         capture_output=True, text=True).stdout.split()
             if _resolve_append_only(wt, conflicted):
                 appended |= set(conflicted)
@@ -2810,7 +2812,7 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
         if not _git_out(wt, "diff", "--cached", "--name-only"):
             drop()
             return False, f"{step['branch']} adds nothing over {step['from']}"
-        commit = subprocess.run(["git", "-C", str(wt), "commit", "-qm", step["subject"]], capture_output=True, text=True)
+        commit = bounded_run.completed(["git", "-C", str(wt), "commit", "-qm", step["subject"]], capture_output=True, text=True)
         if commit.returncode != 0:
             return False, commit.stderr.strip() or commit.stdout.strip()
         squashed_files = (_git_out(wt, "diff", "--name-only", step["from"], "HEAD") or "").splitlines()
@@ -2823,15 +2825,15 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
         if not ok and detail.startswith(_GENERATE_FAILED):
             # Keep the worktree, detached, for inspection; free the branch so a rerun starts fresh
             # instead of finding a pr branch that holds the un-generated tree and refusing on it.
-            subprocess.run(["git", "-C", str(wt), "checkout", "-q", "--detach"], capture_output=True, text=True)
-            subprocess.run(["git", "-C", str(repo), "branch", "-D", step["onto"]], capture_output=True, text=True)
+            bounded_run.completed(["git", "-C", str(wt), "checkout", "-q", "--detach"], capture_output=True, text=True)
+            bounded_run.completed(["git", "-C", str(repo), "branch", "-D", step["onto"]], capture_output=True, text=True)
         suffix = f"; resolved: append-only in {', '.join(sorted(appended))}" if appended else ""
         return (True, f"squashed {step['branch']} onto {step['onto']}{suffix}") if ok else (False, detail)
     if kind == "reuse_branch":
         wt = _land_worktree(repo, step["branch"])
         _remove_land_worktree(repo, step["branch"])
         args = ["worktree", "add", str(wt), step["branch"]] if step["local"] else ["worktree", "add", "-b", step["branch"], str(wt), f"origin/{step['branch']}"]
-        co = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+        co = bounded_run.completed(["git", "-C", str(repo), *args], capture_output=True, text=True)
         if co.returncode == 0:
             _link_venv(repo, wt)
         return co.returncode == 0, (f"reusing {step['branch']}" if co.returncode == 0 else co.stderr.strip() or co.stdout.strip())
@@ -2853,14 +2855,14 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
             # directory is allocated here, at execution, not in the plan
             # (`land.py`/`_land_enrich`), so a dry run never touches disk.
             wt = Path(tempfile.mkdtemp(prefix="land-checks-"))
-            add = subprocess.run(["git", "-C", str(repo), "worktree", "add", "--detach", str(wt), step["branch"]], capture_output=True, text=True)
+            add = bounded_run.completed(["git", "-C", str(repo), "worktree", "add", "--detach", str(wt), step["branch"]], capture_output=True, text=True)
             if add.returncode != 0:
                 return False, add.stderr.strip() or add.stdout.strip()
             _link_venv(repo, wt)
             try:
                 return _run_checks(step["checks"], wt, *cap)
             finally:
-                subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)], capture_output=True)
+                bounded_run.completed(["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)], capture_output=True)
         if "worktree_of" in step:
             return _run_checks(step["checks"], _land_worktree(repo, step["worktree_of"]), *cap)
         return _run_checks(step["checks"], repo, *cap)
@@ -2890,8 +2892,8 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
     if kind == "clean":
         wt = Path(step["worktree_root"]).expanduser() / step["run"] / step["task"]
         if wt.exists():
-            subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)], capture_output=True)
-        subprocess.run(["git", "-C", str(repo), "branch", "-D", step["branch"]], capture_output=True)
+            bounded_run.completed(["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)], capture_output=True)
+        bounded_run.completed(["git", "-C", str(repo), "branch", "-D", step["branch"]], capture_output=True)
         return True, f"deleted branch {step['branch']}"
     if kind == "clean_phase":
         doomed = [b for b in cleanup.git_branches(repo) if b == step["phase_branch"] or b.startswith(step["phase_branch"] + "--")]
@@ -2904,9 +2906,9 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
         for t in step["tasks"]:
             wt = Path(step["worktree_root"]).expanduser() / step["run"] / t
             if wt.exists():
-                subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)], capture_output=True)
+                bounded_run.completed(["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)], capture_output=True)
         for b in doomed:
-            subprocess.run(["git", "-C", str(repo), "branch", "-D", b], capture_output=True)
+            bounded_run.completed(["git", "-C", str(repo), "branch", "-D", b], capture_output=True)
         # The phase branch is named too, so one that lives only on origin is still deleted there.
         parts = step["phase_branch"].split("/")
         prefix = "/".join(parts[:2]) + "/" if parts[0] == "epic" and len(parts) >= 3 else ""
@@ -2947,7 +2949,7 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
 
 
 def _git_run(repo: Path | str, *args: str) -> tuple[bool, str]:
-    done = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    done = bounded_run.completed(["git", "-C", str(repo), *args], capture_output=True, text=True)
     return done.returncode == 0, (done.stderr.strip() or done.stdout.strip())
 
 
@@ -3145,10 +3147,10 @@ def _land_reference(profile: dict, workspace: str, record: dict, item_id: str | 
         items = []
     rollup = route_sync.rollup_for(items, scope, threshold, _initiative_item_id(initiative) or "")
     if rollup is not None:
-        number = route_sync_gh.rollup_issue_number(subprocess.run, rollup)
+        number = route_sync_gh.rollup_issue_number(bounded_run.completed, rollup)
         if number is None and sync is not None:
             _route_sync(argparse.Namespace(**{**vars(sync), "item": item_id or record.get("task", "")}))
-            number = route_sync_gh.rollup_issue_number(subprocess.run, rollup)
+            number = route_sync_gh.rollup_issue_number(bounded_run.completed, rollup)
         return scope, land.pr_reference(issue, number, False)
     parent_issue, last = route_sync.initiative_facts(items, scope, threshold,
                                                      _initiative_item_id(initiative), item_id or record.get("task", ""))
@@ -3300,7 +3302,7 @@ def _pr_number(steps: Sequence[dict], i: int, pr_url: str) -> int | None:
 
 def _fetch_branch(repo: Path, branch: str) -> str | None:
     """Edge. Fetch `origin/<branch>`; the failure text, or None when it landed."""
-    r = subprocess.run(["git", "-C", str(repo), "fetch", "origin", branch], capture_output=True, text=True)
+    r = bounded_run.completed(["git", "-C", str(repo), "fetch", "origin", branch], capture_output=True, text=True)
     return None if r.returncode == 0 else (r.stderr.strip() or r.stdout.strip() or f"git fetch origin {branch} failed")
 
 
@@ -3413,7 +3415,7 @@ _wait_checks = _LazyHandler("agent_tools.forge_github:wait_checks")
 
 
 def _repo_is_dirty(repo: Path) -> bool:
-    status = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True)
+    status = bounded_run.completed(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True)
     return bool(status.stdout.strip())
 
 
@@ -3431,7 +3433,7 @@ def sync_decision(has_origin: bool, behind: int, ahead: int) -> str:
 def _sync_default_branch(repo: Path, default_branch: str) -> tuple[str, str]:
     """Edge. Fast-forward the local default branch to origin's; HEAD and the tree stay put."""
     def git(*args: str) -> subprocess.CompletedProcess:
-        return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+        return bounded_run.completed(["git", "-C", str(repo), *args], capture_output=True, text=True)
 
     remotes = git("remote").stdout.split()
     if "origin" not in remotes:
@@ -3488,7 +3490,7 @@ def _runs_review(a: argparse.Namespace) -> int:
         return rc
     runs_dir = Path(profile["workspace_dir"]).expanduser() / "runs"
     run_id = route.next_run_id(_taken_run_names(runs_dir), "review")
-    return review_pr.run_review(a.pr, profile, run_id, lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    return review_pr.run_review(a.pr, profile, run_id, lambda argv: bounded_run.completed(argv, capture_output=True, text=True))
 
 
 _LAND_LEASE_TTL_SECONDS = 3600
@@ -4654,22 +4656,22 @@ def _runs_recover(a: argparse.Namespace) -> int:
         print(f"recover: would merge {source} into {target} --no-ff -m {message!r} ({subject!r})")
         print(json.dumps(mark_done_step))
         return 0
-    before = subprocess.run(["git", "-C", str(repo), "rev-parse", target], capture_output=True, text=True).stdout.strip()
+    before = bounded_run.completed(["git", "-C", str(repo), "rev-parse", target], capture_output=True, text=True).stdout.strip()
     wt = Path(tempfile.mkdtemp(prefix="recover-"))
-    add = subprocess.run(["git", "-C", str(repo), "worktree", "add", str(wt), target], capture_output=True, text=True)
+    add = bounded_run.completed(["git", "-C", str(repo), "worktree", "add", str(wt), target], capture_output=True, text=True)
     if add.returncode != 0:
         print(f"refused: could not check out {target}: {add.stderr.strip() or add.stdout.strip()}")
         return 2
     try:
-        merge = subprocess.run(["git", "-C", str(wt), "merge", "--no-ff", source, "-m", message], capture_output=True, text=True)
+        merge = bounded_run.completed(["git", "-C", str(wt), "merge", "--no-ff", source, "-m", message], capture_output=True, text=True)
         if merge.returncode != 0:
-            subprocess.run(["git", "-C", str(wt), "merge", "--abort"], capture_output=True, text=True)
+            bounded_run.completed(["git", "-C", str(wt), "merge", "--abort"], capture_output=True, text=True)
             print(f"refused: merge of {source} into {target} was not clean: {merge.stderr.strip() or merge.stdout.strip()}")
             return 2
     finally:
-        subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)], capture_output=True)
-    after = subprocess.run(["git", "-C", str(repo), "rev-parse", target], capture_output=True, text=True).stdout.strip()
-    diff = subprocess.run(["git", "-C", str(repo), "diff", "--stat", before, after], capture_output=True, text=True)
+        bounded_run.completed(["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)], capture_output=True)
+    after = bounded_run.completed(["git", "-C", str(repo), "rev-parse", target], capture_output=True, text=True).stdout.strip()
+    diff = bounded_run.completed(["git", "-C", str(repo), "diff", "--stat", before, after], capture_output=True, text=True)
     print(f"recover: {target} {before[:8]} -> {after[:8]}")
     print(diff.stdout.strip())
     _close_approved_item(item_path, runs_dir=runs_dir, by=_holder_label(a))
@@ -6907,7 +6909,7 @@ def _resolve_sync_project(a: argparse.Namespace, items: list, state_path: Path):
     if not owner:
         print("route sync: no --project given and no repo to derive a project owner from")
         return None, 2
-    ok, found = route_sync_gh.find_project(subprocess.run, owner)
+    ok, found = route_sync_gh.find_project(bounded_run.completed, owner)
     if not ok:
         print(f"route sync: {found}")
         return None, 2
@@ -6915,7 +6917,7 @@ def _resolve_sync_project(a: argparse.Namespace, items: list, state_path: Path):
         return f"{owner}/{found}", None
     if a.dry_run:
         return None, None
-    ok, number = route_sync_gh.create_project(subprocess.run, owner)
+    ok, number = route_sync_gh.create_project(bounded_run.completed, owner)
     if not ok:
         print(f"route sync: {number}")
         return None, 2
@@ -7074,7 +7076,7 @@ def _route_sync_prune(a: argparse.Namespace, workspace: str, profile_path: Path)
     items = [i for i in route_sync_gh.resolve_repos(route_sync_gh.items_from_store(workspace, lazy=True),
                                                     profile.get("repo_aliases") or {})
              if i.repo and not i.repo_error]
-    if not route_sync_gh.auth_ok(subprocess.run):
+    if not route_sync_gh.auth_ok(bounded_run.completed):
         print("route sync: gh is not authenticated; run `gh auth login`")
         return 2
     # A copy with dry_run set, so resolving the project never creates one.
@@ -7082,7 +7084,7 @@ def _route_sync_prune(a: argparse.Namespace, workspace: str, profile_path: Path)
                                         _route_sync_state_path(profile_path))
     if rc is not None:
         return rc
-    ok, result = route_sync_gh.prune_candidates(subprocess.run, sorted({i.repo for i in items}), project)
+    ok, result = route_sync_gh.prune_candidates(bounded_run.completed, sorted({i.repo for i in items}), project)
     if not ok:
         print(f"route sync: {result}")
         return 2
@@ -7137,7 +7139,7 @@ def _route_sync(a: argparse.Namespace) -> int:
     items, scope, rc, skipped = _sync_items(a, workspace)
     if rc is not None:
         return rc
-    if not route_sync_gh.auth_ok(subprocess.run):
+    if not route_sync_gh.auth_ok(bounded_run.completed):
         print("route sync: gh is not authenticated; run `gh auth login`")
         return 2
     project, rc = _resolve_sync_project(a, items, _route_sync_state_path(profile_path))
@@ -7145,9 +7147,9 @@ def _route_sync(a: argparse.Namespace) -> int:
         return rc
     repo_names = sorted({item.repo for item in items if item.repo})
     if a.item and not items[0].id.startswith(route_sync.ROLLUP_PREFIX):
-        ok, result = route_sync_gh.existing_item(subprocess.run, items[0].repo, items[0].issue, project)
+        ok, result = route_sync_gh.existing_item(bounded_run.completed, items[0].repo, items[0].issue, project)
     else:  # a roll-up has no issue number of its own to view: it is found by title among the listed issues
-        ok, result = route_sync_gh.existing(subprocess.run, repo_names, project)
+        ok, result = route_sync_gh.existing(bounded_run.completed, repo_names, project)
     if not ok:
         print(f"route sync: {result}")
         return 2
@@ -7335,7 +7337,7 @@ def _route_launch(a: argparse.Namespace) -> int:
         home = os.path.expanduser("~")
         local_repo = repo_path.expand(repo, home)
         try:
-            status = subprocess.run(
+            status = bounded_run.completed(
                 ["git", "status", "--porcelain"], cwd=local_repo, capture_output=True, text=True, check=True,
             )
         except (OSError, subprocess.CalledProcessError) as exc:
@@ -8490,11 +8492,11 @@ def _chair_export_hook(runs_dir: Path, ids: tuple[str, ...], commit: bool = True
     if not names:  # `git add -A --` with no path stages the whole tree
         return "export: no work/ or intake/ directory to commit"
     paths = [*names, *export_commit_excludes(queue_export.read_held_record(workspace))]
-    add = subprocess.run([*git, "add", "-A", "--", *paths], capture_output=True, text=True)
+    add = bounded_run.completed([*git, "add", "-A", "--", *paths], capture_output=True, text=True)
     if add.returncode != 0:
         raise RuntimeError(f"git add: {add.stderr.strip()}")
     # The staged files by name, not the trees: `git commit -- work` refuses a tree whose every file is held and untracked.
-    staged = subprocess.run([*git, "diff", "--cached", "--name-only", "-z", "--", *paths], capture_output=True, text=True)
+    staged = bounded_run.completed([*git, "diff", "--cached", "--name-only", "-z", "--", *paths], capture_output=True, text=True)
     if staged.returncode != 0:
         raise RuntimeError(f"git diff: {staged.stderr.strip()}")
     files = [name for name in staged.stdout.split("\0") if name]
@@ -8502,7 +8504,7 @@ def _chair_export_hook(runs_dir: Path, ids: tuple[str, ...], commit: bool = True
         committed = "export: no file changes"
     else:
         message = f"chair: export {len(ids)} changed row(s)"
-        commit = subprocess.run([*git, "commit", "-m", message, "--", *files], capture_output=True, text=True)
+        commit = bounded_run.completed([*git, "commit", "-m", message, "--", *files], capture_output=True, text=True)
         if commit.returncode != 0:
             raise RuntimeError(f"git commit: {(commit.stderr or commit.stdout).strip()}")
         pushed = workspace_sync.push_workspace(workspace)
@@ -9030,7 +9032,7 @@ def _git_and_forge_facts(profile: dict) -> dict:
     """`git_version`, the profile's forge name, whether that forge is installed,
     and `gh_auth` only for the github forge. Gathered with or without a profile."""
     try:
-        done = subprocess.run(["git", "--version"], capture_output=True, text=True)
+        done = bounded_run.completed(["git", "--version"], capture_output=True, text=True)
         git_version = done.stdout.strip() if done.returncode == 0 else None
     except OSError:
         git_version = None
@@ -9038,7 +9040,7 @@ def _git_and_forge_facts(profile: dict) -> dict:
     facts = {"git_version": git_version or None, "forge": name, "forge_found": forge.forge_for(name) is not None}
     if name in ("github", "auto"):
         try:
-            facts["gh_auth"] = route_sync_gh.api_login_ok(subprocess.run)
+            facts["gh_auth"] = route_sync_gh.api_login_ok(bounded_run.completed)
         except OSError:
             facts["gh_auth"] = False
     return facts
@@ -9421,6 +9423,7 @@ def _install_facts(a: argparse.Namespace) -> dict:
         "chair_service_exists": service_file is not None and service_file.exists(),
         "chair_env_file": chair_env_file,
         "chair_env_exports": tuple(chair_service.export_lines(chair_env_text or "")),
+        "chair_env_values": unit_env.parse_env(chair_env_text or ""),
     }
 
 
@@ -9525,7 +9528,7 @@ def _migrate_kind(path: Path) -> str:
 def _migrate_worktrees(checkout: Path) -> list[str] | None:
     """Edge. Every path `git worktree list` names for the checkout, main one first; None when git cannot list."""
     try:
-        done = subprocess.run(["git", "-C", str(checkout), "worktree", "list", "--porcelain"],
+        done = bounded_run.completed(["git", "-C", str(checkout), "worktree", "list", "--porcelain"],
                               capture_output=True, text=True)
     except OSError:
         return None
@@ -9639,7 +9642,7 @@ def _migrate_checkout_shallow(checkout: Path) -> bool:
     """Edge. Whether git calls the checkout shallow; an absent checkout or a failed git call is False."""
     argv = ["git", "-C", str(checkout), "rev-parse", "--is-shallow-repository"]
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True)
+        proc = bounded_run.completed(argv, capture_output=True, text=True)
     except OSError:
         return False
     return proc.returncode == 0 and proc.stdout.strip() == "true"
@@ -10361,7 +10364,7 @@ _STORE_CREDENTIALS = (
 def _git_exclude_file(directory: Path) -> Path | None:
     """Edge. The enclosing repository's info/exclude; None outside a repository or without git."""
     try:
-        done = subprocess.run(["git", "rev-parse", "--git-path", "info/exclude"], cwd=directory,
+        done = bounded_run.completed(["git", "rev-parse", "--git-path", "info/exclude"], cwd=directory,
                               capture_output=True, text=True, check=False)
     except OSError:
         return None
@@ -10518,6 +10521,29 @@ def _setup_token(a: argparse.Namespace) -> int:
     )
 
 
+def _setup_unit_env(a: argparse.Namespace) -> int:
+    """Edge. Write the one env file the chair, lander and upgrade units read (`unit_env.ENV_FILE`), keeping the lines it
+    has and setting the token from the stored token file, else from this shell's environment. Prints the path and the
+    names written, never a value; refuses, writing nothing, what `unit_env.file_text` refuses."""
+    home = str(Path.home())
+    path = Path(a.environment_file).expanduser() if a.environment_file else Path(unit_env.env_file_path(home))
+    token = claude_token.read_token(claude_token.token_path(home)) or (os.environ.get(claude_token.TOKEN_ENV) or "").strip()
+    try:
+        text = unit_env.file_text(_read_text_or_none(path), token or None)
+    except ValueError as exc:
+        print(f"refusing: {path}: {exc}")
+        return 2
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch(mode=0o600, exist_ok=True)
+    path.chmod(0o600)
+    path.write_text(text, encoding="utf-8")
+    print(path)
+    print(f"names: {', '.join(unit_env.parse_env(text)) or 'none'}")
+    if not token:
+        print(f"note: no token found; run `cox setup token`, then this again, so the units get {claude_token.TOKEN_ENV}")
+    return 0
+
+
 def _setup_token_status(a: argparse.Namespace) -> int:
     """Edge. Report the stored token's state; `--probe` spends one small claude request to prove it works."""
     return setup_token.status(
@@ -10644,12 +10670,12 @@ def _checkout_facts(path: Path, fetch: bool = False) -> dict:
     must never borrow that repository's tag or dirty state."""
     if not (path / ".git").exists():
         return {"present": False, "tag": None, "dirty": False}
-    describe = subprocess.run(["git", "-C", str(path), "describe", "--tags", "--exact-match"],
+    describe = bounded_run.completed(["git", "-C", str(path), "describe", "--tags", "--exact-match"],
                                capture_output=True, text=True)
     tag = describe.stdout.strip() if describe.returncode == 0 else None
-    status = subprocess.run(["git", "-C", str(path), "status", "--porcelain"], capture_output=True, text=True)
+    status = bounded_run.completed(["git", "-C", str(path), "status", "--porcelain"], capture_output=True, text=True)
     def git(*args: str) -> subprocess.CompletedProcess:
-        return subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True)
+        return bounded_run.completed(["git", "-C", str(path), *args], capture_output=True, text=True)
 
     branch = git("branch", "--show-current").stdout.strip()
     fresh = not fetch or (bool(branch) and git("fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}").returncode == 0)
@@ -10685,9 +10711,12 @@ def _manifest_provider_command(manifest: dict, provider: str) -> str:
 def _real_run(argv: list, cwd: str | None) -> tuple:
     """The subprocess wrapper `install_exec.execute` calls at the edge;
     stdout and stderr are folded together since the caller only prints. A command that cannot start (a missing
-    program or working folder) is exit 127 with the reason, never a traceback."""
+    program or working folder) is exit 127 with the reason, never a traceback. A `git` or `gh` step is bounded by
+    `bounded_run.completed`: a hung fetch is exit 124 with the failure line. Other steps (uv, an install script) are
+    not, since how long a venv build takes is not this function's to guess."""
     try:
-        result = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
+        run = bounded_run.completed if Path(str(argv[0])).name in ("git", "gh") else subprocess.run
+        result = run(argv, cwd=cwd, capture_output=True, text=True)
     except OSError as exc:
         return 127, f"{argv[0]}: {exc}"
     return result.returncode, result.stdout + result.stderr
@@ -10986,8 +11015,24 @@ def _upgrade_channel(a: argparse.Namespace) -> str | None:
         return upgrade_edge.DEFAULT_CHANNEL
 
 
+# The runner every edge-upgrade subprocess goes through; None is `bounded_run.popen_runner`. Tests set one that hangs.
+_edge_runner = None
+
+
+def _edge_run(argv: list, cwd: str | None = None) -> tuple[int, str]:
+    """Edge. Every command the edge upgrade runs (git, gh, systemctl, the doctor), bounded by
+    `bounded_run.default_timeout`: a hung one is killed with its process group and its output is the failure line,
+    `gh run timed out after 120 seconds`, so the timer's oneshot reports it and returns instead of wedging."""
+    limit = bounded_run.default_timeout(argv, os.environ)
+    runner = _edge_runner or bounded_run.popen_runner
+    result = bounded_run.run(argv, limit, Path(cwd) if cwd else None, runner)
+    if result.timed_out or result.returncode == bounded_run.UNRUNNABLE_RETURNCODE:
+        return result.returncode, bounded_run.failure_line(argv, result, limit)
+    return result.returncode, result.output
+
+
 def _edge_git(checkout: Path, *args: str) -> tuple[int, str]:
-    return _real_run(["git", "-C", str(checkout), *args], None)
+    return _edge_run(["git", "-C", str(checkout), *args])
 
 
 def _edge_target(checkout: Path, slug: str) -> tuple[str, str, list[str]] | str:
@@ -11005,7 +11050,7 @@ def _edge_target(checkout: Path, slug: str) -> tuple[str, str, list[str]] | str:
     code, head = _edge_git(checkout, "rev-parse", "HEAD")
     if code != 0:
         return f"git rev-parse HEAD in {checkout} exited {code}: {head.strip()}"
-    code, runs = _real_run(forge_github.ci_runs_argv(slug, upgrade_edge.WORKFLOW, branch), None)
+    code, runs = _edge_run(forge_github.ci_runs_argv(slug, upgrade_edge.WORKFLOW, branch))
     if code != 0:
         return f"cannot list the {upgrade_edge.WORKFLOW} runs on {branch} of {slug}: {runs.strip()}"
     first_parent = [line.strip() for line in history.splitlines() if line.strip()]
@@ -11039,18 +11084,28 @@ def _edge_restart(units: list[str]) -> str | None:
     None on success or with no unit, else why it failed."""
     if not units:
         return None
-    code, out = _real_run(["systemctl", "--user", "try-restart", *units], None)
+    code, out = _edge_run(["systemctl", "--user", "try-restart", *units])
     return None if code == 0 else f"systemctl --user try-restart {' '.join(units)} exited {code}: {out.strip()}"
 
 
-def _edge_doctor() -> str | None:
-    """Edge. The doctor of the moved install (`cox` on PATH is the checkout's own); None when it passes."""
-    argv = remote_argv.doctor_argv()
-    code, out = _real_run(argv, None)
-    if code == 0:
-        return None
-    print(out.rstrip())
-    return f"{' '.join(argv)} exited {code}"
+def _edge_unit_states(units: list[str]) -> dict[str, str]:
+    """Edge. What `systemctl --user is-active` prints for each unit, in order; a unit it printed nothing for is absent.
+    is-active exits nonzero when any unit is not active, so its code is not read."""
+    if not units:
+        return {}
+    _code, out = _edge_run(["systemctl", "--user", "is-active", *units])
+    return dict(zip(units, (line.strip() for line in out.splitlines() if line.strip()), strict=False))
+
+
+def _edge_doctor(before: Mapping[str, str] | None = None, units: list[str] | None = None) -> str | None:
+    """Edge. Runs the moved install's doctor (`cox` on PATH is the checkout's own) and reads the units' states;
+    `doctor.edge_verdict` judges them. None when the required tier passes; an advisory failure only prints a warning."""
+    argv = [*remote_argv.doctor_argv(), "--json"]
+    code, out = _edge_run(argv)
+    failure, warning = doctor.edge_verdict(argv, code, out, before or {}, _edge_unit_states(units or []))
+    if warning:
+        print(warning)
+    return failure
 
 
 def _edge_record_read(path: Path) -> dict | None:
@@ -11102,6 +11157,7 @@ def _upgrade_edge(a: argparse.Namespace) -> int:
         print(f"edge: {target[:12]} adds store migrations {', '.join(added)}; a restarted unit applies them to the "
               "store, and a failed doctor then cannot roll back past them")
     units = _edge_units()
+    before = _edge_unit_states(units)
     if a.dry_run:
         print(f"would restart: {', '.join(units) or 'no chair or lander unit'}; would run cox setup doctor")
         return _upgrade_move(argparse.Namespace(**{**vars(a), "to": target}))
@@ -11113,7 +11169,7 @@ def _upgrade_edge(a: argparse.Namespace) -> int:
         return 2
     failure = None if code == 0 else f"cox upgrade --to {target} exited {code}"
     restarted = failure is None and bool(units)
-    failure = failure or _edge_restart(units) or _edge_doctor()
+    failure = failure or _edge_restart(units) or _edge_doctor(before, units)
     if failure is None:
         _edge_record_write(record_path, head, target, upgrade_edge.UPGRADED)
         print(f"edge: upgraded {head[:12]} -> {target[:12]}")
@@ -11136,9 +11192,10 @@ def _upgrade_edge(a: argparse.Namespace) -> int:
 
 
 def _upgrade_timer_install(a: argparse.Namespace) -> int:
-    """Edge. Writes the oneshot service and its timer and prints the lines that activate them; runs no systemd tool."""
-    if sys.platform != "linux":
-        print("refusing: the upgrade timer is a systemd user timer, and this platform has no systemd")
+    """Edge. Writes the upgrade schedule (a systemd service and timer on Linux, a launchd agent on macOS) and prints
+    the lines that activate it; runs no launchd or systemd tool. Both read the one env file the other units read."""
+    if sys.platform not in ("linux", "darwin"):
+        print(f"refusing: the upgrade schedule is a systemd timer or a launchd agent, and {sys.platform} has neither")
         return 2
     if a.interval_minutes < 1:
         print("refusing: --interval-minutes must be at least 1")
@@ -11147,17 +11204,14 @@ def _upgrade_timer_install(a: argparse.Namespace) -> int:
     if isinstance(resolved, _ChairUnitRefusal):
         print(resolved.message)
         return 2
-    unit_dir = chair_service.unit_path(Path.home()).parent
-    files = [
-        (unit_dir / upgrade_edge.SERVICE_NAME,
-         upgrade_edge.service_text(resolved.cox, resolved.profile, resolved.path, resolved.env_file)),
-        (unit_dir / upgrade_edge.TIMER_NAME, upgrade_edge.timer_text(a.interval_minutes)),
-    ]
+    env_values = unit_env.parse_env(_read_text_or_none(Path(resolved.env_file)) or "") if resolved.env_file else {}
+    files = upgrade_edge.schedule_files(sys.platform, Path.home(), resolved.cox, resolved.profile, resolved.path,
+                                        a.interval_minutes, resolved.env_file, env_values)
     for path, text in files:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
         print(path)
-    print("\n".join(["systemctl --user daemon-reload", f"systemctl --user enable --now {upgrade_edge.TIMER_NAME}"]))
+    print("\n".join(upgrade_edge.activation_lines(sys.platform, files[0][0])))
     channel = _upgrade_channel(a)
     if channel != "edge":
         print(f"note: this machine's channel is {channel}; the timer moves nothing until "
@@ -11166,10 +11220,9 @@ def _upgrade_timer_install(a: argparse.Namespace) -> int:
 
 
 def _upgrade_timer_uninstall() -> int:
-    """Edge. Removes the timer files that exist; runs no systemd tool, so a timer still loaded keeps its last state
-    until `systemctl --user disable --now coxswain-upgrade.timer`."""
-    unit_dir = chair_service.unit_path(Path.home()).parent
-    present = [p for p in (unit_dir / upgrade_edge.SERVICE_NAME, unit_dir / upgrade_edge.TIMER_NAME) if p.exists()]
+    """Edge. Removes this platform's schedule files that exist; runs no launchd or systemd tool, so a schedule still
+    loaded keeps its last state until `systemctl --user disable --now coxswain-upgrade.timer` or `launchctl bootout`."""
+    present = [p for p in upgrade_edge.schedule_paths(sys.platform, Path.home()) if p.exists()]
     for path in present:
         path.unlink()
         print(f"removed {path}")
@@ -12033,8 +12086,8 @@ UPGRADE_GROUP = commands.Group(
         commands.Arg(("--dry-run",), {"action": "store_true"}),
         commands.Arg(("--profile",), {"help": "the routing profile that holds upgrade_channel (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
         commands.Arg(("--scheduled",), {"action": "store_true", "help": "what the upgrade timer runs: does nothing unless this machine's channel is edge"}),
-        commands.Arg(("--install-timer",), {"action": "store_true", "help": "write the systemd user timer that runs the scheduled upgrade and print the lines that activate it; runs nothing itself"}),
-        commands.Arg(("--uninstall-timer",), {"action": "store_true", "help": "remove the timer files --install-timer wrote"}),
+        commands.Arg(("--install-timer",), {"action": "store_true", "help": "write the schedule that runs the scheduled upgrade (a systemd user timer on Linux, a launchd agent on macOS) and print the lines that activate it; runs nothing itself"}),
+        commands.Arg(("--uninstall-timer",), {"action": "store_true", "help": "remove the schedule files --install-timer wrote on this platform"}),
         commands.Arg(("--interval-minutes",), {"type": int, "default": 30, "help": "minutes between scheduled upgrades in the installed timer (default: 30)"}),
         commands.Arg(("--environment-file",), {"help": "with --install-timer: the NAME=value file the timer's service loads (default: ~/.config/agent-tools/garage.env)"}),
     ),
@@ -13541,6 +13594,13 @@ SETUP_COMMANDS = [
         sub_dest="store_cmd", sub_required=False,
     ),
     commands.Command(
+        "unit-env", "setup", "write the one env file the chair, lander and upgrade units read, with the stored token",
+        (
+            commands.Arg(("--environment-file",), {"help": "the file to write (default: ~/.config/agent-tools/garage.env, the one the units read)"}),
+        ),
+        "agent_tools.cli:_setup_unit_env", False, (),
+    ),
+    commands.Command(
         "token", "setup", "store the long-lived Claude token that coxswain's own claude runs use",
         (
             commands.Arg(("--token",), {"help": "the token printed by `claude setup-token`; prefer --from-file, a flag lands in shell history"}),
@@ -14832,7 +14892,7 @@ def _chair_run(a: argparse.Namespace) -> int:
 
 
 def _chair_default_environment_file() -> str | None:
-    garage = Path("~/.config/agent-tools/garage.env").expanduser()
+    garage = Path(unit_env.env_file_path(str(Path.home())))
     return str(garage) if garage.is_file() else None
 
 
@@ -15251,7 +15311,8 @@ def _watchdog_paths(platform: str, home: Path) -> list[Path]:
 def _watchdog_install_plan(platform: str, home: Path, resolved: _ChairUnitInputs, minutes: int) -> list[tuple[Path, str]]:
     """Each file to write, in `_watchdog_paths` order, with its text."""
     if platform == "darwin":
-        texts = [chair_service.watchdog_plist_text(resolved.cox, resolved.profile, resolved.path, minutes)]
+        env_values = unit_env.parse_env(_read_text_or_none(Path(resolved.env_file)) or "") if resolved.env_file else {}
+        texts = [chair_service.watchdog_plist_text(resolved.cox, resolved.profile, resolved.path, minutes, env_values)]
     else:
         texts = [
             chair_service.watchdog_service_text(resolved.cox, resolved.profile, resolved.path, resolved.env_file),
@@ -15750,7 +15811,7 @@ def _host_repos(profile: Mapping) -> list[str]:
 
 def _repo_is_detached(repo: Path) -> bool:
     """Edge: True when `git symbolic-ref -q HEAD` fails; a path that is no checkout reads as detached too."""
-    return subprocess.run(["git", "-C", str(repo), "symbolic-ref", "-q", "HEAD"], capture_output=True).returncode != 0
+    return bounded_run.completed(["git", "-C", str(repo), "symbolic-ref", "-q", "HEAD"], capture_output=True).returncode != 0
 
 
 def _install_roots(profile: Mapping) -> list[str]:
@@ -15761,7 +15822,7 @@ def _install_roots(profile: Mapping) -> list[str]:
 
 def _origin_url(path: str) -> str | None:
     """Edge: `git -C path remote get-url origin`, or None when there is no such remote or no checkout there."""
-    done = subprocess.run(["git", "-C", path, "remote", "get-url", "origin"], capture_output=True, text=True)
+    done = bounded_run.completed(["git", "-C", path, "remote", "get-url", "origin"], capture_output=True, text=True)
     return done.stdout.strip() if done.returncode == 0 else None
 
 

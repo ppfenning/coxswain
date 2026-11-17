@@ -83,6 +83,7 @@ from graphs.delivery.budget_estimate import estimate_budget
 from graphs.delivery.lifecycle_propose import DEFAULT_FIX_ATTEMPTS
 from graphs.delivery.repo_layout import repo_key
 from harness import (
+    bounded_proc,
     landing_git,
     landing_ops,
     landing_store,
@@ -190,8 +191,8 @@ PRINCIPAL = "epic-swarm(lifecycle-propose)"
 # machine with no global git config, needs no setup to run this.
 _IDENTITY = ("-c", "user.email=epic-swarm@invalid", "-c", "user.name=epic-swarm")
 
-# Seconds a `gh pr` call may run. The graphs package does not import the tools package, so this is local.
-_GH_TIMEOUT_SECONDS = 120
+# Seconds a `gh pr` call may run: the one value bounded_proc and the tools bounded_run share.
+_GH_TIMEOUT_SECONDS = bounded_proc.GH_TIMEOUT_SECONDS
 
 def opens_pr(land_at: str, grain: str) -> bool:
     """A review PR is opened per `task` only at land_at `task`. No phase ever opens one: the retired `level` reads as

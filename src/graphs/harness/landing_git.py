@@ -9,11 +9,12 @@ The guard: a branch is never moved to a tip that lacks a sha the record says is 
 
 from __future__ import annotations
 
-import subprocess
 import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from harness import bounded_proc
 
 # Mechanical commits: the lander joins branches, it never authors.
 IDENTITY = ("-c", "user.email=lander@invalid", "-c", "user.name=lander")
@@ -38,7 +39,7 @@ class Merge:
 
 def git(repo: Path | str, *args: str) -> tuple[bool, str]:
     """Run git in `repo`. (ok, stdout stripped, or stderr when it failed)."""
-    done = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    done = bounded_proc.completed(["git", "-C", str(repo), *args], capture_output=True, text=True)
     return done.returncode == 0, (done.stdout if done.returncode == 0 else done.stderr or done.stdout).strip()
 
 

@@ -103,12 +103,10 @@ def watchdog_timer_text(minutes: int) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _environment_variable_lines(path: str, environment: Mapping[str, str] | None) -> list[str]:
-    """The EnvironmentVariables dict: the parsed env file, then PATH, whose value wins on a clash.
-    Raises ValueError for a value systemd would split or expand, so both platforms accept the same file."""
-    unsafe = unsafe_values(dict(environment or {}))
-    if unsafe:
-        raise ValueError(f"environment value would be split or expanded by systemd: {', '.join(unsafe)}")
+def environment_variable_lines(path: str, environment: Mapping[str, str] | None) -> list[str]:
+    """The EnvironmentVariables dict: the parsed env file, then PATH, whose value wins on a clash. launchd passes each
+    string as is, so any value is accepted (a space included) and only XML-escaped; `unit_env.render_env` is what keeps
+    the one file systemd-safe when it is written."""
     merged = {**(environment or {}), "PATH": path}
     entries = [(f"    <key>{escape(name)}</key>", f"    <string>{escape(value)}</string>") for name, value in merged.items()]
     return ["  <key>EnvironmentVariables</key>", "  <dict>", *(line for entry in entries for line in entry), "  </dict>"]
@@ -130,7 +128,7 @@ def watchdog_plist_text(cox: str, profile: str, path: str, minutes: int, environ
         "  </array>",
         "  <key>StartInterval</key>",
         f"  <integer>{minutes * 60}</integer>",
-        *_environment_variable_lines(path, environment),
+        *environment_variable_lines(path, environment),
         "</dict>",
         "</plist>",
     ]
@@ -169,7 +167,7 @@ def chair_plist_text(
         "  <true/>",
         "  <key>WorkingDirectory</key>",
         f"  <string>{escape(workspace_dir)}</string>",
-        *_environment_variable_lines(path, environment),
+        *environment_variable_lines(path, environment),
         "</dict>",
         "</plist>",
     ]

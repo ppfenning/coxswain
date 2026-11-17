@@ -11,10 +11,9 @@ from __future__ import annotations
 import argparse
 import json
 import shlex
-import subprocess
 from pathlib import Path
 
-from agent_tools import route, run_store, settings_model, settings_plan
+from agent_tools import bounded_run, route, run_store, settings_model, settings_plan
 from agent_tools.chair_cap import _load as _load_cartridge
 from agent_tools.settings_builds import builds_rows
 from agent_tools.settings_hosts import host_rows
@@ -136,7 +135,7 @@ def git_tracked(path: Path) -> bool:
     """Edge. True only when `git ls-files --error-unmatch` exits 0 for `path` from its own directory;
     a missing file, a directory outside a repository and a missing git binary are all False."""
     try:
-        done = subprocess.run(
+        done = bounded_run.completed(
             ["git", "ls-files", "--error-unmatch", path.name],
             cwd=path.parent, capture_output=True, text=True, check=False,
         )
@@ -202,7 +201,7 @@ def _no_schema(_text: str) -> list[str]:
 def git_user_name(cwd: Path) -> str | None:
     """Edge. `git config user.name` run from `cwd`; None when unset, empty, or git cannot run."""
     try:
-        done = subprocess.run(
+        done = bounded_run.completed(
             ["git", "config", "user.name"], cwd=cwd, capture_output=True, text=True, check=False,
         )
     except OSError:
@@ -215,7 +214,7 @@ def git_user_name(cwd: Path) -> str | None:
 def git_commit(path: Path, message: str) -> str | None:
     """Edge. Commit only `path` from its own directory; None on success, git's complaint on failure."""
     try:
-        done = subprocess.run(
+        done = bounded_run.completed(
             ["git", "commit", "-m", message, "--", path.name],
             cwd=path.parent, capture_output=True, text=True, check=False,
         )

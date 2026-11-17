@@ -8,14 +8,13 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
-from agent_tools import land
+from agent_tools import bounded_run, land
 from agent_tools.forge import ForgeError
 from agent_tools.forge_github import _update_local_default, push
 from agent_tools.forgejo_api import (
@@ -213,7 +212,7 @@ def delete_branch(target: Target, env: Mapping[str, str], branch: str) -> tuple[
 def _git(repo: Path | str, *argv: str) -> str:
     """Stdout of `git -C repo argv`; ForgeError with git's stderr when it cannot run or exits nonzero."""
     try:
-        r = subprocess.run(["git", "-C", str(repo), *argv], capture_output=True, text=True)
+        r = bounded_run.completed(["git", "-C", str(repo), *argv], capture_output=True, text=True)
     except OSError as exc:
         raise ForgeError(f"git {' '.join(argv)}: {exc}") from exc
     if r.returncode != 0:

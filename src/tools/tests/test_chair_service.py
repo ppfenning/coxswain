@@ -146,14 +146,6 @@ def test_chair_plist_text_carries_the_parsed_environment_and_path_wins() -> None
     assert plistlib.loads(text.encode())["EnvironmentVariables"] == {unit_env.TOKEN_ENV: "abc", "PATH": "/a:/b"}
 
 
-def test_plist_text_refuses_an_environment_value_that_systemd_would_expand() -> None:
-    bad = unit_env.parse_env("A=$HOME\nB=a b\nC=ok\n")
-    with pytest.raises(ValueError, match="A, B"):
-        chair_service.watchdog_plist_text("/bin/cox", "/p.yaml", "/a:/b", 5, bad)
-    with pytest.raises(ValueError, match="A, B"):
-        chair_service.chair_plist_text("/bin/cox", "/ws", "chair", 60, "/a:/b", "/p.yaml", bad)
-
-
 def test_chair_unit_watchdog_service_and_watchdog_plist_carry_the_same_environment_file() -> None:
     env_path = "/etc/coxswain/chair.env"
     mapping = {unit_env.TOKEN_ENV: "abc", "X": "postgresql://h:5432/db"}

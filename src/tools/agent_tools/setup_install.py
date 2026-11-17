@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import posixpath
 import re
+from collections.abc import Mapping
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -202,6 +203,7 @@ def _workspace_steps(workspace: str) -> list:
 def chair_service_steps(
     platform: str, home: str, cox_path: str | None, workspace: str, profile_file: str,
     exists: bool = False, force: bool = False, env_file: str | None = None, env_exports: tuple[int, ...] = (),
+    env_values: Mapping[str, str] | None = None,
 ) -> list:
     """The chair service file write and the activation lines the user runs, or one skip step saying why not.
     An existing file is kept unless `force`: it may carry a label, interval or env file this default lacks.
@@ -238,7 +240,8 @@ def chair_service_steps(
             cox_path, workspace, CHAIR_LABEL, CHAIR_INTERVAL, env_file or None, profile_file, path)
         activate = "\n".join(chair_service.systemctl_lines())
     else:
-        text = chair_service.chair_plist_text(cox_path, workspace, CHAIR_LABEL, CHAIR_INTERVAL, path, profile_file)
+        text = chair_service.chair_plist_text(
+            cox_path, workspace, CHAIR_LABEL, CHAIR_INTERVAL, path, profile_file, env_values)
         activate = f"launchctl bootstrap gui/$(id -u) {target}"
     return [
         {"op": "write", "path": target, "text": text, "why": "start the chair service with the machine"},
@@ -275,6 +278,7 @@ def install_plan(
     chair_service_exists: bool = False,
     chair_env_file: str | None = None,
     chair_env_exports: tuple[int, ...] = (),
+    chair_env_values: Mapping[str, str] | None = None,
 ) -> list:
     """Ordered setup steps for the one checkout `<installs>/coxswain`. With
     `locations`, the installs folder and the profile path come from the
@@ -345,7 +349,7 @@ def install_plan(
 
     steps.extend(chair_service_steps(
         platform, home, cox_path, workspace, profile_file, chair_service_exists, force_profile,
-        chair_env_file, chair_env_exports))
+        chair_env_file, chair_env_exports, chair_env_values))
 
     if workspace:
         steps.append(catalog_link_step(workspace, paths.cartridges))

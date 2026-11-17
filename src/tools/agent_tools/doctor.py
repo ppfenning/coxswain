@@ -4,6 +4,7 @@ phase) builds a Facts mapping and hands it to `checks`."""
 
 from __future__ import annotations
 
+import json
 import os
 import posixpath
 import re
@@ -732,13 +733,30 @@ def exit_code(rows: list[dict]) -> int:
     return 0 if all(row["ok"] for row in rows) else 1
 
 
-# Rows an upgrade needs: the harness venv, the core import probe, the unit PATH and the store. `checks` labels the store
-# "store"; `store_rows` labels a reachable or misconfigured one "shared store" and a failed or unprobed component
-# "shared store <component>". Every other row is advisory.
+UNITS_START_CHECK = "units start"
+
+# Rows an upgrade needs: the profile and the workspace it names, the harness venv, the core import probe, the install
+# bins the upgrade reinstalled, the unit PATH, the store and its schema (a pending migration is a required failure),
+# and the units the upgrade restarted. `checks` labels the store "store"; `store_rows` labels a reachable or
+# misconfigured one "shared store" and a failed or unprobed component "shared store <component>". `units_start_row`
+# is added by the edge upgrade, which knows which units it restarted. Every other row (the token file, plugins, skills,
+# the provider, freshness, logs) is advisory: it never rolls an upgrade back.
 UPGRADE_REQUIRED_CHECKS = frozenset(
-    {"harness venv", "core importable", "chair unit PATH", "store", _STORE_CHECK}
+    {"profile", "workspace", "harness venv", "core importable", "install bins", "chair unit PATH", "store", "schema",
+     _STORE_CHECK, UNITS_START_CHECK}
     | {f"{_STORE_CHECK} {component}" for component in _REQUIRED_PROBES}
 )
+
+
+def units_start_row(before: Mapping[str, str], after: Mapping[str, str]) -> dict:
+    """Every unit that was `active` before the upgrade must be `active` after its restart; a unit that was not running
+    is not judged. `before` and `after` map a unit name to what `systemctl --user is-active` printed for it."""
+    judged = [unit for unit, state in before.items() if state == "active"]
+    down = [f"{unit} is {after.get(unit) or 'unknown'}" for unit in judged if after.get(unit) != "active"]
+    if down:
+        return {"check": UNITS_START_CHECK, "ok": False, "detail": "; ".join(down)}
+    return {"check": UNITS_START_CHECK, "ok": True,
+            "detail": f"{len(judged)} restarted unit(s) active" if judged else "no unit was running"}
 
 
 def row_tier(row: dict) -> str:
@@ -752,6 +770,48 @@ def failing_required(rows: list[dict]) -> list[dict]:
 def upgrade_exit_code(rows: list[dict]) -> int:
     """0 unless a required row is not ok; an advisory failure never blocks an upgrade."""
     return 1 if failing_required(rows) else 0
+
+
+def failing_advisory(rows: list[dict]) -> list[dict]:
+    return [row for row in rows if row_tier(row) == "advisory" and not row["ok"]]
+
+
+def upgrade_verdict_lines(rows: list[dict]) -> tuple[str | None, str | None]:
+    """(the failure that rolls an upgrade back, the warning that does not); either is None when there is nothing."""
+    def names(failing: list[dict]) -> str:
+        return "; ".join(f"{row['check']}: {row.get('detail', '')}".rstrip(": ") for row in failing)
+
+    required, advisory = failing_required(rows), failing_advisory(rows)
+    return (f"doctor required rows failed: {names(required)}" if required else None,
+            f"warning: doctor advisory rows failed (not rolled back): {names(advisory)}" if advisory else None)
+
+
+def rows_from_json(output: str) -> list[dict] | None:
+    """The rows of `cox setup doctor --json` output, skipping anything printed before the JSON; None if unreadable."""
+    start = output.find("{")
+    if start < 0:
+        return None
+    try:
+        data, _end = json.JSONDecoder().raw_decode(output[start:])
+    except ValueError:
+        return None
+    rows = data.get("rows") if isinstance(data, dict) else None
+    if not isinstance(rows, list) or not all(isinstance(r, dict) and "check" in r and "ok" in r for r in rows):
+        return None
+    return rows
+
+
+def edge_verdict(
+    argv: Sequence[str], code: int, output: str, before: Mapping[str, str], after: Mapping[str, str],
+) -> tuple[str | None, str | None]:
+    """What the edge upgrade does with the moved install's doctor: (the failure that rolls back, the warning that does
+    not). Only the required tier and the units-start row can fail it; doctor output with no rows to judge (a crash, a
+    timeout) is a failure, since nothing shows the install works."""
+    rows = rows_from_json(output)
+    if rows is None:
+        first = next((line.strip() for line in output.splitlines() if line.strip()), "")
+        return f"{' '.join(argv)} exited {code} with no rows to judge" + (f": {first}" if first else ""), None
+    return upgrade_verdict_lines([*rows, units_start_row(before, after)])
 
 
 _PARQUET_FIXES = {

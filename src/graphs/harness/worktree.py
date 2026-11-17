@@ -8,6 +8,8 @@ import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
+from harness import bounded_proc
+
 __all__ = [
     "apply_patch",
     "create_worktree",
@@ -95,7 +97,7 @@ def apply_patch(patch: str, worktree: Path) -> tuple[bool, str]:
         return False, refusal
     worktree.mkdir(parents=True, exist_ok=True)
     if not (worktree / ".git").exists():
-        subprocess.run(["git", "init", "-q"], cwd=worktree, capture_output=True, text=True)
+        bounded_proc.completed(["git", "init", "-q"], cwd=worktree, capture_output=True, text=True)
     # A diff that arrives through a JSON field can lose its final newline,
     # and git rejects such a patch as corrupt at its last line even though
     # every hunk is intact. Restoring the newline changes no hunk; it only
@@ -105,7 +107,7 @@ def apply_patch(patch: str, worktree: Path) -> tuple[bool, str]:
     # trusting the header. It does not relax context matching, so a hunk
     # whose content does not fit the file still fails with git's own message.
     normalised = cleaned if cleaned.endswith("\n") or not cleaned else cleaned + "\n"
-    result = subprocess.run(
+    result = bounded_proc.completed(
         ["git", "apply", "--verbose", "--allow-empty", "--recount", "-"],
         input=normalised,
         cwd=worktree,
@@ -135,7 +137,7 @@ def create_worktree(repo: Path, worktree: Path, *, branch: str, base: str | None
     if base is not None:
         cmd.append(base)
     with _REGISTRY_LOCK:
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = bounded_proc.completed(cmd, capture_output=True, text=True)
     return result.returncode == 0, (result.stderr or result.stdout).strip()
 
 
@@ -149,7 +151,7 @@ def link_venv(repo: Path, worktree: Path) -> bool:
     venv, link = Path(repo) / ".venv", Path(worktree) / ".venv"
     if not venv.is_dir() or link.exists() or link.is_symlink():
         return False
-    common = subprocess.run(["git", "-C", str(worktree), "rev-parse", "--git-common-dir"], capture_output=True, text=True)
+    common = bounded_proc.completed(["git", "-C", str(worktree), "rev-parse", "--git-common-dir"], capture_output=True, text=True)
     if common.returncode != 0:
         return False
     exclude = Path(worktree) / common.stdout.strip() / "info" / "exclude"
@@ -170,7 +172,7 @@ def prune_registrations(repo: Path) -> tuple[bool, str]:
     phantom "already exists" until this runs.
     """
     with _REGISTRY_LOCK:
-        result = subprocess.run(
+        result = bounded_proc.completed(
             ["git", "-C", str(repo), "worktree", "prune", "--verbose"],
             capture_output=True,
             text=True,
@@ -188,7 +190,7 @@ def remove_worktree(repo: Path, worktree: Path) -> tuple[bool, str]:
     runs last so a stale entry never survives this call.
     """
     with _REGISTRY_LOCK:
-        result = subprocess.run(
+        result = bounded_proc.completed(
             ["git", "-C", str(repo), "worktree", "remove", "--force", str(worktree)],
             capture_output=True,
             text=True,
@@ -211,7 +213,7 @@ def reset_worktree(worktree: Path, *, branch: str, base: str) -> tuple[bool, str
     )
     messages: list[str] = []
     for args in steps:
-        result = subprocess.run(["git", "-C", str(worktree), *args], capture_output=True, text=True)
+        result = bounded_proc.completed(["git", "-C", str(worktree), *args], capture_output=True, text=True)
         detail = (result.stderr or result.stdout).strip()
         if result.returncode != 0:
             return False, detail
@@ -250,7 +252,7 @@ def stale_holders(porcelain: str, branch: str, worktree_root: Path, alive: Calla
 
 def release_stale_holders(repo: Path, branch: str, worktree_root: Path, alive: Callable[[str], bool]) -> list[Path]:
     """Remove every worktree `stale_holders` finds for `branch`; the branch itself is kept. Returns the removed paths."""
-    listing = subprocess.run(
+    listing = bounded_proc.completed(
         ["git", "-C", str(repo), "worktree", "list", "--porcelain"],
         capture_output=True,
         text=True,

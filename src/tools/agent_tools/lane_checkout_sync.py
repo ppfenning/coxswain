@@ -8,22 +8,33 @@ invocation fetches origin's default branch and reads the five facts, and a secon
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from typing import Literal
 
 from agent_tools import checkout_sync, remote_argv, remote_fetch
 from agent_tools.lane_hosts import LaneHost
 
-LaneVerdict = checkout_sync.Verdict | Literal["unreachable"]
+LaneVerdict = checkout_sync.Verdict | Literal["unreachable", "install"]
 Runner = Callable[[Sequence[str]], tuple[int, str]]  # (argv) -> (exit code, output)
 Facts = tuple[bool, str | None, str, bool, bool]  # clean, branch, default, head_is_ancestor, at_tip
 
 UNREACHABLE: LaneVerdict = "unreachable"
+INSTALL: LaneVerdict = "install"
 _RAISED_CODE = 255
 
 # Any read git cannot answer ends the script nonzero, so a failed read is never taken for a clean tree.
+# The first check runs on the host, before any fetch: when the checkout is the host's install checkout, compared after
+# resolving symlinks, `~` and trailing slashes with `pwd -P`, it prints install=1 and stops. The install is
+# <home>/installs/coxswain, where <home> resolves as `home.resolve` does: COXSWAIN_HOME, else the home record, else
+# $XDG_DATA_HOME/coxswain, else ~/.local/share/coxswain. The install moves only through `cox upgrade`.
 _READ_SCRIPT = """\
 cd "$1" || exit 2
+here=$(pwd -P)
+h=${COXSWAIN_HOME:-$(cat "$HOME/.config/agent-tools/home" 2>/dev/null)}
+[ -n "$h" ] || h=${XDG_DATA_HOME:+$XDG_DATA_HOME/coxswain}
+[ -n "$h" ] || h=$HOME/.local/share/coxswain
+i=$(cd "$h/installs/coxswain" 2>/dev/null && pwd -P)
+if [ -n "$i" ] && [ "$i" = "$here" ]; then echo install=1; exit 0; fi
 d=$(git symbolic-ref --short -q refs/remotes/origin/HEAD) || exit 3
 d=${d#origin/}
 [ -n "$d" ] || exit 3
@@ -59,9 +70,19 @@ def needs_chair_action(
     """None for fast_forward and already_current. `detail` is the reason an unreachable host gives."""
     if verdict in ("fast_forward", "already_current"):
         return None
-    why = (detail or "no reason given") if verdict == UNREACHABLE else checkout_sync.report(verdict, branch, default)
+    if verdict == INSTALL:
+        why = "is this host's install checkout, which moves only through cox upgrade; give the lane its own checkout"
+    elif verdict == UNREACHABLE:
+        why = detail or "no reason given"
+    else:
+        why = checkout_sync.report(verdict, branch, default)
     one_line = " ".join(f"lane host {host_name}, checkout {host_path}: {why}".split())
     return {"kind": "needs_chair", "host": host_name, "cause": f"lane_checkout_{verdict}", "reason": one_line}
+
+
+def is_install(output: str) -> bool:
+    """Whether the read script said the checkout is the host's install checkout."""
+    return "install=1" in (line.strip() for line in output.splitlines())
 
 
 def parse_facts(output: str) -> Facts | None:
@@ -100,19 +121,17 @@ def sync_host_checkout(
     chair_repo: str,
     chair_workspace: str,
     run: Runner,
-    install_paths: Mapping[str, str] | None = None,
 ) -> dict[str, str] | None:
     """Edge. Fetch and read, decide, and fast-forward only on fast_forward.
 
     Unreadable facts, an unreachable host and a fast-forward git refuses are all the unreachable cause: the
-    checkout is left as it was and nothing is retried another way. A host path equal to the host's entry in
-    install_paths is skipped with no ssh call.
+    checkout is left as it was and nothing is retried another way. A checkout the host resolves to its own install
+    checkout is never fetched or merged: it is the install verdict, one needs_chair action.
     """
     host_path = remote_fetch.host_repo_path(chair_workspace, host.workspace_dir, chair_repo)
-    # The install checkout moves only through the edge upgrade; the lane sync must not read or fast-forward it.
-    if install_paths is not None and install_paths.get(host.name) == host_path:
-        return None
     code, out = _call(run, _read_argv(host, host_path))
+    if code == 0 and is_install(out):
+        return needs_chair_action(host.name, host_path, INSTALL)
     facts = parse_facts(out) if code == 0 else None
     if facts is None:
         return needs_chair_action(host.name, host_path, UNREACHABLE, detail=_first_line(out, code))
@@ -132,12 +151,11 @@ def sync_lane_checkouts(
     repos: Sequence[str],
     chair_workspace: str,
     run: Runner,
-    install_paths: Mapping[str, str] | None = None,
 ) -> list[dict[str, str]]:
     """Every repo on every host; the needs_chair actions for the checkouts left alone, empty when all are current."""
     return [
         action
         for host in hosts
         for repo in repos
-        if (action := sync_host_checkout(host, repo, chair_workspace, run, install_paths)) is not None
+        if (action := sync_host_checkout(host, repo, chair_workspace, run)) is not None
     ]

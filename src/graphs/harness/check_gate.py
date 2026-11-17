@@ -10,11 +10,12 @@ runs against one repository never overlap. Task checks never take it.
 from __future__ import annotations
 
 import fcntl
-import subprocess
 import threading
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
+
+from harness import bounded_proc
 
 GATES: tuple[str, ...] = ("task", "level", "ticket")
 
@@ -46,7 +47,7 @@ _registry_lock = threading.Lock()
 
 
 def _common_dir(repo: Path) -> Path:
-    out = subprocess.run(
+    out = bounded_proc.completed(
         ["git", "-C", str(repo), "rev-parse", "--git-common-dir"],
         capture_output=True,
         text=True,

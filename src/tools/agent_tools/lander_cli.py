@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from agent_tools import lander, lander_ports
+from agent_tools import lander, lander_ports, unit_env
 
 RUN_INTERVAL_S = 30.0  # the poll floor: an event wakes nothing yet, so this is how soon a built phase is merged
 UNIT_NAME = "coxswain-lander.service"
@@ -38,7 +38,7 @@ def unit_text(cox: str, workspace_dir: str, interval: int, profile: str | None =
         f"ExecStart={cox} lander run --interval {interval}{profile_args}",
         f"WorkingDirectory={workspace_dir}",
         *([f"Environment=PATH={path}"] if path is not None else []),
-        *([f"EnvironmentFile=-{environment_file}"] if environment_file is not None else []),
+        *([unit_env.environment_file_line(environment_file)] if environment_file is not None else []),
         "Restart=on-failure",
         "RestartSec=30",
         "",

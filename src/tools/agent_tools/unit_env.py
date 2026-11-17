@@ -54,3 +54,24 @@ def parse_env(text: str) -> dict[str, str]:
 def environment_file_line(path: str) -> str:
     """`EnvironmentFile=-` keeps a missing file from failing the unit."""
     return f"EnvironmentFile=-{path}"
+
+
+# The one env file every unit reads: the chair, lander and upgrade units (and the chair watchdog), systemd by
+# EnvironmentFile= and launchd by its parsed values. `cox setup unit-env` writes it.
+ENV_FILE = ".config/agent-tools/garage.env"
+
+
+def env_file_path(user_home: str) -> str:
+    return f"{user_home.rstrip('/')}/{ENV_FILE}"
+
+
+def file_text(existing: str | None, token: str | None) -> str:
+    """The env file's new text: every NAME=value line the file already has, with the token set when one is given.
+    Raises ValueError for `export` lines (parse_env would drop them, losing a setting) and for anything `render_env`
+    refuses, so nothing is written that a unit would read differently."""
+    exports = export_lines(existing or "")
+    if exports:
+        numbers = ", ".join(str(n) for n in exports)
+        raise ValueError(f"export lines ({numbers}) that EnvironmentFile= may skip; rewrite them as NAME=value")
+    values = parse_env(existing or "")
+    return render_env({**values, TOKEN_ENV: token} if token else values)

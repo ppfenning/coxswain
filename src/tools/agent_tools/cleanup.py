@@ -9,18 +9,17 @@ to a finished run and go.
 
 from __future__ import annotations
 
-import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from agent_tools import epic
+from agent_tools import bounded_run, epic
 
 __all__ = ["apply_cleanup", "git_branches", "git_worktrees", "live_owner", "plan_cleanup"]
 
 
 def _git(repo: Path, *args: str) -> str:
-    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True).stdout
+    return bounded_run.completed(["git", "-C", str(repo), *args], capture_output=True, text=True).stdout
 
 
 def git_worktrees(repo: Path) -> list[str]:
@@ -82,9 +81,9 @@ def apply_cleanup(repo: Path | str, plan: dict[str, Any], *, dry_run: bool = Tru
     for w in plan["worktrees"]:
         lines.append(f"{'would remove' if dry_run else 'removed'} worktree {w}")
         if not dry_run:
-            subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", w], capture_output=True)
+            bounded_run.completed(["git", "-C", str(repo), "worktree", "remove", "--force", w], capture_output=True)
     if not dry_run:
-        subprocess.run(["git", "-C", str(repo), "worktree", "prune"], capture_output=True)
+        bounded_run.completed(["git", "-C", str(repo), "worktree", "prune"], capture_output=True)
     for b in plan["branches"]:
         task = _task_of(b)
         settled = task in landed or task in dropped
@@ -95,7 +94,7 @@ def apply_cleanup(repo: Path | str, plan: dict[str, Any], *, dry_run: bool = Tru
         suffix = " (forced)" if force and not settled else ""
         lines.append(f"{'would delete' if dry_run else 'deleted'} branch {b}{suffix}")
         if not dry_run:
-            subprocess.run(["git", "-C", str(repo), "branch", "-D", b], capture_output=True)
+            bounded_run.completed(["git", "-C", str(repo), "branch", "-D", b], capture_output=True)
     root = Path(plan["root"])
     if root.exists():
         lines.append(f"{'would remove' if dry_run else 'removed'} directory {root}")
