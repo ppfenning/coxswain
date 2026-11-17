@@ -2,7 +2,6 @@ import dataclasses
 import json
 import os
 import sqlite3
-import subprocess
 import sys
 import types
 
@@ -865,163 +864,113 @@ def test_remote_lanes_drops_a_local_run_and_keeps_the_rest_in_order():
     assert run_store.remote_lanes([a, b, c], {"b-1"}) == [a, c]
 
 
-def stub_harness(monkeypatch, python="/h/python", result=None, error=None):
-    calls = []
+def _real_store(runs_dir):
+    """A real migrated sqlite store at `<runs_dir>/cox.db`, opened for writes."""
+    from harness.store_migrate import open_store
 
-    def run(argv, **kwargs):
-        calls.append(argv)
-        if error:
-            raise error
-        return result
-
-    monkeypatch.setattr(run_store, "_harness_python", lambda: python)
-    monkeypatch.setattr(run_store, "_store_url", lambda runs_dir: "sqlite:///s.db")
-    monkeypatch.setattr(run_store.subprocess, "run", run)
-    return calls
+    return open_store(run_store._store_url(runs_dir), NOW)
 
 
-def done(code, stdout="", stderr=""):
-    return types.SimpleNamespace(returncode=code, stdout=stdout, stderr=stderr)
+def _seed(runs_dir, write):
+    """Run `write(conn)` against the real store at `runs_dir`, then close it."""
+    conn = _real_store(runs_dir)
+    try:
+        write(conn)
+    finally:
+        conn.close()
 
 
-def test_task_record_runs_the_builders_argv_and_parses_the_output(tmp_path, monkeypatch):
-    calls = stub_harness(monkeypatch, result=done(0, '{"task": "t1"}\n'))
+def _record_tasks(*rows):
+    from harness.store_write import Store
+
+    def write(conn):
+        for run, phase, task, record in rows:
+            Store(conn).record_task_record(run, phase, task, record, NOW)
+
+    return write
+
+
+def test_task_record_reads_one_row_and_is_none_for_another_key(tmp_path):
+    _seed(tmp_path, _record_tasks(("r-1", "p1", "t1", {"task": "t1"})))
     assert run_store.task_record(tmp_path, "r-1", "p1", "t1") == {"task": "t1"}
-    assert calls == [run_store._task_record_argv("/h/python", "sqlite:///s.db", "r-1", "p1", "t1")]
+    assert run_store.task_record(tmp_path, "r-1", "p1", "t2") is None
+    assert run_store.task_record(tmp_path, "r-2", "p1", "t1") is None
 
 
-def test_task_record_is_none_without_a_harness_python_and_runs_nothing(tmp_path, monkeypatch):
-    calls = stub_harness(monkeypatch, python=None)
-    assert run_store.task_record(tmp_path, "r-1", "p1", "t1") is None
-    assert calls == []
-
-
-@pytest.mark.parametrize("error", [OSError("gone"), subprocess.TimeoutExpired("x", 60)])
-def test_task_record_is_none_when_the_harness_cannot_run(tmp_path, monkeypatch, error):
-    stub_harness(monkeypatch, error=error)
+def test_task_record_is_none_with_no_store(tmp_path):
     assert run_store.task_record(tmp_path, "r-1", "p1", "t1") is None
 
 
-def test_task_record_is_none_on_a_nonzero_exit(tmp_path, monkeypatch):
-    stub_harness(monkeypatch, result=done(1, '{"task": "t1"}'))
-    assert run_store.task_record(tmp_path, "r-1", "p1", "t1") is None
+def _short_ids(*, initiatives=(), runs=()):
+    """Number `initiatives` (slug, short id) through their intake rows and `runs` (run id, short id) in the real store."""
+    from harness.store_write import Store, upsert_work_item
+
+    def write(conn):
+        mark = conn.dialect.placeholder
+        for slug, short in initiatives:
+            upsert_work_item(conn, slug, "intake", "", "ready", [], NOW, "me")
+            with conn.transaction():
+                conn.execute(f"UPDATE work_items SET short_id = {mark} WHERE initiative = {mark} AND task_id = 'intake'", (short, slug))
+        for run_id, short in runs:
+            Store(conn).record_run({"run_id": run_id, "graph": "g", "status": "running", "started_at": NOW})
+            with conn.transaction():
+                conn.execute(f"UPDATE runs SET short_id = {mark} WHERE run_id = {mark}", (short, run_id))
+
+    return write
 
 
-@pytest.mark.parametrize("stdout", ["", "[1, 2]"])
-def test_task_record_is_none_when_no_row_matches(tmp_path, monkeypatch, stdout):
-    stub_harness(monkeypatch, result=done(0, stdout))
-    assert run_store.task_record(tmp_path, "r-1", "p1", "t1") is None
+def test_resolve_run_id_maps_a_short_id_and_an_old_key_to_the_same_run(tmp_path):
+    _seed(tmp_path, _short_ids(runs=[("2026-09-29-widget-run", "I412-7")]))
+    assert run_store.resolve_run_id(tmp_path, "I412-7") == "2026-09-29-widget-run"
+    assert run_store.resolve_run_id(tmp_path, "2026-09-29-widget-run") == "2026-09-29-widget-run"
 
 
-def test_resolve_id_argv_binds_the_token_after_the_store_url():
-    argv = run_store._resolve_id_argv("/h/python", "sqlite:///s.db", "I412-7")
-    assert argv == ["/h/python", "-m", "harness.store_ids", "resolve", "sqlite:///s.db", "I412-7", "--json"]
+def test_resolve_run_id_is_none_for_an_unknown_token_and_with_no_store(tmp_path):
+    assert run_store.resolve_run_id(tmp_path, "I412-7") is None
+    _seed(tmp_path, _short_ids(runs=[("some-run", "I1-1")]))
+    assert run_store.resolve_run_id(tmp_path, "I999-1") is None
 
 
-def test_resolve_id_maps_a_short_id_and_an_old_key_to_the_same_run_record(tmp_path, monkeypatch):
-    record = {"run_id": "I412-7", "old_key": "2026-09-29-widget-run"}
-    calls = stub_harness(monkeypatch, result=done(0, json.dumps(record) + "\n"))
-    by_short_id = run_store.resolve_id(tmp_path, "I412-7")
-    by_old_key = run_store.resolve_id(tmp_path, "2026-09-29-widget-run")
-    assert by_short_id == record
-    assert by_old_key == record
-    assert calls == [
-        run_store._resolve_id_argv("/h/python", "sqlite:///s.db", "I412-7"),
-        run_store._resolve_id_argv("/h/python", "sqlite:///s.db", "2026-09-29-widget-run"),
-    ]
+_TWO_INITIATIVES = [("widget-feed", "I412"), ("lake-sync", "I7")]
 
 
-def test_resolve_id_is_none_without_a_harness_python_and_runs_nothing(tmp_path, monkeypatch):
-    calls = stub_harness(monkeypatch, python=None)
-    assert run_store.resolve_id(tmp_path, "I412-7") is None
-    assert calls == []
-
-
-def test_resolve_id_is_none_on_a_nonzero_exit(tmp_path, monkeypatch):
-    stub_harness(monkeypatch, result=done(1, '{"run_id": "I412-7"}'))
-    assert run_store.resolve_id(tmp_path, "I412-7") is None
-
-
-_TWO_INITIATIVES = json.dumps(
-    [{"initiative": "widget-feed", "short_id": "I412"}, {"initiative": "lake-sync", "short_id": "I7"}]
-)
-
-
-def test_initiative_short_ids_maps_a_two_row_reply(tmp_path, monkeypatch):
-    junk_row = json.dumps(json.loads(_TWO_INITIATIVES) + [{"initiative": "x", "short_id": None}])
-    calls = stub_harness(monkeypatch, result=done(0, junk_row + "\n"))
+def test_initiative_short_ids_maps_every_numbered_initiative(tmp_path):
+    _seed(tmp_path, _short_ids(initiatives=_TWO_INITIATIVES))
     assert run_store.initiative_short_ids(tmp_path) == {"widget-feed": "I412", "lake-sync": "I7"}
-    assert calls == [run_store._initiative_ids_argv("/h/python", "sqlite:///s.db")]
 
 
-def test_resolve_initiative_maps_a_short_id_to_its_slug(tmp_path, monkeypatch):
-    stub_harness(monkeypatch, result=done(0, _TWO_INITIATIVES))
+def test_resolve_initiative_maps_a_short_id_to_its_slug_and_leaves_other_tokens_alone(tmp_path):
+    _seed(tmp_path, _short_ids(initiatives=_TWO_INITIATIVES))
     assert run_store.resolve_initiative(tmp_path, "I412") == "widget-feed"
-
-
-def test_resolve_initiative_returns_a_slug_unchanged(tmp_path, monkeypatch):
-    stub_harness(monkeypatch, result=done(0, _TWO_INITIATIVES))
     assert run_store.resolve_initiative(tmp_path, "widget-feed") == "widget-feed"
-
-
-def test_resolve_initiative_returns_an_unknown_token_unchanged(tmp_path, monkeypatch):
-    stub_harness(monkeypatch, result=done(0, _TWO_INITIATIVES))
     assert run_store.resolve_initiative(tmp_path, "I999") == "I999"
 
 
-def test_initiative_lookups_without_a_harness_python_run_nothing(tmp_path, monkeypatch):
-    calls = stub_harness(monkeypatch, python=None)
+def test_initiative_lookups_with_no_store_read_empty(tmp_path):
     assert run_store.initiative_short_ids(tmp_path) == {}
     assert run_store.resolve_initiative(tmp_path, "I412") == "I412"
-    assert calls == []
 
 
-def test_the_task_record_script_reads_a_row_from_a_sqlite_store(tmp_path):
-    db = tmp_path / "s.db"
-    conn = sqlite3.connect(db)
-    conn.execute("CREATE TABLE task_records (run_id, phase_id, task_id, record_json)")
-    conn.execute("INSERT INTO task_records VALUES ('r-1', 'p1', 't1', '{\"task\": \"t1\"}')")
-    conn.commit()
-    conn.close()
-    argv = run_store._task_record_argv(sys.executable, str(db), "r-1", "p1", "t1")
-    hit = subprocess.run(argv, capture_output=True, text=True)
-    miss = subprocess.run(argv[:-1] + ["t2"], capture_output=True, text=True)
-    assert run_store._task_record_from(hit.stdout) == {"task": "t1"}
-    assert run_store._task_record_from(miss.stdout) is None
+def _work_item_rows(*rows):
+    from harness.store_write import upsert_work_item
+
+    def write(conn):
+        for initiative, task, phase, state in rows:
+            upsert_work_item(conn, initiative, task, phase, state, [], "2026-09-25", "me")
+
+    return write
 
 
-def test_work_items_runs_the_builders_argv_and_parses_the_output(tmp_path, monkeypatch):
-    out = '{"task_id": "a", "state": "done", "extra": 1}\n\nnot json\n[1]\n3\n'
-    calls = stub_harness(monkeypatch, result=done(0, out))
-    assert run_store.work_items(tmp_path) == [{"task_id": "a", "state": "done", "extra": 1}]
-    assert calls == [run_store._work_items_argv("/h/python", "sqlite:///s.db", None)]
+def test_work_items_reads_every_row_and_filters_by_initiative(tmp_path):
+    _seed(tmp_path, _work_item_rows(("wsts", "t1", "p1", "done"), ("other", "t2", "p1", "open")))
+    assert [r["task_id"] for r in run_store.work_items(tmp_path)] == ["t1", "t2"]
+    assert [r["task_id"] for r in run_store.work_items(tmp_path, "wsts")] == ["t1"]
+    assert run_store.work_items(tmp_path, "nobody") == []
 
 
-def test_work_items_passes_the_initiative_filter_to_the_argv(tmp_path, monkeypatch):
-    calls = stub_harness(monkeypatch, result=done(0, ""))
-    run_store.work_items(tmp_path, "wsts")
-    assert calls == [run_store._work_items_argv("/h/python", "sqlite:///s.db", "wsts")]
-
-
-def test_work_items_is_empty_for_a_store_without_the_table(tmp_path, monkeypatch):
-    stub_harness(monkeypatch, result=types.SimpleNamespace(returncode=1, stdout="", stderr="sqlite3.OperationalError: no such table: work_items"))
+def test_work_items_is_empty_with_no_store_and_for_a_store_without_the_table(tmp_path):
     assert run_store.work_items(tmp_path) == []
-
-
-def test_work_items_is_empty_without_a_harness_python_and_runs_nothing(tmp_path, monkeypatch):
-    calls = stub_harness(monkeypatch, python=None)
-    assert run_store.work_items(tmp_path) == []
-    assert calls == []
-
-
-@pytest.mark.parametrize("error", [OSError("gone"), subprocess.TimeoutExpired("x", 60)])
-def test_work_items_is_empty_when_the_harness_cannot_run(tmp_path, monkeypatch, error):
-    stub_harness(monkeypatch, error=error)
-    assert run_store.work_items(tmp_path) == []
-
-
-def test_work_items_is_empty_for_an_unreadable_store(tmp_path, monkeypatch):
-    stub_harness(monkeypatch, result=types.SimpleNamespace(returncode=1, stdout="", stderr="sqlite3.OperationalError: unable to open database file"))
+    sqlite3.connect(tmp_path / "cox.db").close()
     assert run_store.work_items(tmp_path) == []
 
 
@@ -1059,222 +1008,75 @@ def test_task_state_of_is_none_when_the_reader_is_empty(tmp_path, monkeypatch):
     assert run_store.task_state_of(tmp_path, "wsts", "a") is None
 
 
-def test_the_work_items_script_reads_rows_from_a_sqlite_store_and_fails_without_the_table(tmp_path):
-    db = tmp_path / "s.db"
-    conn = sqlite3.connect(db)
-    conn.execute("CREATE TABLE work_items (initiative, task_id, phase, state, needs_json, updated_at, updated_by, extra)")
-    conn.execute("INSERT INTO work_items VALUES ('wsts', 't1', 'p1', 'done', '[]', '2026-09-25', 'me', 'x')")
-    conn.execute("INSERT INTO work_items VALUES ('other', 't2', 'p1', 'open', '[]', '2026-09-25', 'me', 'y')")
-    conn.commit()
-    conn.close()
-    every = subprocess.run(run_store._work_items_argv(sys.executable, str(db), None), capture_output=True, text=True)
-    one = subprocess.run(run_store._work_items_argv(sys.executable, str(db), "wsts"), capture_output=True, text=True)
-    assert [r["task_id"] for r in run_store._work_items_from(every.stdout)] == ["t1", "t2"]
-    assert [r["task_id"] for r in run_store._work_items_from(one.stdout)] == ["t1"]
-    bare = tmp_path / "bare.db"
-    sqlite3.connect(bare).close()
-    absent = subprocess.run(run_store._work_items_argv(sys.executable, str(bare), None), capture_output=True, text=True)
-    assert absent.returncode != 0 and run_store._work_items_from(absent.stdout) == []
+def test_task_record_phases_lists_each_phase_once_in_order(tmp_path):
+    _seed(tmp_path, _record_tasks(("r-1", "b", "t1", {}), ("r-1", "a", "t1", {}), ("r-2", "c", "t1", {}), ("r-1", "d", "t2", {})))
+    assert run_store.task_record_phases(tmp_path, "r-1", "t1") == ["a", "b"]
+    assert run_store.task_record_phases(tmp_path / "missing", "r-1", "t1") == []
 
 
-def test_task_record_phases_runs_the_builders_argv_and_reads_one_phase_per_line(tmp_path, monkeypatch):
-    calls = stub_harness(monkeypatch, result=done(0, "p1\n\np2\n"))
-    assert run_store.task_record_phases(tmp_path, "r-1", "t1") == ["p1", "p2"]
-    assert calls == [run_store._task_record_phases_argv("/h/python", "sqlite:///s.db", "r-1", "t1")]
-
-
-def test_task_record_phases_is_empty_without_a_harness_python_and_runs_nothing(tmp_path, monkeypatch):
-    calls = stub_harness(monkeypatch, python=None)
-    assert run_store.task_record_phases(tmp_path, "r-1", "t1") == []
-    assert calls == []
-
-
-@pytest.mark.parametrize("error", [OSError("gone"), subprocess.TimeoutExpired("x", 60)])
-def test_task_record_phases_is_empty_when_the_harness_cannot_run(tmp_path, monkeypatch, error):
-    stub_harness(monkeypatch, error=error)
-    assert run_store.task_record_phases(tmp_path, "r-1", "t1") == []
-
-
-def test_task_record_phases_is_empty_on_a_nonzero_exit(tmp_path, monkeypatch):
-    stub_harness(monkeypatch, result=done(1, "p1\n"))
-    assert run_store.task_record_phases(tmp_path, "r-1", "t1") == []
-
-
-def test_the_task_record_phases_script_lists_each_phase_once_from_a_sqlite_store(tmp_path):
-    db = tmp_path / "s.db"
-    conn = sqlite3.connect(db)
-    conn.execute("CREATE TABLE task_records (run_id, phase_id, task_id, record_json)")
-    conn.executemany("INSERT INTO task_records VALUES (?, ?, ?, '{}')",
-                     [("r-1", "b", "t1"), ("r-1", "a", "t1"), ("r-1", "a", "t1"), ("r-2", "c", "t1"), ("r-1", "d", "t2")])
-    conn.commit()
-    conn.close()
-    argv = run_store._task_record_phases_argv(sys.executable, str(db), "r-1", "t1")
-    hit = subprocess.run(argv, capture_output=True, text=True)
-    assert run_store._phases_from(hit.stdout) == ["a", "b"]
-
-
-def test_run_task_ids_runs_the_builders_argv_and_is_empty_on_a_nonzero_exit(tmp_path, monkeypatch):
-    calls = stub_harness(monkeypatch, result=done(0, "t1\n\nt2\n"))
+def test_run_task_ids_lists_each_task_of_the_run_once(tmp_path):
+    _seed(tmp_path, _record_tasks(("r-1", "b", "t2", {}), ("r-1", "a", "t1", {}), ("r-1", "c", "t1", {}), ("r-2", "a", "t3", {})))
     assert run_store.run_task_ids(tmp_path, "r-1") == ["t1", "t2"]
-    assert calls == [run_store._run_task_ids_argv("/h/python", "sqlite:///s.db", "r-1")]
-    stub_harness(monkeypatch, result=done(1, "t1\n"))
-    assert run_store.run_task_ids(tmp_path, "r-1") == []
+    assert run_store.run_task_ids(tmp_path / "missing", "r-1") == []
 
 
-def test_the_run_task_ids_script_lists_each_task_of_the_run_once_from_a_sqlite_store(tmp_path):
-    db = tmp_path / "s.db"
-    conn = sqlite3.connect(db)
-    conn.execute("CREATE TABLE task_records (run_id, phase_id, task_id, record_json)")
-    conn.executemany("INSERT INTO task_records VALUES (?, ?, ?, '{}')",
-                     [("r-1", "b", "t2"), ("r-1", "a", "t1"), ("r-1", "c", "t1"), ("r-2", "a", "t3")])
-    conn.commit()
-    conn.close()
-    hit = subprocess.run(run_store._run_task_ids_argv(sys.executable, str(db), "r-1"), capture_output=True, text=True)
-    assert run_store._phases_from(hit.stdout) == ["t1", "t2"]
-
-
-def test_queue_read_argv_carries_no_flags_without_a_filter():
-    assert run_store._queue_read_argv("/h/python", "u", None, None) == ["/h/python", "-m", "harness.store_queue", "read", "u"]
-
-
-def test_queue_read_argv_adds_initiative_and_kind_flags():
-    assert run_store._queue_read_argv("/h/python", "u", "i1", "task") == [
-        "/h/python", "-m", "harness.store_queue", "read", "u", "--initiative", "i1", "--kind", "task",
-    ]
-
-
-def test_queue_upsert_argv_is_one_sorted_json_argument():
-    argv = run_store._queue_upsert_argv("/h/python", "u", {"task_id": "t1", "initiative": "i1"})
-    assert argv == ["/h/python", "-m", "harness.store_queue", "upsert", "u", '{"initiative": "i1", "task_id": "t1"}']
-
-
-def test_queue_claim_argv_carries_ttl_and_now_as_strings():
-    argv = run_store._queue_claim_argv("/h/python", "u", "i1", "t1", "me", 30, "2026-09-26T00:00:00Z")
-    assert argv == ["/h/python", "-m", "harness.store_queue", "claim", "u", "i1", "t1", "me", "30", "2026-09-26T00:00:00Z"]
-
-
-def test_queue_release_argv_names_the_holder():
-    assert run_store._queue_release_argv("/h/python", "u", "i1", "t1", "me") == [
-        "/h/python", "-m", "harness.store_queue", "release", "u", "i1", "t1", "me",
-    ]
-
-
-CLAIM = '{"holder": "me", "epoch": 2, "expires_at": "2026-09-26T00:05:00Z"}\n'
 CLAIM_NOW = "2026-09-26T00:00:00Z"
+_QUEUE_ROW = {"kind": "task", "initiative": "i1", "task_id": "t1", "phase": "p1", "state": "ready", "needs": [],
+              "surfaces": [], "title": "T", "body": ""}
 
 
-def test_read_queue_runs_the_builders_argv_and_parses_rows(tmp_path, monkeypatch):
-    out = (
-        '{"initiative": "i1", "task_id": "t1", "extra_col": 1}\n'
-        '{"initiative": "i1", "task_id": "t2", "holder": "me", "epoch": 2, "expires_at": "x"}\n'
-    )
-    calls = stub_harness(monkeypatch, result=done(0, out))
+def test_read_queue_returns_rows_with_every_queue_and_claim_key(tmp_path):
+    assert run_store.upsert_row(tmp_path, _QUEUE_ROW)
+    assert run_store.upsert_row(tmp_path, {**_QUEUE_ROW, "task_id": "t2"})
     rows = run_store.read_queue(tmp_path, "i1", "task")
     assert [r["task_id"] for r in rows] == ["t1", "t2"]
-    assert (rows[1]["holder"], rows[1]["epoch"], rows[1]["expires_at"]) == ("me", 2, "x")
-    assert calls == [run_store._queue_read_argv("/h/python", "sqlite:///s.db", "i1", "task")]
+    assert (rows[0]["holder"], rows[0]["expires_at"]) == (None, None)
+    assert run_store.read_queue(tmp_path, "other") == []
 
 
-def test_upsert_row_is_true_and_repeating_it_issues_the_same_argv(tmp_path, monkeypatch):
-    calls = stub_harness(monkeypatch, result=done(0))
-    row = {"initiative": "i1", "task_id": "t1", "state": "todo"}
-    assert (run_store.upsert_row(tmp_path, row), run_store.upsert_row(tmp_path, row)) == (True, True)
-    assert calls[0] == calls[1] == run_store._queue_upsert_argv("/h/python", "sqlite:///s.db", row)
+def test_upsert_row_is_true_and_repeating_it_changes_nothing(tmp_path):
+    assert (run_store.upsert_row(tmp_path, _QUEUE_ROW), run_store.upsert_row(tmp_path, _QUEUE_ROW)) == (True, True)
+    assert len(run_store.read_queue(tmp_path)) == 1
+    assert run_store.upsert_row_detail(tmp_path, _QUEUE_ROW) == ""
 
 
-def test_upsert_row_detail_is_empty_when_the_store_took_the_row(tmp_path, monkeypatch):
-    stub_harness(monkeypatch, result=done(0))
-    row = {"initiative": "i1", "task_id": "t1", "state": "todo"}
-    assert run_store.upsert_row_detail(tmp_path, row) == ""
+def test_upsert_row_detail_names_why_an_unopenable_store_refused(tmp_path, store_at):
+    store_at("nosuch://x")
+    assert "unsupported store URL" in run_store.upsert_row_detail(tmp_path, _QUEUE_ROW)
+    assert run_store.upsert_row(tmp_path, _QUEUE_ROW) is False
 
 
-def test_upsert_row_detail_is_the_last_stderr_line_when_the_store_refuses(tmp_path, monkeypatch):
-    stub_harness(monkeypatch, result=done(1, stderr="Traceback (most recent call last):\nModuleNotFoundError: No module named 'harness'\n"))
-    row = {"initiative": "i1", "task_id": "t1", "state": "todo"}
-    assert run_store.upsert_row_detail(tmp_path, row) == "ModuleNotFoundError: No module named 'harness'"
+def test_claim_row_takes_a_free_row_and_another_holder_finds_it_held(tmp_path):
+    assert run_store.upsert_row(tmp_path, _QUEUE_ROW)
+    claim = run_store.claim_row(tmp_path, "i1", "t1", "me", 300, CLAIM_NOW)
+    assert claim is not None and (claim["holder"], claim["epoch"]) == ("me", 1)
+    assert run_store.claim_row(tmp_path, "i1", "t1", "you", 300, CLAIM_NOW) is None
+    assert run_store.claim_outcome(tmp_path, "i1", "t1", "you", 300, CLAIM_NOW) == (None, "held")
 
 
-def test_upsert_row_detail_names_the_exit_code_when_the_store_fails_silently(tmp_path, monkeypatch):
-    stub_harness(monkeypatch, result=done(1))
-    row = {"initiative": "i1", "task_id": "t1", "state": "todo"}
-    assert run_store.upsert_row_detail(tmp_path, row) == "exit 1"
-
-
-def test_upsert_row_detail_names_a_missing_harness_python(tmp_path, monkeypatch):
-    stub_harness(monkeypatch, python=None)
-    row = {"initiative": "i1", "task_id": "t1", "state": "todo"}
-    assert run_store.upsert_row_detail(tmp_path, row) == "harness python not found"
-
-
-def test_claim_row_returns_the_claim_of_a_free_row(tmp_path, monkeypatch):
-    calls = stub_harness(monkeypatch, result=done(0, CLAIM))
-    assert run_store.claim_row(tmp_path, "i1", "t1", "me", 300, CLAIM_NOW) == {"holder": "me", "epoch": 2, "expires_at": "2026-09-26T00:05:00Z"}
-    assert calls == [run_store._queue_claim_argv("/h/python", "sqlite:///s.db", "i1", "t1", "me", 300, CLAIM_NOW)]
-
-
-def test_claim_row_retakes_an_expired_claim_at_the_now_it_was_given(tmp_path, monkeypatch):
+def test_claim_row_retakes_an_expired_claim_at_the_now_it_was_given(tmp_path):
+    assert run_store.upsert_row(tmp_path, _QUEUE_ROW)
+    assert run_store.claim_row(tmp_path, "i1", "t1", "me", 300, CLAIM_NOW)
     later = "2026-09-26T01:00:00Z"
-    calls = stub_harness(monkeypatch, result=done(0, '{"holder": "me", "epoch": 3, "expires_at": "2026-09-26T01:05:00Z"}'))
-    assert run_store.claim_outcome(tmp_path, "i1", "t1", "me", 300, later) == (
-        {"holder": "me", "epoch": 3, "expires_at": "2026-09-26T01:05:00Z"}, None,
-    )
-    assert calls[0][-1] == later
+    claim, why = run_store.claim_outcome(tmp_path, "i1", "t1", "you", 300, later)
+    assert why is None and claim["holder"] == "you" and claim["expires_at"] == "2026-09-26T01:05:00Z"
 
 
-def test_claim_row_is_none_held_when_another_holder_is_live(tmp_path, monkeypatch):
-    stub_harness(monkeypatch, result=done(4))
-    assert run_store.claim_row(tmp_path, "i1", "t1", "me", 300, CLAIM_NOW) is None
-    assert run_store.claim_outcome(tmp_path, "i1", "t1", "me", 300, CLAIM_NOW) == (None, "held")
-
-
-def test_release_row_is_true_on_exit_zero_and_false_otherwise(tmp_path, monkeypatch):
-    calls = stub_harness(monkeypatch, result=done(0))
+def test_release_row_is_true_whether_or_not_the_holder_held_it(tmp_path):
+    assert run_store.upsert_row(tmp_path, _QUEUE_ROW)
+    assert run_store.claim_row(tmp_path, "i1", "t1", "me", 300, CLAIM_NOW)
+    assert run_store.release_row(tmp_path, "i1", "t1", "you") is True
+    assert run_store.claim_outcome(tmp_path, "i1", "t1", "you", 300, CLAIM_NOW) == (None, "held")
     assert run_store.release_row(tmp_path, "i1", "t1", "me") is True
-    assert calls == [run_store._queue_release_argv("/h/python", "sqlite:///s.db", "i1", "t1", "me")]
-    stub_harness(monkeypatch, result=done(4))
-    assert run_store.release_row(tmp_path, "i1", "t1", "me") is False
+    assert run_store.claim_row(tmp_path, "i1", "t1", "you", 300, CLAIM_NOW) is not None
 
 
-def test_a_missing_table_reads_as_unavailable_everywhere(tmp_path, monkeypatch):
-    stub_harness(monkeypatch, result=done(1))
+def test_an_unopenable_store_reads_as_unavailable_everywhere_and_never_raises(tmp_path, store_at):
+    store_at("nosuch://x")
     assert run_store.read_queue(tmp_path) == []
     assert run_store.upsert_row(tmp_path, {"initiative": "i1", "task_id": "t1"}) is False
     assert run_store.release_row(tmp_path, "i1", "t1", "me") is False
     assert run_store.claim_outcome(tmp_path, "i1", "t1", "me", 300, CLAIM_NOW) == (None, "unavailable")
-
-
-def test_a_claim_that_exits_zero_without_a_claim_is_unavailable(tmp_path, monkeypatch):
-    stub_harness(monkeypatch, result=done(0, ""))
-    assert run_store.claim_outcome(tmp_path, "i1", "t1", "me", 300, CLAIM_NOW) == (None, "unavailable")
-
-
-def test_a_missing_harness_runs_nothing_and_reads_as_unavailable(tmp_path, monkeypatch):
-    calls = stub_harness(monkeypatch, python=None)
-    assert run_store.read_queue(tmp_path) == []
-    assert run_store.upsert_row(tmp_path, {"initiative": "i1", "task_id": "t1"}) is False
-    assert run_store.release_row(tmp_path, "i1", "t1", "me") is False
-    assert run_store.claim_outcome(tmp_path, "i1", "t1", "me", 300, CLAIM_NOW) == (None, "unavailable")
-    assert calls == []
-
-
-@pytest.mark.parametrize("error", [OSError("gone"), subprocess.TimeoutExpired("x", 60)])
-def test_an_unreadable_store_or_failed_run_never_raises(tmp_path, monkeypatch, error):
-    stub_harness(monkeypatch, error=error)
-    assert run_store.read_queue(tmp_path) == []
-    assert run_store.upsert_row(tmp_path, {"initiative": "i1", "task_id": "t1"}) is False
-    assert run_store.release_row(tmp_path, "i1", "t1", "me") is False
-    assert run_store.claim_outcome(tmp_path, "i1", "t1", "me", 300, CLAIM_NOW) == (None, "unavailable")
-
-
-def test_an_unresolvable_store_url_reads_as_unavailable(tmp_path, monkeypatch):
-    calls = stub_harness(monkeypatch, result=done(0))
-
-    def broken(runs_dir):
-        raise ValueError("bad profile")
-
-    monkeypatch.setattr(run_store, "_store_url", broken)
-    assert run_store.read_queue(tmp_path) == []
-    assert calls == []
 
 
 def test_runs_started_reads_every_launched_at_in_one_map(tmp_path):

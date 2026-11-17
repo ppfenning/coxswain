@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import sys
 from pathlib import Path
 
 from agent_tools import dash_detail_initiative as ddi
@@ -92,14 +91,18 @@ def _settled_rows(state: str) -> list[tuple]:
 
 
 def _seed_store(tmp_path, monkeypatch, rows: list[tuple]) -> None:
-    db = tmp_path / "s.db"
-    conn = sqlite3.connect(db)
-    conn.execute("CREATE TABLE work_items (initiative, task_id, phase, state, needs_json, updated_at, updated_by)")
-    conn.executemany("INSERT INTO work_items VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
-    conn.commit()
-    conn.close()
-    monkeypatch.setattr(run_store, "_harness_python", lambda: Path(sys.executable))
-    monkeypatch.setattr(run_store, "_store_url", lambda runs_dir: f"sqlite:///{db}")
+    """A real migrated sqlite store at `<tmp_path>/s.db`, one work item per `(initiative, task, phase, state, needs_json, at, by)`."""
+    from harness.store_migrate import open_store
+    from harness.store_write import upsert_work_item
+
+    url = f"sqlite:///{tmp_path / 's.db'}"
+    conn = open_store(url, "2026-09-01T00:00:00Z")
+    try:
+        for initiative, task, phase, state, needs_json, at, by in rows:
+            upsert_work_item(conn, initiative, task, phase, state, json.loads(needs_json), at, by)
+    finally:
+        conn.close()
+    monkeypatch.setattr(run_store, "_store_url", lambda runs_dir: url)
 
 
 def _settled_detail(state: str) -> dict:
@@ -160,22 +163,16 @@ def test_build_wires_the_work_store_and_run_record_readers_through_shape(monkeyp
 
 
 def test_items_reads_task_id_state_needs_and_updated_at_from_the_store(tmp_path, monkeypatch) -> None:
-    db = tmp_path / "s.db"
-    conn = sqlite3.connect(db)
-    conn.execute("CREATE TABLE work_items (initiative, task_id, phase, state, needs_json, updated_at, updated_by)")
-    conn.executemany(
-        "INSERT INTO work_items VALUES (?, ?, ?, ?, ?, ?, 'me')",
+    _seed_store(
+        tmp_path,
+        monkeypatch,
         [
-            ("demo", "t1", "p1", "done", "[]", "2026-09-20T00:00:00Z"),
-            ("demo", "t2", "p1", "dropped", "[]", "2026-09-21T00:00:00Z"),
-            ("demo", "t3", "p2", "todo", '["t1"]', "2026-09-22T00:00:00Z"),
-            ("other", "x1", "p1", "done", "[]", "2026-09-01T00:00:00Z"),
+            ("demo", "t1", "p1", "done", "[]", "2026-09-20T00:00:00Z", "me"),
+            ("demo", "t2", "p1", "dropped", "[]", "2026-09-21T00:00:00Z", "me"),
+            ("demo", "t3", "p2", "todo", '["t1"]', "2026-09-22T00:00:00Z", "me"),
+            ("other", "x1", "p1", "done", "[]", "2026-09-01T00:00:00Z", "me"),
         ],
     )
-    conn.commit()
-    conn.close()
-    monkeypatch.setattr(run_store, "_harness_python", lambda: Path(sys.executable))
-    monkeypatch.setattr(run_store, "_store_url", lambda runs_dir: f"sqlite:///{db}")
 
     items = ddi._items(tmp_path, "demo")
 

@@ -13,7 +13,7 @@ import yaml
 from test_run_store import ROW, leases_table, store
 
 from agent_tools import checkout as checkout_module
-from agent_tools import cli, leader, pacing, route, run_store, usage_window
+from agent_tools import cli, leader, pacing, route, run_store, store_cli, usage_window
 from agent_tools.chair_exec import argv_for
 from agent_tools.cli import _LAUNCH_STARTED_MARKER, _idea_is_text, _wait_for_exit, main
 from agent_tools.pacing import Window
@@ -690,20 +690,6 @@ def test_file_intake_writes_the_intake_file_with_todays_date(tmp_path, capsys):
     assert str(ws / rel) in out
 
 
-def test_file_intake_with_ids_sequence_writes_the_allocated_id(tmp_path, monkeypatch, capsys):
-    profile, ws = _write_file_profile(tmp_path)
-    with profile.open("a") as f:
-        f.write("ids: sequence\n")
-    monkeypatch.setattr(route, "allocate_intake_id", lambda: "I7")
-    rc = main(["route", "file", "--profile", str(profile), "--repo", _widget(tmp_path), "--title", "Fix the thing", "--intake"])
-    capsys.readouterr()
-    assert rc == 0
-    written = list((ws / "intake").glob("*.md"))
-    assert [p.name for p in written] == ["I7.md"]
-    fields, _ = route.parse_frontmatter(written[0].read_text(encoding="utf-8"))
-    assert fields == {"id": "I7", "title": "Fix the thing", "stage": "draft"}
-
-
 def test_file_refuses_an_existing_path_collision(tmp_path, capsys):
     profile, ws = _write_file_profile(tmp_path)
     slug = route.slugify("Fix the thing")
@@ -822,9 +808,7 @@ def test_status_reports_landed_once_the_linked_initiatives_one_task_is_done(tmp_
     capsys.readouterr()
     assert rc == 0
     slug = route.slugify("Fix the thing")
-    task_path = ws / "work" / slug / "build" / f"{slug}-task.md"
-    text = task_path.read_text()
-    task_path.write_text(text.replace("state: ready", "state: done"))
+    assert isinstance(store_cli.set_state(ws / "runs", slug, f"{slug}-task", "done", "t"), store_cli.StateSet)  # the store is the board
     rc = main(["route", "status", "--profile", str(profile)])
     out = capsys.readouterr().out
     assert rc == 0
@@ -2356,15 +2340,6 @@ def test_a_second_pull_over_the_same_link_writes_nothing(tmp_path, monkeypatch, 
     assert main(["route", "pull", "--profile", str(profile)]) == 0
     assert capsys.readouterr().out == "routing: pull wrote nothing: no eligible candidates\n"
     assert list((ws / "intake").glob("*.md")) == [written]
-
-
-def test_pull_with_ids_sequence_writes_the_allocated_id(tmp_path, monkeypatch, capsys):
-    profile, ws = _pull_setup(tmp_path, monkeypatch, [_issue("https://x/1")])
-    with profile.open("a") as f:
-        f.write("ids: sequence\n")
-    monkeypatch.setattr(route, "allocate_intake_id", lambda: "I7")
-    assert main(["route", "pull", "--profile", str(profile)]) == 0
-    assert [p.name for p in (ws / "intake").glob("*.md")] == ["I7.md"]
 
 
 def test_pull_refuses_an_unmapped_repo_by_name_and_dry_run_writes_nothing(tmp_path, monkeypatch, capsys):

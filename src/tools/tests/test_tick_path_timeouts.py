@@ -7,7 +7,6 @@ import pytest
 
 # One line per tick-path module, naming the helpers that bound its subprocess work. Each must exist and be bounded.
 TICK_PATH_MODULES: dict[str, frozenset[str]] = {
-    "agent_tools/store_cli.py": frozenset({"_run"}),
     "agent_tools/forge_github.py": frozenset({"_run", "_gh_run", "_gh_text"}),
     "agent_tools/chair_revert_ports.py": frozenset({"bounded"}),
     "agent_tools/chair_exec.py": frozenset({"run_argv"}),

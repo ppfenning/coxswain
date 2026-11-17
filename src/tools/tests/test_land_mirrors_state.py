@@ -1,14 +1,12 @@
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
 
-from agent_tools import cli, store_cli
+from agent_tools import cli, run_store, store_cli
 
 APPROVED = "---\nid: t1\nstate: approved\n---\nbody\n"
 DONE = "---\nid: t1\nstate: done\n---\nbody\n"
-_HARNESS = Path("/h/.venv/bin/python")
 
 
 def _item(tmp_path: Path, text: str = APPROVED) -> Path:
@@ -32,32 +30,25 @@ def test_the_mirror_is_called_with_the_five_arguments_after_the_file_is_written(
     assert seen == [(tmp_path / "runs", "init", "t1", "done", "sess-1", DONE)]
 
 
-@pytest.mark.parametrize("case, code, out, raises, warns", [
-    ("exit 0", 0, '{"state": "done"}', None, False),
-    ("exit 3", 3, '{"error": "no such task"}', None, True),
-    ("exit 2", 2, "bad args", None, True),
-    ("oserror", None, "", OSError("spawn failed"), True),
-    ("missing harness", None, "", None, False),
-])
-def test_a_store_outcome_never_undoes_the_move(monkeypatch, tmp_path, capsys, case, code, out, raises, warns):
+def _seed_row(tmp_path: Path, state: str = "approved") -> None:
+    (tmp_path / "runs").mkdir(exist_ok=True)
+    assert run_store.upsert_row(tmp_path / "runs", {"kind": "task", "initiative": "init", "task_id": "t1", "phase": "p1",
+                                                    "state": state, "needs": [], "surfaces": [], "title": "T", "body": ""})
+
+
+@pytest.mark.parametrize("case, warns", [("recorded", False), ("no row", True), ("unopenable store", True)])
+def test_a_store_outcome_never_undoes_the_move(monkeypatch, tmp_path, capsys, store_at, case, warns):
     item = _item(tmp_path)
-    calls = []
-
-    def fake_run(argv, **kwargs):
-        calls.append(argv)
-        if raises is not None:
-            raise raises
-        return subprocess.CompletedProcess(argv, code, stdout=out, stderr="")
-
-    if case != "missing harness":
-        monkeypatch.setattr(store_cli, "_harness_python", lambda: _HARNESS)
-    monkeypatch.setattr(store_cli.subprocess, "run", fake_run)
+    if case == "recorded":
+        _seed_row(tmp_path)
+    if case == "unopenable store":
+        store_at("nosuch://x")
     cli._close_approved_item(str(item), runs_dir=tmp_path / "runs", by="sess-1")
     printed = capsys.readouterr().out
     assert item.read_text(encoding="utf-8") == DONE
     assert ("warning: store did not record init/t1 as done" in printed) is warns
-    expected = [] if case == "missing harness" else [store_cli.set_state_argv(str(_HARNESS), "init", "t1", "done", "sess-1", store_cli._store_url(tmp_path / "runs"))]
-    assert calls == expected
+    if case == "recorded":
+        assert run_store.work_items(tmp_path / "runs", "init")[0]["state"] == "done"
 
 
 @pytest.mark.parametrize("text, mirrored", [(DONE, True), ("---\nid: t1\nstate: blocked\n---\nbody\n", False)])

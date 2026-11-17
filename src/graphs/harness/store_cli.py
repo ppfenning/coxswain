@@ -5,25 +5,21 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
-import sqlite3
 import sys
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, TextIO
 
 import yaml
 
-from core.workstore import STATES
+from harness import store_api
 from harness.cli import _read_profile, _storage_url
-from harness.store_cli_lease import lease_acquire, lease_release, lease_renew
-from harness.store_dialect import Connection, StoreDriverMissing, insert_ignore, json_text
+from harness.store_api import db_errors, open_errors
+from harness.store_dialect import Connection, insert_ignore, json_text
 from harness.store_hosts import HOST_STATES, host_beat, host_list, host_set_state, host_upsert, update_host_login
-from harness.store_landed import mark_landed
-from harness.store_migrate import MigrationError, open_store
-from harness.store_pause import clear_paused, set_paused
+from harness.store_migrate import open_store
 from harness.store_read import work_items
-from harness.store_work_state import Mismatch, set_state
 from harness.work_mirror import set_frontmatter_state
 
 # Contract read by coxswain-tools (pause and resume among them). Exit 0 and exit 3 print
@@ -34,22 +30,10 @@ from harness.work_mirror import set_frontmatter_state
 EXIT_OK = 0
 EXIT_BAD_INPUT = 2
 EXIT_PRECONDITION = 3
-# The states a caller may move a work item to, and the states a compare-and-set may name: every state a row can be in,
-# read from the one enum (`core.workstore.STATES`) so the parser cannot drift from what callers send. A hand-written
-# list here once refused `quarantined`, and the chair's revert of a phase never reached the store (smoke contract).
-WORK_STATES = STATES
-EXPECT_STATES = STATES
-
-_DB_ERRORS: tuple[type[BaseException], ...] = (sqlite3.Error,)
-try:  # the postgres driver is an optional extra
-    import psycopg
-
-    _DB_ERRORS = (*_DB_ERRORS, psycopg.Error)
-except ImportError:  # pragma: no cover - depends on what is installed
-    pass
-# connect raises ValueError on an unknown scheme and OSError on an unreachable path.
-# Those are caught around opening only, so a handler bug still raises with its traceback.
-_OPEN_ERRORS = (*_DB_ERRORS, ValueError, OSError, StoreDriverMissing, MigrationError)
+# The states a caller may move a work item to, and every state a compare-and-set may name: both are every work state,
+# the API's one enum, so the parser cannot drift from what `agent_tools` sends in process (a test holds them equal).
+WORK_STATES = store_api.WORK_STATES
+EXPECT_STATES = store_api.WORK_STATES
 
 
 def resolve_store_url(flag: str | None, profile: Mapping[str, Any], runs_dir: Path | str) -> str:
@@ -267,13 +251,13 @@ def regenerate_states(conn: Connection, work_dir: Path, initiative: str, apply: 
     return [format_change(change) for change in changes]
 
 
-def _regenerate(conn: Connection, args: argparse.Namespace) -> int:
+def _regenerate(conn: Connection, args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     try:
         lines = regenerate_states(conn, args.work_dir, args.initiative, args.apply)
     except (OSError, UnicodeDecodeError) as exc:
-        return _fail(f"cannot read or write the ticket files: {exc}")
+        return _fail(f"cannot read or write the ticket files: {exc}", err)
     for line in lines:
-        print(line)
+        print(line, file=out)
     return EXIT_OK
 
 
@@ -323,24 +307,18 @@ def action_row(holder: str, action: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _record_action(conn: Connection, holder: str, action: Mapping[str, Any]) -> int:
+def _record_action(conn: Connection, holder: str, action: Mapping[str, Any], out: TextIO) -> int:
     """Edge: insert the row, skipping one whose key is already there, and print the one line."""
     row = action_row(holder, action)
     sql = insert_ignore(conn.dialect, "chair_actions", CHAIR_ACTION_COLUMNS, CHAIR_ACTION_KEY)
     conn.execute(sql, list(row.values()))
-    print(f"recorded chair action {row['kind']} {row['target']}")
+    print(f"recorded chair action {row['kind']} {row['target']}", file=out)
     return EXIT_OK
 
 
-def _host_login(conn: Connection, name: str, login: dict[str, Any]) -> int:
+def _host_login(conn: Connection, name: str, login: dict[str, Any], err: TextIO) -> int:
     """Edge: write through update_host_login only; silent on success, one stderr line on an unknown host."""
-    return EXIT_OK if update_host_login(conn, name, login) else _fail(f"no host {name}")
-
-
-def _run_exists(conn: Connection, run_id: str) -> bool:
-    """True when `runs` has a row for `run_id`, regardless of its paused_at or status."""
-    p = conn.dialect.placeholder
-    return conn.query_one(f"SELECT 1 FROM runs WHERE run_id = {p}", (run_id,)) is not None
+    return EXIT_OK if update_host_login(conn, name, login) else _fail(f"no host {name}", err)
 
 
 def _host(conn: Connection, args: argparse.Namespace, now: str) -> tuple[Any, int]:
@@ -356,35 +334,57 @@ def _host(conn: Connection, args: argparse.Namespace, now: str) -> tuple[Any, in
     return ({}, EXIT_PRECONDITION) if row is None else (row, EXIT_OK)
 
 
+def lease_payload(
+    action: str, result: store_api.LeaseGranted | store_api.LeaseRefused | store_api.LeaseReleased
+) -> dict[str, Any]:
+    """Pure: the `{ok, epoch, holder}` object a lease command prints. Only an acquire names the epoch it granted; a
+    renew keeps the caller's epoch and a release ends it, so both print epoch and holder null."""
+    if isinstance(result, store_api.LeaseRefused):
+        return {"ok": False, "epoch": result.epoch, "holder": result.holder}
+    if isinstance(result, store_api.LeaseGranted) and action == "acquire":
+        return {"ok": True, "epoch": result.epoch, "holder": result.holder}
+    return {"ok": True, "epoch": None, "holder": None}
+
+
+def _lease(conn: Connection, args: argparse.Namespace, now: str) -> tuple[Any, int]:
+    if args.action == "acquire":
+        result = store_api.lease_acquire_on(conn, args.name, args.holder, now, args.ttl, steal=args.steal)
+    elif args.action == "renew":
+        result = store_api.lease_renew_on(conn, args.name, args.holder, args.epoch, now, args.ttl)
+    else:
+        result = store_api.lease_release_on(conn, args.name, args.holder, args.epoch)
+    refused = isinstance(result, store_api.LeaseRefused)
+    return lease_payload(args.action, result), EXIT_PRECONDITION if refused else EXIT_OK
+
+
+def _set_state(conn: Connection, args: argparse.Namespace, now: str) -> tuple[Any, int]:
+    """A refused compare-and-set prints the state it found; a missing row with no --phase prints the empty object."""
+    result = store_api.set_state_on(
+        conn, args.initiative, args.task, args.state, args.by, now, phase=args.phase, expected=args.expect
+    )
+    if isinstance(result, store_api.StateSet):
+        return dict(result.record), EXIT_OK
+    return ({"actual": result.current, "expected": args.expect} if args.expect is not None else {}), EXIT_PRECONDITION
+
+
 def dispatch(conn: Connection, args: argparse.Namespace, now: str) -> tuple[Any, int]:
-    """A missing task record is the empty object with exit 3."""
+    """Every row command goes through `store_api`; a missing task record is the empty object with exit 3."""
     if args.command == "mark-landed":
-        record = mark_landed(conn, args.run_id, args.phase, args.task, args.pr, args.at)
-        return ({}, EXIT_PRECONDITION) if record is None else (record, EXIT_OK)
+        landed = store_api.mark_landed_on(conn, args.run_id, args.phase, args.task, args.pr, args.at)
+        return ({}, EXIT_PRECONDITION) if isinstance(landed, store_api.NotInStore) else (landed.record, EXIT_OK)
     if args.command == "set-state":
-        row = set_state(conn, args.initiative, args.task, args.state, args.by, args.phase, now, expected=args.expect)
-        if isinstance(row, Mismatch):
-            return {"actual": row.current, "expected": args.expect}, EXIT_PRECONDITION
-        return ({}, EXIT_PRECONDITION) if row is None else (row, EXIT_OK)
+        return _set_state(conn, args, now)
     if args.command == "host":
         return _host(conn, args, now)
     if args.command == "pause":
-        if not _run_exists(conn, args.run_id):
+        if isinstance(store_api.pause_on(conn, args.run_id, now, args.reason), store_api.PauseRefused):
             return {"ok": False, "run": args.run_id, "paused": None, "reason": None}, EXIT_PRECONDITION
-        set_paused(conn, args.run_id, now)
         return {"ok": True, "run": args.run_id, "paused": now, "reason": args.reason}, EXIT_OK
     if args.command == "resume":
-        if not _run_exists(conn, args.run_id):
+        if isinstance(store_api.resume_on(conn, args.run_id), store_api.ResumeRefused):
             return {"ok": False, "run": args.run_id, "paused": None, "reason": None}, EXIT_PRECONDITION
-        clear_paused(conn, args.run_id)
         return {"ok": True, "run": args.run_id, "paused": None}, EXIT_OK
-    if args.action == "acquire":
-        result = lease_acquire(conn, args.name, args.holder, now, args.ttl, steal=args.steal)
-    elif args.action == "renew":
-        result = lease_renew(conn, args.name, args.holder, args.epoch, now, args.ttl)
-    else:
-        result = lease_release(conn, args.name, args.holder, args.epoch)
-    return result, EXIT_OK if result["ok"] else EXIT_PRECONDITION
+    return _lease(conn, args, now)
 
 
 def _now() -> str:
@@ -397,57 +397,60 @@ def _refusal(args: argparse.Namespace, payload: Mapping[str, Any]) -> str:
     if args.command == "mark-landed":
         return f"no task record for run {args.run_id} phase {args.phase} task {args.task}"
     if args.command == "set-state" and "actual" in payload:
-        return f"work item {args.task} is in state {payload['actual'] or 'no row'}, expected {payload['expected']}"
+        return store_api.refusal_detail(args.task, payload["actual"], payload["expected"])
     if args.command == "set-state":
-        return f"no work item {args.task} in initiative {args.initiative} and --phase was not given"
+        return store_api.no_row_detail(args.initiative, args.task)
     if args.command in ("pause", "resume"):
         return f"no run {args.run_id}"
     return f"lease {args.name} refused for holder {args.holder}"
 
 
-def _fail(message: str) -> int:
-    print(f"error: {message}", file=sys.stderr)
+def _fail(message: str, err: TextIO) -> int:
+    print(f"error: {message}", file=err)
     return EXIT_BAD_INPUT
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None, out: TextIO | None = None, err: TextIO | None = None) -> int:
+    """`out` and `err` default to the process's own streams; an in-process caller (`agent_tools.store_cli.runner`)
+    passes buffers, so the same command runs without a child interpreter."""
+    out, err = out or sys.stdout, err or sys.stderr
     try:
-        with contextlib.redirect_stdout(sys.stderr):
+        with contextlib.redirect_stdout(err), contextlib.redirect_stderr(err):
             args = build_parser().parse_args(sys.argv[1:] if argv is None else list(argv))
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else EXIT_BAD_INPUT
     if not args.store_url and args.runs_dir is None:
-        return _fail("--store-url or --runs-dir is required")
+        return _fail("--store-url or --runs-dir is required", err)
     if args.command == "regenerate-states" and not (args.work_dir / args.initiative).is_dir():
-        return _fail(f"no directory {args.work_dir / args.initiative}")
+        return _fail(f"no directory {args.work_dir / args.initiative}", err)
     action = parse_action(args.action_json) if args.command == "record-action" else None
     if isinstance(action, str):
-        return _fail(action)
+        return _fail(action, err)
     login = parse_login(args.login_json) if args.command == "host" and args.action == "login" else None
     if isinstance(login, str):
-        return _fail(login)
+        return _fail(login, err)
     now = _now()
     profile = {} if args.provider_profile is None else _read_profile(args.provider_profile)
     url = resolve_store_url(args.store_url, profile, args.runs_dir)
     try:
         conn = open_store(url, now)
-    except _OPEN_ERRORS as exc:
-        return _fail(f"cannot open the store: {exc}")
+    except open_errors() as exc:
+        return _fail(f"cannot open the store: {exc}", err)
     try:
         if args.command == "regenerate-states":
-            return _regenerate(conn, args)
+            return _regenerate(conn, args, out, err)
         if action is not None:
-            return _record_action(conn, args.holder, action)
+            return _record_action(conn, args.holder, action, out)
         if login is not None:
-            return _host_login(conn, args.name, login)
+            return _host_login(conn, args.name, login, err)
         payload, code = dispatch(conn, args, now)
-    except _DB_ERRORS as exc:
-        return _fail(f"cannot read the store: {exc}")
+    except db_errors() as exc:
+        return _fail(f"cannot read the store: {exc}", err)
     finally:
         conn.close()
     if code == EXIT_PRECONDITION:
-        print(f"error: {_refusal(args, payload)}", file=sys.stderr)
-    print(json.dumps(payload, sort_keys=True))
+        print(f"error: {_refusal(args, payload)}", file=err)
+    print(json.dumps(payload, sort_keys=True), file=out)
     return code
 
 

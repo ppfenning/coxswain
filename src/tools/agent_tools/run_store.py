@@ -17,16 +17,15 @@ import json
 import os
 import re
 import sqlite3
-import subprocess
 import time
 import zlib
 from collections import Counter
 from collections.abc import Callable, Collection, Hashable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from agent_tools import analytics_snapshot, epic, install_root
+from agent_tools import analytics_snapshot, epic
 from agent_tools.chair_read_cache import Stamp, StampCache
 from agent_tools.jsonl_log import parse_log
 from agent_tools.lake_config import _LITERAL_SECRETS, _from_env
@@ -53,9 +52,23 @@ def __getattr__(name: str) -> tuple[type[BaseException], ...]:
 __all__ = [
     "Lane", "ParquetCheck", "TracesUnavailable", "all_phase_manifests", "attempt_causes", "attempt_causes_for", "build_counts",
     "call_events", "call_from_row", "connect_readonly", "cost_since", "efficiency_rows", "gate_call_rows",
-    "harness_python", "hosts", "last_call_at", "latest_chair_meter", "lease", "live_lanes", "parquet_readable", "phase_manifests", "phase_names", "remote_lanes", "resolve_id", "run_ids", "run_spans",
+    "hosts", "last_call_at", "latest_chair_meter", "lease", "live_lanes", "parquet_readable", "phase_manifests", "phase_names", "remote_lanes", "resolve_run_id", "run_ids", "run_spans",
     "run_started", "store_usages", "summarize", "task_verdict_rows", "usage", "usages",
 ]
+
+if TYPE_CHECKING:
+    from types import ModuleType
+
+    from harness import store_api
+
+
+def _api() -> ModuleType:
+    """`harness.store_api`, imported on first use: importing any `harness` module loads the package's runtime (and the
+    postgres driver), which a `cox` command that never opens the store must not pay for (test_lazy_heavy_imports)."""
+    from harness import store_api
+
+    return store_api
+
 
 STORE_FILENAME = "cox.db"
 _PHASE_FILE = re.compile(r"^[^:]+:(.+)\.json$")
@@ -166,26 +179,6 @@ def _traces_root_for(runs_dir: str, routing_profile: str) -> TracesRoot:
     """Cached per process, like `_store_url_for`: a call's events are asked for once per call."""
     named = read_provider_profile(routing_profile).get("provider_profile")
     return profile_traces_root(read_provider_profile(named) if isinstance(named, str) and named else {}, runs_dir)
-
-
-def harness_python(routing: Mapping[str, Any]) -> Path | None:
-    """Edge: the python `install_root.harness_python` chooses for the routing profile's `harness_dir` when that file exists, else None."""
-    harness_dir = routing.get("harness_dir")
-    if not isinstance(harness_dir, str) or not harness_dir:
-        return None
-    python = install_root.harness_python(harness_dir)
-    return python if python.is_file() else None
-
-
-@functools.lru_cache(maxsize=32)
-def _harness_python_for(routing_profile: str) -> Path | None:
-    """Cached per process: `harness_python` of the routing profile at that path."""
-    return harness_python(read_provider_profile(routing_profile))
-
-
-def _harness_python() -> Path | None:
-    """Edge. `_harness_python_for` for `$AGENT_TOOLS_PROFILE` or the default routing profile."""
-    return _harness_python_for(os.environ.get("AGENT_TOOLS_PROFILE") or _DEFAULT_PROFILE)
 
 
 def _open(runs_dir: Path) -> tuple[Any, str] | None:
@@ -1033,173 +1026,35 @@ def _parquet_call_events(rows: Sequence[Mapping[str, Any]], call_id: str) -> lis
     return _json_objects(r["event"] for r in mine if isinstance(r.get("event"), str))
 
 
-def _dump_rows(stdout: str) -> list[dict]:
-    """Pure: the rows of `harness.store_traces dump` output, one JSON object per line, cut to `_PARQUET_COLUMNS`."""
-    return [{c: row[c] for c in _PARQUET_COLUMNS} for row in map(json.loads, filter(str.strip, stdout.splitlines()))]
-
-
-_TASK_RECORD_SCRIPT = """import json, sqlite3, sys
-url, *ids = sys.argv[1:]
-sql = "SELECT record_json FROM task_records WHERE run_id = {0} AND phase_id = {0} AND task_id = {0}"
-if url.startswith(("postgres:", "postgresql:")):
-    import psycopg
-    conn, mark = psycopg.connect(url), "%s"
-else:
-    path = url.removeprefix("sqlite:///")
-    conn, mark = sqlite3.connect("file:" + path + "?mode=ro", uri=True), "?"
-row = conn.execute(sql.format(mark), ids).fetchone()
-if row:
-    print(row[0] if isinstance(row[0], str) else json.dumps(row[0]))
-"""
-
-
-def _task_record_argv(python: str, url: str, run_id: str, phase_id: str, task_id: str) -> list[str]:
-    """Pure: the argv that prints one task record's `record_json`. The ids are bound parameters, never SQL text."""
-    return [python, "-c", _TASK_RECORD_SCRIPT, url, run_id, phase_id, task_id]
-
-
-def _task_record_from(stdout: str) -> dict | None:
-    """Pure: the record dict in the output, None when it is empty, not JSON, or not a JSON object."""
-    try:
-        record = json.loads(stdout.strip())
-    except ValueError:
-        return None
-    return record if isinstance(record, dict) else None
-
-
 def task_record(runs_dir: Path, run_id: str, phase_id: str, task_id: str) -> dict | None:
-    """Edge: one task's record from the store through the harness python, None when it cannot say (caller falls back to the file)."""
-    python = _harness_python()
-    if python is None:
-        return None
-    argv = _task_record_argv(str(python), _store_url(Path(runs_dir)), run_id, phase_id, task_id)
-    try:
-        done = subprocess.run(argv, capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return _task_record_from(done.stdout) if done.returncode == 0 else None
-
-
-_TASK_RECORD_PHASES_SCRIPT = """import sqlite3, sys
-url, *ids = sys.argv[1:]
-sql = "SELECT DISTINCT phase_id FROM task_records WHERE run_id = {0} AND task_id = {0} ORDER BY phase_id"
-if url.startswith(("postgres:", "postgresql:")):
-    import psycopg
-    conn, mark = psycopg.connect(url), "%s"
-else:
-    path = url.removeprefix("sqlite:///")
-    conn, mark = sqlite3.connect("file:" + path + "?mode=ro", uri=True), "?"
-for row in conn.execute(sql.format(mark), ids).fetchall():
-    print(row[0])
-"""
-
-
-def _task_record_phases_argv(python: str, url: str, run_id: str, task_id: str) -> list[str]:
-    """Pure: the argv that prints each phase holding a record for the run and task. The ids are bound parameters."""
-    return [python, "-c", _TASK_RECORD_PHASES_SCRIPT, url, run_id, task_id]
-
-
-def _phases_from(stdout: str) -> list[str]:
-    """Pure: the non-blank lines of the output, in order."""
-    return [line.strip() for line in stdout.splitlines() if line.strip()]
+    """Edge: one task's record from the store, None when it has none or cannot say (the caller falls back to the file)."""
+    found = _api().task_record(_store_url(Path(runs_dir)), run_id, phase_id, task_id)
+    return found if isinstance(found, dict) else None
 
 
 def task_record_phases(runs_dir: Path, run_id: str, task: str) -> list[str]:
     """Edge: the distinct phases whose `task_records` rows name this run and task; empty with no store or on a failed read."""
-    python = _harness_python()
-    if python is None:
-        return []
-    argv = _task_record_phases_argv(str(python), _store_url(Path(runs_dir)), run_id, task)
-    try:
-        done = subprocess.run(argv, capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.SubprocessError):
-        return []
-    return _phases_from(done.stdout) if done.returncode == 0 else []
-
-
-_RUN_TASK_IDS_SCRIPT = """import sqlite3, sys
-url, *ids = sys.argv[1:]
-sql = "SELECT DISTINCT task_id FROM task_records WHERE run_id = {0} ORDER BY task_id"
-if url.startswith(("postgres:", "postgresql:")):
-    import psycopg
-    conn, mark = psycopg.connect(url), "%s"
-else:
-    path = url.removeprefix("sqlite:///")
-    conn, mark = sqlite3.connect("file:" + path + "?mode=ro", uri=True), "?"
-for row in conn.execute(sql.format(mark), ids).fetchall():
-    print(row[0])
-"""
-
-
-def _run_task_ids_argv(python: str, url: str, run_id: str) -> list[str]:
-    """Pure: the argv that prints each task id holding a record for the run. The run id is a bound parameter."""
-    return [python, "-c", _RUN_TASK_IDS_SCRIPT, url, run_id]
+    found = _api().task_record_phases(_store_url(Path(runs_dir)), run_id, task)
+    return found if isinstance(found, list) else []
 
 
 def run_task_ids(runs_dir: Path, run_id: str) -> list[str]:
     """Edge: the distinct task ids whose `task_records` rows name this run; empty with no store or on a failed read."""
-    python = _harness_python()
-    if python is None:
-        return []
-    argv = _run_task_ids_argv(str(python), _store_url(Path(runs_dir)), run_id)
-    try:
-        done = subprocess.run(argv, capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.SubprocessError):
-        return []
-    return _phases_from(done.stdout) if done.returncode == 0 else []
+    found = _api().run_task_ids(_store_url(Path(runs_dir)), run_id)
+    return found if isinstance(found, list) else []
 
 
-def _resolve_id_argv(python: str, url: str, token: str) -> list[str]:
-    """Pure: the argv that resolves a short run id or an old run key to its run record, printed as one JSON object."""
-    return [python, "-m", "harness.store_ids", "resolve", url, token, "--json"]
-
-
-def resolve_id(runs_dir: Path, token: str) -> dict | None:
-    """Edge: the run record `harness.store_ids resolve` names for `token` -- a short run id (`I412-7`) or an old
-    run key both resolve to the same record. None when the harness, the call, or the output cannot say."""
-    python = _harness_python()
-    if python is None:
-        return None
-    argv = _resolve_id_argv(str(python), _store_url(Path(runs_dir)), token)
-    try:
-        done = subprocess.run(argv, capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return _task_record_from(done.stdout) if done.returncode == 0 else None
-
-
-def _initiative_ids_argv(python: str, url: str) -> list[str]:
-    """Pure: the argv that lists every initiative's short id as a JSON array of `{"initiative", "short_id"}` rows.
-    Unmeasured: the `initiatives` subcommand name and this reply shape are assumed, not read from harness.store_ids."""
-    return [python, "-m", "harness.store_ids", "initiatives", url, "--json"]
-
-
-def _short_ids_from(stdout: str) -> dict[str, str]:
-    """Pure: slug to short id from the reply rows. Empty when the output is not a JSON array; rows missing either field are skipped."""
-    try:
-        rows = json.loads(stdout.strip())
-    except ValueError:
-        return {}
-    if not isinstance(rows, list):
-        return {}
-    return {
-        row["initiative"]: row["short_id"]
-        for row in rows
-        if isinstance(row, dict) and row.get("initiative") and row.get("short_id")
-    }
+def resolve_run_id(runs_dir: Path, token: str) -> str | None:
+    """Edge: the run id a short run id (`I412-7`) or an old run key names; None when it names no run or the store
+    cannot say."""
+    found = _api().resolve_token(_store_url(Path(runs_dir)), token)
+    return found.key if isinstance(found, _api().Resolved) and found.kind == "run" else None
 
 
 def initiative_short_ids(runs_dir: Path) -> dict[str, str]:
-    """Edge: slug to short id for every initiative that has one. Empty when the harness, the call, or the output cannot say."""
-    python = _harness_python()
-    if python is None:
-        return {}
-    argv = _initiative_ids_argv(str(python), _store_url(Path(runs_dir)))
-    try:
-        done = subprocess.run(argv, capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.SubprocessError):
-        return {}
-    return _short_ids_from(done.stdout) if done.returncode == 0 else {}
+    """Edge: slug to short id for every initiative that has one. Empty when the store cannot say."""
+    found = _api().initiative_short_ids(_store_url(Path(runs_dir)))
+    return found if isinstance(found, dict) else {}
 
 
 def resolve_initiative(runs_dir: Path, token: str) -> str:
@@ -1208,101 +1063,29 @@ def resolve_initiative(runs_dir: Path, token: str) -> str:
     return by_short_id.get(token, token)
 
 
-_WORK_ITEMS_COLUMNS = ("initiative", "task_id", "phase", "state", "needs_json", "updated_at", "updated_by")
-
-_WORK_ITEMS_SCRIPT = """import json, sqlite3, sys
-url, *want = sys.argv[1:]
-sql = "SELECT {columns} FROM work_items" + (" WHERE initiative = {0}" if want else "")
-if url.startswith(("postgres:", "postgresql:")):
-    import psycopg
-    conn, mark = psycopg.connect(url), "%s"
-else:
-    path = url.removeprefix("sqlite:///")
-    conn, mark = sqlite3.connect("file:" + path + "?mode=ro", uri=True), "?"
-cur = conn.execute(sql.format(mark), want)
-names = [d[0] for d in cur.description]
-for row in cur.fetchall():
-    print(json.dumps(dict(zip(names, row)), default=str))
-""".replace("{columns}", ", ".join(_WORK_ITEMS_COLUMNS))
-
-
-def _work_items_argv(python: str, url: str, initiative: str | None) -> list[str]:
-    """Pure: the argv that prints `work_items` rows as JSON lines. The initiative is a bound argument, never SQL text."""
-    return [python, "-c", _WORK_ITEMS_SCRIPT, url, *([] if initiative is None else [initiative])]
-
-
-def _work_items_from(stdout: str) -> list[dict]:
-    """Pure: the JSON-object lines of the output whole, so extra columns pass through. Anything else is skipped."""
-    parsed = map(_task_record_from, stdout.splitlines())
-    return [row for row in parsed if row is not None]
-
-
 def task_state(rows: list[dict], initiative: str, task: str) -> str | None:
     """Pure: the `state` of the row for this initiative and task, or None when no row matches."""
     return next((row.get("state") for row in rows if row.get("initiative") == initiative and row.get("task_id") == task), None)
-
-
-_STAMP_SCRIPT = """import hashlib, json, sqlite3, sys
-url, *want = sys.argv[1:]
-if url.startswith(("postgres:", "postgresql:")):
-    import psycopg
-    conn, mark = psycopg.connect(url), "%s"
-else:
-    path = url.removeprefix("sqlite:///")
-    conn, mark = sqlite3.connect("file:" + path + "?mode=ro", uri=True), "?"
-where = (" WHERE " + " AND ".join(name + " = " + mark for name in @NAMES@)) if @NAMES@ else ""
-cur = conn.execute("SELECT * FROM work_items" + where + " ORDER BY initiative, task_id", want)
-upd = [d[0] for d in cur.description].index("updated_at")
-rows = cur.fetchall()
-newest = max((str(r[upd]) for r in rows if r[upd] is not None), default=None)
-print(json.dumps([len(rows), newest, hashlib.sha256(repr(rows).encode()).hexdigest()]))
-"""
 
 
 class _ReadFailed(Exception):
     """A full read produced no rows because the reader failed, so the cache must not store it."""
 
 
-def _stamp_argv(python: str, url: str, filters: Sequence[tuple[str, str | None]]) -> list[str]:
-    """Pure: the argv that prints `[row count, greatest updated_at, sha256 of every column of every row]` as one JSON line.
-
-    The digest covers all columns because the mirror and the queue upsert keep an older updated_at on a changed row,
-    so count and greatest updated_at alone miss ordinary writes. Filter columns are fixed names; values are bound arguments."""
-    narrow = [(column, value) for column, value in filters if value is not None]
-    script = _STAMP_SCRIPT.replace("@NAMES@", repr(tuple(column for column, _ in narrow)))
-    return [python, "-c", script, url, *(value for _, value in narrow)]
-
-
-def _work_items_stamp_argv(python: str, url: str, initiative: str | None) -> list[str]:
-    """Pure: the stamp argv for the table, or for one initiative."""
-    return _stamp_argv(python, url, [("initiative", initiative)])
-
-
-def _stamp_from(stdout: str) -> Stamp | None:
-    """Pure: (row count, crc32 of the greatest updated_at and row digest) from the probe's JSON line. None unless it is a list led by an int count."""
-    try:
-        parsed = json.loads(stdout)
-    except ValueError:
+def _stamp(found: store_api.TableStamp | store_api.Failed | store_api.NotAvailable) -> Stamp | None:
+    """Pure: the cache stamp of a probe, (row count, crc32 of the greatest updated_at and the row digest); None when
+    the store could not say. The digest covers every column: a queue upsert keeps an older updated_at on a changed row."""
+    if not isinstance(found, _api().TableStamp):
         return None
-    if not isinstance(parsed, list) or not parsed or isinstance(parsed[0], bool) or not isinstance(parsed[0], int):
-        return None
-    return (parsed[0], zlib.crc32(json.dumps(parsed[1:]).encode()))
+    return (found.count, zlib.crc32(json.dumps([found.newest, found.digest]).encode()))
 
 
-def _stamp_of(done: Any) -> Stamp | None:
-    """Pure: the stamp of a finished probe, None when it did not run, failed or printed nothing usable."""
-    return None if done is None or done.returncode != 0 else _stamp_from(done.stdout)
+def _rows(found: Sequence[Mapping[str, Any]] | store_api.Failed | store_api.NotAvailable) -> list[dict] | None:
+    """Pure: the rows as plain dicts, None when the store could not say."""
+    return [dict(row) for row in found] if isinstance(found, list) else None
 
 
-def _run_argv(argv: list[str]) -> Any | None:
-    """Edge: the finished process for argv, None when it cannot be launched or times out."""
-    try:
-        return subprocess.run(argv, capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.SubprocessError):
-        return None
-
-
-def _versioned(cache: StampCache, key: Any, probe: Any, read_rows: Callable[[], list[dict] | None]) -> list[dict]:
+def _versioned(cache: StampCache, key: Any, stamp: Stamp | None, read_rows: Callable[[], list[dict] | None]) -> list[dict]:
     """Edge: rows from `cache` keyed by the probe's stamp, as copies. A failed full read is [] and is never stored."""
 
     def full() -> list[dict]:
@@ -1312,28 +1095,24 @@ def _versioned(cache: StampCache, key: Any, probe: Any, read_rows: Callable[[], 
         return rows
 
     try:
-        return copy.deepcopy(cache.get(key, _stamp_of(probe), full))
+        return copy.deepcopy(cache.get(key, stamp, full))
     except _ReadFailed:
         return []
 
 
 def work_items(runs_dir: Path, initiative: str | None = None, cache: StampCache | None = None) -> list[dict]:
-    """Edge: `work_items` rows through the harness python, optionally for one initiative.
+    """Edge: `work_items` rows from the store, optionally for one initiative.
 
-    Empty when the table, the harness or the store is missing or unreadable, so an old store reads as an empty one.
+    Empty when the table or the store is missing or unreadable, so an old store reads as an empty one.
     With a cache, a probe of the row count, greatest updated_at and a digest of every row decides whether the stored rows still stand."""
-    python = _harness_python()
-    if python is None:
-        return []
     url = _store_url(Path(runs_dir))
 
     def read_rows() -> list[dict] | None:
-        done = _run_argv(_work_items_argv(str(python), url, initiative))
-        return _work_items_from(done.stdout) if done is not None and done.returncode == 0 else None
+        return _rows(_api().work_item_rows(url, initiative))
 
     if cache is None:
         return read_rows() or []
-    probe = _run_argv(_work_items_stamp_argv(str(python), url, initiative))
+    probe = _stamp(_api().work_items_stamp(url, [("initiative", initiative)]))
     return _versioned(cache, ("work_items", str(runs_dir), initiative), probe, read_rows)
 
 
@@ -1417,188 +1196,83 @@ def landed_tasks(runs_dir: Path, since: str, until: str) -> Landed:
 
 _QUEUE_COLUMNS = ("kind", "initiative", "task_id", "phase", "state", "needs", "title", "surfaces", "body", "extra")
 _CLAIM_KEYS = ("holder", "epoch", "expires_at")
-_HELD_EXIT = 4
 HELD = "held"
 UNAVAILABLE = "unavailable"
 
-# Assumed harness subcommands, for graphs to match. Each is `<python> -m harness.store_queue <verb> <store-url> ...`:
-#   read URL [--initiative I] [--kind K]       one JSON object per row per line, extra columns allowed
-#   upsert URL ROW_JSON                        one row keyed (initiative, task_id); exit 0 when written, safe to repeat
-#   claim URL INITIATIVE TASK HOLDER TTL_S NOW one conditional row update that bumps epoch; exit 0 prints the
-#                                              claim JSON {holder, epoch, expires_at}; exit 4 means a live claim by
-#                                              another holder (unknown: graphs must confirm 4 for held)
-#   release URL INITIATIVE TASK HOLDER         clears the claim only when HOLDER matches; exit 0 when cleared
-# Any other non-zero exit, or a harness that is absent, reads as unavailable.
+
+def _now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def _queue_read_argv(python: str, url: str, initiative: str | None, kind: str | None) -> list[str]:
-    """Pure: the argv that prints queue rows as JSON lines, narrowed by initiative and kind when given."""
-    narrow = [*([] if initiative is None else ["--initiative", initiative]), *([] if kind is None else ["--kind", kind])]
-    return [python, "-m", "harness.store_queue", "read", url, *narrow]
-
-
-def _queue_upsert_argv(python: str, url: str, row: Mapping[str, Any]) -> list[str]:
-    """Pure: the argv that upserts one row. The row is one JSON argument with sorted keys, so equal rows give equal argv."""
-    return [python, "-m", "harness.store_queue", "upsert", url, json.dumps(row, sort_keys=True, default=str)]
-
-
-def _queue_claim_argv(python: str, url: str, initiative: str, task_id: str, holder: str, ttl_s: float, now: str) -> list[str]:
-    """Pure: the argv that claims a row. `now` is the caller's clock reading, so the store never consults its own."""
-    return [python, "-m", "harness.store_queue", "claim", url, initiative, task_id, holder, str(ttl_s), now]
-
-
-def _queue_release_argv(python: str, url: str, initiative: str, task_id: str, holder: str) -> list[str]:
-    """Pure: the argv that clears a row's claim when `holder` holds it."""
-    return [python, "-m", "harness.store_queue", "release", url, initiative, task_id, holder]
-
-
-def _queue_rows_from(stdout: str) -> list[dict]:
-    """Pure: the JSON-object lines of the output, each with every queue and claim key present (None when absent) and extras kept."""
+def _queue_rows(found: Sequence[Mapping[str, Any]] | store_api.Failed | store_api.NotAvailable) -> list[dict] | None:
+    """Pure: each row with every queue and claim key present (None when absent) and extras kept; None when the store
+    could not say."""
     blank = dict.fromkeys((*_QUEUE_COLUMNS, *_CLAIM_KEYS))
-    return [{**blank, **row} for row in _work_items_from(stdout)]
-
-
-def _claim_from(stdout: str) -> dict | None:
-    """Pure: `{holder, epoch, expires_at}` from a JSON object naming a holder, else None."""
-    claim = _task_record_from(stdout)
-    return None if claim is None or claim.get("holder") is None else {key: claim.get(key) for key in _CLAIM_KEYS}
-
-
-def _claim_reason(returncode: int) -> str:
-    """Pure: why a non-zero claim exit failed, `HELD` for the assumed held code, else `UNAVAILABLE`."""
-    return HELD if returncode == _HELD_EXIT else UNAVAILABLE
-
-
-def _queue_run(runs_dir: Path, build: Any) -> Any | None:
-    """Edge: run the argv `build(python, url)` through the harness python; None when it cannot run. Never raises."""
-    python = _harness_python()
-    if python is None:
-        return None
-    try:
-        argv = build(str(python), _store_url(Path(runs_dir)))
-        return subprocess.run(argv, capture_output=True, text=True, timeout=60)
-    except Exception:  # an unreadable profile or store must read as unavailable, not crash the caller
-        return None
-
-
-def _queue_stamp_argv(python: str, url: str, initiative: str | None, kind: str | None) -> list[str]:
-    """Pure: the stamp argv narrowed by initiative and kind when given. Claim and release change holder, epoch and expires_at without touching updated_at; the digest covers them."""
-    return _stamp_argv(python, url, [("initiative", initiative), ("kind", kind)])
+    rows = _rows(found)
+    return None if rows is None else [{**blank, **row} for row in rows]
 
 
 def read_queue(runs_dir: Path, initiative: str | None = None, kind: str | None = None, cache: StampCache | None = None) -> list[dict]:
-    """Edge: queue rows from the store, optionally for one initiative and kind. Empty when the harness, table or store is unavailable.
+    """Edge: queue rows from the store, optionally for one initiative and kind. Empty when the table or store is unavailable.
 
     With a cache, a probe of the table's version decides whether the stored rows still stand."""
+    url = _store_url(Path(runs_dir))
 
     def read_rows() -> list[dict] | None:
-        done = _queue_run(runs_dir, lambda python, url: _queue_read_argv(python, url, initiative, kind))
-        return _queue_rows_from(done.stdout) if done is not None and done.returncode == 0 else None
+        return _queue_rows(_api().queue_rows(url, initiative, kind))
 
     if cache is None:
         return read_rows() or []
-    probe = _queue_run(runs_dir, lambda python, url: _queue_stamp_argv(python, url, initiative, kind))
+    probe = _stamp(_api().work_items_stamp(url, [("initiative", initiative), ("kind", kind)]))
     return _versioned(cache, ("queue", str(runs_dir), initiative, kind), probe, read_rows)
 
 
 def queue_stamp(runs_dir: Path) -> Stamp | None:
     """Edge: the version of the whole queue (row count and a digest of every row), None when the store cannot say.
     Two equal stamps mean no row changed in between."""
-    return _stamp_of(_queue_run(runs_dir, lambda python, url: _queue_stamp_argv(python, url, None, None)))
+    return _stamp(_api().work_items_stamp(_store_url(Path(runs_dir)), []))
 
 
 def upsert_row(runs_dir: Path, row: Mapping[str, Any]) -> bool:
     """Edge: True when the store took the row, False when it could not."""
-    done = _queue_run(runs_dir, lambda python, url: _queue_upsert_argv(python, url, row))
-    return done is not None and done.returncode == 0
+    return upsert_row_detail(runs_dir, row) == ""
 
 
 def upsert_row_detail(runs_dir: Path, row: Mapping[str, Any]) -> str:
-    """Edge: "" only when the store took the row; otherwise a non-empty reason: the command's last
-    line of stderr, `exit N` when it failed silently, or "harness python not found"."""
-    done = _queue_run(runs_dir, lambda python, url: _queue_upsert_argv(python, url, row))
-    if done is None:
-        return "harness python not found"
-    if done.returncode == 0:
-        return ""
-    lines = done.stderr.strip().splitlines()
-    return lines[-1] if lines else f"exit {done.returncode}"
+    """Edge: "" only when the store took the row (or already held it); otherwise a non-empty reason."""
+    done = _api().upsert_queue_row(_store_url(Path(runs_dir)), dict(row), _now())
+    if isinstance(done, _api().Failed):
+        return done.detail or f"exit {done.code}"
+    if isinstance(done, _api().NotAvailable):
+        return done.reason or "the store is not available"
+    return ""
 
 
 def release_row(runs_dir: Path, initiative: str, task_id: str, holder: str) -> bool:
-    """Edge: True when the claim was cleared, False when `holder` did not hold it or the store could not say."""
-    done = _queue_run(runs_dir, lambda python, url: _queue_release_argv(python, url, initiative, task_id, holder))
-    return done is not None and done.returncode == 0
-
-
-# The export's own table, apart from the harness-owned work_items: one row per (initiative, task_id) holding the sha256
-# of the file text the export last wrote. `CREATE TABLE IF NOT EXISTS` makes it additive and safe to rerun, and a row
-# with no entry reads as no hash. Run through the harness python, like every other queue write.
-_EXPORT_HASH_SCRIPT = """import json, os, sqlite3, sys
-url, verb, *row = sys.argv[1:]
-if url.startswith(("postgres:", "postgresql:")):
-    import psycopg
-    conn, mark = psycopg.connect(url), "%s"
-else:
-    path = url.removeprefix("sqlite:///")
-    if not os.path.exists(path):
-        sys.exit(3)
-    conn, mark = sqlite3.connect(path), "?"
-conn.execute("CREATE TABLE IF NOT EXISTS export_hashes (initiative TEXT NOT NULL, task_id TEXT NOT NULL, sha256 TEXT NOT NULL, PRIMARY KEY (initiative, task_id))")
-if verb == "set":
-    conn.execute(
-        "INSERT INTO export_hashes (initiative, task_id, sha256) VALUES ({0}, {0}, {0}) "
-        "ON CONFLICT (initiative, task_id) DO UPDATE SET sha256 = excluded.sha256".format(mark),
-        row,
-    )
-else:
-    for found in conn.execute("SELECT initiative, task_id, sha256 FROM export_hashes").fetchall():
-        print(json.dumps(list(found)))
-conn.commit()
-"""
-
-
-def _export_hash_argv(python: str, url: str, verb: str, row: Sequence[str] = ()) -> list[str]:
-    """Pure: the argv that lists ("get") or sets ("set", with `row` = initiative, task_id, sha256) export hashes. Values are bound arguments, never SQL text."""
-    return [python, "-c", _EXPORT_HASH_SCRIPT, url, verb, *row]
-
-
-def _export_hashes_from(stdout: str) -> dict[tuple[str, str], str]:
-    """Pure: (initiative, task_id) to sha256 from the getter's JSON-array lines. Anything else is skipped."""
-    parsed = (_hash_line_from(line) for line in stdout.splitlines())
-    return {(r[0], r[1]): r[2] for r in parsed if r is not None}
-
-
-def _hash_line_from(line: str) -> list[str] | None:
-    """Pure: the three-string JSON array on this line, else None."""
-    try:
-        found = json.loads(line)
-    except ValueError:
-        return None
-    return found if isinstance(found, list) and len(found) == 3 and all(isinstance(v, str) for v in found) else None
+    """Edge: True when the store answered; a release by a holder that did not hold the row changes nothing and is
+    still True, as the harness CLI exits 0 either way. False only when the store could not say."""
+    done = _api().release_queue_row(_store_url(Path(runs_dir)), initiative, task_id, holder, _now())
+    return isinstance(done, _api().Released)
 
 
 def export_hashes(runs_dir: Path) -> dict[tuple[str, str], str]:
     """Edge: the sha256 of the file the export last wrote, by (initiative, task_id). A row the export never wrote is absent; empty when the store cannot say."""
-    done = _queue_run(runs_dir, lambda python, url: _export_hash_argv(python, url, "get"))
-    return _export_hashes_from(done.stdout) if done is not None and done.returncode == 0 else {}
+    found = _api().export_hashes(_store_url(Path(runs_dir)), _now())
+    return found if isinstance(found, dict) else {}
 
 
 def set_export_hash(runs_dir: Path, initiative: str, task_id: str, digest: str) -> bool:
     """Edge: True when the store recorded `digest` for this row, False when it could not."""
-    done = _queue_run(runs_dir, lambda python, url: _export_hash_argv(python, url, "set", (initiative, task_id, digest)))
-    return done is not None and done.returncode == 0
+    done = _api().set_export_hash(_store_url(Path(runs_dir)), initiative, task_id, digest, _now())
+    return not isinstance(done, _api().Failed | _api().NotAvailable)
 
 
 def claim_outcome(runs_dir: Path, initiative: str, task_id: str, holder: str, ttl_s: float, now: str) -> tuple[dict | None, str | None]:
     """Edge: `(claim, None)` when taken, else `(None, HELD)` or `(None, UNAVAILABLE)` so a caller can tell them apart."""
-    done = _queue_run(runs_dir, lambda python, url: _queue_claim_argv(python, url, initiative, task_id, holder, ttl_s, now))
-    if done is None:
-        return None, UNAVAILABLE
-    if done.returncode != 0:
-        return None, _claim_reason(done.returncode)
-    claim = _claim_from(done.stdout)
-    return (claim, None) if claim is not None else (None, UNAVAILABLE)
+    done = _api().claim_queue_row(_store_url(Path(runs_dir)), initiative, task_id, holder, int(ttl_s), now)
+    if isinstance(done, _api().Claimed):
+        return dict(done.claim), None
+    return None, HELD if isinstance(done, _api().Held) else UNAVAILABLE
 
 
 def claim_row(runs_dir: Path, initiative: str, task_id: str, holder: str, ttl_s: float, now: str) -> dict | None:
@@ -1662,69 +1336,15 @@ def _filesystem(pafs: Any, root: TracesRoot) -> tuple[Any, str]:
     return pafs.LocalFileSystem(), str(Path(root.url).absolute())
 
 
-def _dump_failure(returncode: int, stderr: str) -> str:
-    """Pure: the exit code and the last stderr line of a failed dump, for the TracesUnavailable message."""
-    last = next((line.strip() for line in reversed(stderr.splitlines()) if line.strip()), "")
-    return f"exit {returncode}: {last}" if last else f"exit {returncode}"
-
-
-@functools.lru_cache(maxsize=8)
-def _harness_dump(python: str, url: str, run_id: str) -> tuple[dict, ...] | str:
-    """Edge, cached per process: the run's dumped rows, else the failure as text, so a broken harness runs once.
-
-    Exit 3 raises LookupError, which lru_cache does not store: a live run's file can appear later."""
-    argv = [python, "-m", "harness.store_traces", "dump", url, run_id]
-    try:
-        done = subprocess.run(argv, capture_output=True, text=True, timeout=60)
-    except subprocess.TimeoutExpired:
-        return "timed out after 60s"
-    except (OSError, subprocess.SubprocessError) as exc:
-        return f"{type(exc).__name__}: {exc}"
-    if done.returncode == 3:
-        raise LookupError(run_id)
-    if done.returncode != 0:
-        return _dump_failure(done.returncode, done.stderr)
-    try:
-        return tuple(_dump_rows(done.stdout))
-    except (ValueError, KeyError, TypeError) as exc:
-        return f"unreadable output: {type(exc).__name__}: {exc}"
-
-
-def _harness_parquet_rows(root: TracesRoot, run_id: str, missing: TracesUnavailable) -> list[dict] | None:
-    """Edge: the run's rows through the harness `store_traces dump`, None on exit 3, else `missing` re-raised."""
-    python = _harness_python()
-    if python is None:
-        raise missing
-    try:
-        dumped = _harness_dump(str(python), root.url, run_id)
-    except LookupError:
-        return None
-    if isinstance(dumped, str):
-        raise TracesUnavailable(f"{missing} (the harness could not read it either): {dumped}") from missing
-    return list(dumped)
-
-
-def _harness_can_read(python: Path) -> bool:
-    """Edge: whether the harness python imports pyarrow and `harness.store_traces`, the two things a dump needs."""
-    argv = [str(python), "-c", "import pyarrow.parquet, harness.store_traces"]
-    try:
-        return subprocess.run(argv, capture_output=True, text=True, timeout=60).returncode == 0
-    except (OSError, subprocess.SubprocessError):
-        return False
-
-
 def _parquet_rows(root: TracesRoot, run_id: str) -> list[dict] | None:
     """Edge: the rows of the run's `YYYY/MM/DD/<run_id>.parquet` files, None when it has none.
 
     A local root is probed with a glob first, so a missing pyarrow only matters once a file exists. A remote root
-    cannot be probed without pyarrow. Without pyarrow the rows come through the harness when it has a python,
-    else TracesUnavailable is raised."""
+    cannot be probed without pyarrow. Without pyarrow TracesUnavailable is raised: the harness is this same package,
+    so no other interpreter could read them either."""
     name = f"{run_id}.parquet"
     if root.remote:
-        try:
-            pafs, pq = _import_pyarrow()
-        except TracesUnavailable as missing:
-            return _harness_parquet_rows(root, run_id, missing)
+        pafs, pq = _import_pyarrow()
         fs, base = _filesystem(pafs, root)
         selector = pafs.FileSelector(base, recursive=True, allow_not_found=True)
         found = sorted(i.path for i in fs.get_file_info(selector) if i.type == pafs.FileType.File and i.base_name == name)
@@ -1732,10 +1352,7 @@ def _parquet_rows(root: TracesRoot, run_id: str) -> list[dict] | None:
         found = sorted(str(p) for p in Path(root.url).absolute().glob(f"*/*/*/{name}"))
         if not found:
             return None
-        try:
-            pafs, pq = _import_pyarrow()
-        except TracesUnavailable as missing:
-            return _harness_parquet_rows(root, run_id, missing)
+        pafs, pq = _import_pyarrow()
         fs, _ = _filesystem(pafs, root)
     if not found:
         return None
@@ -1825,17 +1442,16 @@ def _parquet_rows_or_fault(root: TracesRoot, run_id: str) -> tuple[tuple[dict, .
 
 @dataclass(frozen=True)
 class ParquetCheck:
-    """`readable` with the `reason`: `ok`, `through the harness`, `pyarrow missing`, `root unreachable`, or the
+    """`readable` with the `reason`: `ok`, `pyarrow missing`, `root unreachable`, or the
     object_store error text, which names the literal secret or the unset env var."""
 
     readable: bool
     reason: str
 
 
-def parquet_readable(traces_root: TracesRoot, harness: Path | None) -> ParquetCheck:
+def parquet_readable(traces_root: TracesRoot) -> ParquetCheck:
     """Edge: whether Parquet traces under `traces_root` can be read, for the doctor. Opens no trace file.
 
-    `harness` is the diagnosed profile's harness python; without pyarrow it counts only when it imports what a dump needs.
     A bad object_store block is reported first, by its own message, since no filesystem can be built from it."""
     try:
         _block_options(traces_root)
@@ -1844,8 +1460,7 @@ def parquet_readable(traces_root: TracesRoot, harness: Path | None) -> ParquetCh
     try:
         pafs, _ = _import_pyarrow()
     except TracesUnavailable:
-        readable = harness is not None and _harness_can_read(harness)
-        return ParquetCheck(True, "through the harness") if readable else ParquetCheck(False, "pyarrow missing")
+        return ParquetCheck(False, "pyarrow missing")
     import pyarrow
 
     try:

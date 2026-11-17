@@ -1,14 +1,12 @@
 """`cox runs recover` records an escalated task as merged into its phase branch, the way the epic records its own merges.
 
 The decisions are pure and tested on example values. The command runs end to end on a real git repository in a temp
-dir and a throwaway sqlite store, reached only through its real API: the routing profile names a harness directory
-whose python is this interpreter, so the store commands run for real and nothing in the command path is replaced.
+dir and a throwaway sqlite store, reached only through its real API, in process: nothing in the command path is replaced.
 """
 
 import json
 import shlex
 import subprocess as sp
-import sys
 
 import pytest
 
@@ -65,18 +63,8 @@ def _git(repo, *args):
 
 
 @pytest.fixture
-def ws(tmp_path, monkeypatch):
-    """A workspace with a real store: the routing profile's harness directory runs this interpreter."""
-    python = tmp_path / "harness" / ".venv" / "bin" / "python"
-    python.parent.mkdir(parents=True)
-    python.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
-    python.chmod(0o755)
-    profile = tmp_path / "profile.yaml"
-    profile.write_text(f"harness_dir: {tmp_path / 'harness'}\n", encoding="utf-8")
-    monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(profile))
-    # conftest points every test's store_cli at no harness; this one has its own throwaway store, so the real
-    # resolver comes back, and it finds the harness the profile names.
-    monkeypatch.setattr(store_cli, "_harness_python", run_store._harness_python)
+def ws(tmp_path):
+    """A workspace with a real store, in process, under its own runs directory."""
     (tmp_path / "runs").mkdir()
     open_store(run_store._store_url(tmp_path / "runs"), "2026-01-01T00:00:00Z").close()
     return tmp_path

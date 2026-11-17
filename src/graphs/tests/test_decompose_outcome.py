@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -273,7 +270,7 @@ def test_a_task_file_with_extra_frontmatter_reaches_the_store_with_it(store, tmp
 
 
 def test_the_real_route_file_writer_and_reader_agree_on_a_file_backed_store(tmp_path, monkeypatch, capsys) -> None:
-    """No stand-ins: `route.write_filed_item` and `run_store.read_queue` run their harness subprocess against one sqlite file."""
+    """No stand-ins: `route.write_filed_item` and `run_store.read_queue` reach one sqlite file through the store API."""
     from agent_tools import run_store
     from harness.store_dialect import default_url
     from harness.store_migrate import open_store
@@ -282,9 +279,6 @@ def test_the_real_route_file_writer_and_reader_agree_on_a_file_backed_store(tmp_
     runs_dir.mkdir()
     url = default_url(runs_dir)
     open_store(url, NOW).close()
-    graphs_root = Path(cli.__file__).resolve().parent.parent
-    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([str(graphs_root), str(graphs_root.parent / "cartridges")]))
-    monkeypatch.setattr(run_store, "_harness_python", lambda: Path(sys.executable))
     monkeypatch.setattr(run_store, "_store_url", lambda _runs_dir: url)
     expected = expected_for("t1", "t2", "t3")
     for task, rel in expected.items():

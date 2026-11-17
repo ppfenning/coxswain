@@ -2330,28 +2330,14 @@ def test_pull_plan_routes_a_pr_to_a_review_and_an_issue_to_an_intake_file():
     assert (len(files), reviews, refusals) == (1, ["l2"], [])
 
 
-def test_pull_plan_with_ids_sequence_writes_the_allocated_id(monkeypatch):
-    monkeypatch.setattr(route, "allocate_intake_id", lambda: "I7")
-    files, reviews, refusals = route.pull_plan(
-        [_cand("l1")], frozenset(), {"a/b": "tools"}, date="2026-09-24", source="github", ids="sequence"
-    )
-    assert refusals == []
-    assert set(files[0]) == {"intake/I7.md"}
+def test_pull_plan_with_ids_sequence_and_no_allocator_raises():
+    with pytest.raises(ValueError, match="ids: sequence needs an allocator"):
+        route.pull_plan([_cand("l1")], frozenset(), {"a/b": "tools"}, date="2026-09-24", source="github", ids="sequence")
 
 
-def test_parse_allocate_id_returns_the_id_on_a_clean_exit():
-    assert route.parse_allocate_id(0, '{"id": "I7"}') == "I7"
-
-
-def test_parse_allocate_id_raises_naming_the_exit_code_and_output_on_failure():
-    with pytest.raises(ValueError, match=r"id allocation failed \(exit 1\): boom"):
-        route.parse_allocate_id(1, "boom")
-
-
-def test_allocate_intake_id_raises_when_the_harness_python_is_unavailable(monkeypatch):
-    monkeypatch.setattr(route.run_store, "_harness_python", lambda: None)
-    with pytest.raises(ValueError, match="id allocation failed"):
-        route.allocate_intake_id()
+def test_intake_file_with_ids_sequence_and_no_allocator_raises():
+    with pytest.raises(ValueError, match="ids: sequence needs an allocator"):
+        route.intake_file("T", "b", "r", "2026-09-24", ids="sequence")
 
 
 def test_a_one_task_initiatives_task_id_is_never_the_initiatives_own_id():

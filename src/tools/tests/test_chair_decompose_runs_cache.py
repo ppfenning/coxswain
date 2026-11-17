@@ -93,7 +93,6 @@ def store(tmp_path, monkeypatch):
         s.reads["logs"] += self.suffix == ".log"
         return real(self, *args, **kwargs)
 
-    monkeypatch.setattr(mod.run_store, "_harness_python", lambda: tmp_path)
     monkeypatch.setattr(mod, "_store_files", lambda runs_dir: [tmp_path / "cox.db"])
     monkeypatch.setattr(mod, "exit_rows", exit_rows)
     monkeypatch.setattr(mod, "_task_items", task_items)

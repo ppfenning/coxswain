@@ -28,7 +28,7 @@ def order(monkeypatch):
     """Fakes the pause, stop, clear_branches and relaunch edges; the list records which ran."""
     calls: list[str] = []
 
-    def fake_pause(run_id, reason=None):
+    def fake_pause(store_url, run_id, reason=None):
         calls.append("pause")
         return store_cli.Paused(reason=reason)
 

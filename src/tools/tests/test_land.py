@@ -3,7 +3,6 @@ import importlib.metadata
 import json
 import os
 import subprocess as sp
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -23,7 +22,6 @@ pytestmark = pytest.mark.usefixtures("board_store")
 def _store_leases(monkeypatch):
     """The land's state writes go to the test store, through this interpreter. Its leases are granted in memory: a land
     renews one before every step, and each would be a process. A test about a lease replaces these with its own."""
-    monkeypatch.setattr(store_cli, "_harness_python", lambda: Path(sys.executable))
     monkeypatch.setattr(store_cli, "lease_acquire", lambda runs_dir, name, holder, ttl, steal=False: store_cli.LeaseGranted(1, holder))
     monkeypatch.setattr(store_cli, "lease_renew", lambda runs_dir, name, holder, epoch, ttl: store_cli.LeaseGranted(epoch, holder))
     monkeypatch.setattr(store_cli, "lease_release", lambda runs_dir, name, holder, epoch: store_cli.LeaseReleased())

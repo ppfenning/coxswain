@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_tools import chair_exec, chair_facts, cli, route_guard, route_hold, run_store, store_cli
+from agent_tools import chair_exec, chair_facts, cli, route_guard, route_hold, run_store
 from agent_tools.chair_no_progress import (
     DEFAULT_NO_PROGRESS_AFTER,
     hold_reason,
@@ -169,8 +169,6 @@ def ws(tmp_path, monkeypatch):
     profile = tmp_path / "profile.yaml"
     profile.write_text(f"workspace_dir: {tmp_path}\nharness_dir: {tmp_path / 'harness'}\n", encoding="utf-8")
     monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(profile))
-    # conftest points every test's store_cli at no harness; this one owns a throwaway store, so the real resolver comes back.
-    monkeypatch.setattr(store_cli, "_harness_python", run_store._harness_python)
     (tmp_path / "runs").mkdir()
     open_store(run_store._store_url(tmp_path / "runs"), "2026-01-01T00:00:00Z").close()
     (tmp_path / "work" / "demo").mkdir(parents=True)

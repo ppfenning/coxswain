@@ -1,7 +1,4 @@
 import json
-import sqlite3
-import sys
-from pathlib import Path
 
 from agent_tools import cli, remote_fetch, run_store
 from agent_tools.cli import main
@@ -117,21 +114,23 @@ def test_the_real_store_readers_find_the_run_tasks_and_their_done_states(tmp_pat
     monkeypatch.setattr(run_store, "run_task_ids", REAL_RUN_TASK_IDS)
     monkeypatch.setattr(run_store, "task_state_of", REAL_TASK_STATE_OF)
     monkeypatch.setattr(cli, "_initiative_of", REAL_INITIATIVE_OF)
-    db = tmp_path / "cox.db"
-    conn = sqlite3.connect(db)
-    conn.execute("CREATE TABLE task_records (run_id, phase_id, task_id, record_json)")
-    conn.executemany("INSERT INTO task_records VALUES (?, 'p1', ?, '{}')", [(RUN, "a"), (RUN, "b"), ("other-1", "c")])
-    conn.execute("CREATE TABLE work_items (initiative, task_id, phase, state, needs_json, updated_at, updated_by)")
-    conn.executemany("INSERT INTO work_items VALUES ('init', ?, 'p1', ?, '[]', ?, 'me')",
-                     [("a", "done", ENDED), ("b", "done", ENDED), ("c", "approved", ENDED)])
-    conn.commit()
-    conn.close()
+    from harness.store_migrate import open_store
+    from harness.store_write import Store, upsert_work_item
+
+    url = f"sqlite:///{tmp_path / 'cox.db'}"
+    conn = open_store(url, ENDED)
+    try:
+        for run, task in ((RUN, "a"), (RUN, "b"), ("other-1", "c")):
+            Store(conn).record_task_record(run, "p1", task, {}, ENDED)
+        for task, state in (("a", "done"), ("b", "done"), ("c", "approved")):
+            upsert_work_item(conn, "init", task, "p1", state, [], ENDED, "me")
+    finally:
+        conn.close()
     for task in ("a", "b", "c"):
         item = ws / "work" / "init" / "p1" / f"{task}.md"
         item.parent.mkdir(parents=True, exist_ok=True)
         item.write_text("---\nstate: done\n---\n")
-    monkeypatch.setattr(run_store, "_harness_python", lambda: Path(sys.executable))
-    monkeypatch.setattr(run_store, "_store_url", lambda runs_dir: f"sqlite:///{db}")
+    monkeypatch.setattr(run_store, "_store_url", lambda runs_dir: url)
     assert main(["runs", "fetch", RUN, "--profile", str(profile)]) == 0
     assert seen["fetch_run"] == []
     assert capsys.readouterr().out.splitlines() == [LINE]

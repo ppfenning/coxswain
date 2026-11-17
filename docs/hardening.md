@@ -53,6 +53,23 @@ imported a different checkout's `core` and `harness` (seen building #1171, #1173
 **Done when.** No `python -m harness` call remains in `agent_tools`; a test asserts the CLI's choices equal the
 API's enums; a lane check imports only its worktree's code (a test proves it with two checkouts).
 
+**Status.** `harness.store_api` is the typed store API: `*_on` functions over an open connection, which
+`harness.store_cli` wraps, and url-level functions that `agent_tools` calls in process (`store_cli`, `run_store`).
+Its values are frozen dataclasses and TypedDicts; `WorkState` is the one enum and `core.workstore.STATES` must equal
+it. What stays a command line, and why: the next-step hints `cox runs recover --reopen` and the chair's remedies print
+for a person (`-m harness.store_cli set-state`), and `store_switch` copies a store with `-m harness.store_copy`, which
+needs the sqlite double set in its own environment. The chair's trace prune (`-m harness.store_backfill_traces
+prune`) still runs as a child of the profile's harness python: it is file maintenance, not a store row, and moves
+when the chair's housekeeping does.
+
+**One install per machine (item 3).** `cox setup install` installs `coxswain` editable from the install checkout
+(`<home>/installs/coxswain`) into that checkout's `.venv` and as the `coxswain` uv tool, and into nothing else. A
+development venv for another checkout installs from that checkout or not at all; a lane never relies on the venv's
+install, since each suite's `pytest.ini` puts its own tree first and the store is called in process. `cox setup
+doctor` checks both: `install bins` (required) fails when the checkout's venv or the uv tool is editable from anywhere
+else, and `running install` (advisory, so a person running the doctor from a development venv never rolls an upgrade
+back) warns when the interpreter running `cox` is editable from outside the install checkout.
+
 ## H2. Types on the core
 
 **Evidence.** 396 loose dict signatures in the code that plans and performs actions on every project.

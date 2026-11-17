@@ -402,17 +402,16 @@ def test_a_carry_conflict_is_surfaced_as_needs_chair_and_marks_nothing_landed() 
 
 
 def _store_edge(tmp_path, monkeypatch, pr_url: str) -> tuple[list, chair_exec._StoreEdge]:
-    argvs: list = []
+    calls: list = []
 
-    def fake_run(build, run=None):
-        argvs.append(build("py"))
-        return 0, "{}"
+    def fake_mark_landed(runs_dir, run, phase, task, pr, at):
+        calls.append((run, phase, task, pr, at))
+        return chair_exec.store_cli.Landed({})
 
-    monkeypatch.setattr(chair_exec.store_cli, "_run", fake_run)
-    monkeypatch.setattr(chair_exec.store_cli, "_store_url", lambda runs_dir: None)
+    monkeypatch.setattr(chair_exec.store_cli, "mark_landed", fake_mark_landed)
     forge = chair_exec._ForgeEdge(None)
     forge.pr_url = pr_url
-    return argvs, chair_exec._StoreEdge(tmp_path, tmp_path, _carry(), forge, lambda: "2026-10-05T00:00:00+00:00")
+    return calls, chair_exec._StoreEdge(tmp_path, tmp_path, _carry(), forge, lambda: "2026-10-05T00:00:00+00:00")
 
 
 @pytest.mark.parametrize(
@@ -420,19 +419,16 @@ def _store_edge(tmp_path, monkeypatch, pr_url: str) -> tuple[list, chair_exec._S
     [
         (
             "https://github.com/o/r/pull/7",
-            [[
-                "py", "-m", "harness.store_cli", "mark-landed", "run-1", "p1", "t1",
-                "--pr", "https://github.com/o/r/pull/7", "--at", "2026-10-05T00:00:00+00:00",
-            ]],
+            [("run-1", "p1", "t1", "https://github.com/o/r/pull/7", "2026-10-05T00:00:00+00:00")],
         ),
         ("", []),
     ],
     ids=["pr_opened", "no_pr"],
 )
 def test_the_store_edge_stamps_the_pr_url_open_pr_returned_and_writes_nothing_without_one(tmp_path, monkeypatch, pr_url, expected) -> None:
-    argvs, store = _store_edge(tmp_path, monkeypatch, pr_url)
+    calls, store = _store_edge(tmp_path, monkeypatch, pr_url)
     store.mark_landed("t1", "run-1")
-    assert argvs == expected
+    assert calls == expected
 
 
 def test_the_forge_edge_keeps_only_the_url_gh_printed(monkeypatch) -> None:
