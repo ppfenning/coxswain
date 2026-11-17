@@ -7190,7 +7190,7 @@ options:
 </code></pre></div>
 <h2 id="recover">recover</h2>
 <div class="highlight"><pre><span></span><code>usage: cox runs recover [-h] --repo REPO [--runs-dir RUNS_DIR]
-                        [--profile PROFILE] [--dry-run]
+                        [--profile PROFILE] [--dry-run] [--reopen]
                         run_id task_id
 
 positional arguments:
@@ -7203,8 +7203,12 @@ options:
   --runs-dir RUNS_DIR  override: resolve task records here instead of the
                        profile's workspace_dir
   --profile PROFILE
-  --dry-run            print the merge that would be made and exit without
-                       touching anything
+  --dry-run            print the merge and the record that would be made;
+                       writes no branch, row or file, but fetches origin's
+                       default branch first
+  --reopen             put a task an earlier recover closed as done (no merge
+                       commit recorded) back to approved, then record the
+                       merge
 </code></pre></div>
 <h2 id="series">series</h2>
 <div class="highlight"><pre><span></span><code>usage: cox runs series [-h] [--runs-dir RUNS_DIR] [--json] [--append APPEND]
