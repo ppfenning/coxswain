@@ -171,7 +171,8 @@ EXCLUDE_BASELINE = frozenset({
 
 # H9 (docs/hardening.md): a module split out of an excluded one takes its place on the list, and only that: each part
 # named here may be excluded because the code it holds was excluded before the move, never as a net new entry. The old
-# module stays listed only while it still holds unmoved code, and leaves (here and in the baseline) once it passes.
+# module stays on the exclude list only while it still holds code that fails; it stays in the baseline above as the
+# record of where its parts' exclusion came from, and a key that is not in the baseline allows nothing.
 SPLIT_FROM: dict[str, frozenset[str]] = {
     "src/tools/agent_tools/cli.py": frozenset({
         "src/tools/agent_tools/cli_doctor.py",
@@ -183,8 +184,19 @@ SPLIT_FROM: dict[str, frozenset[str]] = {
 
 
 def allowed_excludes(baseline: frozenset[str], split_from: dict[str, frozenset[str]]) -> frozenset[str]:
-    """The baseline, plus each part of a module split out of a baseline module or out of one that has since left it."""
-    return baseline.union(*split_from.values())
+    """Pure. The baseline, plus each part of a module that is itself in the baseline; a split of any other module adds
+    nothing, so a part cannot enter the list through a module that was never excluded."""
+    return baseline.union(*(parts for old, parts in split_from.items() if old in baseline))
+
+
+def test_allowed_excludes_admits_only_the_parts_of_a_baseline_module():
+    split = {"old.py": frozenset({"old_a.py"}), "checked.py": frozenset({"checked_a.py"})}
+    assert allowed_excludes(frozenset({"old.py", "other.py"}), split) == {"old.py", "other.py", "old_a.py"}
+    assert allowed_excludes(frozenset(), split) == frozenset()
+
+
+def test_every_split_comes_from_a_baseline_module():
+    assert sorted(set(SPLIT_FROM) - EXCLUDE_BASELINE) == []
 
 
 def test_the_exclude_list_only_shrinks():

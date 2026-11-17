@@ -9,11 +9,14 @@ keep reading and patching the old module: `install` makes it a facade, so
   that holds the name, so a function moved into a part sees the patch exactly as it did when both lived in one file.
 
 Undoing a write restores each part's own value: the facade remembers, the first time a name is written, what it and
-each part held, and a later write of the facade's original value puts every part's original back.
+each part held, and a later write of the facade's original value puts every part's original back and forgets the
+record. A builtin shadowed on the facade (`print`, `open`) reaches every part, as it reached every function of the one
+file, and its undo unbinds it from the parts that never held it.
 """
 
 from __future__ import annotations
 
+import builtins
 import importlib
 import sys
 import types
@@ -47,28 +50,47 @@ class FacadeModule(types.ModuleType):
         held = parts(self)  # first: a part's own import may register into a facade global this write replaces
         seen = _seen(self)
         if name not in seen:
+            # A builtin a test shadows on the module (`print`, `open`) reached every function of the one file; it
+            # reaches every part, and the undo takes it out of the parts that never held it.
+            shadows = hasattr(builtins, name)
             seen[name] = (
                 self.__dict__.get(name, _MISSING),
-                tuple((part, part.__dict__[name]) for part in held if name in part.__dict__),
+                tuple((part, part.__dict__.get(name, _MISSING)) for part in held if shadows or name in part.__dict__),
             )
         original, originals = seen[name]
         super().__setattr__(name, value)
         for part, part_value in originals:
-            setattr(part, name, part_value if value is original else value)
+            _put(part, name, part_value if value is original else value)
+        if value is original:
+            # Restored: forget the record, so the next write reads what each part holds then, not what it held now
+            # (a part a test patched directly would otherwise get that patch back from a later test's undo).
+            del seen[name]
 
     def __delattr__(self, name: str) -> None:
         super().__delattr__(name)
         snapshot = _seen(self).pop(name, None)
         if snapshot is not None:
             for part, part_value in snapshot[1]:
-                setattr(part, name, part_value)
+                _put(part, name, part_value)
 
 
-def install(module_name: str, part_names: Sequence[str]) -> None:
-    """Make the module `module_name` (already in `sys.modules`) a facade over `part_names`, which are not imported here."""
+def _put(part: types.ModuleType, name: str, value: object) -> None:
+    """Bind `name` in `part`, or unbind it when `value` is the missing marker."""
+    if value is not _MISSING:
+        setattr(part, name, value)
+    elif name in part.__dict__:
+        delattr(part, name)
+
+
+def install(module_name: str, part_names: Sequence[str], *, eager: bool = False) -> None:
+    """Make the module `module_name` (already in `sys.modules`) a facade over `part_names`.
+
+    The parts are imported now when `eager`, as they were when their code was the module's own; else on first use."""
     module = sys.modules[module_name]
     module.__dict__[PARTS_KEY] = tuple(part_names)
     module.__class__ = FacadeModule
+    if eager:
+        parts(module)
 
 
 def attribute(module_name: str, name: str) -> object:

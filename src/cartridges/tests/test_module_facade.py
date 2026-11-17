@@ -95,3 +95,42 @@ def test_install_imports_no_part() -> None:
         assert isinstance(module, module_facade.FacadeModule)
     finally:
         sys.modules.pop(FACADE, None)
+
+
+def test_an_eager_install_imports_the_parts_now() -> None:
+    _module(PART_A, "def helper():\n    return 'real'\n")
+    module = _module(FACADE, "")
+    try:
+        sys.modules.pop(PART_A)
+        with pytest.raises(ModuleNotFoundError):  # proof the parts are imported at install: this one is gone
+            module_facade.install(FACADE, (PART_A,), eager=True)
+        assert isinstance(module, module_facade.FacadeModule)
+    finally:
+        sys.modules.pop(FACADE, None)
+
+
+def test_a_builtin_shadowed_on_the_facade_reaches_every_part_and_its_undo_takes_it_out(facade: types.ModuleType) -> None:
+    _module(PART_A, "def shout():\n    return len('abc')\n")
+    module_facade.install(FACADE, (PART_A, PART_B))
+    facade.len = lambda _value: 99
+    assert sys.modules[PART_A].shout() == 99
+    del facade.len
+    assert "len" not in sys.modules[PART_A].__dict__
+    assert sys.modules[PART_A].shout() == 3
+
+
+def test_a_restored_name_forgets_what_the_parts_held(facade: types.ModuleType) -> None:
+    """Regression: test A patched a part directly, then the facade, and undid both; test B's later patch and undo of
+    the facade put test A's fake back into the part, from the record the first write had kept."""
+    part_a = sys.modules[PART_A]
+    real = part_a.helper
+    original = module_facade.attribute(FACADE, "helper")
+    fake_a = lambda: "a"  # noqa: E731 - test A's direct patch of the part
+    part_a.helper = fake_a  # test A
+    facade.helper = lambda: "facade"
+    facade.helper = original  # test A's undo, in reverse order
+    part_a.helper = real
+    facade.helper = lambda: "b"  # test B
+    facade.helper = original  # test B's undo
+    assert part_a.helper is real
+    assert sys.modules[PART_B].twice() == "realreal"
