@@ -17,7 +17,7 @@ from typing import Any
 from agent_tools import bounded_run, forge, forge_forgejo, forge_github, forge_local
 from agent_tools.forge import ForgeNotSupported
 
-__all__ = ["find_branch_prs", "find_open_prs", "forge_of", "mark_ready", "merge", "merge_state", "open_pr", "push", "update_branch", "update_pr", "wait_checks"]
+__all__ = ["find_branch_prs", "find_open_prs", "forge_of", "mark_ready", "merge", "merge_state", "open_pr", "poll_checks", "push", "update_branch", "update_pr", "wait_checks"]
 
 
 def _forge_for_url(url: str, env: Mapping[str, str]):
@@ -64,6 +64,10 @@ def mark_ready(repo: Path | str, *, head: str) -> tuple[bool, str]:
 
 def wait_checks(repo: Path | str, timeout_s: float, *, ref: str = "HEAD") -> tuple[bool, str]:
     return forge_of(repo).wait_checks(Path(repo), timeout_s, ref=ref)
+
+
+def poll_checks(repo: Path | str, *, ref: str = "HEAD", memo: Mapping[str, Any] | None = None) -> tuple[str, str, dict]:
+    return forge_of(repo).poll_checks(Path(repo), ref=ref, memo=memo)
 
 
 def merge_state(pr: int, *, repo: Path | str | None = None) -> str:

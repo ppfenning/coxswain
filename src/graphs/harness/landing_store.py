@@ -78,12 +78,19 @@ def list_items(conn: Connection, states: Sequence[str] | None = None) -> list[di
     return [item for item in map(_item, rows) if states is None or item["state"] in states]
 
 
+def requeued_at(state: str, queued_at: str, now: str) -> str:
+    """Pure. When an item that is queued again counts as queued from. A `failed` item keeps its first queueing, so an
+    item that fails on every pass still ages, and the queue alarm sees it; one that was `done` is new work."""
+    return queued_at if state == "failed" and queued_at else now
+
+
 def enqueue(conn: Connection, kind: str, initiative: str, *, repo: str, now: str, phase: str = "", parent: str = "",
             reason: str = "") -> bool:
     """Queue one item. True when this call queued it: a new item, or one that was `done` or `failed`.
 
     An item already `queued` or `claimed` is left alone, so an event and the sweep may both name it. Queueing again
-    keeps `attempts` and `last_error`, so a retried item still shows its history."""
+    keeps `attempts` and `last_error`, so a retried item still shows its history, and a `failed` item keeps its
+    `queued_at` (`requeued_at`)."""
     ident = item_id(kind, initiative, phase)
     p = conn.dialect.placeholder
     with conn.transaction():
@@ -99,7 +106,7 @@ def enqueue(conn: Connection, kind: str, initiative: str, *, repo: str, now: str
         conn.execute(
             f"UPDATE land_queue SET state = 'queued', reason = {p}, queued_at = {p}, repo = {p}, parent = {p}, "
             f"claimed_by = '', claimed_at = '', lease_until = '', updated_at = {p} WHERE id = {p}",
-            (reason, now, repo, parent, now, ident),
+            (reason, requeued_at(str(found["state"]), str(found.get("queued_at") or ""), now), repo, parent, now, ident),
         )
         return True
 

@@ -1202,6 +1202,79 @@ def wait_decision(returncode: int, output: str, elapsed_s: float, timeout_s: flo
     return "failed"
 
 
+def check_state(returncode: int, output: str) -> str:
+    """Pure. One poll's `(returncode, output)` as a state a caller that does not wait reads: `green`, `pending` or
+    `failed`. No check reported yet is `pending`: the caller polls again on its next pass instead of sleeping here."""
+    decision = wait_decision(returncode, output, 0.0, float("inf"))
+    return "pending" if decision == "retry" else decision
+
+
+# A caller that polls once per pass keeps, between passes, what `wait_checks` kept in its loop: the commit it is
+# about, failed reads in a row, refused rerun calls, the run ids gh took a rerun for, the failed check runs a rerun
+# replaced, and the polls since that still showed only those. All bounded by `POLL_ERROR_LIMIT`, as in `wait_checks`.
+
+def poll_memo(memo: Mapping[str, Any] | None, head: str) -> dict[str, Any]:
+    """Pure. What earlier passes saw of `head`'s checks; a fresh memory when the commit is new."""
+    fresh: dict[str, Any] = {"head": head, "errors": 0, "rerun_tries": 0, "stale_polls": 0, "accepted": [], "rerun_of": []}
+    return {**fresh, **dict(memo)} if memo and memo.get("head") == head else fresh
+
+
+def unreadable_step(memo: Mapping[str, Any], detail: str) -> tuple[str, str, dict[str, Any]]:
+    """Pure. A read of the checks that failed: `pending` for the next pass, until `POLL_ERROR_LIMIT` passes in a row
+    have failed, which is `error`: the land still waits, and the caller tells a person (the memo keeps the reason)."""
+    errors = int(memo.get("errors") or 0) + 1
+    after = {**memo, "errors": errors, "unreadable": detail}
+    if errors >= POLL_ERROR_LIMIT:
+        return "error", f"checks unreadable {errors} passes in a row: {detail}", after
+    return "pending", f"checks unreadable, read again next pass ({errors}/{POLL_ERROR_LIMIT}): {detail}", after
+
+
+@dataclass(frozen=True)
+class FailedPoll:
+    """What to do with red checks. `state`: failed (final), pending (a rerun not yet registered), or rerun (call a
+    rerun for `todo`, then `rerun_step`)."""
+
+    state: str
+    detail: str
+    memo: dict
+    todo: tuple[str, ...] = ()
+
+
+def failed_poll_step(memo: Mapping[str, Any], failed_ids: Collection[str], rerun_ids: Sequence[str], output: str) -> FailedPoll:
+    """Pure. Red checks on a commit: rerun its failed runs once, then judge. A failure made only of the check runs a
+    rerun replaced is the rerun not yet registered (`pending`) for at most `POLL_ERROR_LIMIT` polls; any other failure
+    after the rerun is final. A startup failure, a failure with no run to rerun, and one whose rerun gh has refused
+    `POLL_ERROR_LIMIT` times are final at once."""
+    memo = dict(memo)
+    if output.startswith(WORKFLOW_ISSUE):
+        return FailedPoll("failed", output, memo)
+    if memo.get("rerun_of"):
+        stale_polls = int(memo.get("stale_polls") or 0)
+        if set(failed_ids) <= set(memo["rerun_of"]) and stale_polls < POLL_ERROR_LIMIT:
+            return FailedPoll("pending", f"rerun not yet registered: {output}", {**memo, "stale_polls": stale_polls + 1})
+        return FailedPoll("failed", output, memo)
+    if not rerun_ids:
+        return FailedPoll("failed", output, memo)
+    tries = int(memo.get("rerun_tries") or 0)
+    if tries >= POLL_ERROR_LIMIT:
+        return FailedPoll("failed", f"{output}; the rerun was refused {tries} times", memo)
+    accepted = set(memo.get("accepted") or ())
+    return FailedPoll("rerun", output, memo, tuple(i for i in rerun_ids if i not in accepted))
+
+
+def rerun_step(memo: Mapping[str, Any], todo: Sequence[str], refused: Collection[str], failed_ids: Collection[str],
+               output: str) -> tuple[str, str, dict[str, Any]]:
+    """Pure. After the rerun calls for `todo`: the runs gh took are kept, so none is rerun twice. A refusal (gh refuses
+    while a sibling job runs) is `pending` and counted; with none, the rerun is made and its failures are remembered."""
+    accepted = [*(memo.get("accepted") or ()), *(i for i in todo if i not in refused)]
+    if refused:
+        tries = int(memo.get("rerun_tries") or 0) + 1
+        return ("pending", f"{output}; rerun refused for runs {', '.join(refused)}, tried again next pass ({tries}/{POLL_ERROR_LIMIT})",
+                {**memo, "accepted": accepted, "rerun_tries": tries})
+    return ("rerun", f"{output}; failed runs rerun once: {', '.join(accepted)}",
+            {**memo, "accepted": accepted, "rerun_of": sorted(str(i) for i in failed_ids)})
+
+
 def merge_expects_check(output: str) -> bool:
     """Whether a refused merge's output is GitHub's `Required status check "<name>" is expected`; the check name is never matched."""
     return "Required status check" in output and "is expected" in output

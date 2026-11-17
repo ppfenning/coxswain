@@ -175,6 +175,10 @@ def _merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: 
     record = ls.get_record(conn, initiative)
     if record is None:
         return PhaseMerge("error", initiative, phase, detail=f"{initiative} has no landing record")
+    if record.get("held"):
+        # The lander holds an initiative whose record and origin's branch disagree: nothing merges into it until they agree.
+        why = (record.get("held") or {}).get("reason") or "its record and its branch disagree"
+        return PhaseMerge("not_ready", initiative, phase, detail=f"{initiative} is held: {why}")
     state = lr.phase_state(record, phase, tasks)
     if state == "merged":
         entry = (record.get("phases") or {}).get(phase) or {}

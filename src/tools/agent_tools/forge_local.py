@@ -14,7 +14,7 @@ from typing import Any
 from agent_tools import bounded_run
 from agent_tools.forge import ForgeNotSupported
 
-__all__ = ["find_open_prs", "merge", "merge_state", "open_pr", "push", "update_branch", "wait_checks"]
+__all__ = ["find_open_prs", "merge", "merge_state", "open_pr", "poll_checks", "push", "update_branch", "wait_checks"]
 
 
 def _git(repo: Path | str, *args: str) -> tuple[int, str]:
@@ -44,6 +44,10 @@ def mark_ready(repo: Path | str, *, head: str) -> tuple[bool, str]:
 
 def wait_checks(repo: Path | str, timeout_s: float, *, ref: str = "HEAD") -> tuple[bool, str]:
     return True, "local forge: the land's own checks are the gate"
+
+
+def poll_checks(repo: Path | str, *, ref: str = "HEAD", memo: Mapping[str, Any] | None = None) -> tuple[str, str, dict]:
+    return "green", "local forge: the land's own checks are the gate", dict(memo or {})
 
 
 def merge_state(pr: int, *, repo: Path | str | None = None) -> str:

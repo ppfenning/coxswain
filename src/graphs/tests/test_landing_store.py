@@ -99,9 +99,28 @@ def test_a_failed_item_keeps_its_error_and_history_when_it_is_queued_again(conn)
     assert ls.claim(conn, ident, "lander-b", now=T9, lease_until=T9) is False, "failed stays failed until queued again"
     assert ls.enqueue(conn, ls.PHASE_MERGE, "i1", phase="p1", repo="r", now=T2, reason="rectify task approved") is True
     again = ls.get_item(conn, ident)
+    # It keeps its first queueing: an item that fails and is queued again every pass still ages for the queue alarm.
     assert (again["state"], again["queued_at"], again["attempts"], again["last_error"]) == (
-        "queued", T2, 1, "merge conflict in src/a.py",
+        "queued", T0, 1, "merge conflict in src/a.py",
     )
+
+
+def test_a_done_item_queued_again_is_new_work_and_counts_from_now(conn):
+    ls.enqueue(conn, ls.INITIATIVE_LAND, "i1", repo="r", parent="main", now=T0)
+    ident = ls.item_id(ls.INITIATIVE_LAND, "i1")
+    ls.claim(conn, ident, "lander-a", now=T1, lease_until=T2)
+    assert ls.finish(conn, ident, "lander-a", now=T1) is True
+    assert ls.enqueue(conn, ls.INITIATIVE_LAND, "i1", repo="r", parent="main", now=T2) is True
+    assert ls.get_item(conn, ident)["queued_at"] == T2
+
+
+@pytest.mark.parametrize(("state", "queued_at", "expected"), [
+    ("failed", "2026-11-17T10:00:00Z", "2026-11-17T10:00:00Z"),
+    ("failed", "", "2026-11-17T12:00:00Z"),
+    ("done", "2026-11-17T10:00:00Z", "2026-11-17T12:00:00Z"),
+])
+def test_requeued_at_keeps_a_failed_items_first_queueing(state, queued_at, expected):
+    assert ls.requeued_at(state, queued_at, "2026-11-17T12:00:00Z") == expected
 
 
 def test_a_released_item_goes_back_to_queued_without_counting_an_attempt(conn):

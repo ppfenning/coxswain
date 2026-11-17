@@ -10,7 +10,8 @@ from __future__ import annotations
 import argparse
 import json
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -85,6 +86,7 @@ def status_rows(records: Sequence[Mapping[str, Any]], items: Sequence[Mapping[st
             "initiative": record["initiative"], "state": state, "branch": record.get("branch"), "parent": record.get("parent"),
             "phases": lr.phase_states(record, rows) if rows else {},
             "pr": (record.get("pr") or {}).get("url"),
+            "held": (record.get("held") or {}).get("reason") or None,
         })
     queue = [
         {"id": i["id"], "kind": i["kind"], "state": i["state"], "waiting": age(str(i.get("queued_at") or ""), now),
@@ -103,6 +105,8 @@ def status_lines(status: Mapping[str, Any]) -> list[str]:
         pr = f"  {row['pr']}" if row.get("pr") else ""
         lines.append(f"{row['initiative']}: {row['state']} on {row['branch']} -> {row['parent']}{pr}")
         lines.append(f"  phases: {phases}")
+        if row.get("held"):
+            lines.append(f"  held: {row['held']}")
     if not status["initiatives"]:
         lines.append("no initiative is in flight")
     lines.append("")
@@ -131,15 +135,58 @@ def _caps(profile: Mapping[str, Any]) -> dict[str, int]:
             "land_batch_size": resolve_land_batch(cartridge)}
 
 
+class Lanes:
+    """Runs each repository's lane of a pass on a thread of its own, with ports (and a store connection) of its own.
+
+    With `wait` (`cox lander once`) a pass returns when every lane has. Without it (`cox lander run`) a lane runs on
+    while the next passes start: a repository whose lane is still busy is left out of them until it is done, and
+    every other repository goes on landing."""
+
+    def __init__(self, open_ports: Callable[[], lander.Ports], caps: Callable[[], Mapping[str, int]], *, wait: bool,
+                 log: Callable[[str], None] = print) -> None:
+        self._open, self._caps, self._wait, self._log = open_ports, caps, wait, log
+        self._pool = ThreadPoolExecutor(thread_name_prefix="lander-lane")
+        self._busy: dict[str, Future] = {}
+
+    def __call__(self, lanes: Sequence[lander.Lane]) -> list[lander.Outcome]:
+        started = []
+        for lane in lanes:
+            running = self._busy.get(lane.repo)
+            if running is not None and not running.done():
+                continue
+            self._busy[lane.repo] = self._pool.submit(self._work, lane)
+            started.append(self._busy[lane.repo])
+        return [outcome for future in started for outcome in future.result()] if self._wait else []
+
+    def _work(self, lane: lander.Lane) -> list[lander.Outcome]:
+        try:
+            ports = self._open()
+        except Exception as exc:
+            self._log(f"lander: {lane.repo}: no store connection for its lane: {type(exc).__name__}: {exc}")
+            return []
+        try:
+            return lander.run_lane(ports, lane, **self._caps())
+        except Exception as exc:  # one lane's failure must not end the others, nor the loop
+            self._log(f"lander: {lane.repo}: lane failed: {type(exc).__name__}: {exc}")
+            return []
+        finally:
+            ports.conn.close()
+
+    def close(self) -> None:
+        self._pool.shutdown(wait=self._wait, cancel_futures=True)
+
+
 def _once(a: argparse.Namespace) -> int:
     found = _workspace(a)
     if found is None:
         return 2
     ws, profile = found
     ports = lander_ports.build(ws, profile)
+    lanes = Lanes(lambda: lander_ports.build(ws, profile, worker=ports.worker), lambda: _caps(profile), wait=True)
     try:
-        outcomes = lander.run_once(ports, **_caps(profile))
+        outcomes = lander.run_once(ports, run_lanes=lanes)
     finally:
+        lanes.close()
         ports.conn.close()
     if not outcomes:
         print("lander: nothing to do")
@@ -153,10 +200,11 @@ def _run(a: argparse.Namespace) -> int:
     ws, profile = found
     ports = lander_ports.build(ws, profile)
     print(f"lander: {ports.worker} on {ws}, every {a.interval:g}s")
+    lanes = Lanes(lambda: lander_ports.build(ws, profile, worker=ports.worker), lambda: _caps(profile), wait=False)
     try:
         while True:
             try:
-                lander.run_once(ports, **_caps(profile))
+                lander.run_once(ports, run_lanes=lanes)
             except KeyboardInterrupt:
                 raise
             except Exception as exc:  # one bad pass must not end the loop: the next pass reads everything again
@@ -165,6 +213,7 @@ def _run(a: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         return 0
     finally:
+        lanes.close()
         ports.conn.close()
 
 

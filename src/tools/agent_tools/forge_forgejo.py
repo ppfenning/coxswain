@@ -26,7 +26,7 @@ from agent_tools.forgejo_api import (
     request,
 )
 
-__all__ = ["find_open_prs", "green_commits", "merge", "merge_state", "open_pr", "push", "update_branch", "wait_checks"]
+__all__ = ["find_open_prs", "green_commits", "merge", "merge_state", "open_pr", "poll_checks", "push", "update_branch", "wait_checks"]
 
 DEFAULT_TOKEN_ENV = "FORGEJO_TOKEN"
 # Where an ssh origin finds its API address: the origin names a host, not an http(s) server.
@@ -417,6 +417,23 @@ def update_branch(pr: int, *, repo: Path | str | None = None) -> None:
     status, body = _call(_target(repo, os.environ), os.environ, "POST", f"/pulls/{pr}/update")
     if not 200 <= status < 300:
         raise ForgeError(f"could not update pull request {pr}: {_message(status, body)}")
+
+
+def poll_checks(repo: Path, *, ref: str = "HEAD", memo: Mapping | None = None) -> tuple[str, str, dict]:
+    """One read of `ref`'s combined status, no wait: (`green` | `pending` | `failed` | `error`, detail, memo). A read
+    that fails is `pending` for the caller's next pass, and `error` after `land.POLL_ERROR_LIMIT` in a row. Forgejo
+    has no rerun."""
+    try:
+        sha = _git(repo, "rev-parse", ref)
+    except ForgeError as exc:
+        return land.unreadable_step(land.poll_memo(memo, ""), str(exc))
+    seen = land.poll_memo(memo, sha)
+    try:
+        code, output = read_checks(_target(repo, os.environ), os.environ, sha)
+    except ForgeError as exc:
+        return land.unreadable_step(seen, str(exc))
+    state = land.check_state(code, output)
+    return state, output or state, {**seen, "errors": 0}
 
 
 def wait_checks(repo: Path, timeout_s: float, sleep=time.sleep, now=time.monotonic, *, ref: str = "HEAD") -> tuple[bool, str]:

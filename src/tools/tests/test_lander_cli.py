@@ -43,7 +43,7 @@ def test_status_shows_live_initiatives_by_derived_state_and_the_open_queue_with_
     status = lander_cli.status_rows(records, items, tasks, NOW)
     assert status["initiatives"] == [
         {"initiative": "demo", "state": "building", "branch": "init/demo", "parent": "main",
-         "phases": {"p1": "merged", "p2": "built"}, "pr": None},
+         "phases": {"p1": "merged", "p2": "built"}, "pr": None, "held": None},
     ]
     assert [(q["id"], q["waiting"], q["last_error"]) for q in status["queue"]] == [
         ("phase_merge:demo:p2", "2h05m", "conflict in shared.txt"),
