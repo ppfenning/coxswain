@@ -21,6 +21,7 @@ from agent_tools.chair_carry import plan_carry
 from agent_tools.chair_decompose_miss import DecomposeMiss, escalation_reason, is_skipped, needs_escalation
 from agent_tools.chair_idle_ready import plan_idle_ready
 from agent_tools.chair_idle_stall import diagnose, is_stalled
+from agent_tools.chair_no_progress import plan_no_progress
 from agent_tools.chair_plan_fill import (
     HostSlot,
     _best_host,
@@ -1113,6 +1114,11 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     login_needs_chair = _login_needs_chair_actions(facts, now)
     empty_decompose_needs_chair = _empty_decompose_needs_chair_actions(facts)
     held_needs_chair = plan_held_files(facts)
+    # H4.1: an initiative whose last runs ended the same way is held for a person, and not relaunched meanwhile.
+    no_progress_holds = plan_no_progress(facts)
+    # Only an initiative held this tick is withheld: once its hold is visible the held gate takes over, and a hold a
+    # person cleared by any route lets it launch again.
+    no_progress = frozenset(a["initiative"] for a in no_progress_holds)
     streak_stalled, streak_needs_chair = _decompose_gate(facts)
     missed_intake, miss_needs_chair = _decompose_miss_gate(facts, now)
     # A skipped intake stays in facts["intake"] (so no pull is planned), but plan_fill never launches it.
@@ -1139,7 +1145,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     would_relaunch = frozenset(a["initiative"] for a in pre_exit_gate if a["kind"] == "relaunch")
     not_exited = frozenset(i for i in would_relaunch if not run_exited.get(i, False))
     recoverable = _without_gated_launches(
-        _hold_for_ci([*_withhold_not_exited(pre_exit_gate, not_exited), *lost_actions], held | gated), gated
+        _hold_for_ci([*_withhold_not_exited(pre_exit_gate, not_exited), *lost_actions], held | gated | no_progress), gated | no_progress
     )
     lease_held = _lease_held_ids(facts)
     lease_stuck = _lease_stuck_actions(facts, now)
@@ -1181,6 +1187,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
             *empty_decompose_needs_chair,
             *lease_stuck,
             *held_needs_chair,
+            *no_progress_holds,
             *decompose_stalled_needs_chair,
             *review,
             *unstarted_waiting_chair,
@@ -1225,6 +1232,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         "waiting on a need": waiting_ids,
         "its launch was refused on a held lease": lease_held,
         "it is held or deferred to a later release": gated,
+        "its last runs ended the same way": no_progress,
     }
     withheld = frozenset().union(*withheld_by.values())
     claimed = claimed_by(recover_actions, facts)
@@ -1272,6 +1280,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         *empty_decompose_needs_chair,
         *lease_stuck,
         *held_needs_chair,
+        *no_progress_holds,
         *decompose_stalled_needs_chair,
         *review,
         *unstarted_waiting_chair,

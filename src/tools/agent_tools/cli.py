@@ -123,6 +123,7 @@ chair_read_run_id = _LazyModule("agent_tools.chair_read_run_id")
 chair_read_run_records = _LazyModule("agent_tools.chair_read_run_records")
 chair_read_stale = _LazyModule("agent_tools.chair_read_stale")
 chair_read_stall = _LazyModule("agent_tools.chair_read_stall")
+chair_read_run_outcomes = _LazyModule("agent_tools.chair_read_run_outcomes")
 chair_read_stranded = _LazyModule("agent_tools.chair_read_stranded")
 chair_report = _LazyModule("agent_tools.chair_report")
 chair_restart = _LazyModule("agent_tools.chair_restart")
@@ -14636,6 +14637,9 @@ def _chair_run_deps(
         stale_days=lambda: (profile.get("chair") or {}).get("stale_days"),
         max_launches_per_hour=lambda: (profile.get("chair") or {}).get("max_launches_per_hour"),
         quarantine_hold_after=lambda: (profile.get("chair") or {}).get("quarantine_hold_after"),
+        no_progress_after=lambda: (profile.get("chair") or {}).get("no_progress_after"),
+        # The runs, phases and task records live in the store; with no store the reader finds no runs and holds nothing.
+        run_outcomes=lambda ids, last: chair_read_run_outcomes.read_run_outcomes(runs_dir, ids, last),
         merge_queue=lambda: profile.get("merge_queue"),
         shared_file_limit=lambda: (profile.get("chair") or {}).get("max_shared_file_initiatives"),
         serial_files=lambda: profile.get("serial_files"),

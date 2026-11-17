@@ -663,6 +663,8 @@ class Facts(TypedDict):
     # on the count. Absent means 3.
     quarantine_hold_after: NotRequired[int]
     held_tasks: NotRequired[list[HeldTask]]  # tasks held for a person with the `needs you:` mark; absent means none
+    # chair_no_progress.no_progress_facts: initiative to its repeated runs (newest first) and `needs you:` hold reason. Absent means {}.
+    no_progress: NotRequired[dict[str, Any]]
     merge_queue: NotRequired[MergeQueueFacts]  # the profile's enabled merge queue; absent means the queue is off
     # `<run1>|<run2>` of each relaunch_loop needs_chair already in the action log. Absent means [].
     relaunch_loop_reported: NotRequired[list[str]]
@@ -737,6 +739,7 @@ ActionKind = Literal[
     "request_triage",
     "hold_task",
     "announce_hold",
+    "hold_initiative",
 ]
 
 
@@ -778,7 +781,8 @@ class Action(TypedDict, total=False):
     for triage and set back to ready, so the next run triages it before any rebuild.
     hold_task carries initiative, task_id, cause, reason (starting `needs you:`) and key (`hold:<task>:<run>`): the store
     row takes the reason and moves to blocked. announce_hold carries initiative, task_id, reason and key: one courier
-    entry for a held task."""
+    entry for a held task. hold_initiative carries initiative, cause (`no_progress`), reason (starting `needs you:`) and key
+    (`no_progress:<initiative>:<newest run>`): the initiative row and file are held with the reason, and one courier entry goes out."""
 
     kind: ActionKind
     epoch: int

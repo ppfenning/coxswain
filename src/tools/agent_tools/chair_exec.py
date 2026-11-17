@@ -1157,6 +1157,45 @@ def _announce_hold(action: Action, deps: Deps) -> Result:
     return _result(action, "done", f"{task} announced: {reason}")
 
 
+def _hold_initiative(action: Action, deps: Deps) -> Result:
+    """Edge. Hold an initiative whose last runs ended the same way (H4.1): its store row first, then its
+    `initiative.md`, take `held` and the `needs you:` reason; then one courier entry, and the key is marked handled.
+
+    An initiative already held is left as it is and announced by no one here: a person, or an earlier tick, holds it."""
+    from agent_tools import route_hold  # lazy: only this action writes an initiative's hold
+    from core.workstore import hold_text  # lazy: core sits beside agent_tools in one venv
+
+    initiative = action.get("initiative", "")
+    reason = hold_text(action.get("reason", "") or "the chair held it: its last runs ended the same way")
+    row = route_hold.initiative_row_of(deps.initiative_rows(), initiative)
+    if row is None:
+        return _result(action, "failed", f"no initiative row for {initiative} in the store")
+    if route_hold.is_held_initiative(row):
+        return _result(action, "skipped", f"{initiative} is held already")
+    refused = run_store.upsert_row_detail(deps.runs_dir, route_hold.initiative_row_held_as(row, reason))
+    if refused:
+        return _result(action, "failed", f"the store did not take the hold on {initiative}: {refused}")
+    path = deps.work_dir / "work" / initiative / "initiative.md"
+    note = ""
+    try:
+        if path.is_file():
+            path.write_text(route_hold.initiative_held_as(path.read_text(encoding="utf-8"), reason), encoding="utf-8")
+            queue_export.record_written_paths(deps.work_dir, [path])
+    except OSError as exc:  # the store row holds it; the board export rewrites the file
+        note = f" (its file was not written: {exc})"
+    entry = courier.send(
+        courier.Reference("initiative", initiative), deps.label or "chair", deps.note_to, f"{initiative}: {reason}",
+        uuid.uuid4().hex, event="needs_attention", fields={"initiative": initiative, "reason": reason}, topic=initiative or None,
+    )
+    try:
+        courier.append_file(deps.work_dir / "courier.jsonl", entry)
+    except OSError as exc:
+        return _result(action, "failed", f"{initiative} held, but its courier entry was not written: {exc}")
+    if deps.mark_handled is not None and action.get("key"):
+        deps.mark_handled(action["key"])
+    return _result(action, "done", f"{initiative} held: {reason}{note}")
+
+
 def _rescue(action: Action, deps: Deps) -> Result:
     """The rescue launch; once it is out, its task state's key is handled, so the next tick does not launch it again.
 
@@ -1671,6 +1710,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
         return _hold_task(action, deps)
     if kind == "announce_hold":
         return _announce_hold(action, deps)
+    if kind == "hold_initiative":
+        return _hold_initiative(action, deps)
     if kind == "release_approvals":
         return _release_approvals(action, deps)
     if kind == "restore_approvals":
