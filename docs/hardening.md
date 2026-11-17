@@ -170,6 +170,31 @@ guard the moves. No behaviour change.
 
 **Done when.** No module in `agent_tools` or `harness` exceeds 2,000 lines.
 
+## H10. Tests prove the change runs, not only that it exists
+
+**Evidence.** H5's first phase, built by the epic on 2026-11-17, passed every task review, arbitration and the full
+lane check, yet four of its five tasks added functions that no running code called: edge still rolled back on the
+full doctor, its `gh` calls stayed unbounded, the lane-sync guard was never passed its paths, and no unit read the
+new environment file (#1191, review). Each task was judged against its own unit tests; nothing asked whether the
+entry point reached the change.
+
+**Change.**
+
+1. A done-when names a runtime behaviour at an entry point (`cox upgrade` does not roll back on an advisory row),
+   not a helper's return value. Its test drives that entry point with only the edges faked.
+2. A new public function or module with no caller outside tests is a finding. A check lists the symbols a diff adds
+   and fails when one has no non-test reference.
+3. Task review, arbitration and `validate_phase` ask which test drives the entry point that reaches the change; no
+   such test means revise.
+4. Contract tests at process boundaries (H1.4) come before the in-process API moves, since stubs hid both the store
+   CLI drift and the unwired H5 work.
+5. Decompose keeps a helper and its wiring in one task, or in one phase, so a phase cannot complete with library
+   code alone.
+
+**Done when.** The unused-symbol check runs in CI and in the lane check; the review and validator skills carry the
+entry-point question and a test shows a review of an unwired helper returns revise; the decompose skill's task rules
+state item 5.
+
 ## Order
 
 1. **H5** (edge and deploy): small, and every later change ships through it.
@@ -178,6 +203,9 @@ guard the moves. No behaviour change.
 4. **H3** and **H4** (lander, loops, stale work): what stops a hand fold being needed again.
 5. **H7** (operator told).
 6. **H6** (tick cost, then event-driven), **H8** (contracts), **H9** (split).
+
+**H10** (tests prove the change runs) applies from now on to every hardening PR's review, and its checks are built
+alongside **H1**, whose contract tests it relies on.
 
 Each item is built as its own initiative once the chair is stable on PRs 0–C, and each lands behind the review
 step those PRs used: an independent reviewer reads the diff before it merges.
