@@ -54,6 +54,12 @@ def test_ci_runs_the_unwired_check_against_full_history():
     assert any(UNWIRED_LINE in str(step.get("run", "")) for step in steps)
 
 
+def test_ci_runs_the_unwired_main_scan_in_the_required_job():
+    """H10: the whole tree, not only the diff, so a change that deletes a symbol's last caller fails as well."""
+    ci = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text())
+    assert any(step.get("run") == f"uv run {UNWIRED_LINE} --all" for step in ci["jobs"]["test"]["steps"])
+
+
 def test_ci_runs_the_type_check_in_the_required_job():
     """The required test job runs pyright over the project's own config, as the lane's line does, with the extras synced."""
     ci = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text())

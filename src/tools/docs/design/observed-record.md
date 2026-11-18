@@ -9,6 +9,10 @@ have nothing in the system become invisible." Groups intake items G1 from
 `workspace/plans/agent-platform/2026-09-08-intake-grouping.md`. This file is committed identically to
 `coxswain-graphs/docs/design/` and `coxswain-tools/docs/design/` so a build seat in either repo can read it.
 
+Update 2026-11-18: the store replaced `usage.json`. `harness/usage.py`'s `record_usage` lost its last caller in
+the storage cutover and was deleted in #1221 (H10); the per-call ledger now lives in the store. The sections
+below that name `record_usage` or `usage.json` describe the design as it was approved, not the code today.
+
 ## 0. The defect, once
 
 The platform NARRATES what it already OBSERVES. It asks a model to report the files it touched while

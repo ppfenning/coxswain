@@ -20,13 +20,3 @@ def plan_restore(facts: Facts) -> list[Action]:
         }
         for initiative in dict.fromkeys(e["initiative"] for e in entries)
     ]
-
-
-def not_released(restores: list[Action], releases: list[Action]) -> list[Action]:
-    """The restores without any task a release names for the same initiative; a restore left empty is dropped."""
-    released = {(a["initiative"], t) for a in releases for t in a.get("task_ids", [])}
-    trimmed: list[Action] = [
-        {**a, "task_ids": [t for t in a.get("task_ids", []) if (a["initiative"], t) not in released]}
-        for a in restores
-    ]
-    return [a for a in trimmed if a["task_ids"]]

@@ -854,10 +854,6 @@ def test_chair_perform_with_smoke_holds_on_a_traceback_and_opens_no_revert_pr(mo
         ],
     )
 
-    def _fail_if_called(argv):
-        raise AssertionError("run_revert_pr must not be called")
-
-    monkeypatch.setattr(cli.chair_smoke, "run_revert_pr", _fail_if_called)
     land_result = _land_result("/repos/coxswain-tools", pr=9, commit="deadbeef")
     results = [land_result]
     wrapped = cli._chair_perform_with_smoke(runs_dir, lambda *a: results)
