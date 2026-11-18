@@ -190,12 +190,12 @@ def _epic_run(ws: Path, n: int, *, tasks=(), ended=True) -> None:
     try:
         store, run = Store(conn), f"demo-{n}"
         store.record_run({"run_id": run})
-        ctx = SimpleNamespace(store=store, retry=epic._StoreRetry(), run_id=run, epoch=None, lease_name=None)
-        epic._record_phase(ctx, {"phase": "p1", "status": "partial", "reason": _STUCK})
-        epic._record_tasks(ctx, "p1", [{"id": task, "status": status} for task, status in tasks], [])
-        epic._record_phase(ctx, {"phase": "p2", "status": "blocked", "reason": "parent phase 'p1' is not merged"})
+        ctx = SimpleNamespace(store=store, retry=epic.StoreRetry(), run_id=run, epoch=None, lease_name=None)
+        epic.record_phase(ctx, {"phase": "p1", "status": "partial", "reason": _STUCK})
+        epic.record_tasks(ctx, "p1", [{"id": task, "status": status} for task, status in tasks], [])
+        epic.record_phase(ctx, {"phase": "p2", "status": "blocked", "reason": "parent phase 'p1' is not merged"})
         if ended:
-            epic._record_run_exit(store, run, "ok", epic._StoreRetry())
+            epic.record_run_exit(store, run, "ok", epic.StoreRetry())
     finally:
         conn.close()
 

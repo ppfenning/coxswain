@@ -1,4 +1,4 @@
-"""The epic driver, one phase: `_run_phase`, from the fan-out to the gate."""
+"""The epic driver, one phase: `run_phase_tasks`, from the fan-out to the gate."""
 
 from __future__ import annotations
 
@@ -23,122 +23,122 @@ from harness.check_gate import gate_commands
 from harness.checks import HARNESS_FAULT_PREFIX, check_feedback, is_harness_fault
 from harness.digest import build_digest
 from harness.epic_batch import (
-    _build_batch,
-    _phase_status,
-    _quarantine_task,
-    _record_task_cause,
-    _stale_phase,
-    _trim_phase,
+    build_batch,
+    phase_status,
+    quarantine_task,
+    record_task_cause,
+    stale_phase,
+    trim_phase,
 )
 from harness.epic_branches import (
-    _DRAFT_KINDS,
+    DRAFT_KINDS,
     PATCH_FOR_VALIDATION_CHARS,
     TRIAGE,
     VALIDATE,
-    _attempt_tree,
-    _carry_forward,
-    _fetch_or_stop,
-    _invoke_from_attempt,
-    _missing_branch_phase,
-    _open_grain_pr,
-    _parent_gap,
-    _phase_branches_to_fetch,
-    _PhaseRunner,
-    _resume_body,
+    PhaseRunner,
+    attempt_tree,
+    carry_forward,
+    fetch_or_stop,
+    invoke_from_attempt,
+    missing_branch_phase,
+    open_grain_pr,
     opens_pr,
+    parent_gap,
+    phase_branches_to_fetch,
     previous_objection_block,
+    resume_body,
 )
 from harness.epic_build import (
-    _body_stamp,
-    _build_task,
-    _lifecycle_invocation,
-    _refix,
-    _run_level_checks,
-    _run_level_integration,
-    _unapproved,
-    _verify_of,
+    body_stamp,
+    build_task,
+    lifecycle_invocation,
+    refix_task,
+    run_level_checks,
+    run_level_integration,
     task_outcome,
+    unapproved,
+    verify_of,
 )
-from harness.epic_context import _Ctx, _git, _phase_goal, _read_evidence_file
+from harness.epic_context import Ctx, git_in, phase_goal, read_evidence_file
 from harness.epic_execute import (
-    _caused_records,
-    _execute,
-    _policy_split,
-    _record_attempts,
-    _stored_causes,
-    _without_cause,
+    caused_records,
+    execute_cleared,
+    policy_split,
+    record_attempts,
     records_after,
+    stored_causes,
     with_record_attempts,
     with_stored_causes,
+    without_cause,
 )
 from harness.epic_phase_branch import (
     ASSEMBLY_FAILED,
-    _locked_merges,
-    _needs_missing,
-    _needs_other_phase,
-    _note_push_failure,
-    _open_phase_worktree,
-    _phase_branch_cherry,
-    _publish_branch,
-    _rebase,
-    _recorded_merges,
-    _refresh_level,
-    _required_refs,
-    _start_failure,
     blocking_commits,
     branch_action,
     classify_unlanded,
+    locked_merges,
+    needs_missing,
+    needs_other_phase,
+    note_push_failure,
     open_in_phase,
+    open_phase_worktree,
+    phase_branch_cherry,
+    publish_branch,
+    rebase_phase_branch,
+    recorded_merges,
+    refresh_level,
+    required_refs,
+    start_failure,
     waiting_tasks,
 )
 from harness.epic_records import (
-    _END_WRITE_WINDOW_S,
+    END_WRITE_WINDOW_S,
     PRINCIPAL,
-    _default_branch_commit,
-    _default_branch_paths,
-    _Execution,
-    _fenced,
-    _git_stdout,
-    _heal_surfaces,
-    _log,
-    _quarantine_row,
-    _read_store_rows,
-    _record_tasks,
-    _save_result,
-    _store_authoritative,
-    _store_fresh,
-    _surface_refusal_reason,
-    _wait_if_paused,
-    _without_correction_lint,
-    _working_tree_paths,
-    _write_healed_surfaces,
+    Execution,
+    default_branch_commit,
+    default_branch_paths,
+    epic_log,
+    fence_reason,
+    git_stdout,
+    heal_surfaces,
+    quarantine_row,
+    read_store_rows,
+    record_tasks,
+    save_task_result,
+    store_authoritative,
+    store_fresh,
+    surface_refusal_reason,
+    wait_if_paused_here,
+    without_correction_lint,
+    working_tree_paths,
+    write_healed_surfaces,
 )
 from harness.epic_triage import (
-    _amend_in_store,
-    _amended_body,
-    _apply_amend_directly,
-    _attempt_cap_for,
-    _attempt_cap_reason,
-    _base_expected,
-    _base_gaps,
-    _build_attempts,
-    _buildable,
-    _combine_task,
-    _drop_stale_triage_flag,
-    _drop_task,
-    _earlier_merged,
-    _hold_task,
-    _initiative_context,
-    _invoke_failure_kind,
-    _is_append_only,
-    _newest_attempt_text,
-    _quarantine_missing_merges,
-    _queue_rows,
-    _record_triage,
-    _row_extra,
-    _stale_base_missing,
-    _ticket_amend_ramp,
+    amend_in_store,
+    amended_body,
+    apply_amend_directly,
+    attempt_cap_for,
+    attempt_cap_reason,
+    base_expected,
+    base_gaps,
+    build_attempts,
+    buildable,
+    combine_task,
+    drop_stale_triage_flag,
+    drop_task,
+    earlier_merged,
+    hold_task,
+    invoke_failure_kind,
+    is_append_only,
+    newest_attempt_text,
+    quarantine_missing_merges,
+    read_queue_rows,
+    record_triage,
+    row_extra,
+    stale_base_missing,
+    ticket_amend_ramp,
     triage_failure_hold,
+    triage_initiative_context,
 )
 from harness.escalate import escalate_self_modification
 from harness.gate import apply_arm_for, gate
@@ -151,8 +151,8 @@ from harness.ticket_check import check_ticket, ticket_lookups
 from harness.worktree import registry_lock
 
 
-def _run_phase(
-    ctx: _Ctx,
+def run_phase_tasks(
+    ctx: Ctx,
     *,
     initiative: Mapping[str, Any],
     phase: str,
@@ -172,7 +172,7 @@ def _run_phase(
     # A land marks a phase's tasks done, and `phase_parents` then drops the edge, so the pr base is chosen on
     # the needs themselves: a phase that needs a task of another phase builds on the pr branch, done or not.
     with ctx.items_lock:
-        stacked = bool(parents) or _needs_other_phase(items, phase)
+        stacked = bool(parents) or needs_other_phase(items, phase)
     # At initiative every phase is cut from the initiative branch, whose tip holds every merged parent phase.
     # (`stacked` still names the phases that need another phase's work, for a run with no initiative branch.)
     pr_ref = ctx.pr_branch_ref() if is_initiative(ctx.land_at) and (stacked or ctx.initiative_branch) else None
@@ -194,21 +194,21 @@ def _run_phase(
     }
 
     # A stale leader opens no branch and builds nothing.
-    stale_start = _fenced(ctx)
+    stale_start = fence_reason(ctx)
     if stale_start:
-        return _stale_phase(record, stale_start)
+        return stale_phase(record, stale_start)
 
     # A branch under a parent is cut from the default ref and holds only the commits its tasks need.
     with ctx.items_lock:
         from_pr = pr_ref is not None
-        needed = _required_refs(items, phase, parents, ctx.phase_branch, base_ref, from_pr=from_pr)
-        cut_from = _required_refs(items, phase, parents, ctx.phase_branch, base_ref, cut=True, from_pr=from_pr)
+        needed = required_refs(items, phase, parents, ctx.phase_branch, base_ref, from_pr=from_pr)
+        cut_from = required_refs(items, phase, parents, ctx.phase_branch, base_ref, cut=True, from_pr=from_pr)
     # A lone parent that is settled is the stack itself: cut from it, with no merge commit.
     cut_ref = base_ref if not parents or cut_from == [base_ref] else ctx.default_ref
 
     def open_failed(detail: str, verb: str) -> dict[str, Any]:
         record["status"] = "blocked"
-        record["reason"] = _start_failure(detail, verb)
+        record["reason"] = start_failure(detail, verb)
         if not detail.startswith(ASSEMBLY_FAILED):
             record["phase_failed_to_start"] = record["reason"]
         if detail.startswith(ASSEMBLY_FAILED) and only:
@@ -216,7 +216,7 @@ def _run_phase(
             with ctx.items_lock:
                 by_id = {str(i["id"]): i for i in items}
             quarantined.extend(
-                _quarantine_task(
+                quarantine_task(
                     ctx, by_id, phase=phase, task=tid, reason=record["reason"], kind="infra",
                     cause=("harness", "assembly conflict"),
                 )
@@ -229,17 +229,17 @@ def _run_phase(
     # A branch an earlier phase left on origin from another host becomes a local branch here; one that is
     # nowhere stops the phase before any worktree opens, so assembly only ever fails on a real conflict.
     parent_branches = [] if from_pr else [ctx.phase_branch(p) for p in parents]
-    fetch, required, loose = _phase_branches_to_fetch(ctx.initiative_id, branch, parent_branches, needed, cut_from)
-    if (stopped := _fetch_or_stop(ctx, record, fetch, required, loose, parent_branches)) is not None:
+    fetch, required, loose = phase_branches_to_fetch(ctx.initiative_id, branch, parent_branches, needed, cut_from)
+    if (stopped := fetch_or_stop(ctx, record, fetch, required, loose, parent_branches)) is not None:
         return stopped
 
     if ctx.initiative_branch is not None:
         # The phase is cut from the initiative branch, so every parent has to be merged into it in this clone first.
         # Nothing is quarantined: the phase starts on a later run, once the parent's merge is here.
-        for gap in filter(None, (_parent_gap(ctx, p, items) for p in parents)):
+        for gap in filter(None, (parent_gap(ctx, p, items) for p in parents)):
             reason, missing = gap
             if missing:
-                return _missing_branch_phase(record, missing, reason)
+                return missing_branch_phase(record, missing, reason)
             record.update(status="blocked", reason=reason)
             return record
         if ctx.parent_behind and phase != INTEGRATE_PHASE:
@@ -248,28 +248,28 @@ def _run_phase(
             record.update(status="blocked", reason=f"phase {phase} waits: {ctx.parent_behind}")
             return record
 
-    opened = _open_phase_worktree(ctx, phase, cut_ref, parents, cut_from)
+    opened = open_phase_worktree(ctx, phase, cut_ref, parents, cut_from)
     ok, detail, branch_reused = opened
     record["cleared_worktrees"] = list(getattr(opened, "cleared", ()))
     if not ok:
         return open_failed(detail, "created")
     record["reused_branch"] = branch_reused
-    _note_push_failure(record, _publish_branch(ctx, branch))
+    note_push_failure(record, publish_branch(ctx, branch))
 
     # Decided before a single task builds: a reused branch missing a commit it
     # needs is either recreated (nothing of its own to lose) or blocked (something is).
     # With an initiative branch none of this applies: the parent does not float, so a reused phase branch is never
-    # stale against it. It is behind only by what siblings merged, and `_refresh_level` merges that forward below.
-    head_moved = ctx.initiative_branch is None and branch_reused and _needs_missing(ctx, phase, needed)
+    # stale against it. It is behind only by what siblings merged, and `refresh_level` merges that forward below.
+    head_moved = ctx.initiative_branch is None and branch_reused and needs_missing(ctx, phase, needed)
     with ctx.items_lock:
         task_states = {str(i["id"]): str(i.get("state")) for i in items}
-    cherry = _phase_branch_cherry(ctx, phase, pr_ref) if head_moved else []
+    cherry = phase_branch_cherry(ctx, phase, pr_ref) if head_moved else []
     unlanded_kind = classify_unlanded(cherry, task_states)
     action = branch_action(branch_reused, head_moved, unlanded_kind not in ("landed", "rebuild"))
 
     foreign = initiative.get("foreign") or {}
     with ctx.items_lock:
-        buildable_now = len(_buildable(items, phase, foreign, only, ctx.land_at))
+        buildable_now = len(buildable(items, phase, foreign, only, ctx.land_at))
     holds = phase_holds(len(waiting_tasks(cherry)), buildable_now)
     if action == "block" and unlanded_kind == "awaiting_land" and not holds:
         # Approved lands in flight, but a ready task can build: leave the branch and its commits as they are.
@@ -284,7 +284,7 @@ def _run_phase(
             "carries its own commits; a rebase onto the default ref would drop that parent, so re-assemble it"
         )
         quarantined.append({"id": phase, "phase": phase, "grain": "phase", "reason": record["reason"]})
-        _git("-C", str(ctx.phase_worktree(phase)), "checkout", "--detach", "-q")
+        git_in("-C", str(ctx.phase_worktree(phase)), "checkout", "--detach", "-q")
         return record
 
     if action == "block" and unlanded_kind == "awaiting_land":
@@ -295,19 +295,19 @@ def _run_phase(
             f"phase branch {branch} is behind {base_ref}; its unlanded commits belong to approved "
             "tasks whose lands are still in flight"
         )
-        _git("-C", str(ctx.phase_worktree(phase)), "checkout", "--detach", "-q")
+        git_in("-C", str(ctx.phase_worktree(phase)), "checkout", "--detach", "-q")
         return record
 
     if action == "block" and unlanded_kind == "rebase":
         # Some commits already landed (done), the rest are approved: replay the branch onto the new base.
         with ctx.items_lock:
-            recorded = _recorded_merges(items, phase)
-        rebased_ok, rebase_detail = _rebase(ctx, phase, base_ref, recorded)
+            recorded = recorded_merges(items, phase)
+        rebased_ok, rebase_detail = rebase_phase_branch(ctx, phase, base_ref, recorded)
         if not rebased_ok:
             record["status"] = "blocked"
             record["reason"] = f"rebase conflict: {rebase_detail}"
             quarantined.append({"id": phase, "phase": phase, "grain": "phase", "reason": record["reason"]})
-            _git("-C", str(ctx.phase_worktree(phase)), "checkout", "--detach", "-q")
+            git_in("-C", str(ctx.phase_worktree(phase)), "checkout", "--detach", "-q")
             return record
         record["rebased"] = True
     elif action == "block":
@@ -337,25 +337,25 @@ def _run_phase(
         )
         quarantined.append({"id": phase, "phase": phase, "grain": "phase", "reason": record["reason"]})
         # Release it, or the next run cannot open this branch at all.
-        _git("-C", str(ctx.phase_worktree(phase)), "checkout", "--detach", "-q")
+        git_in("-C", str(ctx.phase_worktree(phase)), "checkout", "--detach", "-q")
         return record
 
     def recreate() -> dict[str, Any] | None:
         """Cut the phase branch again from its base; the record to return when the leader is stale or the reopen fails."""
-        stale_recreate = _fenced(ctx)
+        stale_recreate = fence_reason(ctx)
         if stale_recreate:
-            return _stale_phase(record, stale_recreate)
-        _git("-C", str(ctx.phase_worktree(phase)), "checkout", "--detach", "-q")
+            return stale_phase(record, stale_recreate)
+        git_in("-C", str(ctx.phase_worktree(phase)), "checkout", "--detach", "-q")
         with registry_lock(ctx.repo):
-            _git("-C", str(ctx.repo), "worktree", "remove", "--force", str(ctx.phase_worktree(phase)))
-        _git("-C", str(ctx.repo), "branch", "-D", branch)
-        reopened = _open_phase_worktree(ctx, phase, cut_ref, parents, cut_from)
+            git_in("-C", str(ctx.repo), "worktree", "remove", "--force", str(ctx.phase_worktree(phase)))
+        git_in("-C", str(ctx.repo), "branch", "-D", branch)
+        reopened = open_phase_worktree(ctx, phase, cut_ref, parents, cut_from)
         ok, detail, branch_reused = reopened
         record["cleared_worktrees"] = [*record["cleared_worktrees"], *getattr(reopened, "cleared", ())]
         if not ok:
             return open_failed(detail, "recreated")
         record["reused_branch"] = branch_reused
-        _note_push_failure(record, _publish_branch(ctx, branch))
+        note_push_failure(record, publish_branch(ctx, branch))
         return None
 
     if action == "recreate":
@@ -368,7 +368,7 @@ def _run_phase(
             else f"phase branch {branch} recreated from {base_ref}: its commits already landed there via squash-merge"
         )
 
-    if (early := _refresh_level(ctx, record, phase, _locked_merges(ctx, items, phase))) is not None:
+    if (early := refresh_level(ctx, record, phase, locked_merges(ctx, items, phase))) is not None:
         return early
 
     # A runner whose nodes can read the world reads THIS phase's branch — not
@@ -381,7 +381,7 @@ def _run_phase(
     ctx = replace(
         ctx,
         shared_runner=ctx.runner,
-        runner=_PhaseRunner(
+        runner=PhaseRunner(
             ctx.runner,
             worktree,
             build_digest(worktree) or None,
@@ -392,7 +392,7 @@ def _run_phase(
 
     # A task approved and merged in an earlier run is not rebuilt. Its commit must be on this phase's branch,
     # and a task whose commit is gone is quarantined alone: no other task's row or state is touched.
-    if (paused := _quarantine_missing_merges(ctx, phase, items, quarantined)) is not None:
+    if (paused := quarantine_missing_merges(ctx, phase, items, quarantined)) is not None:
         record.update(status="blocked", reason=paused)
         return record
     with ctx.items_lock:
@@ -401,38 +401,38 @@ def _run_phase(
     # A dropped task is terminal like a done one: it never gets rebuilt or
     # re-reviewed, and never blocks the phase behind it.
     with ctx.items_lock:
-        all_ready = _buildable(items, phase, foreign, only, ctx.land_at)
+        all_ready = buildable(items, phase, foreign, only, ctx.land_at)
     # Under work_state store no work file holds an attempt: a task's attempts are its runs' task records, as the chair
     # reads them. So the cap below counts them, and a rebuild resumes from the newest one's kept patch, which another
     # lane's record carries in the store when this machine has no file of it.
 
     # A third run of the same task is refused outright rather than tried
-    # again — quarantined here, plainly, never through `_quarantine_task`,
+    # again — quarantined here, plainly, never through `quarantine_task`,
     # because a refusal is not an attempt and must not grow the count it is
     # enforcing.
     # An `infra` attempt is the apply arm's own failure, not the task's, so it
     # must not grow the count the cap enforces. Nor does a `rescue_failed` one:
     # a rescue checks work already built and is not a build.
-    read_rows = _queue_rows(ctx)
+    read_rows = read_queue_rows(ctx)
     queue_rows = read_rows or {}
     # A task a person readied by hand, or whose initiative a person released, starts fresh: no attempt and no triage
     # request from a run at or before that point (`FRESH_AFTER_RUN`, on the task's row or the initiative's) counts. The
     # mark holds one number per run series, so a phase run (`<initiative>.<phase>-N`) is compared only within its own.
-    initiative_extra = _row_extra(queue_rows.get(ctx.initiative_id))
+    initiative_extra = row_extra(queue_rows.get(ctx.initiative_id))
     cutoff_by_id = {
-        str(item["id"]): workstore.fresh_cutoff(_row_extra(queue_rows.get(str(item["id"]))), initiative_extra) for item in all_ready
+        str(item["id"]): workstore.fresh_cutoff(row_extra(queue_rows.get(str(item["id"]))), initiative_extra) for item in all_ready
     }
     # Under work_state store no work file holds an attempt: a task's attempts are its runs' task records, as the chair
     # reads them. So the cap below counts them, and a rebuild resumes from the newest one's kept patch, which another
     # lane's record carries in the store when this machine has no file of it. A record from a run at or before the
     # task's fresh start is history: it is neither an attempt nor a patch to resume from.
     recorded = {
-        str(item["id"]): records_after(_caused_records(ctx, phase, str(item["id"])), cutoff_by_id[str(item["id"])])
+        str(item["id"]): records_after(caused_records(ctx, phase, str(item["id"])), cutoff_by_id[str(item["id"])])
         for item in all_ready
-    } if _store_authoritative(ctx) else {}
+    } if store_authoritative(ctx) else {}
     all_ready = [with_record_attempts(item, [a for a, _ in recorded.get(str(item["id"]), [])]) for item in all_ready]
     record_patches = {task_id: rescue_select.patch_of(found[-1][1]) for task_id, found in recorded.items() if found}
-    attempts_by_id = {str(item["id"]): _build_attempts(item.get("attempts") or []) for item in all_ready}
+    attempts_by_id = {str(item["id"]): build_attempts(item.get("attempts") or []) for item in all_ready}
     # A rewritten ticket starts a fresh count. Triage still gets the whole history for its repeat guard.
     # An item with no `body` cannot be matched, so all its attempts count.
     counted_by_id = {
@@ -448,13 +448,13 @@ def _run_phase(
         for item in all_ready
     }
     caused_by_id = {
-        task_id: with_stored_causes({"attempts": counted}, _stored_causes(ctx, task_id))["attempts"] if counted else counted
+        task_id: with_stored_causes({"attempts": counted}, stored_causes(ctx, task_id))["attempts"] if counted else counted
         for task_id, counted in counted_by_id.items()
     }
-    cap_by_id = {task_id: _attempt_cap_for(caused) for task_id, caused in caused_by_id.items()}
+    cap_by_id = {task_id: attempt_cap_for(caused) for task_id, caused in caused_by_id.items()}
     # A capped task is launched into `triage` (docs/design/triage.md §1) rather
     # than quarantined outright: the graph classifies the attempt record and
-    # emits by class; a triage that could not run holds the task for a person, never through `_quarantine_task`.
+    # emits by class; a triage that could not run holds the task for a person, never through `quarantine_task`.
     # A task the chair flagged for triage (its row's `TRIAGE_FLAG`) is triaged too, whatever its attempt count: a
     # failure that needs a tweak gets its instruction before any rebuild.
     triage_batch: list[dict[str, Any]] = []
@@ -466,11 +466,11 @@ def _run_phase(
         print(f"  triage: {task_id} not built; its store row could not be read, so a request for triage cannot be ruled out")
     capped = {task_id for task_id, attempts in counted_by_id.items() if len(attempts) >= cap_by_id[task_id]} - unread
     flags = {
-        task_id: flag for task_id in counted_by_id if (flag := _row_extra(queue_rows.get(task_id)).get(workstore.TRIAGE_FLAG))
+        task_id: flag for task_id in counted_by_id if (flag := row_extra(queue_rows.get(task_id)).get(workstore.TRIAGE_FLAG))
     }
     flagged = {t for t, flag in flags.items() if workstore.counts_after(workstore.triage_flag_run(flag), cutoff_by_id[t])}
     for task_id in sorted(set(flags) - flagged):
-        _drop_stale_triage_flag(ctx, task_id)
+        drop_stale_triage_flag(ctx, task_id)
         print(
             f"  triage: {task_id} not triaged; its request came from run {workstore.triage_flag_run(flags[task_id]) or '(unknown)'}, "
             "before a person readied it or released its initiative, so it builds fresh"
@@ -480,7 +480,7 @@ def _run_phase(
 
     def asked(task_id: str) -> str:
         """Why the task went to triage, for a line a person reads."""
-        return _attempt_cap_reason(attempts_by_id[task_id]) if task_id in capped else "the chair asked for triage of this quarantine."
+        return attempt_cap_reason(attempts_by_id[task_id]) if task_id in capped else "the chair asked for triage of this quarantine."
 
     if capped_ids:
         all_ready_by_id = {str(item["id"]): item for item in all_ready}
@@ -489,8 +489,8 @@ def _run_phase(
             context_items = [dict(item) for item in items]
         # Under work_state store no work file holds an attempt: a flagged task's attempts are its runs' task records.
         for task_id in capped_ids:
-            attempts_by_id[task_id] = attempts_by_id[task_id] or _build_attempts(_record_attempts(ctx, phase, task_id))
-        _wait_if_paused(ctx)
+            attempts_by_id[task_id] = attempts_by_id[task_id] or build_attempts(record_attempts(ctx, phase, task_id))
+        wait_if_paused_here(ctx)
         triaged, _, triage_failures = invoke_graphs(
             [
                 Invocation(
@@ -501,9 +501,9 @@ def _run_phase(
                         "date": ctx.date,
                         "work_item": all_ready_by_id[task_id],
                         "attempts": attempts_by_id[task_id],
-                        "initiative_context": _initiative_context(initiative, context_items, task_id),
+                        "initiative_context": triage_initiative_context(initiative, context_items, task_id),
                         "triaged": [
-                            dict(r) for r in _row_extra(queue_rows.get(task_id)).get(workstore.TRIAGE_RECORDS) or [] if isinstance(r, Mapping)
+                            dict(r) for r in row_extra(queue_rows.get(task_id)).get(workstore.TRIAGE_RECORDS) or [] if isinstance(r, Mapping)
                         ],
                     },
                 )
@@ -516,24 +516,24 @@ def _run_phase(
         )
         def hold(task_id: str, reason: str) -> None:
             """Leave the task for a person with the mark; it is not built in this run either way."""
-            text, why = _hold_task(ctx, shared.get(task_id) or dict(all_ready_by_id[task_id]), reason)
+            text, why = hold_task(ctx, shared.get(task_id) or dict(all_ready_by_id[task_id]), reason)
             print(f"  triage: {task_id} held for a person: {text}" + (f" (the hold was not written: {why})" if why else ""))
 
         # A triage that could not run (its graph raised, or every answer it gave was refused) is not the task's
         # failure: quarantining again would only send it back to triage, which fails the same way. A person decides.
         for failure in triage_failures:
             task_id, reason = triage_failure_hold(failure, asked(failure.split(":", 1)[0]))
-            print(f"  attempt cap: {task_id} not built; triage could not run; {_newest_attempt_text(attempts_by_id[task_id])}")
+            print(f"  attempt cap: {task_id} not built; triage could not run; {newest_attempt_text(attempts_by_id[task_id])}")
             hold(task_id, reason)
 
         for result in triaged:
             task_id = str(result.get("run_id", "")).rsplit(":", 1)[-1]
             attempts = attempts_by_id[task_id]
             class_, diagnosis, action = str(result.get("class") or ""), str(result.get("diagnosis") or ""), str(result.get("action") or "")
-            _record_triage(ctx, task_id, {"class": class_, "diagnosis": diagnosis, "run": str(result.get("run_id") or "")})
+            record_triage(ctx, task_id, {"class": class_, "diagnosis": diagnosis, "run": str(result.get("run_id") or "")})
             if result.get("escalated"):
                 # The same (class, diagnosis) twice is the same reasoning restated: a person decides, by the mark.
-                print(f"  attempt cap: {task_id} launched triage, which escalated a repeated diagnosis; {_newest_attempt_text(attempts)}")
+                print(f"  attempt cap: {task_id} launched triage, which escalated a repeated diagnosis; {newest_attempt_text(attempts)}")
                 prior = cast(Mapping[str, Any], result.get("prior") if isinstance(result.get("prior"), Mapping) else {})
                 hold(task_id, f"triage repeats its earlier {class_} diagnosis (run {prior.get('run') or 'unrecorded'}): {diagnosis}")
                 continue
@@ -543,11 +543,11 @@ def _run_phase(
             if emitted.get("kind") == "item_create":
                 triage_batch.append(emitted)  # a platform defect's intake goes to the gate beside the hold
             if effect == "hold" or ("kind" not in emitted and effect not in ("drop", "combine")):
-                print(f"  attempt cap: {task_id} launched triage -> {class_}; {_newest_attempt_text(attempts)}")
+                print(f"  attempt cap: {task_id} launched triage -> {class_}; {newest_attempt_text(attempts)}")
                 hold(task_id, f"triage {class_}: {diagnosis}" + (f" Next: {action}" if action else ""))
                 continue
             if effect == "drop":
-                why = _drop_task(ctx, items, shared.get(task_id) or dict(all_ready_by_id[task_id]))
+                why = drop_task(ctx, items, shared.get(task_id) or dict(all_ready_by_id[task_id]))
                 if why is None:
                     print(f"  triage: {task_id} dropped: {diagnosis}")
                 else:
@@ -558,7 +558,7 @@ def _run_phase(
                 # A sibling triaged in this same run may itself be dropped or folded: its answer could lose this scope.
                 why = (
                     f"{into} is itself being triaged in this run" if into in capped_ids
-                    else _combine_task(ctx, items, shared.get(task_id) or dict(all_ready_by_id[task_id]), into)
+                    else combine_task(ctx, items, shared.get(task_id) or dict(all_ready_by_id[task_id]), into)
                 )
                 if why is None:
                     folded.add(into)
@@ -569,9 +569,9 @@ def _run_phase(
 
             if emitted.get("kind") == "ticket_amend":
                 old_body = str(all_ready_by_id[task_id].get("body") or "")
-                new_body = _amended_body(old_body, str(emitted.get("suggested_action", "")))
-                emitted["ramp"] = _ticket_amend_ramp(old_body, new_body)
-                rebuilt, failure = _apply_amend_directly(
+                new_body = amended_body(old_body, str(emitted.get("suggested_action", "")))
+                emitted["ramp"] = ticket_amend_ramp(old_body, new_body)
+                rebuilt, failure = apply_amend_directly(
                     ctx, emitted, all_ready_by_id[task_id], old_body=old_body, new_body=new_body, phase=phase,
                     quarantined=quarantined, by_id={str(item["id"]): item for item in items},
                 )
@@ -579,15 +579,15 @@ def _run_phase(
                 if (
                     rebuilt is None
                     and failure is None
-                    and _store_authoritative(ctx)
+                    and store_authoritative(ctx)
                     and apply_arm_for("ticket_amend", cast(dict[str, Any], ctx.cartridge)) in (None, "workstore")
                     and emitted["ramp"] == "eligible"
-                    and _is_append_only(old_body, new_body)
+                    and is_append_only(old_body, new_body)
                 ):
                     # The store is the board and no model arm is named: the harness appends the checked text itself,
                     # led by the diagnosis, which quotes the objection (check_citation refuses one that does not).
-                    quoted = _amended_body(old_body, f"Triage: {diagnosis}\n\n{emitted.get('suggested_action', '')}")
-                    rebuilt, stored = _amend_in_store(ctx, all_ready_by_id[task_id], old_body=old_body, new_body=quoted)
+                    quoted = amended_body(old_body, f"Triage: {diagnosis}\n\n{emitted.get('suggested_action', '')}")
+                    rebuilt, stored = amend_in_store(ctx, all_ready_by_id[task_id], old_body=old_body, new_body=quoted)
                     unwritten = stored or ""
                 if rebuilt is not None:
                     amended[task_id] = rebuilt
@@ -596,17 +596,17 @@ def _run_phase(
                             shared[task_id]["body"] = rebuilt["body"]
                     print(
                         f"  attempt cap: {task_id} launched triage -> append-only ticket_amend applied; rebuilding; "
-                        f"{_newest_attempt_text(attempts)}"
+                        f"{newest_attempt_text(attempts)}"
                     )
                     continue
                 if failure is not None and task_id not in flagged:
                     if not any(q.get("id") == task_id and q.get("grain") == "task" for q in quarantined):
-                        reason = f"{_attempt_cap_reason(attempts)} triage proposed an append-only amendment; applying it failed: {failure}"
+                        reason = f"{attempt_cap_reason(attempts)} triage proposed an append-only amendment; applying it failed: {failure}"
                         quarantined.append({"id": task_id, "phase": phase, "grain": "task", "reason": reason, "kind": "no_work"})
-                        _quarantine_row(ctx, phase, task_id)
+                        quarantine_row(ctx, phase, task_id)
                     print(
                         f"  attempt cap: {task_id} append-only ticket_amend not applied ({failure}); "
-                        f"{_newest_attempt_text(attempts)}"
+                        f"{newest_attempt_text(attempts)}"
                     )
                     continue
                 if task_id in flagged and not any(q.get("id") == task_id and q.get("grain") == "task" for q in quarantined):
@@ -621,7 +621,7 @@ def _run_phase(
             triage_batch.append(emitted)
             print(
                 f"  attempt cap: {task_id} launched triage -> {class_} ({emitted.get('kind')}); "
-                f"{_newest_attempt_text(attempts)}"
+                f"{newest_attempt_text(attempts)}"
             )
     if folded:
         with ctx.items_lock:
@@ -641,7 +641,7 @@ def _run_phase(
 
     by_id = {str(item["id"]): amended.get(str(item["id"]), item) for item in items}
     if hasattr(ctx.runner, "verify_by_task"):
-        ctx.runner.verify_by_task = {**ctx.runner.verify_by_task, **{t: _verify_of(by_id, t) for t in by_id}}
+        ctx.runner.verify_by_task = {**ctx.runner.verify_by_task, **{t: verify_of(by_id, t) for t in by_id}}
     results: list[dict[str, Any]] = []
 
     # Resume: a task whose earlier run already produced an approved patch is
@@ -655,7 +655,7 @@ def _run_phase(
         for task in ready:
             saved = load_result(ctx.runs_dir, ctx.resume_from, phase, str(task["id"]))
             if reusable(saved):
-                reused.append(_without_cause(cast(dict[str, Any], saved)))
+                reused.append(without_cause(cast(dict[str, Any], saved)))
                 print(f"  reused {task['id']} from {ctx.resume_from} (approved patch, no model call)")
             else:
                 to_run.append(task)
@@ -665,7 +665,7 @@ def _run_phase(
 
     # A task whose item asks for a build budget above the cartridge's cap
     # never reaches the model at all — refused outright, plainly, the same
-    # way the attempt cap above is: never through `_quarantine_task`, because
+    # way the attempt cap above is: never through `quarantine_task`, because
     # this is not an attempt either and must not grow the count that gates it.
     cap = (ctx.cartridge.get("policy") or {}).get("build_budget_usd_max")
     # Item order, not set iteration order: a set's order comes from the
@@ -685,7 +685,7 @@ def _run_phase(
                 f"build_budget_usd_max {cap} (a per build call ceiling)"
             ),
         })
-        _quarantine_row(ctx, phase, task_id)
+        quarantine_row(ctx, phase, task_id)
         print(f"  build budget: {task_id} refused (budget_usd {task['budget_usd']} > cap {cap})")
     over_budget_ids = {str(task["id"]) for task in over_budget}
     within_budget = [task for task in to_run if str(task["id"]) not in over_budget_ids]
@@ -695,30 +695,30 @@ def _run_phase(
     # does not heal again, and the build goes on with the healed task. Only a
     # malformed surface (absolute, outside the repository, a glob) is refused
     # plainly, like the budget refusal above: not an attempt, so never through
-    # `_quarantine_task`, and no model call is made.
+    # `quarantine_task`, and no model call is made.
     # Judged against the fetched default branch, not the checkout, which may be stale.
     surface_paths = frozenset[str]()
     if any(task.get("surfaces") for task in within_budget):
-        listed = _default_branch_paths(ctx)
-        surface_paths = listed if listed is not None else _working_tree_paths(ctx.repo)
+        listed = default_branch_paths(ctx)
+        surface_paths = listed if listed is not None else working_tree_paths(ctx.repo)
     refused_ids: set[str] = set()
     healed_by_id: dict[str, dict[str, Any]] = {}
     heal_notes: dict[str, list[str]] = {}
     ticket_corrections: dict[str, list[str]] = {}
     # The ticket check reads file contents at the commit the listing was taken from. It never refuses or
     # quarantines: when the commit cannot be read, the check raises, is logged, and the task builds unchanged.
-    commit = _default_branch_commit(ctx) if surface_paths else ""
-    defined, search = ticket_lookups(str(ctx.repo), commit, _git_stdout)
+    commit = default_branch_commit(ctx) if surface_paths else ""
+    defined, search = ticket_lookups(str(ctx.repo), commit, git_stdout)
     for task in (t for t in within_budget if t.get("surfaces")):
         task_id = str(task["id"])
         bad = malformed_surfaces([str(s) for s in task["surfaces"]])
         if bad:
             refused_ids.add(task_id)
             quarantined.append({
-                "id": task_id, "phase": phase, "grain": "task", "kind": "no_work", "reason": _surface_refusal_reason(bad),
+                "id": task_id, "phase": phase, "grain": "task", "kind": "no_work", "reason": surface_refusal_reason(bad),
             })
-            _record_task_cause(ctx, phase, task_id, "ticket", "rule: surfaces not in the repository")
-            _quarantine_row(ctx, phase, task_id)
+            record_task_cause(ctx, phase, task_id, "ticket", "rule: surfaces not in the repository")
+            quarantine_row(ctx, phase, task_id)
             print(f"  surfaces: {task_id} refused (malformed: {', '.join(bad)})")
             continue
         # The ticket check runs first: a bare filename must be resolved before heal_new_markers can mark it `(new)`.
@@ -727,11 +727,11 @@ def _run_phase(
         try:
             checked, corrections = check_ticket(prepared, surface_paths, defined, search)
         except Exception as exc:
-            _log.warning("ticket check failed, task builds unchanged: task=%s: %s: %s", task_id, type(exc).__name__, exc)
+            epic_log.warning("ticket check failed, task builds unchanged: task=%s: %s: %s", task_id, type(exc).__name__, exc)
             checked, corrections = prepared, ()
         if corrections:
             ticket_corrections[task_id] = list(corrections)
-        healed = _without_correction_lint(_heal_surfaces(checked, surface_paths), task)
+        healed = without_correction_lint(heal_surfaces(checked, surface_paths), task)
         if healed == dict(task):
             if corrections:
                 print(f"  ticket check: {task_id} {len(corrections)} correction(s) for the builder")
@@ -739,7 +739,7 @@ def _run_phase(
         healed_by_id[task_id] = healed
         known = {str(n) for n in task.get("lint") or []}
         heal_notes[task_id] = [str(n) for n in healed.get("lint") or [] if str(n) not in known]
-        _write_healed_surfaces(
+        write_healed_surfaces(
             ctx, task_id, healed["surfaces"], heal_notes[task_id], str(task["path"]) if task.get("path") else None
         )
         changed = [str(s) for s in healed["surfaces"] if s not in task["surfaces"]]
@@ -764,12 +764,12 @@ def _run_phase(
     # task is quarantined and no attempt is recorded: the tasks stay ready for the next launch.
     if runnable:
         worktree = ctx.phase_worktree(phase)
-        expected = _base_expected(ctx, phase, parents, items, runnable)
-        missing = _base_gaps(worktree, expected)
+        expected = base_expected(ctx, phase, parents, items, runnable)
+        missing = base_gaps(worktree, expected)
         if missing:
             fetch_origin(ctx.repo)
             merged_ok, merge_detail = merge_in(worktree, [g.commit for g in missing])
-            remaining = _base_gaps(worktree, expected)
+            remaining = base_gaps(worktree, expected)
             if remaining or not merged_ok:
                 stopped = remaining or missing
                 record["status"] = "blocked"
@@ -778,7 +778,7 @@ def _run_phase(
                     "id": stopped[0].task, "phase": phase, "grain": "phase", "kind": "stale_base",
                     "reason": record["reason"],
                 })
-                _git("-C", str(worktree), "checkout", "--detach", "-q")
+                git_in("-C", str(worktree), "checkout", "--detach", "-q")
                 print(f"  base check: {phase} stopped ({record['reason']}; {merge_detail or 'commit not found'})")
                 return record
             record["base_rebuilt"] = sorted({g.task for g in missing})
@@ -790,23 +790,23 @@ def _run_phase(
     resumed: dict[str, tuple[Path, str]] = {}
     for task in runnable:
         last = patches_for_attempt.get(str(task["id"]))
-        if last and last.strip() and (tree := _attempt_tree(ctx, phase, str(task["id"]), last)) is not None:
+        if last and last.strip() and (tree := attempt_tree(ctx, phase, str(task["id"]), last)) is not None:
             resumed[str(task["id"])] = tree
 
     budget_sources: dict[str, Any] = {}
     if runnable:
-        _wait_if_paused(ctx)
+        wait_if_paused_here(ctx)
         invocations = [
-            _lifecycle_invocation(
+            lifecycle_invocation(
                 ctx,
                 task,
                 body=plan_context(
                     {
                         **task,
                         "body": (
-                            _resume_body(task.get("body") or "", list(task.get("attempts") or []), resumed[str(task["id"])][1])
+                            resume_body(task.get("body") or "", list(task.get("attempts") or []), resumed[str(task["id"])][1])
                             if str(task["id"]) in resumed
-                            else _carry_forward(
+                            else carry_forward(
                                 task.get("body") or "",
                                 list(task.get("attempts") or []),
                                 patches_for_attempt.get(str(task["id"])),
@@ -836,7 +836,7 @@ def _run_phase(
             max_parallel=ctx.max_parallel,
         )
         for inv in (i for i in invocations if i.id in resumed):
-            more, more_failures = _invoke_from_attempt(ctx, phase, inv, *resumed[inv.id], run_id=f"{ctx.run_id}:{phase}")
+            more, more_failures = invoke_from_attempt(ctx, phase, inv, *resumed[inv.id], run_id=f"{ctx.run_id}:{phase}")
             results = [*results, *more]
             failures = [*failures, *more_failures]
         # A child's failure is a quarantined task, not a failed swarm — the
@@ -851,17 +851,17 @@ def _run_phase(
             failed = failure.split(":", 1)[0]
             # An empty patch from a base that lacks the ticket's own files is the base's fault, not the ticket's.
             empty = is_patch_empty(failure) and failed in by_id
-            missing = _stale_base_missing(ctx, phase, by_id[failed]) if empty else ()
+            missing = stale_base_missing(ctx, phase, by_id[failed]) if empty else ()
             # Files that all live in one other repository are the ticket's fault: its cause is `ticket`, no free retry.
             elsewhere = wrong_repository(missing, repo_key(str(ctx.repo)))
             stale_reason = (
                 wrong_repository_reason(failed, missing, elsewhere) if elsewhere else stale_base_reason(failed, missing)
             )
             quarantined.append(
-                _quarantine_task(
+                quarantine_task(
                     ctx, by_id, phase=phase, task=failed,
                     reason=stale_reason if missing else failure,
-                    kind="stale_base" if missing else _invoke_failure_kind(failure),
+                    kind="stale_base" if missing else invoke_failure_kind(failure),
                 )
             )
         # A lapsed login fails every task in every later phase the same way.
@@ -876,8 +876,8 @@ def _run_phase(
         # without these two fields on the saved record, neither command can find it.
         result.setdefault("initiative", ctx.initiative_id)
         result.setdefault("phase", phase)
-        result.update(_body_stamp(by_id.get(str(result.get("ticket")))))
-        _save_result(ctx, result, phase=phase, task=str(result.get("ticket")))
+        result.update(body_stamp(by_id.get(str(result.get("ticket")))))
+        save_task_result(ctx, result, phase=phase, task=str(result.get("ticket")))
 
     built: dict[str, dict[str, Any]] = {}
     surviving: list[str] = []
@@ -888,7 +888,7 @@ def _run_phase(
 
         # A non-build node raised mid-round: review, adversary, arbitrate,
         # validate or handoff never reached a verdict, so nothing here was
-        # judged and `_unapproved` has nothing to read. The patch a later
+        # judged and `unapproved` has nothing to read. The patch a later
         # node was handed is kept rather than lost to the traceback.
         failed_node = result.get("failed_node")
         if failed_node is not None:
@@ -915,14 +915,14 @@ def _run_phase(
                     "failed_node": failed_node,
                 }
             )
-            quarantined.append(_quarantine_task(ctx, by_id, phase=phase, task=task, reason=reason, kind="infra"))
+            quarantined.append(quarantine_task(ctx, by_id, phase=phase, task=task, reason=reason, kind="infra"))
             continue
 
         # The loop's refusal is the answer, and it is free. Applying a patch the
         # reviewers rejected costs a worktree, a check run and both validators
         # before anything says no, and what finally says no is a validator
         # reading a stale verdict rather than the loop that actually decided.
-        refused = _unapproved(result)
+        refused = unapproved(result)
         if refused is not None:
             record["task_records"].append(
                 {
@@ -938,12 +938,12 @@ def _run_phase(
                 }
             )
             quarantined.append(
-                _quarantine_task(ctx, by_id, phase=phase, task=task, reason=refused, kind="refused", result=result)
+                quarantine_task(ctx, by_id, phase=phase, task=task, reason=refused, kind="refused", result=result)
             )
             continue
 
-        build = _build_task(ctx, phase=phase, task=task, result=result, verify=_verify_of(by_id, task))
-        final, build = _refix(ctx, by_id, phase=phase, task=task, result=result, build=build)
+        build = build_task(ctx, phase=phase, task=task, result=result, verify=verify_of(by_id, task))
+        final, build = refix_task(ctx, by_id, phase=phase, task=task, result=result, build=build)
         build["result"] = final
         built[task] = build
         if "checks" in build:
@@ -951,13 +951,13 @@ def _run_phase(
             # per-check results (excerpt and log name) go into it under `change_facts`, as the
             # task record below carries them.
             facts = {**(final.get("change_facts") or {}), "checks": build["checks"]}
-            _save_result(ctx, {**final, "change_facts": facts}, phase=phase, task=task)
+            save_task_result(ctx, {**final, "change_facts": facts}, phase=phase, task=task)
 
         # Evidence first, escalation second — the same order `cli.py` uses, and
         # for the same reason: the gate should see the tests' opinion of a
         # governance change too.
         for item in final.get("proposals") or []:
-            if item.get("kind") in _DRAFT_KINDS:
+            if item.get("kind") in DRAFT_KINDS:
                 item.setdefault("evidence", []).extend(build["evidence"])
 
         # A change to the rules is not whatever kind the graph called it. This
@@ -974,7 +974,7 @@ def _run_phase(
             escalated.add(task)
             build["governance_hits"] = hits
 
-        # `_execute` sees only the batch item, so the verdicts ride on it.
+        # `execute_cleared` sees only the batch item, so the verdicts ride on it.
         arbitration = final.get("arbitration")
         for item in build["proposals"]:
             if item.get("escalated_from") == "draft_pr_create":
@@ -1014,20 +1014,20 @@ def _run_phase(
             # A harness fault is not an attempt: the build was never actually
             # tried, so recording one here would burn the same two-strike cap
             # a real failure does. Mirrors the attempt-cap refusal above,
-            # which quarantines without ever calling `_quarantine_task`.
+            # which quarantines without ever calling `quarantine_task`.
             if is_harness_fault(reason):
                 quarantined.append({"id": task, "phase": phase, "grain": "task", "reason": reason, "kind": "no_work"})
-                _quarantine_row(ctx, phase, task)
+                quarantine_row(ctx, phase, task)
             else:
                 # This branch is only reached for a task the fix loop already
-                # approved — `_unapproved` above quarantines anything else as
+                # approved — `unapproved` above quarantines anything else as
                 # `refused` before a worktree is even opened. A check still
                 # failing here, after the lint_fix step had its chance, is a
                 # non-functional finding on an approved patch, not grounds to
                 # discard it: `unverified` keeps it, same as `validate_chunk`.
                 detail = check_feedback(build.get("checks") or []) or None
                 quarantined.append(
-                    _quarantine_task(
+                    quarantine_task(
                         ctx, by_id, phase=phase, task=task, reason=reason, kind="unverified", detail=detail
                     )
                 )
@@ -1043,10 +1043,10 @@ def _run_phase(
     # would be scored against a goal its siblings have not yet built toward.
     # A task an earlier run approved counts as finished, and joins the validator's input.
     # One store read: a task another machine landed since this run read its items counts as finished.
-    store_rows = _read_store_rows(ctx)
+    store_rows = read_store_rows(ctx)
     with ctx.items_lock:
-        fresh_items = _store_fresh(items, store_rows)
-    earlier = _earlier_merged(fresh_items, phase, {str(r.get("ticket")) for r in results})
+        fresh_items = store_fresh(items, store_rows)
+    earlier = earlier_merged(fresh_items, phase, {str(r.get("ticket")) for r in results})
     open_ids = (
         open_in_phase(
             fresh_items,
@@ -1065,7 +1065,7 @@ def _run_phase(
         }
     elif validated and results:
         phase_state = {
-            "phase": {"id": phase, "goal": _phase_goal(initiative, phase)},
+            "phase": {"id": phase, "goal": phase_goal(initiative, phase)},
             "tasks": [
                 {
                     "id": task,
@@ -1118,7 +1118,7 @@ def _run_phase(
                         "date": ctx.date,
                         "cartridge": ctx.cartridge,
                         "phase_state": phase_state,
-                        "reader": _read_evidence_file,
+                        "reader": read_evidence_file,
                     },
                 )
             ],
@@ -1152,7 +1152,7 @@ def _run_phase(
             surviving.remove(task)
             gaps = ", ".join(chunk.get("gaps") or []) or str(chunk.get("reasoning", ""))
             quarantined.append(
-                _quarantine_task(
+                quarantine_task(
                     ctx, by_id, phase=phase, task=task,
                     reason=f"validate_chunk unsatisfied: {gaps}", kind="unverified",
                 )
@@ -1163,7 +1163,7 @@ def _run_phase(
                     task_record["quarantine"] = f"validate_chunk unsatisfied: {gaps}"
 
     # ── the phase's one gate batch, in task-id order ─────────────────────────
-    batch, slots = _build_batch(
+    batch, slots = build_batch(
         ctx,
         phase=phase,
         surviving=surviving,
@@ -1177,7 +1177,7 @@ def _run_phase(
     record["batch"] = batch
 
     # ── policy, then the gate, then execution in batch order ────────────────
-    auto, gated = _policy_split(ctx, batch)
+    auto, gated = policy_split(ctx, batch)
     # At ticket, with no `assume` given, nobody is asked and nobody decides: the batch is auto-cleared. Auto-cleared
     # work writes no gate diff and no ledger row, so unattended runs add nothing to a kind's graduation streak.
     if land_gate_level(ctx.land_at) == "initiative" and ctx.assume is None:
@@ -1186,7 +1186,7 @@ def _run_phase(
     decisions, human_minutes = gate(gated, assume=ctx.assume) if gated else ([], 0.0)
     decided = {id(item): (decision, edited) for item, decision, edited in decisions}
 
-    state = _Execution(
+    state = Execution(
         landed={}, merged={}, moved={}, quarantined=quarantined, escalated=frozenset(escalated),
         builds={task: (built[task]["result"].get("build") or {}) for task in surviving},
     )  # fmt: skip
@@ -1195,7 +1195,7 @@ def _run_phase(
     for item in batch:
         slot, subject = slots.get(id(item), ("other", ""))
         if id(item) in auto_ids:
-            applied, _ = _execute(ctx, item, slot=slot, subject=subject, phase=phase, state=state, by_id=by_id)
+            applied, _ = execute_cleared(ctx, item, slot=slot, subject=subject, phase=phase, state=state, by_id=by_id)
             # Auto-cleared: NO gate diff and NO ledger row. Autonomy is spent by
             # acting; a row here would let a kind ratchet itself up on its own
             # say-so, which is the self-report the ledger exists to disbelieve.
@@ -1205,7 +1205,7 @@ def _run_phase(
         decision, edited = decided.get(id(item), ("refused", False))
         applied = False
         if decision == "approved":
-            applied, _ = _execute(ctx, item, slot=slot, subject=subject, phase=phase, state=state, by_id=by_id)
+            applied, _ = execute_cleared(ctx, item, slot=slot, subject=subject, phase=phase, state=state, by_id=by_id)
             record["rebased"] = record["rebased"] or (applied and slot == "rebase")
         # Built here rather than by `gate.apply_decisions`, which cannot know
         # about a branch this driver created: `applied` is what actually
@@ -1213,7 +1213,7 @@ def _run_phase(
         diffs.append(gate_diff(item, decision, applied=applied, edited=cast(bool, edited)))
 
     for warning in state.push_warnings:
-        _note_push_failure(record, warning)
+        note_push_failure(record, warning)
 
     # At `task` each task merged by this run gets its own PR; at `level` and `ticket` none does. A failed PR is a
     # note on the task, not a quarantine: the merge into the phase branch already happened.
@@ -1222,7 +1222,7 @@ def _run_phase(
         # A restart also covers the tasks a first run merged and approved, whose PR may never have opened.
         stored_merged = {str(i["id"]) for i in items if i.get("phase") == phase and i.get("state") == "approved" and i.get("merged")}
         for task in sorted(({t for t in surviving if state.merged.get(t)} | stored_merged) - held):
-            ok, detail = _open_grain_pr(
+            ok, detail = open_grain_pr(
                 ctx,
                 grain="task",
                 name=task,
@@ -1235,7 +1235,7 @@ def _run_phase(
             else:
                 state.notes[task] = detail
 
-    # `_execute` can quarantine a task after its merge already succeeded — the
+    # `execute_cleared` can quarantine a task after its merge already succeeded — the
     # apply arm failing on its own bookkeeping, not the code — so that failure
     # must reach the task record here, or reconciliation below would see only
     # `merged=True` and report it `landed`.
@@ -1263,7 +1263,7 @@ def _run_phase(
             # A skipped arbiter is recorded as a string, not a mapping.
             str(cast(Mapping[str, Any], verdicts.get("arbitration") if isinstance(verdicts.get("arbitration"), Mapping) else {}).get("verdict") or "") or None,
             task_record.get("quarantine"),
-            # Merged AND quarantined only happens when `_execute`'s own
+            # Merged AND quarantined only happens when `execute_cleared`'s own
             # bookkeeping step failed after the code already landed — that is
             # not `landed` in the sense this outcome reports.
             task_record["merged"] and not task_record.get("quarantine"),
@@ -1294,14 +1294,14 @@ def _run_phase(
                 if task_record["id"] == task:
                     task_record["state"] = "approved"
 
-    _record_tasks(ctx, phase, record["task_records"], quarantined)
+    record_tasks(ctx, phase, record["task_records"], quarantined)
 
-    record["status"], reason = _phase_status(
+    record["status"], reason = phase_status(
         verdict,
         validated=validated,
         ready=ready,
         quarantined=quarantined,
-        items=_store_fresh(items, store_rows),
+        items=store_fresh(items, store_rows),
         phase=phase,
         landed=bool(surviving) and all(state.merged.get(task) for task in surviving),
         branch=branch,
@@ -1313,17 +1313,17 @@ def _run_phase(
     # The level gate: once per assembled level, after the status is known and before any review PR opens.
     # It covers the level as merged. The optional style_pass trim below runs later and is not re-checked here.
     if record["status"] == "complete":
-        _run_level_checks(ctx, phase, record)
+        run_level_checks(ctx, phase, record)
     if record["status"] == "complete":
-        _run_level_integration(ctx, phase, str(record["base"]), record)
+        run_level_integration(ctx, phase, str(record["base"]), record)
 
     # docs/design/landing-model.md §5: one style_pass over the assembled phase
     # diff, run only once validate_phase itself has said the goal is met — a
     # trim is not a second opinion on completeness, it runs after that
     # question is already settled.
     if record["status"] == "complete" and verdict is not None and verdict.get("goal_met") and "style_pass" in ctx.bound:
-        stale_trim = _fenced(ctx)
-        outcome = f"refused: {stale_trim}" if stale_trim else _trim_phase(ctx, phase)
+        stale_trim = fence_reason(ctx)
+        outcome = f"refused: {stale_trim}" if stale_trim else trim_phase(ctx, phase)
         if outcome is not None:
             record["trim"] = f"trim: {outcome}"
 
@@ -1331,7 +1331,7 @@ def _run_phase(
     # worktrees, and re-entrancy — a later run building on the branch this one
     # left — is a stated requirement, so the worktree keeps its files and gives
     # the branch back. Nothing here deletes work: the branches are the artifact.
-    _git("-C", str(ctx.phase_worktree(phase)), "checkout", "--detach", "-q")
+    git_in("-C", str(ctx.phase_worktree(phase)), "checkout", "--detach", "-q")
 
     totals = {
         "ready": len(ready),
@@ -1353,18 +1353,18 @@ def _run_phase(
         totals=totals,
     )
     record["totals"] = totals
-    stale = _fenced(ctx)
+    stale = fence_reason(ctx)
     if stale is not None:
-        return _stale_phase(record, stale)
+        return stale_phase(record, stale)
     append_ledger(manifest, ledger_path=ctx.ledger_path)  # the host file is written once, never inside a retry
     if ctx.store is not None:
         store = ctx.store
         # Ledger rows are built in `core.manifest.append_ledger`; the store copies this phase's rows back by run id.
         for row in ledger.read(ctx.ledger_path):
             if row.get("run_id") == manifest["run_id"]:
-                ctx.retry.write(lambda row=row: store.record_ledger(row, epoch=ctx.epoch), _END_WRITE_WINDOW_S)
+                ctx.retry.write(lambda row=row: store.record_ledger(row, epoch=ctx.epoch), END_WRITE_WINDOW_S)
         ctx.retry.write(
-            lambda: store.record_gate_decisions(ctx.run_id, phase, diffs, epoch=ctx.epoch), _END_WRITE_WINDOW_S
+            lambda: store.record_gate_decisions(ctx.run_id, phase, diffs, epoch=ctx.epoch), END_WRITE_WINDOW_S
         )
     record["manifest"] = f"{ctx.run_id}:{phase}"
     record["manifest_record"] = manifest

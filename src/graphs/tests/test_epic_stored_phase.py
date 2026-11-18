@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from harness.epic import _phase_status, open_in_phase
+from harness.epic import open_in_phase, phase_status
 
 MERGED = {"id": "m", "phase": "p1", "state": "approved", "merged": True}
 UNMERGED = {"id": "u", "phase": "p1", "state": "approved", "merged": False}
@@ -33,7 +33,7 @@ def test_done_and_dropped_items_are_finished_and_other_states_are_open() -> None
 
 
 def _status(items: list[dict], land_at: str = "ticket") -> tuple[str, str]:
-    return _phase_status(
+    return phase_status(
         {"goal_met": True},
         validated=True,
         ready=[],

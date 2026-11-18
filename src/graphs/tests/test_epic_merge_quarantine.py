@@ -47,15 +47,15 @@ def _spy(monkeypatch) -> list:
 
 
 def _fake_merge_git(monkeypatch) -> None:
-    monkeypatch.setattr(epic, "_git", lambda *a, **k: (False, CONFLICT) if "merge" in a and "--no-ff" in a else (True, ""))
+    monkeypatch.setattr(epic, "git_in", lambda *a, **k: (False, CONFLICT) if "merge" in a and "--no-ff" in a else (True, ""))
 
 
 def _conflicting_merge(ctx, monkeypatch, by_id=None):
     """Run the merge slot for t1 with git faked: the merge fails, every other git call succeeds."""
     _fake_merge_git(monkeypatch)
-    state = epic._Execution(landed={"t1": True}, merged={}, moved={}, quarantined=[])
+    state = epic.Execution(landed={"t1": True}, merged={}, moved={}, quarantined=[])
     move = {"kind": "merge_stack", "target": "t1"}
-    result = epic._execute(ctx, move, slot="merge", subject="t1", phase="p1", state=state, by_id=by_id or {})
+    result = epic.execute_cleared(ctx, move, slot="merge", subject="t1", phase="p1", state=state, by_id=by_id or {})
     return state, result
 
 
@@ -64,13 +64,13 @@ def test_the_approve_then_conflicting_merge_sequence_ends_quarantined(store_conn
     _put(ctx, item, "ready")
     monkeypatch.setattr(epic, "auto_apply", lambda proposal, **_: (Path(item["path"]).write_bytes(APPROVED), (True, "stub"))[1])
     calls = _spy(monkeypatch)
-    monkeypatch.setattr(epic, "_unkept_work", lambda *_: None)  # the approve-then-conflict order is under test, not the gate
-    state = epic._Execution(landed={"t1": True}, merged={}, moved={}, quarantined=[])
+    monkeypatch.setattr(epic, "unkept_work", lambda *_: None)  # the approve-then-conflict order is under test, not the gate
+    state = epic.Execution(landed={"t1": True}, merged={}, moved={}, quarantined=[])
     by_id = {"t1": item}
-    moved = epic._execute(ctx, {"kind": "state_move", "target": "t1"}, slot="state_move", subject="t1", phase="p1", state=state, by_id=by_id)
+    moved = epic.execute_cleared(ctx, {"kind": "state_move", "target": "t1"}, slot="state_move", subject="t1", phase="p1", state=state, by_id=by_id)
     assert moved[0] is True and _row_state(ctx) == "approved"
     _fake_merge_git(monkeypatch)
-    ok, detail = epic._execute(ctx, {"kind": "merge_stack", "target": "t1"}, slot="merge", subject="t1", phase="p1", state=state, by_id=by_id)
+    ok, detail = epic.execute_cleared(ctx, {"kind": "merge_stack", "target": "t1"}, slot="merge", subject="t1", phase="p1", state=state, by_id=by_id)
     assert (ok, detail) == (False, CONFLICT)
     assert state.quarantined == [
         {"id": "t1", "phase": "p1", "grain": "task", "reason": f"merge conflict: {CONFLICT}", "kind": "infra", "patch_kept": True}
@@ -101,7 +101,7 @@ def test_the_quarantine_writer_leaves_a_done_row_alone(store_conn, item, monkeyp
     ctx = _merge_ctx(store_conn, "store")
     _put(ctx, item, "done")
     calls = _spy(monkeypatch)
-    epic._quarantine_row(ctx, "p1", "t1", approved_is_open=approved_is_open)
+    epic.quarantine_row(ctx, "p1", "t1", approved_is_open=approved_is_open)
     _conflicting_merge(ctx, monkeypatch)
     assert calls == []
     assert _row_state(ctx) == "done"
@@ -110,10 +110,10 @@ def test_the_quarantine_writer_leaves_a_done_row_alone(store_conn, item, monkeyp
 def test_a_stale_leader_writes_no_quarantine_to_the_row(store_conn, item, monkeypatch):  # noqa: F811
     ctx = _merge_ctx(store_conn, "store")
     _put(ctx, item, "ready")
-    monkeypatch.setattr(epic, "_fenced", lambda _ctx: STALE)
+    monkeypatch.setattr(epic, "fence_reason", lambda _ctx: STALE)
     calls = _spy(monkeypatch)
-    epic._quarantine_row(ctx, "p1", "t1")
-    epic._quarantine_row(ctx, "p1", "t1", approved_is_open=True)
+    epic.quarantine_row(ctx, "p1", "t1")
+    epic.quarantine_row(ctx, "p1", "t1", approved_is_open=True)
     assert calls == []
     assert _row_state(ctx) == "ready"
 

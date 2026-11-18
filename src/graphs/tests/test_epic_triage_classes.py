@@ -143,7 +143,7 @@ def test_ticket_defect_with_no_arm_writes_the_amendment_to_the_row_and_builds_on
 
 
 def test_a_flagged_amendment_the_harness_cannot_write_holds_the_task_unbuilt(monkeypatch, repo, cart, tmp_path) -> None:  # noqa: F811
-    monkeypatch.setattr(epic_module, "_amended_body", lambda old, action: f"{action}\n{old}")  # not append-only
+    monkeypatch.setattr(epic_module, "amended_body", lambda old, action: f"{action}\n{old}")  # not append-only
     result, runner, store = _drive(repo, cart, tmp_path, _answer("ticket_defect"))
     row = _row(store, "t1-probe")
     assert not _built(runner, "t1-probe")
@@ -363,7 +363,7 @@ def test_a_combine_whose_fold_fails_puts_the_needs_and_the_state_back_and_holds_
 
 
 def test_when_the_queue_rows_cannot_be_read_a_task_with_attempts_is_not_built(monkeypatch, repo, cart, tmp_path) -> None:  # noqa: F811
-    monkeypatch.setattr(epic_module, "_queue_rows", lambda ctx: None)
+    monkeypatch.setattr(epic_module, "read_queue_rows", lambda ctx: None)
     _, runner, store = _drive(repo, cart, tmp_path, _answer("hold"))
     assert not _triage_calls(runner) and not _built(runner, "t1-probe")
     assert _row(store, "t1-probe")["state"] == "ready"  # left for the next run, which reads the flag
@@ -378,7 +378,7 @@ def test_queue_rows_read_none_when_the_store_read_fails(monkeypatch, tmp_path) -
 
     monkeypatch.setattr(store_queue, "read", broken)
     ctx = SimpleNamespace(store=SimpleNamespace(conn=object()), initiative_id=INITIATIVE)
-    assert epic_module._queue_rows(ctx) is None
+    assert epic_module.read_queue_rows(ctx) is None
 
 
 def test_combined_needs_give_the_sibling_the_folded_tasks_own_needs() -> None:

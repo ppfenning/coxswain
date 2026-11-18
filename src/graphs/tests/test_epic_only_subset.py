@@ -1,4 +1,4 @@
-"""`_run_phase(only=...)` builds a named subset of a phase and judges the phase once, when it is finished."""
+"""`run_phase_tasks(only=...)` builds a named subset of a phase and judges the phase once, when it is finished."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from harness import epic as epic_module
-from harness.epic import _buildable, _Ctx, _earlier_merged, _run_phase
+from harness.epic import Ctx, buildable, earlier_merged, run_phase_tasks
 from harness.store_migrate import open_store
 from harness.store_write import Store
 from tests.test_epic_driver import (  # noqa: F401
@@ -27,8 +27,8 @@ A, B = "t1-probe", "t2-bench"
 PATCHES = {A: new_file_patch(f"{A}.txt"), B: new_file_patch(f"{B}.txt")}
 
 
-def _ctx(root: Path, cartridge: dict, tmp_path: Path, runner: Runner) -> _Ctx:
-    return _Ctx(
+def _ctx(root: Path, cartridge: dict, tmp_path: Path, runner: Runner) -> Ctx:
+    return Ctx(
         repo=root,
         cartridge=cartridge,
         runner=runner,
@@ -50,8 +50,8 @@ def _ctx(root: Path, cartridge: dict, tmp_path: Path, runner: Runner) -> _Ctx:
     )
 
 
-def _call(ctx: _Ctx, work: dict, only: frozenset[str] | None) -> dict:
-    return _run_phase(ctx, initiative=work, phase=PHASE, parents=(), items=work["items"], only=only)
+def _call(ctx: Ctx, work: dict, only: frozenset[str] | None) -> dict:
+    return run_phase_tasks(ctx, initiative=work, phase=PHASE, parents=(), items=work["items"], only=only)
 
 
 @pytest.fixture
@@ -78,8 +78,8 @@ def _built_ids(runner: Runner) -> set[str]:
 
 def test_only_narrows_the_buildable_set() -> None:
     items = initiative(two_phases=False)["items"]
-    assert [i["id"] for i in _buildable(items, PHASE, {})] == [A, B]
-    assert [i["id"] for i in _buildable(items, PHASE, {}, frozenset({B}))] == [B]
+    assert [i["id"] for i in buildable(items, PHASE, {})] == [A, B]
+    assert [i["id"] for i in buildable(items, PHASE, {}, frozenset({B}))] == [B]
 
 
 def test_earlier_merged_takes_approved_items_outside_the_run_with_or_without_a_handoff() -> None:
@@ -90,7 +90,7 @@ def test_earlier_merged_takes_approved_items_outside_the_run_with_or_without_a_h
         {"id": "d", "phase": "q", "state": "approved", "handoff": {"files_changed": ["d.py"]}},
         {"id": "e", "phase": "p", "state": "approved", "handoff": {"files_changed": ["e.py"]}},
     ]
-    assert [i["id"] for i in _earlier_merged(items, "p", {"e"})] == ["a", "b"]
+    assert [i["id"] for i in earlier_merged(items, "p", {"e"})] == ["a", "b"]
 
 
 def test_two_calls_build_one_task_each_on_one_branch_and_the_second_validates_the_whole_phase(
@@ -99,7 +99,7 @@ def test_two_calls_build_one_task_each_on_one_branch_and_the_second_validates_th
     runner = Runner(PATCHES)
     ctx = _ctx(repo, cart, tmp_path, runner)
     work = initiative(two_phases=False)
-    epic_module._mirror_read(ctx, work["items"])
+    epic_module.mirror_read(ctx, work["items"])
 
     first = _call(ctx, work, frozenset({A}))
     assert _built_ids(runner) == {A}
@@ -135,7 +135,7 @@ def test_no_subset_builds_every_ready_task_and_validates_exactly_those(
     runner = Runner(PATCHES)
     ctx = _ctx(repo, cart, tmp_path, runner)
     work = initiative(two_phases=False)
-    epic_module._mirror_read(ctx, work["items"])
+    epic_module.mirror_read(ctx, work["items"])
 
     record = _call(ctx, work, None)
 

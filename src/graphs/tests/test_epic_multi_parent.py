@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from harness.epic import ASSEMBLY_FAILED, _needs_missing, _open_phase_worktree, _required_refs, _run_phase
+from harness.epic import ASSEMBLY_FAILED, needs_missing, open_phase_worktree, required_refs, run_phase_tasks
 from tests.test_epic_driver import (  # noqa: F401 -- cart and repo are fixtures
     cart,
     drive,
@@ -126,15 +126,15 @@ def test_the_needs_check_covers_every_parent(repo, tmp_path) -> None:  # noqa: F
          "merged_commit": git("rev-parse", "HEAD", cwd=tree)}
         for name, tree in trees.items()
     ] + [{"id": "t3-cutover", "phase": PHASE, "state": "ready", "needs": ["t-pa", "t-pb"]}]
-    refs = _required_refs(items, PHASE, parents, ctx.phase_branch, "main")
+    refs = required_refs(items, PHASE, parents, ctx.phase_branch, "main")
     assert sorted(refs) == sorted(i["merged_commit"] for i in items[:2])
-    ok, detail, _ = _open_phase_worktree(ctx, PHASE, "main", parents, refs)
+    ok, detail, _ = open_phase_worktree(ctx, PHASE, "main", parents, refs)
     assert ok, detail
-    assert _needs_missing(ctx, PHASE, refs) is False
+    assert needs_missing(ctx, PHASE, refs) is False
     commit_file(trees["pb"], "more.md", "more")
-    assert _needs_missing(ctx, PHASE, refs) is False
+    assert needs_missing(ctx, PHASE, refs) is False
     stale = [*refs, git("rev-parse", "HEAD", cwd=trees["pb"])]
-    assert _needs_missing(ctx, PHASE, stale) is True
+    assert needs_missing(ctx, PHASE, stale) is True
 
 
 def test_a_cut_uses_each_parents_branch_tip_while_the_needs_check_keeps_the_stored_commits(repo, tmp_path) -> None:  # noqa: F811
@@ -152,10 +152,10 @@ def test_a_cut_uses_each_parents_branch_tip_while_the_needs_check_keeps_the_stor
         for name in parents
     ] + [{"id": "t3-cutover", "phase": PHASE, "state": "ready", "needs": ["t-pa", "t-pb"]}]
 
-    cut = _required_refs(items, PHASE, parents, ctx.phase_branch, "main", cut=True)
+    cut = required_refs(items, PHASE, parents, ctx.phase_branch, "main", cut=True)
     assert cut == [ctx.phase_branch("pa"), ctx.phase_branch("pb")]
-    assert _required_refs(items, PHASE, parents, ctx.phase_branch, "main") == sorted(stored.values())
-    ok, detail, _ = _open_phase_worktree(ctx, PHASE, "main", parents, cut)
+    assert required_refs(items, PHASE, parents, ctx.phase_branch, "main") == sorted(stored.values())
+    ok, detail, _ = open_phase_worktree(ctx, PHASE, "main", parents, cut)
     assert ok, detail
     assert is_ancestor(repo, later, ctx.phase_branch(PHASE))
 
@@ -167,13 +167,13 @@ def test_a_reused_two_parent_branch_with_own_commits_is_blocked_not_rebased(repo
     for name, tree in trees.items():
         git("worktree", "add", "-b", first.phase_branch(name), str(tree), "main", cwd=repo)
         commit_file(tree, f"{name}.md", name)
-    ok, detail, _ = _open_phase_worktree(first, PHASE, "main", parents)
+    ok, detail, _ = open_phase_worktree(first, PHASE, "main", parents)
     assert ok, detail
     commit_file(first.phase_worktree(PHASE), "own.md", f"epic r1: merge t3-cutover into {PHASE}")
     commit_file(trees["pb"], "more.md", "more")
 
     items = [{"id": "t3-cutover", "phase": PHASE, "state": "approved", "needs": [], "surfaces": []}]
-    record = _run_phase(_ctx(repo, tmp_path, "r2"), initiative={"id": "x"}, phase=PHASE, parents=parents, items=items)
+    record = run_phase_tasks(_ctx(repo, tmp_path, "r2"), initiative={"id": "x"}, phase=PHASE, parents=parents, items=items)
 
     assert record["status"] == "blocked"
     assert record["rebased"] is False

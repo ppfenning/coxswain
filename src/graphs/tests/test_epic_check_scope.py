@@ -68,7 +68,7 @@ def tree(repo: Path) -> Path:  # noqa: F811
 def lane(monkeypatch) -> dict:
     """Every lane `run_checks` call as its commands, with the context and record `_build_task` returned."""
     seen: dict = {"lane_calls": [], "ctx": None, "record": None}
-    build = epic._build_task
+    build = epic.build_task
 
     def counts(cmd: str) -> dict[str, int]:
         return {"passed": 3, "failed": 0, "skipped": 5} if "pytest" in cmd else {}
@@ -94,7 +94,7 @@ def lane(monkeypatch) -> dict:
 
     monkeypatch.setattr(epic, "run_checks", fake_run_checks)
     monkeypatch.setattr(check_reuse, "run_checks", fake_run_checks)  # the task gate runs through the ledger
-    monkeypatch.setattr(epic, "_build_task", spy_build)
+    monkeypatch.setattr(epic, "build_task", spy_build)
     return seen
 
 
@@ -196,12 +196,12 @@ def test_an_added_source_module_runs_its_component_whole(run) -> None:
 
 
 def test_an_unreadable_diff_runs_the_full_list_and_says_why(run, monkeypatch) -> None:
-    real = epic._git
+    real = epic.git_in
 
     def git_without_diff(*args, **kw):
         return (False, "bad ref") if "--name-only" in args else real(*args, **kw)
 
-    monkeypatch.setattr(epic, "_git", git_without_diff)
+    monkeypatch.setattr(epic, "git_in", git_without_diff)
     seen = run(tools_edit())
     assert seen["lane_calls"] == [[c["cmd"] for c in CHECKS]]
     assert set(seen["record"]["check_scope"]["reason"].values()) == {"fallback diff unreadable: bad ref"}
@@ -220,7 +220,7 @@ def test_a_rename_hands_the_selector_both_paths(run, monkeypatch) -> None:
 
 
 def test_a_style_pass_runs_a_narrowed_command_and_records_the_totals(tree, cart, tmp_path, monkeypatch) -> None:  # noqa: F811
-    monkeypatch.setattr(epic, "_collected_ids", lambda _worktree: {"test_x.py::test_a"})
+    monkeypatch.setattr(epic, "collected_test_ids", lambda _worktree: {"test_x.py::test_a"})
     real, runs = epic.run_checks, []
 
     def run_checks(worktree, checks, **kw):
@@ -235,14 +235,14 @@ def test_a_style_pass_runs_a_narrowed_command_and_records_the_totals(tree, cart,
         ]
         return [*real(worktree, live, **kw), *fake]
 
-    builds, build = {}, epic._build_task
+    builds, build = {}, epic.build_task
 
     def spy_build(ctx, **kw):
         builds[kw["task"]] = record = build(ctx, **kw)
         return record
 
     monkeypatch.setattr(epic, "run_checks", run_checks)
-    monkeypatch.setattr(epic, "_build_task", spy_build)
+    monkeypatch.setattr(epic, "build_task", spy_build)
     lint = f"{sys.executable} check.py"
     cart["skills"]["style_pass"] = "acme-skills:style"
     cart["landing_areas"]["checks"] = [{"name": "lint", "cmd": lint}, {"name": "tools", "cmd": TOOLS}]

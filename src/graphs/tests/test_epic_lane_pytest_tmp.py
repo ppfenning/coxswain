@@ -105,14 +105,14 @@ def test_the_phase_level_checks_use_a_directory_of_their_own(repo, cart, tmp_pat
 
 def test_a_name_a_task_could_carry_never_reaches_the_phase_level_directory() -> None:
     ctx = SimpleNamespace(worktree_root=Path("/runs"), run_id=RUN_ID)
-    used = {epic._scratch_dir(ctx, PHASE, name) for name in ("@level", "@level-integration", "@trim", "@rescue-t1")}
-    assert not used & {epic._scratch_dir(ctx, PHASE, name) for name in ("level", "level-integration", "trim", "t1")}
+    used = {epic.scratch_dir(ctx, PHASE, name) for name in ("@level", "@level-integration", "@trim", "@rescue-t1")}
+    assert not used & {epic.scratch_dir(ctx, PHASE, name) for name in ("level", "level-integration", "trim", "t1")}
 
 
 def test_two_runs_of_one_id_under_two_worktree_roots_never_share_a_directory() -> None:
     one = SimpleNamespace(worktree_root=Path("/a/worktrees"), run_id=RUN_ID)
     other = SimpleNamespace(worktree_root=Path("/b/worktrees"), run_id=RUN_ID)
-    assert epic._scratch_dir(one, PHASE, "t1") != epic._scratch_dir(other, PHASE, "t1")
+    assert epic.scratch_dir(one, PHASE, "t1") != epic.scratch_dir(other, PHASE, "t1")
 
 
 def test_a_lane_directory_is_gone_before_the_phase_level_checks_run(repo, cart, tmp_path, monkeypatch) -> None:  # noqa: F811
@@ -149,23 +149,23 @@ def test_an_operators_pytest_addopts_pass_through_and_the_tmpdir_still_moves_to_
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "temp"))
     monkeypatch.setenv("PYTEST_ADDOPTS", "--basetemp=/operator")
     ctx = SimpleNamespace(worktree_root=tmp_path / "worktrees", run_id=RUN_ID, lane_workers=None)
-    env = epic._checks_env(ctx, {}, PHASE, "t1-probe")
+    env = epic.checks_env(ctx, {}, PHASE, "t1-probe")
     assert env["PYTEST_ADDOPTS"] == "--basetemp=/operator"
-    assert _tmpdir(env).parent == epic._run_scratch(ctx) / "pytest-tmp"
+    assert _tmpdir(env).parent == epic.run_scratch(ctx) / "pytest-tmp"
     assert _tmpdir(env).is_relative_to(tmp_path / "temp") and _tmpdir(env).is_dir()
 
 
 def test_a_rescue_removes_its_runs_temp_directory(repo, cart, tmp_path, monkeypatch) -> None:  # noqa: F811
     ctx, item, _ = _setup(repo, cart, tmp_path, new_file_patch("t1-probe.txt"))
     seen: list[Path] = []
-    real = epic._checks_env
+    real = epic.checks_env
 
     def spy(ctx, lane, phase, task):
         env = real(ctx, lane, phase, task)
         seen.append(_tmpdir(env))
         return env
 
-    monkeypatch.setattr(epic, "_checks_env", spy)
+    monkeypatch.setattr(epic, "checks_env", spy)
     assert _rescue(ctx, item, Runner({}))["status"] == "approved"
     assert seen and not any(path.exists() for path in seen)
-    assert not epic._run_scratch(ctx).exists()
+    assert not epic.run_scratch(ctx).exists()

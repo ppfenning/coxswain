@@ -32,7 +32,7 @@ only at a gate.
 
 Checks are the cartridge's `landing_areas.checks` plus whatever the repository
 itself declares in a root `.agent-checks` file, read once at the edge and
-merged in by `_Ctx.checks`.
+merged in by `Ctx.checks`.
 """
 
 from __future__ import annotations
@@ -42,13 +42,13 @@ from typing import Any
 from core import module_facade
 from harness.epic_branches import resolve_default_ref as resolve_default_ref
 from harness.epic_build import work_state_of as work_state_of
+from harness.epic_context import Ctx as Ctx
 from harness.epic_context import PoolSetting as PoolSetting
-from harness.epic_context import _Ctx as _Ctx
 from harness.epic_context import phase_order as phase_order
 from harness.epic_execute import rescue_task as rescue_task
 from harness.epic_phase_branch import branch_action as branch_action
 from harness.epic_records import PRINCIPAL as PRINCIPAL
-from harness.epic_records import _mirror_read as _mirror_read
+from harness.epic_records import mirror_read as mirror_read
 from harness.epic_run import run_epic as run_epic
 from harness.waves import phase_parents as phase_parents
 

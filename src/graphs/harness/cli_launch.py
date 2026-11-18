@@ -697,7 +697,7 @@ def _run_rescue(
 ) -> tuple[int, str]:
     """(exit, run status). Exit 0 with a JSON report for any answer, LimitStop included; 1 for a task not in the initiative."""
     # Not module-level: harness/epic imports this package (see the epic branch of `_run_graph`).
-    from harness.epic import _Ctx, _mirror_read, rescue_task, resolve_default_ref, work_state_of
+    from harness.epic import Ctx, mirror_read, rescue_task, resolve_default_ref, work_state_of
 
     for flag, value in (("--initiative", args.initiative), ("--task", args.task), ("--repo", args.repo)):
         if not value:
@@ -723,7 +723,7 @@ def _run_rescue(
         agent_checks = (repo / ".agent-checks").read_text(encoding="utf-8-sig")
     except (OSError, UnicodeDecodeError):
         agent_checks = ""
-    ctx = _Ctx(
+    ctx = Ctx(
         repo=repo,
         cartridge=cartridge,
         runner=runner,
@@ -750,7 +750,7 @@ def _run_rescue(
     )
     # As `run_epic` does before any work: under work_state store the row's state wins, so the move's compare-and-set holds.
     items = [dict(found)]
-    _mirror_read(ctx, items)
+    mirror_read(ctx, items)
     mark = store.conn.dialect.placeholder
     stored = store.conn.query_all(f"SELECT run_id, ts, cause FROM attempts WHERE task_id = {mark}", (args.task,))
     try:

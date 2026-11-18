@@ -15,20 +15,20 @@ from harness import termination
 from harness.cause_model import cause_evidence, classify_with_model, one_line
 from harness.cause_rule import classify_cause
 from harness.checks import all_passed, coverage_floor_holds, run_checks
-from harness.epic_branches import _DRAFT_KINDS, _IDENTITY, _STYLE_PASS_PROMPT, _STYLE_PASS_SCHEMA, _checks_env
-from harness.epic_build import _body_stamp, _collected_ids
-from harness.epic_context import _Ctx, _git
-from harness.epic_phase_branch import _branch_ahead, _branch_exists, open_in_phase
+from harness.epic_branches import DRAFT_KINDS, IDENTITY, STYLE_PASS_PROMPT, STYLE_PASS_SCHEMA, checks_env
+from harness.epic_build import body_stamp, collected_test_ids
+from harness.epic_context import Ctx, git_in
+from harness.epic_phase_branch import branch_ahead, branch_exists, open_in_phase
 from harness.epic_records import (
-    _END_WRITE_WINDOW_S,
-    _Execution,
-    _fenced,
-    _is_stale_epoch,
-    _log,
-    _now,
-    _quarantine_row,
-    _save_result,
-    _wait_if_paused,
+    END_WRITE_WINDOW_S,
+    Execution,
+    epic_log,
+    fence_reason,
+    is_stale_epoch,
+    quarantine_row,
+    save_task_result,
+    utc_now,
+    wait_if_paused_here,
 )
 from harness.escalate import escalate_self_modification
 from harness.resume import load_result
@@ -37,8 +37,8 @@ from harness.worktree import apply_patch, create_worktree, remove_worktree
 from runner.protocol import LimitStop
 
 
-def _quarantine_task(
-    ctx: _Ctx,
+def quarantine_task(
+    ctx: Ctx,
     by_id: Mapping[str, dict[str, Any]],
     *,
     phase: str,
@@ -59,14 +59,14 @@ def _quarantine_task(
     the quarantine entry itself.
 
     `kind` is the closed set from docs/design/observed-record.md §3. `infra`
-    reaches here three ways: the caller's own branch at the `_open_phase_worktree`
+    reaches here three ways: the caller's own branch at the `open_phase_worktree`
     failure site, which marks the phase `phase_failed_to_start` before this
-    function ever sees a task; `_execute`, when the apply arm itself raises
+    function ever sees a task; `execute_cleared`, when the apply arm itself raises
     rather than reports; and a non-build node raising mid-round, where the patch
     a later node was handed is kept rather than discarded. `unverified` is an
     approved patch the validator would not sign off, kept for the same reason.
     Both carry `patch_kept: True` on both the entry and the attempt. `infra` from
-    `_execute` names the BUILD's already-approved patch already on the task
+    `execute_cleared` names the BUILD's already-approved patch already on the task
     record, not a resumable arm session: `auto_apply`'s `runner.run` call carries
     no `thread=`, so nothing about the failed arm call itself survives to be
     resumed.
@@ -92,7 +92,7 @@ def _quarantine_task(
 
     `approved_is_open` lets the store row leave `approved`: the end-of-run audit quarantines a task already moved there.
     """
-    stale = _fenced(ctx)
+    stale = fence_reason(ctx)
     if stale is not None:
         # A stale leader records no attempt anywhere, so it is not an attempt either.
         return {"id": task, "phase": phase, "grain": "task", "reason": f"{stale}; not recorded: {reason}", "kind": "no_work"}
@@ -105,7 +105,7 @@ def _quarantine_task(
     entry: dict[str, Any] = {"id": task, "phase": phase, "grain": "task", "reason": reason, "kind": kind}
     if patch_kept:
         entry["patch_kept"] = True
-    ts = _now()
+    ts = utc_now()
     path = (by_id.get(task) or {}).get("path")
     if path:
         with contextlib.suppress(WorkStoreError, OSError):
@@ -130,10 +130,10 @@ def _quarantine_task(
                 ctx.run_id, task, seq, phase, kind, detail or reason, ts, epoch=ctx.epoch, cause=judged_cause, cause_why=cause_why
             )
 
-        ctx.retry.write(attempt, _END_WRITE_WINDOW_S)
-        _record_task_cause(ctx, phase, task, judged_cause, cause_why, by_id.get(task))
+        ctx.retry.write(attempt, END_WRITE_WINDOW_S)
+        record_task_cause(ctx, phase, task, judged_cause, cause_why, by_id.get(task))
     # A merge conflict leaves the row at approved with its work unlanded; approved is not always finished.
-    _quarantine_row(ctx, phase, task, approved_is_open=approved_is_open or judged == ("harness", "merge conflict"))
+    quarantine_row(ctx, phase, task, approved_is_open=approved_is_open or judged == ("harness", "merge conflict"))
     return entry
 
 
@@ -151,10 +151,10 @@ def _cause_of(runner: Any, kind: str, reason: str, result: Mapping[str, Any] | N
         return "unknown", one_line(f"classifier failed: {type(exc).__name__}: {exc}")
 
 
-def _record_task_cause(
-    ctx: _Ctx, phase: str, task: str, cause: str, cause_why: str, item: Mapping[str, Any] | None = None,
+def record_task_cause(
+    ctx: Ctx, phase: str, task: str, cause: str, cause_why: str, item: Mapping[str, Any] | None = None,
 ) -> None:
-    """Put the cause, and the body the task was built on (`_body_stamp(item)`), on this run's saved result, which
+    """Put the cause, and the body the task was built on (`body_stamp(item)`), on this run's saved result, which
     mirrors it into the store row: file and row stay equal.
 
     A task with no saved result gets a minimal result-shaped one. A failure is a warning, never a block.
@@ -167,9 +167,9 @@ def _record_task_cause(
             "initiative": ctx.initiative_id,
             "phase": phase,
         }
-        _save_result(ctx, {**saved, "cause": cause, "cause_why": cause_why, **_body_stamp(item)}, phase=phase, task=task)
+        save_task_result(ctx, {**saved, "cause": cause, "cause_why": cause_why, **body_stamp(item)}, phase=phase, task=task)
     except Exception as exc:
-        _log.warning("cause for %s/%s/%s not recorded on the task record: %r", ctx.run_id, phase, task, exc)
+        epic_log.warning("cause for %s/%s/%s not recorded on the task record: %r", ctx.run_id, phase, task, exc)
 
 
 def _next_attempt_seq(store: Store, run_id: str, task: str) -> int:
@@ -182,14 +182,14 @@ def _next_attempt_seq(store: Store, run_id: str, task: str) -> int:
 INTERRUPTED_KIND = "interrupted"  # a task the lost lease stopped mid-run; never an attempt
 
 
-def _stale_phase(record: dict[str, Any], reason: str) -> dict[str, Any]:
+def stale_phase(record: dict[str, Any], reason: str) -> dict[str, Any]:
     """Stop the phase on a fence, so it neither reads complete nor unblocks its dependents.
 
-    A lost lease leaves the phase `interrupted`. Its in-flight tasks, and the task entries `_quarantine_task`
+    A lost lease leaves the phase `interrupted`. Its in-flight tasks, and the task entries `quarantine_task`
     returned once fenced, move from `quarantined` to `interrupted`. Merged and otherwise quarantined tasks stay.
     """
     record["reason"] = reason
-    if not _is_stale_epoch(reason):
+    if not is_stale_epoch(reason):
         record["status"] = "blocked"
         record["quarantined"].append(
             {"id": record["phase"], "phase": record["phase"], "grain": "phase", "reason": reason, "kind": "no_work"}
@@ -213,11 +213,11 @@ def _stale_phase(record: dict[str, Any], reason: str) -> dict[str, Any]:
 
 
 def _fenced_task_entry(entry: Mapping[str, Any]) -> bool:
-    """A task quarantine entry that `_quarantine_task` returned because the lease was already lost."""
-    return entry.get("grain") == "task" and _is_stale_epoch(str(entry.get("reason")))
+    """A task quarantine entry that `quarantine_task` returned because the lease was already lost."""
+    return entry.get("grain") == "task" and is_stale_epoch(str(entry.get("reason")))
 
 
-def _trim_phase(ctx: _Ctx, phase: str) -> str | None:
+def trim_phase(ctx: Ctx, phase: str) -> str | None:
     """Run `style_pass` once over the phase's assembled diff, gated on the coverage floor.
 
     §5 is literal: the diff is against `main` (`ctx.default_ref`), not the
@@ -239,20 +239,20 @@ def _trim_phase(ctx: _Ctx, phase: str) -> str | None:
     """
     worktree = ctx.phase_worktree(phase)
     branch = ctx.phase_branch(phase)
-    ok, diff = _git("-C", str(ctx.repo), "diff", f"{ctx.default_ref}...{branch}")
+    ok, diff = git_in("-C", str(ctx.repo), "diff", f"{ctx.default_ref}...{branch}")
     if not ok or not diff.strip():
         return None
     # The only direct `ctx.runner.run` call this module owns. No `task=` here:
     # `style_pass` runs once over the whole PHASE diff — every task's work
     # combined — so there is no single task id to stamp, and its ledger row
-    # is `role: "style_pass"`, which `_trace_evidence`'s `role == "build"`
+    # is `role: "style_pass"`, which `trace_evidence`'s `role == "build"`
     # filter excludes regardless of `task_id` (see the test naming this call).
     result = ctx.runner.run(
         role="style_pass",
         tier="standard",
-        schema=_STYLE_PASS_SCHEMA,
-        wait_if_paused=lambda: _wait_if_paused(ctx),
-        prompt=f"{_STYLE_PASS_PROMPT}\n\nPhase: {phase}\n\nPhase diff:\n{diff}",
+        schema=STYLE_PASS_SCHEMA,
+        wait_if_paused=lambda: wait_if_paused_here(ctx),
+        prompt=f"{STYLE_PASS_PROMPT}\n\nPhase: {phase}\n\nPhase diff:\n{diff}",
         context=list(ctx.cartridge.get("context") or []),
     )
     patch = str(result.get("patch") or "")
@@ -267,23 +267,23 @@ def _trim_phase(ctx: _Ctx, phase: str) -> str | None:
         after_tree = Path(scratch) / "after"
         try:
             ok, _ = create_worktree(ctx.repo, before_tree, branch=before_branch, base=branch)
-            before = _collected_ids(before_tree) if ok else None
+            before = collected_test_ids(before_tree) if ok else None
 
             ok, _ = create_worktree(ctx.repo, after_tree, branch=after_branch, base=branch)
             applied = ok and apply_patch(patch, after_tree)[0]
-            after = _collected_ids(after_tree) if applied else None
+            after = collected_test_ids(after_tree) if applied else None
 
             if before is None or after is None:
                 outcome = "refused (coverage floor)"
             else:
-                checks_ok = all_passed(run_checks(after_tree, ctx.checks, env=_checks_env(ctx, {}, phase, "@trim"))) if ctx.checks else True
+                checks_ok = all_passed(run_checks(after_tree, ctx.checks, env=checks_env(ctx, {}, phase, "@trim"))) if ctx.checks else True
                 if not (coverage_floor_holds(before, after) and checks_ok):
                     outcome = "refused (coverage floor)"
         finally:
             remove_worktree(ctx.repo, before_tree)
             remove_worktree(ctx.repo, after_tree)
-            _git("-C", str(ctx.repo), "branch", "-D", before_branch)
-            _git("-C", str(ctx.repo), "branch", "-D", after_branch)
+            git_in("-C", str(ctx.repo), "branch", "-D", before_branch)
+            git_in("-C", str(ctx.repo), "branch", "-D", after_branch)
     if outcome is not None:
         return outcome
 
@@ -297,16 +297,16 @@ def _trim_phase(ctx: _Ctx, phase: str) -> str | None:
     # the harness-owned `agents/<run>/<task>` scratch namespace into the
     # commit this phase later squash-merges to main. `-u` restages only paths
     # already tracked on the branch — exactly what style_pass's patch touched.
-    ok, _ = _git(*_IDENTITY, "-C", str(worktree), "add", "-u")
+    ok, _ = git_in(*IDENTITY, "-C", str(worktree), "add", "-u")
     if ok:
-        ok, _ = _git(*_IDENTITY, "-C", str(worktree), "commit", "-q", "-m", f"epic {ctx.run_id}: trim {phase}")
+        ok, _ = git_in(*IDENTITY, "-C", str(worktree), "commit", "-q", "-m", f"epic {ctx.run_id}: trim {phase}")
     if not ok:
         return "refused (coverage floor)"
     removed = sum(1 for line in patch.splitlines() if line.startswith("-") and not line.startswith("---"))
     return f"{removed} lines removed"
 
 
-def _phase_status(
+def phase_status(
     verdict: Mapping[str, Any] | None,
     *,
     validated: bool,
@@ -422,8 +422,8 @@ def item_apply(path: str | None, item: Mapping[str, Any]) -> dict[str, Any]:
     return {"apply": {"path": str(path), "item": dict(item)}} if path else {}
 
 
-def _build_batch(
-    ctx: _Ctx,
+def build_batch(
+    ctx: Ctx,
     *,
     phase: str,
     surviving: Sequence[str],
@@ -446,7 +446,7 @@ def _build_batch(
     for task in surviving:
         for item in built[task]["proposals"]:
             batch.append(item)
-            if item.get("kind") in _DRAFT_KINDS:
+            if item.get("kind") in DRAFT_KINDS:
                 slots[id(item)] = ("draft", task)
 
     for task in surviving:
@@ -511,7 +511,7 @@ def _build_batch(
         task, other, file, text = pair["task"], pair["other"], pair["file"], pair["text"]
         ids = " and ".join(sorted((task, other)))
         # Propose only, per conventions.md's propose-don't-write posture: no
-        # slots entry, so `_execute`'s default ("other", "") slot never merges
+        # slots entry, so `execute_cleared`'s default ("other", "") slot never merges
         # or moves anything on this proposal's account.
         batch.append(
             proposal(
@@ -549,15 +549,15 @@ def kept_work_refusal(landed: bool, merged: bool | None, escalated: bool, ahead:
     return None
 
 
-def _unkept_work(ctx: _Ctx, phase: str, subject: str, state: _Execution) -> str | None:
+def unkept_work(ctx: Ctx, phase: str, subject: str, state: Execution) -> str | None:
     """Read what happened to the task's draft and merge, and report why its work is not kept, if it is not."""
     escalated = subject in state.escalated
     branch = ctx.scratch_branch(subject) if escalated else ctx.phase_branch(phase)
     return kept_work_refusal(
-        landed=_branch_exists(ctx, branch) if escalated else bool(state.landed.get(subject)),
+        landed=branch_exists(ctx, branch) if escalated else bool(state.landed.get(subject)),
         merged=state.merged.get(subject),
         escalated=escalated,
-        ahead=_branch_ahead(ctx, branch),
+        ahead=branch_ahead(ctx, branch),
     )
 
 
@@ -571,7 +571,7 @@ def draft_skipped_note(*, landed: bool, merged: bool | None, escalated: bool, br
     return f"approved without a draft branch: {detail}. The work is on the task branch; `runs land` creates the PR."
 
 
-def _draft_note(ctx: _Ctx, subject: str, state: _Execution) -> str | None:
+def draft_note(ctx: Ctx, subject: str, state: Execution) -> str | None:
     """Read the scratch branch and the draft step's outcome, and return the note when the work is kept without a draft."""
     scratch = ctx.scratch_branch(subject)
     return draft_skipped_note(
@@ -579,7 +579,7 @@ def _draft_note(ctx: _Ctx, subject: str, state: _Execution) -> str | None:
         merged=state.merged.get(subject),
         escalated=subject in state.escalated,
         branch_kept=kept_work_refusal(
-            landed=_branch_exists(ctx, scratch), merged=None, escalated=True, ahead=_branch_ahead(ctx, scratch)
+            landed=branch_exists(ctx, scratch), merged=None, escalated=True, ahead=branch_ahead(ctx, scratch)
         )
         is None,
         detail=state.draft_detail.get(subject) or "the draft step did not run or was not approved",
@@ -616,17 +616,17 @@ def end_of_run_refusal(facts: BranchFacts, *, merged: bool) -> str | None:
     return kept_work_refusal(landed=True, merged=None, escalated=True, ahead=facts.ahead)
 
 
-def _holds(ctx: _Ctx, commit_branch: str | None, branch: str) -> bool:
+def _holds(ctx: Ctx, commit_branch: str | None, branch: str) -> bool:
     """True when `commit_branch`'s tip is an ancestor of `branch`. A missing branch on either side is False."""
     if not commit_branch:
         return False
-    ok, _ = _git(
+    ok, _ = git_in(
         "-C", str(ctx.repo), "merge-base", "--is-ancestor", f"refs/heads/{commit_branch}", f"refs/heads/{branch}"
     )
     return ok
 
 
-def _gather_branch_facts(ctx: _Ctx, records: Sequence[Mapping[str, Any]]) -> dict[str, BranchFacts]:
+def _gather_branch_facts(ctx: Ctx, records: Sequence[Mapping[str, Any]]) -> dict[str, BranchFacts]:
     """Per task id, the git facts `end_of_run_refusal` judges. The only part of the audit that reads git."""
     facts: dict[str, BranchFacts] = {}
     for record in records:
@@ -637,15 +637,15 @@ def _gather_branch_facts(ctx: _Ctx, records: Sequence[Mapping[str, Any]]) -> dic
         facts[task] = BranchFacts(
             branch=branch,
             draft=draft,
-            exists=_branch_exists(ctx, branch),
+            exists=branch_exists(ctx, branch),
             holds_merge=_holds(ctx, draft, branch) if merged else True,
-            ahead=_branch_ahead(ctx, branch),
+            ahead=branch_ahead(ctx, branch),
         )
     return facts
 
 
-def _audit_approved_kept(
-    ctx: _Ctx, by_id: Mapping[str, dict[str, Any]], tasks: Sequence[dict[str, Any]], quarantined: list[dict[str, Any]]
+def audit_approved_kept(
+    ctx: Ctx, by_id: Mapping[str, dict[str, Any]], tasks: Sequence[dict[str, Any]], quarantined: list[dict[str, Any]]
 ) -> None:
     """Quarantine each task this run moved to approved whose work is no longer on a branch. Never recovers it."""
     approved = [t for t in tasks if t.get("state") == "approved" and not t.get("quarantine")]
@@ -655,7 +655,7 @@ def _audit_approved_kept(
         if why is None:
             continue
         # `no_work`, not `infra`: `infra` marks a patch as kept, and the branch that kept it is what went missing.
-        entry = _quarantine_task(
+        entry = quarantine_task(
             ctx,
             by_id,
             phase=str(record["phase"]),

@@ -118,7 +118,7 @@ def _parse_counts(output: str) -> dict[str, int]:
     return counts
 
 
-def _tail_lines(text: str, n: int = _TAIL_LINES) -> str:
+def tail_lines(text: str, n: int = _TAIL_LINES) -> str:
     lines = text.splitlines()
     if len(lines) <= n:
         return text
@@ -516,7 +516,7 @@ def checks_evidence(
             body = f"{error_text}\n{captured}" if captured else error_text
         else:
             body = captured
-        tail = f"\ncmd: {result.get('cmd')}\n{_tail_lines(body)}"
+        tail = f"\ncmd: {result.get('cmd')}\n{tail_lines(body)}"
         carries_tail = always_tail or not result.get("passed")
         output = summary + tail if carries_tail else summary
         if result.get("reused"):
@@ -540,7 +540,7 @@ def is_harness_fault(reason: str) -> bool:
 def check_feedback(results: Sequence[Mapping[str, Any]]) -> str:
     """The failing checks' name, command, exit code and output tail, for a builder to read."""
     return "\n\n".join(
-        f"{r.get('name')}: {r.get('cmd')}\nexit {r.get('exit_code')}\n{_tail_lines(str(r.get('output_tail') or ''))}"
+        f"{r.get('name')}: {r.get('cmd')}\nexit {r.get('exit_code')}\n{tail_lines(str(r.get('output_tail') or ''))}"
         for r in results
         if not r.get("passed")
     )

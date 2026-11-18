@@ -289,5 +289,5 @@ def at_task(cart, monkeypatch):
     cart["landing_areas"]["land_at"] = "task"
     monkeypatch.setattr(epic, "_push_review_ref", lambda ctx, local, name: (True, ""))
     monkeypatch.setattr(epic, "_existing_pr", lambda ctx, head: (True, ""))
-    monkeypatch.setattr(epic, "_open_review_pr", lambda ctx, *, title, body, head, base: (True, f"pr:{head}"))
+    monkeypatch.setattr(epic, "open_review_pr", lambda ctx, *, title, body, head, base: (True, f"pr:{head}"))
     return cart

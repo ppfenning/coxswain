@@ -66,8 +66,8 @@ def test_at_initiative_a_merge_this_clone_cannot_get_stops_the_phase_without_a_q
     first, _ = drive(hosts.a, cart, tmp_path, work=initiative(two_phases=False), run_id="epic-a", store=store)
     assert first["phases"][0]["initiative_merge"]["status"] == "merged"
     opened: list[str] = []
-    real = epic._open_phase_worktree
-    monkeypatch.setattr(epic, "_open_phase_worktree", lambda *a, **k: opened.append("called") or real(*a, **k))
+    real = epic.open_phase_worktree
+    monkeypatch.setattr(epic, "open_phase_worktree", lambda *a, **k: opened.append("called") or real(*a, **k))
 
     result, runner = drive(hosts.b, hosts.cart_b, hosts.home_b, work=staged(), only_phases=[P2], run_id="epic-b", store=store)
 
@@ -145,8 +145,8 @@ def test_phase_two_on_another_host_builds_on_the_phase_one_branch_it_finds_on_or
 @pytest.mark.usefixtures("at_task")
 def test_a_parent_branch_on_neither_clone_nor_origin_stops_the_phase_without_a_quarantine(hosts, monkeypatch) -> None:
     opened: list[str] = []
-    real = epic._open_phase_worktree
-    monkeypatch.setattr(epic, "_open_phase_worktree", lambda *a, **k: opened.append("called") or real(*a, **k))
+    real = epic.open_phase_worktree
+    monkeypatch.setattr(epic, "open_phase_worktree", lambda *a, **k: opened.append("called") or real(*a, **k))
 
     result, runner = drive(hosts.b, hosts.cart_b, hosts.home_b, work=staged(), only_phases=[P2], run_id="epic-b")
 
@@ -161,10 +161,10 @@ def test_a_parent_branch_on_neither_clone_nor_origin_stops_the_phase_without_a_q
 @pytest.mark.usefixtures("at_task")
 def test_a_parent_whose_needs_resolve_to_commit_ids_still_stops_when_its_branch_is_missing(hosts, monkeypatch) -> None:
     """An open parent with approved, merged needs contributes merged commit ids, which live only on its branch."""
-    monkeypatch.setattr(epic, "_required_refs", lambda *args, **kwargs: ["a" * 40])
+    monkeypatch.setattr(epic, "required_refs", lambda *args, **kwargs: ["a" * 40])
     opened: list[str] = []
-    real = epic._open_phase_worktree
-    monkeypatch.setattr(epic, "_open_phase_worktree", lambda *a, **k: opened.append("called") or real(*a, **k))
+    real = epic.open_phase_worktree
+    monkeypatch.setattr(epic, "open_phase_worktree", lambda *a, **k: opened.append("called") or real(*a, **k))
 
     result, _ = drive(hosts.b, hosts.cart_b, hosts.home_b, work=staged(), only_phases=[P2], run_id="epic-b")
 
@@ -176,7 +176,7 @@ def test_a_parent_whose_needs_resolve_to_commit_ids_still_stops_when_its_branch_
 
 @pytest.mark.usefixtures("at_task")
 def test_a_parent_branch_that_is_missing_but_needed_for_nothing_does_not_stop_the_phase(hosts, monkeypatch) -> None:
-    monkeypatch.setattr(epic, "_required_refs", lambda *args, **kwargs: [])
+    monkeypatch.setattr(epic, "required_refs", lambda *args, **kwargs: [])
 
     result, runner = drive(hosts.b, hosts.cart_b, hosts.home_b, work=staged(), only_phases=[P2], run_id="epic-b")
 
@@ -209,7 +209,7 @@ def test_a_stale_local_branch_is_fast_forwarded_by_the_fetch(hosts, cart, tmp_pa
     git("branch", P1_BRANCH, "main", cwd=hosts.b)
     stale = git("rev-parse", P1_BRANCH, cwd=hosts.b)
 
-    outcomes = epic._fetch_phase_branches(SimpleNamespace(repo=hosts.b), [P1_BRANCH])
+    outcomes = epic.fetch_phase_branches(SimpleNamespace(repo=hosts.b), [P1_BRANCH])
 
     assert outcomes[P1_BRANCH].kind == Kind.FAST_FORWARDED
     assert stale != git("rev-parse", P1_BRANCH, cwd=hosts.b) == git("rev-parse", f"origin/{P1_BRANCH}", cwd=hosts.b)
@@ -222,7 +222,7 @@ def test_a_local_branch_holding_its_own_commit_is_not_overwritten_by_the_fetch(h
               f"{P1_BRANCH}^{{tree}}", cwd=hosts.b)
     git("update-ref", f"refs/heads/{P1_BRANCH}", own, cwd=hosts.b)
 
-    outcomes = epic._fetch_phase_branches(SimpleNamespace(repo=hosts.b), [P1_BRANCH])
+    outcomes = epic.fetch_phase_branches(SimpleNamespace(repo=hosts.b), [P1_BRANCH])
 
     assert outcomes[P1_BRANCH].kind == Kind.DIVERGED
     assert git("rev-parse", P1_BRANCH, cwd=hosts.b) == own
@@ -236,18 +236,18 @@ def test_the_branches_to_fetch_are_the_own_and_parent_branches_and_the_epic_refs
 
     sha = "a" * 40
 
-    assert epic._phase_branches_to_fetch(INITIATIVE, own, [p1, p2], [p1], [p1, "main", sha, "pr/x"]) == (
+    assert epic.phase_branches_to_fetch(INITIATIVE, own, [p1, p2], [p1], [p1, "main", sha, "pr/x"]) == (
         [own, p1, p2],
         [p1],
         ["main", sha, "pr/x"],
     )
-    assert epic._phase_branches_to_fetch(INITIATIVE, own, [], [], [f"epic/other/{P1}"]) == (
+    assert epic.phase_branches_to_fetch(INITIATIVE, own, [], [], [f"epic/other/{P1}"]) == (
         [own],
         [],
         [f"epic/other/{P1}"],
     )
-    assert epic._phase_branches_to_fetch(INITIATIVE, own, [], [], [p2]) == ([own, p2], [p2], [])
-    assert epic._phase_branches_to_fetch(INITIATIVE, own, [p1], [sha], [sha]) == ([own, p1], [], [sha])
+    assert epic.phase_branches_to_fetch(INITIATIVE, own, [], [], [p2]) == ([own, p2], [p2], [])
+    assert epic.phase_branches_to_fetch(INITIATIVE, own, [p1], [sha], [sha]) == ([own, p1], [], [sha])
 
 
 def _merge_on_b(hosts, store_conn, task: str):
@@ -260,9 +260,9 @@ def _merge_on_b(hosts, store_conn, task: str):
     worktree = hosts.home_b / "wt"
     ctx.phase_worktree = lambda phase: worktree
     git("worktree", "add", "-q", "-b", P1_BRANCH, str(worktree), "main", cwd=hosts.b)
-    state = epic._Execution(landed={task: True}, merged={}, moved={}, quarantined=[])
+    state = epic.Execution(landed={task: True}, merged={}, moved={}, quarantined=[])
     move = {"kind": "merge_stack", "target": task}
-    return epic._execute(ctx, move, slot="merge", subject=task, phase=P1, state=state, by_id={}), state
+    return epic.execute_cleared(ctx, move, slot="merge", subject=task, phase=P1, state=state, by_id={}), state
 
 
 def test_a_draft_another_host_pushed_is_fetched_for_the_merge(hosts, cart, tmp_path, store_conn) -> None:  # noqa: F811

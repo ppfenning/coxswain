@@ -18,7 +18,7 @@ import yaml
 
 from harness import work_mirror
 from harness.courier_adapter import publish_run_exited
-from harness.epic_context import _Ctx, _StoreRetry
+from harness.epic_context import Ctx, StoreRetry
 from harness.resume import save_result
 from harness.store_lease import assert_epoch, renew
 from harness.store_pause import clear_paused, is_paused
@@ -26,7 +26,7 @@ from harness.store_write import Store, upsert_work_item
 from harness.surface_heal import heal_bare_filenames, heal_new_markers, notes_out_of_surfaces
 from harness.waves import widest_wave
 
-_log = logging.getLogger("harness.epic")  # the driver's logger keeps its name across the split (H9)
+epic_log = logging.getLogger("harness.epic")  # the driver's logger keeps its name across the split (H9)
 
 
 # The principal names the driver AND the graph whose work it records, so a
@@ -42,14 +42,14 @@ EXIT_AWAITING_LAND = 4
 
 
 # A mid-run mirror or a pause clear waits this long for a lost connection; the run's exit record gets the full five minutes.
-_END_WRITE_WINDOW_S = 60.0
+END_WRITE_WINDOW_S = 60.0
 _EXIT_WINDOW_S = 300.0
 
 
 LEASE_NAME = "chair"
 
 
-def _now() -> str:
+def utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
@@ -57,14 +57,14 @@ class StoreMissing(RuntimeError):
     """A store write or read on a run that opened no store: a wiring fault, named rather than an AttributeError."""
 
 
-def _ctx_store(ctx: _Ctx) -> Store:
+def ctx_store(ctx: Ctx) -> Store:
     """The run's open store. Every caller sits behind a check that the run has one, so None is a wiring fault."""
     if ctx.store is None:
         raise StoreMissing(f"run {ctx.run_id} of {ctx.initiative_id} reached a store call without an open store")
     return ctx.store
 
 
-def _mirror_by(ctx: _Ctx) -> str:
+def mirror_by(ctx: Ctx) -> str:
     return f"epic-driver:{ctx.run_id}"
 
 
@@ -85,7 +85,7 @@ def _upsert_row(store: Store, row: Mapping[str, Any]) -> None:
     )  # fmt: skip
 
 
-def _repair_file_state(item: Mapping[str, Any], new_state: str) -> bool:
+def repair_file_state(item: Mapping[str, Any], new_state: str) -> bool:
     """Rewrite only the `state:` line of the item's work file, bytes otherwise kept. False when it could not."""
     if not item.get("path"):
         return False
@@ -102,7 +102,7 @@ def _repair_file_state(item: Mapping[str, Any], new_state: str) -> bool:
     return True
 
 
-def _mirror_read_store(ctx: _Ctx, items: Sequence[dict[str, Any]], rows: Sequence[Mapping[str, Any]]) -> None:
+def _mirror_read_store(ctx: Ctx, items: Sequence[dict[str, Any]], rows: Sequence[Mapping[str, Any]]) -> None:
     """work_state: store. A row wins over its file: the file's state line is repaired and `items` follows the row.
 
     `items` is the driver's own copy, so the ready and needs checks that read it see the store's state. A task with
@@ -116,14 +116,14 @@ def _mirror_read_store(ctx: _Ctx, items: Sequence[dict[str, Any]], rows: Sequenc
         row_state = None if row is None else row["state"]
         decision = work_mirror.authority_decision("store", file_state, row_state)
         if decision == work_mirror.USE_STORE_REWRITE_FILE:
-            if _repair_file_state(item, cast(str, row_state)):
-                _log.warning("work file state rewritten from the store: task=%s old=%s new=%s", task, file_state, row_state)
+            if repair_file_state(item, cast(str, row_state)):
+                epic_log.warning("work file state rewritten from the store: task=%s old=%s new=%s", task, file_state, row_state)
             else:
-                _log.warning("work file state not rewritable, store state used: task=%s file=%s", task, file_state)
+                epic_log.warning("work file state not rewritable, store state used: task=%s file=%s", task, file_state)
             item["state"] = row_state
         elif decision == work_mirror.USE_FILE_AND_UPSERT:
-            new = work_mirror.item_row(ctx.initiative_id, item, times.get(str(task)) or _now(), _mirror_by(ctx))
-            _upsert_row(_ctx_store(ctx), new)
+            new = work_mirror.item_row(ctx.initiative_id, item, times.get(str(task)) or utc_now(), mirror_by(ctx))
+            _upsert_row(ctx_store(ctx), new)
         if row is not None:
             # A merge and its handoff live only in the row, so `ready_tasks` sees a merged parent in any run.
             item["merged"] = bool(row.get("merged"))
@@ -131,7 +131,7 @@ def _mirror_read_store(ctx: _Ctx, items: Sequence[dict[str, Any]], rows: Sequenc
             item["handoff"] = row.get("handoff")
 
 
-def _mirror_read(ctx: _Ctx, items: Sequence[dict[str, Any]]) -> None:
+def mirror_read(ctx: Ctx, items: Sequence[dict[str, Any]]) -> None:
     """Mirror the files' state into work_items. Under work_state files the files stay authoritative: `items` is never touched.
 
     Under work_state store a stored row wins: see `_mirror_read_store`. A ctx with no work_state reads as files.
@@ -149,40 +149,40 @@ def _mirror_read(ctx: _Ctx, items: Sequence[dict[str, Any]]) -> None:
             _mirror_read_store(ctx, items, rows)
             return
         upserts, disagreements = work_mirror.plan_mirror(
-            ctx.initiative_id, items, rows, _file_times(items), _mirror_by(ctx), fallback_time=_now()
+            ctx.initiative_id, items, rows, _file_times(items), mirror_by(ctx), fallback_time=utc_now()
         )
         for row in upserts:
             _upsert_row(ctx.store, row)
         for d in disagreements:
-            _log.warning(
+            epic_log.warning(
                 "work_items disagrees with the file: initiative=%s task=%s file_state=%s store_state=%s updated_by=%s",
                 d["initiative"], d["task_id"], d["file_state"], d["store_state"], d["store_updated_by"],
             )  # fmt: skip
     except Exception as exc:
-        _log.warning("work_items mirror (read) failed for %s: %s: %s", ctx.initiative_id, type(exc).__name__, exc)
+        epic_log.warning("work_items mirror (read) failed for %s: %s: %s", ctx.initiative_id, type(exc).__name__, exc)
 
 
-def _store_authoritative(ctx: _Ctx) -> bool:
+def store_authoritative(ctx: Ctx) -> bool:
     return ctx.store is not None and getattr(ctx, "work_state", "files") == "store"
 
 
-def _read_store_rows(ctx: _Ctx) -> list[Mapping[str, Any]] | None:
+def read_store_rows(ctx: Ctx) -> list[Mapping[str, Any]] | None:
     """The initiative's work_items rows as the store holds them now; None under files or when the read fails.
 
-    The one store read of the done-wins check. A failure is logged and reads as no rows, as `_mirror_read` does.
+    The one store read of the done-wins check. A failure is logged and reads as no rows, as `mirror_read` does.
     """
-    if not _store_authoritative(ctx):
+    if not store_authoritative(ctx):
         return None
     try:
-        from harness import store_read  # not module level, for the reason given in `_mirror_read`
+        from harness import store_read  # not module level, for the reason given in `mirror_read`
 
-        return list(store_read.work_items(_ctx_store(ctx).conn, ctx.initiative_id))
+        return list(store_read.work_items(ctx_store(ctx).conn, ctx.initiative_id))
     except Exception as exc:
-        _log.warning("work_items not re-read for %s: %s: %s", ctx.initiative_id, type(exc).__name__, exc)
+        epic_log.warning("work_items not re-read for %s: %s: %s", ctx.initiative_id, type(exc).__name__, exc)
         return None
 
 
-def _store_fresh(items: Sequence[Mapping[str, Any]], rows: Sequence[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
+def store_fresh(items: Sequence[Mapping[str, Any]], rows: Sequence[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
     """Copies of `items` where a task whose row says done takes the row's state, merged flag and merged commit."""
     done = {str(r["task_id"]): r for r in rows or () if r.get("state") == "done"}
     return [
@@ -193,28 +193,28 @@ def _store_fresh(items: Sequence[Mapping[str, Any]], rows: Sequence[Mapping[str,
     ]
 
 
-def _store_first(ctx: _Ctx, item: dict[str, Any], state: str) -> str | None:
+def store_first(ctx: Ctx, item: dict[str, Any], state: str) -> str | None:
     """work_state: store. Move `item` to `state` in the store, compare-and-set on the state the mover read.
 
     None when the store accepted, so the driver writes the file line itself. Otherwise the refusal reason: nothing else runs.
     A mismatch adopts the store's state into `item`, as `_mirror_read_store` does. A store error refuses the move.
     """
-    from harness import store_work_state  # not module level: see `_mirror_read`
+    from harness import store_work_state  # not module level: see `mirror_read`
 
     task, expected = item.get("id"), str(item["state"])
     try:
         written = store_work_state.set_state(
-            _ctx_store(ctx).conn, ctx.initiative_id, str(task), state, _mirror_by(ctx), item.get("phase"), _now(), expected=expected
+            ctx_store(ctx).conn, ctx.initiative_id, str(task), state, mirror_by(ctx), item.get("phase"), utc_now(), expected=expected
         )
     except Exception as exc:
         reason = f"state move refused, store write failed: {type(exc).__name__}: {exc}"
-        _log.warning("%s: task=%s", reason, task)
+        epic_log.warning("%s: task=%s", reason, task)
         return reason
     if not isinstance(written, store_work_state.Mismatch):
         return None
     _, why = work_mirror.check_expected_state(expected, written.current)
     reason = f"state move refused: {why}"
-    _log.warning("%s: task=%s", reason, task)
+    epic_log.warning("%s: task=%s", reason, task)
     if written.current is not None:
         item["state"] = written.current
     return reason
@@ -229,10 +229,10 @@ def row_should_quarantine(work_state: str, current_state: str | None, *, approve
     return work_state == "store" and current_state is not None and current_state not in finished
 
 
-def _git_stdout(*args: str, timeout: int = 120, ok_codes: tuple[int, ...] = (0,)) -> str | None:
+def git_stdout(*args: str, timeout: int = 120, ok_codes: tuple[int, ...] = (0,)) -> str | None:
     """Edge. Stdout of one git command, byte for byte; None on an exit outside `ok_codes`, a timeout or undecodable output.
 
-    `_git` returns stderr in place of stdout when stderr is non-empty, so it cannot carry a NUL-separated listing.
+    `git_in` returns stderr in place of stdout when stderr is non-empty, so it cannot carry a NUL-separated listing.
     `git grep` exits 1 for no match, so its callers pass ok_codes=(0, 1).
     """
     try:
@@ -242,33 +242,33 @@ def _git_stdout(*args: str, timeout: int = 120, ok_codes: tuple[int, ...] = (0,)
     return proc.stdout if proc.returncode in ok_codes else None
 
 
-def _default_branch_paths(ctx: _Ctx) -> frozenset[str] | None:
+def default_branch_paths(ctx: Ctx) -> frozenset[str] | None:
     """Edge. Repo-relative file paths on `ctx.default_ref`, the ref `resolve_default_ref` produced after its fetch.
 
     Cached on `ctx` by the commit the ref names, so a phase reuses the listing until the ref moves.
     None when the ref or its listing cannot be read; that is not cached.
     """
     repo = ("-C", str(ctx.repo))
-    named = _git_stdout(*repo, "rev-parse", "--verify", f"{ctx.default_ref}^{{commit}}")
+    named = git_stdout(*repo, "rev-parse", "--verify", f"{ctx.default_ref}^{{commit}}")
     if named is None:
         return None
     sha = named.strip()
     with ctx.items_lock:
         if sha not in ctx.surface_paths:
-            listing = _git_stdout(*repo, "ls-tree", "-r", "-z", "--name-only", sha)
+            listing = git_stdout(*repo, "ls-tree", "-r", "-z", "--name-only", sha)
             if listing is None:
                 return None
             ctx.surface_paths[sha] = frozenset(p for p in listing.split("\0") if p)
         return ctx.surface_paths[sha]
 
 
-def _default_branch_commit(ctx: _Ctx) -> str:
+def default_branch_commit(ctx: Ctx) -> str:
     """Edge. The commit `ctx.default_ref` names; empty when it cannot be read."""
-    named = _git_stdout("-C", str(ctx.repo), "rev-parse", "--verify", f"{ctx.default_ref}^{{commit}}")
+    named = git_stdout("-C", str(ctx.repo), "rev-parse", "--verify", f"{ctx.default_ref}^{{commit}}")
     return (named or "").strip()
 
 
-def _without_correction_lint(ticket: Mapping[str, Any], original: Mapping[str, Any]) -> dict[str, Any]:
+def without_correction_lint(ticket: Mapping[str, Any], original: Mapping[str, Any]) -> dict[str, Any]:
     """`ticket` without its `correction:` lint entries.
 
     A correction quotes the tree at one commit, so it goes stale once the code or the body changes. It is
@@ -279,7 +279,7 @@ def _without_correction_lint(ticket: Mapping[str, Any], original: Mapping[str, A
     return {**rest, "lint": kept} if kept or "lint" in original else rest
 
 
-def _working_tree_paths(root: Path) -> frozenset[str]:
+def working_tree_paths(root: Path) -> frozenset[str]:
     """Edge. Repo-relative file paths in the working tree of `root`; the fallback when the branch listing is unreadable."""
     return frozenset(
         p.relative_to(root).as_posix()
@@ -288,7 +288,7 @@ def _working_tree_paths(root: Path) -> frozenset[str]:
     )
 
 
-def _surface_refusal_reason(malformed: Sequence[str]) -> str:
+def surface_refusal_reason(malformed: Sequence[str]) -> str:
     """The reason a task is refused for surfaces that are absolute, reach outside the repository, or are a glob."""
     return (
         f"malformed surfaces: {', '.join(malformed)}; a surface is a repository relative path "
@@ -296,11 +296,11 @@ def _surface_refusal_reason(malformed: Sequence[str]) -> str:
     )
 
 
-def _frontmatter_key_lines(key: str, value: Sequence[str]) -> list[str]:
+def frontmatter_key_lines(key: str, value: Sequence[str]) -> list[str]:
     return yaml.safe_dump({key: list(value)}, default_flow_style=None, allow_unicode=True).rstrip().split("\n")
 
 
-def _heal_surfaces(task: Mapping[str, Any], paths: frozenset[str]) -> dict[str, Any]:
+def heal_surfaces(task: Mapping[str, Any], paths: frozenset[str]) -> dict[str, Any]:
     """Bare filenames resolved or left out with a note, notes moved to lint, then missing surfaces marked `(new)`.
 
     An unmarked bare name that no repository file shares is a new file at the repository root, so it is not
@@ -332,15 +332,15 @@ def _rewrite_frontmatter_surfaces(path: Path, surfaces: Sequence[str], notes: Se
     for key, value in (("surfaces", surfaces), ("lint", lint)):
         at = next((i for i, line in enumerate(front) if line.startswith(f"{key}:")), None)
         if at is None:
-            front = [*front, *_frontmatter_key_lines(key, value)]
+            front = [*front, *frontmatter_key_lines(key, value)]
             continue
         stop = next((i for i in range(at + 1, len(front)) if not front[i].startswith((" ", "-"))), len(front))
-        front = [*front[:at], *_frontmatter_key_lines(key, value), *front[stop:]]
+        front = [*front[:at], *frontmatter_key_lines(key, value), *front[stop:]]
     path.write_text("\n".join(["---", *front, *lines[end:]]), encoding="utf-8")
     return lint
 
 
-def _write_healed_surfaces(ctx: _Ctx, task: str, surfaces: Sequence[str], notes: Sequence[str], path: str | None) -> None:
+def write_healed_surfaces(ctx: Ctx, task: str, surfaces: Sequence[str], notes: Sequence[str], path: str | None) -> None:
     """Persist a healed task's surfaces and new lint notes, so a relaunch reads them and does not heal again.
 
     A stale leader writes neither the file nor the row. Otherwise the file is rewritten first with the row's lint
@@ -351,30 +351,30 @@ def _write_healed_surfaces(ctx: _Ctx, task: str, surfaces: Sequence[str], notes:
     never raised.
 
     Functions checked for other writes of a task file's title, body or surfaces: `_rewrite_frontmatter_surfaces`
-    (called only here), `_repair_file_state` (the `state:` line only), and `_apply_amend_directly`, whose only file
+    (called only here), `repair_file_state` (the `state:` line only), and `apply_amend_directly`, whose only file
     write puts back the bytes read before a refused amend. Triage's own effects write a body (`_rewrite_file_body`, for
     an amendment the store took or a combined sibling) and `needs` (`_rewrite_file_needs`), never surfaces or a title.
     The fix-loop re-scope and correction rounds amend a ticket
     through the `work_state_arm` `ticket_amend` call and do not write the file themselves, so none needed routing.
     """
     try:
-        stale = _fenced(ctx)
+        stale = fence_reason(ctx)
     except Exception as exc:
-        _log.warning("healed surfaces not written: task=%s: %s: %s", task, type(exc).__name__, exc)
+        epic_log.warning("healed surfaces not written: task=%s: %s: %s", task, type(exc).__name__, exc)
         return
     if stale is not None:
-        _log.warning("healed surfaces not written: task=%s: %s", task, stale)
+        epic_log.warning("healed surfaces not written: task=%s: %s", task, stale)
         return
     row: Mapping[str, Any] | None = None
     if ctx.store is not None:
         try:
-            from harness import store_queue  # not module level: see `_mirror_read`
+            from harness import store_queue  # not module level: see `mirror_read`
 
             row = next((r for r in store_queue.read(ctx.store.conn, ctx.initiative_id) if r["task_id"] == task), None)
         except Exception as exc:
-            _log.warning("healed surfaces: store row not read: task=%s: %s: %s", task, type(exc).__name__, exc)
+            epic_log.warning("healed surfaces: store row not read: task=%s: %s: %s", task, type(exc).__name__, exc)
         if row is None:
-            _log.warning("healed surfaces not written to the store row: task=%s: no row", task)
+            epic_log.warning("healed surfaces not written to the store row: task=%s: no row", task)
     extra = dict(cast(Mapping[str, Any], (row or {}).get("extra") or {}))
     row_lint = [str(n) for n in extra.get("lint") or []]
     lint = list(dict.fromkeys([*row_lint, *notes]))
@@ -382,77 +382,77 @@ def _write_healed_surfaces(ctx: _Ctx, task: str, surfaces: Sequence[str], notes:
         try:
             lint = _rewrite_frontmatter_surfaces(Path(path), surfaces, lint)
         except Exception as exc:
-            _log.warning("healed surfaces not written to the task file: task=%s: %s: %s", task, type(exc).__name__, exc)
-            _log.warning("healed surfaces not written to the store row, to keep it in step with the task file: task=%s", task)
+            epic_log.warning("healed surfaces not written to the task file: task=%s: %s: %s", task, type(exc).__name__, exc)
+            epic_log.warning("healed surfaces not written to the store row, to keep it in step with the task file: task=%s", task)
             return
-    elif not _store_authoritative(ctx):
-        _log.warning("healed surfaces not written to the task file: task=%s: no path", task)
-        _log.warning("healed surfaces not written to the store row, to keep it in step with the task file: task=%s", task)
+    elif not store_authoritative(ctx):
+        epic_log.warning("healed surfaces not written to the task file: task=%s: no path", task)
+        epic_log.warning("healed surfaces not written to the store row, to keep it in step with the task file: task=%s", task)
         return
     if row is None:
         return
     try:
         store_queue.upsert(
-            _ctx_store(ctx).conn,
+            ctx_store(ctx).conn,
             {"initiative": ctx.initiative_id, "task_id": task, "surfaces": list(surfaces), "extra": {**extra, "lint": list(lint)}},
         )
     except Exception as exc:
-        _log.warning("healed surfaces not written to the store row: task=%s: %s: %s", task, type(exc).__name__, exc)
+        epic_log.warning("healed surfaces not written to the store row: task=%s: %s: %s", task, type(exc).__name__, exc)
 
 
-def _quarantine_row(ctx: _Ctx, phase: str, task: str, *, approved_is_open: bool = False) -> None:
+def quarantine_row(ctx: Ctx, phase: str, task: str, *, approved_is_open: bool = False) -> None:
     """Under work_state store, move the task's row to quarantined, so the chair stops relaunching it. Errors are logged, never raised.
 
-    The files work state writes nothing here, and neither does a stale leader. Same store write as the move to approved: `_store_first`.
+    The files work state writes nothing here, and neither does a stale leader. Same store write as the move to approved: `store_first`.
     """
-    if not _store_authoritative(ctx):
+    if not store_authoritative(ctx):
         return
     try:
-        stale = _fenced(ctx)  # callers in `_run_phase` reach here long after the phase-start fence
+        stale = fence_reason(ctx)  # callers in `run_phase_tasks` reach here long after the phase-start fence
         if stale is not None:
-            _log.warning("quarantined state not written to the store row: task=%s: %s", task, stale)
+            epic_log.warning("quarantined state not written to the store row: task=%s: %s", task, stale)
             return
-        from harness import store_read  # not module level: see `_mirror_read`
+        from harness import store_read  # not module level: see `mirror_read`
 
-        row = next((r for r in store_read.work_items(_ctx_store(ctx).conn, ctx.initiative_id) if r["task_id"] == task), None)
+        row = next((r for r in store_read.work_items(ctx_store(ctx).conn, ctx.initiative_id) if r["task_id"] == task), None)
         current = None if row is None else str(row["state"])
         if row_should_quarantine(ctx.work_state, current, approved_is_open=approved_is_open):
-            _store_first(ctx, {"id": task, "phase": phase, "state": current}, "quarantined")
+            store_first(ctx, {"id": task, "phase": phase, "state": current}, "quarantined")
     except Exception as exc:
-        _log.warning("quarantined state not written to the store row: task=%s: %s: %s", task, type(exc).__name__, exc)
+        epic_log.warning("quarantined state not written to the store row: task=%s: %s: %s", task, type(exc).__name__, exc)
 
 
-def _mirror_write(ctx: _Ctx, item: Mapping[str, Any] | None, state: str) -> None:
+def mirror_write(ctx: Ctx, item: Mapping[str, Any] | None, state: str) -> None:
     """Upsert one task's work_items row after an arm wrote `state` to its file. Errors are logged, never raised.
 
-    Under work_state store the row was already written by `_store_first`, before the file, so nothing is upserted.
+    Under work_state store the row was already written by `store_first`, before the file, so nothing is upserted.
     """
-    if ctx.store is None or item is None or _store_authoritative(ctx):
+    if ctx.store is None or item is None or store_authoritative(ctx):
         return
     try:
-        _upsert_row(ctx.store, work_mirror.item_row(ctx.initiative_id, {**item, "state": state}, _now(), _mirror_by(ctx)))
+        _upsert_row(ctx.store, work_mirror.item_row(ctx.initiative_id, {**item, "state": state}, utc_now(), mirror_by(ctx)))
     except Exception as exc:
-        _log.warning("work_items mirror (write) failed for %s: %s: %s", item.get("id"), type(exc).__name__, exc)
+        epic_log.warning("work_items mirror (write) failed for %s: %s: %s", item.get("id"), type(exc).__name__, exc)
 
 
-def _fenced(ctx: _Ctx) -> str | None:
+def fence_reason(ctx: Ctx) -> str | None:
     """None when a leader-only write may proceed, else the `stale epoch` reason. No epoch, no fence."""
     if ctx.epoch is None or ctx.store is None:
         return None
     conn, name, epoch = ctx.store.conn, ctx.lease_name or LEASE_NAME, ctx.epoch
 
     def check() -> str | None:
-        if assert_epoch(conn, name, epoch, _now()):
+        if assert_epoch(conn, name, epoch, utc_now()):
             return None
         row = conn.query_one(f"SELECT epoch FROM leases WHERE name = {conn.dialect.placeholder}", (name,))
         held = "none" if row is None else row[0]
         return f"stale epoch: this driver holds epoch {epoch}, lease '{name}' is at epoch {held} or has expired"
 
-    return ctx.retry.write(check, _END_WRITE_WINDOW_S)
+    return ctx.retry.write(check, END_WRITE_WINDOW_S)
 
 
-def _is_stale_epoch(reason: str) -> bool:
-    """True for the reason `_fenced` returns when the driver's lease is lost."""
+def is_stale_epoch(reason: str) -> bool:
+    """True for the reason `fence_reason` returns when the driver's lease is lost."""
     return reason.startswith("stale epoch")
 
 
@@ -491,34 +491,34 @@ def _wait_while_paused(
                 return call()
             except _STORE_ERRORS as exc:
                 error = exc
-        _log.warning("pause wait: store error after %d attempts: %s: %s", attempts, type(error).__name__, error)
+        epic_log.warning("pause wait: store error after %d attempts: %s: %s", attempts, type(error).__name__, error)
         raise SystemExit(143) from error
 
     while retried(lambda: is_paused(conn, run_id)):
         # heartbeat says why: paused, not stuck
         if not retried(lambda: renew(conn, lease_name, run_id, epoch, now(), ttl, status="paused")):
-            _log.warning("pause wait: lease '%s' epoch %s lost; ending the run", lease_name, epoch)
+            epic_log.warning("pause wait: lease '%s' epoch %s lost; ending the run", lease_name, epoch)
             raise SystemExit(143)
         sleep(poll_seconds)
     # always: clears a prior "paused" on resume too. A False return is left to the caller's fence re-check.
     retried(lambda: renew(conn, lease_name, run_id, epoch, now(), ttl, status=None))
 
 
-def _clear_pause_if_held(
-    store: Store, run_id: str, lease_name: str, epoch: int | None, retry: _StoreRetry | None = None
+def clear_pause_if_held(
+    store: Store, run_id: str, lease_name: str, epoch: int | None, retry: StoreRetry | None = None
 ) -> None:
     """Clear the run's pause flag so a rerun does not stop at once; skipped when another holder owns the run."""
 
     def clear() -> None:
-        if epoch is None or assert_epoch(store.conn, lease_name, epoch, _now()):
+        if epoch is None or assert_epoch(store.conn, lease_name, epoch, utc_now()):
             clear_paused(store.conn, run_id)
         else:
-            _log.warning("pause flag kept for %s: lease '%s' epoch %s is no longer held", run_id, lease_name, epoch)
+            epic_log.warning("pause flag kept for %s: lease '%s' epoch %s is no longer held", run_id, lease_name, epoch)
 
     try:
-        (retry or _StoreRetry()).write(clear, _END_WRITE_WINDOW_S)
+        (retry or StoreRetry()).write(clear, END_WRITE_WINDOW_S)
     except _STORE_ERRORS as exc:  # a store failure must not mask the run's real exit
-        _log.warning("pause flag clear failed for %s: %s: %s", run_id, type(exc).__name__, exc)
+        epic_log.warning("pause flag clear failed for %s: %s: %s", run_id, type(exc).__name__, exc)
 
 
 def _awaits_land(phase: Mapping[str, Any]) -> bool:
@@ -557,7 +557,7 @@ def build_outcome(result: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _unlanded(
+def unlanded_tasks(
     tasks: Sequence[Mapping[str, Any]], run_id: str, repo: Path | str
 ) -> list[tuple[Mapping[str, Any], str]]:
     """Tasks approved but not landed, each with the `cox runs land` command a human runs for it.
@@ -593,7 +593,7 @@ def _integration_counts(tasks: Sequence[Mapping[str, Any]], phases: Sequence[Map
     }
 
 
-def _build_result(
+def build_result(
     *,
     run_id: str,
     date: str,
@@ -611,7 +611,7 @@ def _build_result(
     lane_databases: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The epic result from the lists as they stand: whole at a normal end, partial when a phase raised."""
-    unlanded = _unlanded(tasks, run_id, repo)
+    unlanded = unlanded_tasks(tasks, run_id, repo)
     return {
         "run_id": run_id,
         "date": date,
@@ -649,40 +649,40 @@ def _build_result(
     }
 
 
-def _record_run_exit(
-    store: Store, run_id: str, status: str, retry: _StoreRetry, result: Mapping[str, Any] | None = None
+def record_run_exit(
+    store: Store, run_id: str, status: str, retry: StoreRetry, result: Mapping[str, Any] | None = None
 ) -> None:
     """Stamp the run's end, then store its outcome, each retried for the full exit window. A failure is logged and never changes the run's exit."""
-    ended_at = _now()
+    ended_at = utc_now()
     try:
         retry.write(lambda: store.finish_run(run_id, ended_at, status), _EXIT_WINDOW_S)
     except Exception as exc:
-        _log.warning("run exit for %s not recorded in the store: %s: %s", run_id, type(exc).__name__, exc)
+        epic_log.warning("run exit for %s not recorded in the store: %s: %s", run_id, type(exc).__name__, exc)
     if result is None:
         return
     try:
         retry.write(lambda: store.record_outcome(run_id, build_outcome(result)), _EXIT_WINDOW_S)
     except Exception as exc:
-        _log.warning("run outcome for %s not recorded in the store: %s: %s", run_id, type(exc).__name__, exc)
+        epic_log.warning("run outcome for %s not recorded in the store: %s: %s", run_id, type(exc).__name__, exc)
 
 
-def _publish_run_exit(run_id: str, initiative_id: str, status: str) -> None:
+def publish_run_exit(run_id: str, initiative_id: str, status: str) -> None:
     """Publish `run_exited` once, after the exit is recorded. A failure is logged and never changes the run's exit."""
     try:
         published = publish_run_exited(run_id, initiative_id, status)
     except Exception as exc:
-        _log.warning("run_exited for %s not published: %s: %s", run_id, type(exc).__name__, exc)
+        epic_log.warning("run_exited for %s not published: %s: %s", run_id, type(exc).__name__, exc)
         return
     if not published:
-        _log.warning("run_exited for %s not published: the courier was unreachable", run_id)
+        epic_log.warning("run_exited for %s not published: the courier was unreachable", run_id)
 
 
-def _wait_if_paused(ctx: _Ctx) -> None:
+def wait_if_paused_here(ctx: Ctx) -> None:
     """`_wait_while_paused` bound to this run's own lease; a no-op without a fenced store."""
     if ctx.epoch is None or ctx.store is None:
         return
     _wait_while_paused(
-        ctx.store.conn, ctx.run_id, ctx.lease_name or LEASE_NAME, ctx.epoch, _now, _PAUSE_LEASE_TTL, sleep=time.sleep,
+        ctx.store.conn, ctx.run_id, ctx.lease_name or LEASE_NAME, ctx.epoch, utc_now, _PAUSE_LEASE_TTL, sleep=time.sleep,
     )
 
 
@@ -698,53 +698,53 @@ def _task_record_mirror(
     return (run_id, phase, task, json.loads(json.dumps(dict(result), default=str)), ts)
 
 
-def _save_result(ctx: _Ctx, result: Mapping[str, Any], *, phase: str, task: str) -> None:
+def save_task_result(ctx: Ctx, result: Mapping[str, Any], *, phase: str, task: str) -> None:
     """Save the result file, then mirror it into the store. The file stays authoritative.
 
     A mirror failure is a warning, never a failed run. The file write is outside the try.
     """
     save_result(result, runs_dir=ctx.runs_dir, run_id=ctx.run_id, phase=phase, task=task)
     try:
-        args = _task_record_mirror(ctx.store, result, ctx.run_id, phase, task, _now())
+        args = _task_record_mirror(ctx.store, result, ctx.run_id, phase, task, utc_now())
         store = ctx.store
 
         def mirror() -> None:
-            if _fenced(ctx) is None:
+            if fence_reason(ctx) is None:
                 cast(Store, store).record_task_record(*cast(tuple[str, str, str, dict[str, Any], str], args))
 
         if args is not None and store is not None:
-            ctx.retry.write(mirror, _END_WRITE_WINDOW_S)
+            ctx.retry.write(mirror, END_WRITE_WINDOW_S)
     except Exception as exc:
-        _log.warning("task record for %s/%s/%s not mirrored into the store: %r", ctx.run_id, phase, task, exc)
+        epic_log.warning("task record for %s/%s/%s not mirrored into the store: %r", ctx.run_id, phase, task, exc)
 
 
-def _record_phase(ctx: _Ctx, record: Mapping[str, Any]) -> None:
-    if ctx.store is not None and _fenced(ctx) is None:
-        row = {**record, "run_id": f"{ctx.run_id}:{record['phase']}", "ts": _now(), "principal": PRINCIPAL}
+def record_phase(ctx: Ctx, record: Mapping[str, Any]) -> None:
+    if ctx.store is not None and fence_reason(ctx) is None:
+        row = {**record, "run_id": f"{ctx.run_id}:{record['phase']}", "ts": utc_now(), "principal": PRINCIPAL}
         store = ctx.store
-        ctx.retry.write(lambda: store.record_phase(row, epoch=ctx.epoch), _END_WRITE_WINDOW_S)
+        ctx.retry.write(lambda: store.record_phase(row, epoch=ctx.epoch), END_WRITE_WINDOW_S)
 
 
-def _record_tasks(
-    ctx: _Ctx, phase: str, task_records: Sequence[Mapping[str, Any]], quarantined: Sequence[Mapping[str, Any]]
+def record_tasks(
+    ctx: Ctx, phase: str, task_records: Sequence[Mapping[str, Any]], quarantined: Sequence[Mapping[str, Any]]
 ) -> None:
     """One row per task at its final state: the store keeps the first row for a (run, task)."""
-    if ctx.store is None or _fenced(ctx) is not None:
+    if ctx.store is None or fence_reason(ctx) is not None:
         return
     states = {str(q["id"]): "quarantined" for q in quarantined if q.get("grain") == "task"}
     states.update({str(t["id"]): str(t.get("state") or t["status"]) for t in task_records})
-    ts = _now()
+    ts = utc_now()
     store = ctx.store
     for task, state in sorted(states.items()):
         # One retry per row, so a lost connection never replays rows that already landed.
         ctx.retry.write(
             lambda task=task, state=state: store.record_task(ctx.run_id, phase, task, state, ts, epoch=ctx.epoch),
-            _END_WRITE_WINDOW_S,
+            END_WRITE_WINDOW_S,
         )
 
 
-def _refuse_stale(state: _Execution, *, phase: str, subject: str, slot: str, reason: str) -> None:
-    """Quarantine what a stale leader tried to write. Not an attempt, so never through `_quarantine_task`."""
+def refuse_stale(state: Execution, *, phase: str, subject: str, slot: str, reason: str) -> None:
+    """Quarantine what a stale leader tried to write. Not an attempt, so never through `quarantine_task`."""
     task_grain = bool(subject) and slot != "rebase"
     entry = {
         "id": subject if task_grain else phase,
@@ -758,7 +758,7 @@ def _refuse_stale(state: _Execution, *, phase: str, subject: str, slot: str, rea
 
 
 @dataclass
-class _Execution:
+class Execution:
     """What actually happened, per task, as the batch executes."""
 
     landed: dict[str, bool]

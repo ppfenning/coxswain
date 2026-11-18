@@ -10,7 +10,7 @@ from tests.test_epic_store_authority_write import _ctx, _put, _row_state, item  
 
 
 def _quarantine(ctx) -> None:
-    epic._quarantine_task(ctx, {}, phase="p1", task="t1", reason="the fix loop stopped: checkpoint after 2 build attempts", kind="infra")
+    epic.quarantine_task(ctx, {}, phase="p1", task="t1", reason="the fix loop stopped: checkpoint after 2 build attempts", kind="infra")
 
 
 def _spy(monkeypatch) -> list:

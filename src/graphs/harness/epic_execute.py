@@ -17,35 +17,35 @@ from graphs.delivery import rescue_review
 from harness import rescue_checks, rescue_select
 from harness.autonomy import split_by_policy
 from harness.checks import HARNESS_FAULT_PREFIX
-from harness.epic_batch import _draft_note, _quarantine_task, _unkept_work, state_move_apply
+from harness.epic_batch import draft_note, quarantine_task, state_move_apply, unkept_work
 from harness.epic_branches import (
-    _IDENTITY,
-    _checks_env,
-    _fetch_phase_branches,
-    _open_review_pr,
-    _push_review_branch,
-    _run_scratch,
+    IDENTITY,
+    checks_env,
+    fetch_phase_branches,
+    open_review_pr,
     opens_pr,
+    push_review_branch,
+    run_scratch,
 )
-from harness.epic_build import _body_stamp
-from harness.epic_context import _Ctx, _git
-from harness.epic_phase_branch import _branch_exists, _locked_merges, _publish_branch, _rebase
+from harness.epic_build import body_stamp
+from harness.epic_context import Ctx, git_in
+from harness.epic_phase_branch import branch_exists, locked_merges, publish_branch, rebase_phase_branch
 from harness.epic_records import (
-    _END_WRITE_WINDOW_S,
-    _ctx_store,
-    _Execution,
-    _fenced,
-    _log,
-    _mirror_by,
-    _mirror_write,
-    _now,
-    _record_tasks,
-    _refuse_stale,
-    _repair_file_state,
-    _save_result,
-    _store_authoritative,
-    _store_first,
-    _wait_if_paused,
+    END_WRITE_WINDOW_S,
+    Execution,
+    ctx_store,
+    epic_log,
+    fence_reason,
+    mirror_by,
+    mirror_write,
+    record_tasks,
+    refuse_stale,
+    repair_file_state,
+    save_task_result,
+    store_authoritative,
+    store_first,
+    utc_now,
+    wait_if_paused_here,
 )
 from harness.gate import apply_arm_for, auto_apply, gate
 from harness.handoff import build_handoff
@@ -56,20 +56,20 @@ from harness.worktree import apply_patch, create_worktree, link_venv, remove_wor
 from runner.protocol import LimitStop, RunnerError
 
 
-def _without_cause(saved: Mapping[str, Any]) -> dict[str, Any]:
+def without_cause(saved: Mapping[str, Any]) -> dict[str, Any]:
     """A saved result as a later run reuses it. Its cause, and the body it was quarantined on, name the run that
     quarantined it, not this one."""
     return {k: v for k, v in saved.items() if k not in ("cause", "cause_why", "body_sha")}
 
 
-def _execute(
-    ctx: _Ctx,
+def execute_cleared(
+    ctx: Ctx,
     item: Mapping[str, Any],
     *,
     slot: str,
     subject: str,
     phase: str,
-    state: _Execution,
+    state: Execution,
     by_id: Mapping[str, dict[str, Any]],
 ) -> tuple[bool, str]:
     """Do what the gate — or the policy — cleared. Dispatch on the KIND, not the slot.
@@ -80,14 +80,14 @@ def _execute(
     and reports honestly that nothing happened. That is what makes an escalated
     task's merge impossible to earn rather than merely discouraged.
     """
-    stale = _fenced(ctx)
+    stale = fence_reason(ctx)
     if stale is not None:
-        _refuse_stale(state, phase=phase, subject=subject, slot=slot, reason=stale)
+        refuse_stale(state, phase=phase, subject=subject, slot=slot, reason=stale)
         return False, stale
-    _wait_if_paused(ctx)
-    stale = _fenced(ctx)  # the wait can outlast this driver's lease
+    wait_if_paused_here(ctx)
+    stale = fence_reason(ctx)  # the wait can outlast this driver's lease
     if stale is not None:
-        _refuse_stale(state, phase=phase, subject=subject, slot=slot, reason=stale)
+        refuse_stale(state, phase=phase, subject=subject, slot=slot, reason=stale)
         return False, stale
 
     kind = item.get("kind")
@@ -98,12 +98,12 @@ def _execute(
         # nobody has opened has exactly the blast radius the taxonomy prices it
         # at: the cost of a wrong one is a branch nobody reads.
         draft = ctx.draft_branch(phase, subject)
-        ok, detail = _git("-C", str(ctx.repo), "branch", draft, ctx.scratch_branch(subject))
+        ok, detail = git_in("-C", str(ctx.repo), "branch", draft, ctx.scratch_branch(subject))
         state.landed[subject] = ok
         if not ok:
             state.draft_detail[subject] = f"draft branch {draft} was not created ({detail})"
         else:
-            state.push_warnings.extend(filter(None, [_publish_branch(ctx, draft)]))
+            state.push_warnings.extend(filter(None, [publish_branch(ctx, draft)]))
         return ok, detail or f"created {draft}"
 
     if kind == "merge_stack" and slot == "merge":
@@ -114,19 +114,19 @@ def _execute(
         if not state.landed.get(subject):
             return False, "the draft did not land, so its merge is refused with it"
         draft = ctx.draft_branch(phase, subject)
-        if not _branch_exists(ctx, draft):
+        if not branch_exists(ctx, draft):
             # A draft another host created and pushed: make it local, or refuse with the cause.
-            found = _fetch_phase_branches(ctx, [draft])[draft]
+            found = fetch_phase_branches(ctx, [draft])[draft]
             if found.kind in (Kind.MISSING_EVERYWHERE, Kind.FETCH_FAILED):
                 return False, missing_branch_cause(draft, found)
-        ok, detail = _git(
-            *_IDENTITY, "-C", str(ctx.phase_worktree(phase)), "merge", "--no-ff", draft,
+        ok, detail = git_in(
+            *IDENTITY, "-C", str(ctx.phase_worktree(phase)), "merge", "--no-ff", draft,
             "-m", f"epic {ctx.run_id}: merge {subject} into {phase}",
         )
         if not ok:
-            _git("-C", str(ctx.phase_worktree(phase)), "merge", "--abort")
+            git_in("-C", str(ctx.phase_worktree(phase)), "merge", "--abort")
             state.quarantined.append(
-                _quarantine_task(
+                quarantine_task(
                     ctx,
                     by_id,
                     phase=phase,
@@ -138,14 +138,14 @@ def _execute(
             )
         state.merged[subject] = ok
         if ok:
-            head_ok, head = _git("-C", str(ctx.phase_worktree(phase)), "rev-parse", "HEAD")
+            head_ok, head = git_in("-C", str(ctx.phase_worktree(phase)), "rev-parse", "HEAD")
             if head_ok:
                 state.commits[subject] = head
-            state.push_warnings.extend(filter(None, [_publish_branch(ctx, ctx.phase_branch(phase))]))
+            state.push_warnings.extend(filter(None, [publish_branch(ctx, ctx.phase_branch(phase))]))
         return ok, detail
 
     if kind == "stack_rebase" and slot == "rebase":
-        ok, detail = _rebase(ctx, phase, _rebase_base(item), _locked_merges(ctx, by_id.values(), phase))
+        ok, detail = rebase_phase_branch(ctx, phase, _rebase_base(item), locked_merges(ctx, by_id.values(), phase))
         if not ok:
             state.quarantined.append(
                 {"id": phase, "phase": phase, "grain": "phase", "reason": f"rebase conflict: {detail}"}
@@ -156,7 +156,7 @@ def _execute(
         # A review PR a human reads, never a merge: no merge call runs here. It is a task PR, so it follows land_at.
         if not opens_pr(ctx.land_at, "task"):
             return False, f"escalated: its review PR opens only at land_at task, not {ctx.land_at}"
-        ok, detail = _push_review_branch(ctx, subject)
+        ok, detail = push_review_branch(ctx, subject)
         if not ok:
             return False, f"review branch push failed: {detail}"
         paths = next(
@@ -170,7 +170,7 @@ def _execute(
                 f"Governance paths: {paths or 'none'}",
             )
         )
-        ok, detail = _open_review_pr(
+        ok, detail = open_review_pr(
             ctx,
             title=f"[review] {ctx.initiative_id}: {by_id[subject]['title']}",
             body=body,
@@ -191,10 +191,10 @@ def _execute(
     # task as `infra` and lets the phase continue rather than crashing `run_epic`.
     if slot == "state_move":
         # Before any store or apply-arm write: `approved` is only true of work on a branch that survives the run.
-        why = _unkept_work(ctx, phase, subject, state)
+        why = unkept_work(ctx, phase, subject, state)
         # A draft that did not land is not lost work: the task branch holds it and `runs land` opens the PR.
         # On a lane host that branch is in the host's repo, so it counts there and is fetched to the chair later.
-        note = _draft_note(ctx, subject, state) if why is not None else None
+        note = draft_note(ctx, subject, state) if why is not None else None
         if note is not None:
             state.notes[subject] = note
             why = None
@@ -202,7 +202,7 @@ def _execute(
             state.moved[subject] = False
             if not any(q.get("id") == subject and q.get("grain") == "task" for q in state.quarantined):
                 state.quarantined.append(
-                    _quarantine_task(
+                    quarantine_task(
                         ctx,
                         by_id,
                         phase=phase,
@@ -213,36 +213,36 @@ def _execute(
                     )
                 )
             return False, why
-    if slot == "state_move" and _store_authoritative(ctx) and by_id.get(subject) is not None:
+    if slot == "state_move" and store_authoritative(ctx) and by_id.get(subject) is not None:
         # The store's acceptance is the move. The file is a cache, so no arm runs; the driver writes its line.
-        refused = _store_first(ctx, by_id[subject], "approved")
+        refused = store_first(ctx, by_id[subject], "approved")
         if refused is not None:
             state.moved[subject] = False
             return False, refused
-        if not _repair_file_state(by_id[subject], "approved"):
-            _log.warning("store moved %s to approved; file state line not written, regenerate-states repairs it", subject)
+        if not repair_file_state(by_id[subject], "approved"):
+            epic_log.warning("store moved %s to approved; file state line not written, regenerate-states repairs it", subject)
         state.moved[subject] = True
         _record_merge(ctx, state, subject)
         return True, "store moved to approved; file state line written"
     try:
         applied, detail = auto_apply(
-            dict(item), cartridge=cast(dict[str, Any], ctx.cartridge), runner=ctx.runner, wait_if_paused=lambda: _wait_if_paused(ctx)
+            dict(item), cartridge=cast(dict[str, Any], ctx.cartridge), runner=ctx.runner, wait_if_paused=lambda: wait_if_paused_here(ctx)
         )
     except LimitStop:
-        raise  # the account's own limit, not this task's; never through `_quarantine_task`
+        raise  # the account's own limit, not this task's; never through `quarantine_task`
     except RunnerError as exc:
         arm = apply_arm_for(cast(str, item.get("kind")), cast(dict[str, Any], ctx.cartridge))
         reason = f"apply arm '{arm}' raised {type(exc).__name__}: {exc}"
-        state.quarantined.append(_quarantine_task(ctx, by_id, phase=phase, task=subject, reason=reason, kind="infra"))
+        state.quarantined.append(quarantine_task(ctx, by_id, phase=phase, task=subject, reason=reason, kind="infra"))
         return False, reason
     if slot == "state_move":
         state.moved[subject] = applied
         if applied:
-            _mirror_write(ctx, by_id.get(subject), "approved")
+            mirror_write(ctx, by_id.get(subject), "approved")
     return applied, detail
 
 
-def _record_merge(ctx: _Ctx, state: _Execution, task: str) -> None:
+def _record_merge(ctx: Ctx, state: Execution, task: str) -> None:
     """work_state: store. Stamp the merge commit and the handoff on the task's approved row. Errors are logged, never raised.
 
     Runs after the move to approved, because `record_merge` refuses any other state.
@@ -252,10 +252,10 @@ def _record_merge(ctx: _Ctx, state: _Execution, task: str) -> None:
         return
     try:
         handoff = build_handoff(state.builds.get(task) or {}, ctx.scratch_branch(task), commit)
-        record_merge(_ctx_store(ctx).conn, ctx.initiative_id, task, commit, _now(), _mirror_by(ctx))
-        record_handoff(_ctx_store(ctx).conn, ctx.initiative_id, task, handoff, _now(), _mirror_by(ctx))
+        record_merge(ctx_store(ctx).conn, ctx.initiative_id, task, commit, utc_now(), mirror_by(ctx))
+        record_handoff(ctx_store(ctx).conn, ctx.initiative_id, task, handoff, utc_now(), mirror_by(ctx))
     except Exception as exc:
-        _log.warning("merge and handoff not written to the store row: task=%s: %s: %s", task, type(exc).__name__, exc)
+        epic_log.warning("merge and handoff not written to the store row: task=%s: %s: %s", task, type(exc).__name__, exc)
         return
     state.handoffs[task] = handoff
 
@@ -276,14 +276,14 @@ def _rebase_base(item: Mapping[str, Any]) -> str:
 RESCUE_PRINCIPAL = "epic-swarm(rescue-review)"
 
 
-def _rescue_failed(ctx: _Ctx, item: Mapping[str, Any], *, phase: str, reason: str, failed_checks: bool) -> dict[str, Any]:
+def _rescue_failed(ctx: Ctx, item: Mapping[str, Any], *, phase: str, reason: str, failed_checks: bool) -> dict[str, Any]:
     """The task stays quarantined: a `rescue_failed` attempt carrying the rule's cause, and a quarantined task row."""
     task = str(item["id"])
     cause, cause_why = rescue_select.rescue_cause(failed_checks, reason)
-    entry = _quarantine_task(
+    entry = quarantine_task(
         ctx, {task: dict(item)}, phase=phase, task=task, reason=reason, kind="rescue_failed", cause=(cause, cause_why)
     )
-    _record_tasks(ctx, phase, [], [entry])
+    record_tasks(ctx, phase, [], [entry])
     return {"status": "rescue_failed", "reason": reason, "cause": cause}
 
 
@@ -335,7 +335,7 @@ def with_stored_rescues(item: Mapping[str, Any], rows: Sequence[Mapping[str, Any
     return {**item, "attempts": sorted([*item["attempts"], *stored], key=lambda a: str(a.get("ts") or ""))}
 
 
-def _stored_rescues(ctx: _Ctx, task: str) -> list[dict[str, Any]]:
+def _stored_rescues(ctx: Ctx, task: str) -> list[dict[str, Any]]:
     """The store's `rescue_failed` attempts for `task`, any run. Empty without a store."""
     if ctx.store is None:
         return []
@@ -345,7 +345,7 @@ def _stored_rescues(ctx: _Ctx, task: str) -> list[dict[str, Any]]:
     return [dict(zip(cols, row, strict=True)) for row in ctx.store.conn.query_all(sql, (task, rescue_select.RESCUE_KIND))]
 
 
-def _stored_causes(ctx: _Ctx, task: str) -> list[dict[str, Any]]:
+def stored_causes(ctx: Ctx, task: str) -> list[dict[str, Any]]:
     """The store's attempt causes for `task`, any run and kind. Empty without a store."""
     if ctx.store is None:
         return []
@@ -390,7 +390,7 @@ def _record_attempt(run: str, phase: str, record: Mapping[str, Any], ts: str) ->
     }
 
 
-def _caused_records(ctx: _Ctx, phase: str, task: str) -> list[tuple[dict[str, Any], Mapping[str, Any]]]:
+def caused_records(ctx: Ctx, phase: str, task: str) -> list[tuple[dict[str, Any], Mapping[str, Any]]]:
     """(attempt, record) for each of the task's run task records that names a cause, oldest first.
 
     Under work_state store nothing writes an attempt into the work file: these records are the attempts. This machine's
@@ -410,13 +410,13 @@ def _caused_records(ctx: _Ctx, phase: str, task: str) -> list[tuple[dict[str, An
             found[path.parts[-4]] = (record, stamp)
     if ctx.store is not None:
         try:
-            from harness import store_read  # not module level: see `_mirror_read`
+            from harness import store_read  # not module level: see `mirror_read`
 
             for row in store_read.task_records_of(ctx.store.conn, phase, task):
                 if isinstance(row["record_json"], Mapping):
                     found.setdefault(str(row["run_id"]), (row["record_json"], str(row.get("updated_at") or "")))
         except Exception as exc:
-            _log.warning("task records of %s/%s not read from the store: %s: %s", phase, task, type(exc).__name__, exc)
+            epic_log.warning("task records of %s/%s not read from the store: %s: %s", phase, task, type(exc).__name__, exc)
     caused = [
         (_run_number(run), attempt["ts"], stamp, attempt, record)
         for run, (record, stamp) in found.items()
@@ -425,21 +425,21 @@ def _caused_records(ctx: _Ctx, phase: str, task: str) -> list[tuple[dict[str, An
     return [(attempt, record) for *_, attempt, record in sorted(caused, key=lambda t: t[:3])]
 
 
-def _record_attempts(ctx: _Ctx, phase: str, task: str) -> list[dict[str, Any]]:
-    """The task's attempts as its runs' task records hold them (`_caused_records`), oldest first: for triage of an item
+def record_attempts(ctx: Ctx, phase: str, task: str) -> list[dict[str, Any]]:
+    """The task's attempts as its runs' task records hold them (`caused_records`), oldest first: for triage of an item
     with no attempt, which would otherwise reach triage with nothing to cite."""
-    return [attempt for attempt, _ in _caused_records(ctx, phase, task)]
+    return [attempt for attempt, _ in caused_records(ctx, phase, task)]
 
 
-def _record_rescue_gate(ctx: _Ctx, phase: str, move: Mapping[str, Any], diff: Mapping[str, Any], minutes: float) -> None:
-    """Ledger the gate's decision on a rescue's move, as `_run_phase` ledgers a phase batch's.
+def _record_rescue_gate(ctx: Ctx, phase: str, move: Mapping[str, Any], diff: Mapping[str, Any], minutes: float) -> None:
+    """Ledger the gate's decision on a rescue's move, as `run_phase_tasks` ledgers a phase batch's.
 
     Keyed per task, since the store ignores a second gate row under the same run, phase and seq.
     """
     task = str(move["target"])
     manifest = build_manifest(
         run_id=f"{ctx.run_id}:{phase}:{task}",
-        ts=_now(),
+        ts=utc_now(),
         principal=RESCUE_PRINCIPAL,
         cartridge=ctx.cartridge,
         provider_profile=ctx.provider_profile,
@@ -448,21 +448,21 @@ def _record_rescue_gate(ctx: _Ctx, phase: str, move: Mapping[str, Any], diff: Ma
         human_minutes=minutes,
         totals={"rescued": 1, "auto_applied": 0, "gated": 1},
     )
-    if _fenced(ctx) is not None:
+    if fence_reason(ctx) is not None:
         return
     append_ledger(manifest, ledger_path=ctx.ledger_path)  # the host file is written once, never inside a retry
     if ctx.store is not None:
         store = ctx.store
         for row in ledger.read(ctx.ledger_path):
             if row.get("run_id") == manifest["run_id"]:
-                ctx.retry.write(lambda row=row: store.record_ledger(row, epoch=ctx.epoch), _END_WRITE_WINDOW_S)
+                ctx.retry.write(lambda row=row: store.record_ledger(row, epoch=ctx.epoch), END_WRITE_WINDOW_S)
         ctx.retry.write(
             lambda: store.record_gate_decisions(ctx.run_id, f"{phase}:{task}", [diff], epoch=ctx.epoch),
-            _END_WRITE_WINDOW_S,
+            END_WRITE_WINDOW_S,
         )
 
 
-def _policy_split(ctx: _Ctx, proposals: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def policy_split(ctx: Ctx, proposals: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """The policy split for one gate batch. With a store the streaks come from its ledger table, so a lane host
     judges a kind by the streak every host shares; the host file is then only an export."""
     return split_by_policy(
@@ -474,7 +474,7 @@ def _policy_split(ctx: _Ctx, proposals: list[dict[str, Any]]) -> tuple[list[dict
     )
 
 
-def _rescue_move(ctx: _Ctx, item: Mapping[str, Any], *, phase: str, evidence: list[dict[str, Any]]) -> tuple[bool, str]:
+def _rescue_move(ctx: Ctx, item: Mapping[str, Any], *, phase: str, evidence: list[dict[str, Any]]) -> tuple[bool, str]:
     """The approved task's `state_move`, through `split_by_policy` and `gate` as a build's is.
 
     Executed on the built-in workstore arm whatever arm the cartridge names, so the write is code and never
@@ -492,7 +492,7 @@ def _rescue_move(ctx: _Ctx, item: Mapping[str, Any], *, phase: str, evidence: li
         ),
         **state_move_apply(item.get("path"), "approved"),
     }
-    auto, gated = _policy_split(ctx, [move])
+    auto, gated = policy_split(ctx, [move])
     decisions, minutes = gate(gated, assume=ctx.assume)
     decision, edited = ("approved", False) if auto else (decisions[0][1], decisions[0][2])
     kinds = ctx.cartridge.get("write_kinds") or {}
@@ -501,9 +501,9 @@ def _rescue_move(ctx: _Ctx, item: Mapping[str, Any], *, phase: str, evidence: li
         cartridge={**ctx.cartridge, "write_kinds": {**kinds, "state_move": {**(kinds.get("state_move") or {}), "apply_arm": "workstore"}}},
     )
     # A rescue lands no draft and merges nothing: its kept work is the `agents/<run>/<task>` branch `_land_branch` made.
-    state = _Execution(landed={}, merged={}, moved={}, quarantined=[], escalated=frozenset({task}))
+    state = Execution(landed={}, merged={}, moved={}, quarantined=[], escalated=frozenset({task}))
     applied, detail = (
-        _execute(code_arm, move, slot="state_move", subject=task, phase=phase, state=state, by_id={task: dict(item)})
+        execute_cleared(code_arm, move, slot="state_move", subject=task, phase=phase, state=state, by_id={task: dict(item)})
         if decision == "approved"
         else (False, "the gate refused the move")
     )
@@ -512,21 +512,21 @@ def _rescue_move(ctx: _Ctx, item: Mapping[str, Any], *, phase: str, evidence: li
     return applied, detail
 
 
-def _commit_patch(ctx: _Ctx, worktree: Path, patch: str, task: str) -> str | None:
+def _commit_patch(ctx: Ctx, worktree: Path, patch: str, task: str) -> str | None:
     """Apply `patch` in `worktree` and commit it as `epic <run>: <task>`. None on success, else why not."""
     link_venv(ctx.repo, worktree)
     ok, detail = apply_patch(patch, worktree)
     if not ok:
         return f"kept patch did not apply: {detail}"
-    ok, detail = _git(*_IDENTITY, "-C", str(worktree), "add", "-A")
+    ok, detail = git_in(*IDENTITY, "-C", str(worktree), "add", "-A")
     if ok:
-        ok, detail = _git(
-            *_IDENTITY, "-C", str(worktree), "commit", "--allow-empty", "-q", "-m", f"epic {ctx.run_id}: {task}"
+        ok, detail = git_in(
+            *IDENTITY, "-C", str(worktree), "commit", "--allow-empty", "-q", "-m", f"epic {ctx.run_id}: {task}"
         )
     return None if ok else f"kept patch could not be committed: {detail}"
 
 
-def _land_branch(ctx: _Ctx, *, task: str, patch: str) -> str | None:
+def _land_branch(ctx: Ctx, *, task: str, patch: str) -> str | None:
     """`agents/<run>/<task>`: one commit on `default_ref` holding `patch`, the shape `cox runs land` takes.
 
     None on success. Otherwise a harness-fault reason, with any half-made branch deleted.
@@ -541,35 +541,35 @@ def _land_branch(ctx: _Ctx, *, task: str, patch: str) -> str | None:
     finally:
         remove_worktree(ctx.repo, worktree)
     if why is not None:
-        _git("-C", str(ctx.repo), "branch", "-D", branch)
+        git_in("-C", str(ctx.repo), "branch", "-D", branch)
         return f"{HARNESS_FAULT_PREFIX} {why}"
     return None
 
 
-def rescue_task(ctx: _Ctx, item: Mapping[str, Any], *, phase: str) -> dict[str, Any]:
+def rescue_task(ctx: Ctx, item: Mapping[str, Any], *, phase: str) -> dict[str, Any]:
     """Harness checks on a quarantined task's kept patch, one review round, then a gated move to `approved` or `rescue_failed`."""
     task = str(item["id"])
     attempts = item.get("attempts") or []
     # Under work_state store no work file holds an attempt: the runs' task records are the attempts, and the newest one
     # holds the kept patch (the store's copy, when another lane wrote it). Reading only the file, the rescue the chair
     # launched from those records would find nothing, and the chair would launch it again.
-    records = _caused_records(ctx, phase, task) if not attempts and _store_authoritative(ctx) else []
+    records = caused_records(ctx, phase, task) if not attempts and store_authoritative(ctx) else []
     if records:
         item = {**item, "attempts": [attempt for attempt, _ in records]}
         saved: Mapping[str, Any] | None = records[-1][1]
     else:
         saved = load_result(ctx.runs_dir, attempts[-1]["run"], phase, task) if attempts else None
     patch = rescue_select.patch_of(saved)
-    caused = with_stored_causes(item, _stored_causes(ctx, task))
+    caused = with_stored_causes(item, stored_causes(ctx, task))
     ok, why = rescue_select.eligible(with_stored_rescues(caused, _stored_rescues(ctx, task)), patch)
     if not ok or patch is None:
         return {"status": "not_eligible", "why": why}
-    if not item.get("path") and not _store_authoritative(ctx):
+    if not item.get("path") and not store_authoritative(ctx):
         # With nothing to write in code, the workstore arm would fall back to a model call.
         return {"status": "not_eligible", "why": "no work file to move and no authoritative store"}
 
     def apply(worktree: Path, text: str) -> str | None:
-        link_venv(ctx.repo, worktree)  # as `_build_task` does, so the checks find the same interpreter
+        link_venv(ctx.repo, worktree)  # as `build_task` does, so the checks find the same interpreter
         applied, detail = apply_patch(text, worktree)
         return None if applied else detail
 
@@ -581,19 +581,19 @@ def rescue_task(ctx: _Ctx, item: Mapping[str, Any], *, phase: str) -> dict[str, 
             ctx.checks,
             apply=apply,
             workdir=ctx.worktree_root / ctx.run_id,
-            env=_checks_env(ctx, {}, phase, f"@rescue-{task}"),
+            env=checks_env(ctx, {}, phase, f"@rescue-{task}"),
         )
     finally:
         # A rescue is one task under a run id of its own, so the run's whole temp directory goes with it.
-        shutil.rmtree(_run_scratch(ctx), ignore_errors=True)
+        shutil.rmtree(run_scratch(ctx), ignore_errors=True)
     if not verified["passed"]:
         return _rescue_failed(ctx, item, phase=phase, reason=str(verified["reason"]), failed_checks=True)
 
     rows = verified["rows"]
     evidence = [*((saved or {}).get("evidence") or []), *rows]
-    _save_result(
+    save_task_result(
         ctx,
-        {**_without_cause(saved or {}), "initiative": ctx.initiative_id, "phase": phase, "evidence": evidence, **_body_stamp(item)},
+        {**without_cause(saved or {}), "initiative": ctx.initiative_id, "phase": phase, "evidence": evidence, **body_stamp(item)},
         phase=phase,
         task=task,
     )
@@ -622,8 +622,8 @@ def rescue_task(ctx: _Ctx, item: Mapping[str, Any], *, phase: str) -> dict[str, 
     land_fault = _land_branch(ctx, task=task, patch=patch)
     if land_fault is not None:
         return _rescue_failed(ctx, item, phase=phase, reason=land_fault, failed_checks=False)
-    _save_result(
-        ctx, {**graph, "initiative": ctx.initiative_id, "phase": phase, "evidence": evidence, **_body_stamp(item)}, phase=phase, task=task
+    save_task_result(
+        ctx, {**graph, "initiative": ctx.initiative_id, "phase": phase, "evidence": evidence, **body_stamp(item)}, phase=phase, task=task
     )
     applied, detail = _rescue_move(
         ctx,
@@ -635,7 +635,7 @@ def rescue_task(ctx: _Ctx, item: Mapping[str, Any], *, phase: str) -> dict[str, 
         ],
     )
     if not applied:
-        _record_tasks(ctx, phase, [], [{"id": task, "grain": "task"}])
+        record_tasks(ctx, phase, [], [{"id": task, "grain": "task"}])
         return {"status": "move_refused", "why": detail}
-    _record_tasks(ctx, phase, [{"id": task, "status": "approved", "state": "approved"}], [])
+    record_tasks(ctx, phase, [{"id": task, "status": "approved", "state": "approved"}], [])
     return {"status": "approved", "detail": detail}
