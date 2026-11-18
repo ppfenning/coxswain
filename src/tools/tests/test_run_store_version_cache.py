@@ -137,7 +137,7 @@ def test_a_state_change_on_a_non_newest_row_at_the_same_updated_at_changes_the_s
 
 def test_a_claim_or_release_changes_the_queue_stamp(runs):
     before = run_store.queue_stamp(runs)
-    assert run_store.claim_row(runs, "i1", "t1", "me", 300, "2026-11-06T00:00:00Z")
+    assert run_store.claim_outcome(runs, "i1", "t1", "me", 300, "2026-11-06T00:00:00Z")[0]
     claimed = run_store.queue_stamp(runs)
     assert run_store.release_row(runs, "i1", "t1", "me")
     released = run_store.queue_stamp(runs)

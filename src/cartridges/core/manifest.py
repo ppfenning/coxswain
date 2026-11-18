@@ -4,7 +4,6 @@ CONTRACT (implement against this; see docs/CLEAN-ROOM.md — write it fresh)
 
     build_manifest(...) -> dict          # pure
     gate_diff(proposal, decision, applied, edited) -> dict   # pure
-    agreement_rate(manifest) -> float    # pure
     record_run(manifest, ...) -> None    # THE I/O EDGE: writes runs/ + ledger
     append_ledger(manifest, ...) -> None # I/O edge: ledger rows only
 
@@ -19,7 +18,6 @@ Design rules:
 4.  `human_minutes` is run-level and entered AT THE GATE, not reconstructed
     later. A time saving recalled a month afterwards convinces nobody, least
     of all the person who has to fund the next quarter of this.
-5.  `agreement_rate` answers "how often was it right" from gate diffs alone.
 
 Shell duty after a run is two calls — build_manifest, then record_run — not a
 convention someone has to remember.
@@ -36,7 +34,6 @@ from core import ledger
 
 __all__ = [
     "ManifestError",
-    "agreement_rate",
     "append_ledger",
     "build_manifest",
     "gate_diff",
@@ -134,20 +131,6 @@ def gate_diff(
         if field in proposal:
             diff[field] = proposal[field]
     return diff
-
-
-def agreement_rate(manifest: Mapping[str, object]) -> float:
-    """How often the gate accepted what was proposed, unedited.
-
-    Denominator is decisions actually made — a proposal nobody ruled on says
-    nothing about agreement, and padding the denominator with it would quietly
-    depress a number this whole system is judged by.
-    """
-    diffs = cast("Sequence[Mapping[str, object]]", manifest.get("gate_diffs") or [])
-    decided = [d for d in diffs if d.get("outcome") in {"clean", "reversal"}]
-    if not decided:
-        return 0.0
-    return sum(1 for d in decided if d["outcome"] == "clean") / len(decided)
 
 
 def append_ledger(manifest: Mapping[str, object], *, ledger_path: Path | str) -> None:

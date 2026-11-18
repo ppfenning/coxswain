@@ -42,11 +42,6 @@ def _land(line: str) -> tuple[str, str] | None:
     return None
 
 
-def landed_lands(lines: Iterable[str]) -> list[tuple[str, str]]:
-    """(day, task_id) per `land.jsonl` line with exit 0, `mark_done` reached and a task; a line with no `ts` has day ''."""
-    return [land for land in map(_land, lines) if land is not None]
-
-
 def first_land_days(lands: Iterable[tuple[str, str]]) -> dict[str, str]:
     """task_id -> the earliest dated day it landed. A task landed twice counts once, on its first day."""
     dated = sorted((day, task) for day, task in lands if day)
@@ -64,20 +59,6 @@ def coverage_start(lands: Iterable[tuple[str, str]]) -> str | None:
     The landed set says only when tasks landed, never that a source was recording before its first land, so a day
     before that first land is unknown rather than zero, whichever source the set came from."""
     return min((day for day, _ in lands if day), default=None)
-
-
-def _log_day(line: str) -> str:
-    try:
-        row = json.loads(line.replace("\x00", ""))
-    except ValueError:
-        return ""
-    ts = row.get("ts") if isinstance(row, dict) else None
-    return ts[:10] if isinstance(ts, str) else ""
-
-
-def first_log_day(lines: Iterable[str]) -> str | None:
-    """The earliest dated day over every parseable `land.jsonl` row, failed lands included; None when no row has a `ts`."""
-    return min(filter(None, map(_log_day, lines)), default=None)
 
 
 def _is_in_flight(last_ts: str | None, now: datetime) -> bool:

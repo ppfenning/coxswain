@@ -44,11 +44,6 @@ def clean_finding(exit_code: int | None, output: str) -> str | None:
     )
 
 
-def clean_gate_finding(patch: str, checks: Sequence[Mapping[str, Any]], repo_dir: str | None) -> str | None:
-    """The clean check's finding for `patch`; see `clean_gate_outcome`."""
-    return clean_gate_outcome(patch, checks, repo_dir)[0]
-
-
 def clean_gate_outcome(
     patch: str, checks: Sequence[Mapping[str, Any]], repo_dir: str | None
 ) -> tuple[str | None, GateStatus]:

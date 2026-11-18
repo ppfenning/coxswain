@@ -104,26 +104,6 @@ def test_clock_and_age_returns_placeholder_for_unparseable_timestamp():
     assert console_screen._clock_and_age("not-a-timestamp", _NOW, _EASTERN) == "?"
 
 
-def test_selection_at_host_index():
-    sections = {
-        "drafts": [DraftRow(id="foo", proposed_by="operator", age_seconds=3600)],
-        "hosts": [{"name": "host-a"}],
-        "lanes": [],
-        "chair": [],
-    }
-    assert console_screen.selection_at(sections, 1) == {"kind": "host", "name": "host-a"}
-
-
-def test_selection_at_past_last_item_is_none():
-    sections = {
-        "drafts": [DraftRow(id="foo", proposed_by="operator", age_seconds=3600)],
-        "hosts": [{"name": "host-a"}],
-        "lanes": [],
-        "chair": [],
-    }
-    assert console_screen.selection_at(sections, 2) is None
-
-
 def test_gather_keeps_only_recent_needs_chair(monkeypatch):
     now = "2026-09-28T12:00:00+00:00"
     recent = {"kind": "needs_chair", "ts": "2026-09-28T11:55:00+00:00"}

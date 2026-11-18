@@ -977,8 +977,8 @@ class ClaudeCodeRunner:
     def tag_decision(self) -> Callable[[NodeResult], CallDecision | None] | None:
         """The calling thread's hook, set by a shadow-mode FastPathRunner around one call.
 
-        It tags the decision before the ledger write, because `record_usage` lets the
-        ledger row win over `calls`. It is thread-local: another thread's call never sees it.
+        It tags the decision before the ledger write, so the ledger row carries the tag.
+        It is thread-local: another thread's call never sees it.
         """
         return getattr(self._local, "tag_decision", None)
 

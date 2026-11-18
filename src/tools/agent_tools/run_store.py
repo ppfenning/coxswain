@@ -1303,11 +1303,6 @@ def claim_outcome(runs_dir: Path, initiative: str, task_id: str, holder: str, tt
     return None, HELD if isinstance(done, _api().Held) else UNAVAILABLE
 
 
-def claim_row(runs_dir: Path, initiative: str, task_id: str, holder: str, ttl_s: float, now: str) -> dict | None:
-    """Edge: the claim taken on a free or expired row at `now`, None when held or unavailable; `claim_outcome` says which."""
-    return claim_outcome(runs_dir, initiative, task_id, holder, ttl_s, now)[0]
-
-
 def _import_pyarrow() -> tuple[Any, Any]:
     """The only place pyarrow is imported: `(pyarrow.fs, pyarrow.parquet)`, else TracesUnavailable naming the extra."""
     try:

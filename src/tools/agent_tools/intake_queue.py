@@ -69,12 +69,6 @@ def landed_ids(rows: list[Row]) -> set[str]:
     return initiatives.union(*(_intake_ids(row) for row in named))
 
 
-def unmet_after(row: Row, rows: list[Row]) -> list[str]:
-    """Ids in the row's `after` not yet landed, in declared order; an id naming nothing is unmet."""
-    landed = landed_ids(rows)
-    return [name for name in after_ids(row["extra"]) if name not in landed]
-
-
 def _queued_intake(rows: list[Row]) -> list[Row]:
     return [row for row in rows if row["kind"] == "intake" and row["state"] == "queued"]
 

@@ -61,7 +61,6 @@ __all__ = [
     "check_poll_result",
     "checks_argv",
     "checks_detail",
-    "close_to_done",
     "gate_steps",
     "gate_stop",
     "generated_conflict_only",
@@ -1645,18 +1644,6 @@ def set_state_stop(result: Any) -> str | None:
     if kind == "Failed":
         return f"land: store set-state failed: exit {result.code}: {result.detail}"
     return "land: store not available; cannot compare-and-set the task to done"
-
-
-def close_to_done(
-    text: str, *, mode: str, merged: bool, set_state: Callable[[str], Any]
-) -> tuple[str | None, str | None]:
-    """`approve_to_done` under `mode`. `files` is `approve_to_done` unchanged and never calls `set_state`.
-    `store` calls `set_state(expected)` for `done --expect approved` only when the item would move; a stop comes back as `(None, reason)`, so the file is never rewritten."""
-    new_text, message = approve_to_done(text, merged=merged)
-    if mode != "store" or new_text is None:
-        return new_text, message
-    stop = set_state_stop(set_state("approved"))
-    return (None, stop) if stop is not None else (new_text, message)
 
 
 _Hunk = tuple[list[str], list[str], list[str]]

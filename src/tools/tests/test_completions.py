@@ -1,7 +1,7 @@
 import json
 from datetime import UTC, datetime
 
-from agent_tools.completions import completions, count_completions, day_completions
+from agent_tools.completions import completions, day_completions
 
 
 def _row(task, updated_at="2026-11-09T10:00:00Z", run="acme-1", **record):
@@ -49,11 +49,6 @@ def test_a_record_with_no_usable_stamp_is_skipped_not_raised():
 def test_a_decoded_record_dict_and_a_naive_stamp_read_as_utc():
     row = {"run_id": "acme-1", "task_id": "t1", "record_json": {"status": "done"}, "updated_at": "2026-11-09T10:00:00"}
     assert completions([row]) == [("acme-1", "t1", _at(10))]
-
-
-def test_count_includes_the_window_start_and_excludes_earlier_completions():
-    done = [("r", "t1", _at(9)), ("r", "t2", _at(10)), ("r", "t3", _at(11))]
-    assert count_completions(done, _at(10)) == 2
 
 
 def test_a_day_counts_the_records_completed_in_it_and_the_logged_lands_no_record_shows():

@@ -37,14 +37,9 @@ from harness.checks import all_passed, checks_evidence
 from harness.worktree import apply_patch, create_worktree
 from runner.protocol import NodeRunner
 
-__all__ = ["GRAPH_NAME", "SPEC", "review_request", "run"]
+__all__ = ["GRAPH_NAME", "SPEC", "run"]
 
 GRAPH_NAME = "review-diff"
-
-
-def review_request(diff: str, repo: str, ref: str) -> dict[str, Any]:
-    """The review inputs a build's own review step gets, shaped for a standalone diff."""
-    return {"diff": diff, "repo": repo, "ref": ref}
 
 
 def _finding(item: Mapping[str, Any]) -> dict[str, Any]:

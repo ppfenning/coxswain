@@ -10,8 +10,6 @@ from agent_tools.stats_efficiency import (
     coverage_start,
     efficiency,
     first_land_days,
-    first_log_day,
-    landed_lands,
     lands_of,
     render_lines,
     to_json,
@@ -136,18 +134,15 @@ def test_a_day_before_the_land_logs_first_row_is_unknown_and_a_later_day_with_no
         _call("2026-09-22", "t2", 1.0, 2, 0, 0), _call("2026-09-23", "t3", 4.0, 1, 0, 0),
     ]
     tasks = [_task(t, 1, f"{d}T10:00:00+00:00") for t, d in [("t0", "2026-09-20"), ("t1", "2026-09-21"), ("t2", "2026-09-22"), ("t3", "2026-09-23")]]
-    log = [
-        '{"ts": "2026-09-22T10:00:00+00:00", "task": "t2", "steps_reached": ["mark_done"], "exit": 0}',
-        '{"ts": "2026-09-21T10:00:00+00:00", "task": "t1", "steps_reached": ["merge"], "exit": 1}',
-    ]
-    rows, total = efficiency(calls, tasks, landed_lands(log), SINCE, NOW, first_log_day(log))
+    # the land log starts on 2026-09-21 and its one landed row is t2's
+    rows, total = efficiency(calls, tasks, [("2026-09-22", "t2")], SINCE, NOW, "2026-09-21")
     lines = render_lines(rows, total)
     assert "$/completion" in lines[0] and "$/landed" not in lines[0]
     assert lines[1].split()[4:8] == ["-", "-", "-", "-"]
     assert (lines[2].split()[4], lines[2].split()[7]) == ("0", "100%")
     assert (total.cost_usd, total.turns, total.landed, total.cost_per_completion, total.first_try_rate) == (8.0, 7, 1, 6.0, 1.0)
     assert total.waste_share == pytest.approx(5.0 / 6.0)
-    rows, total = efficiency(calls, tasks, [], SINCE, NOW, first_log_day([]))
+    rows, total = efficiency(calls, tasks, [], SINCE, NOW, None)
     assert [r.landed for r in [*rows, total]] == [None] * 5
     assert [r.cost_per_completion for r in [*rows, total]] == [None] * 5
 
@@ -166,19 +161,6 @@ def test_a_task_landed_before_the_window_or_with_no_ts_is_not_waste_and_not_coun
 def test_no_calls_and_no_lands_gives_no_days_and_an_all_none_total():
     rows, total = efficiency([], [], [], SINCE, NOW, None)
     assert (rows, total.cost_usd, total.cost_per_turn, total.waste_share) == ([], 0, None, None)
-
-
-def test_landed_lands_keeps_exit_zero_with_mark_done_and_a_task_and_skips_the_rest():
-    lines = [
-        '{"ts": "2026-09-22T10:00:00+00:00", "run": "r", "task": "t1", "steps_reached": ["merge", "mark_done"], "exit": 0}',
-        "not json",
-        '{"ts": "2026-09-22T10:00:00+00:00", "run": "r", "task": "t2", "steps_reached": ["merge"], "exit": 0}',
-        '{"ts": "2026-09-22T10:00:00+00:00", "run": "r", "task": "t3", "steps_reached": ["mark_done"], "exit": 1}',
-        '{"ts": "2026-09-22T10:00:00+00:00", "run": "r", "task": null, "steps_reached": ["mark_done"], "exit": 0}',
-        "[1, 2]",
-        '{"run": "r", "task": "t6", "steps_reached": ["mark_done"], "exit": 0}',
-    ]
-    assert landed_lands(lines) == [("2026-09-22", "t1"), ("", "t6")]
 
 
 def test_render_lines_dashes_a_missing_ratio_and_ends_with_the_total():

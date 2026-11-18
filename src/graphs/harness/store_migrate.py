@@ -31,7 +31,6 @@ __all__ = [
     "MigrationError",
     "check_version",
     "default_modules",
-    "discover_migrations",
     "migrate",
     "open_store",
     "pending",
@@ -69,11 +68,6 @@ def _ordered(given: Sequence[ModuleType | str]) -> tuple[ModuleType, ...]:
     if gaps:
         raise MigrationError(f"migration numbering has a gap: expected {gaps[0][0]}, found {gaps[0][1]}")
     return ordered
-
-
-def discover_migrations(modules: Sequence[ModuleType | str]) -> tuple[Migration, ...]:
-    """(version, statements) pairs in version order; a gap or duplicate raises."""
-    return tuple((m.VERSION, m.statements) for m in _ordered(modules))
 
 
 def default_modules() -> tuple[ModuleType, ...]:

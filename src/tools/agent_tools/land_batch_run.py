@@ -7,7 +7,6 @@ batch opens in a pass; every other source is deferred untouched, so the next cha
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -40,16 +39,6 @@ class QueueResult:
     landed: list[tuple[Source, str | None]]
     returned: list[tuple[Source, str]]
     deferred: list[Source]
-    ci_runs: int
-
-
-@dataclass(frozen=True)
-class ParsedQueue:
-    """What the text carries: labels (`<initiative>/<phase>`), not the sources, which the text does not hold."""
-
-    landed: list[tuple[str, str]]
-    returned: list[tuple[str, str]]
-    deferred: list[str]
     ci_runs: int
 
 
@@ -111,21 +100,3 @@ def render_lines(result: QueueResult) -> str:
         f"returned={len(result.returned)} deferred={len(result.deferred)}",
     ]
     return "\n".join(lines) + "\n"
-
-
-_LANDED = re.compile(r"^batch landed (\S+?/\S+?) pr=(.*)$")
-_RETURNED = re.compile(r"^batch returned (\S+?/\S+?): (.*)$")
-_DEFERRED = re.compile(r"^batch deferred (\S+?/\S+)$")
-_SUMMARY = re.compile(r"^batch summary: ci_runs=(\d+) landed=\d+ returned=\d+ deferred=\d+$")
-
-
-def parse_lines(text: str) -> ParsedQueue:
-    """The four groups from `render_lines` output; any other line is ignored. ci_runs is 0 without a summary line."""
-    lines = text.splitlines()
-    summaries = [m for m in map(_SUMMARY.match, lines) if m]
-    return ParsedQueue(
-        [(m[1], m[2]) for m in map(_LANDED.match, lines) if m],
-        [(m[1], m[2]) for m in map(_RETURNED.match, lines) if m],
-        [m[1] for m in map(_DEFERRED.match, lines) if m],
-        int(summaries[-1][1]) if summaries else 0,
-    )

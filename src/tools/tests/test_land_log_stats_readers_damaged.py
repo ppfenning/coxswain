@@ -1,6 +1,6 @@
 import json
 
-from agent_tools import route, run_store, stats_efficiency
+from agent_tools import route, run_store
 
 SINCE, UNTIL = "2026-10-01T00:00:00+00:00", "2026-10-08T00:00:00+00:00"
 DAY = "2026-10-03"
@@ -13,15 +13,6 @@ def land(task, ts=f"{DAY}T12:00:00+00:00"):
 ALL_NULL = "\x00" * 20
 EMBEDDED = "\x00" + land("c")[:10] + "\x00\x00" + land("c")[10:] + "\x00"
 LINES = [land("a"), ALL_NULL, land("b"), EMBEDDED]
-
-
-def test_stats_reader_keeps_good_rows_and_the_embedded_nul_row():
-    assert stats_efficiency.landed_lands(LINES) == [(DAY, "a"), (DAY, "b"), (DAY, "c")]
-
-
-def test_stats_first_log_day_ignores_an_all_null_line_and_reads_an_embedded_nul_row():
-    assert stats_efficiency.first_log_day([ALL_NULL, EMBEDDED]) == DAY
-    assert stats_efficiency.first_log_day([ALL_NULL]) is None
 
 
 def test_route_landed_today_keeps_good_rows_and_the_embedded_nul_row():
