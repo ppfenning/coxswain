@@ -53,8 +53,8 @@ without mocks in `tests/test_smoke_plan.py`.
 - **`forge_repo`** (per test): a new repository on the forge with one commit on `main`, cloned at `~/src/app` with
   the forge as its http origin. `forge_repo.report(sha, state)` reports a commit status, as a CI job would.
   `forge_repo.pull(n)` and `forge_repo.branch_tip(branch)` read back what the forge holds. A branch answer is read
-  by the forge's own `forge_forgejo.parse_branch_tip`, imported from this tree: the one exception to the rule below
-  that a smoke test does not import the code under test, so there is one reader of that answer, not two.
+  by the forge's own `forge_forgejo.parse_branch_tip`, imported from this tree: one of two exceptions to the rule below
+  that a smoke test does not import the code under test, so there is one reader of that answer, not two. The other is `test_unit_env_doctor.py`, which judges the doctor's rows by `doctor.failing_required`, the rule `cox upgrade` rolls back on.
 - **`edge_machine`** (per test): an edge machine laid out as `cox setup install` lays a home out. Its checkout at
   `~/.local/share/coxswain/installs/coxswain` is this tree, cloned from the forge (`edge_origin`, once per module:
   this tree's tracked files as one commit, so an untracked local file never reaches it, plus one newer commit, both reported green). The checkout sits at the older commit, its
@@ -64,6 +64,11 @@ without mocks in `tests/test_smoke_plan.py`.
   writes** both: a sync adds the packages it fetched to the caller's cache, and when no Python 3.14 is there uv may
   install one into the caller's interpreter folder. Everything else of uv's stays in the sandbox, and a user
   `uv.toml` (under the real `~/.config/uv`) is not read, since HOME and XDG_CONFIG_HOME point into the sandbox.
+- **`object_store`** (once per session): a single-node Garage container (`plan.GARAGE_IMAGE`, pinned by digest)
+  with its S3 port on one loopback port only and its state on tmpfs. The fixture gives the node a layout, imports a
+  key it chose (so no output it reads carries the secret), creates one bucket and grants the key on it. It is
+  labelled and reaped like the Postgres container. The `install` carries the `traces` extra, so the doctor's bucket
+  probe has pyarrow.
 
 ## Contract tests
 
@@ -80,6 +85,7 @@ into a scratch copy of the tree and confirming that they fail.
 | `test_doctor_running_install.py` | `cox setup doctor` to the interpreter running it | The `running install` row missing, or a plain install read as editable. |
 | `test_contract_store_bounds.py` | an in-process store call to a locked row | A store call with no time bound: a held row lock must end the write as `Failed` within the lock bound. Also a storage URL with its own `options`, which once replaced the lock and statement bounds instead of adding to them. |
 | `test_chair_tick_cache.py` | the chair's store readers to Postgres's change counters | A quiet tick that reads the store again, or a write that re-reads readers of other tables (H6). |
+| `test_unit_env_doctor.py` | a hand-run `cox setup doctor` to the units' env file | The object_store keys held only in the file the upgrade unit names (written by `cox upgrade --install-timer --environment-file`) and missing from the shell: the required rows fail and a good `cox upgrade` rolls back. Also a file value overriding one the shell already sets (the shell must win). Each test failed with the doctor's loading taken out. |
 | `test_sandbox.py` | the harness itself | A child interpreter importing another checkout. It also checks that `cox` resolves the profile the sandbox HOME names, and that every path `cox route context` reports is under the sandbox or the install. It does not prove that `cox` opens no other file; the environment the sandbox builds is what keeps the real home out of reach. |
 
 **A drift found while building this suite, now closed.** The chair's revert of a phase quarantines its tasks with
@@ -99,7 +105,7 @@ rows dropped from the verdict, the rollback test fails.
 | Test | Entry point | What it proves |
 | --- | --- | --- |
 | `test_forge_land.py` | `cox runs land --task t1 --gate full --apply` | On green checks, the land pushes `pr/t1`, opens the pull request, waits for the commit status the test reports, squash-merges and deletes the branch, and the local `main` follows. On failing checks it stops at `wait_checks`, names the failing context, and leaves the pull request open and `main` alone. |
-| `test_edge_upgrade.py` | `cox upgrade` on an edge machine | H5: with no token file (an advisory doctor row), the move to the newer green commit stands, prints the advisory warning, and is recorded `upgraded`. With the store on a closed port (a required row), the move rolls back to the older commit, the record says `rolled_back`, and the next run holds that commit instead of retrying it. The git, `uv sync`, tool reinstall and doctor all run for real. |
+| `test_edge_upgrade.py` | `cox upgrade` on an edge machine | H5: with no token file (an advisory doctor row), the move to the newer green commit stands, prints the advisory warning, and is recorded `upgraded`. With the store on a closed port (a required row), the move rolls back to the older commit, the record says `rolled_back`, and the next run holds that commit instead of retrying it. The git, `uv sync`, tool reinstall and doctor all run for real. With `FORGEJO_BASE_URL` and `FORGEJO_TOKEN` only in `~/.config/agent-tools/garage.env` and not in the shell, a hand-run `cox upgrade` loads them and upgrades. With the load in `cli_install._upgrade` taken out, it refuses, because its CI query falls back to `gh`. |
 
 `cox upgrade` asks the forge which commits passed CI. For an origin on the `FORGEJO_BASE_URL` host it reads Forgejo's
 commit statuses (`forge_forgejo.green_commits`). For any other origin it asks `gh run list` for the `ci.yml` push

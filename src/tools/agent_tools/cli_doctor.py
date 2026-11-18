@@ -52,7 +52,7 @@ from agent_tools.cli_lazy import (
     store_url,
 )
 from agent_tools.cli_runs_fetch import _lane_host_candidates, _profile_lane_hosts
-from agent_tools.cli_setup_store import _doctor_profile, _probe_store
+from agent_tools.cli_setup_store import _doctor_profile, _probe_store, _unit_env_loaded
 from agent_tools.cli_views import _dash_dirs
 
 
@@ -545,8 +545,16 @@ def _doctor_log_rows(profile: dict | None, *, fix: bool, out) -> list[dict]:
 
 
 def _setup_doctor(a: argparse.Namespace) -> int:
+    """Edge. With `--host`, the host's doctor over ssh. Else this machine's, with the units' env file loaded under any
+    variable the process lacks, so a hand run in an ssh shell judges what the units would see. `--json` keeps stdout
+    to the JSON alone, so the note naming what was loaded is printed only without it."""
     if getattr(a, "host", None):
         return _setup_doctor_host(a, _run_ssh)
+    with _unit_env_loaded(None if a.json else print):
+        return _setup_doctor_here(a)
+
+
+def _setup_doctor_here(a: argparse.Namespace) -> int:
     repo = Path(a.repo).expanduser() if a.repo else Path.cwd()
     facts = _gather_doctor_facts(_profile_path(a), repo)
     rows = doctor.checks(facts)

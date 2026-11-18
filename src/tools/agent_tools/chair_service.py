@@ -11,7 +11,13 @@ from xml.sax.saxutils import escape
 from agent_tools.chair_restart import RESTART_EXIT_CODE
 
 # cli.py and setup_install.py still call these through chair_service; the rules now live in unit_env.
-from agent_tools.unit_env import environment_file_line, export_lines, launchd_arguments, unsafe_values  # noqa: F401
+from agent_tools.unit_env import (  # noqa: F401
+    environment_file_line,
+    export_lines,
+    launchd_arguments,
+    unit_environment_file,
+    unsafe_values,
+)
 
 UNIT_NAME = "coxswain-chair.service"
 WATCHDOG_SERVICE_NAME = "coxswain-chair-watchdog.service"
@@ -22,7 +28,6 @@ WATCHDOG_PLIST_LABEL = "coxswain-chair-watchdog"
 WATCHDOG_PLIST_NAME = "coxswain-chair-watchdog.plist"
 
 _EXEC_START = re.compile(r"^ExecStart=(.*)$", re.MULTILINE)
-_ENV_FILE = re.compile(r"^EnvironmentFile=-(\S+)\s*$", re.MULTILINE)
 
 
 def unit_path[Home: PurePath](home: Home) -> Home:  # a Path in, a Path out: the edge calls .exists on the result
@@ -188,10 +193,10 @@ def unit_args(text: str) -> dict[str, str | None] | None:
     tokens = next((t for t in commands if ("chair", "run") in pairwise(t)), None)
     if tokens is None:
         return None
-    env = _ENV_FILE.search(text)
+    env_file = unit_environment_file(text)
     return {
         "label": _flag_value(tokens, "--label"),
         "interval": _flag_value(tokens, "--interval"),
         "profile": _flag_value(tokens, "--profile"),
-        "env_file": env.group(1) if env is not None else None,
+        "env_file": env_file,
     }

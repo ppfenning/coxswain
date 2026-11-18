@@ -254,6 +254,31 @@ launchd agents get its values as `EnvironmentVariables`. It keeps the
 from the token that `cox setup token` stored. Run it again after you change the
 token.
 
+A shell you open yourself, by ssh or at the terminal, does not read that file.
+So `cox upgrade` and `cox setup doctor` read it themselves when you run them by
+hand. They read the files the installed upgrade unit names: every
+`EnvironmentFile=` line, with `%h` as your home and a later file winning, or the
+file the launchd agent sources. If no upgrade unit names one, they try the chair
+unit, then the lander unit, then the default `~/.config/agent-tools/garage.env`.
+
+A variable that your shell already sets keeps its value, even when it is empty.
+The rest come from the file, read the way the units read it. Surrounding quotes
+and backslash escapes are removed (`"q v"` gives `q v`, `a\b` gives `ab`). `%`
+and an empty value (`E=`) load as written. On Linux, `$` loads as written too,
+as systemd keeps it. The command prints names and paths, never values:
+
+- the variables it loaded;
+- the shell variables that override a different value in the file (if you
+  rotated a key in the file, unset the old one in your shell);
+- any value it did not load. One is an unbalanced quote, unquoted space or
+  other escape that systemd and `sh` would read differently. On macOS, the
+  other is a `$` or backtick outside single quotes, which the launchd agent's
+  `sh` would expand. Put such a value in single quotes;
+- a file a unit names that does not exist, and a file skipped because it is
+  not UTF-8 text.
+
+`cox setup doctor --json` loads the file without printing anything.
+
 On an edge machine, `cox upgrade` with no `--to` does these steps:
 
 1. It finds the newest commit on `origin/main` whose `ci` workflow passed on

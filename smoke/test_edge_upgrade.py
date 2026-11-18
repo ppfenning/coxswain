@@ -10,6 +10,7 @@ and the moved checkout's own doctor. Nothing is stubbed. No chair or lander unit
 
 import json
 import socket
+import subprocess
 
 import pytest
 
@@ -75,3 +76,25 @@ def test_a_required_doctor_failure_rolls_the_upgrade_back(edge_machine):
     assert again.returncode == 0, again.stdout + again.stderr
     assert f"edge: {newer[:12]} was rolled back or failed" in again.stdout
     assert edge_machine.head() == base
+
+
+def test_a_hand_run_upgrade_reads_the_forge_settings_from_the_units_env_file(edge_machine):
+    # The forge's address and token are only in the env file the units read, not in the shell: as over ssh. The upgrade
+    # itself needs them (its CI query picks Forgejo by FORGEJO_BASE_URL and reads with FORGEJO_TOKEN), before any doctor.
+    names = (plan.FORGEJO_BASE_URL_ENV, plan.FORGEJO_TOKEN_ENV)
+    env = edge_machine.sandbox.env
+    garage = edge_machine.sandbox.home / ".config" / "agent-tools" / "garage.env"
+    garage.write_text("".join(f"{name}={env[name]}\n" for name in names), encoding="utf-8")
+    garage.chmod(0o600)
+    shell = {key: value for key, value in env.items() if key not in names}
+    base, newer = edge_machine.origin.base, edge_machine.origin.newer
+
+    done = subprocess.run([str(edge_machine.sandbox.home / ".local" / "bin" / "cox"), "upgrade"], env=shell,
+                          cwd=edge_machine.sandbox.home, capture_output=True, text=True, timeout=UPGRADE_TIMEOUT_S)
+
+    output = done.stdout + done.stderr
+    assert done.returncode == 0, output
+    assert f"env: loaded {', '.join(names)} from {garage}, as the units read it" in output
+    assert f"edge: upgraded {base[:12]} -> {newer[:12]}" in output
+    assert env[plan.FORGEJO_TOKEN_ENV] not in output
+    assert edge_machine.head() == newer

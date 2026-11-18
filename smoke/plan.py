@@ -146,7 +146,12 @@ def docker_ready_argv(container: str) -> list[str]:
 
 
 def docker_port_argv(container: str) -> list[str]:
-    return ["docker", "port", container, "5432/tcp"]
+    return docker_port_argv_for(container, 5432)
+
+
+def docker_port_argv_for(container: str, port: int) -> list[str]:
+    """`docker port` for the host address a container's `port` is published on."""
+    return ["docker", "port", container, f"{port}/tcp"]
 
 
 def docker_remove_argv(*containers: str) -> list[str]:
@@ -310,10 +315,18 @@ _TOKEN = re.compile(r"^[0-9a-f]{40}$")
 def forge_source(docker_path: str | None, docker_ok: bool, *, required: bool, broken_docker_ok: bool = False) -> StartContainer | Skip | Fail:
     """Whether the session can start the Forgejo container. Docker decides, as it does for Postgres, and there is no
     URL to use instead: the suite creates users, tokens and repositories, which it does only on a server it owns."""
+    return container_source("the sandbox forge", docker_path, docker_ok, required=required, broken_docker_ok=broken_docker_ok)
+
+
+def container_source(
+    what: str, docker_path: str | None, docker_ok: bool, *, required: bool, broken_docker_ok: bool = False,
+) -> StartContainer | Skip | Fail:
+    """Whether the session can start the container for `what` (the sandbox forge, the sandbox object store), which the
+    suite only ever uses on a server it owns. Docker decides, as it does for Postgres."""
     if docker_path is None:
-        return unavailable("no docker on PATH for the sandbox forge", required=required)
+        return unavailable(f"no docker on PATH for {what}", required=required)
     if not docker_ok:
-        reason = "docker is on PATH but its daemon did not answer, so the sandbox forge cannot start"
+        reason = f"docker is on PATH but its daemon did not answer, so {what} cannot start"
         if broken_docker_ok and not required:
             return Skip(f"{reason} ({BROKEN_DOCKER_OK_ENV} is set)")
         return Fail(f"{reason}; set {BROKEN_DOCKER_OK_ENV}=1 to skip on this host")
@@ -442,3 +455,94 @@ def pull_summary(pull: object) -> dict:
     head, base = pull.get("head") or {}, pull.get("base") or {}
     return {"state": pull.get("state"), "merged": pull.get("merged") is True, "head": head.get("ref"),
             "sha": head.get("sha"), "base": base.get("ref")}
+
+
+# --- the sandbox object store ---------------------------------------------------------------------------------------
+
+# Garage, the S3 server the machines' traces live on, pinned by the digest of its multi-arch index. Bump on purpose.
+GARAGE_IMAGE = "dxflrs/garage:v2.1.0@sha256:4c9b34c113e61358466e83fd6e7d66e6d18657ede14b776eb78a93ee8da7cf6a"
+GARAGE_S3_PORT = 3900  # the S3 API port inside the container
+GARAGE_REGION = "garage"
+GARAGE_CONFIG = "/etc/garage.toml"  # where the image's entrypoint reads its config
+GARAGE_BUCKET = "smoke-traces"
+GARAGE_KEY_NAME = "smoke"
+# The variable names the provider profile's object_store block names, as on a person's machine.
+GARAGE_ACCESS_KEY_ENV = "GARAGE_ACCESS_KEY_ID"
+GARAGE_SECRET_KEY_ENV = "GARAGE_SECRET_ACCESS_KEY"
+_NODE_ID = re.compile(r"^([0-9a-f]{64})@")
+
+
+def garage_config_text(rpc_secret: str) -> str:
+    """One node, one copy, sqlite metadata: what a single-node Garage needs. Data and metadata sit on the container's
+    tmpfs, so nothing outlives it."""
+    return "".join([
+        'metadata_dir = "/var/lib/garage/meta"\n',
+        'data_dir = "/var/lib/garage/data"\n',
+        'db_engine = "sqlite"\n',
+        "replication_factor = 1\n",
+        'rpc_bind_addr = "[::]:3901"\n',
+        'rpc_public_addr = "127.0.0.1:3901"\n',
+        f'rpc_secret = "{rpc_secret}"\n',
+        "\n[s3_api]\n",
+        f's3_region = "{GARAGE_REGION}"\n',
+        f'api_bind_addr = "[::]:{GARAGE_S3_PORT}"\n',
+    ])
+
+
+def garage_run_argv(session: str, started: int, config_path: str, image: str = GARAGE_IMAGE) -> list[str]:
+    """`docker run` for a throwaway Garage: its S3 port on a random loopback port only, its state on tmpfs, its config
+    mounted read-only. Labelled as the Postgres container is, so a later session reaps it after a killed one."""
+    return [
+        "docker", "run", "--detach", "--rm",
+        "--label", CONTAINER_LABEL,
+        "--label", f"{SESSION_LABEL}={session}",
+        "--label", f"{STARTED_LABEL}={started}",
+        "--publish", f"127.0.0.1::{GARAGE_S3_PORT}",
+        "--tmpfs", "/var/lib/garage",
+        "--volume", f"{config_path}:{GARAGE_CONFIG}:ro",
+        image,
+    ]
+
+
+def garage_argv(container: str, *args: str) -> list[str]:
+    """`garage ...` inside the container; the image has no shell, only the binary."""
+    return ["docker", "exec", container, "/garage", *args]
+
+
+def garage_setup_argvs(container: str, node: str, key_id: str, secret: str) -> list[list[str]]:
+    """In order: give the one node a role, apply that layout, import the key the suite chose, create the bucket and
+    let the key use it. Importing a chosen key keeps the secret out of every command's output the fixture reads."""
+    return [
+        garage_argv(container, "layout", "assign", "--zone", "dc1", "--capacity", "1G", node[:16]),
+        garage_argv(container, "layout", "apply", "--version", "1"),
+        garage_argv(container, "key", "import", "--yes", "-n", GARAGE_KEY_NAME, key_id, secret),
+        garage_argv(container, "bucket", "create", GARAGE_BUCKET),
+        garage_argv(container, "bucket", "allow", "--read", "--write", "--owner", GARAGE_BUCKET, "--key", GARAGE_KEY_NAME),
+    ]
+
+
+def parse_node_id(output: str) -> str:
+    """The node id `garage node id` printed (`<64 hex>@<address>`). Raises ValueError when there is none."""
+    found = [m.group(1) for line in output.splitlines() if (m := _NODE_ID.match(line.strip()))]
+    if not found:
+        raise ValueError("garage node id printed no node id")
+    return found[-1]
+
+
+def garage_endpoint(port: int, host: str = "127.0.0.1") -> str:
+    return f"http://{host}:{port}"
+
+
+def object_store_provider_text(storage_url: str, endpoint: str, bucket: str = GARAGE_BUCKET) -> str:
+    """A provider profile for a shared store: the Postgres, the traces in `bucket` and the object_store block that
+    names the credential variables, never their values, as `docs/customize/several-machines.md` lays it out."""
+    return "".join([
+        f"storage_url: {storage_url}\n",
+        f"traces_url: s3://{bucket}/traces\n",
+        "object_store:\n",
+        f"  endpoint: {endpoint}\n",
+        f"  region: {GARAGE_REGION}\n",
+        f"  access_key_env: {GARAGE_ACCESS_KEY_ENV}\n",
+        f"  secret_key_env: {GARAGE_SECRET_KEY_ENV}\n",
+        "  path_style: true\n",
+    ])

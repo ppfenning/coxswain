@@ -12,6 +12,7 @@ from pathlib import Path
 from agent_tools.cli_common import _profile_path, _read_text_or_none
 from agent_tools.cli_lazy import (
     bounded_run,
+    chair_service,
     claude_token,
     route,
     setup_store,
@@ -21,6 +22,7 @@ from agent_tools.cli_lazy import (
     store_switch,
     store_url,
     unit_env,
+    upgrade_edge,
 )
 
 
@@ -75,6 +77,38 @@ def _env_overlay(overlay: Mapping[str, str]):
                 os.environ.pop(name, None)
             else:
                 os.environ[name] = old
+
+
+def _read_bytes_or_none(path: Path) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
+@contextlib.contextmanager
+def _unit_env_loaded(note: Callable[[str], None] | None = None):
+    """Edge. A hand run (an ssh or interactive shell) sees the environment the units see. The env files are those
+    the upgrade, chair or lander unit names, in that order, else the default `cox setup unit-env` writes; every
+    variable they define that the process lacks is set for the duration, then removed. `unit_env` decides all of it
+    (which files, what loads, what each note says); this only reads bytes. `note` gets names and paths, never a value."""
+    from agent_tools import lander_cli
+
+    home = Path.home()
+    unit_paths = [upgrade_edge.schedule_paths(sys.platform, home)[0], chair_service.unit_path(home),
+                  chair_service.chair_plist_path(home), lander_cli.unit_path(home)]
+    unit_reads = [(str(path), _read_bytes_or_none(path)) for path in unit_paths]
+    default = unit_env.env_file_path(str(home))
+    files = unit_env.units_environment_files([unit_env.decode_text(data) for _, data in unit_reads], default, str(home))
+    file_reads = [(path, _read_bytes_or_none(Path(path).expanduser())) for path in files]
+    values = unit_env.merged_values(unit_env.decode_text(data) for _, data in file_reads)
+    load = unit_env.plan_load(os.environ, values, sys.platform)
+    absent = [path for path, data in file_reads if data is None and path != default]
+    for line in unit_env.load_notes(load, files, absent, unit_env.undecodable([*unit_reads, *file_reads])):
+        if note is not None:
+            note(line)
+    with _env_overlay(load.loaded):
+        yield
 
 
 def _probe_store(profile: Mapping, overlay: Mapping[str, str]) -> list:
