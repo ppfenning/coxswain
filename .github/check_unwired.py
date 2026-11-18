@@ -29,8 +29,14 @@ refused.
 The main scan (--all) judges the whole tree instead of a diff: every public symbol under src/ needs a caller, and a
 use on any line counts. It is the gate for what a diff cannot see: a change that deletes a symbol's last caller.
 Unfinished work, a helper whose wiring is owed by a named intake, goes in the debt list (.github/unwired-debt.txt),
-in the allowlist's format, with that intake as the reason. The list only shrinks: an entry that is gone or wired
+in the allowlist's format, with that intake as the reason. The list only shrinks. The diff check refuses a line the
+base's list lacks (exit 2), and the list never excuses a symbol the diff itself adds. An entry that is gone or wired
 is a note to drop it, never a failure, since the change that wires or deletes one need not touch the list.
+
+The limit of matching by name: a reference is any use of the same name, wherever it resolves. A dead `step` or
+`State` passes when another module uses a `step` or a `State` of its own, and a dead module passes when some file
+has a local variable of its name. The check proves a symbol has no caller only when its name is unique; a passing
+symbol with a common name may still be dead.
 
 Usage: python .github/check_unwired.py [--all] [--base REF] [--root DIR] [--allow FILE] [--debt FILE]. Stdlib only.
 The base is --base, else $COX_LANE_BASE (an epic lane's phase branch, exported by the harness), else origin/main.
@@ -354,6 +360,32 @@ def parse_debt(text: str, sources: Mapping[str, str]) -> Allowlist:
     return parse_entries(text, sources, "debt list")
 
 
+def _entry_lines(text: str) -> list[tuple[int, tuple[str, str]]]:
+    """(line number, (path, name)) for each well-formed `path::name  # reason` line."""
+    found: list[tuple[int, tuple[str, str]]] = []
+    for number, raw in enumerate(text.splitlines(), 1):
+        entry = raw.strip().partition("#")[0].strip()
+        path, sep, name = entry.partition("::")
+        if sep and path and name.strip():
+            found.append((number, (path, name.strip())))
+    return found
+
+
+def debt_growth(text: str, base_text: str | None) -> tuple[str, ...]:
+    """Each debt line whose entry the base's list lacks. The list only shrinks, so a diff may not add one: a new
+    unwired symbol is wired, deleted or allowlisted as an entry point, never parked. No list at the base (the change
+    that starts it) refuses nothing."""
+    if base_text is None:
+        return ()
+    on_base = {entry for _, entry in _entry_lines(base_text)}
+    return tuple(
+        f"debt list line {number}: {path}::{name} is not on the base's debt list; the list only shrinks:"
+        " wire it, delete it, or allowlist it as an entry point"
+        for number, (path, name) in _entry_lines(text)
+        if (path, name) not in on_base
+    )
+
+
 def whole_tree(paths: Iterable[str]) -> tuple[Change, ...]:
     """The main scan: every in-scope file as if the diff added it, so every public symbol under src/ needs a caller."""
     return tuple(Change("A", None, path) for path in sorted(paths) if in_scope(path))
@@ -461,6 +493,14 @@ def _git(root: pathlib.Path, *args: str) -> str:
     return done.stdout
 
 
+def _show(root: pathlib.Path, rev: str, path: str) -> str | None:
+    """`path` as it is at `rev`; None when it is not there."""
+    try:
+        return _git(root, "show", f"{rev}:{path}")
+    except GitError:
+        return None
+
+
 def _read(root: pathlib.Path, path: str) -> str | None:
     try:
         return (root / path).read_text(encoding="utf-8")
@@ -481,9 +521,10 @@ def main(argv: Sequence[str], environ: Mapping[str, str]) -> int:
         untracked = [p for p in _git(root, "ls-files", "-z", "--others", "--exclude-standard").split("\0") if p]
         tracked = [p for p in _git(root, "ls-files", "-z").split("\0") if p]
         if args.all:
-            changes, diff, old = (), "", {}
+            changes, diff, old, base_debt = (), "", {}, None
         else:
             base = _git(root, "merge-base", args.base, "HEAD").strip()
+            base_debt = _show(root, base, args.debt)
             changes = parse_name_status(_git(root, "diff", "--name-status", "-z", "-M", base, "--", "src"))
             diff = _git(
                 root, "diff", "-U0", "-M", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", base
@@ -519,9 +560,17 @@ def main(argv: Sequence[str], environ: Mapping[str, str]) -> int:
     except SyntaxError as error:
         print(f"unwired: cannot parse {error.filename}: {error.msg}", file=sys.stderr)
         return 2
-    found, resolved = split_debt(unwired(added, sources, added_lines, private, allow.entries), debt.entries)
-    lines = scan_report(len(added), found, len(debt.entries), resolved) if args.all else report(added, found)
-    print("\n".join(lines))
+    found = unwired(added, sources, added_lines, private, allow.entries)
+    if not args.all:
+        # A diff's own symbols are never excused by the debt list, and it may not add a line to the list.
+        grown = debt_growth(_read(root, args.debt) or "", base_debt)
+        if grown:
+            print("\n".join(grown), file=sys.stderr)
+            return 2
+        print("\n".join(report(added, found)))
+        return 1 if found else 0
+    found, resolved = split_debt(found, debt.entries)
+    print("\n".join(scan_report(len(added), found, len(debt.entries), resolved)))
     return 1 if found else 0
 
 

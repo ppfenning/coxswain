@@ -22,7 +22,3 @@ src/graphs/harness/serial_tests.py::pytest_sessionfinish  # pytest hook
 src/tools/agent_tools/source_folder.py::source_folder  # source adapter, imported by name in sources.adapter_for
 src/tools/agent_tools/source_github.py::source_github  # source adapter, imported by name in sources.adapter_for
 src/tools/agent_tools/sources.py::SourceAdapter  # the Protocol every adapter module, built-in or a coxswain.sources plugin, implements
-
-# Contract gates the suite runs on purpose: no runtime caller, by design.
-src/graphs/harness/store_dialect.py::forbidden_constructs  # the store's portability lint; the store suites run it over every statement
-src/tools/agent_tools/dash_contract.py::manifest_findings  # checks the dash_contract.json towpath pins; tests/test_dash_contract.py runs it

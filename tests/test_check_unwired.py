@@ -504,6 +504,36 @@ def test_end_to_end_a_debt_entry_explains_it_and_a_stale_one_is_only_a_note(repo
     assert refused.returncode == 2 and "has no reason" in refused.stderr
 
 
+def test_debt_growth_refuses_each_line_the_base_lacks_and_nothing_when_the_base_has_no_list():
+    base = f"# owed\n{CORE}::owed  # the router intake\n"
+    grown = f"# owed\n{CORE}::owed  # the router intake\n{CORE}::fresh  # parked\n"
+    assert check_unwired.debt_growth(base, base) == ()
+    assert check_unwired.debt_growth("", base) == (), "a line removed is the list shrinking"
+    assert check_unwired.debt_growth(grown, base) == (
+        f"debt list line 3: {CORE}::fresh is not on the base's debt list; the list only shrinks:"
+        " wire it, delete it, or allowlist it as an entry point",
+    )
+    assert check_unwired.debt_growth(grown, None) == (), "the change that starts the list"
+
+
+def test_end_to_end_a_diff_cannot_park_its_own_new_helper_on_the_debt_list(repo: Path):
+    write(repo, ".github/unwired-debt.txt", "# owed work\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "start the debt list")
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    add_unwired_helper(repo)
+    write(repo, ".github/unwired-debt.txt", f"# owed work\n{CORE}::count  # parked by the same change\n")
+    refused = check(repo)
+    assert refused.returncode == 2 and "the list only shrinks" in refused.stderr, refused.stdout + refused.stderr
+
+
+def test_end_to_end_the_debt_list_never_excuses_a_symbol_the_diff_adds(repo: Path):
+    add_unwired_helper(repo)
+    write(repo, ".github/unwired-debt.txt", f"{CORE}::count  # on the list before the base had one\n")
+    failed = check(repo)
+    assert failed.returncode == 1 and "function count" in failed.stdout, failed.stdout + failed.stderr
+
+
 def test_end_to_end_the_main_scan_notes_a_debt_entry_that_is_wired_now(repo: Path):
     write(repo, ".github/unwired-debt.txt", f"{CORE}::parse  # was owed\n")
     scan = check(repo, "--all")

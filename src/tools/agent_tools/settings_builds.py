@@ -16,8 +16,7 @@ Keys carried, in row order, all cartridge scope, each with where the repo names 
   file in the repo nests it under `policy`, so the nesting is the one fact the
   repo states only by omission.
 - `landing_areas.checks`, the checks the land step runs.
-  `agent_tools/provenance.py:18` lists it in `_FIXED_PATHS` and
-  `tests/test_editor_model.py:71` builds it as `"landing_areas": {"checks": ["ci"]}`.
+  `agent_tools/provenance.py:18` lists it in `_FIXED_PATHS`.
 
 Left out on purpose: `policy.pacing.*` keys such as `hard_stop_fraction` belong
 to the spend and pacing section (`settings_model.py:90-92`), and the spend

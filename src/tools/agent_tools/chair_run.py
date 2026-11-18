@@ -55,7 +55,7 @@ __all__ = [
     "CHAT_CONSUMER", "CHAT_REF", "DEFAULT_INTERVAL", "FACTS_BOUND_SECONDS", "LAND_BEAT_INTERVAL", "RELEASE_HOLD_OFF_SECONDS", "TAKEOVER_GRACE_SECONDS",
     "ChatDeps", "GateState",
     "LeaseRejected", "OverrunState", "ReasonState", "ReleaseState", "RestartState", "RunDeps", "TickOverrun",
-    "WorkerLands", "as_holder", "error_line", "finished_land", "land_sink", "next_gate_record", "no_landing", "no_lands_in_flight", "no_lands_to_stop", "overran",
+    "WorkerLands", "as_holder", "error_line", "finished_land", "land_sink", "next_gate_record", "no_lands_in_flight", "no_lands_to_stop", "overran",
     "overrun_limit_hit", "overrun_line", "run", "tick", "tick_timed", "unacked_chat",
 ]
 
@@ -91,11 +91,6 @@ def no_lands_to_stop() -> None:
 def no_lands_in_flight() -> bool:
     """The in-flight source of a chair with no land worker."""
     return False
-
-
-def no_landing() -> list[dict[str, str]]:
-    """The landing source of a chair with no land worker."""
-    return []
 
 
 def no_gate_change(_gate: CiGate) -> None:

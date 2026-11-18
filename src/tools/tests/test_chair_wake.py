@@ -3,7 +3,7 @@ from dataclasses import replace
 from test_chair_run import Rig
 
 from agent_tools.chair_run import run
-from agent_tools.chair_wake import new_run_exits, wait_for_run_exit
+from agent_tools.chair_wake import wait_for_run_exit
 
 
 def _exit(id_, **over):
@@ -22,17 +22,6 @@ class Clock:
     def sleep(self, seconds):
         self.steps.append(seconds)
         self.t += seconds
-
-
-def test_new_run_exits_skips_acked_other_events_malformed_and_seen_ids():
-    entries = [
-        _exit("a", ack=True),
-        _exit("b", event="stuck"),
-        _exit("c", fields={"run": "r1"}),
-        _exit("d"),
-        _exit("e"),
-    ]
-    assert new_run_exits(entries, {"d"}) == [entries[4]]
 
 
 def test_the_wait_returns_early_on_an_event_and_one_entry_wakes_it_once():

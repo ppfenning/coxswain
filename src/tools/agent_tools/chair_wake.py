@@ -6,7 +6,7 @@ from collections.abc import Callable, Collection
 
 from agent_tools.courier import parse_run_exited
 
-__all__ = ["new_run_exits", "new_wake_events", "wait_for_events", "wait_for_run_exit"]
+__all__ = ["new_wake_events", "wait_for_events", "wait_for_run_exit"]
 
 RUN_EXITED = "run_exited"
 INTAKE = "intake"  # courier has no intake event: a plain entry, with no `event`, whose ref is `coxswain://intake/<id>`
@@ -27,11 +27,6 @@ def new_wake_events(entries: list[dict], seen_ids: Collection[str], kinds: Colle
         e for e in entries
         if not e.get("ack") and isinstance(e.get("id"), str) and e["id"] not in seen_ids and any(_wakes(e, k) for k in kinds)
     ]
-
-
-def new_run_exits(entries: list[dict], seen_ids: Collection[str]) -> list[dict]:
-    """Entries `parse_run_exited` accepts that are unacked and whose id is not in `seen_ids`."""
-    return new_wake_events(entries, seen_ids, (RUN_EXITED,))
 
 
 def wait_for_events(
