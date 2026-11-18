@@ -1213,6 +1213,15 @@ def test_cli_apply_takes_over_a_repo_lease_held_by_a_dead_pid_on_this_host(repo,
     assert [release[3] for release in calls["release"]] == [5]
 
 
+def test_cli_apply_reads_pid_alive_at_the_call_so_a_live_pid_with_the_dead_holders_number_cannot_refuse(
+        repo, tmp_path, monkeypatch, capsys):
+    """The takeover asks `land_repo_lease.pid_alive` as it stands at the call, not the def-time default of
+    `acquire_in_slots`. With the real probe answering alive for every pid, as it did on a runner where some
+    process held pid 4242, the patched answer still decides."""
+    monkeypatch.setattr(cli.land_repo_lease.os, "kill", lambda _pid, _sig: None)
+    test_cli_apply_takes_over_a_repo_lease_held_by_a_dead_pid_on_this_host(repo, tmp_path, monkeypatch, capsys)
+
+
 def test_cli_apply_refuses_a_repo_lease_held_by_a_holder_on_another_host(repo, tmp_path, monkeypatch, capsys):
     calls = _apply_with_repo_lease(repo, tmp_path, monkeypatch, store_cli.LeaseRefused(epoch=4, holder="chair-x@host-b:4242"))
     monkeypatch.setattr(cli.socket, "gethostname", lambda: "host-a")

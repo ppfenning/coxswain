@@ -743,12 +743,13 @@ def _runs_land(a: argparse.Namespace) -> int:
     repo_holder = f"{_holder_label(a)}@{socket.gethostname()}:{os.getpid()}"
     repo_limit = land_limit.repo_land_limit(str(repo))
     repo_slot[0], got = land_repo_lease.acquire_in_slots(
-        runs_dir, str(repo), repo_holder, _REPO_LEASE_TTL_SECONDS, socket.gethostname(), repo_limit)
+        runs_dir, str(repo), repo_holder, _REPO_LEASE_TTL_SECONDS, socket.gethostname(), repo_limit,
+        alive=land_repo_lease.pid_alive)
     if getattr(a, "wait_lock", False) and isinstance(got, store_cli.LeaseRefused):
         print(land_repo_lease.waiting_message(str(repo), got.holder))
         repo_slot[0], got = land_repo_lease.acquire_in_slots_waiting(
             runs_dir, str(repo), repo_holder, _REPO_LEASE_TTL_SECONDS, socket.gethostname(), repo_limit,
-            getattr(a, "wait_lock_timeout", 600), _LAND_LOCK_POLL_SECONDS)
+            getattr(a, "wait_lock_timeout", 600), _LAND_LOCK_POLL_SECONDS, alive=land_repo_lease.pid_alive)
     leased = isinstance(got, store_cli.LeaseGranted)
     if isinstance(got, store_cli.LeaseGranted):
         repo_epoch[0] = got.epoch
@@ -804,7 +805,8 @@ class _BatchLease:
         if self.busy is not None or self.held:
             return self.busy
         self.slot, got = land_repo_lease.acquire_in_slots(
-            self.runs_dir, str(self.repo), self.holder, _REPO_LEASE_TTL_SECONDS, socket.gethostname(), self.limit)
+            self.runs_dir, str(self.repo), self.holder, _REPO_LEASE_TTL_SECONDS, socket.gethostname(), self.limit,
+            alive=land_repo_lease.pid_alive)
         if isinstance(got, store_cli.LeaseRefused):
             self.busy = land_repo_lease.refusal_message(str(self.repo), got.holder or "another land")
         elif isinstance(got, store_cli.LeaseGranted):
