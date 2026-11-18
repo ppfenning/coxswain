@@ -7,7 +7,6 @@ from agent_tools.intake_queue import (
     is_held,
     landed_ids,
     runnable_intake,
-    unmet_after,
     waiting_on,
 )
 
@@ -80,7 +79,6 @@ def test_after_naming_extra_id_is_met() -> None:
         intake("file-name", "decomposed", id="field-id", initiative="a"),
         intake("next", after="field-id"),
     ]
-    assert unmet_after(rows[2], rows) == []
     assert runnable_intake(rows) == [rows[2]]
 
 
@@ -90,14 +88,7 @@ def test_after_naming_task_id_is_met() -> None:
         intake("file-name", "decomposed", id="field-id", initiative="a"),
         intake("next", after="file-name"),
     ]
-    assert unmet_after(rows[2], rows) == []
     assert runnable_intake(rows) == [rows[2]]
-
-
-def test_unmet_after_string_unknown_and_partial() -> None:
-    rows = [task("a", "done"), intake("x", after="nowhere"), intake("y", after=["a", "nowhere", "b"])]
-    assert unmet_after(rows[1], rows) == ["nowhere"]
-    assert unmet_after(rows[2], rows) == ["nowhere", "b"]
 
 
 def test_runnable_orders_by_priority_with_ties_in_row_order() -> None:

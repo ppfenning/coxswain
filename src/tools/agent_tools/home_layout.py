@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from agent_tools import home_model, panel, regatta
 from agent_tools.home_model import Line
 
-__all__ = ["DEFAULT", "KEYS", "PANELS", "Layout", "focus_after", "from_json", "rects", "render", "step", "to_json"]
+__all__ = ["DEFAULT", "KEYS", "PANELS", "Layout", "rects", "render", "step", "to_json"]
 
 PANELS = ("regatta", "leader", "backlog", "window", "runs")
 KEYS = ("1", "2", "3", "4", "5", "<", ">", "+", "-")
@@ -65,23 +65,8 @@ def step(layout: Layout, key: str, focus: str = "runs") -> Layout:
     return layout
 
 
-def focus_after(key: str, focus: str) -> str:
-    """A digit key focuses the panel it toggles; any other key leaves focus where it was."""
-    return PANELS[int(key) - 1] if key in KEYS[:5] else focus
-
-
 def to_json(layout: Layout) -> dict:
     return {"order": list(layout.order), "hidden": sorted(layout.hidden), "runs_weight": layout.runs_weight}
-
-
-def from_json(data: object) -> Layout:
-    """`DEFAULT` for anything that is not a complete, in-range layout."""
-    try:
-        order, hidden, weight = tuple(data["order"]), frozenset(data["hidden"]), float(data["runs_weight"])
-    except (KeyError, TypeError, ValueError):
-        return DEFAULT
-    valid = sorted(order) == sorted(PANELS) and hidden <= set(PANELS) and WEIGHT_MIN <= weight <= WEIGHT_MAX
-    return Layout(order, hidden, weight) if valid else DEFAULT
 
 
 def render(layout: Layout, facts: home_model.Facts, width: int, height: int) -> tuple[Line, ...]:

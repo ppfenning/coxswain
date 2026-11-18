@@ -7,8 +7,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from agent_tools.store_url import read_provider_profile
-
 _PASSWORD = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*://[^/:@]*):[^/]*@")
 _LITERAL_SECRETS = frozenset({"access_key", "secret_key", "secret"})
 _PLAIN_PROPERTIES = (("endpoint", "s3.endpoint"), ("region", "s3.region"))
@@ -66,11 +64,6 @@ def iceberg_properties(object_store: Mapping[str, Any] | None, env: Mapping[str,
 def redact(url: str) -> str:
     """The URL with any password replaced by `***`; a URL without one is returned as it came."""
     return _PASSWORD.sub(r"\1:***@", url)
-
-
-def resolve_lake_at(provider_profile: Path | str, runs_dir: str | Path) -> LakeConfig:
-    """Edge. The lake config for the provider profile at `provider_profile`; opens no connection."""
-    return resolve_lake(read_provider_profile(provider_profile), runs_dir)
 
 
 def load_catalog(config: LakeConfig, env: Mapping[str, str] = os.environ):

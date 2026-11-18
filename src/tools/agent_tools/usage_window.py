@@ -25,7 +25,7 @@ from agent_tools import budget, run_store
 from agent_tools.pacing import Policy, Window
 
 __all__ = [
-    "CCUSAGE_CACHE_S", "DEFAULT_POLICY", "WeeklyReset", "block_remaining", "ceiling_remaining",
+    "CCUSAGE_CACHE_S", "DEFAULT_POLICY", "WeeklyReset", 
     "five_hour_start", "gather", "gather_daily_costs", "gather_month", "gather_weekly", "parse_weekly_reset",
     "read_usage", "usage_cost_usd", "weekly_start_from_reset", "weekly_window_from", "weekly_window_start", "window_from",
 ]
@@ -139,20 +139,6 @@ def window_from(
         spent_usd=spent_usd, ceiling_usd=ceiling_usd,
         burn_usd_per_hour=spent_usd / elapsed_hours, runs_in_flight=len(in_window),
     )
-
-
-def block_remaining(window: Window, now: datetime) -> tuple[int, float]:
-    """Whole minutes left in the block and the fraction still to run, clamped to [0, 1]."""
-    span = (window.end - window.start).total_seconds()
-    left = max((window.end - now).total_seconds(), 0.0)
-    return int(left // 60), max(0.0, min(1.0, left / span)) if span > 0 else 0.0
-
-
-def ceiling_remaining(window: Window) -> float | None:
-    """Fraction of `ceiling_usd` unspent, clamped to [0, 1]; None when there is no ceiling."""
-    if window.ceiling_usd is None or window.ceiling_usd <= 0:
-        return None
-    return max(0.0, min(1.0, (window.ceiling_usd - window.spent_usd) / window.ceiling_usd))
 
 
 def usage_cost_usd(usage: Mapping[str, Any]) -> float:

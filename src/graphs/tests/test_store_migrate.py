@@ -11,7 +11,6 @@ from harness.store_migrate import (
     MigrationError,
     check_version,
     default_modules,
-    discover_migrations,
     migrate,
     open_store,
     pending,
@@ -132,25 +131,23 @@ def test_a_gap_in_numbering_is_refused(conn):
     assert "schema_version" not in tables(conn)
 
 
-def test_a_duplicate_number_is_refused():
+def test_a_duplicate_number_is_refused(conn):
     with pytest.raises(MigrationError, match="duplicate migration number 1"):
-        discover_migrations([fake(1, ONE), fake(1, TWO, name="harness.store_ddl_0001")])
+        migrate(conn, NOW, [fake(1, ONE), fake(1, TWO, name="harness.store_ddl_0001")])
 
 
-def test_a_version_that_disagrees_with_its_name_is_refused():
+def test_a_version_that_disagrees_with_its_name_is_refused(conn):
     with pytest.raises(MigrationError, match="VERSION 2"):
-        discover_migrations([fake(2, ONE, name="harness.store_ddl_0001")])
+        migrate(conn, NOW, [fake(2, ONE, name="harness.store_ddl_0001")])
 
 
-def test_discover_returns_ordered_version_statement_pairs():
-    pairs = discover_migrations([fake(2, TWO), fake(1, ONE)])
-    assert [v for v, _ in pairs] == [1, 2]
-    assert pairs[0][1](None) == ONE
+def test_pending_lists_the_migrations_in_version_order(conn):
+    assert [v for v, _ in pending(conn, [fake(2, TWO), fake(1, ONE)])] == [1, 2]
 
 
-def test_discover_accepts_dotted_names(monkeypatch):
+def test_a_migration_named_by_its_dotted_path_is_imported(conn, monkeypatch):
     monkeypatch.setitem(sys.modules, "fakepkg.store_ddl_0001", fake(1, ONE, name="fakepkg.store_ddl_0001"))
-    assert [v for v, _ in discover_migrations(["fakepkg.store_ddl_0001"])] == [1]
+    assert [v for v, _ in pending(conn, ["fakepkg.store_ddl_0001"])] == [1]
 
 
 def test_a_database_newer_than_the_code_is_refused_before_any_write(conn, monkeypatch):

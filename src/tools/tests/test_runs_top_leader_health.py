@@ -15,7 +15,6 @@ def _chair(state: str = "live", holder: str = "loop-a") -> dict:
 def test_a_run_whose_launched_by_differs_from_the_live_chair_is_orphaned():
     r = runs_top.row("r1", True, [], [], [], None, "loop-b", _chair())
     assert r.status == "orphaned"
-    assert runs_top.highlight(r) == "alert"
 
 
 def test_a_run_matching_the_live_chairs_holder_is_not_orphaned():
@@ -49,13 +48,6 @@ def test_the_chair_line_and_by_column_render_from_literals():
 def test_render_with_no_chair_arg_omits_the_chair_line():
     lines = runs_top.render([], 40)
     assert lines[0].startswith("RUN")
-
-
-def test_a_stale_chair_line_highlights_alert_a_live_one_does_not():
-    assert runs_top.chair_highlight(_chair("stale")) == "alert"
-    assert runs_top.chair_highlight(_chair("crashed")) == "alert"
-    assert runs_top.chair_highlight(_chair("live")) == "normal"
-    assert runs_top.chair_highlight(None) == "normal"
 
 
 def test_chair_notifications_fires_only_on_a_live_to_stale_or_none_transition_with_a_live_run():

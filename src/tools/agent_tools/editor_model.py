@@ -14,7 +14,6 @@ from typing import Any
 
 from agent_tools.provenance import _FIXED_PATHS
 from agent_tools.roster_model import Row as RosterRow
-from agent_tools.roster_model import rows as roster_rows
 from agent_tools.roster_model import set_context as roster_set_context
 from agent_tools.roster_model import set_skills as roster_set_skills
 from agent_tools.roster_model import toggle as roster_toggle
@@ -126,10 +125,6 @@ def _cast_layers(probe: dict) -> tuple[tuple[str, dict], ...]:
         if owner:
             owners.setdefault(owner, {})[seat] = {}
     return tuple(owners.items())
-
-
-def roster_from_probe(probe: dict) -> tuple[RosterRow, ...]:
-    return roster_rows(_crew(probe.get("resolved") or {}), _cast_layers(probe))
 
 
 def sections(items: list[Row]) -> dict[str, list[Row]]:
@@ -326,13 +321,6 @@ def _refresh(state: State) -> State:
     return replace(state, effects=(Effect("run_probe", {}),))
 
 
-def apply_probe(state: State, probe: dict) -> State:
-    """The write landed in `edited.yaml`; the freshly probed rows come back
-    with layer `edited`, which `rows()` already treats as editable."""
-    return replace(state, rows=tuple(rows(probe, state.team)), roster=roster_from_probe(probe),
-                   pending={}, effects=())
-
-
 def _roster_line(row: RosterRow, state: State, width: int) -> str:
     if state.editing == f"roster:{row.seat}:context":
         return f"> {row.seat}.context = {state.buffer}_"[:width]
@@ -405,40 +393,3 @@ def step(state: State, key: str) -> State:
 
 def _is_refusal(result: dict) -> bool:
     return "provenance_error" in result or result.get("returncode", 0) != 0
-
-
-def apply_effect_result(state: State, effect: Effect, result: dict) -> State:
-    """The edge ran `effect` and got `result` back; this is the only place
-    that decides what a probe, a write, or an init means for the state, so a
-    refused write can never be shown on a section that write emptied."""
-    if effect.kind == "run_probe":
-        return apply_probe(state, result)
-    if effect.kind == "write_fragment":
-        if "provenance_error" in result:
-            # `edits`'s own top-level keys are already sections (dotted keys nest
-            # under them), so the refused sections come from the write that was
-            # actually attempted, never from `state.pending`, which may have
-            # moved on by the time the result comes back. The result names no
-            # single refused key, so every section the write touched is named,
-            # not just the alphabetically first.
-            written = sorted(effect.payload.get("edits", {}))
-            section = ", ".join(written) if written else effect.kind
-            return replace(state, message=f"{section}: {result['provenance_error']}")
-        return replace(state, pending={}, effects=state.effects + (Effect("run_probe", {}),))
-    if effect.kind == "init_cartridge":
-        if _is_refusal(result):
-            return replace(state, message=result.get("provenance_error", "init_cartridge refused"))
-        return replace(state, team=result.get("team", effect.payload.get("team", state.team)))
-    if effect.kind == "set_profile_team":
-        if result.get("returncode") == 0:
-            return replace(state, team=result["team"])
-        return state
-    return state
-
-
-def fold_effects(state: State, results: list[tuple[Effect, dict]]) -> State:
-    """Applies each result in order, stopping at the first refusal so a
-    failed init never runs the probe that assumed it had succeeded."""
-    kept = list(itertools.takewhile(lambda item: not _is_refusal(item[1]), results))
-    to_apply = kept + results[len(kept) : len(kept) + 1]
-    return functools.reduce(lambda acc, item: apply_effect_result(acc, *item), to_apply, state)

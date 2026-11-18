@@ -10,7 +10,6 @@ from agent_tools.lake_config import (
     load_catalog,
     redact,
     resolve_lake,
-    resolve_lake_at,
 )
 
 
@@ -46,12 +45,6 @@ def test_redact_leaves_a_url_without_a_password_alone():
 def test_the_config_is_frozen():
     with pytest.raises(dataclasses.FrozenInstanceError):
         resolve_lake({}, "/runs").warehouse = "x"  # type: ignore[misc]
-
-
-def test_resolve_lake_at_reads_the_profile_file(tmp_path):
-    profile = tmp_path / "p.yaml"
-    profile.write_text("lake_url: s3://b/l\n", encoding="utf-8")
-    assert resolve_lake_at(profile, "/runs").warehouse == "s3://b/l"
 
 
 def test_load_catalog_without_pyiceberg_names_the_lake_extra(monkeypatch):

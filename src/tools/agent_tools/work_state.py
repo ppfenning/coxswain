@@ -3,18 +3,11 @@
 import contextlib
 import urllib.parse
 from collections.abc import Mapping
-from pathlib import Path
 from typing import Any
 
 from agent_tools import store_dialect
 
 _PROBE_CONNECT_TIMEOUT_S = 3
-
-
-def _resolve_mode(explicit: object, shared_store: bool, store_answered: bool) -> str:
-    """Pure. Always `store`: the store is the only board. The arguments are kept for the status line's callers;
-    none of them can select the retired `files` mode, in which the ticket files were the board."""
-    return "store"
 
 
 def _with_connect_timeout(url: str) -> str:
@@ -62,9 +55,4 @@ def resolve(profile: Mapping[str, Any]) -> tuple[str, str]:
 
 def work_state_mode(profile: Mapping[str, Any]) -> str:
     """Always `store`. Opens no connection: whether the store answers changes the status line, never the mode."""
-    return "store"
-
-
-def work_state_mode_at(provider_profile: Path | str) -> str:
-    """The mode for the provider profile at `provider_profile`: always `store`."""
     return "store"

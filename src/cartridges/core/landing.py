@@ -27,11 +27,6 @@ def canonical_land_at(value: object) -> str | None:
     return LAND_AT_ALIASES.get(value)
 
 
-def lands_at_initiative(value: object) -> bool:
-    """True for `initiative`, its alias `ticket`, the retired `level`, and an absent value (the default)."""
-    return value is None or canonical_land_at(value) == INITIATIVE
-
-
 def is_initiative(value: object) -> bool:
     """True for `initiative` and the spellings that read as it (`ticket`, the retired `level`); False for `task`, an
     absent value and anything else. Use it wherever a stored or recorded `land_at` is compared."""

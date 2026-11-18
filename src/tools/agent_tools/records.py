@@ -17,7 +17,6 @@ __all__ = [
     "format_table",
     "launched_by_for",
     "load_trace",
-    "load_usage",
     "series",
     "series_new_lines",
     "series_row",
@@ -28,10 +27,6 @@ __all__ = [
 ]
 
 _CHAIR_KINDS = {"leader_taken": "taken", "leader_released": "released", "leader_stale": "stale"}
-
-
-def load_usage(path: Path | str) -> dict[str, Any]:
-    return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
 def load_trace(path: Path | str) -> list[dict[str, Any]]:

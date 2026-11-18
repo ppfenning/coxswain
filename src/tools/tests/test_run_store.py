@@ -1046,17 +1046,17 @@ def test_upsert_row_detail_names_why_an_unopenable_store_refused(tmp_path, store
     assert run_store.upsert_row(tmp_path, _QUEUE_ROW) is False
 
 
-def test_claim_row_takes_a_free_row_and_another_holder_finds_it_held(tmp_path):
+def test_claim_outcome_takes_a_free_row_and_another_holder_finds_it_held(tmp_path):
     assert run_store.upsert_row(tmp_path, _QUEUE_ROW)
-    claim = run_store.claim_row(tmp_path, "i1", "t1", "me", 300, CLAIM_NOW)
+    claim = run_store.claim_outcome(tmp_path, "i1", "t1", "me", 300, CLAIM_NOW)[0]
     assert claim is not None and (claim["holder"], claim["epoch"]) == ("me", 1)
-    assert run_store.claim_row(tmp_path, "i1", "t1", "you", 300, CLAIM_NOW) is None
+    assert run_store.claim_outcome(tmp_path, "i1", "t1", "you", 300, CLAIM_NOW)[0] is None
     assert run_store.claim_outcome(tmp_path, "i1", "t1", "you", 300, CLAIM_NOW) == (None, "held")
 
 
-def test_claim_row_retakes_an_expired_claim_at_the_now_it_was_given(tmp_path):
+def test_claim_outcome_retakes_an_expired_claim_at_the_now_it_was_given(tmp_path):
     assert run_store.upsert_row(tmp_path, _QUEUE_ROW)
-    assert run_store.claim_row(tmp_path, "i1", "t1", "me", 300, CLAIM_NOW)
+    assert run_store.claim_outcome(tmp_path, "i1", "t1", "me", 300, CLAIM_NOW)[0]
     later = "2026-09-26T01:00:00Z"
     claim, why = run_store.claim_outcome(tmp_path, "i1", "t1", "you", 300, later)
     assert why is None and claim["holder"] == "you" and claim["expires_at"] == "2026-09-26T01:05:00Z"
@@ -1064,11 +1064,11 @@ def test_claim_row_retakes_an_expired_claim_at_the_now_it_was_given(tmp_path):
 
 def test_release_row_is_true_whether_or_not_the_holder_held_it(tmp_path):
     assert run_store.upsert_row(tmp_path, _QUEUE_ROW)
-    assert run_store.claim_row(tmp_path, "i1", "t1", "me", 300, CLAIM_NOW)
+    assert run_store.claim_outcome(tmp_path, "i1", "t1", "me", 300, CLAIM_NOW)[0]
     assert run_store.release_row(tmp_path, "i1", "t1", "you") is True
     assert run_store.claim_outcome(tmp_path, "i1", "t1", "you", 300, CLAIM_NOW) == (None, "held")
     assert run_store.release_row(tmp_path, "i1", "t1", "me") is True
-    assert run_store.claim_row(tmp_path, "i1", "t1", "you", 300, CLAIM_NOW) is not None
+    assert run_store.claim_outcome(tmp_path, "i1", "t1", "you", 300, CLAIM_NOW)[0] is not None
 
 
 def test_an_unopenable_store_reads_as_unavailable_everywhere_and_never_raises(tmp_path, store_at):

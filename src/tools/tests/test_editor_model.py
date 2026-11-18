@@ -4,10 +4,7 @@ from agent_tools.editor_model import (
     Effect,
     Row,
     State,
-    apply_effect_result,
-    apply_probe,
     apply_text,
-    fold_effects,
     frame,
     rows,
     sections,
@@ -386,37 +383,6 @@ def test_step_r_returns_a_run_probe_effect():
     assert after.effects == (Effect("run_probe", {}),)
 
 
-def test_apply_probe_with_an_edited_provenance_keeps_the_row_editable():
-    state = State(
-        rows=(_TOGGLE_ROW,),
-        cursor=0,
-        pending={"crew.builder.enabled": True},
-        message="",
-        team="acme",
-    )
-    new_probe = {
-        "resolved": {"crew": {"builder": {"enabled": True}}},
-        "provenance": {"crew.builder.enabled": "edited"},
-    }
-    after = apply_probe(state, new_probe)
-    assert after.pending == {}
-    assert after.effects == ()
-    row = after.rows[0]
-    assert row.layer == "edited"
-    assert row.editable is True
-
-
-def test_apply_probe_rebuilds_rows_using_the_states_own_team_not_the_default():
-    state = State(rows=(), cursor=0, pending={}, message="", team="acme")
-    probe = {
-        "resolved": {"policy": {"review_tier": "2"}},
-        "provenance": {"policy.review_tier": "acme"},
-    }
-    row = apply_probe(state, probe).rows[0]
-    assert row.layer == "acme"
-    assert row.editable is True
-
-
 def test_frame_marks_a_pending_row_and_fits_width():
     state = State(rows=(_TOGGLE_ROW, _READONLY_ROW), cursor=0, pending={"crew.builder.enabled": True}, message="ok")
     lines = frame(state, width=60)
@@ -472,121 +438,6 @@ def test_frame_shows_the_buffer_with_a_trailing_cursor_on_the_row_being_edited()
     typed = step(editing, "x")
     edited_line = next(line for line in frame(typed, width=60) if _TEXT_ROW.key in line)
     assert edited_line.endswith("x_")
-
-
-def test_apply_effect_result_run_probe_delegates_to_apply_probe():
-    state = State(rows=(), cursor=0, pending={"x": 1}, message="", team="acme")
-    probe = {
-        "resolved": {"policy": {"review_tier": "2"}},
-        "provenance": {"policy.review_tier": "acme"},
-    }
-    after = apply_effect_result(state, Effect("run_probe", {}), probe)
-    assert after.pending == {}
-    assert after.rows[0].layer == "acme"
-
-
-def test_apply_effect_result_write_fragment_refusal_keeps_rows_and_pending_and_prefixes_the_section():
-    state = State(rows=(_TOGGLE_ROW,), cursor=0, pending={_TOGGLE_ROW.key: True}, message="")
-    effect = Effect("write_fragment", {"edits": {"crew": {"builder": {"enabled": True}}}})
-    result = {"provenance_error": "base owns this key"}
-    after = apply_effect_result(state, effect, result)
-    assert after.rows == state.rows
-    assert after.pending == state.pending
-    assert after.message == "crew: base owns this key"
-
-
-def test_apply_effect_result_write_fragment_refusal_names_the_section_from_the_effects_own_edits_not_current_pending():
-    # `state.pending` has moved on to a different section by the time the
-    # refusal comes back; the message must still name the section that was
-    # actually written, not whatever is pending now.
-    state = State(rows=(_TOGGLE_ROW,), cursor=0, pending={"policy.review_tier": "2"}, message="")
-    effect = Effect("write_fragment", {"edits": {"crew": {"builder": {"enabled": True}}}})
-    after = apply_effect_result(state, effect, {"provenance_error": "base owns this key"})
-    assert after.message == "crew: base owns this key"
-
-
-def test_apply_effect_result_write_fragment_refusal_names_every_section_when_more_than_one_was_written():
-    # the result names no single refused key, so a write spanning two
-    # sections must not blame only the alphabetically first one.
-    state = State(
-        rows=(_TOGGLE_ROW,),
-        cursor=0,
-        pending={"crew.builder.enabled": True, "policy.review_tier": "2"},
-        message="",
-    )
-    effect = Effect(
-        "write_fragment",
-        {"edits": {"crew": {"builder": {"enabled": True}}, "policy": {"review_tier": "2"}}},
-    )
-    after = apply_effect_result(state, effect, {"provenance_error": "refused"})
-    assert after.message == "crew, policy: refused"
-
-
-def test_apply_effect_result_write_fragment_clean_clears_pending_and_queues_run_probe():
-    state = State(rows=(_TOGGLE_ROW,), cursor=0, pending={_TOGGLE_ROW.key: True}, message="")
-    after = apply_effect_result(state, Effect("write_fragment", {}), {})
-    assert after.pending == {}
-    assert after.effects == (Effect("run_probe", {}),)
-
-
-def test_apply_effect_result_init_cartridge_success_carries_the_new_team():
-    state = State(rows=(), cursor=0, pending={}, message="", team="")
-    after = apply_effect_result(state, Effect("init_cartridge", {"team": "acme"}), {"returncode": 0, "team": "acme"})
-    assert after.team == "acme"
-
-
-def test_apply_effect_result_init_cartridge_failure_is_a_refusal_message():
-    state = State(rows=(), cursor=0, pending={}, message="", team="")
-    after = apply_effect_result(
-        state, Effect("init_cartridge", {"team": "acme"}), {"returncode": 1, "provenance_error": "boom"}
-    )
-    assert after.team == ""
-    assert "boom" in after.message
-
-
-def test_apply_effect_result_set_profile_team_success_sets_team():
-    state = State(rows=(), cursor=0, pending={}, message="", team="")
-    after = apply_effect_result(state, Effect("set_profile_team", {}), {"returncode": 0, "team": "acme"})
-    assert after.team == "acme"
-
-
-def test_fold_effects_stops_at_the_first_refusal():
-    state = State(rows=(), cursor=0, pending={}, message="", team="")
-    results = [
-        (Effect("init_cartridge", {"team": "acme"}), {"returncode": 1, "provenance_error": "boom"}),
-        (Effect("set_profile_team", {}), {"returncode": 0, "team": "acme"}),
-    ]
-    after = fold_effects(state, results)
-    assert after.team == ""
-    assert "boom" in after.message
-
-
-def test_fold_effects_applies_a_leading_success_before_stopping_at_a_later_refusal():
-    state = State(rows=(), cursor=0, pending={}, message="", team="")
-    results = [
-        (Effect("set_profile_team", {}), {"returncode": 0, "team": "acme"}),
-        (Effect("init_cartridge", {"team": "other"}), {"returncode": 1, "provenance_error": "boom"}),
-        (Effect("set_profile_team", {}), {"returncode": 0, "team": "third"}),
-    ]
-    after = fold_effects(state, results)
-    assert after.team == "acme"
-    assert "boom" in after.message
-
-
-def test_fold_effects_folds_a_clean_write_with_its_paired_probe_into_fresh_rows_and_no_leftover_effect():
-    state = State(rows=(_TOGGLE_ROW,), cursor=0, pending={_TOGGLE_ROW.key: True}, message="", team="acme")
-    probe = {
-        "resolved": {"crew": {"builder": {"enabled": True}}},
-        "provenance": {"crew.builder.enabled": "edited"},
-    }
-    results = [
-        (Effect("write_fragment", {"edits": {"crew": {"builder": {"enabled": True}}}}), {}),
-        (Effect("run_probe", {}), probe),
-    ]
-    after = fold_effects(state, results)
-    assert after.pending == {}
-    assert after.effects == ()
-    assert after.rows[0].layer == "edited"
 
 
 _ROSTER_ROW = RosterRow(seat="builder", enabled=True, layer="acme", skills_count=1, context="ships features")

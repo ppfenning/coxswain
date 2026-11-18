@@ -3,9 +3,7 @@
 from agent_tools.land_batch_run import (
     Effects,
     Outcome,
-    ParsedQueue,
     QueueResult,
-    parse_lines,
     render_lines,
     run_queue,
 )
@@ -107,19 +105,12 @@ def test_no_sources_returns_an_empty_result_without_landing_or_sleeping():
     assert fake.batches == [] and fake.slept == []
 
 
-def test_render_then_parse_round_trips_a_result():
+def test_render_lines_writes_one_line_per_outcome_then_the_summary():
     a, b, c = _src("a", ["x"]), _src("b", ["y"]), _src("c", ["z"])
     result = QueueResult([(a, "pr-1")], [(b, "boom\nsecond line")], [c], 3)
-    text = render_lines(result)
-    assert text == (
+    assert render_lines(result) == (
         "batch landed a/p pr=pr-1\n"
         "batch returned b/p: boom\n"
         "batch deferred c/p\n"
         "batch summary: ci_runs=3 landed=1 returned=1 deferred=1\n"
     )
-    assert parse_lines(text) == ParsedQueue([("a/p", "pr-1")], [("b/p", "boom")], ["c/p"], 3)
-
-
-def test_parse_ignores_other_lines():
-    text = "chair: starting\nbatch landed nopr\n\nbatch deferred c/p\nbatch summary: ci_runs=x\n"
-    assert parse_lines(text) == ParsedQueue([], [], ["c/p"], 0)

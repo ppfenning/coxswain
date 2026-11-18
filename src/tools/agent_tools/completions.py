@@ -74,8 +74,3 @@ def day_completions(
     seen = {(run, task) for run, task, _ in done}
     dated: list[tuple[str | None, str | None]] = [(run, task) for run, task, at in done if start <= at < end]
     return [*dated, *(pair for pair in logged if pair not in seen)]
-
-
-def count_completions(done: Sequence[Completion], since: datetime) -> int:
-    """How many completions are at or after `since`."""
-    return sum(1 for _, _, at in done if at >= since)

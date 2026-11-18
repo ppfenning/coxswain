@@ -87,7 +87,6 @@ __all__ = [
     "STATES",
     "WorkStoreError",
     "foreign_states",
-    "phase_complete",
     "phases",
     "read_initiative",
     "read_item",
@@ -611,11 +610,6 @@ def foreign_states(store_root: Path | str, own_initiative: str) -> dict[str, str
 def phases(items: Sequence[Mapping[str, object]]) -> list[str]:
     """Phase names, in order. Ordering is the phase name's job — prefixes stay short."""
     return sorted({str(item.get("phase") or "") for item in items} - {""})
-
-
-def phase_complete(items: Sequence[Mapping[str, object]], phase: str) -> bool:
-    """A phase is complete once every one of its items is done or dropped."""
-    return all(item.get("state") in _TERMINAL for item in items if item.get("phase") == phase)
 
 
 def validate_dag(items: Iterable[Mapping[str, object]], foreign: Mapping[str, str] | None = None) -> None:

@@ -2,10 +2,8 @@ from harness.handoff import (
     HANDOFF_KEYS,
     build_handoff,
     files_from_patch,
-    parse_handoff,
     plan_context,
     render_handoff,
-    serialise_handoff,
 )
 
 PATCH = (
@@ -38,12 +36,6 @@ def test_the_record_from_a_literal_patch_has_exactly_the_five_keys():
 
 def test_a_patch_names_each_file_once_in_first_seen_order():
     assert files_from_patch(PATCH + "+++ b/src/a.py\n") == ["src/a.py", "src/b.py", "src/gone.py"]
-
-
-def test_serialisation_round_trips_and_keeps_only_the_five_keys():
-    record = _record()
-    assert parse_handoff(serialise_handoff(record)) == record
-    assert set(parse_handoff(serialise_handoff({**record, "transcript": "t"}))) == set(HANDOFF_KEYS)
 
 
 def test_a_siblings_record_never_appears_in_the_plan_context():
