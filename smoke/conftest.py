@@ -116,14 +116,9 @@ def _clean_env(home: Path, bins: list[str]) -> dict[str, str]:
 
 @pytest.fixture(scope="session")
 def install(tmp_path_factory: pytest.TempPathFactory) -> Install:
-    return _install(tmp_path_factory, "install", "postgres,traces")
-
-
-@pytest.fixture(scope="session")
-def lake_install(tmp_path_factory: pytest.TempPathFactory) -> Install:
-    """A second install of this tree, with the `lake` extra too (pyiceberg, duckdb, pyarrow): built only for the
-    tests that use it, so every other test keeps running without the lake's packages, as `install` does."""
-    return _install(tmp_path_factory, "lake-install", "postgres,traces,lake")
+    """This tree with `[postgres,traces,lake]`: one install for the whole session. The lake extra is what `cox lake`
+    needs (test_lake.py); a second install for it alone cost about a minute of CI on a cold cache."""
+    return _install(tmp_path_factory, "install", "postgres,traces,lake")
 
 
 def _install(tmp_path_factory: pytest.TempPathFactory, name: str, extras: str) -> Install:
@@ -392,14 +387,6 @@ def launchable(sandbox: Sandbox, repo: Repo, tmp_path: Path) -> Launchable:
         encoding="utf-8",
     )
     return Launchable(sandbox=sandbox, cartridges=cartridges, skills=skills, worktrees=worktrees)
-
-
-@pytest.fixture
-def lake_sandbox(sandbox: Sandbox, lake_install: Install) -> Sandbox:
-    """The same sandbox (home, workspace, store), with `cox` from the install that has the `lake` extra."""
-    path = sandbox.env["PATH"].split(os.pathsep)
-    lake_path = [str(lake_install.bin) if entry == str(sandbox.install.bin) else entry for entry in path]
-    return replace(sandbox, install=lake_install, env={**sandbox.env, "PATH": os.pathsep.join(lake_path)})
 
 
 # --- the sandbox forge ---------------------------------------------------------------------------------------------

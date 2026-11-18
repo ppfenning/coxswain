@@ -101,7 +101,7 @@ def _host_remove(a: argparse.Namespace) -> int:
     if a.dry_run:
         print(f"would remove {host_cmd.removed_line(row)}")
         return 0
-    code = _host_store_write(a, host_cmd.delete_argv(a.name, _holder_label(a)))
+    code = _host_store_write(a, host_cmd.delete_argv(a.name))
     if code == 0:
         print(f"removed {host_cmd.removed_line(row)}")
     return code
