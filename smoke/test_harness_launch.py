@@ -43,8 +43,12 @@ def _responses(launchable):
 
 def _run_row(sandbox, run_id: str) -> dict | None:
     with psycopg.connect(sandbox.store_url, connect_timeout=10) as conn:
-        row = conn.execute("SELECT status, ended_at, cartridge_team FROM runs WHERE run_id = %s", (run_id,)).fetchone()
-    return None if row is None else {"status": row[0], "ended_at": row[1], "team": row[2]}
+        row = conn.execute("SELECT status, ended_at, cartridge_team, record_json FROM runs WHERE run_id = %s",
+                           (run_id,)).fetchone()
+    if row is None:
+        return None
+    record = row[3] if isinstance(row[3], dict) else json.loads(row[3] or "{}")
+    return {"status": row[0], "ended_at": row[1], "team": row[2], "runner": record.get("runner")}
 
 
 def _registered_worktrees(sandbox, repo) -> list[str]:
@@ -83,8 +87,15 @@ def test_cox_route_launch_runs_an_epic_offline_and_its_phase_lands_on_main(launc
     _filed(sandbox)
     _responses(launchable)
     log = _launched(sandbox, "ship-1")
-    # the check ran in the build worktree under the environment cox built for the harness: git, grep and a PATH
     assert SUMMARY.format(run="ship-1") in log, log[-3000:]
+    # The checks ran in the build worktree under the environment `route.child_env` built: the repo's venv, then the
+    # harness bin, first on PATH, and the run's trace dir set (the `lane-probe` check needs the first; `lane-env`
+    # wrote the rest).
+    env = plan.lane_env_lines(launchable.lane_env_file.read_text(encoding="utf-8"))
+    assert env is not None, launchable.lane_env_file.read_text(encoding="utf-8")
+    trace, path = env
+    assert trace == str(sandbox.workspace / "runs" / "ship-1-trace")
+    assert path.startswith(f"{repo.path}/.venv/bin:{sandbox.install.bin}:"), path
 
     # the phase branch carries the built file, on this clone and on origin; the build worktree is gone
     assert sandbox.git(repo.path, "show", f"epic/{INITIATIVE}/p1:{NOTE}") == "ok"
@@ -93,7 +104,8 @@ def test_cox_route_launch_runs_an_epic_offline_and_its_phase_lands_on_main(launc
     row = sandbox.store_row(INITIATIVE, TASK)
     assert (row["state"], row["updated_by"]) == ("approved", "epic-driver:ship-1")
     run = _run_row(sandbox, "ship-1")
-    assert run is not None and (run["status"], run["team"]) == ("ok", "smoke") and run["ended_at"], run
+    assert run is not None and (run["status"], run["team"], run["runner"]) == ("ok", "smoke", "scripted"), run
+    assert run["ended_at"], run
 
     # the land the run's summary names, through the local forge the bare origin gets
     land = sandbox.cox("runs", "land", "ship-1", "--repo", "~/src/app", "--task", TASK, "--gate", "full", "--apply",
@@ -132,7 +144,7 @@ def test_a_single_graph_checks_its_patch_in_a_worktree_of_the_repo_and_records_t
     argv = [str(sandbox.install.python), str(sandbox.install.root / "shell.py"), "lifecycle",
             *launchable.harness_flags(), "--run-id", "life-1", "--ticket", f"Add {NOTE} holding ok",
             "--repo", str(repo.path), "--scripted", str(_responses(launchable)), "--result-out", str(result)]
-    done = launchable.run(argv, cwd=sandbox.workspace)
+    done = launchable.run(argv, cwd=sandbox.workspace, repo=repo.path, run_id="life-1")
     assert done.returncode == 0, done.stdout[-3000:] + done.stderr[-3000:]
     assert f"patch applied in {launchable.worktrees / 'life-1'}" in done.stdout
     assert "recorded life-1: 0 auto-applied, 1 gated decision(s), 1 proposal(s)" in done.stdout
@@ -140,9 +152,10 @@ def test_a_single_graph_checks_its_patch_in_a_worktree_of_the_repo_and_records_t
     record = json.loads(result.read_text(encoding="utf-8"))
     assert record["change_facts"]["patch_ok"] is True
     # the cartridge's check ran in the worktree, against the applied file
-    assert [(c["name"], c["passed"]) for c in record["checks"]] == [("note", True), ("lane-path", True)], record.get("checks")
+    assert [(c["name"], c["passed"]) for c in record["checks"]] == [
+        ("note", True), ("lane-probe", True), ("lane-env", True)], record.get("checks")
     assert [p["kind"] for p in record["proposals"]] == ["draft_pr_create"]
     assert not (launchable.worktrees / "life-1").exists()
     assert _registered_worktrees(sandbox, repo) == [str(repo.path)]
     run = _run_row(sandbox, "life-1")
-    assert run is not None and run["status"] == "ok" and run["ended_at"], run
+    assert run is not None and (run["status"], run["runner"]) == ("ok", "scripted") and run["ended_at"], run

@@ -319,11 +319,23 @@ def test_the_object_store_provider_names_the_credential_variables_never_their_va
 
 
 def test_the_team_cartridge_extends_base_binds_every_smoke_skill_and_carries_its_checks():
-    cart = yaml.safe_load(plan.team_cartridge_text("smoke", "/w", plan.SMOKE_CHECKS))
+    cart = yaml.safe_load(plan.team_cartridge_text("smoke", "/w", plan.smoke_checks("/h/lane-env.txt")))
     assert (cart["team"], cart["extends"]) == ("smoke", "base")
     assert cart["skills"] == plan.SMOKE_SKILLS
     assert cart["landing_areas"] == {"worktree_root": "/w", "checks": [
-        {"name": "note", "cmd": "grep -qx ok notes/t1.txt"}, {"name": "lane-path", "cmd": "command -v cox"}]}
+        {"name": "note", "cmd": "grep -qx ok notes/t1.txt"},
+        {"name": "lane-probe", "cmd": "command -v smoke-lane-probe"},
+        {"name": "lane-env", "cmd": "printenv AGENT_GRAPHS_TRACE_DIR PATH > /h/lane-env.txt"}]}
+
+
+def test_a_hand_started_harness_gets_the_repo_venv_first_and_the_trace_dir():
+    assert plan.lane_env({"PATH": "/a:/b", "X": "1"}, "/r", "/t") == {"PATH": "/r/.venv/bin:/a:/b", "X": "1",
+                                                                      "AGENT_GRAPHS_TRACE_DIR": "/t"}
+
+
+def test_the_lane_env_file_is_read_as_its_two_lines():
+    assert plan.lane_env_lines("/runs/x-trace\n/r/.venv/bin:/i/bin\n") == ("/runs/x-trace", "/r/.venv/bin:/i/bin")
+    assert plan.lane_env_lines("/only/one\n") is None
 
 
 def test_the_skill_plugin_holds_a_manifest_and_one_body_per_bound_skill():

@@ -332,20 +332,33 @@ class Launchable:
         path.write_text(json.dumps(responses), encoding="utf-8")
         return path
 
-    def run(self, argv: list[str], cwd: Path, timeout: float = 300) -> subprocess.CompletedProcess[str]:
-        """Run a harness argv in the sandbox's environment from `cwd`, the directory `cox route launch` ran in: the
-        harness inherits it, and resolves a relative `--initiative` there."""
-        return _run(argv, env=self.sandbox.env, cwd=cwd, timeout=timeout)
+    @property
+    def lane_env_file(self) -> Path:
+        """Where the `lane-env` check writes the trace dir and PATH the harness was given (`plan.smoke_checks`)."""
+        return self.sandbox.home / "lane-env.txt"
+
+    def run(self, argv: list[str], cwd: Path, repo: Path, run_id: str, timeout: float = 300) -> subprocess.CompletedProcess[str]:
+        """Run a harness argv by hand from `cwd`, in the environment a lane gives it (`plan.lane_env`): the one
+        `cox route launch` would build, which the launch tests hold cox to."""
+        trace = self.sandbox.workspace / "runs" / f"{run_id}-trace"
+        return _run(argv, env=plan.lane_env(self.sandbox.env, str(repo), str(trace)), cwd=cwd, timeout=timeout)
 
 
 @pytest.fixture
-def launchable(sandbox: Sandbox, tmp_path: Path) -> Launchable:
+def launchable(sandbox: Sandbox, repo: Repo, tmp_path: Path) -> Launchable:
     # The launcher a checkout carries at src/graphs/shell.py; the package does not ship it, so the install has none.
     shutil.copy2(ROOT / "src" / "graphs" / "shell.py", sandbox.install.root / "shell.py")
     cartridges, worktrees = tmp_path / "cartridges", tmp_path / "worktrees"
     shutil.copytree(ROOT / "src" / "cartridges" / "cartridges" / "base", cartridges / "base")
     (cartridges / TEAM).mkdir()
-    (cartridges / TEAM / "cartridge.yaml").write_text(plan.team_cartridge_text(TEAM, str(worktrees), plan.SMOKE_CHECKS), encoding="utf-8")
+    (cartridges / TEAM / "cartridge.yaml").write_text(plan.team_cartridge_text(TEAM, str(worktrees), plan.smoke_checks(str(sandbox.home / "lane-env.txt"))), encoding="utf-8")
+    # The target repository's own venv, holding the probe `lane-probe` looks for; git ignores it, as a real one is.
+    probe = repo.path / ".venv" / "bin" / plan.LANE_PROBE
+    probe.parent.mkdir(parents=True)
+    probe.write_text(plan.LANE_PROBE_TEXT, encoding="utf-8")
+    probe.chmod(0o755)
+    with open(repo.path / ".git" / "info" / "exclude", "a", encoding="utf-8") as exclude:
+        exclude.write(".venv/\n")
     skills = tmp_path / "skills"
     for relative, text in plan.skill_plugin_files().items():
         (skills / relative).parent.mkdir(parents=True, exist_ok=True)

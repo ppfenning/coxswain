@@ -88,9 +88,13 @@ the child environment (`route.child_env`), and starts the harness detached. The 
 real, the patch is applied in a real worktree, and the cartridge's checks run there under the environment cox built.
 The gate, the merge onto the phase branch, the push and the store records are all real.
 
-The `lane-path` check (`command -v cox`) passes only when that environment carries the harness bin on PATH. A system's
-default path holds git and grep, so without it a launch environment with no PATH at all still passed; with it, a
-`route.child_env` that drops PATH fails both launch tests (checked by making that change in the tree and running them).
+The launch tests hold cox to the environment `route.child_env` builds. The `launchable` fixture puts a probe executable
+in the target repository's own venv (`<repo>/.venv/bin`, ignored by git). The `lane-probe` check (`command -v` that
+probe) passes only when that folder is on the check's PATH, and the `lane-env` check writes the trace dir and PATH the
+harness was given, which the epic test reads: `<repo>/.venv/bin` then the harness bin, first, and
+`AGENT_GRAPHS_TRACE_DIR` at `runs/ship-1-trace`. A `child_env` that drops PATH, or that skips both prefixes and the
+trace dir, fails both launch tests (checked by making each change in the tree and running them). The store's run row
+records `runner: scripted`, so a run whose approvals were canned answers never reads as a model's.
 
 | Test | Entry point | What it proves |
 | --- | --- | --- |

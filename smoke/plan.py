@@ -563,13 +563,36 @@ SMOKE_SKILLS = {
 }
 
 
-# The file the scripted build adds, and the checks the team cartridge runs on every built task. `note` passes only once
-# the patch is applied in the worktree the check runs in. `lane-path` passes only when the harness bin is on the
-# check's PATH: `cox route launch` puts it there (`route.child_env`), and a lane's real checks (`uv run pytest`,
-# `ruff`) are found the same way. A system's default path holds git and grep, so only this check notices a launch
-# environment with no PATH at all.
+# The file the scripted build adds, and the probe a target repository's own venv holds (`<repo>/.venv/bin`).
 SMOKE_NOTE = "notes/t1.txt"
-SMOKE_CHECKS = ({"name": "note", "cmd": f"grep -qx ok {SMOKE_NOTE}"}, {"name": "lane-path", "cmd": "command -v cox"})
+LANE_PROBE = "smoke-lane-probe"
+LANE_PROBE_TEXT = "#!/bin/sh\nexit 0\n"
+
+
+def smoke_checks(env_out: str) -> tuple[dict[str, str], ...]:
+    """The checks the team cartridge runs on every built task, in the worktree the build made.
+
+    `note` passes only once the patch is applied there. `lane-probe` passes only when `<repo>/.venv/bin` is on the
+    check's PATH, which is the first prefix `cox route launch` gives the harness (`route.child_env`); a lane's real
+    checks (`uv run pytest`, `ruff`) are found the same way. `lane-env` writes the trace dir and PATH the harness was
+    given to `env_out`, and fails when the trace dir is unset, so a test can hold both to what cox should have built."""
+    return (
+        {"name": "note", "cmd": f"grep -qx ok {SMOKE_NOTE}"},
+        {"name": "lane-probe", "cmd": f"command -v {LANE_PROBE}"},
+        {"name": "lane-env", "cmd": f"printenv AGENT_GRAPHS_TRACE_DIR PATH > {env_out}"},
+    )
+
+
+def lane_env(env: Mapping[str, str], repo: str, trace_dir: str) -> dict[str, str]:
+    """`env` as a lane gives it to a harness started by hand: `<repo>/.venv/bin` first on PATH and the trace dir set,
+    for the one test that runs the harness's entry point directly rather than through `cox route launch`."""
+    return {**env, "PATH": f"{repo}/.venv/bin:{env.get('PATH', '')}", "AGENT_GRAPHS_TRACE_DIR": trace_dir}
+
+
+def lane_env_lines(text: str) -> tuple[str, str] | None:
+    """(trace dir, PATH) from what the `lane-env` check wrote; None when it wrote anything else."""
+    lines = text.splitlines()
+    return (lines[0], lines[1]) if len(lines) == 2 else None
 
 
 def team_cartridge_text(team: str, worktree_root: str, checks: Sequence[Mapping[str, str]] = ()) -> str:

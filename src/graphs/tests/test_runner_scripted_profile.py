@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from harness.runners import build_runner
+from harness.runners import build_runner, runner_name
 from runner import ScriptedRunner
 
 
@@ -25,3 +25,10 @@ def test_the_profile_names_the_answers_and_the_runner_replays_them(tmp_path):
 def test_a_scripted_runner_with_no_answers_file_named_is_refused(tmp_path):
     with pytest.raises(ValueError, match="needs `scripted:`"):
         build_runner(scripted=None, provider_profile=_profile(tmp_path))
+
+
+def test_the_runner_name_is_scripted_for_the_flag_or_the_profile_and_anthropic_by_default():
+    assert runner_name("answers.json", {"runner": "claude-code"}) == "scripted"
+    assert runner_name(None, {"runner": "scripted"}) == "scripted"
+    assert runner_name(None, {"runner": "claude-code"}) == "claude-code"
+    assert runner_name(None, {}) == "anthropic"

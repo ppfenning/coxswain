@@ -225,6 +225,13 @@ def _runner_factory(name: str) -> _RunnerFactory:
     )
 
 
+def runner_name(scripted: str | Path | None, profile: Mapping[str, Any]) -> str:
+    """Pure. The runner a run is built with, as `build_runner` picks it: `scripted` for the `--scripted` flag, else the
+    profile's `runner:`, else `anthropic`. The run row records it, so a run whose approvals were canned answers
+    never reads as one a model made."""
+    return "scripted" if scripted else str(profile.get("runner") or "anthropic")
+
+
 def build_runner(
     *,
     scripted: str | Path | None,
