@@ -74,7 +74,8 @@ from agent_tools import forge_github
 required = forge_github.read_required_for_base(Path("."), "main")
 print(json.dumps(None if required is None else list(required)))
 """)
-    assert required is not None, "the rulesets or the classic protection of main could not be read"
+    # the recording's ruleset for main requires the one status check `test` (CI's test job)
+    assert required == ["test"], required
 
 
 def test_run_list_finds_the_green_ci_push_runs_on_main(github):

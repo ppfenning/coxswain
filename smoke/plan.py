@@ -751,9 +751,11 @@ def gh_exchange_queues(exchanges: Sequence[Mapping]) -> dict[str, list[Mapping]]
 
 
 def gh_env(proxy: str, config_dir: str) -> dict[str, str]:
-    """What sends a sandboxed gh to the replay or the recorder at `proxy`: the local host, the proxy, a config folder
-    of its own, a placeholder token, and no prompt or update check."""
-    return {"GH_HOST": GH_HOST, "HTTP_PROXY": proxy, "http_proxy": proxy, "NO_PROXY": "", "no_proxy": "",
+    """What sends a sandboxed gh to the replay or the recorder at `proxy`: the local host, the proxy for http and
+    https alike (so a request gh made to any other host also reaches the replay, which has no answer for it, and never
+    the network), a config folder of its own, a placeholder token, and no prompt or update check."""
+    return {"GH_HOST": GH_HOST, "HTTP_PROXY": proxy, "http_proxy": proxy, "HTTPS_PROXY": proxy, "https_proxy": proxy,
+            "NO_PROXY": "", "no_proxy": "",
             "GH_TOKEN": GH_REPLAY_TOKEN, "GH_CONFIG_DIR": config_dir, "GH_PROMPT_DISABLED": "1",
             "GH_NO_UPDATE_NOTIFIER": "1", "GH_SPINNER_DISABLED": "1"}
 

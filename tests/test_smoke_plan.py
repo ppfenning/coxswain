@@ -431,5 +431,7 @@ def test_gh_is_sent_to_the_proxy_with_a_placeholder_token_and_a_config_of_its_ow
     env = plan.gh_env("http://127.0.0.1:9", "/s/gh")
     assert (env["GH_HOST"], env["HTTP_PROXY"], env["GH_TOKEN"], env["GH_CONFIG_DIR"]) == (
         "github.localhost", "http://127.0.0.1:9", plan.GH_REPLAY_TOKEN, "/s/gh")
+    assert env["HTTPS_PROXY"] == env["https_proxy"] == env["http_proxy"] == "http://127.0.0.1:9"
+    assert env["NO_PROXY"] == env["no_proxy"] == ""
     assert plan.gh_remote_url("o/r") == "https://github.localhost/o/r.git"
     assert plan.gh_recording_name("test_x[a/b]") == "test_x-a-b.json"

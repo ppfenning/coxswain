@@ -220,7 +220,7 @@ weighed.
   merge and check semantics differ from GitHub's in detail.
 - **B, recorded GitHub answers replayed to the real `gh` (built: `test_contract_gh.py`).** This was first rejected
   for three reasons. Two of them do not hold. `gh` needs no certificate for the replay: for its local-development host
-  `github.localhost` it speaks plain http to `api.github.localhost`, and Go's client sends that through `HTTP_PROXY`.
+  `github.localhost` it speaks plain http to `api.github.localhost`, and Go's client sends that through `HTTP_PROXY`. `HTTPS_PROXY` names the replay too, so nothing gh asks of any host reaches the network.
   The recordings carry no token either: the recorder adds its own on the way out and never writes one down, and it
   replaces every git identity (an object with a `name` and an `email`) with the sandbox's own. The third reason holds:
   a replay returns what GitHub said on the day it was recorded, so it cannot notice GitHub's API changing. What it
@@ -247,7 +247,7 @@ and the `ci.yml` push runs on main are recorded too. `gh_recordings/*.json` name
 | `test_pr_view_reads_every_field_a_land_needs` | `forge_github.read_pr`, `pr_land.carried_tasks` | `gh pr view --json number,state,url,headRefName,headRefOid,baseRefName,body` |
 | `test_cox_pr_land_of_a_merged_pr_marks_the_task_it_carries_done` | `cox pr land` | `gh pr view`, then the store's mark-done |
 | `test_check_rows_of_a_commit_read_its_check_runs_and_statuses` | `forge_github.pr_check_rows` | `gh api --paginate .../check-runs` and `.../status` |
-| `test_required_checks_of_main_are_read` | `forge_github.read_required_for_base` | `gh api .../rules/branches/main`, then classic protection |
+| `test_required_checks_of_main_are_read` | `forge_github.read_required_for_base`: exactly `["test"]`, the recorded ruleset's one required check | `gh api .../rules/branches/main` |
 | `test_run_list_finds_the_green_ci_push_runs_on_main` | `cli_install._edge_run`, `forge_github.ci_runs_argv` and `parse_green_shas`, as `cox upgrade` on the edge channel runs them | `gh run list --workflow ci.yml --branch main --event push --json headSha,status,conclusion` |
 | `test_pr_checks_watch_of_a_finished_pr_lists_no_failing_check` | `chair_revert_ports.GhForgePort.wait_checks`, the chair's revert path | `gh pr checks <n> --watch` |
 | `test_pr_merge_of_a_merged_pr_reads_as_merged` | `forge_github.merge_pr` | `gh pr merge <n> --squash --delete-branch` on a pull request that is already merged |
