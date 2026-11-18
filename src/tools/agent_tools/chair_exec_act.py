@@ -14,7 +14,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import assert_never, cast
+from typing import assert_never
 
 from agent_tools import (
     base_branch,
@@ -133,9 +133,13 @@ def _quarantined_row(action: Action, deps: Deps) -> tuple[Mapping[str, object] |
 
 
 def _extra_of(row: Mapping[str, object]) -> dict[str, object]:
-    """The `extra` of a queue row as a fresh dict; empty when it has none."""
-    extra = row.get("extra")
-    return dict(extra) if is_mapping(extra) else {}
+    """Pure. The `extra` of a queue row as a fresh dict; empty when it has none. An `extra` that is not a mapping
+    raises TypeError: these writes replace the whole extra, so reading it as empty would wipe held, attempts,
+    priority and release_target before the state moved."""
+    extra: object = row.get("extra") or {}
+    if not is_mapping(extra):
+        raise TypeError(f"the extra of {row.get('task_id')!r} is a {type(extra).__name__}, not a mapping")
+    return dict(extra)
 
 
 def taken_back(current: Mapping[str, object], before: Mapping[str, object], added: Mapping[str, object], removed: Collection[str]) -> dict[str, object]:
@@ -863,8 +867,9 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
             return _stalled(action, deps, signal.SIGTERM)
         case ActionKind.SCHEDULE_UPDATED:
             return _schedule_updated(action, deps)
-        case ActionKind.LAND_BATCH | ActionKind.PULL_WORKSPACE | ActionKind.CLOSE_MERGED_TASK:
-            # declared and planned, but no executor runs them yet: refused, as before the match was exhaustive
+        case ActionKind.LAND_BATCH | ActionKind.PULL_WORKSPACE | ActionKind.CLOSE_MERGED_TASK | ActionKind.PYTEST_TMP_SWEEP:
+            # declared, but no executor runs them as planned actions (the sweep is only recorded): refused, as before
+            # the match was exhaustive
             return make_result(action, "refused", f"unsupported action kind {kind.value!r}")
         case _:
             assert_never(kind)
@@ -1069,8 +1074,8 @@ def perform(
     # After every action's result, so a caller that reads `results[0]` for its single action still gets that action's.
     if not dry_run and (removed := _sweep_pytest_tmp(deps)):
         swept = make_result(
-            # not a planned kind (no `ActionKind` member), so no housekeeping timer moves
-            cast(Action, {"kind": "pytest_tmp_sweep"}),
+            # recorded only: no planner plans the kind, so no housekeeping timer moves
+            {"kind": ActionKind.PYTEST_TMP_SWEEP},
             "done",
             f"removed stale pytest run directories: {', '.join(removed)}",
         )

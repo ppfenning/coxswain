@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import cast
 
 from agent_tools import route
@@ -10,10 +10,14 @@ from agent_tools import route
 Row = Mapping[str, object]
 
 
-def _needs(item: Row) -> Sequence[object]:
-    """The ids a row needs; an absent or empty value is none."""
-    needs = item.get("needs")
-    return cast(Sequence[object], needs) if isinstance(needs, list | tuple) else []
+def _needs(item: Row) -> list[object]:
+    """The ids a row needs, iterated as the row holds them; an absent or empty value is none, and one that is not
+    iterable raises TypeError, as `chair_read_dag._needs_of` does. Never read as none: a need dropped is a task launched
+    before its dependency."""
+    raw: object = item.get("needs") or []
+    if not isinstance(raw, Iterable):
+        raise TypeError(f"'{type(raw).__name__}' object is not iterable")
+    return list(cast(Iterable[object], raw))
 
 
 def _phase_parents(items: Sequence[Row]) -> dict[str, set[str]]:

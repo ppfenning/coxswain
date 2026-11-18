@@ -788,6 +788,7 @@ class ActionKind(StrEnum):
     HOLD_INITIATIVE = "hold_initiative"
     STALL_ALARM = "stall_alarm"
     STALL_CLEAR = "stall_clear"
+    PYTEST_TMP_SWEEP = "pytest_tmp_sweep"  # recorded by the executor after a tick's actions; no planner plans it
 
 
 class Action(TypedDict, total=False):
