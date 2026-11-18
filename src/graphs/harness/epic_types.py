@@ -16,7 +16,7 @@ could not open. Nothing here does I/O.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Literal, NotRequired, TypedDict, cast
+from typing import Literal, NotRequired, Required, TypedDict, cast
 
 from harness.store_dialect import Json, JsonObject
 
@@ -25,6 +25,8 @@ __all__ = [
     "AttemptRow",
     "MalformedRecord",
     "PhaseRecord",
+    "Quarantine",
+    "TaskEntry",
     "TaskRecord",
     "as_json",
     "as_list",
@@ -97,6 +99,45 @@ class Attempt(TypedDict):
     malformed: NotRequired[str]  # why its task record was refused: an attempt with no verdicts
 
 
+class TaskEntry(TypedDict, total=False):
+    """One entry of a phase record's `task_records`: what the driver measured and decided for one task in the phase.
+    In-process only, with no constructor. `id`, `phase`, `branch` and `evidence` are set by the builder that makes it."""
+
+    id: Required[str]
+    phase: Required[str]
+    branch: Required[str]
+    evidence: Required[list[dict[str, object]]]
+    quarantine: str | None
+    governance_hits: list[str]
+    draft: object
+    merged: bool
+    status: str
+    build: dict[str, object]
+    failed_node: str | None
+    change_facts: dict[str, object]
+    test_database: str
+    lint_fixed: bool
+    lint_fix_checks: list[str]
+    build_budget_source: object
+    refix: object
+    state: str
+    review_pr: object
+    outcome: object
+    reason: str | None
+
+
+class Quarantine(TypedDict, total=False):
+    """One entry of a phase record's `quarantined`, as `quarantine_task` or the phase itself builds it. In-process only,
+    with no constructor. `id`, `phase`, `grain` and `reason` are always set."""
+
+    id: Required[str]
+    phase: Required[str]
+    grain: Required[str]
+    reason: Required[str]
+    kind: str
+    patch_kept: bool
+
+
 class PhaseRecord(TypedDict, total=False):
     """What one phase did, as `run_phase_tasks` builds it. `phase` and `status` are always there; the rest as the phase
     got to them. `task_records` are the phase's own per-task entries, not the run task records above."""
@@ -111,8 +152,8 @@ class PhaseRecord(TypedDict, total=False):
     land_at: str
     reason: str | None
     rebased: bool
-    task_records: list[dict[str, object]]
-    quarantined: list[dict[str, object]]
+    task_records: list[TaskEntry]
+    quarantined: list[Quarantine]
     batch: list[dict[str, object]]
     cleared_worktrees: list[str]
     reused_branch: bool
@@ -130,7 +171,7 @@ class PhaseRecord(TypedDict, total=False):
     serialised: object
     initiative_merge: dict[str, object]
     phase_verdict: dict[str, object]
-    chunk_verdicts: list[object]
+    chunk_verdicts: list[dict[str, object]]
     level_checks: list[dict[str, object]]
     level_integration: list[dict[str, object]]
     level_integration_scope: object
@@ -138,6 +179,8 @@ class PhaseRecord(TypedDict, total=False):
     totals: dict[str, int]
     manifest: str
     manifest_record: dict[str, object]
+    wave: int | None
+    lane: int | None
 
 
 _TASK_RECORD: dict[str, Kind] = {
@@ -163,7 +206,7 @@ _PHASE_RECORD: dict[str, Kind] = {
     "awaiting_tasks": "list", "base_rebuilt": "list", "stopped": "str", "interrupted": "list", "serialised": "json",
     "initiative_merge": "object", "phase_verdict": "object", "chunk_verdicts": "list", "level_checks": "list",
     "level_integration": "list", "level_integration_scope": "json", "trim": "str", "totals": "object",
-    "manifest": "str", "manifest_record": "object",
+    "manifest": "str", "manifest_record": "object", "wave": "int?", "lane": "int?",
 }  # fmt: skip
 
 

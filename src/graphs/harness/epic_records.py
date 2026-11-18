@@ -19,7 +19,7 @@ import yaml
 from harness import work_mirror
 from harness.courier_adapter import publish_run_exited
 from harness.epic_context import Ctx, StoreRetry
-from harness.epic_types import phase_record
+from harness.epic_types import Quarantine, phase_record
 from harness.resume import save_result
 from harness.store_lease import assert_epoch, renew
 from harness.store_pause import clear_paused, is_paused
@@ -749,7 +749,7 @@ def record_tasks(
 def refuse_stale(state: Execution, *, phase: str, subject: str, slot: str, reason: str) -> None:
     """Quarantine what a stale leader tried to write. Not an attempt, so never through `quarantine_task`."""
     task_grain = bool(subject) and slot != "rebase"
-    entry = {
+    entry: Quarantine = {
         "id": subject if task_grain else phase,
         "phase": phase,
         "grain": "task" if task_grain else "phase",
@@ -767,7 +767,7 @@ class Execution:
     landed: dict[str, bool]
     merged: dict[str, bool]
     moved: dict[str, bool]
-    quarantined: list[dict[str, Any]]
+    quarantined: list[Quarantine]
     review_pr: dict[str, str] = field(default_factory=dict)
     escalated: frozenset[str] = frozenset()
     notes: dict[str, str] = field(default_factory=dict)

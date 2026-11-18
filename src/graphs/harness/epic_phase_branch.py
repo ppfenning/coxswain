@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Any
 
 from core.landing import need_met
 from harness.assembly import assemble
 from harness.checks import tail_lines
 from harness.cos import pid_alive
 from harness.epic_context import Ctx, git_in
+from harness.epic_types import PhaseRecord, Quarantine, as_list, as_mapping
 from harness.phase_remote import push_branch
 from harness.stack_refresh import guarded_refresh, refresh_record
 from harness.worktree import create_worktree, prune_registrations, registry_lock, release_stale_holders, remove_worktree
@@ -23,7 +23,7 @@ def publish_branch(ctx: Ctx, branch: str) -> str | None:
     return None if ok else f"push of {branch} failed: {detail}"
 
 
-def note_push_failure(record: dict[str, Any], warning: str | None) -> None:
+def note_push_failure(record: PhaseRecord, warning: str | None) -> None:
     """Add `warning` to the phase record's `remote_push_failed`, a single string joined with '; '."""
     if warning:
         record["remote_push_failed"] = "; ".join(filter(None, [record.get("remote_push_failed"), warning]))
@@ -41,7 +41,7 @@ def branch_ahead(ctx: Ctx, branch: str) -> bool:
     return ok and out.isdigit() and int(out) > 0
 
 
-class _Opened(tuple):
+class _Opened(tuple[bool, str, bool]):
     """`(ok, detail, reused)`, with the worktree paths cleared on the way in as `.cleared`.
 
     A tuple subclass so every caller and test that unpacks the triple keeps working.
@@ -128,7 +128,7 @@ def start_failure(detail: str, verb: str) -> str:
 
 
 def required_refs(
-    items: Sequence[Mapping[str, Any]],
+    items: Sequence[Mapping[str, object]],
     phase: str,
     parents: Collection[str],
     branch_of: Callable[[str], str],
@@ -152,7 +152,7 @@ def required_refs(
     by_id = {str(i["id"]): i for i in items}
     open_phases = {str(i.get("phase")) for i in items if i.get("state") in ("todo", "ready", "in_progress", "blocked")}
     needed = [
-        by_id[str(n)] for i in items if i.get("phase") == phase for n in i.get("needs") or [] if str(n) in by_id
+        by_id[str(n)] for i in items if i.get("phase") == phase for n in as_list(i.get("needs")) if str(n) in by_id
     ]
     refs: set[str] = set()
     for parent in parents:
@@ -168,14 +168,14 @@ def required_refs(
     return sorted(refs)
 
 
-def needs_other_phase(items: Sequence[Mapping[str, Any]], phase: str) -> bool:
+def needs_other_phase(items: Sequence[Mapping[str, object]], phase: str) -> bool:
     """Does a task of `phase` need a task of another phase, whatever that task's state?"""
     phase_of = {str(i["id"]): i.get("phase") for i in items}
     return any(
         phase_of.get(str(n)) not in (None, phase)
         for i in items
         if i.get("phase") == phase
-        for n in i.get("needs") or []
+        for n in as_list(i.get("needs"))
     )
 
 
@@ -244,19 +244,19 @@ def waiting_tasks(cherry_lines: Sequence[str]) -> list[str]:
     return list(dict.fromkeys(t for t in ids if t is not None))
 
 
-def awaiting_land_lines(record: Mapping[str, Any], run_id: str, repo: Path | str) -> list[str]:
+def awaiting_land_lines(record: Mapping[str, object], run_id: str, repo: Path | str) -> list[str]:
     """The phase line, then one `cox runs land` per waiting task, for an awaiting_land record whose land is due; else nothing.
 
     The flags mirror the chair's land action (`chair_exec`); this layer does not import it.
     """
     if record.get("status") != "awaiting_land":
         return []
-    tasks = list(record.get("awaiting_tasks") or [])
+    tasks = [str(t) for t in as_list(record.get("awaiting_tasks"))]
     head = f"phase {record.get('phase')}: awaiting land of {len(tasks)} approved task(s): {', '.join(tasks)}"
     return [head, *(f"cox runs land {run_id} --task {t} --repo {repo} --apply" for t in tasks)]
 
 
-def blocked_line(record: Mapping[str, Any]) -> str | None:
+def blocked_line(record: Mapping[str, object]) -> str | None:
     """`phase <p>: blocked: <reason>` for a blocked or interrupted phase record, else None."""
     status = record.get("status")
     if status not in ("blocked", "interrupted"):
@@ -265,7 +265,7 @@ def blocked_line(record: Mapping[str, Any]) -> str | None:
 
 
 def open_in_phase(
-    items: Sequence[Mapping[str, Any]], phase: str, in_run: Collection[str], land_at: str
+    items: Sequence[Mapping[str, object]], phase: str, in_run: Collection[str], land_at: str
 ) -> list[str]:
     """Ids of `phase` items outside this run whose stored state does not meet `need_met` for `land_at`, in item order."""
     return [
@@ -278,8 +278,8 @@ def open_in_phase(
 
 
 def outside_parents_complete(
-    items: Sequence[Mapping[str, Any]],
-    rows: Sequence[Mapping[str, Any]] | None,
+    items: Sequence[Mapping[str, object]],
+    rows: Sequence[Mapping[str, object]] | None,
     parents: Mapping[str, set[str]],
     named: Collection[str],
     land_at: str,
@@ -303,12 +303,12 @@ def phase_branch_cherry(ctx: Ctx, phase: str, upstream: str | None = None) -> li
     return out.splitlines() if ok else []
 
 
-def recorded_merges(items: Iterable[Mapping[str, Any]], phase: str) -> tuple[str, ...]:
+def recorded_merges(items: Iterable[Mapping[str, object]], phase: str) -> tuple[str, ...]:
     """The `merged_commit` each of `phase`'s tasks recorded, in item order: the shas a refresh must keep on the branch."""
     return tuple(str(i["merged_commit"]) for i in items if i.get("phase") == phase and i.get("merged_commit"))
 
 
-def locked_merges(ctx: Ctx, items: Iterable[Mapping[str, Any]], phase: str) -> tuple[str, ...]:
+def locked_merges(ctx: Ctx, items: Iterable[Mapping[str, object]], phase: str) -> tuple[str, ...]:
     with ctx.items_lock:
         return recorded_merges(items, phase)
 
@@ -352,8 +352,8 @@ def _branch_head(ctx: Ctx, branch: str) -> str:
 
 
 def refresh_level(
-    ctx: Ctx, record: dict[str, Any], phase: str, recorded: Iterable[str] = ()
-) -> dict[str, Any] | None:
+    ctx: Ctx, record: PhaseRecord, phase: str, recorded: Iterable[str] = ()
+) -> PhaseRecord | None:
     """Bring a reused phase branch up to the initiative branch; the record to return when it blocks.
 
     The initiative branch is the phase's only parent. It moves when a sibling phase merges (or when the lander takes
@@ -370,7 +370,8 @@ def refresh_level(
     if not merged.ok:
         record["status"] = "blocked"
         record["reason"] = merged.reason
-        record["quarantined"].append({"id": phase, "phase": phase, "grain": "phase", "reason": merged.reason})
+        quarantine: Quarantine = {"id": phase, "phase": phase, "grain": "phase", "reason": merged.reason}
+        record.setdefault("quarantined", []).append(quarantine)
         git_in("-C", str(ctx.phase_worktree(phase)), "checkout", "--detach", "-q")
         return record
     after = _branch_head(ctx, branch)
@@ -385,7 +386,7 @@ def refresh_level(
 # ── one task's build, applied and measured in a worktree the harness owns ────
 
 
-def trace_evidence(calls: Sequence[Any], task: str, patch: str) -> list[dict[str, Any]]:
+def trace_evidence(calls: Sequence[object], task: str, patch: str) -> list[dict[str, str]]:
     """Evidence rows the harness itself observed, per docs/design/validator-reach.md §1.
 
     Commands are selected by `task_id` — stamped onto the call ledger by
@@ -400,18 +401,16 @@ def trace_evidence(calls: Sequence[Any], task: str, patch: str) -> list[dict[str
     entry matches at all — `files_touched` then falls back to the reconciled `patch`
     itself, still exactly one row, never empty for a non-empty patch.
     """
-    call = next(
-        (c for c in reversed(calls) if isinstance(c, Mapping) and c.get("role") == "build" and c.get("task_id") == task),
-        {},
-    )
+    builds = [m for m in map(as_mapping, calls) if m.get("role") == "build" and m.get("task_id") == task]
+    call: Mapping[str, object] = builds[-1] if builds else {}
     commands = [
         {
             "check": "command",
             "source": "trace",
             "output": f"{entry.get('command', '')}\n{tail_lines(str(entry.get('output') or ''))}",
         }
-        for entry in (call.get("commands_run") or [])
-        if isinstance(entry, Mapping) and entry.get("source") == "trace"
+        for entry in map(as_mapping, as_list(call.get("commands_run")))
+        if entry.get("source") == "trace"
     ]
-    files = call.get("files_touched") or files_touched_from_patch(patch)
-    return [*commands, {"check": "files_touched", "source": "trace", "output": "\n".join(files)}]
+    files = as_list(call.get("files_touched")) or files_touched_from_patch(patch)
+    return [*commands, {"check": "files_touched", "source": "trace", "output": "\n".join(map(str, files))}]

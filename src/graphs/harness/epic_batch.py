@@ -30,7 +30,7 @@ from harness.epic_records import (
     utc_now,
     wait_if_paused_here,
 )
-from harness.epic_types import as_list
+from harness.epic_types import PhaseRecord, Quarantine, TaskEntry, as_list
 from harness.escalate import escalate_self_modification
 from harness.resume import load_result
 from harness.store_write import Store
@@ -50,7 +50,7 @@ def quarantine_task(
     result: Mapping[str, Any] | None = None,
     cause: tuple[str, str] | None = None,
     approved_is_open: bool = False,
-) -> dict[str, Any]:
+) -> Quarantine:
     """Build a task's quarantine entry AND leave a record on its own work item.
 
     The phase record is the run's memory; the item file is the task's own, so
@@ -103,7 +103,7 @@ def quarantine_task(
     # Before any write, so a `LimitStop` from the classifier leaves nothing half recorded.
     judged = (cause or _cause_of(ctx.runner, kind, reason, result, task)) if ctx.store is not None else None
     patch_kept = kind in ("unverified", "infra")
-    entry: dict[str, Any] = {"id": task, "phase": phase, "grain": "task", "reason": reason, "kind": kind}
+    entry: Quarantine = {"id": task, "phase": phase, "grain": "task", "reason": reason, "kind": kind}
     if patch_kept:
         entry["patch_kept"] = True
     ts = utc_now()
@@ -183,7 +183,7 @@ def _next_attempt_seq(store: Store, run_id: str, task: str) -> int:
 INTERRUPTED_KIND = "interrupted"  # a task the lost lease stopped mid-run; never an attempt
 
 
-def stale_phase(record: dict[str, Any], reason: str) -> dict[str, Any]:
+def stale_phase(record: PhaseRecord, reason: str) -> PhaseRecord:
     """Stop the phase on a fence, so it neither reads complete nor unblocks its dependents.
 
     A lost lease leaves the phase `interrupted`. Its in-flight tasks, and the task entries `quarantine_task`
@@ -646,7 +646,7 @@ def _gather_branch_facts(ctx: Ctx, records: Sequence[Mapping[str, Any]]) -> dict
 
 
 def audit_approved_kept(
-    ctx: Ctx, by_id: Mapping[str, dict[str, Any]], tasks: Sequence[dict[str, Any]], quarantined: list[dict[str, Any]]
+    ctx: Ctx, by_id: Mapping[str, dict[str, Any]], tasks: Sequence[TaskEntry], quarantined: list[Quarantine]
 ) -> None:
     """Quarantine each task this run moved to approved whose work is no longer on a branch. Never recovers it."""
     approved = [t for t in tasks if t.get("state") == "approved" and not t.get("quarantine")]

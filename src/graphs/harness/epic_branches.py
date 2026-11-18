@@ -21,6 +21,7 @@ from harness.digest import build_digest
 from harness.epic_context import Ctx, git_in
 from harness.epic_phase_branch import branch_exists, publish_branch
 from harness.epic_records import END_WRITE_WINDOW_S, ctx_store, utc_now
+from harness.epic_types import PhaseRecord
 from harness.invoke import Invocation, invoke_graphs
 from harness.lane_pytest_tmp import lane_scratch_dir, lane_tmp_env, run_scratch_root
 from harness.lane_workers import workers_env
@@ -541,12 +542,12 @@ def _await_launched_branch(ctx: Ctx, branch: str, outcome: FetchOutcome, *, pati
 
 def fetch_or_stop(
     ctx: Ctx,
-    record: dict[str, Any],
+    record: PhaseRecord,
     fetch: Sequence[str],
     required: Sequence[str],
     loose: Sequence[str] = (),
     parent_branches: Sequence[str] = (),
-) -> dict[str, Any] | None:
+) -> PhaseRecord | None:
     """Fetch `fetch`; the stopped record when a branch the phase needs is missing everywhere or origin could not be asked.
 
     The needed branches are `required`, plus the parents' when a `loose` ref (a commit id) is not in this repo,
@@ -751,7 +752,7 @@ class PhaseRunner:
             setattr(self._shared, name, value)
 
 
-def missing_branch_phase(record: dict[str, Any], branch: str, cause: str) -> dict[str, Any]:
+def missing_branch_phase(record: PhaseRecord, branch: str, cause: str) -> PhaseRecord:
     """Block the phase on a branch it needs and cannot find. Nothing is quarantined: the run stops, the work is untouched."""
     record["status"] = "blocked"
     record["reason"] = cause

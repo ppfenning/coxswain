@@ -43,6 +43,7 @@ from harness.epic_records import (
     unlanded_tasks,
 )
 from harness.epic_triage import close_runner
+from harness.epic_types import PhaseRecord, Quarantine, TaskEntry
 from harness.lane_workers import lane_workers_from
 from harness.lanes import lane_bound
 from harness.scheduler import plan_launches
@@ -131,9 +132,9 @@ def run_epic(
     ctx: Ctx | None = None
     result: dict[str, Any] | None = None
     # Bound before the `try` so the `finally` can build a partial result from whatever phases finished.
-    phases: list[dict[str, Any]] = []
-    tasks: list[dict[str, Any]] = []
-    quarantined: list[dict[str, Any]] = []
+    phases: list[PhaseRecord] = []
+    tasks: list[TaskEntry] = []
+    quarantined: list[Quarantine] = []
     proposals: list[dict[str, Any]] = []
     stacks_rebased = 0
     paused_until: str | None = None
@@ -219,7 +220,7 @@ def run_epic(
         if (warning := unreached_warning(unreached)) is not None:
             print(warning)
 
-        def add_phase(record: dict[str, Any]) -> None:
+        def add_phase(record: PhaseRecord) -> None:
             phases.append(record)
             record_phase(ctx, record)
             if (line := blocked_line(record)) is not None:
@@ -244,6 +245,7 @@ def run_epic(
             for phase in sorted(parents):
                 if missing := sorted(parents[phase] - named - seed):
                     gap, branch = unmerged.get(missing[0], ("", ""))
+                    missing_branch: PhaseRecord = {"missing_branch": branch} if branch else {}
                     add_phase(
                         {
                             "phase": phase,
@@ -253,7 +255,7 @@ def run_epic(
                                 f"parent phase '{missing[0]}' is outside this run and its tasks are not all met "
                                 f"under land_at {ctx.land_at}; dependents do not run"
                             ),
-                            **({"missing_branch": branch} if branch else {}),
+                            **missing_branch,
                         }
                     )
             scope = frozenset(p for p in parents if p not in {str(r["phase"]) for r in phases})
@@ -390,10 +392,10 @@ def _run_lanes(
     items: list[dict[str, Any]],
     parents: Mapping[str, set[str]],
     waves: Sequence[Sequence[str]],
-    add_phase: Callable[[dict[str, Any]], None],
-    phases: list[dict[str, Any]],
-    tasks: list[dict[str, Any]],
-    quarantined: list[dict[str, Any]],
+    add_phase: Callable[[PhaseRecord], None],
+    phases: list[PhaseRecord],
+    tasks: list[TaskEntry],
+    quarantined: list[Quarantine],
     proposals: list[dict[str, Any]],
     tally: _Tally,
     headroom_usd: Callable[[], float | None] | None,
@@ -409,21 +411,22 @@ def _run_lanes(
     order = [p for w in waves for p in w]
     wave_of = {p: n + 1 for n, w in enumerate(waves) for p in w}
     phase_of = {str(i["id"]): str(i.get("phase") or "") for i in items}
-    running: dict[Future[dict[str, Any]], tuple[str, frozenset[str], int]] = {}
+    running: dict[Future[PhaseRecord], tuple[str, frozenset[str], int]] = {}
     lane_of: dict[str, int] = {}
-    acc: dict[str, dict[str, Any]] = {}
+    acc: dict[str, PhaseRecord] = {}
     launched: set[str] = set()
     complete: set[str] = set(seed_complete)
     recorded = {str(r["phase"]) for r in phases}
     serialised: dict[str, str] = {}
     why_stopped: list[str] = []
 
-    def settle(phase: str, record: dict[str, Any]) -> None:
+    def settle(phase: str, record: PhaseRecord) -> None:
         record = {**record, "wave": wave_of.get(phase), "lane": lane_of.get(phase)}
         if record["status"] == "awaiting_land" and adopt_done(phase):
             # The store keeps the first row of a phase, so a phase done elsewhere is recorded complete the first time.
             # Only an awaiting_land record is rewritten: a partial one carries a verdict this check must not overrule.
-            record = {k: v for k, v in record.items() if k != "awaiting_tasks"}
+            record = PhaseRecord(**record)
+            record.pop("awaiting_tasks", None)
             record.update(status="complete", reason="every task in the phase is done in the store")
         if phase in serialised:
             record["serialised"] = serialised[phase]
@@ -434,7 +437,8 @@ def _run_lanes(
             if merge is not None:
                 record["initiative_merge"] = merge
                 if merge["status"] == "merged":
-                    record = {k: v for k, v in record.items() if k not in ("awaiting_tasks",)}
+                    record = PhaseRecord(**record)
+                    record.pop("awaiting_tasks", None)
                     if record["status"] == "awaiting_land":
                         record.update(status="complete", reason=f"merged into {merge['branch']}")
                 elif merge["status"] == "not_built":
@@ -459,7 +463,7 @@ def _run_lanes(
                 item.update({k: new[k] for k in ("state", "merged", "merged_commit")})
         return True
 
-    def parent_block(phase: str) -> dict[str, Any] | None:
+    def parent_block(phase: str) -> PhaseRecord | None:
         bad = next((p for p in sorted(parents[phase]) if p in recorded and p not in complete), None)
         if bad is None:
             return None
@@ -482,7 +486,7 @@ def _run_lanes(
             ),
         }
 
-    def fold(fut: Future[dict[str, Any]]) -> None:
+    def fold(fut: Future[PhaseRecord]) -> None:
         phase, _ids, _lane = running.pop(fut)
         try:
             record = fut.result()
