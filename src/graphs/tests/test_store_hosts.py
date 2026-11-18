@@ -1,7 +1,15 @@
 import pytest
 
 from harness import store_hosts
-from harness.store_hosts import _merge_login, host_beat, host_list, host_set_state, host_upsert, update_host_login
+from harness.store_hosts import (
+    _merge_login,
+    host_beat,
+    host_delete,
+    host_list,
+    host_set_state,
+    host_upsert,
+    update_host_login,
+)
 
 NOW1 = "2026-10-12T00:00:00Z"
 NOW2 = "2026-10-12T01:00:00Z"
@@ -98,3 +106,21 @@ def test_set_state_accepts_unreachable(conn):
 def test_an_unknown_host_returns_false_and_creates_no_row(store_conn):
     assert update_host_login(store_conn, "ghost", {"login_ok": True}) is False
     assert store_conn.query_all("SELECT COUNT(*) FROM hosts") == [(0,)]
+
+
+def test_delete_removes_a_draining_host_and_returns_its_row_as_it_was(conn):
+    drained = host_set_state(conn, "alpha", "draining", "operator", NOW2)
+    assert host_delete(conn, "alpha") == drained
+    assert host_list(conn) == []
+
+
+@pytest.mark.parametrize("state", ["active", "offline", "deploy_only", "unreachable"])
+def test_delete_keeps_a_host_that_is_not_draining(conn, state):
+    host_set_state(conn, "alpha", state, "operator", NOW2)
+    assert host_delete(conn, "alpha") is None
+    assert [r["name"] for r in host_list(conn)] == ["alpha"]
+
+
+def test_delete_of_an_unknown_host_is_none(conn):
+    assert host_delete(conn, "ghost") is None
+    assert [r["name"] for r in host_list(conn)] == ["alpha"]

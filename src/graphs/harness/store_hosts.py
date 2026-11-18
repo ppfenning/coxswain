@@ -11,7 +11,7 @@ from typing import cast
 from harness.store_dialect import Cell, Connection, Json, JsonObject, json_load, json_text, upsert
 from harness.store_types import HostRow
 
-__all__ = ["HOST_STATES", "host_beat", "host_list", "host_set_state", "host_upsert", "update_host_login"]
+__all__ = ["HOST_STATES", "host_beat", "host_delete", "host_list", "host_set_state", "host_upsert", "update_host_login"]
 
 HOST_STATES = ("active", "draining", "offline", "deploy_only", "unreachable")
 HOST_COLUMNS = ("name", "ssh", "capacity", "state", "beat_at", "versions_json", "updated_at", "updated_by")
@@ -111,6 +111,19 @@ def update_host_login(conn: Connection, name: str, login: Mapping[str, Json]) ->
             [json_text(_merge_login(found["versions_json"], login)), name],
         )
         return True
+
+
+def host_delete(conn: Connection, name: str) -> HostRow | None:
+    """Delete a draining host's row and return it as it was; None, with nothing deleted, when no host has the name
+    or the host is in any other state. The state is checked in the DELETE itself, so a host that was activated
+    after the caller read it is kept."""
+    mark = conn.dialect.placeholder
+    with conn.transaction():
+        found = _find(conn, name)
+        if found is None or found["state"] != "draining":
+            return None
+        deleted = conn.execute(f"DELETE FROM hosts WHERE name = {mark} AND state = {mark}", [name, "draining"])
+        return found if deleted else None
 
 
 def host_list(conn: Connection) -> list[HostRow]:

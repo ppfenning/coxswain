@@ -17,7 +17,15 @@ from harness import store_api
 from harness.cli import profile_storage_url, read_provider_profile
 from harness.store_api import db_errors, open_errors
 from harness.store_dialect import Connection, Json, JsonObject, insert_ignore, json_text
-from harness.store_hosts import HOST_STATES, host_beat, host_list, host_set_state, host_upsert, update_host_login
+from harness.store_hosts import (
+    HOST_STATES,
+    host_beat,
+    host_delete,
+    host_list,
+    host_set_state,
+    host_upsert,
+    update_host_login,
+)
 from harness.store_migrate import open_store
 from harness.store_read import work_items
 from harness.work_mirror import set_frontmatter_state
@@ -138,7 +146,7 @@ def build_parser() -> argparse.ArgumentParser:
     release.add_argument("holder")
     release.add_argument("epoch", type=int)
 
-    host = commands.add_parser("host", help="upsert, beat, set-state, login or list the hosts table")
+    host = commands.add_parser("host", help="upsert, beat, set-state, login, delete or list the hosts table")
     host_actions = host.add_subparsers(dest="action", required=True)
 
     upsert_host = host_actions.add_parser("upsert", help="insert or overwrite a host, keeping its last beat")
@@ -164,6 +172,10 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_args(host_login, top=False)
     host_login.add_argument("name", type=_non_empty)
     host_login.add_argument("--login-json", required=True, help="a JSON object: the login fields to merge")
+
+    delete = host_actions.add_parser("delete", help="delete a draining host's row and print it as it was")
+    add_common_args(delete, top=False)
+    delete.add_argument("name")
 
     listing = host_actions.add_parser("list", help="print every host, by name")
     add_common_args(listing, top=False)
@@ -335,6 +347,8 @@ def _host(conn: Connection, args: argparse.Namespace, now: str) -> tuple[Payload
         return host_upsert(conn, args.name, args.ssh, args.capacity, args.state, args.by, now), EXIT_OK
     if args.action == "beat":
         row = host_beat(conn, args.name, args.versions, now)
+    elif args.action == "delete":
+        row = host_delete(conn, args.name)
     else:
         row = host_set_state(conn, args.name, args.state, args.by, now)
     return ({}, EXIT_PRECONDITION) if row is None else (row, EXIT_OK)
@@ -398,6 +412,8 @@ def _now() -> str:
 
 
 def _refusal(args: argparse.Namespace, payload: Payload) -> str:
+    if args.command == "host" and args.action == "delete":
+        return f"no draining host {args.name}"
     if args.command == "host":
         return f"no host {args.name}"
     if args.command == "mark-landed":

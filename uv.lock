@@ -211,6 +211,7 @@ analytics = [
 ]
 lake = [
     { name = "duckdb" },
+    { name = "pyarrow" },
     { name = "pyiceberg", extra = ["pyiceberg-core", "sql-postgres", "sql-sqlite"] },
 ]
 live = [
@@ -246,6 +247,7 @@ requires-dist = [
     { name = "duckdb", marker = "extra == 'analytics'", specifier = ">=1.0" },
     { name = "duckdb", marker = "extra == 'lake'", specifier = ">=1.0" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.2" },
+    { name = "pyarrow", marker = "extra == 'lake'", specifier = ">=15" },
     { name = "pyarrow", marker = "extra == 'parquet'" },
     { name = "pyarrow", marker = "extra == 'traces'", specifier = ">=15" },
     { name = "pyiceberg", extras = ["sql-sqlite", "sql-postgres", "pyiceberg-core"], marker = "extra == 'lake'", specifier = ">=0.9" },

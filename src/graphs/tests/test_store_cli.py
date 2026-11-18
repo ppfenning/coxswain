@@ -398,6 +398,27 @@ def test_host_list_prints_every_host_by_name(url, run):
     assert (code, [r["name"] for r in one_object(out)]) == (0, ["a", "b"])
 
 
+def test_host_delete_removes_a_draining_host_and_prints_the_row_it_removed(url, run, at):
+    # `cox host remove` sends this argv (agent_tools.host_cmd.delete_argv); the store had no `delete` until H10's smoke.
+    # No `--by`: the row goes, and the hosts table keeps no record of who removed it.
+    at(T20)
+    run(url, "host", "upsert", "host-a", "--ssh", "host-a", "--capacity", "8", "--by", "chair")
+    run(url, "host", "set-state", "host-a", "draining", "--by", "operator")
+    code, out, _ = run(url, "host", "delete", "host-a")
+    assert (code, one_object(out)["name"], one_object(out)["state"]) == (0, "host-a", "draining")
+    _, listed, _ = run(url, "host", "list")
+    assert json.loads(listed) == []
+
+
+def test_host_delete_of_an_active_host_exits_three_names_it_and_keeps_it(url, run):
+    run(url, "host", "upsert", "host-a", "--ssh", "host-a", "--capacity", "8", "--by", "chair")
+    code, out, err = run(url, "host", "delete", "host-a")
+    assert (code, one_object(out)) == (3, {})
+    assert err.startswith("error: no draining host host-a")
+    _, listed, _ = run(url, "host", "list")
+    assert [r["name"] for r in json.loads(listed)] == ["host-a"]
+
+
 LOGIN = '{"login_ok": false, "login_user": "operator"}'
 
 

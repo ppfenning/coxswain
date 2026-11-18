@@ -116,17 +116,23 @@ def _clean_env(home: Path, bins: list[str]) -> dict[str, str]:
 
 @pytest.fixture(scope="session")
 def install(tmp_path_factory: pytest.TempPathFactory) -> Install:
+    """This tree with `[postgres,traces,lake]`: one install for the whole session. The lake extra is what `cox lake`
+    needs (test_lake.py); a second install for it alone cost about a minute of CI on a cold cache."""
+    return _install(tmp_path_factory, "install", "postgres,traces,lake")
+
+
+def _install(tmp_path_factory: pytest.TempPathFactory, name: str, extras: str) -> Install:
     uv = shutil.which("uv")
     if uv is None:
         _unavailable(plan.unavailable("no uv on PATH to install cox from this tree", required=_required()))
-    root = tmp_path_factory.mktemp("install")
+    root = tmp_path_factory.mktemp(name)
     venv = root / ".venv"
     version = f"{sys.version_info.major}.{sys.version_info.minor}"
     _must([uv, "venv", "--quiet", "--python", version, str(venv)])
     python = venv / "bin" / "python"
     # --reinstall-package: uv caches a local build by its pyproject's mtime, so without it an edited .py file would
     # install the previous build. The drift check below proves the install is this tree either way.
-    _must([uv, "pip", "install", "--quiet", "--python", str(python), "--reinstall-package", "coxswain", f"{ROOT}[postgres,traces]"])
+    _must([uv, "pip", "install", "--quiet", "--python", str(python), "--reinstall-package", "coxswain", f"{ROOT}[{extras}]"])
     env = _clean_env(root / "home", [str(venv / "bin")])
     site = Path(_must([str(python), "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"], env=env).stdout.strip())
     drift = _install_drift(site)
@@ -331,6 +337,14 @@ class Launchable:
         path = self.answers
         path.write_text(json.dumps(responses), encoding="utf-8")
         return path
+
+    def lifecycle(self, repo: Path, run_id: str) -> subprocess.CompletedProcess[str]:
+        """One scripted lifecycle run that builds and checks `plan.SMOKE_NOTE` in `repo`, recorded in the store."""
+        responses = plan.scripted_epic_responses(plan.new_file_patch(plan.SMOKE_NOTE, "ok"), [plan.SMOKE_NOTE])
+        argv = [str(self.sandbox.install.python), str(self.sandbox.install.root / "shell.py"), "lifecycle",
+                *self.harness_flags(), "--run-id", run_id, "--ticket", f"Add {plan.SMOKE_NOTE}", "--repo", str(repo),
+                "--scripted", str(self.scripted(responses))]
+        return self.run(argv, cwd=self.sandbox.workspace, repo=repo, run_id=run_id)
 
     @property
     def lane_env_file(self) -> Path:

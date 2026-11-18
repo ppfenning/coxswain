@@ -45,6 +45,17 @@ jobs:
       - name: pytest cartridges
         run: uv run pytest -q -n auto
         working-directory: src/cartridges
+      # The smoke install carries the postgres and lake extras, so a dependency missing outside every extra would not
+      # show there: this checkout installed bare, under a home of its own, runs `cox --help` and one real command.
+      - name: bare install (no extras)
+        run: |
+          bare="$RUNNER_TEMP/bare"
+          uv venv --quiet --python 3.14 "$bare/venv"
+          uv pip install --quiet --python "$bare/venv/bin/python" .
+          mkdir -p "$bare/user" "$bare/runs"
+          export HOME="$bare/user" XDG_CONFIG_HOME="$bare/user/.config" XDG_DATA_HOME="$bare/user/.local/share" XDG_STATE_HOME="$bare/user/.local/state"
+          "$bare/venv/bin/cox" --help >/dev/null
+          "$bare/venv/bin/cox" runs series --runs-dir "$bare/runs"
       # Real `cox`, installed from this checkout, against real git and the service's Postgres; nothing is stubbed.
       # Serial: one install and one server per run. REQUIRED turns a missing uv or Postgres into a failure, not a skip.
       - name: smoke

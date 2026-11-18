@@ -623,7 +623,7 @@ def _remove_args(tmp_path, monkeypatch, state, lanes, dry_run=False):
 def test_cox_host_remove_deletes_a_draining_idle_host_and_prints_the_row(tmp_path, monkeypatch, capsys):
     args, seen = _remove_args(tmp_path, monkeypatch, "draining", [])
     assert cli._host_remove(args) == 0
-    assert seen == [["host", "delete", "host-a", "--by", "unlabeled"]]
+    assert seen == [["host", "delete", "host-a"]]
     assert capsys.readouterr().out.splitlines()[-2:] == [
         'removed host-a: {"beat_at": "2026-09-26T11:58:00+00:00", "capacity": 8, "name": "host-a", "ssh": "host-a", '
         '"state": "draining", "versions_json": "{\\"login_ok\\": true}"}',

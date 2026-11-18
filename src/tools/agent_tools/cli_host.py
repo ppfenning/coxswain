@@ -53,7 +53,8 @@ def _host_store_write(a: argparse.Namespace, argv: list[str]) -> int:
     if rc is not None:
         return rc
     code, output = store_cli.runner(runs_dir)(argv)
-    print(output.strip() if code == 0 else f"host: store_cli exit {code}: {output.strip()}")
+    if code != 0 or output.strip():
+        print(output.strip() if code == 0 else f"host: store_cli exit {code}: {output.strip()}")
     return 0 if code == 0 else 1
 
 
@@ -100,7 +101,7 @@ def _host_remove(a: argparse.Namespace) -> int:
     if a.dry_run:
         print(f"would remove {host_cmd.removed_line(row)}")
         return 0
-    code = _host_store_write(a, host_cmd.delete_argv(a.name, _holder_label(a)))
+    code = _host_store_write(a, host_cmd.delete_argv(a.name))
     if code == 0:
         print(f"removed {host_cmd.removed_line(row)}")
     return code
@@ -207,17 +208,19 @@ def _host_beat(a: argparse.Namespace) -> int:
     return _host_store_write(a, _beat_argv(profile, a.name or socket.gethostname()))
 
 
-def _host_login_argv(name: str, login_ok: bool | None, reason: str | None, failures: int, by: str) -> list[str]:
-    """The store_cli argv that stores login state and never stamps `beat_at`; `none` is spelled out, never omitted."""
-    ok = "none" if login_ok is None else json.dumps(login_ok)
-    return ["host", "login", name, "--login-ok", ok, *(["--reason", reason] if reason else []), "--failures", str(failures), "--by", by]
+def _host_login_argv(name: str, login_ok: bool | None, reason: str | None, failures: int) -> list[str]:
+    """Pure. The store_cli argv that merges login state into the host's versions and never stamps `beat_at`: the
+    keys the chair's own login check writes (`chair_login_check`). `login_ok` and `reason` are null when not given, so
+    a passing check clears the reason an earlier failure stored: the store merges these keys into what it holds."""
+    login = {"login_ok": login_ok, "login_failures": failures, "reason": reason or None}
+    return ["host", "login", name, "--login-json", json.dumps(login, sort_keys=True)]
 
 
 def _host_login(a: argparse.Namespace) -> int:
     """Stores login_ok, reason and the consecutive-failure count on the host's row and leaves `beat_at` as stored,
     so a host that failed its check is not made to look freshly beaten. `host beat` stays the writer of `beat_at`.
-    Needs `harness.store_cli host login` (another repo); until it exists the store refuses and this exits 1."""
-    return _host_store_write(a, _host_login_argv(a.name, a.login_ok, a.reason, a.failures, _holder_label(a)))
+    The store answers nothing on success, so nothing is printed then."""
+    return _host_store_write(a, _host_login_argv(a.name, a.login_ok, a.reason, a.failures))
 
 
 def _host_ssh(a: argparse.Namespace, profile: Mapping, runs_dir: Path) -> lane_hosts.LaneHost | None:

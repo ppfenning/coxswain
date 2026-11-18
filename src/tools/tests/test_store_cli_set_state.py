@@ -41,3 +41,11 @@ def test_reply_row_is_the_printed_row_on_exit_0_and_the_store_error_otherwise():
     assert store_cli.reply_row(0, "not json") == {}
     assert store_cli.reply_row(3, "{}\n") == {store_cli.STORE_ERROR: "store_cli exit 3: {}"}
     assert store_cli.reply_row(2, "usage: ...\ninvalid choice") == {store_cli.STORE_ERROR: "store_cli exit 2: usage: ... invalid choice"}
+
+
+def test_the_answer_is_stdout_on_success_and_the_reason_on_stderr_otherwise():
+    assert store_cli.answer(0, '{"name": "a"}\n', "") == '{"name": "a"}\n'
+    assert store_cli.answer(3, "{}\n", "error: no host ghost\n") == "error: no host ghost\n"
+    assert store_cli.answer(2, "", "usage: ...") == "usage: ..."
+    assert store_cli.answer(3, "{}\n", "") == "{}\n"
+    assert store_cli.answer(0, "", "a warning\n") == "a warning\n"
