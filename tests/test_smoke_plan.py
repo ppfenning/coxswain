@@ -363,3 +363,73 @@ def test_the_offline_provider_profile_names_the_scripted_runner_and_its_answers(
     profile = yaml.safe_load(plan.scripted_provider_profile_text("postgresql://127.0.0.1/x", "/h/scripted.json"))
     assert profile == {"storage_url": "postgresql://127.0.0.1/x", "runner": "scripted", "scripted": "/h/scripted.json",
                        "tiers": {}, "capabilities": {"tool_use": True}}
+
+
+QUERY = b'{"query":"\\n\\tquery PullRequestByNumber($owner: String!) {x}","variables":{"repo":"r","owner":"o"}}'
+
+
+def test_a_proxied_target_and_a_direct_one_have_the_same_path():
+    assert plan.gh_path("http://api.github.localhost/repos/o/r?b=2&a=1") == "/repos/o/r?b=2&a=1"
+    assert plan.gh_path("/repos/o/r") == "/repos/o/r"
+
+
+def test_a_rest_request_is_keyed_by_method_path_and_sorted_query():
+    assert plan.gh_request_key("GET", "http://api.github.localhost/repos/o/r/runs?per_page=5&branch=main", b"") == (
+        "GET /repos/o/r/runs?branch=main&per_page=5"
+    )
+
+
+def test_a_graphql_request_is_keyed_by_operation_and_variables_not_its_text():
+    key = plan.gh_request_key("POST", "/graphql", QUERY)
+    assert key == 'POST /graphql query PullRequestByNumber {"owner":"o","repo":"r"}'
+    reworded = b'{"query":"query PullRequestByNumber($owner: String!) { y z }","variables":{"owner":"o","repo":"r"}}'
+    assert plan.gh_request_key("POST", "/graphql", reworded) == key
+
+
+def test_reads_are_gets_and_graphql_queries_and_everything_else_is_a_write():
+    assert not plan.gh_is_write("GET", "/repos/o/r", b"")
+    assert not plan.gh_is_write("POST", "/graphql", QUERY)
+    assert plan.gh_is_write("POST", "/graphql", b'{"query":"mutation MergePullRequest { x }"}')
+    assert plan.gh_is_write("POST", "/graphql", b"not json")
+    assert plan.gh_is_write("DELETE", "/repos/o/r/git/refs/heads/b", b"")
+    assert plan.gh_is_write("PUT", "/repos/o/r/pulls/1/merge", b"{}")
+
+
+def test_only_a_branch_deletion_is_probed_for_the_branch_being_gone():
+    assert plan.gh_absent_branch_probe("DELETE", "http://api.github.localhost/repos/o/r/git/refs/heads/pr/t1") == (
+        "/repos/o/r/git/ref/heads/pr/t1"
+    )
+    assert plan.gh_absent_branch_probe("GET", "/repos/o/r/git/refs/heads/pr/t1") is None
+    assert plan.gh_absent_branch_probe("DELETE", "/repos/o/r/issues/1") is None
+
+
+def test_every_git_identity_is_scrubbed_and_nothing_else_changes():
+    body = {"head_commit": {"author": {"name": "A Person", "email": "a@b.c"}, "message": "m"},
+            "actor": {"login": "x", "name": None}, "runs": [{"committer": {"name": "B", "email": "b@c.d", "date": "t"}}]}
+    assert plan.gh_scrub(body) == {
+        "head_commit": {"author": {"name": "Smoke Test", "email": "smoke@example.invalid"}, "message": "m"},
+        "actor": {"login": "x", "name": None},
+        "runs": [{"committer": {"name": "Smoke Test", "email": "smoke@example.invalid", "date": "t"}}],
+    }
+
+
+def test_an_exchange_keeps_the_type_and_the_next_page_pointed_at_the_replay():
+    headers = {"content-type": "application/json", "Link": '<https://api.github.com/x?page=2>; rel="next"', "X-Other": "1"}
+    exchange = plan.gh_exchange("GET /x", 200, headers, '{"a": {"name": "n", "email": "e"}}')
+    assert exchange == {"key": "GET /x", "status": 200, "body": '{"a":{"name":"Smoke Test","email":"smoke@example.invalid"}}',
+                        "headers": {"Content-Type": "application/json",
+                                    "Link": '<http://api.github.localhost/x?page=2>; rel="next"'}}
+    assert plan.gh_exchange("GET /y", 404, {}, "not json")["body"] == "not json"
+
+
+def test_answers_queue_by_key_in_the_order_recorded():
+    one, two, other = {"key": "k", "n": 1}, {"key": "k", "n": 2}, {"key": "j", "n": 3}
+    assert plan.gh_exchange_queues([one, other, two]) == {"k": [one, two], "j": [other]}
+
+
+def test_gh_is_sent_to_the_proxy_with_a_placeholder_token_and_a_config_of_its_own():
+    env = plan.gh_env("http://127.0.0.1:9", "/s/gh")
+    assert (env["GH_HOST"], env["HTTP_PROXY"], env["GH_TOKEN"], env["GH_CONFIG_DIR"]) == (
+        "github.localhost", "http://127.0.0.1:9", plan.GH_REPLAY_TOKEN, "/s/gh")
+    assert plan.gh_remote_url("o/r") == "https://github.localhost/o/r.git"
+    assert plan.gh_recording_name("test_x[a/b]") == "test_x-a-b.json"
