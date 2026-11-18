@@ -7,7 +7,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from xml.sax.saxutils import unescape
 
-from agent_tools import forge_forgejo
+from agent_tools import forgejo_env
 from agent_tools.claude_token import TOKEN_ENV
 
 # Only variables some module already reads, imported from the module that defines each name.
@@ -426,7 +426,7 @@ def plan_load(process_env: Mapping[str, str], file_values: Mapping[str, str],
 
 # Names a note may always print: ENV_KEYS, and the forge's address and token, which a hand-run upgrade reads to ask
 # Forgejo which commits passed CI.
-DECLARED_BASE = frozenset({*ENV_KEYS, forge_forgejo.BASE_URL_ENV, forge_forgejo.DEFAULT_TOKEN_ENV})
+DECLARED_BASE = frozenset({*ENV_KEYS, forgejo_env.BASE_URL_ENV, forgejo_env.DEFAULT_TOKEN_ENV})
 
 
 def declared_names(*profiles: object) -> frozenset[str]:
