@@ -805,8 +805,7 @@ class _BatchLease:
         if self.busy is not None or self.held:
             return self.busy
         self.slot, got = land_repo_lease.acquire_in_slots(
-            self.runs_dir, str(self.repo), self.holder, _REPO_LEASE_TTL_SECONDS, socket.gethostname(), self.limit,
-            alive=land_repo_lease.pid_alive)
+            self.runs_dir, str(self.repo), self.holder, _REPO_LEASE_TTL_SECONDS, socket.gethostname(), self.limit)
         if isinstance(got, store_cli.LeaseRefused):
             self.busy = land_repo_lease.refusal_message(str(self.repo), got.holder or "another land")
         elif isinstance(got, store_cli.LeaseGranted):
