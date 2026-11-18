@@ -28,14 +28,14 @@ def read_last_housekeeping(runs_dir: Path) -> str | None:
     rule sees `None` and treats housekeeping as due rather than stalling because the store could not be read.
     """
     try:
-        opened = run_store._open(runs_dir)
+        opened = run_store.open_store(runs_dir)
     except (*run_store._DB_ERRORS, RuntimeError):  # an unreachable Postgres, or psycopg not installed
         return None
     if opened is None:
         return None
     conn, token = opened
     try:
-        sql = run_store._sql("SELECT ts, status FROM chair_actions WHERE kind = {p}", token)
+        sql = run_store.sql_for("SELECT ts, status FROM chair_actions WHERE kind = {p}", token)
         rows = [dict(r) for r in conn.execute(sql, ("housekeeping",)).fetchall()]
     except run_store._DB_ERRORS:
         return None

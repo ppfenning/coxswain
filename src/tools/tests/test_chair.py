@@ -260,7 +260,7 @@ def test_renew_of_a_held_lease_on_an_unreachable_postgres_store_warns_and_keeps_
 def test_take_on_a_postgres_store_with_an_unreachable_lease_is_refused_and_writes_no_lock(tmp_path, monkeypatch, capsys):
     profile = tmp_path / "profile.yaml"
     profile.write_text(f"workspace_dir: {tmp_path}\n")
-    monkeypatch.setattr(store_cli, "_store_url", lambda runs_dir: _PG)
+    monkeypatch.setattr(store_cli, "store_url_for", lambda runs_dir: _PG)
     monkeypatch.setattr(store_cli, "lease_acquire", lambda *args, **kwargs: store_cli.LeaseError("exit 2: bad"))
 
     rc = main(["route", "chair", "take", "--profile", str(profile), "--label", "bob", "--pid", str(os.getpid())])

@@ -7,7 +7,7 @@ from typing import Any
 
 from agent_tools import land_manual
 from agent_tools.base_branch import DEFAULT_BASE
-from agent_tools.land import _approved as land_approved
+from agent_tools.land import approved_reason as land_approved
 
 
 def _scoped_item(record: dict, candidates: list[dict]) -> dict | None:
@@ -77,12 +77,12 @@ def _row(record: dict, item: dict | None, base_of: Callable[[str], str] | None =
 _LIVE_STATES = frozenset({"ready", "approved"})
 
 
-def _rebuilt(record: dict, item: dict | None) -> bool:
+def was_rebuilt(record: dict, item: dict | None) -> bool:
     """True when a `route edit --rebuild` listed this record's run in the item's `rebuilt_from`, whatever the item's state now."""
     return bool(item) and record.get("run") in (item.get("rebuilt_from") or [])
 
 
-def _awaiting_rebuild(item: dict | None) -> bool:
+def awaiting_rebuild(item: dict | None) -> bool:
     """True for a ready item a land conflict sent back: the relaunch rebuilds it, nothing is stranded."""
     return bool(item) and item.get("state") == "ready" and bool(item.get("land_conflict"))
 
@@ -102,7 +102,7 @@ def _live_pairs(records: list[dict], items: list[dict]) -> list[tuple[dict, dict
         if not candidates:
             continue
         item = _scoped_item(record, candidates)
-        if item is not None and (item.get("state") not in _LIVE_STATES or _rebuilt(record, item) or _awaiting_rebuild(item)):
+        if item is not None and (item.get("state") not in _LIVE_STATES or was_rebuilt(record, item) or awaiting_rebuild(item)):
             continue
         pairs.append((record, item))
     return pairs

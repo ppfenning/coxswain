@@ -20,8 +20,8 @@ from agent_tools import courier
 from agent_tools.chair_idle_ready import IDLE_READY_CAUSE
 from agent_tools.chair_read_stale import read_chair_actions
 from agent_tools.chair_types import DEADLOCK_CAUSE
-from agent_tools.dash_chair_today import _ts
-from agent_tools.dash_feed import _courier_blob, _iso_ts, open_needs_chair_ids
+from agent_tools.dash_chair_today import row_ts
+from agent_tools.dash_feed import courier_blob, iso_ts_row, open_needs_chair_ids
 
 CAUSE = "idle_stall"
 _OLDEST = datetime.min.replace(tzinfo=UTC)
@@ -41,12 +41,12 @@ def open_idle_stall(
     rows: Sequence[Mapping[str, Any]], open_items: Collection[str]
 ) -> tuple[str | None, str | None]:
     """(signature, reason) of the newest open `idle_stall`, `deferred_land_deadlock` or `idle_ready` needs_chair row, else (None, None); a resolved one is not open."""
-    flat = [_fields(_iso_ts(dict(r))) for r in rows]
+    flat = [_fields(iso_ts_row(dict(r))) for r in rows]
     mine = [
         r for r in flat
         if r.get("kind") == "needs_chair" and r.get("cause") in (CAUSE, DEADLOCK_CAUSE, IDLE_READY_CAUSE) and r.get("signature") in open_items
     ]
-    newest = max(enumerate(mine), key=lambda p: (_ts(p[1]) or _OLDEST, p[0]), default=None)
+    newest = max(enumerate(mine), key=lambda p: (row_ts(p[1]) or _OLDEST, p[0]), default=None)
     return (str(newest[1]["signature"]), str(newest[1].get("reason") or "")) if newest is not None else (None, None)
 
 
@@ -57,6 +57,6 @@ def read_idle_open(ws: Path, actions: Sequence[Mapping[str, Any]] | None = None)
     try:
         # None is the caller that has not been wired to the shared rows yet; it still reads its own.
         rows = actions if actions is not None else read_chair_actions(ws / "runs")
-        return open_idle_stall(rows, open_needs_chair_ids(courier.inbox(_courier_blob(ws))))
+        return open_idle_stall(rows, open_needs_chair_ids(courier.inbox(courier_blob(ws))))
     except Exception:  # a tick must survive any unreadable source
         return (None, None)

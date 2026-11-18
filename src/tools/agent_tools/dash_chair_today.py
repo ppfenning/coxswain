@@ -9,7 +9,7 @@ _LAND_KINDS = ("land", "land_phase")
 _REFUSED_OR_FAILED = ("refused", "failed")
 
 
-def _ts(row: Mapping[str, object]) -> datetime | None:
+def row_ts(row: Mapping[str, object]) -> datetime | None:
     """The row's ISO-8601 `ts` as an aware datetime, a naive one read as UTC; None when absent or unparseable."""
     raw = row.get("ts")
     if not isinstance(raw, str):
@@ -32,7 +32,7 @@ def chair_today(
 ) -> dict[str, int]:
     """Counts rows by their `ts`, `kind` and `status` fields since local midnight of `now`; any refused or failed row counts."""
     start = local_midnight(now, utc_offset)
-    today = [row for row in rows if (at := _ts(row)) is not None and at >= start]
+    today = [row for row in rows if (at := row_ts(row)) is not None and at >= start]
     return {
         "lands": len([r for r in today if r.get("kind") in _LAND_KINDS and r.get("status") == "landed"]),
         "launches": len([r for r in today if r.get("kind") in LAUNCH_KINDS and r.get("status") == "done"]),

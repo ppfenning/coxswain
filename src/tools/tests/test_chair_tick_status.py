@@ -47,7 +47,7 @@ def test_the_json_text_round_trips():
 
 def test_the_read_only_open_refuses_an_update(tmp_path):
     _store(tmp_path)
-    conn, _ = run_store._open(tmp_path)
+    conn, _ = run_store.open_store(tmp_path)
     try:
         refused = False
         try:

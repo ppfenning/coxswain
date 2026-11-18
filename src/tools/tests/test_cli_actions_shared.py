@@ -59,7 +59,7 @@ def ws(tmp_path: Path) -> Path:
 
 def _tick(monkeypatch, ws: Path, rows: list[dict]) -> tuple[CountingConn, chair_run.RunDeps]:
     conn = CountingConn(rows)
-    monkeypatch.setattr(run_store, "_open", lambda runs_dir: (conn, "?"))
+    monkeypatch.setattr(run_store, "open_store", lambda runs_dir: (conn, "?"))
     deps = cli._chair_run_deps(ws / "runs", {}, "chair", 1, "h", True, print, ws / "p.yaml", "files")
     return conn, deps
 

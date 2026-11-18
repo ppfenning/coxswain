@@ -26,12 +26,12 @@ def run_exited(rows: Sequence[Row]) -> dict[str, bool]:
 
 def exit_rows(runs_dir: Path) -> list[dict[str, Any]]:
     """Edge. run_id, launched_at, ended_at and status of every `runs` row; empty with no store or an unreadable one. A store with no `status` column reads it as None."""
-    opened = run_store._open(runs_dir)
+    opened = run_store.open_store(runs_dir)
     if opened is None:
         return []
     conn, token = opened
     try:
-        status = "status" if "status" in run_store._runs_columns(conn, token) else "NULL AS status"
+        status = "status" if "status" in run_store.runs_columns(conn, token) else "NULL AS status"
         return [dict(r) for r in conn.execute(f"SELECT run_id, launched_at, ended_at, {status} FROM runs").fetchall()]
     except run_store._DB_ERRORS:
         return []

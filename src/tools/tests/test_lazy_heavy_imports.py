@@ -44,4 +44,4 @@ def test_db_errors_is_the_old_tuple() -> None:
     from agent_tools import run_store
 
     psycopg = pytest.importorskip("psycopg")
-    assert run_store._DB_ERRORS == run_store._db_errors() == (run_store.sqlite3.DatabaseError, psycopg.Error)
+    assert run_store._DB_ERRORS == run_store.db_error_types() == (run_store.sqlite3.DatabaseError, psycopg.Error)

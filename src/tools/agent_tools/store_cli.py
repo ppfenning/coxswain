@@ -12,7 +12,7 @@ except a land lease, named by land_lease_name.
 `runner` is the one string-shaped door left: it runs a `harness.store_cli` command line (record-action, host verbs)
 through that CLI's own `main`, in process, for callers that already hold such a command.
 
-`harness` is imported on first use, here and in `run_store._api`: importing it loads the package's whole runtime, and
+`harness` is imported on first use, here and in `run_store.harness_store_api`: importing it loads the package's whole runtime, and
 `agent_tools.chair` imports this module on `cox route chair status`'s startup path (test_cli_startup).
 """
 
@@ -25,7 +25,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from agent_tools.run_store import _api, _store_url
+from agent_tools.run_store import harness_store_api, store_url_for
 
 if TYPE_CHECKING:  # the names `__getattr__` re-exports at run time, so a checker sees the classes a caller narrows on
     from harness.store_api import (
@@ -93,7 +93,7 @@ _API_NAMES = frozenset({
 
 def __getattr__(name: str) -> Any:
     if name in _API_NAMES:
-        return getattr(_api(), name)
+        return getattr(harness_store_api(), name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -108,7 +108,7 @@ def _now() -> str:
 
 
 def _url(runs_dir: Path) -> str:
-    return _store_url(Path(runs_dir))
+    return store_url_for(Path(runs_dir))
 
 
 def land_lease_name(task: str) -> str:
@@ -143,32 +143,32 @@ def reply_row(code: int, output: str) -> dict:
 
 
 def mark_landed(runs_dir: Path, run_id: str, phase: str, task: str, pr: str, at: str) -> MarkLandedResult:
-    return _api().mark_task_landed(_url(runs_dir), run_id, phase, task, pr, at, _now())
+    return harness_store_api().mark_task_landed(_url(runs_dir), run_id, phase, task, pr, at, _now())
 
 
 def mark_merged(runs_dir: Path, initiative: str, task: str, commit: str, by: str) -> MergeResult:
     """Edge. Record that an approved task's work is merged at `commit`; its state stays approved."""
-    return _api().record_task_merge(_url(runs_dir), initiative, task, commit, by, _now())
+    return harness_store_api().record_task_merge(_url(runs_dir), initiative, task, commit, by, _now())
 
 
 def mark_phase_done(runs_dir: Path, run: str, phase: str, branch: str) -> MergeResult:
     """Edge. Mark the store's phase row done and merged into `branch`, never landed. Refused for a phase with no row."""
-    return _api().record_phase_done(_url(runs_dir), run, phase, branch, _now())
+    return harness_store_api().record_phase_done(_url(runs_dir), run, phase, branch, _now())
 
 
 def pause(store_url: str, run_id: str, reason: str | None = None) -> PauseResult:
     """Edge. `store_url` is the run's store, named explicitly: a run may be paused from a machine that never ran it."""
-    return _api().pause_run(store_url, run_id, _now(), reason)
+    return harness_store_api().pause_run(store_url, run_id, _now(), reason)
 
 
 def resume(store_url: str, run_id: str) -> ResumeResult:
-    return _api().resume_run(store_url, run_id, _now())
+    return harness_store_api().resume_run(store_url, run_id, _now())
 
 
 def set_state(
     runs_dir: Path, initiative: str, task: str, state: WorkState, by: str, expected: WorkState | None = None
 ) -> SetStateResult:
-    return _api().set_work_state(_url(runs_dir), initiative, task, state, by, _now(), expected=expected)
+    return harness_store_api().set_work_state(_url(runs_dir), initiative, task, state, by, _now(), expected=expected)
 
 
 def _warning(initiative: str, task: str, state: str, reason: str) -> str:
@@ -178,7 +178,7 @@ def _warning(initiative: str, task: str, state: str, reason: str) -> str:
 def state_write_failure(initiative: str, task: str, state: str, result: SetStateResult) -> str | None:
     """Pure. None when the store took the state; else one `warning:` line naming why. A store that could not be opened
     is a failure too: the write did not land."""
-    from harness.store_api import Failed, NotAvailable, StateRefused  # on first use, as `_api` imports it
+    from harness.store_api import Failed, NotAvailable, StateRefused  # on first use, as `harness_store_api` imports it
 
     if isinstance(result, StateRefused):
         return _warning(initiative, task, state, f"refused: {result.detail or 'no detail'}")
@@ -199,12 +199,12 @@ def mirror_state(runs_dir: Path, initiative: str, task: str, state: WorkState, b
 
 
 def lease_acquire(runs_dir: Path, name: str, holder: str, ttl: int, steal: bool = False) -> LeaseResult:
-    return _api().acquire_lease(_url(runs_dir), name, holder, ttl, _now(), steal=steal)
+    return harness_store_api().acquire_lease(_url(runs_dir), name, holder, ttl, _now(), steal=steal)
 
 
 def lease_renew(runs_dir: Path, name: str, holder: str, epoch: int, ttl: int) -> LeaseResult:
-    return _api().renew_lease(_url(runs_dir), name, holder, epoch, ttl, _now())
+    return harness_store_api().renew_lease(_url(runs_dir), name, holder, epoch, ttl, _now())
 
 
 def lease_release(runs_dir: Path, name: str, holder: str, epoch: int) -> LeaseResult:
-    return _api().release_lease(_url(runs_dir), name, holder, epoch, _now())
+    return harness_store_api().release_lease(_url(runs_dir), name, holder, epoch, _now())

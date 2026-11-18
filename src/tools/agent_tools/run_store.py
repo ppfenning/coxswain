@@ -33,7 +33,7 @@ from agent_tools.store_dialect import connect_readonly_url, is_postgres, placeho
 from agent_tools.store_url import TracesRoot, profile_traces_root, read_provider_profile, resolve_store_url
 
 
-def _db_errors() -> tuple[type[BaseException], ...]:
+def db_error_types() -> tuple[type[BaseException], ...]:
     """Store errors to catch; psycopg's join them only when it is installed. Imported here so the module loads lazily."""
     try:
         import psycopg
@@ -45,15 +45,15 @@ def _db_errors() -> tuple[type[BaseException], ...]:
 def __getattr__(name: str) -> tuple[type[BaseException], ...]:
     """Keep `run_store._DB_ERRORS` for other modules and cli.py, computed on first access instead of at import."""
     if name == "_DB_ERRORS":
-        return _db_errors()
+        return db_error_types()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [
-    "Lane", "ParquetCheck", "TracesUnavailable", "all_phase_manifests", "attempt_causes", "attempt_causes_for", "build_counts",
-    "call_events", "call_from_row", "connect_readonly", "cost_since", "efficiency_rows", "gate_call_rows",
-    "hosts", "last_call_at", "latest_chair_meter", "lease", "live_lanes", "parquet_readable", "phase_manifests", "phase_names", "remote_lanes", "resolve_run_id", "run_ids", "run_spans",
-    "run_started", "store_usages", "summarize", "task_verdict_rows", "usage", "usages",
+    "LEASE_SNAPSHOT_S", "Lane", "ParquetCheck", "TracesUnavailable", "all_phase_manifests", "attempt_causes", "attempt_causes_for", "build_counts",
+    "call_events", "call_from_row", "connect_readonly", "cost_since", "db_error_types", "efficiency_rows", "gate_call_rows",
+    "harness_store_api", "hosts", "json_cell", "last_call_at", "latest_chair_meter", "lease", "lease_name_for", "lease_table_for", "live_lanes", "open_store", "parquet_readable", "phase_manifests", "phase_names", "remote_lanes", "resolve_run_id", "run_ids", "run_spans",
+    "run_started", "runs_columns", "sql_for", "sqlite_path", "store_url_for", "store_usages", "summarize", "task_verdict_rows", "traces_root_for", "usage", "usages",
 ]
 
 if TYPE_CHECKING:
@@ -62,7 +62,7 @@ if TYPE_CHECKING:
     from harness import store_api
 
 
-def _api() -> ModuleType:
+def harness_store_api() -> ModuleType:
     """`harness.store_api`, imported on first use: importing any `harness` module loads the package's runtime (and the
     postgres driver), which a `cox` command that never opens the store must not pay for (test_lazy_heavy_imports)."""
     from harness import store_api
@@ -112,7 +112,7 @@ def summarize(calls: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _json_cell(raw: Any) -> Any:
+def json_cell(raw: Any) -> Any:
     """A store JSON cell decoded: SQLite hands back text, Postgres a decoded value. None when the text is not JSON."""
     if isinstance(raw, (str, bytes)):
         try:
@@ -125,7 +125,7 @@ def _json_cell(raw: Any) -> Any:
 def _detail_of(row: Mapping[str, Any]) -> dict[str, Any]:
     """The row's `detail_json` as an object; empty when the column is absent, null, unparseable or not an object."""
     raw = row["detail_json"] if "detail_json" in row.keys() else None  # noqa: SIM118 -- sqlite3.Row's `in` tests values, not keys
-    detail = _json_cell(raw)
+    detail = json_cell(raw)
     return detail if isinstance(detail, dict) else {}
 
 
@@ -138,7 +138,7 @@ def call_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
         "model": row["model_alias"],
         "model_id": row["model_id"] if "model_id" in row.keys() else None,  # noqa: SIM118 -- a store from before the column has none; sqlite3.Row's `in` tests values
         "ok": bool(row["ok"]),
-        "decision": _json_cell(row["decision_json"]),
+        "decision": json_cell(row["decision_json"]),
         **{k: detail[k] for k in ("summary", "commands_run") if k in detail},
     }
 
@@ -147,16 +147,16 @@ def call_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
 _DEFAULT_PROFILE = "~/.config/agent-tools/profile.yaml"
 
 
-def _sql(template: str, token: str) -> str:
+def sql_for(template: str, token: str) -> str:
     """Pure: `template` with each `{p}` marker replaced by the dialect's bind-parameter token."""
     return template.replace("{p}", token)
 
 
-def _sqlite_path(url: str) -> Path:
+def sqlite_path(url: str) -> Path:
     return Path(url.removeprefix("sqlite:///") if url.startswith("sqlite:") else url)
 
 
-def _store_url(runs_dir: Path) -> str:
+def store_url_for(runs_dir: Path) -> str:
     """Edge. The store URL: the provider profile named by the routing profile (`$AGENT_TOOLS_PROFILE` or the default), else `cox.db` in `runs_dir`."""
     return _store_url_for(str(runs_dir), os.environ.get("AGENT_TOOLS_PROFILE") or _DEFAULT_PROFILE)
 
@@ -169,7 +169,7 @@ def _store_url_for(runs_dir: str, routing_profile: str) -> str:
     return resolve_store_url(named if isinstance(named, str) else "", runs_dir)
 
 
-def _traces_root(runs_dir: Path) -> TracesRoot:
+def traces_root_for(runs_dir: Path) -> TracesRoot:
     """Edge. The traces root: the `traces_url` of the provider profile the routing profile names, else `<runs_dir>/traces`."""
     return _traces_root_for(str(runs_dir), os.environ.get("AGENT_TOOLS_PROFILE") or _DEFAULT_PROFILE)
 
@@ -181,17 +181,17 @@ def _traces_root_for(runs_dir: str, routing_profile: str) -> TracesRoot:
     return profile_traces_root(read_provider_profile(named) if isinstance(named, str) and named else {}, runs_dir)
 
 
-def _open(runs_dir: Path) -> tuple[Any, str] | None:
+def open_store(runs_dir: Path) -> tuple[Any, str] | None:
     """Edge. A read-only connection and its bind-parameter token; None when a SQLite store file is absent."""
-    url = _store_url(Path(runs_dir))
-    if not is_postgres(url) and not _sqlite_path(url).exists():
+    url = store_url_for(Path(runs_dir))
+    if not is_postgres(url) and not sqlite_path(url).exists():
         return None
     return connect_readonly_url(url), placeholder(url)
 
 
 def connect_readonly(runs_dir: Path) -> Any | None:
     """None when a SQLite store is absent. Opened read-only, so it can never create the file. Rows are addressable by column name."""
-    opened = _open(runs_dir)
+    opened = open_store(runs_dir)
     return None if opened is None else opened[0]
 
 
@@ -237,9 +237,9 @@ def store_change_stamp(runs_dir: Path) -> Hashable | None:
     None for a SQLite store, an absent store or any failure, from config, psycopg or the database. Never raises.
     """
     try:
-        if not is_postgres(_store_url(Path(runs_dir))):
+        if not is_postgres(store_url_for(Path(runs_dir))):
             return None
-        opened = _open(runs_dir)
+        opened = open_store(runs_dir)
         if opened is None:
             return None
         conn = opened[0]
@@ -253,42 +253,42 @@ def store_change_stamp(runs_dir: Path) -> Hashable | None:
 
 def run_started_at(runs_dir: Path, run_id: str) -> str | None:
     """Edge. `runs.started_at` text for `run_id`; None with no store, no row, a null value or an unreadable store."""
-    opened = _open(runs_dir)
+    opened = open_store(runs_dir)
     if opened is None:
         return None
     conn, token = opened
     try:
-        row = conn.execute(_sql("SELECT started_at FROM runs WHERE run_id = {p}", token), (run_id,)).fetchone()
-    except _db_errors():
+        row = conn.execute(sql_for("SELECT started_at FROM runs WHERE run_id = {p}", token), (run_id,)).fetchone()
+    except db_error_types():
         return None
     finally:
         conn.close()
     return None if row is None or row["started_at"] is None else str(row["started_at"])
 
 
-def _lease_name(run_id: str) -> str:
+def lease_name_for(run_id: str) -> str:
     # mirrors graphs `harness/run_lease.lease_name`: the lease is per prefix, so `x-3` and `x-4` share `runs:x`
     return "runs:" + re.sub(r"-\d+$", "", run_id)
 
 
 def lease(runs_dir: Path, run_id: str) -> tuple[str, str, str] | None:
     """Edge. The (holder, expires_at, heartbeat_at) of the store lease for `run_id`'s prefix; None with no store, no row, or an unreadable store."""
-    return _lease_table(str(runs_dir), int(time.monotonic() // _LEASE_SNAPSHOT_S)).get(_lease_name(run_id))
+    return lease_table_for(str(runs_dir), int(time.monotonic() // LEASE_SNAPSHOT_S)).get(lease_name_for(run_id))
 
 
-_LEASE_SNAPSHOT_S = 2  # one read of the leases table serves every liveness check within this window
+LEASE_SNAPSHOT_S = 2  # one read of the leases table serves every liveness check within this window
 
 
 @functools.lru_cache(maxsize=8)
-def _lease_table(runs_dir: str, _window: int) -> dict[str, tuple[str, str, str]]:
-    """Every lease row by name, read once per `_LEASE_SNAPSHOT_S` window: a docket asks about ~800 pidfiles."""
-    opened = _open(Path(runs_dir))
+def lease_table_for(runs_dir: str, _window: int) -> dict[str, tuple[str, str, str]]:
+    """Every lease row by name, read once per `LEASE_SNAPSHOT_S` window: a docket asks about ~800 pidfiles."""
+    opened = open_store(Path(runs_dir))
     if opened is None:
         return {}
     conn, _ = opened
     try:
         rows = conn.execute("SELECT name, holder, expires_at, heartbeat_at FROM leases").fetchall()
-    except _db_errors():
+    except db_error_types():
         return {}
     finally:
         conn.close()
@@ -312,19 +312,19 @@ def _leases_columns(conn: Any, token: str) -> set[str]:
     """Edge. The column names of `leases`, asked of the backend: a failed SELECT would abort a Postgres transaction."""
     if token == placeholder("postgres://"):
         sql = "SELECT column_name AS name FROM information_schema.columns WHERE table_name = {p} AND table_schema = current_schema()"
-        return {r["name"] for r in conn.execute(_sql(sql, token), ("leases",)).fetchall()}
+        return {r["name"] for r in conn.execute(sql_for(sql, token), ("leases",)).fetchall()}
     return {r["name"] for r in conn.execute("PRAGMA table_info(leases)").fetchall()}
 
 
 def lease_row(runs_dir: Path, run_id: str) -> LeaseRow | None:
     """Edge. The full store lease row for `run_id`'s prefix; None with no store, no row, or an unreadable store."""
-    return _lease_rows(str(runs_dir), int(time.monotonic() // _LEASE_SNAPSHOT_S)).get(_lease_name(run_id))
+    return _lease_rows(str(runs_dir), int(time.monotonic() // LEASE_SNAPSHOT_S)).get(lease_name_for(run_id))
 
 
 @functools.lru_cache(maxsize=8)
 def _lease_rows(runs_dir: str, _window: int) -> dict[str, LeaseRow]:
-    """Every lease row by name with its epoch, read once per `_LEASE_SNAPSHOT_S` window. `status` and `progress` are read only when the table has them."""
-    opened = _open(Path(runs_dir))
+    """Every lease row by name with its epoch, read once per `LEASE_SNAPSHOT_S` window. `status` and `progress` are read only when the table has them."""
+    opened = open_store(Path(runs_dir))
     if opened is None:
         return {}
     conn, token = opened
@@ -332,7 +332,7 @@ def _lease_rows(runs_dir: str, _window: int) -> dict[str, LeaseRow]:
         columns = _leases_columns(conn, token)
         extra = ", ".join(c if c in columns else f"NULL AS {c}" for c in ("status", "progress"))
         rows = conn.execute(f"SELECT name, holder, epoch, expires_at, heartbeat_at, {extra} FROM leases").fetchall()
-    except _db_errors():
+    except db_error_types():
         return {}
     finally:
         conn.close()
@@ -370,11 +370,11 @@ def running_phases(progress: str | None) -> int:
     return max(1, len(phases))
 
 
-def _runs_columns(conn: Any, token: str) -> set[str]:
+def runs_columns(conn: Any, token: str) -> set[str]:
     """Edge. The column names of `runs`, asked of the backend: a failed SELECT would abort a Postgres transaction."""
     if token == placeholder("postgres://"):
         sql = "SELECT column_name AS name FROM information_schema.columns WHERE table_name = {p} AND table_schema = current_schema()"
-        return {r["name"] for r in conn.execute(_sql(sql, token), ("runs",)).fetchall()}
+        return {r["name"] for r in conn.execute(sql_for(sql, token), ("runs",)).fetchall()}
     return {r["name"] for r in conn.execute("PRAGMA table_info(runs)").fetchall()}
 
 
@@ -382,11 +382,11 @@ def _newest_run(conn: Any, token: str, name: str, host_expr: str) -> Any | None:
     """Edge. The run row of lease `name`'s prefix with the latest `launched_at`; None when the prefix has no run."""
     prefix = name.removeprefix("runs:")
     like = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "-%"
-    sql = _sql(
+    sql = sql_for(
         f"SELECT run_id, launched_at, {host_expr} FROM runs WHERE (run_id = {{p}} OR run_id LIKE {{p}} ESCAPE '\\') ORDER BY launched_at DESC",
         token,
     )
-    return next((r for r in conn.execute(sql, (prefix, like)).fetchall() if _lease_name(r["run_id"]) == name), None)
+    return next((r for r in conn.execute(sql, (prefix, like)).fetchall() if lease_name_for(r["run_id"]) == name), None)
 
 
 def live_lanes(runs_dir: Path, now: str) -> list[Lane]:
@@ -394,7 +394,7 @@ def live_lanes(runs_dir: Path, now: str) -> list[Lane]:
 
     A lease with no run row is skipped. `phases` is `running_phases` of the lease's progress, read in the same snapshot.
     Empty with no store or an unreadable one."""
-    rows = _lease_rows(str(runs_dir), int(time.monotonic() // _LEASE_SNAPSHOT_S))
+    rows = _lease_rows(str(runs_dir), int(time.monotonic() // LEASE_SNAPSHOT_S))
     live = sorted((n, r.heartbeat_at, running_phases(r.progress)) for n, r in rows.items() if n.startswith("runs:") and r.expires_at > now)
     return _joined_lanes(runs_dir, live)
 
@@ -404,21 +404,21 @@ def lost_lanes(runs_dir: Path, now: str) -> list[Lane]:
 
     A release writes a 1970 `expires_at`, so a released lease is never listed. A lane whose host died stops renewing, and
     its lease lapses a ttl after its last beat, so it is listed here and not in `live_lanes`."""
-    table = _lease_table(str(runs_dir), int(time.monotonic() // _LEASE_SNAPSHOT_S))
+    table = lease_table_for(str(runs_dir), int(time.monotonic() // LEASE_SNAPSHOT_S))
     lapsed = sorted((n, beat, 1) for n, (_, expires, beat) in table.items() if n.startswith("runs:") and beat < expires <= now)
     return _joined_lanes(runs_dir, lapsed)
 
 
 def _joined_lanes(runs_dir: Path, live: list[tuple[str, str, int]]) -> list[Lane]:
     """Edge. Each (lease name, heartbeat, phases) joined to its prefix's newest run row; a lease with no run row is skipped."""
-    opened = _open(runs_dir) if live else None
+    opened = open_store(runs_dir) if live else None
     if opened is None:
         return []
     conn, token = opened
     try:
-        host_expr = "host" if "host" in _runs_columns(conn, token) else "NULL AS host"
+        host_expr = "host" if "host" in runs_columns(conn, token) else "NULL AS host"
         joined = [(_newest_run(conn, token, name, host_expr), beat, phases) for name, beat, phases in live]
-    except _db_errors():
+    except db_error_types():
         return []
     finally:
         conn.close()
@@ -429,14 +429,14 @@ def newest_run_hosts(runs_dir: Path, initiatives: Collection[str]) -> dict[str, 
     """Edge. Each initiative's newest run's `runs.host` ("" when the column is absent or the row's host is blank).
 
     An initiative with no run row is omitted. Empty with no store or an unreadable one."""
-    opened = _open(runs_dir)
+    opened = open_store(runs_dir)
     if opened is None:
         return {}
     conn, token = opened
     try:
-        host_expr = "host" if "host" in _runs_columns(conn, token) else "NULL AS host"
+        host_expr = "host" if "host" in runs_columns(conn, token) else "NULL AS host"
         rows = {i: _newest_run(conn, token, f"runs:{i}", host_expr) for i in initiatives}
-    except _db_errors():
+    except db_error_types():
         return {}
     finally:
         conn.close()
@@ -446,15 +446,15 @@ def newest_run_hosts(runs_dir: Path, initiatives: Collection[str]) -> dict[str, 
 def hosts(runs_dir: Path) -> list[dict]:
     """Edge. The `hosts` table's rows by name; empty with no store, no table, or an unreadable store. Read every chair tick, so it never raises."""
     try:
-        opened = _open(runs_dir)
-    except (*_db_errors(), RuntimeError):  # an unreachable Postgres, or psycopg not installed
+        opened = open_store(runs_dir)
+    except (*db_error_types(), RuntimeError):  # an unreachable Postgres, or psycopg not installed
         return []
     if opened is None:
         return []
     conn, _ = opened
     try:
         return [dict(r) for r in conn.execute("SELECT * FROM hosts ORDER BY name").fetchall()]
-    except _db_errors():
+    except db_error_types():
         return []
     finally:
         conn.close()
@@ -467,13 +467,13 @@ def remote_lanes(lanes: Sequence[Lane], local_runs: Collection[str]) -> list[Lan
 
 def run_ids(runs_dir: Path) -> set[str]:
     """Edge. Every `run_id` in the store's `runs` table; empty with no store or an unreadable one."""
-    opened = _open(runs_dir)
+    opened = open_store(runs_dir)
     if opened is None:
         return set()
     conn, _ = opened
     try:
         return {row["run_id"] for row in conn.execute("SELECT run_id FROM runs")}
-    except _db_errors():
+    except db_error_types():
         return set()
     finally:
         conn.close()
@@ -543,13 +543,13 @@ _SINCE_TASKS = " WHERE run_id IN (SELECT run_id FROM node_calls WHERE ts >= {p})
 
 def _store_tuples(runs_dir: Path, template: str, params: Sequence[Any], keys: Sequence[str]) -> list[tuple]:
     """Edge. The `keys` columns of `template` run on the store, as tuples; empty with no store or an unreadable one."""
-    opened = _open(runs_dir)
+    opened = open_store(runs_dir)
     if opened is None:
         return []
     conn, p = opened
     try:
-        return [tuple(r[k] for k in keys) for r in conn.execute(_sql(template, p), tuple(params)).fetchall()]
-    except _db_errors():
+        return [tuple(r[k] for k in keys) for r in conn.execute(sql_for(template, p), tuple(params)).fetchall()]
+    except db_error_types():
         return []
     finally:
         conn.close()
@@ -564,12 +564,12 @@ def _snapshot_rows(runs_dir: Path, template: str, params: Sequence[Any], keys: S
     def fallback() -> list[tuple]:
         return _store_tuples(runs_dir, template, params, keys)
 
-    url = _store_url(Path(runs_dir))
+    url = store_url_for(Path(runs_dir))
     if not is_postgres(url):
         return fallback()
     profile = read_provider_profile(os.environ.get("AGENT_TOOLS_PROFILE") or _DEFAULT_PROFILE)
     return analytics_snapshot.query(
-        _sql(template, "?"),  # DuckDB binds with `?`, whatever the store's own token is
+        sql_for(template, "?"),  # DuckDB binds with `?`, whatever the store's own token is
         params,
         runs_dir=runs_dir,
         store_url=url,
@@ -596,15 +596,15 @@ def gate_call_rows(runs_dir: Path, since: str | None) -> list[dict[str, Any]]:
 
 def cost_since(runs_dir: Path, since: str, until: str | None = None) -> float | None:
     """Edge. Sum of `node_calls.cost_usd` with `since <= ts < until` (ISO text); None with no store or an unreadable one."""
-    opened = _open(runs_dir)
+    opened = open_store(runs_dir)
     if opened is None:
         return None
     conn, p = opened
     bound, params = (" AND ts < {p}", (since, until)) if until is not None else ("", (since,))
     try:
-        row = conn.execute(_sql("SELECT SUM(cost_usd) AS total FROM node_calls WHERE ts >= {p}" + bound, p), params).fetchone()
+        row = conn.execute(sql_for("SELECT SUM(cost_usd) AS total FROM node_calls WHERE ts >= {p}" + bound, p), params).fetchone()
         return float(row["total"] or 0.0)
-    except _db_errors():
+    except db_error_types():
         return None
     finally:
         conn.close()
@@ -613,56 +613,56 @@ def cost_since(runs_dir: Path, since: str, until: str | None = None) -> float | 
 def latest_chair_meter(runs_dir: Path) -> dict | None:
     """Edge. The newest `meter` row's `action_json` as a dict; None for no store, no row, a store error, or a non-object."""
     try:
-        opened = _open(runs_dir)
-    except (*_db_errors(), RuntimeError):  # an unreachable Postgres, or psycopg not installed
+        opened = open_store(runs_dir)
+    except (*db_error_types(), RuntimeError):  # an unreachable Postgres, or psycopg not installed
         return None
     if opened is None:
         return None
     conn, token = opened
     try:
-        sql = _sql("SELECT action_json FROM chair_actions WHERE kind = {p} ORDER BY ts DESC LIMIT 1", token)
+        sql = sql_for("SELECT action_json FROM chair_actions WHERE kind = {p} ORDER BY ts DESC LIMIT 1", token)
         row = conn.execute(sql, ("meter",)).fetchone()
-    except _db_errors():
+    except db_error_types():
         return None
     finally:
         conn.close()
-    # Postgres rows are `dict_row`, so the cell is read by name, never `row[0]`; `_json_cell` takes text or a decoded dict.
-    doc = _json_cell(row["action_json"]) if row is not None else None
+    # Postgres rows are `dict_row`, so the cell is read by name, never `row[0]`; `json_cell` takes text or a decoded dict.
+    doc = json_cell(row["action_json"]) if row is not None else None
     return doc if isinstance(doc, dict) else None
 
 
 def latest_chair_status(runs_dir: Path) -> dict | None:
     """Edge. The newest `status` row's `action_json` as a dict; None for no store, no row, a store error, or a non-object."""
     try:
-        opened = _open(runs_dir)
-    except (*_db_errors(), RuntimeError):  # an unreachable Postgres, or psycopg not installed
+        opened = open_store(runs_dir)
+    except (*db_error_types(), RuntimeError):  # an unreachable Postgres, or psycopg not installed
         return None
     if opened is None:
         return None
     conn, token = opened
     try:
-        sql = _sql("SELECT action_json FROM chair_actions WHERE kind = {p} ORDER BY ts DESC LIMIT 1", token)
+        sql = sql_for("SELECT action_json FROM chair_actions WHERE kind = {p} ORDER BY ts DESC LIMIT 1", token)
         row = conn.execute(sql, ("status",)).fetchone()
-    except _db_errors():
+    except db_error_types():
         return None
     finally:
         conn.close()
-    doc = _json_cell(row["action_json"]) if row is not None else None
+    doc = json_cell(row["action_json"]) if row is not None else None
     return doc if isinstance(doc, dict) else None
 
 
 def last_call_at(runs_dir: Path, run_ids: Sequence[str]) -> dict[str, str]:
     """Edge. Each id in `run_ids` mapped to its newest `node_calls.ts`; a run with no call row is absent.
     `{}` with no store, an unreadable one, or an empty `run_ids`."""
-    opened = _open(runs_dir) if run_ids else None
+    opened = open_store(runs_dir) if run_ids else None
     if opened is None:
         return {}
     conn, p = opened
     try:
         marks = ", ".join(["{p}"] * len(run_ids))
-        sql = _sql(f"SELECT run_id, MAX(ts) AS last FROM node_calls WHERE run_id IN ({marks}) GROUP BY run_id", p)
+        sql = sql_for(f"SELECT run_id, MAX(ts) AS last FROM node_calls WHERE run_id IN ({marks}) GROUP BY run_id", p)
         return {r["run_id"]: r["last"] for r in conn.execute(sql, tuple(run_ids)).fetchall()}
-    except _db_errors():
+    except db_error_types():
         return {}
     finally:
         conn.close()
@@ -671,16 +671,16 @@ def last_call_at(runs_dir: Path, run_ids: Sequence[str]) -> dict[str, str]:
 def build_counts(runs_dir: Path, task_ids: Collection[str], runs: Collection[str] = ()) -> dict[str, int]:
     """Edge. Build calls per `task_id` equal to one of `task_ids` or a `<run>:...` composite of one of `runs`; empty with no store or an unreadable one."""
     ids, prefixes = sorted(set(task_ids)), sorted(set(runs))
-    opened = _open(runs_dir) if ids or prefixes else None
+    opened = open_store(runs_dir) if ids or prefixes else None
     if opened is None:
         return {}
     conn, p = opened
     match = " OR ".join(["task_id = {p}"] * len(ids) + ["task_id LIKE {p} ESCAPE '\\'"] * len(prefixes))
     likes = tuple(r.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + ":%" for r in prefixes)
     try:
-        sql = _sql(f"SELECT task_id, COUNT(*) AS n FROM node_calls WHERE role = 'build' AND ({match}) GROUP BY task_id", p)
+        sql = sql_for(f"SELECT task_id, COUNT(*) AS n FROM node_calls WHERE role = 'build' AND ({match}) GROUP BY task_id", p)
         return {r["task_id"]: int(r["n"]) for r in conn.execute(sql, (*ids, *likes)).fetchall()}
-    except _db_errors():
+    except db_error_types():
         return {}
     finally:
         conn.close()
@@ -714,7 +714,7 @@ def _attempts_columns(conn: Any, token: str) -> set[str]:
     """Edge. The column names of `attempts`, asked of the backend: a failed SELECT would abort a Postgres transaction."""
     if token == placeholder("postgres://"):
         sql = "SELECT column_name AS name FROM information_schema.columns WHERE table_name = {p} AND table_schema = current_schema()"
-        return {r["name"] for r in conn.execute(_sql(sql, token), ("attempts",)).fetchall()}
+        return {r["name"] for r in conn.execute(sql_for(sql, token), ("attempts",)).fetchall()}
     return {r["name"] for r in conn.execute("PRAGMA table_info(attempts)").fetchall()}
 
 
@@ -723,16 +723,16 @@ def attempt_causes(runs_dir: Path, since: str) -> list[dict[str, Any]]:
 
     `ts` is ISO text, so a `YYYY-MM-DD` `since` compares correctly as text. A store below schema 5 has no `cause`
     or `cause_why` column: both read as None."""
-    opened = _open(runs_dir)
+    opened = open_store(runs_dir)
     if opened is None:
         return []
     conn, p = opened
     try:
         cols = "cause, cause_why" if "cause" in _attempts_columns(conn, p) else "NULL AS cause, NULL AS cause_why"
-        sql = _sql(f"SELECT kind, {cols}, reason, ts FROM attempts WHERE ts >= {{p}} ORDER BY ts", p)
+        sql = sql_for(f"SELECT kind, {cols}, reason, ts FROM attempts WHERE ts >= {{p}} ORDER BY ts", p)
         keys = ("kind", "cause", "cause_why", "reason", "ts")
         return [{k: r[k] for k in keys} for r in conn.execute(sql, (since,)).fetchall()]
-    except _db_errors():
+    except db_error_types():
         return []
     finally:
         conn.close()
@@ -742,17 +742,17 @@ def attempt_causes_for(runs_dir: Path, run_ids: Sequence[str]) -> list[dict[str,
     """Edge. Each attempt's run_id, task_id, seq and cause for the given runs, by run then seq; empty with no store, no runs or an unreadable store.
 
     A store below schema 5 has no `cause` column: it reads as None."""
-    opened = _open(runs_dir) if run_ids else None
+    opened = open_store(runs_dir) if run_ids else None
     if opened is None:
         return []
     conn, p = opened
     try:
         cols = "cause" if "cause" in _attempts_columns(conn, p) else "NULL AS cause"
         marks = ", ".join(["{p}"] * len(run_ids))
-        sql = _sql(f"SELECT run_id, task_id, seq, {cols} FROM attempts WHERE run_id IN ({marks}) ORDER BY run_id, seq", p)
+        sql = sql_for(f"SELECT run_id, task_id, seq, {cols} FROM attempts WHERE run_id IN ({marks}) ORDER BY run_id, seq", p)
         keys = ("run_id", "task_id", "seq", "cause")
         return [{k: r[k] for k in keys} for r in conn.execute(sql, tuple(run_ids)).fetchall()]
-    except _db_errors():
+    except db_error_types():
         return []
     finally:
         conn.close()
@@ -762,16 +762,16 @@ def rescue_failures(runs_dir: Path) -> list[dict[str, Any]]:
     """Edge. Each attempts row of kind rescue_failed as run_id, task_id, phase_id, ts and cause, oldest first; empty with no store or an unreadable one.
 
     A store below schema 5 has no `cause` column: it reads as None."""
-    opened = _open(runs_dir)
+    opened = open_store(runs_dir)
     if opened is None:
         return []
     conn, p = opened
     try:
         cols = "cause" if "cause" in _attempts_columns(conn, p) else "NULL AS cause"
-        sql = _sql(f"SELECT run_id, task_id, phase_id, ts, {cols} FROM attempts WHERE kind = {{p}} ORDER BY ts", p)
+        sql = sql_for(f"SELECT run_id, task_id, phase_id, ts, {cols} FROM attempts WHERE kind = {{p}} ORDER BY ts", p)
         keys = ("run_id", "task_id", "phase_id", "ts", "cause")
         return [{k: r[k] for k in keys} for r in conn.execute(sql, ("rescue_failed",)).fetchall()]
-    except _db_errors():
+    except db_error_types():
         return []
     finally:
         conn.close()
@@ -782,21 +782,21 @@ def run_spans(runs_dir: Path, since: str) -> list[tuple[str, str, str | None]]:
 
     A run with no `ended_at` that is not live (killed, or from before ended_at was stamped) ends at its last
     recorded call, or at its launch when it has none; only a live run stays open."""
-    opened = _open(runs_dir)
+    opened = open_store(runs_dir)
     if opened is None:
         return []
     conn, p = opened
 
     def last_call(run_id: str) -> str | None:
         try:
-            return conn.execute(_sql("SELECT MAX(ts) AS last FROM node_calls WHERE run_id = {p}", p), (run_id,)).fetchone()["last"]
-        except _db_errors():
+            return conn.execute(sql_for("SELECT MAX(ts) AS last FROM node_calls WHERE run_id = {p}", p), (run_id,)).fetchone()["last"]
+        except db_error_types():
             return None
 
     spans = []
     try:
         rows = conn.execute(
-            _sql(
+            sql_for(
                 "SELECT run_id, launched_at, ended_at FROM runs "
                 "WHERE launched_at IS NOT NULL AND (ended_at IS NULL OR ended_at >= {p}) ORDER BY launched_at",
                 p,
@@ -810,7 +810,7 @@ def run_spans(runs_dir: Path, since: str) -> list[tuple[str, str, str | None]]:
                 if ended_at < since:
                     continue
             spans.append((run_id, launched_at, ended_at))
-    except _db_errors():
+    except db_error_types():
         return []
     finally:
         conn.close()
@@ -838,20 +838,20 @@ def _run_ended(runs_dir: Path, run_id: str, ended_at: Any) -> bool:
 
 
 def _read_calls(runs_dir: Path, run_id: str) -> list[dict]:
-    opened = _open(runs_dir)
+    opened = open_store(runs_dir)
     if opened is None:
         return []
     conn, p = opened
     try:
         rows = conn.execute(
-            _sql(
+            sql_for(
                 "SELECT n.*, r.ended_at AS run_ended_at FROM node_calls n JOIN runs r ON r.run_id = n.run_id "
                 "WHERE n.run_id = {p} ORDER BY n.ts, n.seq",
                 p,
             ),
             (run_id,),
         ).fetchall()
-    except _db_errors():
+    except db_error_types():
         return []
     finally:
         conn.close()
@@ -876,14 +876,14 @@ def _store_usage(run_id: str, calls: list[dict]) -> dict:
 def _store_runs(runs_dir: Path, exclude: Collection[str] = (), since: str | None = None) -> dict[str, list[dict]]:
     """Every run with `node_calls` rows and a `runs` row that has ended (`ended_at` set, or no live pid), its calls ordered by ts then seq.
     Runs in `exclude` are dropped before any row becomes a call and before the pid check. With `since`, a run whose `ended_at` is set and earlier is dropped in SQL."""
-    opened = _open(runs_dir)
+    opened = open_store(runs_dir)
     if opened is None:
         return {}
     conn, p = opened
     where, params = ("WHERE r.ended_at IS NULL OR r.ended_at >= {p} ", (since,)) if since is not None else ("", ())
     try:
         rows = conn.execute(
-            _sql(
+            sql_for(
                 "SELECT n.*, r.ended_at AS run_ended_at FROM node_calls n JOIN runs r ON r.run_id = n.run_id "
                 + where
                 + "ORDER BY n.run_id, n.ts, n.seq",
@@ -891,7 +891,7 @@ def _store_runs(runs_dir: Path, exclude: Collection[str] = (), since: str | None
             ),
             params,
         ).fetchall()
-    except _db_errors():
+    except db_error_types():
         return {}
     finally:
         conn.close()
@@ -937,20 +937,20 @@ def _manifest_files(runs_dir: Path) -> dict[str, list[dict]]:
 
 
 def _manifest_record(record_json: Any) -> dict | None:
-    record = _json_cell(record_json)
+    record = json_cell(record_json)
     found = record.get("manifest_record") if isinstance(record, dict) else None
     return found if isinstance(found, dict) else None
 
 
 def _store_manifests(runs_dir: Path) -> dict[str, list[dict]]:
     """Run id to the `manifest_record` of each of its `phases` rows, ended run or not, ordered by the row's ts."""
-    opened = _open(runs_dir)
+    opened = open_store(runs_dir)
     if opened is None:
         return {}
     conn, _ = opened
     try:
         rows = conn.execute("SELECT run_id, record_json FROM phases ORDER BY run_id, ts").fetchall()
-    except _db_errors():
+    except db_error_types():
         return {}
     finally:
         conn.close()
@@ -975,13 +975,13 @@ def all_phase_manifests(runs_dir: Path) -> dict[str, list[dict]]:
 
 
 def _store_phase_names(runs_dir: Path, run_id: str) -> list[str]:
-    opened = _open(runs_dir)
+    opened = open_store(runs_dir)
     if opened is None:
         return []
     conn, p = opened
     try:
-        rows = conn.execute(_sql("SELECT phase_id FROM phases WHERE run_id = {p} ORDER BY ts", p), (run_id,)).fetchall()
-    except _db_errors():
+        rows = conn.execute(sql_for("SELECT phase_id FROM phases WHERE run_id = {p} ORDER BY ts", p), (run_id,)).fetchall()
+    except db_error_types():
         return []
     finally:
         conn.close()
@@ -1041,32 +1041,32 @@ def _parquet_call_events(rows: Sequence[Mapping[str, Any]], call_id: str) -> lis
 
 def task_record(runs_dir: Path, run_id: str, phase_id: str, task_id: str) -> dict | None:
     """Edge: one task's record from the store, None when it has none or cannot say (the caller falls back to the file)."""
-    found = _api().task_record(_store_url(Path(runs_dir)), run_id, phase_id, task_id)
+    found = harness_store_api().task_record(store_url_for(Path(runs_dir)), run_id, phase_id, task_id)
     return found if isinstance(found, dict) else None
 
 
 def task_record_phases(runs_dir: Path, run_id: str, task: str) -> list[str]:
     """Edge: the distinct phases whose `task_records` rows name this run and task; empty with no store or on a failed read."""
-    found = _api().task_record_phases(_store_url(Path(runs_dir)), run_id, task)
+    found = harness_store_api().task_record_phases(store_url_for(Path(runs_dir)), run_id, task)
     return found if isinstance(found, list) else []
 
 
 def run_task_ids(runs_dir: Path, run_id: str) -> list[str]:
     """Edge: the distinct task ids whose `task_records` rows name this run; empty with no store or on a failed read."""
-    found = _api().run_task_ids(_store_url(Path(runs_dir)), run_id)
+    found = harness_store_api().run_task_ids(store_url_for(Path(runs_dir)), run_id)
     return found if isinstance(found, list) else []
 
 
 def resolve_run_id(runs_dir: Path, token: str) -> str | None:
     """Edge: the run id a short run id (`I412-7`) or an old run key names; None when it names no run or the store
     cannot say."""
-    found = _api().resolve_token(_store_url(Path(runs_dir)), token)
-    return found.key if isinstance(found, _api().Resolved) and found.kind == "run" else None
+    found = harness_store_api().resolve_token(store_url_for(Path(runs_dir)), token)
+    return found.key if isinstance(found, harness_store_api().Resolved) and found.kind == "run" else None
 
 
 def initiative_short_ids(runs_dir: Path) -> dict[str, str]:
     """Edge: slug to short id for every initiative that has one. Empty when the store cannot say."""
-    found = _api().initiative_short_ids(_store_url(Path(runs_dir)))
+    found = harness_store_api().initiative_short_ids(store_url_for(Path(runs_dir)))
     return found if isinstance(found, dict) else {}
 
 
@@ -1097,7 +1097,7 @@ class _ReadFailed(Exception):
 def _stamp(found: store_api.TableStamp | store_api.Failed | store_api.NotAvailable) -> Stamp | None:
     """Pure: the cache stamp of a probe, (row count, crc32 of the greatest updated_at and the row digest); None when
     the store could not say. The digest covers every column: a queue upsert keeps an older updated_at on a changed row."""
-    if not isinstance(found, _api().TableStamp):
+    if not isinstance(found, harness_store_api().TableStamp):
         return None
     return (found.count, zlib.crc32(json.dumps([found.newest, found.digest]).encode()))
 
@@ -1127,14 +1127,14 @@ def work_items(runs_dir: Path, initiative: str | None = None, cache: StampCache 
 
     Empty when the table or the store is missing or unreadable, so an old store reads as an empty one.
     With a cache, a probe of the row count, greatest updated_at and a digest of every row decides whether the stored rows still stand."""
-    url = _store_url(Path(runs_dir))
+    url = store_url_for(Path(runs_dir))
 
     def read_rows() -> list[dict] | None:
-        return _rows(_api().work_item_rows(url, initiative))
+        return _rows(harness_store_api().work_item_rows(url, initiative))
 
     if cache is None:
         return read_rows() or []
-    probe = _stamp(_api().work_items_stamp(url, [("initiative", initiative)]))
+    probe = _stamp(harness_store_api().work_items_stamp(url, [("initiative", initiative)]))
     return _versioned(cache, ("work_items", str(runs_dir), initiative), probe, read_rows)
 
 
@@ -1143,10 +1143,10 @@ def task_merge_row(runs_dir: Path, initiative: str, task: str) -> tuple[str, str
     conn = connect_readonly(Path(runs_dir))
     if conn is None:
         return None
-    sql = _sql("SELECT state, merged_commit FROM work_items WHERE initiative = {p} AND task_id = {p}", placeholder(_store_url(Path(runs_dir))))
+    sql = sql_for("SELECT state, merged_commit FROM work_items WHERE initiative = {p} AND task_id = {p}", placeholder(store_url_for(Path(runs_dir))))
     try:
         row = conn.execute(sql, (initiative, task)).fetchone()
-    except _db_errors():
+    except db_error_types():
         return None
     finally:
         conn.close()
@@ -1175,7 +1175,7 @@ def _one_land_per_key(rows: Sequence[Mapping[str, str]]) -> tuple[dict[str, str]
 def _done_work_item_lands(conn: Any, token: str, since: str, until: str) -> list[dict[str, str]]:
     """Edge. Done work items stamped `since <= updated_at < until`."""
     # A work item carries no run_id, so its initiative stands in as run_id; (initiative, task_id) is the table's own key.
-    sql = _sql("SELECT initiative, task_id, updated_at FROM work_items WHERE state = {p} AND updated_at >= {p} AND updated_at < {p}", token)
+    sql = sql_for("SELECT initiative, task_id, updated_at FROM work_items WHERE state = {p} AND updated_at >= {p} AND updated_at < {p}", token)
     rows = conn.execute(sql, ("done", since, until)).fetchall()
     return [{"run_id": r["initiative"], "task_id": r["task_id"], "ts": r["updated_at"]} for r in rows if r["updated_at"]]
 
@@ -1201,13 +1201,13 @@ def _land_record_lands(runs_dir: Path, since: str, until: str) -> list[dict[str,
 
 def landed_tasks(runs_dir: Path, since: str, until: str) -> Landed:
     """Edge. Tasks landed in `since <= ts < until` (ISO text): done work items, else `land.jsonl` lands; never both."""
-    opened = _open(runs_dir)
+    opened = open_store(runs_dir)
     done: list[dict[str, str]] = []
     if opened is not None:
         conn, token = opened
         try:
             done = _done_work_item_lands(conn, token, since, until)
-        except _db_errors():
+        except db_error_types():
             done = []
         finally:
             conn.close()
@@ -1238,21 +1238,21 @@ def read_queue(runs_dir: Path, initiative: str | None = None, kind: str | None =
     """Edge: queue rows from the store, optionally for one initiative and kind. Empty when the table or store is unavailable.
 
     With a cache, a probe of the table's version decides whether the stored rows still stand."""
-    url = _store_url(Path(runs_dir))
+    url = store_url_for(Path(runs_dir))
 
     def read_rows() -> list[dict] | None:
-        return _queue_rows(_api().queue_rows(url, initiative, kind))
+        return _queue_rows(harness_store_api().queue_rows(url, initiative, kind))
 
     if cache is None:
         return read_rows() or []
-    probe = _stamp(_api().work_items_stamp(url, [("initiative", initiative), ("kind", kind)]))
+    probe = _stamp(harness_store_api().work_items_stamp(url, [("initiative", initiative), ("kind", kind)]))
     return _versioned(cache, ("queue", str(runs_dir), initiative, kind), probe, read_rows)
 
 
 def queue_stamp(runs_dir: Path) -> Stamp | None:
     """Edge: the version of the whole queue (row count and a digest of every row), None when the store cannot say.
     Two equal stamps mean no row changed in between."""
-    return _stamp(_api().work_items_stamp(_store_url(Path(runs_dir)), []))
+    return _stamp(harness_store_api().work_items_stamp(store_url_for(Path(runs_dir)), []))
 
 
 def upsert_row(runs_dir: Path, row: Mapping[str, Any]) -> bool:
@@ -1268,10 +1268,10 @@ def plain_row(row: Mapping[str, Any]) -> dict:
 
 def upsert_row_detail(runs_dir: Path, row: Mapping[str, Any]) -> str:
     """Edge: "" only when the store took the row (or already held it); otherwise a non-empty reason."""
-    done = _api().upsert_queue_row(_store_url(Path(runs_dir)), plain_row(row), _now())
-    if isinstance(done, _api().Failed):
+    done = harness_store_api().upsert_queue_row(store_url_for(Path(runs_dir)), plain_row(row), _now())
+    if isinstance(done, harness_store_api().Failed):
         return done.detail or f"exit {done.code}"
-    if isinstance(done, _api().NotAvailable):
+    if isinstance(done, harness_store_api().NotAvailable):
         return done.reason or "the store is not available"
     return ""
 
@@ -1279,28 +1279,28 @@ def upsert_row_detail(runs_dir: Path, row: Mapping[str, Any]) -> str:
 def release_row(runs_dir: Path, initiative: str, task_id: str, holder: str) -> bool:
     """Edge: True when the store answered; a release by a holder that did not hold the row changes nothing and is
     still True, as the harness CLI exits 0 either way. False only when the store could not say."""
-    done = _api().release_queue_row(_store_url(Path(runs_dir)), initiative, task_id, holder, _now())
-    return isinstance(done, _api().Released)
+    done = harness_store_api().release_queue_row(store_url_for(Path(runs_dir)), initiative, task_id, holder, _now())
+    return isinstance(done, harness_store_api().Released)
 
 
 def export_hashes(runs_dir: Path) -> dict[tuple[str, str], str]:
     """Edge: the sha256 of the file the export last wrote, by (initiative, task_id). A row the export never wrote is absent; empty when the store cannot say."""
-    found = _api().export_hashes(_store_url(Path(runs_dir)), _now())
+    found = harness_store_api().export_hashes(store_url_for(Path(runs_dir)), _now())
     return found if isinstance(found, dict) else {}
 
 
 def set_export_hash(runs_dir: Path, initiative: str, task_id: str, digest: str) -> bool:
     """Edge: True when the store recorded `digest` for this row, False when it could not."""
-    done = _api().set_export_hash(_store_url(Path(runs_dir)), initiative, task_id, digest, _now())
-    return not isinstance(done, _api().Failed | _api().NotAvailable)
+    done = harness_store_api().set_export_hash(store_url_for(Path(runs_dir)), initiative, task_id, digest, _now())
+    return not isinstance(done, harness_store_api().Failed | harness_store_api().NotAvailable)
 
 
 def claim_outcome(runs_dir: Path, initiative: str, task_id: str, holder: str, ttl_s: float, now: str) -> tuple[dict | None, str | None]:
     """Edge: `(claim, None)` when taken, else `(None, HELD)` or `(None, UNAVAILABLE)` so a caller can tell them apart."""
-    done = _api().claim_queue_row(_store_url(Path(runs_dir)), initiative, task_id, holder, int(ttl_s), now)
-    if isinstance(done, _api().Claimed):
+    done = harness_store_api().claim_queue_row(store_url_for(Path(runs_dir)), initiative, task_id, holder, int(ttl_s), now)
+    if isinstance(done, harness_store_api().Claimed):
         return dict(done.claim), None
-    return None, HELD if isinstance(done, _api().Held) else UNAVAILABLE
+    return None, HELD if isinstance(done, harness_store_api().Held) else UNAVAILABLE
 
 
 def _import_pyarrow() -> tuple[Any, Any]:
@@ -1410,19 +1410,19 @@ def synthetic_call_id(run_id: str, trace: object) -> str | None:
 def _store_ids_by_trace(runs_dir: str, run_id: str) -> dict[str, str]:
     """Edge, cached per run: the store's call id for each trace path its node_calls rows name. Calls from before call
     ids carry `legacy:<run>:<seq>` in the store, and the Parquet traces are relinked to it (graphs #445)."""
-    opened = _open(Path(runs_dir))
+    opened = open_store(Path(runs_dir))
     if opened is None:
         return {}
     conn, p = opened
     try:
-        rows = conn.execute(_sql("SELECT call_id, detail_json FROM node_calls WHERE run_id = {p}", p), (run_id,)).fetchall()
-    except _db_errors():
+        rows = conn.execute(sql_for("SELECT call_id, detail_json FROM node_calls WHERE run_id = {p}", p), (run_id,)).fetchall()
+    except db_error_types():
         return {}
     finally:
         conn.close()
     ids = {}
     for row in rows:
-        detail = _json_cell(row["detail_json"])
+        detail = json_cell(row["detail_json"])
         trace = detail.get("trace") if isinstance(detail, dict) else None
         if isinstance(trace, str) and trace:
             ids[trace] = row["call_id"]
@@ -1436,7 +1436,7 @@ def call_events(runs_dir: Path, run_id: str, call: Mapping[str, Any]) -> list[di
     call_id = str(call.get("id"))
     trace = call.get("trace")
     synthetic = synthetic_call_id(run_id, trace)
-    rows, fault = _parquet_rows_or_fault(_traces_root(Path(runs_dir)), run_id)
+    rows, fault = _parquet_rows_or_fault(traces_root_for(Path(runs_dir)), run_id)
     if rows and (
         found := _parquet_call_events(rows, call_id)
         or (isinstance(trace, str) and trace and _parquet_call_events(rows, _store_ids_by_trace(str(runs_dir), run_id).get(trace, "")))
@@ -1498,13 +1498,13 @@ def runs_started(runs_dir: Path) -> dict[str, str]:
     """Run id to the `launched_at` of every store `runs` row that has one, read in one query; {} for no store or a
     failed read. Callers that need many runs' start times use this instead of `run_started` per run, which opened one
     connection each (445 of them made `cox route context` take 24 s over the tailnet, 2026-10-06)."""
-    opened = _open(Path(runs_dir))
+    opened = open_store(Path(runs_dir))
     if opened is None:
         return {}
     conn, p = opened
     try:
-        rows = conn.execute(_sql("SELECT run_id, launched_at FROM runs WHERE launched_at IS NOT NULL", p)).fetchall()
-    except _db_errors():
+        rows = conn.execute(sql_for("SELECT run_id, launched_at FROM runs WHERE launched_at IS NOT NULL", p)).fetchall()
+    except db_error_types():
         return {}
     finally:
         conn.close()
@@ -1513,13 +1513,13 @@ def runs_started(runs_dir: Path) -> dict[str, str]:
 
 def run_started(runs_dir: Path, run_id: str) -> str | None:
     """The `launched_at` of the store's `runs` row, else None."""
-    opened = _open(Path(runs_dir))
+    opened = open_store(Path(runs_dir))
     if opened is None:
         return None
     conn, p = opened
     try:
-        row = conn.execute(_sql("SELECT launched_at FROM runs WHERE run_id = {p}", p), (run_id,)).fetchone()
-    except _db_errors():
+        row = conn.execute(sql_for("SELECT launched_at FROM runs WHERE run_id = {p}", p), (run_id,)).fetchone()
+    except db_error_types():
         return None
     finally:
         conn.close()

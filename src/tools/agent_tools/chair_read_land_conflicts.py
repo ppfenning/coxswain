@@ -46,7 +46,7 @@ def land_conflicts(rows: Sequence[Row], current: Mapping[tuple[str, str], Commit
     ]
 
 
-def _rev_parse(repo: str, ref: str) -> str | None:
+def rev_parse_commit(repo: str, ref: str) -> str | None:
     argv = repo_path.git_argv(repo, os.path.expanduser("~"), "rev-parse", "--verify", "--quiet", ref)
     r = bounded_run.completed(argv, capture_output=True, text=True)
     return r.stdout.strip() or None if r.returncode == 0 else None
@@ -55,7 +55,7 @@ def _rev_parse(repo: str, ref: str) -> str | None:
 def read_land_conflicts(
     runs_dir: str,
     repos: Mapping[str, str],
-    rev_parse: Callable[[str, str], str | None] = _rev_parse,
+    rev_parse: Callable[[str, str], str | None] = rev_parse_commit,
 ) -> list[LandConflict]:
     """Edge. `[]` on an unreadable log. A phase whose repo is unknown or whose refs do not resolve has no current ids, so it is not a conflict."""
     if not runs_dir:

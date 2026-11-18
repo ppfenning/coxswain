@@ -197,7 +197,7 @@ def test_a_failed_command_records_its_stdout_verdict_before_its_stderr_noise(mon
     done = chair_exec.ArgvResult(2, stdout, stderr, stdout + stderr)
     monkeypatch.setattr(chair_exec, "run_argv_split", lambda *a, **k: done)
     code, output = run_argv(argv)
-    reason = chair_exec._recorded({"action": {"kind": "fetch_exit", "run": "r-1"}, "status": "failed", "reason": output})["reason"]
+    reason = chair_exec.recorded_action({"action": {"kind": "fetch_exit", "run": "r-1"}, "status": "failed", "reason": output})["reason"]
     assert code == 2
     assert reason.startswith(start)
     assert reason.endswith(end)
@@ -1865,7 +1865,7 @@ def _hk_deps(monkeypatch, calls: list, fail: tuple = ()) -> Deps:
         calls.append(argv)
         return (1, f"boom: {argv[0]}") if argv in fail else (0, "ok")
 
-    monkeypatch.setattr(chair_exec.run_store, "_traces_root", lambda runs_dir: TracesRoot("t/traces", False))
+    monkeypatch.setattr(chair_exec.run_store, "traces_root_for", lambda runs_dir: TracesRoot("t/traces", False))
     return Deps(
         run=run, delete_branches=lambda repo, pattern: ([], ""), acquire_lease=lambda holder, host: "",
         record=lambda action: None, run_id=lambda action: "", repo_for=lambda action: "",

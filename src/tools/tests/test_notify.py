@@ -228,7 +228,7 @@ def test_a_poll_leaves_no_postgres_transaction_open(tmp_path, monkeypatch):
     from agent_tools import run_store
 
     opened = _fake_psycopg(monkeypatch)
-    monkeypatch.setattr(run_store, "_store_url", lambda _runs_dir: "postgresql://h/db")
+    monkeypatch.setattr(run_store, "store_url_for", lambda _runs_dir: "postgresql://h/db")
     for name in ("run1", "run2"):
         (tmp_path / f"{name}.log").write_text(_EXIT.format(run=name, q=0), encoding="utf-8")
     assert notify.run_loop(tmp_path, once=True, send=[].append) == 0
@@ -248,7 +248,7 @@ def test_a_store_error_on_one_poll_backs_off_and_the_next_poll_still_notifies(tm
             raise sqlite3.OperationalError("connection refused")
         return
 
-    monkeypatch.setattr(run_store, "_open", flaky_open)
+    monkeypatch.setattr(run_store, "open_store", flaky_open)
     (tmp_path / "run1.log").write_text(_EXIT.format(run="run1", q=0), encoding="utf-8")
     sent, sleeps = [], []
 

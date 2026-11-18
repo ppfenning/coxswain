@@ -100,7 +100,7 @@ def _phase_pidfiles(runs_dir: Path, initiative: str) -> list[tuple[str, Path]]:
 def _phase_leases(runs_dir: Path, initiative: str) -> dict[str, Lease]:
     """Edge. The `runs:<initiative>.<phase>` lease rows by phase; the whole-initiative `runs:<initiative>` row never matches."""
     own = re.compile("runs:" + re.escape(initiative) + r"\.([^.]+)")
-    table = run_store._lease_table(str(runs_dir), int(time.monotonic() // run_store._LEASE_SNAPSHOT_S))  # the cache window is the only clock read
+    table = run_store.lease_table_for(str(runs_dir), int(time.monotonic() // run_store.LEASE_SNAPSHOT_S))  # the cache window is the only clock read
     matches = ((own.fullmatch(name), row) for name, row in table.items())
     return {m.group(1): Lease(row[0], row[1]) for m, row in matches if m}
 

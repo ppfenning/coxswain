@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from agent_tools.chair_facts import RESCUE_FAILED_CAUSE, _key, _run_number, run_initiative
+from agent_tools.chair_facts import RESCUE_FAILED_CAUSE, run_initiative, run_ordinal, task_key
 from agent_tools.chair_read_attempts import read_attempts
 from agent_tools.chair_read_cache import StampCache, file_stamp
 from agent_tools.chair_read_quarantined import WorkFiles, body_sha
@@ -71,7 +71,7 @@ def open_record_keys(store_rows: Iterable[Row]) -> set[tuple[str, str]]:
 def _order(row: Row) -> tuple[int, str]:
     """A run's number first: one initiative's runs never overlap (its `runs:<initiative>` lease), so a later number is a
     later attempt whatever its record is dated. `ts` only orders rows of the same run."""
-    return _run_number(str(row.get("run") or "")), str(row.get("ts") or "")
+    return run_ordinal(str(row.get("run") or "")), str(row.get("ts") or "")
 
 
 def record_rows(records: Iterable[RecordFile], store_rows: Iterable[Row]) -> list[dict]:
@@ -109,8 +109,8 @@ def record_rows(records: Iterable[RecordFile], store_rows: Iterable[Row]) -> lis
 def merged_attempts(file_rows: Sequence[Row], records: Sequence[Row]) -> list[dict]:
     """Pure. The files path's rows, then each record row for a run the files path does not already name for its task,
     oldest first by run, then `ts` (`_order`). A work file that holds an attempt wins over the record of the same run."""
-    named = {(*_key(r), str(r.get("run") or "")) for r in file_rows}
-    kept = [r for r in records if (*_key(r), str(r.get("run") or "")) not in named]
+    named = {(*task_key(r), str(r.get("run") or "")) for r in file_rows}
+    kept = [r for r in records if (*task_key(r), str(r.get("run") or "")) not in named]
     return sorted([dict(r) for r in (*file_rows, *kept)], key=_order)
 
 
@@ -134,7 +134,7 @@ def fresh_attempts(attempts: Iterable[Row], store_rows: Iterable[Row]) -> list[d
     listed = [dict(a) for a in attempts]
 
     def task(a: Row) -> tuple[str, str]:
-        return _key(a)[0], _key(a)[2]
+        return task_key(a)[0], task_key(a)[2]
 
     fresh = [counts_after(a.get("run"), cutoffs.get(task(a), {})) for a in listed]
     counted = {task(a) for a, ok in zip(listed, fresh, strict=True) if ok}

@@ -82,7 +82,7 @@ def test_the_host_prune_refuses_on_a_live_local_pidfile_without_an_ssh_call(tmp_
     _pidfile(tmp_path, "B-1", os.getpid())
     calls: list[list[str]] = []
     deps = _recording(calls, tmp_path)
-    deleted, error = chair_exec._pruned(chair_exec._over_ssh(deps, SSH), "R", "B", "epic/B/*", set(), "~/R")
+    deleted, error = chair_exec._pruned(chair_exec.over_ssh(deps, SSH), "R", "B", "epic/B/*", set(), "~/R")
     assert (deleted, error) == ([], f"clear refused, a run of this initiative is live: B-1 pid {os.getpid()} running")
     assert calls == []
 

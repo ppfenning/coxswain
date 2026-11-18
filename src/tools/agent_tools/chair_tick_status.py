@@ -32,11 +32,11 @@ def dump_tick_status(status: dict[str, Any]) -> str:
 def _open_writable(runs_dir: Path) -> tuple[Any, str] | None:
     """Edge. A writable connection and its bind token; None when a SQLite store file is absent, so it never creates one.
 
-    `run_store._open` is read-only (`mode=ro`, `read_only = True`), so an UPDATE through it always fails."""
-    url = run_store._store_url(runs_dir)
+    `run_store.open_store` is read-only (`mode=ro`, `read_only = True`), so an UPDATE through it always fails."""
+    url = run_store.store_url_for(runs_dir)
     if is_postgres(url):
         return store_connect.connect(url), placeholder(url)
-    path = run_store._sqlite_path(url)
+    path = run_store.sqlite_path(url)
     return (sqlite3.connect(path), placeholder(url)) if path.exists() else None
 
 
@@ -50,7 +50,7 @@ def write_tick_status(runs_dir: Path, epoch: int, text: str) -> bool:
         return False
     conn, token = opened
     try:
-        updated = conn.execute(run_store._sql(UPDATE_SQL, token), (text, LEASE_NAME, epoch)).rowcount
+        updated = conn.execute(run_store.sql_for(UPDATE_SQL, token), (text, LEASE_NAME, epoch)).rowcount
         conn.commit()
     except (*run_store._DB_ERRORS, RuntimeError):
         return False

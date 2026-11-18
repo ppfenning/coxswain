@@ -3,7 +3,7 @@
 Names come from the store and the harness, none are new. `runs` rows carry run_id, ended_at, host and status (`dash_feed._finished_status`
 reads approved, landed, quarantined; the store writes `ok` for a run that finished, `error` or `failed` for one that did not).
 `task_records` rows carry run_id, phase_id, task_id and record_json. A record names `landed` (True, or the `{at, pr}` that
-`store_cli.mark_landed` writes), `ticket`, `initiative`, `cause`, `reason`, the review sections `land._approved` reads, and an
+`store_cli.mark_landed` writes), `ticket`, `initiative`, `cause`, `reason`, the review sections `land.approved_reason` reads, and an
 `attempts` list whose entries carry `cause` (`stats_ingest`, `chair_read_attempts`). `node_calls` rows carry run_id and cost_usd.
 A stopped run is one whose status is in STOPPED_STATUSES; `budget` is `runs_top._status`. Outcomes: landed, approved, quarantined,
 stopped, crashed, and idle for a run that finished with nothing landed, approved or quarantined.
@@ -20,7 +20,7 @@ from datetime import UTC, datetime, tzinfo
 from itertools import groupby
 from typing import Any
 
-from agent_tools.land import _approved as land_approved
+from agent_tools.land import approved_reason as land_approved
 
 Row = Mapping[str, Any]
 
@@ -66,7 +66,7 @@ def _is_landed(row: Row) -> bool:
 
 
 def _is_approved(row: Row) -> bool:
-    """The land's own approval rule, `land._approved`, so a unanimous approval with the arbiter skipped counts too."""
+    """The land's own approval rule, `land.approved_reason`, so a unanimous approval with the arbiter skipped counts too."""
     return land_approved(dict(_record(row.get("record_json")))) is None
 
 

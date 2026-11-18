@@ -102,7 +102,7 @@ def _seed_store(tmp_path, monkeypatch, rows: list[tuple]) -> None:
             upsert_work_item(conn, initiative, task, phase, state, json.loads(needs_json), at, by)
     finally:
         conn.close()
-    monkeypatch.setattr(run_store, "_store_url", lambda runs_dir: url)
+    monkeypatch.setattr(run_store, "store_url_for", lambda runs_dir: url)
 
 
 def _settled_detail(state: str) -> dict:

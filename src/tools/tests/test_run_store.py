@@ -157,7 +157,7 @@ class _DictRowConn:
 
 
 def test_latest_chair_meter_reads_a_postgres_dict_row_with_a_decoded_cell(monkeypatch, tmp_path):
-    monkeypatch.setattr(run_store, "_open", lambda runs_dir: (_DictRowConn(), "%s"))
+    monkeypatch.setattr(run_store, "open_store", lambda runs_dir: (_DictRowConn(), "%s"))
     assert run_store.latest_chair_meter(tmp_path) == METER_DOC
 
 
@@ -688,8 +688,8 @@ def test_lease_reads_the_leases_table_once_per_window(tmp_path, monkeypatch):
     conn.commit()
     conn.close()
     opens = []
-    real_open = run_store._open
-    monkeypatch.setattr(run_store, "_open", lambda runs_dir: opens.append(runs_dir) or real_open(runs_dir))
+    real_open = run_store.open_store
+    monkeypatch.setattr(run_store, "open_store", lambda runs_dir: opens.append(runs_dir) or real_open(runs_dir))
     assert run_store.lease(tmp_path, "x-3") == ("x-3", "2026-09-25T12:02:00Z", "2026-09-25T12:00:00Z")
     assert run_store.lease(tmp_path, "x-4") == ("x-3", "2026-09-25T12:02:00Z", "2026-09-25T12:00:00Z")
     assert run_store.lease(tmp_path, "y-1") is None
@@ -736,8 +736,8 @@ def test_lease_row_is_none_with_no_store(tmp_path):
 def test_lease_row_is_none_for_a_store_with_no_leases_table(tmp_path, monkeypatch):
     store(tmp_path, ROW)
     opens = []
-    real_open = run_store._open
-    monkeypatch.setattr(run_store, "_open", lambda runs_dir: opens.append(runs_dir) or real_open(runs_dir))
+    real_open = run_store.open_store
+    monkeypatch.setattr(run_store, "open_store", lambda runs_dir: opens.append(runs_dir) or real_open(runs_dir))
     assert run_store.lease_row(tmp_path, "x-3") is None
     assert len(opens) == 1
 
@@ -776,8 +776,8 @@ def test_lease_row_is_shared_by_x_2_and_x_3(tmp_path):
 def test_lease_row_reads_the_leases_table_once_per_window(tmp_path, monkeypatch):
     lease_rows_table(tmp_path, ("status", "progress"), ("runs:x", "host-a", 1, "2026-09-25T12:02:00Z", "2026-09-25T12:00:00Z", "running", "p"))
     opens = []
-    real_open = run_store._open
-    monkeypatch.setattr(run_store, "_open", lambda runs_dir: opens.append(runs_dir) or real_open(runs_dir))
+    real_open = run_store.open_store
+    monkeypatch.setattr(run_store, "open_store", lambda runs_dir: opens.append(runs_dir) or real_open(runs_dir))
     assert run_store.lease_row(tmp_path, "x-3") is not None
     assert run_store.lease_row(tmp_path, "x-4") is not None
     assert run_store.lease_row(tmp_path, "y-1") is None
@@ -868,7 +868,7 @@ def _real_store(runs_dir):
     """A real migrated sqlite store at `<runs_dir>/cox.db`, opened for writes."""
     from harness.store_migrate import open_store
 
-    return open_store(run_store._store_url(runs_dir), NOW)
+    return open_store(run_store.store_url_for(runs_dir), NOW)
 
 
 def _seed(runs_dir, write):

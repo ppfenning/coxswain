@@ -126,7 +126,7 @@ def count_by_repo(specs: list[LandSpec]) -> dict[str, int]:
     return {repo: sum(1 for s in specs if s.repo == repo) for repo in {s.repo for s in specs}}
 
 
-def _write_atomic(path: Path, text: str) -> None:
+def write_atomic(path: Path, text: str) -> None:
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name, suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as f:
@@ -182,7 +182,7 @@ def main(spec_path: str) -> int:
     if spec is None:
         return 2
     _, outcome_path = paths_for(path.parent, spec.key)
-    _write_atomic(outcome_path, encode_outcome(_run(spec)))
+    write_atomic(outcome_path, encode_outcome(_run(spec)))
     return 0
 
 

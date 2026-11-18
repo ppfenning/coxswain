@@ -17,8 +17,7 @@ from agent_tools.chair_facts_read import (
     LAUNCH_KINDS,
     FactsDeps,
     Row,
-    _action_doc,
-    _run_number,
+    action_doc,
     awaiting_fetch,
     fleet_lanes,
     land_freeze_fact,
@@ -28,6 +27,7 @@ from agent_tools.chair_facts_read import (
     phase_facts,
     quarantine_facts,
     run_host_facts,
+    run_ordinal,
     running_initiatives,
     schedule_inputs_from_rows,
     store_approved_tasks,
@@ -104,7 +104,7 @@ def _streak_step(streaks: Mapping[str, int], doc: Row) -> dict[str, int]:
 def steer_streaks_from_actions(actions: Sequence[Row]) -> dict[str, int]:
     """`<initiative>|<other>` to its steer_clear count since that initiative's last launch; no record, no key."""
     ordered = sorted(actions, key=lambda r: str(r.get("ts") or ""))
-    return reduce(_streak_step, map(_action_doc, ordered), {})
+    return reduce(_streak_step, map(action_doc, ordered), {})
 
 
 HOLD_LAND_KINDS = frozenset({"land", "land_phase"})
@@ -126,7 +126,7 @@ def _hold_step(task: Row, ticks: frozenset[str], doc: Row) -> frozenset[str]:
 
 def approval_holds_from_actions(approved: Sequence[Row], actions: Sequence[Row]) -> list[ApprovalHold]:
     """Per approved task not merged and not branch_merged, the distinct `ts` of its or its initiative's land, land_phase and steer_clear rows since its last landed row; none, no entry."""
-    docs = list(map(_action_doc, sorted(actions, key=lambda r: str(r.get("ts") or ""))))
+    docs = list(map(action_doc, sorted(actions, key=lambda r: str(r.get("ts") or ""))))
     holds = [
         ApprovalHold(
             initiative=str(a["initiative"]), repo=str(a.get("repo") or ""), task_id=str(a["id"]),
@@ -150,14 +150,14 @@ def _waiting_step(reported: Mapping[str, str], doc: Row) -> dict[str, str]:
 def waiting_reported_from_actions(actions: Sequence[Row]) -> dict[str, str]:
     """Initiative to `<phase>|<quarantined>|<awaiting_land>` of its newest waiting row, until a later launch of it."""
     ordered = sorted(actions, key=lambda r: str(r.get("ts") or ""))
-    return reduce(_waiting_step, map(_action_doc, ordered), {})
+    return reduce(_waiting_step, map(action_doc, ordered), {})
 
 
 def pull_age_s(actions: Sequence[Row], now: datetime) -> float | None:
     """Seconds from the newest `pull` row's `ts` to `now`; None when no row is a `pull` with a parseable `ts`."""
     stamps = [
         at
-        for doc in map(_action_doc, actions)
+        for doc in map(action_doc, actions)
         if doc.get("kind") == "pull"
         if (at := _parsed_ts(doc.get("ts"), now)) is not None
     ]
@@ -185,7 +185,7 @@ def windowed_actions(load: Callable[[datetime], Sequence[Row]], now: datetime) -
 
 def decompose_stalled_keys(actions: Sequence[Row]) -> list[str]:
     """`<initiative>|<run>` of each decompose_stalled needs_chair row, in row order."""
-    docs = [_action_doc(row) for row in actions]
+    docs = [action_doc(row) for row in actions]
     return [
         f"{d['initiative']}|{d['run']}"
         for d in docs
@@ -213,7 +213,7 @@ def _miss_step(misses: Mapping[str, DecomposeMiss], doc: Row) -> dict[str, Decom
 
 def decompose_miss_facts(actions: Sequence[Row]) -> dict[str, DecomposeMiss]:
     """Intake path to its run of launches that found no idea file, oldest row first; a done launch of the path ends it."""
-    ordered = sorted(map(_action_doc, actions), key=lambda d: str(d.get("ts") or ""))
+    ordered = sorted(map(action_doc, actions), key=lambda d: str(d.get("ts") or ""))
     return reduce(_miss_step, ordered, {})
 
 
@@ -238,7 +238,7 @@ def decompose_miss_fact_keys(
 
 def decompose_misses_reported_keys(actions: Sequence[Row]) -> list[str]:
     """`<intake path>|<fingerprint>` of each decompose_missing_idea needs_chair row, in row order."""
-    docs = [_action_doc(row) for row in actions]
+    docs = [action_doc(row) for row in actions]
     return [
         f"{d['intake']}|{d.get('fingerprint', '')}"
         for d in docs
@@ -248,7 +248,7 @@ def decompose_misses_reported_keys(actions: Sequence[Row]) -> list[str]:
 
 def held_file_keys(actions: Sequence[Row]) -> list[str]:
     """`<path>|<blob>` of each held_file needs_chair row, in row order."""
-    docs = [_action_doc(row) for row in actions]
+    docs = [action_doc(row) for row in actions]
     return [
         f"{d['path']}|{d.get('blob', '')}"
         for d in docs
@@ -265,7 +265,7 @@ def _settled_stale_draft(doc: Row) -> bool:
 
 def stale_draft_keys(actions: Sequence[Row]) -> list[str]:
     """`chair_plan_stale.draft_key` of each settled stale_to_draft row (`_settled_stale_draft`), in row order."""
-    docs = [_action_doc(row) for row in actions]
+    docs = [action_doc(row) for row in actions]
     return [
         f"{d['initiative']}|{','.join(sorted(str(t) for t in d.get('stale_tasks') or []))}"
         for d in docs
@@ -275,7 +275,7 @@ def stale_draft_keys(actions: Sequence[Row]) -> list[str]:
 
 def stale_checkout_keys(actions: Sequence[Row]) -> list[str]:
     """`<host>|<repo>` of each stale_checkout needs_chair row, in row order."""
-    docs = [_action_doc(row) for row in actions]
+    docs = [action_doc(row) for row in actions]
     return [
         f"{d['host']}|{d['repo']}"
         for d in docs
@@ -311,7 +311,7 @@ _LOOP_RUNS = re.compile(r"runs (\S+) and (\S+) were both quarantined")
 
 def relaunch_loop_keys(actions: Sequence[Row]) -> list[str]:
     """`<run1>|<run2>` of each relaunch_loop needs_chair row, in row order; the row names both runs only in its reason."""
-    docs = [_action_doc(row) for row in actions]
+    docs = [action_doc(row) for row in actions]
     matches = [
         _LOOP_RUNS.search(str(d.get("reason") or ""))
         for d in docs
@@ -340,7 +340,7 @@ def land_refusals_from_actions(
     actions: Sequence[Row], now: datetime | None = None, horizon: timedelta = LAND_REFUSAL_HORIZON
 ) -> list[LandRefusal]:
     """Per (initiative, phase, run), the refused, failed or not_landed land_phase or partial_land rows after its last landed row and inside (now - horizon, now]; a key with none is left out. With no `now` the horizon is not applied."""
-    docs = sorted((_action_doc(row) for row in actions), key=lambda d: str(d.get("ts") or ""))
+    docs = sorted((action_doc(row) for row in actions), key=lambda d: str(d.get("ts") or ""))
     lands = [d for d in docs if d.get("kind") in ("land_phase", "partial_land") and d.get("initiative") and d.get("phase") and d.get("run")]
     keys = dict.fromkeys((d["initiative"], d["phase"], d["run"]) for d in lands)
 
@@ -381,7 +381,7 @@ def _fail_step(state: Mapping[tuple[str, str], _FailState], doc: Row) -> dict[tu
 
 def land_fail_streaks_from_actions(actions: Sequence[Row]) -> list[LandFailStreak]:
     """Per (initiative, phase), the newest failed land_phase or merge_level reason and the distinct ticks it ran unbroken; a landed row drops the entry."""
-    docs = map(_action_doc, sorted(actions, key=lambda r: str(r.get("ts") or "")))
+    docs = map(action_doc, sorted(actions, key=lambda r: str(r.get("ts") or "")))
     rows = [d for d in docs if d.get("kind") in LAND_FAIL_KINDS and d.get("initiative") and d.get("phase")]
     state = reduce(_fail_step, rows, {})
     return [
@@ -403,7 +403,7 @@ def _no_run_step(task: Row, ticks: frozenset[str], doc: Row) -> frozenset[str]:
 
 def no_run_streaks_from_actions(approved: Sequence[Row], actions: Sequence[Row]) -> dict[str, int]:
     """Unmerged approved task id to the distinct ticks its initiative recorded a no_run needs_chair since the task's last landed or requeue_task row; none, no key."""
-    docs = list(map(_action_doc, sorted(actions, key=lambda r: str(r.get("ts") or ""))))
+    docs = list(map(action_doc, sorted(actions, key=lambda r: str(r.get("ts") or ""))))
     counts = {str(a["id"]): len(reduce(partial(_no_run_step, a), docs, frozenset())) for a in approved if not a.get("merged")}
     return {task_id: n for task_id, n in counts.items() if n > 0}
 
@@ -423,7 +423,7 @@ def launch_history_from_actions(
     """Per initiative, its done launch_epic and relaunch rows in the last hour and its quarantined runs, newest first.
 
     A run's `body` and `main_head` are "": no gathered fact carries a ticket body hash or the default-branch head."""
-    docs = [_action_doc(row) for row in actions]
+    docs = [action_doc(row) for row in actions]
     launches = [
         {"at": str(d["ts"]), "kind": d["kind"], "initiative": d.get("initiative") or d.get("target")}
         for d in docs
@@ -436,7 +436,7 @@ def launch_history_from_actions(
     initiatives = sorted({x["initiative"] for x in launches} | {i for i, _ in quarantined})
 
     def runs_of(initiative: str) -> list[RunRecord]:
-        own = sorted((r for i, r in quarantined if i == initiative), key=_run_number, reverse=True)
+        own = sorted((r for i, r in quarantined if i == initiative), key=run_ordinal, reverse=True)
         return [
             {"run_id": r, "quarantined": True, "reason": quarantined[(initiative, r)].get("reason", ""), "body": "", "main_head": ""}
             for r in own
@@ -455,7 +455,7 @@ def lease_refusals_from_actions(actions: Sequence[Row], now: datetime) -> dict[s
     launches = sorted(
         (
             d
-            for d in map(_action_doc, actions)
+            for d in map(action_doc, actions)
             if d.get("kind") in ("launch_epic", "relaunch")
             and (d.get("initiative") or d.get("target"))
             and _launched_within_window(d.get("ts"), now)
@@ -490,12 +490,12 @@ def decompose_streak_facts(
 
 def read_ticket_items(ws: Path, mode: str) -> list[dict]:
     """Edge. Every ticket under `ws/work`, parsed as the docket reader parses it, its state from the store in "store" mode."""
-    return chair_read_docket._work_items(ws, mode)
+    return chair_read_docket.docket_work_items(ws, mode)
 
 
 def read_initiative_repos(ws: Path, home: str) -> dict[str, str]:
     """Edge. Initiative id to the `repo:` in `work/<initiative>/initiative.md` expanded under `home`; an unreadable file or no `repo:` is left out."""
-    texts = {p.parent.name: chair_read_docket._text(p) for p in sorted((ws / "work").glob("*/initiative.md"))}
+    texts = {p.parent.name: chair_read_docket.docket_text(p) for p in sorted((ws / "work").glob("*/initiative.md"))}
     fields = {name: route.parse_frontmatter(text)[0] for name, text in texts.items() if text is not None}
     return {name: repo_path.expand(f["repo"], home) for name, f in fields.items() if isinstance(f.get("repo"), str) and f["repo"]}
 
@@ -625,13 +625,13 @@ def alive_decompose_runs(
 
     Not `epic.run_live`: it returns the lease verdict whenever a lease row exists, so an ended run whose process is
     still writing would read as dead. A missing or unreadable pid file is not alive; so is an empty `runs_dir`."""
-    from agent_tools.chair_read_lost import _pid_alive  # lazy: chair_read_lost imports this module
+    from agent_tools.chair_read_lost import pid_alive  # lazy: chair_read_lost imports this module
 
     return {
         run
         for initiative, run in decomposed.items()
         if pid_probe.get(initiative, {}).get("alive")
-        or (bool(runs_dir) and _pid_alive(Path(runs_dir) / f"{run}.pid"))
+        or (bool(runs_dir) and pid_alive(Path(runs_dir) / f"{run}.pid"))
     }
 
 
@@ -1078,7 +1078,7 @@ def gather_facts(
     ready_ids = {i["id"]: {t["id"] for t in i["ready_tasks"]} for i in ready}
     problems = dag_problems(items) if deps.tickets is not None else {}
     live_phase_pairs = [(p[0], p[1]) for p in deps.live_phases()] if deps.live_phases is not None else []
-    leased = {(r["initiative"], r["task_id"]) for r in rows if r["kind"] == "task" and chair_read_docket._claimed(r, now_iso)}
+    leased = {(r["initiative"], r["task_id"]) for r in rows if r["kind"] == "task" and chair_read_docket.is_claimed(r, now_iso)}
     initiatives = [
         cast(InitiativeFacts, {**i, "dag_problem": problems[i["id"]]}) if i["id"] in problems else i
         for i in initiative_facts(
@@ -1251,12 +1251,12 @@ def gather_facts(
         "idle_stall": deps.idle_stall(now),
         "stall_alarm": stall_facts(
             resolve_settings(deps.stall_alarm() if deps.stall_alarm is not None else None),
-            landing_records, [_action_doc(row) for row in action_rows],
+            landing_records, [action_doc(row) for row in action_rows],
         ),
         "tuning": tuning_facts(
             *deps.tuning(now),
             weekly_fraction(weekly),
-            pacing._elapsed_fraction(weekly, now) if weekly is not None else 0.0,
+            pacing.window_elapsed_fraction(weekly, now) if weekly is not None else 0.0,
             current_lanes(dispatch), dict(deps.lane_bounds()),
         ),
         "landed_main": landed_main_facts(list(deps.land_watches()), deps.read_main_ci, deps.land_hold(), deps.green_since),

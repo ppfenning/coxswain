@@ -7,13 +7,13 @@ from typing import Any, TypedDict
 
 from agent_tools import route, run_store
 from agent_tools.chair_facts import docket_by_land_at, empty_decompose_facts
-from agent_tools.chair_read_docket import _busy_lanes, local_runs, read_docket
+from agent_tools.chair_read_docket import busy_lane_count, local_runs, read_docket
 from agent_tools.chair_read_intake import read_intake
 from agent_tools.chair_read_live import read_live_initiatives
 from agent_tools.chair_read_quarantined import WorkFiles, initiative_files, read_work_items
 from agent_tools.chair_read_stale import read_chair_actions
 from agent_tools.chair_types import BlockedReady
-from agent_tools.draft_state import _is_draft
+from agent_tools.draft_state import is_draft
 from core.landing import DEFAULT_LAND_AT, need_met
 
 Item = Mapping[str, Any]
@@ -59,7 +59,7 @@ def last_progress_at(last_launch: str | None, last_land: str | None, node_calls:
 
 def stub_candidates(initiative_texts: Mapping[str, str]) -> list[str]:
     """Initiative ids with an `initiative.md`, less drafts: a draft has no tasks by design until approved."""
-    return sorted(i for i, text in initiative_texts.items() if not _is_draft(text))
+    return sorted(i for i, text in initiative_texts.items() if not is_draft(text))
 
 
 def stored_initiatives(rows: Sequence[Item]) -> list[str]:
@@ -182,7 +182,7 @@ def read_idle_backlog(
             "docket": _safe(
                 lambda: (
                     read_docket(ws, mode, max_in_flight, lambda: now, files, store_rows) if land_at is None
-                    else docket_by_land_at(work, _busy_lanes(runs_dir, now_text), max_in_flight, land_at)
+                    else docket_by_land_at(work, busy_lane_count(runs_dir, now_text), max_in_flight, land_at)
                 ),
                 None,
             ),

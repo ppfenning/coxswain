@@ -67,7 +67,7 @@ class LandHandle[T]:
     def wait(self, timeout: float | None = None) -> bool:
         return self._done.wait(timeout)
 
-    def _finish(self, result: LandResult[T]) -> None:
+    def finish(self, result: LandResult[T]) -> None:
         self._result = result
         self._done.set()
 
@@ -146,9 +146,9 @@ class LandWorker:
         return land, handle
 
     def _land_loop(self, repo: str, land: Land, handle: LandHandle) -> None:
-        handle._finish(self._execute(land))
+        handle.finish(self._execute(land))
         for queued_land, queued_handle in iter(lambda: self._next_queued(repo), None):
-            queued_handle._finish(self._execute(queued_land))
+            queued_handle.finish(self._execute(queued_land))
 
     def _next_queued(self, repo: str) -> tuple[Land, LandHandle] | None:
         with self._mutex:
@@ -181,7 +181,7 @@ class LandWorker:
             queued = tuple(handle for queue in self._queues.values() for _, handle in queue)
             self._queues = {}
         for handle in queued:
-            handle._finish(LandResult(None, LandRefused("chair stopped"), None))
+            handle.finish(LandResult(None, LandRefused("chair stopped"), None))
 
     def _beat_loop(self) -> None:
         last: float | None = None

@@ -274,7 +274,7 @@ def live(record: Mapping[str, Any]) -> bool:
     return record.get("state") != "landed" and record.get("land_at") not in ("task", "epic")
 
 
-def _repo(ports: Ports, record: Mapping[str, Any]) -> Path:
+def ports_repo(ports: Ports, record: Mapping[str, Any]) -> Path:
     found = ports.repo(record) if ports.repo is not None else Path(str(record.get("repo") or "")).expanduser()
     if not str(found).strip(".") or not found.is_absolute():
         # Never the current directory: an empty path would run git in whatever checkout the process happens to be in.
@@ -282,7 +282,7 @@ def _repo(ports: Ports, record: Mapping[str, Any]) -> Path:
     return found
 
 
-def _parent_ref(repo: Path, parent: str) -> str:
+def parent_ref_of(repo: Path, parent: str) -> str:
     """The parent as it stands on origin after a fetch, else the local branch (a repo with no origin)."""
     lg.git(repo, "fetch", "--quiet", "origin", parent)
     return f"origin/{parent}" if lg.rev(repo, f"refs/remotes/origin/{parent}") else parent
@@ -303,7 +303,7 @@ def merge_phase(ports: Ports, initiative: str, phase: str) -> Outcome:
     record = ls.get_record(ports.conn, initiative)
     if record is None:
         return Outcome("skipped", ident, f"{initiative} has no landing record")
-    repo, tasks = _repo(ports, record), ports.tasks(initiative)
+    repo, tasks = ports_repo(ports, record), ports.tasks(initiative)
     # The phase was built on another host as often as not: its branch, and the initiative's, come from origin first.
     diverged = ports.fetch(repo, ops.phase_branch(initiative, phase))
     if diverged:
@@ -340,7 +340,7 @@ def _send_back(ports: Ports, record: Mapping[str, Any], phase: str, done: ops.Ph
     The conflicted merge is committed on the phase branch first, markers and all: a builder returns a patch, so the
     conflict has to be in the tree it starts from, and everything the phase already built stays where it is."""
     initiative, branch = str(record["initiative"]), str(record["branch"])
-    repo = _repo(ports, record)
+    repo = ports_repo(ports, record)
     if done.cause == "guard":
         ports.notify("needs_chair", {"initiative": initiative, "phase": phase, "reason": done.detail})
         return [f"phase {phase} of {initiative}: {done.detail}"]
@@ -434,7 +434,7 @@ def land_initiative(ports: Ports, initiative: str, *, merge: bool = True, refres
         return close("done", f"{initiative} already landed", _finish_landed(ports, record, tasks, None))
     if state not in ("assembled", "pr_open"):
         return close("waiting", f"{initiative} is {state}, not assembled")
-    repo, branch, parent = _repo(ports, record), str(record["branch"]), str(record["parent"])
+    repo, branch, parent = ports_repo(ports, record), str(record["branch"]), str(record["parent"])
     meta = ports.meta(initiative)
     events: list[str] = list(stack_events)
     auto = str(meta.get("gate") or "full") == "full"
@@ -443,7 +443,7 @@ def land_initiative(ports: Ports, initiative: str, *, merge: bool = True, refres
     # An open pull request the lander itself will merge is refreshed when its parent has moved under it. One that
     # waits for a person is left as that person last saw it.
     behind = (auto and refresh_when_behind and not merged
-              and (lg.ahead_behind(repo, branch, _parent_ref(repo, parent)) or (0, 0))[1] > 0)
+              and (lg.ahead_behind(repo, branch, parent_ref_of(repo, parent)) or (0, 0))[1] > 0)
     if not merged and (state == "assembled" or not (record.get("pr") or {}).get("url") or behind):
         opened = _open_pr(ports, record, tasks, meta, repo, branch, parent)
         if isinstance(opened, Outcome):
@@ -537,7 +537,7 @@ def _restack(ports: Ports, record: lr.LandingRecord) -> tuple[lr.LandingRecord, 
     ls.put_record(ports.conn, updated)
     events = [f"{initiative}: {below['initiative']} landed; its parent is now {new_parent}"]
     if (record.get("pr") or {}).get("url"):
-        ok, why = ports.forge.retarget(_repo(ports, record), str(record["branch"]), new_parent)
+        ok, why = ports.forge.retarget(ports_repo(ports, record), str(record["branch"]), new_parent)
         events.append(f"{initiative}: pull request retargeted to {new_parent}" if ok
                       else f"{initiative}: pull request not retargeted to {new_parent}: {why}")
     return updated, events, None
@@ -560,7 +560,7 @@ def land_epics(ports: Ports) -> list[str]:
         branch, parent = meta.get("epic_branch"), meta.get("epic_parent")
         if not meta.get("epic_stack") or not branch or not parent:
             continue
-        repo = _repo(ports, members[0])
+        repo = ports_repo(ports, members[0])
         title = str(meta.get("epic_title") or epic)
         body = "\n".join([title, "", *(f"- {m['initiative']}: {m.get('landed_pr') or ''}".rstrip() for m in members), ""])
         ok, url = ports.forge.open_pr(repo, title, body, head=str(branch), base=str(parent))
@@ -581,7 +581,7 @@ def _open_pr(ports: Ports, record: lr.LandingRecord, tasks: Sequence[Mapping[str
     """Refresh onto the parent, run the gate checks, push, and open the one pull request (or find the one already open)."""
     initiative, ident = str(record["initiative"]), ls.item_id(ls.INITIATIVE_LAND, str(record["initiative"]))
     recorded = lr.recorded_shas(record)
-    refreshed = ops.take_parent_forward(ports.conn, repo, initiative=initiative, parent_ref=_parent_ref(repo, parent),
+    refreshed = ops.take_parent_forward(ports.conn, repo, initiative=initiative, parent_ref=parent_ref_of(repo, parent),
                                         worker=ports.worker, now=ports.now(), fetch=lambda b: ports.fetch(repo, b))
     if refreshed.status == "conflict":
         return Outcome("failed", ident, f"merging {parent} into {branch} conflicted in {', '.join(refreshed.paths)}",
@@ -627,7 +627,7 @@ def _send_back_initiative(ports: Ports, record: Mapping[str, Any], cause: str, d
     The `integrate` branch is cut from the initiative tip, so it holds every merged phase; for a conflict the
     conflicted merge of the parent is committed on it first. Nothing already merged is rebuilt."""
     initiative, branch, parent = str(record["initiative"]), str(record["branch"]), str(record["parent"])
-    repo, phase = _repo(ports, record), lr.INTEGRATE_PHASE
+    repo, phase = ports_repo(ports, record), lr.INTEGRATE_PHASE
     integrate = ops.phase_branch(initiative, phase)
     tip, _, why = lg.ensure_branch(repo, integrate, branch)
     if tip is None:
@@ -635,7 +635,7 @@ def _send_back_initiative(ports: Ports, record: Mapping[str, Any], cause: str, d
         return [f"{initiative}: could not cut {integrate}: {why}"]
     lg.merge_into(repo, branch=integrate, source=branch, message=f"{initiative}: bring {integrate} up to {branch}")
     if cause == "conflict":
-        marked = lg.conflict_commit(repo, branch=integrate, source=_parent_ref(repo, parent),
+        marked = lg.conflict_commit(repo, branch=integrate, source=parent_ref_of(repo, parent),
                                     message=f"{initiative}: merge {parent} into {integrate} (conflicted, to rectify)")
         if marked.status == "error":
             ports.notify("needs_chair", {"initiative": initiative, "reason": marked.detail})
@@ -683,7 +683,7 @@ def _finish_landed(ports: Ports, record: Mapping[str, Any], tasks: Sequence[Mapp
 
 def _clean(ports: Ports, record: Mapping[str, Any]) -> list[str]:
     """Delete the landed initiative's branches, here and on origin. Only ever called after the forge says it merged."""
-    initiative, repo = str(record["initiative"]), _repo(ports, record)
+    initiative, repo = str(record["initiative"]), ports_repo(ports, record)
     ok, listed = lg.git(repo, "for-each-ref", "--format=%(refname:short)", f"refs/heads/epic/{initiative}/")
     phases = [b for b in listed.splitlines() if b] if ok else []
     landed_tip = lg.rev(repo, f"refs/heads/{record['branch']}")
@@ -876,8 +876,8 @@ def land_batch(ports: Ports, items: Sequence[Mapping[str, Any]]) -> list[Outcome
     if len(prepared) < 2:
         return [*outcomes, *(land_initiative(ports, str(i["initiative"])) for i in prepared)]
     records = [ls.get_record(ports.conn, str(i["initiative"])) or {} for i in prepared]
-    repo, parent = _repo(ports, records[0]), str(records[0].get("parent") or "")
-    passed, why = _check_together(ports, repo, _parent_ref(repo, parent), [str(r["branch"]) for r in records])
+    repo, parent = ports_repo(ports, records[0]), str(records[0].get("parent") or "")
+    passed, why = _check_together(ports, repo, parent_ref_of(repo, parent), [str(r["branch"]) for r in records])
     if not passed:
         first = land_initiative(ports, str(prepared[0]["initiative"]))
         note = f"batch of {len(prepared)} on {parent} does not pass together ({why.splitlines()[0] if why else 'checks failed'}); landing one at a time"
@@ -896,11 +896,11 @@ def _land_paths(ports: Ports, items: Sequence[Mapping[str, Any]]) -> dict[str, f
     for item in items:
         record = ls.get_record(ports.conn, str(item["initiative"]))
         try:
-            repo = _repo(ports, record) if record else None
+            repo = ports_repo(ports, record) if record else None
         except LookupError:
             repo = None
         found[str(item["id"])] = (
-            changed_paths(repo, str(record["branch"]), _parent_ref(repo, str(record.get("parent") or "")))
+            changed_paths(repo, str(record["branch"]), parent_ref_of(repo, str(record.get("parent") or "")))
             if record and repo is not None else None
         )
     return found
@@ -1029,7 +1029,7 @@ def reconcile(ports: Ports, initiative: str) -> list[str]:
     if record is None or not live(record) or not merged_entries(record) or not published(record):
         return []
     try:
-        repo = _repo(ports, record)
+        repo = ports_repo(ports, record)
     except LookupError:
         return []
     lease = store_lease.acquire(ports.conn, ops.branch_lease(initiative), ports.worker, ports.now(), ops.CLAIM_SECONDS)
@@ -1066,7 +1066,7 @@ def plan_pass(ports: Ports) -> list[Lane]:
     where: dict[str, str] = {}
     for record in records:
         try:
-            where[str(record["initiative"])] = str(_repo(ports, record))
+            where[str(record["initiative"])] = str(ports_repo(ports, record))
         except LookupError:
             continue
     return lanes(records, ls.claimable(ls.list_items(ports.conn), ports.now()), where)

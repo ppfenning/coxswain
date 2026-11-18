@@ -44,7 +44,6 @@ from agent_tools.route_profile import _SPEND_KEYS as _SPEND_KEYS
 from agent_tools.route_profile import _SPEND_TEXT_KEYS as _SPEND_TEXT_KEYS
 from agent_tools.route_profile import ProfileError as ProfileError
 from agent_tools.route_profile import RepoRefused as RepoRefused
-from agent_tools.route_profile import _yaml_scalar as _yaml_scalar
 from agent_tools.route_profile import harness_argv as harness_argv
 from agent_tools.route_profile import initiative_files as initiative_files
 from agent_tools.route_profile import intake_file as intake_file
@@ -58,6 +57,7 @@ from agent_tools.route_profile import review_argv as review_argv
 from agent_tools.route_profile import slugify as slugify
 from agent_tools.route_profile import surface_candidates as surface_candidates
 from agent_tools.route_profile import unknown_keys as unknown_keys
+from agent_tools.route_profile import yaml_scalar as yaml_scalar
 from agent_tools.route_status import DEFAULT_LAND_AT as DEFAULT_LAND_AT
 from agent_tools.route_status import FENCED_NOTE as FENCED_NOTE
 from agent_tools.route_status import TERMINAL as TERMINAL

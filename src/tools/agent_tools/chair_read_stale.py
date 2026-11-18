@@ -1,7 +1,7 @@
 """The `stale_candidates` reader: per-task file, run, chair-action and quarantine-cause history as `StaleCandidate` rows.
 
 Reuses `chair_read_quarantined.read_work_items` to list the board, `chair_read_attempts.read_attempts` and
-`chair_facts._key` for attempts matched exactly as `chair_facts.harness_failures` matches them, and
+`chair_facts.task_key` for attempts matched exactly as `chair_facts.harness_failures` matches them, and
 `chair_read_quarantined.attempts_on_current_body` for the current ticket version."""
 
 import subprocess
@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from agent_tools import run_store
-from agent_tools.chair_facts import HARNESS_CAUSE, LAUNCH_KINDS, Key, _key
+from agent_tools.chair_facts import HARNESS_CAUSE, LAUNCH_KINDS, Key, task_key
 from agent_tools.chair_read_attempts import read_attempts
 from agent_tools.chair_read_quarantined import WorkFiles, attempts_on_current_body, item_body, read_work_items
 from agent_tools.chair_revert_watch import RESOLVED_KIND, WATCH_KIND
@@ -34,12 +34,12 @@ def _iso(value: object) -> str:
 
 def last_run_at(attempts: Sequence[Row], key: Key) -> str | None:
     """The newest `ts` among the attempts `harness_failures` would count for `key`."""
-    return max((_iso(a["ts"]) for a in attempts if _key(a) == key and a.get("ts")), default=None)
+    return max((_iso(a["ts"]) for a in attempts if task_key(a) == key and a.get("ts")), default=None)
 
 
 def quarantine_non_harness_count(attempts: Sequence[Row], body: str, key: Key) -> int:
     """The complement of `harness_failures` for `key`, over the attempts made on the current `body` only."""
-    on_body = attempts_on_current_body([a for a in attempts if _key(a) == key], body)
+    on_body = attempts_on_current_body([a for a in attempts if task_key(a) == key], body)
     return sum(1 for a in on_body if a.get("cause") != HARNESS_CAUSE)
 
 
@@ -73,7 +73,7 @@ def actions_query(token: str, now: datetime | None, window_days: int = ACTIONS_W
         return "SELECT * FROM chair_actions", ()
     marks = ", ".join(["{p}"] * len(_KEPT_KINDS))
     cutoff = (now - timedelta(days=window_days)).date().isoformat()
-    return run_store._sql(f"SELECT * FROM chair_actions WHERE ts >= {{p}} OR kind IN ({marks})", token), (cutoff, *_KEPT_KINDS)
+    return run_store.sql_for(f"SELECT * FROM chair_actions WHERE ts >= {{p}} OR kind IN ({marks})", token), (cutoff, *_KEPT_KINDS)
 
 
 def read_chair_actions(runs_dir: Path, now: datetime | None = None, window_days: int = ACTIONS_WINDOW_DAYS) -> list[dict]:
@@ -82,7 +82,7 @@ def read_chair_actions(runs_dir: Path, now: datetime | None = None, window_days:
 
     A table with no `target` column raises: read as `[]` it would make every task look staler than it is."""
     try:
-        opened = run_store._open(runs_dir)
+        opened = run_store.open_store(runs_dir)
     except (*run_store._DB_ERRORS, RuntimeError):  # an unreachable Postgres, or psycopg not installed
         return []
     if opened is None:

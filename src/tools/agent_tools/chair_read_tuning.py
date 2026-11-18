@@ -173,12 +173,12 @@ def read_stats(stats_db: str, current: Mapping[str, str], now: datetime) -> list
 def read_last_tuned(runs_dir: Path) -> str | None:
     """Edge. None with no store, no `chair_actions` table or an unreadable store."""
     try:
-        opened = run_store._open(runs_dir)
+        opened = run_store.open_store(runs_dir)
         if opened is None:
             return None
         conn, token = opened
         try:
-            sql = run_store._sql("SELECT ts, kind FROM chair_actions WHERE kind IN ({p}, {p})", token)
+            sql = run_store.sql_for("SELECT ts, kind FROM chair_actions WHERE kind IN ({p}, {p})", token)
             rows = [dict(r) for r in conn.execute(sql, tuple(sorted(TUNING_KINDS))).fetchall()]
         finally:
             conn.close()

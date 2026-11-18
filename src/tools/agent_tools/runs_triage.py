@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from agent_tools import run_store
-from agent_tools.chair_facts import _action_doc, land_refusals_from_actions
+from agent_tools.chair_facts import action_doc, land_refusals_from_actions
 from agent_tools.chair_read_stale import read_chair_actions
 
 __all__ = [
@@ -298,7 +298,7 @@ def refusal_row(actions: Sequence[Mapping[str, Any]], initiative: str, phase: st
     last = max(mine, key=lambda r: _when(r["last_refused_at"]) or datetime.min.replace(tzinfo=UTC))
     refused = [
         d
-        for d in map(_action_doc, actions)
+        for d in map(action_doc, actions)
         if d.get("kind") in _LAND_KINDS
         and (d.get("initiative"), d.get("phase"), d.get("run")) == (initiative, phase, last["run"])
         and str(d.get("ts")) == last["last_refused_at"]
@@ -382,8 +382,8 @@ class StoreTriageReader:
 
     def _query(self, template: str, params: Sequence[Any]) -> list[dict[str, Any]]:
         try:
-            opened = run_store._open(self._runs_dir)
-        except (*run_store._db_errors(), RuntimeError):  # an unreachable Postgres, or psycopg not installed
+            opened = run_store.open_store(self._runs_dir)
+        except (*run_store.db_error_types(), RuntimeError):  # an unreachable Postgres, or psycopg not installed
             self.unreadable = True
             return []
         if opened is None:
@@ -391,8 +391,8 @@ class StoreTriageReader:
             return []
         conn, token = opened
         try:
-            return [dict(r) for r in conn.execute(run_store._sql(template, token), tuple(params)).fetchall()]
-        except run_store._db_errors():
+            return [dict(r) for r in conn.execute(run_store.sql_for(template, token), tuple(params)).fetchall()]
+        except run_store.db_error_types():
             self.unreadable = True
             return []
         finally:

@@ -33,7 +33,7 @@ from datetime import datetime
 
 from agent_tools.budget import MonthBudget
 
-__all__ = ["Assessment", "Policy", "WeeklyPace", "Window", "assess", "weekly_pace"]
+__all__ = ["Assessment", "Policy", "WeeklyPace", "Window", "assess", "weekly_pace", "window_elapsed_fraction"]
 
 WEEKLY_MIN_ELAPSED = 0.05
 # A burn-rate projection is held on only once this share of the window has elapsed.
@@ -98,7 +98,7 @@ class Assessment:
     month_projected_usd: float | None = None
 
 
-def _elapsed_fraction(window: Window, now: datetime) -> float:
+def window_elapsed_fraction(window: Window, now: datetime) -> float:
     span = (window.end - window.start).total_seconds()
     if span <= 0:
         return 1.0 if now >= window.end else 0.0
@@ -208,7 +208,7 @@ def weekly_pace(weekly: Window | None, policy: Policy, now: datetime) -> WeeklyP
     spent_fraction = _weekly_fraction(weekly)
     if weekly is None or spent_fraction is None:
         return _not_judged("no usable weekly window or ceiling; pace not judged")
-    elapsed = _elapsed_fraction(weekly, now)
+    elapsed = window_elapsed_fraction(weekly, now)
     target = policy.weekly_target_fraction * elapsed
     if elapsed < WEEKLY_MIN_ELAPSED:
         return _not_judged(f"week {elapsed:.0%} elapsed, under {WEEKLY_MIN_ELAPSED:.0%}; pace not judged", target)
@@ -286,7 +286,7 @@ def assess(window: Window, policy: Policy, now: datetime, weekly: Window | None 
 
 
 def _assess_windows(window: Window, policy: Policy, now: datetime, weekly: Window | None) -> Assessment:
-    elapsed_fraction = _elapsed_fraction(window, now)
+    elapsed_fraction = window_elapsed_fraction(window, now)
     weekly_fraction = _weekly_fraction(weekly)
     if weekly_fraction is not None and weekly_fraction >= policy.weekly_hard_stop_fraction:
         return _weekly_stop(window, policy, now, elapsed_fraction, weekly_fraction)

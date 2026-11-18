@@ -8,10 +8,10 @@ from agent_tools.chair_exec import (
     TIMED_OUT,
     Deps,
     _bounded_for_ssh,
-    _land,
-    _land_phase,
-    _recorded,
     local_timeout,
+    perform_land,
+    perform_land_phase,
+    recorded_action,
 )
 from agent_tools.remote_argv import LANE_HOST_TIMEOUT_S
 
@@ -74,14 +74,14 @@ def test_the_land_worker_turns_a_timeout_exception_into_a_failure_naming_the_com
     def run(argv):
         raise subprocess.TimeoutExpired(argv, LAND_TIMEOUT_S)
 
-    result = _land(LAND_ACTION, _deps(run), {})
+    result = perform_land(LAND_ACTION, _deps(run), {})
     assert result["status"] == "failed"
     assert result["reason"] == f"{' '.join(LAND_ARGV)}: timed out after 45 min"
-    assert "cox runs land r-1" in _recorded(result)["reason"]
+    assert "cox runs land r-1" in recorded_action(result)["reason"]
 
 
 def test_the_land_worker_turns_the_timed_out_exit_into_a_failure_not_a_needs_chair():
-    result = _land(LAND_ACTION, _deps(lambda argv: (TIMED_OUT, "cox: timed out after 2700.0s\n")), {})
+    result = perform_land(LAND_ACTION, _deps(lambda argv: (TIMED_OUT, "cox: timed out after 2700.0s\n")), {})
     assert result["status"] == "failed"
     assert "needs_chair" not in result
     assert "timed out after 45 min" in result["reason"]
@@ -89,6 +89,6 @@ def test_the_land_worker_turns_the_timed_out_exit_into_a_failure_not_a_needs_cha
 
 def test_a_phase_land_that_times_out_also_fails_naming_its_command():
     action = {"kind": "land_phase", "run": "r-1", "phase": "p1", "repo": "r"}
-    result = _land_phase(action, _deps(lambda argv: (TIMED_OUT, "")), {})
+    result = perform_land_phase(action, _deps(lambda argv: (TIMED_OUT, "")), {})
     assert result["status"] == "failed"
     assert "cox runs land r-1 --phase p1" in result["reason"]

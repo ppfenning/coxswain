@@ -293,7 +293,7 @@ def _sqlite_store(tmp_path, monkeypatch, rows):
 
     (tmp_path / "runs").mkdir(exist_ok=True)
     now = "2026-09-21T00:00:00Z"
-    conn = open_store(run_store._store_url(tmp_path / "runs"), now)
+    conn = open_store(run_store.store_url_for(tmp_path / "runs"), now)
     try:
         for run, task, record in rows:
             Store(conn).record_task_record(run, "p1", task, record, now)

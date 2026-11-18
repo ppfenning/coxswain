@@ -112,7 +112,7 @@ def _tolerant_cost_since(runs_dir, since: str, until: str | None = None) -> floa
     try:
         bounds = (since,) if until is None else (since, until)
         return run_store.cost_since(Path(runs_dir), *bounds)
-    except (*run_store._db_errors(), ValueError, TypeError, RuntimeError):  # RuntimeError: psycopg not installed
+    except (*run_store.db_error_types(), ValueError, TypeError, RuntimeError):  # RuntimeError: psycopg not installed
         return None
 
 

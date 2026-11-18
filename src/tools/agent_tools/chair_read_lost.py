@@ -97,7 +97,7 @@ def _text(path: Path) -> str | None:
         return None
 
 
-def _pid_alive(pidfile: Path) -> bool:
+def pid_alive(pidfile: Path) -> bool:
     """Edge. The pid itself answers, probed before any file is read. Not `epic.run_live`: it returns the lease verdict
     whenever a lease row exists, so for an expired lease it would never probe the pid."""
     pid = (_text(pidfile) or "").strip()
@@ -137,6 +137,6 @@ def read_lost_runs(runs_dir: Path, now: str) -> dict[str, str]:
     exited = {str(row.get("run_id") or ""): row_exited(row) for row in rows}
     leased = [{**row, "expires_at": _lease_expiry(runs_dir, str(row.get("run_id") or ""))} for row in rows]
     candidates = ghost_runs_of(leased, (), (), now).values()
-    live = {run for run in candidates if _pid_alive(runs_dir / f"{run}.pid")}
+    live = {run for run in candidates if pid_alive(runs_dir / f"{run}.pid")}
     unfetched = {run for run in candidates if _unfetched(runs_dir, run)}
     return lost_runs_of(run_store.live_lanes(runs_dir, now), stale, exited, now, rows=leased, live=live, unfetched=unfetched)

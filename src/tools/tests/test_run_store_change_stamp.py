@@ -31,8 +31,8 @@ class FakeConn:
 @pytest.fixture
 def stamp_of(monkeypatch):
     def run(conn, url=PG):
-        monkeypatch.setattr(run_store, "_store_url", lambda runs_dir: url)
-        monkeypatch.setattr(run_store, "_open", lambda runs_dir: None if conn is None else (conn, "%s"))
+        monkeypatch.setattr(run_store, "store_url_for", lambda runs_dir: url)
+        monkeypatch.setattr(run_store, "open_store", lambda runs_dir: None if conn is None else (conn, "%s"))
         return run_store.store_change_stamp("/runs")
 
     return run
@@ -72,8 +72,8 @@ def test_missing_psycopg_gives_none(monkeypatch):
     def no_psycopg(runs_dir):
         raise RuntimeError("psycopg is not installed")
 
-    monkeypatch.setattr(run_store, "_store_url", lambda runs_dir: PG)
-    monkeypatch.setattr(run_store, "_open", no_psycopg)
+    monkeypatch.setattr(run_store, "store_url_for", lambda runs_dir: PG)
+    monkeypatch.setattr(run_store, "open_store", no_psycopg)
     assert run_store.store_change_stamp("/runs") is None
 
 
@@ -81,7 +81,7 @@ def test_unreadable_store_config_gives_none(monkeypatch):
     def bad_config(runs_dir):
         raise ValueError("malformed provider profile")
 
-    monkeypatch.setattr(run_store, "_store_url", bad_config)
+    monkeypatch.setattr(run_store, "store_url_for", bad_config)
     assert run_store.store_change_stamp("/runs") is None
 
 

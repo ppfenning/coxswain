@@ -35,7 +35,7 @@ from agent_tools import (
 )
 from agent_tools.chair_carry_exec import ForgePort, GitPort, StorePort
 from agent_tools.chair_phase_quarantine import Quarantined
-from agent_tools.chair_read_land_conflicts import _rev_parse as rev_parse
+from agent_tools.chair_read_land_conflicts import rev_parse_commit as rev_parse
 from agent_tools.chair_rebase_exec import RebasePort
 from agent_tools.chair_revert_exec import ForgePort as RevertForgePort
 from agent_tools.chair_revert_exec import GitPort as RevertGitPort
@@ -192,7 +192,7 @@ def target_for(
     return resolved_target(cartridge_target, epic_branch, initiative_branch)
 
 
-def _target_of(deps: Deps, initiative: str) -> str | None:
+def target_branch_of(deps: Deps, initiative: str) -> str | None:
     """The branch `initiative` lands on, or None for the repo default. A caller's stub with no `target_branch` has none."""
     read = getattr(deps, "target_branch", None)
     return read(initiative) if read is not None and initiative else None
@@ -213,8 +213,8 @@ def stagger_seconds(value: object) -> float:
     return seconds if math.isfinite(seconds) and seconds >= 0 else DEFAULT_LAUNCH_STAGGER_S
 
 
-_UNFENCED = ("standby", "take_lease", "steer_clear", "waiting", "deferred", "unlaunched")  # not writes, so a stale or missing epoch does not stop them
-_LAND_KINDS = ("land", "land_phase", "partial_land")  # a partial_land is a run of task lands, blocked and escalated as one
+UNFENCED_KINDS = ("standby", "take_lease", "steer_clear", "waiting", "deferred", "unlaunched")  # not writes, so a stale or missing epoch does not stop them
+LAND_ACTION_KINDS = ("land", "land_phase", "partial_land")  # a partial_land is a run of task lands, blocked and escalated as one
 _REASON_CAP = 600
 LOCAL_ARGV_TIMEOUT_S = 900.0  # a local argv with no bound of its own; matches _CHECK_COMMAND_TIMEOUT_S
 LAND_TIMEOUT_S = 45 * 60.0  # the overall bound on one `cox runs land`; it outlives the checks it runs
@@ -288,17 +288,17 @@ def land_refusal(action: Action, code: int, output: str) -> Action | None:
         cause = "land"
     return {
         "kind": ActionKind.NEEDS_CHAIR, "initiative": action.get("initiative", ""), "task_id": action.get("task_id", ""),
-        "cause": cause, "epoch": action.get("epoch", 0), **_phase_of(action),
+        "cause": cause, "epoch": action.get("epoch", 0), **phase_action(action),
     }
 
 
-def _phase_of(action: Action) -> Action:
+def phase_action(action: Action) -> Action:
     """`{"phase": ...}` for a land_phase, which carries no task_id, so its needs_chair still names what failed; else empty."""
     phase = action.get("phase", "")
     return {"phase": phase} if phase else {}
 
 
-def _land_subject(action: Action) -> str:
+def land_subject(action: Action) -> str:
     """The task a land names, else `phase <phase>` for a land_phase; the name a skip or escalation reason quotes."""
     task, phase = action.get("task_id", ""), action.get("phase", "")
     return task if task else (f"phase {phase}" if phase else "")
@@ -404,21 +404,21 @@ def argv_for(action: Action, initiative_id: str = "", ids_mode: str = "slug", la
     return None
 
 
-def _result(action: Action, status: Status, reason: str = "") -> Result:
+def make_result(action: Action, status: Status, reason: str = "") -> Result:
     return {"action": action, "status": status, "reason": reason}
 
 
-def _recorded(result: Result) -> Action:
+def recorded_action(result: Result) -> Action:
     """The action with its outcome attached; the reason keeps its last 600 characters, where a traceback's failing frame is."""
     return {**result["action"], "status": result["status"], "reason": tail(result["reason"], _REASON_CAP)}  # type: ignore[typeddict-item]
 
 
 def _land_result(action: Action, repo: str, code: int, output: str) -> Result:
-    """Same as `_result(action, "landed"/"not_landed", output)`, but a true `landed()` also carries the repo's
+    """Same as `make_result(action, "landed"/"not_landed", output)`, but a true `landed()` also carries the repo's
     new origin/main commit from `land_commit`, run right after so nothing else has moved origin/main yet."""
     if not landed(code, output):
-        return _result(action, "not_landed", output)
-    return {**_result(action, "landed", output), "commit": land_commit(repo)}
+        return make_result(action, "not_landed", output)
+    return {**make_result(action, "landed", output), "commit": land_commit(repo)}
 
 
 def _run_land(deps: Deps, argv: list[str]) -> tuple[int, str]:
@@ -431,7 +431,7 @@ def _run_land(deps: Deps, argv: list[str]) -> tuple[int, str]:
 
 def _land_timed_out(action: Action, argv: list[str]) -> Result:
     """The failure a land records when `cox runs land` outlives LAND_TIMEOUT_S; the reason names the command and the bound."""
-    return _result(action, "failed", f"{' '.join(argv)}: timed out after {int(LAND_TIMEOUT_S // 60)} min")
+    return make_result(action, "failed", f"{' '.join(argv)}: timed out after {int(LAND_TIMEOUT_S // 60)} min")
 
 
 def runs_as_process(action: Action) -> bool:
@@ -448,9 +448,9 @@ def land_command(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> tup
     argv = argv_for(action, label=deps.label)
     if argv is None:
         need = "land_phase needs a run id, a phase and a repo" if phase else "land needs a run id, a task_id and a repo"
-        return _result(action, "refused", need)
+        return make_result(action, "refused", need)
     if repo in blocked:
-        return _result(action, "skipped", f"an earlier land in {repo} ({blocked[repo].label}) was not counted")
+        return make_result(action, "skipped", f"an earlier land in {repo} ({blocked[repo].label}) was not counted")
     return (_with_head(action, deps, repo) if phase else action), argv
 
 
@@ -461,7 +461,7 @@ def land_outcome(action: Action, deps: Deps, code: int, output: str) -> Result:
         return _land_timed_out(action, argv)
     # Busy first: a repo-lease refusal exits non-zero like every other refusal, so `land_refusal` would escalate it.
     if _repo_busy(output):
-        return _result(action, "busy", output)
+        return make_result(action, "busy", output)
     if action.get("kind") == "land_phase":
         gone = _already_landed_result(action, deps, output)
         if gone is not None:
@@ -470,11 +470,11 @@ def land_outcome(action: Action, deps: Deps, code: int, output: str) -> Result:
     if refusal is not None:
         return {"action": action, "status": "refused", "reason": output, "needs_chair": refusal}
     if action.get("kind") == "land_phase" and note_only_land(code, output):
-        return _result(action, "deferred", output.strip())
+        return make_result(action, "deferred", output.strip())
     return _land_result(action, action.get("repo", ""), code, output)
 
 
-def _land(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
+def perform_land(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
     command = land_command(action, deps, blocked)
     if not isinstance(command, tuple):
         return command
@@ -483,20 +483,20 @@ def _land(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
     return land_outcome(action, deps, code, output)
 
 
-def _land_async(action: Action, deps: Deps, sink: LandSink) -> Result:
+def perform_land_async(action: Action, deps: Deps, sink: LandSink) -> Result:
     """Hand the land to the sink and return at once; a repo already at its land limit is left alone.
 
     A sink with `start` runs a `land` or a `land_phase` without task_runs as its own process; any other land goes to `submit`."""
     repo = action.get("repo", "")
     if sink.full(repo):
-        return _result(action, "in_progress", f"a land in {repo} is still running")
+        return make_result(action, "in_progress", f"a land in {repo} is still running")
     if hasattr(sink, "start") and runs_as_process(action):
         command = land_command(action, deps, {})
         if not isinstance(command, tuple):
             return command
         started, argv = command
         return sink.start(started, argv)
-    land = {"land": _land, "partial_land": _partial_land}.get(action.get("kind", ""), _land_phase)
+    land = {"land": perform_land, "partial_land": perform_partial_phase}.get(action.get("kind", ""), perform_land_phase)
     return sink.submit(action, lambda: land(action, deps, {}))
 
 
@@ -518,7 +518,7 @@ def _swept_branches(deps: Deps, repo: str, pattern: str, carry: set[str]) -> tup
     return deleted, "".join(out for _, (c, out) in outcomes if c != 0)
 
 
-def _over_ssh(deps: Deps, ssh: str) -> Deps:
+def over_ssh(deps: Deps, ssh: str) -> Deps:
     """`deps` with its git door, and the sweep built on it, running on the host at `ssh` instead of here."""
     def run(argv: list[str]) -> tuple[int, str]:
         return deps.run(ssh_argv(ssh, argv))
@@ -531,7 +531,7 @@ def _host_repo(deps: Deps, repo: str) -> str:
     return repo_path.host_form(repo, deps.home) if deps.home else repo
 
 
-def _local_repo(repo: str, home: str = "") -> str:
+def local_repo_path(repo: str, home: str = "") -> str:
     """`repo` as this machine names it, a leading tilde expanded; for argv that runs here, never on a lane host."""
     return repo_path.expand(repo, home or os.path.expanduser("~"))
 
@@ -576,7 +576,7 @@ def _branch_on_host(
 
     `host_repo` is `repo` as the host names it; "" means `repo`. Lines keep naming `repo`."""
     ref = f"refs/heads/{branch}"
-    here = _local_repo(repo, getattr(deps, "home", ""))  # `deps.run` is local; only `at_home` reaches the host
+    here = local_repo_path(repo, getattr(deps, "home", ""))  # `deps.run` is local; only `at_home` reaches the host
     verify = ["git", "-C", here, "rev-parse", "--verify", "--quiet", ref]
     on_host, host_out = at_home(["git", "-C", host_repo or repo, "rev-parse", "--verify", "--quiet", ref])
     if on_host == 124:
@@ -603,41 +603,41 @@ def _carry_forward(
     conflict stops the loop without failing the clear, any other failed git step fails it.
     """
     host = action.get("host", "")
-    at_home = _over_ssh(deps, ssh).run if ssh else deps.run
+    at_home = over_ssh(deps, ssh).run if ssh else deps.run
     # How `at_home` names the repo: the home-relative form on a host, the expanded path here; lines keep `repo`.
     # `getattr`: a caller may pass a bare stub with no `home`, and the expansion then uses this machine's HOME.
-    home_repo = _host_repo(deps, repo) if ssh else _local_repo(repo, getattr(deps, "home", ""))
+    home_repo = _host_repo(deps, repo) if ssh else local_repo_path(repo, getattr(deps, "home", ""))
     if ssh and phases:
         # The relaunch's own launch_on_host runs this same sync before starting the lane, so a host checkout that
         # is dirty or off main would fail that relaunch anyway; failing here says why one step earlier.
         code, out = at_home(sync_argv(home_repo))
         if code != 0:
-            return [], None, _result(action, "failed", f"updating {repo} on {host} before the carry: {out.strip()}")
+            return [], None, make_result(action, "failed", f"updating {repo} on {host} before the carry: {out.strip()}")
     merged: list[str] = []
     base = ""
     if phases:
         # Resolved in the host checkout after its fetch: `origin/<base>`, never a local branch that may be stale or absent.
         try:
-            base = base_branch.base_ref(home_repo, _target_of(deps, initiative), base_branch.configured_base(repo), at_home)
+            base = base_branch.base_ref(home_repo, target_branch_of(deps, initiative), base_branch.configured_base(repo), at_home)
         except (base_branch.BaseError, TargetUnreadable) as exc:
-            return [], None, _result(action, "failed", f"resolving the base to carry onto in {repo}{f' on {host}' if ssh else ''}: {exc}")
+            return [], None, make_result(action, "failed", f"resolving the base to carry onto in {repo}{f' on {host}' if ssh else ''}: {exc}")
     for phase in phases:
         branch = f"epic/{initiative}/{phase}"
         present, error = _branch_on_host(deps, at_home, ssh, repo, branch, home_repo) if ssh else (True, "")
         if error:
-            return merged, None, _result(action, "failed", error)
+            return merged, None, make_result(action, "failed", error)
         if not present:
             continue
         if ssh:
             code, out = at_home(["mktemp", "-d", "/tmp/cox-carry-XXXXXX"])
             tmp = out.strip().splitlines()[-1] if code == 0 and out.strip() else ""
             if not tmp:
-                return merged, None, _result(action, "failed", f"mktemp -d on {host}: {out.strip()}")
+                return merged, None, make_result(action, "failed", f"mktemp -d on {host}: {out.strip()}")
         else:
             tmp = tempfile.mkdtemp(prefix="cox-carry-")
         code, out = at_home(["git", "-C", home_repo, "worktree", "add", tmp, branch])
         if code != 0:
-            return merged, None, _result(action, "failed", f"git worktree add {tmp} {branch} in {repo}: {out.strip()}")
+            return merged, None, make_result(action, "failed", f"git worktree add {tmp} {branch} in {repo}: {out.strip()}")
         # The `-C tmp` calls below name a mkdtemp path on whichever machine `at_home` runs on: already absolute.
         code, out = at_home(["git", "-C", tmp, "merge", "--no-edit", base])
         if code != 0:
@@ -645,11 +645,11 @@ def _carry_forward(
             conflicted = [line for line in diff_out.splitlines() if line.strip()]
             if not conflicted:
                 at_home(["git", "-C", home_repo, "worktree", "remove", "--force", tmp])
-                return merged, None, _result(action, "failed", f"git merge --no-edit {base} in {tmp} ({branch}): {out.strip()}")
+                return merged, None, make_result(action, "failed", f"git merge --no-edit {base} in {tmp} ({branch}): {out.strip()}")
             at_home(["git", "-C", tmp, "merge", "--abort"])
             rcode, rout = at_home(["git", "-C", home_repo, "worktree", "remove", "--force", tmp])
             if rcode != 0:
-                return merged, None, _result(action, "failed", f"git worktree remove --force {tmp} in {repo}: {rout.strip()}")
+                return merged, None, make_result(action, "failed", f"git worktree remove --force {tmp} in {repo}: {rout.strip()}")
             needs_chair: Action = {
                 "kind": ActionKind.NEEDS_CHAIR, "initiative": initiative, "cause": "carry_conflict", "epoch": action.get("epoch", 0),
                 "reason": f"phase {phase} conflicts with {base}: {conflicted}",
@@ -657,7 +657,7 @@ def _carry_forward(
             return merged, needs_chair, None
         rcode, rout = at_home(["git", "-C", home_repo, "worktree", "remove", "--force", tmp])
         if rcode != 0:
-            return merged, None, _result(action, "failed", f"git worktree remove --force {tmp} in {repo}: {rout.strip()}")
+            return merged, None, make_result(action, "failed", f"git worktree remove --force {tmp} in {repo}: {rout.strip()}")
         merged.append(phase)
     return merged, None, None
 
@@ -669,8 +669,8 @@ def _with_head(action: Action, deps: Deps, repo: str) -> Action:
     return {**action, "head": tip} if tip else action  # type: ignore[typeddict-item]
 
 
-def _land_phase(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
-    """Same shape as `_land`, one command for a whole phase: its own `mark_done:` lines mark every task in the
+def perform_land_phase(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
+    """Same shape as `perform_land`, one command for a whole phase: its own `mark_done:` lines mark every task in the
     phase done, so this only runs the command and reads its output."""
     command = land_command(action, deps, blocked)
     if not isinstance(command, tuple):
@@ -696,7 +696,7 @@ def _already_landed_result(action: Action, deps: Deps, output: str) -> Result | 
     whole_detail = output[output.rindex(f"land: stopped at {stop[0]}:") :]
     if not already_landed(stop[0], whole_detail, deps.phase_states(action.get("initiative", ""), phase)):
         return None
-    return {**_result(action, "recorded", f"land phase {phase} already landed: {stop[1]}"), "already_landed": True}
+    return {**make_result(action, "recorded", f"land phase {phase} already landed: {stop[1]}"), "already_landed": True}
 
 
 def _land_by_task(action: Action, refused: str, deps: Deps, blocked: dict[str, Blocker]) -> Result:
@@ -704,22 +704,22 @@ def _land_by_task(action: Action, refused: str, deps: Deps, blocked: dict[str, B
     partial_land's task lands, siblings backed up and restored. The result keeps the land_phase action, so its row
     clears or counts toward the phase's backoff as a land_phase's would; the refusal leads the reason."""
     by_task: Action = {**action, "task_ids": list(action["task_runs"]), "quarantined": 0}
-    result = _partial_land(by_task, deps, blocked)
+    result = perform_partial_phase(by_task, deps, blocked)
     reason = "\n".join(filter(None, [refused.strip(), "landing by task instead", result["reason"]]))
     return {**result, "action": action, "reason": reason}
 
 
-def _partial_land(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
+def perform_partial_phase(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
     """The approved tasks of a partial phase, one task land each, through `partial_land.perform_partial_land`:
-    git runs through `deps.run`, and each task land is `_land`'s, so a refusal is classified and escalated as one."""
+    git runs through `deps.run`, and each task land is `perform_land`'s, so a refusal is classified and escalated as one."""
     repo = action.get("repo", "")
     if not repo or not action.get("task_ids"):
-        return _result(action, "refused", "partial_land needs a repo and approved task ids")
+        return make_result(action, "refused", "partial_land needs a repo and approved task ids")
     if repo in blocked:
-        return _result(action, "skipped", f"an earlier land in {repo} ({blocked[repo].label}) was not counted")
+        return make_result(action, "skipped", f"an earlier land in {repo} ({blocked[repo].label}) was not counted")
     if not partial_land.steps(action):  # recorded, not escalated: the run is learned once it is fetched
-        return _result(action, "recorded", "no approved task of the phase has a known run yet")
-    return partial_land.perform_partial_land(action, deps.run, lambda land: _land(land, deps, blocked))  # type: ignore[return-value]
+        return make_result(action, "recorded", "no approved task of the phase has a known run yet")
+    return partial_land.perform_partial_land(action, deps.run, lambda land: perform_land(land, deps, blocked))  # type: ignore[return-value]
 
 
 def _land_blocks_clear(landing: list[dict[str, str]], repo: str, initiative: str) -> bool:
@@ -732,33 +732,33 @@ def _land_blocks_clear(landing: list[dict[str, str]], repo: str, initiative: str
     return not initiatives or any(i in ("", initiative) for i in initiatives)
 
 
-def _clear(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
+def perform_clear(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
     initiative = action.get("initiative", "")
     pattern = branch_pattern(initiative)
     repo = deps.repo_for(action)
     if pattern is None:
-        return _result(action, "refused", f"branch glob for initiative {initiative!r} is not epic/<initiative>/*")
+        return make_result(action, "refused", f"branch glob for initiative {initiative!r} is not epic/<initiative>/*")
     if not repo:
-        return _result(action, "refused", f"no repository resolved for initiative {initiative}")
+        return make_result(action, "refused", f"no repository resolved for initiative {initiative}")
     if repo in blocked:
-        return _result(action, "skipped", f"an earlier land in {repo} ({blocked[repo].label}) was not counted")
+        return make_result(action, "skipped", f"an earlier land in {repo} ({blocked[repo].label}) was not counted")
     if deps.lands is not None and deps.lands.pending(repo) and _land_blocks_clear(deps.lands.landing(), repo, initiative):
-        return _result(action, "skipped", f"a land in {repo} is still running")
+        return make_result(action, "skipped", f"a land in {repo} is still running")
     host = action.get("host", "")
     ssh = deps.ssh_for(host) if host else ""
     if host and not ssh:
-        return _result(action, "failed", f"no ssh destination for host {host}: its clear cannot run there")
+        return make_result(action, "failed", f"no ssh destination for host {host}: its clear cannot run there")
     carry = set(action.get("carry", []))
     # Expanded here, at the local call, because `_pruned` and `_swept_branches` also run over ssh on a host-form path.
-    deleted, error = _pruned(deps, repo, initiative, pattern, carry, _local_repo(repo, deps.home))
+    deleted, error = _pruned(deps, repo, initiative, pattern, carry, local_repo_path(repo, deps.home))
     if error:
-        return _result(action, "failed", error)
+        return make_result(action, "failed", error)
     # A host-homed initiative's earlier runs left their worktrees and branches in the host's checkout, and git
     # refuses to add a worktree on a branch another worktree holds, so the host gets the same prune first.
-    host_pruned = _pruned(_over_ssh(deps, ssh), repo, initiative, pattern, carry, _host_repo(deps, repo)) if ssh else None
+    host_pruned = _pruned(over_ssh(deps, ssh), repo, initiative, pattern, carry, _host_repo(deps, repo)) if ssh else None
     host_deleted, error = host_pruned or ([], "")
     if error:
-        return _result(action, "failed", f"on {host}: {error}")
+        return make_result(action, "failed", f"on {host}: {error}")
     merged, needs_chair, failure = _carry_forward(action, deps, repo, initiative, sorted(carry), ssh)
     if failure is not None:
         return failure
@@ -774,11 +774,11 @@ def _clear(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
     ]
     # Nothing stale or partial is the state a clear exists to reach: a relaunch that failed after an earlier clear
     # must not be skipped forever because that clear already deleted the branches and carried the phases forward.
-    result = _result(action, "done", "; ".join(parts) if parts else f"nothing to clear: no branch matched {pattern} in {repo}")
+    result = make_result(action, "done", "; ".join(parts) if parts else f"nothing to clear: no branch matched {pattern} in {repo}")
     return {**result, "needs_chair": needs_chair} if needs_chair is not None else result
 
 
-def _lease(action: Action, deps: Deps) -> Result:
+def perform_lease(action: Action, deps: Deps) -> Result:
     holder, host = action.get("holder", ""), action.get("host", "")
     reason = action.get("reason", "")
     if reason.startswith("takeback from "):
@@ -787,13 +787,13 @@ def _lease(action: Action, deps: Deps) -> Result:
         line = deps.acquire_lease(holder, host, steal=True)
     else:
         line = deps.acquire_lease(holder, host)
-    return _result(action, "refused", line) if line else _result(action, "done")
+    return make_result(action, "refused", line) if line else make_result(action, "done")
 
 
 def _rendered_value(value: object) -> object:
     """A list renders as the flat-list literal `_frontmatter` writes and `parse_frontmatter` reads back; anything else is unchanged."""
     if isinstance(value, list):
-        return route._Raw("[" + ", ".join(route._yaml_scalar(v) for v in value) + "]")
+        return route._Raw("[" + ", ".join(route.yaml_scalar(v) for v in value) + "]")
     return value
 
 
@@ -816,7 +816,7 @@ def _initiative_tickets(work_dir: Path, initiative: str) -> list[dict]:
     return tickets
 
 
-def _ticket_paths(work_dir: Path, initiative: str) -> dict[str, Path]:
+def ticket_paths_of(work_dir: Path, initiative: str) -> dict[str, Path]:
     """Edge. Every ticket path under `work/<initiative>/*/*.md`, keyed by its task id (file stem); `initiative.md` excluded."""
     return {
         path.stem: path
@@ -878,26 +878,26 @@ def _merge_and_write(work_dir: Path, runs_dir: Path, initiative: str) -> str:
     return ""
 
 
-def _launch(action: Action, deps: Deps) -> Result:
+def perform_launch(action: Action, deps: Deps) -> Result:
     initiative_id = ""
     if action.get("kind") == "launch_decompose" and action.get("intake_ids"):
         idea = action["intake_ids"][0]
         chosen_id = decompose_id(idea, deps.intake_id(idea))
         if isinstance(chosen_id, Refusal):
-            return _result(action, "refused", chosen_id.reason)
+            return make_result(action, "refused", chosen_id.reason)
         initiative_id = route_guard.fresh_initiative_id(chosen_id, deps.initiative_rows())
     if action.get("kind") in ("launch_epic", "relaunch") and action.get("initiative"):
         failure = _merge_and_write(deps.work_dir, deps.runs_dir, action["initiative"])
         if failure:
-            return _result(action, "failed", failure)
+            return make_result(action, "failed", failure)
     argv = argv_for(action, initiative_id, deps.ids_mode, deps.label)
     if argv is None:
-        return _result(action, "refused", f"{action.get('kind')} names no initiative, task or intake id")
+        return make_result(action, "refused", f"{action.get('kind')} names no initiative, task or intake id")
     code, output = deps.run(argv)
     if code == 0:
-        return _result(action, "done", output)
+        return make_result(action, "done", output)
     if chair_lease_refusal.parse_lease_refusal(output) is not None:  # the previous run's lease has not expired: not a broken launch
-        return _result(action, chair_lease_refusal.STATUS, output)
+        return make_result(action, chair_lease_refusal.STATUS, output)
     missing = idea_miss_path(output) if action.get("kind") == "launch_decompose" and action.get("intake_ids") else None
     if missing is not None:
         # The recorded row carries the miss, which `chair_facts.decompose_miss_facts` counts into the planner's backoff.
@@ -905,8 +905,8 @@ def _launch(action: Action, deps: Deps) -> Result:
         missed: Action = {**action, "idea_missing": missing}
         if fingerprint is not None:
             missed["fingerprint"] = fingerprint
-        return _result(missed, "failed", output)
-    return _result(action, "failed", output)
+        return make_result(missed, "failed", output)
+    return make_result(action, "failed", output)
 
 
 IDEA_MISS_PREFIX = "routing: no idea file at "  # the line `cox route launch decompose` prints when --idea names no file
@@ -933,7 +933,7 @@ def fetch_status(code: int, message: str) -> Status:
     return "skipped" if code != 0 and live else "failed"
 
 
-def _fetch_exit(action: Action, deps: Deps) -> Result:
+def perform_fetch_exit(action: Action, deps: Deps) -> Result:
     """`cox runs fetch` for a remote run, then fold its approvals into local ticket state on success.
 
     A nonzero exit applies nothing and reports failed, exactly as `fetch` does; the fetch_exit stays
@@ -942,10 +942,10 @@ def _fetch_exit(action: Action, deps: Deps) -> Result:
     run, initiative = action.get("run", ""), action.get("initiative", "")
     argv = argv_for(action)
     if argv is None:
-        return _result(action, "refused", "fetch_exit needs a run id")
+        return make_result(action, "refused", "fetch_exit needs a run id")
     code, output = deps.run(argv)
     if code != 0:
-        return _result(action, fetch_status(code, output), output)
+        return make_result(action, fetch_status(code, output), output)
     approved, warnings = chair_apply_fetch.apply_fetched_approvals(deps.runs_dir, deps.work_dir, run, initiative)
     _ack_run_exited(run, deps)
     reason = "; ".join([f"fetched {run}; approved: {', '.join(approved)}", *warnings, *fetch_divergences(output)])
@@ -957,13 +957,13 @@ def fetch_divergences(output: str) -> list[str]:
     return [line.strip() for line in output.splitlines() if "fetch: diverged:" in line]
 
 
-def _widen_ticket(action: Action, deps: Deps) -> Result:
+def perform_widen_ticket(action: Action, deps: Deps) -> Result:
     """In-process, with no argv; a widened ticket's `ready` is mirrored to the store so file and store stay one record."""
     ok, reason = chair_apply_widen.apply_widen(deps.work_dir, action, deps.now()[:10])
     if not ok:
-        return _result(action, "failed", reason)
+        return make_result(action, "failed", reason)
     warning = store_cli.mirror_state(deps.runs_dir, action.get("initiative", ""), action.get("task_id", ""), "ready", "chair")
-    return _result(action, "done", reason if warning is None else f"{reason}; {warning}")
+    return make_result(action, "done", reason if warning is None else f"{reason}; {warning}")
 
 
 def run_exited_ids(entries: list[dict], run: str) -> list[str]:

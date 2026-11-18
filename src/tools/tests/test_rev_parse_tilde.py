@@ -1,7 +1,7 @@
 import subprocess
 from pathlib import Path
 
-from agent_tools.chair_read_land_conflicts import _rev_parse
+from agent_tools.chair_read_land_conflicts import rev_parse_commit
 
 
 def _make_repo(parent: Path) -> tuple[Path, str]:
@@ -22,4 +22,4 @@ def _make_repo(parent: Path) -> tuple[Path, str]:
 def test_rev_parse_expands_leading_tilde(tmp_path, monkeypatch):
     repo, head = _make_repo(tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path))
-    assert _rev_parse(f"~/{repo.name}", "HEAD") == head
+    assert rev_parse_commit(f"~/{repo.name}", "HEAD") == head

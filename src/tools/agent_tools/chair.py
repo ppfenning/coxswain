@@ -475,7 +475,7 @@ def acquire_lease(runs_dir: Path, session: str, pid: int, host: str, ttl: int = 
     if isinstance(result, store_cli.LeaseGranted):
         _write_lease(runs_dir, holder, result.epoch)
         return ""
-    verdict, line = lease_verdict(result, store_cli._store_url(Path(runs_dir)))
+    verdict, line = lease_verdict(result, store_cli.store_url_for(Path(runs_dir)))
     if verdict == "refused":
         return line
     _lease_path(runs_dir).unlink(missing_ok=True)

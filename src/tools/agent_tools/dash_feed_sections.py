@@ -50,7 +50,7 @@ from agent_tools.chair_types import EASTERN
 from agent_tools.dash_chair_attention import chair_attention
 from agent_tools.dash_chair_beat import beat_age_s
 from agent_tools.dash_chair_counters import chair_counters
-from agent_tools.dash_chair_today import _ts, chair_today, local_midnight
+from agent_tools.dash_chair_today import chair_today, local_midnight, row_ts
 from agent_tools.dash_feed_tasks import counts, task_entries
 from agent_tools.dash_finished_runs import LIMIT
 from agent_tools.dash_history import _is_landed, _record
@@ -301,7 +301,7 @@ def _store_meter(read_store, runs_dir: Path) -> usage_meter.Meter | None:
     which `usage_meter.fresh` cannot compare with an aware clock."""
     try:
         doc = read_store(Path(runs_dir))
-    except (*run_store._db_errors(), ValueError, TypeError, RuntimeError):  # RuntimeError: psycopg not installed
+    except (*run_store.db_error_types(), ValueError, TypeError, RuntimeError):  # RuntimeError: psycopg not installed
         return None
     meter = usage_meter.parse(doc) if doc else None
     return meter if meter is not None and meter.observed_at.tzinfo is not None else None
@@ -1068,7 +1068,7 @@ def _reaches_a_person(to: str) -> bool:
     return to == "chair" or to.startswith("chair-") or to not in _SEATS
 
 
-def _courier_blob(work_dir: Path) -> str:
+def courier_blob(work_dir: Path) -> str:
     """The raw courier.jsonl, undecodable bytes replaced; "" when it cannot be opened."""
     return courier.read_text(Path(work_dir) / "courier.jsonl")
 
@@ -1171,7 +1171,7 @@ def _as_results(action_rows: list[dict], at: datetime, utc_offset: timedelta) ->
     return [
         {"action": {"kind": row.get("kind")}, "status": row.get("status")}
         for row in action_rows
-        if (stamp := _ts(row)) is not None and stamp >= start
+        if (stamp := row_ts(row)) is not None and stamp >= start
     ]
 
 
@@ -1447,7 +1447,7 @@ def _tasks_edge(
         latest_runs = {_latest_run(grouped) for slug in slugs for grouped in _attempts_by_task(attempts, slug).values()}
         verdicts = {run: _run_verdicts(runs_dir, run) for run in latest_runs}
         return {slug: _run_tasks(rows, attempts, calls_by_run, verdicts, slug, runs_dir) for slug in slugs}
-    except (OSError, *run_store._db_errors()):  # a store failure must not take the feed down; a code fault must
+    except (OSError, *run_store.db_error_types()):  # a store failure must not take the feed down; a code fault must
         return None
 
 

@@ -207,11 +207,11 @@ def _store_held_records(runs_dir: Path, items: list[dict]) -> list[dict]:
 
 def _approved_store_rows(records: Mapping[tuple[str, str], dict | None]) -> list[tuple[str, str, dict]]:
     """Pure: (phase, task, record) for every store row whose review and arbitration verdicts approve it
-    (`land._approved` is None); a row the store could not read is left out."""
+    (`land.approved_reason` is None); a row the store could not read is left out."""
     return [
         (phase, task, record)
         for (phase, task), record in records.items()
-        if record is not None and land._approved(record) is None
+        if record is not None and land.approved_reason(record) is None
     ]
 
 

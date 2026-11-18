@@ -170,7 +170,7 @@ def ws(tmp_path, monkeypatch):
     profile.write_text(f"workspace_dir: {tmp_path}\nharness_dir: {tmp_path / 'harness'}\n", encoding="utf-8")
     monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(profile))
     (tmp_path / "runs").mkdir()
-    open_store(run_store._store_url(tmp_path / "runs"), "2026-01-01T00:00:00Z").close()
+    open_store(run_store.store_url_for(tmp_path / "runs"), "2026-01-01T00:00:00Z").close()
     (tmp_path / "work" / "demo").mkdir(parents=True)
     (tmp_path / "work" / "demo" / "initiative.md").write_text("---\ntitle: Demo\nid: demo\n---\nBody.\n", encoding="utf-8")
     for row in (_row("initiative", "demo", state="todo"), _row("task", "demo-t1", state="approved"), _row("task", "demo-t3", state="ready")):
@@ -186,7 +186,7 @@ def _row(kind, task_id, state):
 def _epic_run(ws: Path, n: int, *, tasks=(), ended=True) -> None:
     """One run as the epic records it: the launch's runs row, then `_record_phase` and `_record_tasks` for each phase,
     then `_record_run_exit`. Phase p1 ends partial and p2 blocked, every time."""
-    conn = open_store(run_store._store_url(ws / "runs"), "2026-01-01T00:00:00Z")
+    conn = open_store(run_store.store_url_for(ws / "runs"), "2026-01-01T00:00:00Z")
     try:
         store, run = Store(conn), f"demo-{n}"
         store.record_run({"run_id": run})
@@ -278,7 +278,7 @@ def _held_by_the_chair(ws: Path) -> None:
 
 def _live_run(ws: Path, run: str) -> None:
     """A run in flight, as the epic holds one: its runs row and its `runs:` lease, live for an hour from now."""
-    conn = open_store(run_store._store_url(ws / "runs"), "2026-01-01T00:00:00Z")
+    conn = open_store(run_store.store_url_for(ws / "runs"), "2026-01-01T00:00:00Z")
     try:
         Store(conn).record_run({"run_id": run}, {"at": datetime.now(UTC).isoformat(), "launched_by": "chair"})
         assert store_lease.acquire(conn, run_lease.lease_name(run), f"run:{run}", datetime.now(UTC).isoformat(), 3600).ok

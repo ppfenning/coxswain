@@ -279,7 +279,7 @@ def test_the_real_route_file_writer_and_reader_agree_on_a_file_backed_store(tmp_
     runs_dir.mkdir()
     url = default_url(runs_dir)
     open_store(url, NOW).close()
-    monkeypatch.setattr(run_store, "_store_url", lambda _runs_dir: url)
+    monkeypatch.setattr(run_store, "store_url_for", lambda _runs_dir: url)
     expected = expected_for("t1", "t2", "t3")
     for task, rel in expected.items():
         task_file(tmp_path, rel, task)

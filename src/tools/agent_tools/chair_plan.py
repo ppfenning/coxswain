@@ -25,14 +25,14 @@ from agent_tools.chair_idle_stall import diagnose, is_stalled
 from agent_tools.chair_no_progress import plan_no_progress
 from agent_tools.chair_plan_fill import (
     HostSlot,
-    _best_host,
-    _eligible,
-    _less_consumed,
-    _place_on_hosts,
-    _required_capabilities,
+    best_host,
     budget_skips,
+    eligible_host,
     host_free_slots,
+    less_consumed,
+    place_on_hosts,
     plan_fill,
+    required_capabilities,
 )
 from agent_tools.chair_plan_land import (
     backoff_held,
@@ -44,8 +44,8 @@ from agent_tools.chair_plan_land import (
 )
 from agent_tools.chair_plan_recover import (
     STRANDED_CAUSE,
-    _initiative_first_unmet_need,
     claimed_by,
+    initiative_first_unmet_need,
     landing_initiatives,
     plan_lost_runs,
     plan_recover,
@@ -192,8 +192,8 @@ def _freest_machine(
     """The machine with the most free lanes, "" meaning this one, or None when none has a free lane.
 
     A host lacking `required` is not a candidate; this machine always is. A tie goes to `last`, then to this
-    machine, then to the host _best_host ranks first among the tied hosts. `pinned` leaves only `last`."""
-    capable = [host for host in hosts if _eligible(host, required)]
+    machine, then to the host best_host ranks first among the tied hosts. `pinned` leaves only `last`."""
+    capable = [host for host in hosts if eligible_host(host, required)]
     free = {"": local_free, **{host[0]: host[3] for host in capable}}
     options = {name: lanes for name, lanes in free.items() if lanes > 0 and (not pinned or name == last)}
     if not options:
@@ -203,7 +203,7 @@ def _freest_machine(
         return last
     if "" in tied:
         return ""
-    best = _best_host(required, [host for host in capable if host[0] in tied])
+    best = best_host(required, [host for host in capable if host[0] in tied])
     return best[0] if best is not None else None
 
 
@@ -233,7 +233,7 @@ def _cap_launches(
 ) -> tuple[list[Action], dict[str, int]]:
     """A relaunch or retry goes to the machine with the most free lanes, this one included unless its local lanes are
     decompose-only (_place_freest): a
-    tie goes to the initiative's home, then to this machine, then to the host _best_host ranks first. A host
+    tie goes to the initiative's home, then to this machine, then to the host best_host ranks first. A host
     lacking the initiative's capabilities is skipped. A placement here carries no host, one elsewhere carries
     host, and a paired clear_branches always runs locally. A move off a remote home plans a fetch of its newest
     run's branches first; with no run to fetch, the initiative stays pinned to its home. A rescue keeps the old
@@ -241,7 +241,7 @@ def _cap_launches(
 
     A relaunch or retry whose home host is drained, login-lapsed, or whose lane is lost, or a "" home while local
     lanes are decompose-only, is relocated instead:
-    ranked by _place_on_hosts, its own old home host excluded from the candidates, never a local lane, with a
+    ranked by place_on_hosts, its own old home host excluded from the candidates, never a local lane, with a
     fetch for its newest run's branches planned right before its own first action; with no run to fetch it is
     dropped and a needs_chair names it instead. What nothing can take is dropped. A dropped relaunch takes its
     paired clear_branches with it.
@@ -267,7 +267,7 @@ def _cap_launches(
 
     def required_for(n: int) -> frozenset[str]:
         initiative = actions[n]["initiative"]
-        return _required_capabilities(by_id[initiative]) if initiative in by_id else frozenset()
+        return required_capabilities(by_id[initiative]) if initiative in by_id else frozenset()
 
     ordered = stuck_hostable
     rest = [(actions[n]["initiative"], required_for(n)) for n in ordered]
@@ -277,7 +277,7 @@ def _cap_launches(
         for name, weight, capabilities, free, assigned in host_free
         if name not in excluded
     ]
-    placed = iter(_place_on_hosts(rest, reduced_host_free))
+    placed = iter(place_on_hosts(rest, reduced_host_free))
     next_placed = next(placed, None)
     host_for_index: dict[int, str] = dict(homed_host_for_index)
     for n in ordered:
@@ -304,7 +304,7 @@ def _cap_launches(
             for n in freest_at
         ],
         local_left,
-        _less_consumed(host_free, taken_so_far),
+        less_consumed(host_free, taken_so_far),
     )
     host_for_index = {**host_for_index, **{n: machine for n, machine in freest.items() if machine}}
     consumed: dict[str, int] = {}
@@ -541,7 +541,7 @@ def _withhold_lease_held(actions: list[Action], held: frozenset[str]) -> list[Ac
 
 def _unmet_needs_ids(initiatives: list[InitiativeFacts]) -> frozenset[str]:
     """Initiatives no launch_epic may take this tick: no ready task has every need landed."""
-    return frozenset(i["id"] for i in initiatives if _initiative_first_unmet_need(i) is not None)
+    return frozenset(i["id"] for i in initiatives if initiative_first_unmet_need(i) is not None)
 
 
 def _steer_deferred(action: Action) -> bool:
@@ -555,7 +555,7 @@ def _unstarted_waiting_chair(initiatives: list[InitiativeFacts]) -> list[Action]
     return [
         {"kind": ActionKind.NEEDS_CHAIR, "initiative": i["id"], "cause": f"waiting on {need}"}
         for i in initiatives
-        if not i["started"] and (need := _initiative_first_unmet_need(i)) is not None
+        if not i["started"] and (need := initiative_first_unmet_need(i)) is not None
     ]
 
 
@@ -873,7 +873,7 @@ def _land_only_ids(initiatives: list[InitiativeFacts], approved: list[ApprovedTa
     return frozenset(
         i["id"]
         for i in initiatives
-        if i["started"] and _initiative_first_unmet_need(i) is not None and all((i["id"], n) in pending for n in unmet(i))
+        if i["started"] and initiative_first_unmet_need(i) is not None and all((i["id"], n) in pending for n in unmet(i))
     )
 
 
@@ -964,7 +964,7 @@ def _no_host(free_lanes: int, host_free: Sequence[HostSlot], consumed: Mapping[s
     reserved is dispatch local_lanes "decompose": the local lanes then take no epic."""
     local_epics = sum(a["kind"] == "launch_epic" and "host" not in a for a in filled)
     taken = Counter(a["host"] for a in filled if a["kind"] == "launch_epic" and "host" in a)
-    host_slots = [free - taken[name] for name, *_, free, _ in _less_consumed(list(host_free), dict(consumed))]
+    host_slots = [free - taken[name] for name, *_, free, _ in less_consumed(list(host_free), dict(consumed))]
     return (reserved or free_lanes - local_epics <= 0) and not any(slot > 0 for slot in host_slots)
 
 

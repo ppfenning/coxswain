@@ -19,10 +19,10 @@ from agent_tools.chair_facts_read import RESCUE_FAILED_CAUSE as RESCUE_FAILED_CA
 from agent_tools.chair_facts_read import STRANDED_CAUSE as STRANDED_CAUSE
 from agent_tools.chair_facts_read import FactsDeps as FactsDeps
 from agent_tools.chair_facts_read import Key as Key
-from agent_tools.chair_facts_read import _action_doc as _action_doc
-from agent_tools.chair_facts_read import _key as _key
-from agent_tools.chair_facts_read import _run_number as _run_number
+from agent_tools.chair_facts_read import action_doc as action_doc
 from agent_tools.chair_facts_read import run_initiative as run_initiative
+from agent_tools.chair_facts_read import run_ordinal as run_ordinal
+from agent_tools.chair_facts_read import task_key as task_key
 from core import module_facade
 
 

@@ -264,12 +264,12 @@ def _machines(runs_dir: Path, work_dir: Path, now: str, profile: Mapping[str, An
 
 
 def _timed_store_read(runs_dir: Path, clock: Callable[[], float] = time.monotonic) -> tuple[dict, int]:
-    """Edge. One store open through `run_store._open`, as every store reader does: `({"ok", "detail"}, elapsed_ms)`.
+    """Edge. One store open through `run_store.open_store`, as every store reader does: `({"ok", "detail"}, elapsed_ms)`.
 
     No store, or one that cannot be opened, is `ok` False with the reason; it never raises."""
     started = clock()
     try:
-        opened = run_store._open(Path(runs_dir))
+        opened = run_store.open_store(Path(runs_dir))
         if opened is None:
             result = {"ok": False, "detail": "no store under the runs dir"}
         else:
@@ -281,11 +281,11 @@ def _timed_store_read(runs_dir: Path, clock: Callable[[], float] = time.monotoni
 
 
 def _lease_row(runs_dir: Path, clock: Callable[[], float] = time.monotonic) -> tuple[dict | None, str | None]:
-    """Edge. `(row, error)`: the chair lease as `{"holder", "expires_at"}` from `run_store._lease_table`, which selects
+    """Edge. `(row, error)`: the chair lease as `{"holder", "expires_at"}` from `run_store.lease_table_for`, which selects
     `expires_at`; `chair_read_lease.read_lease` reads the same row but drops it. No row is `(None, None)`; a raising
     read or a row of another shape is `(None, reason)`."""
     try:
-        row = run_store._lease_table(str(runs_dir), int(clock())).get(chair.LEASE_NAME)
+        row = run_store.lease_table_for(str(runs_dir), int(clock())).get(chair.LEASE_NAME)
         return (None, None) if row is None else ({"holder": row[0], "expires_at": row[1]}, None)
     except Exception as exc:  # reported in `errors`, so a broken read does not read as a released lease
         return None, f"chair_lease: {type(exc).__name__}: {exc}"

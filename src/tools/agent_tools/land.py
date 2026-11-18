@@ -53,6 +53,7 @@ __all__ = [
     "GeneratedFile",
     "LeaseRenewal",
     "approve_to_done",
+    "approved_reason",
     "approved_state",
     "arbitration_verdict",
     "await_checks",
@@ -119,7 +120,7 @@ def arbitration_verdict(record: dict[str, Any]) -> str | None:
     return "approve" if arbitration == _ARBITER_SKIPPED else None
 
 
-def _approved(record: dict[str, Any]) -> str | None:
+def approved_reason(record: dict[str, Any]) -> str | None:
     """None when the record's decision is approve, else the reason it is not.
     An arbiter only runs on disagreement, so unanimous approval leaves no
     arbitration verdict at all — the best outcome, not a missing one."""
@@ -265,7 +266,7 @@ def phase_landable(items: list[dict[str, Any]], records: dict[str, dict[str, Any
             if status == "done":
                 continue
             return f"{item.get('id')} has no task record"
-        refusal = _approved(record)
+        refusal = approved_reason(record)
         if refusal is not None:
             return f"{item.get('id')}: {refusal}"
     return None
@@ -893,7 +894,7 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
                            ticket_records=ticket_records, ticket_unrecorded=ticket_unrecorded, phases=phases)
     if _proposal(record, "draft_pr_create") is None:
         return [{"kind": "refuse", "reason": "no draft_pr_create proposal in record"}]
-    refusal = _approved(record)
+    refusal = approved_reason(record)
     if refusal is not None:
         return [{"kind": "refuse", "reason": refusal}]
 

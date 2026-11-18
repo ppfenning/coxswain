@@ -24,7 +24,7 @@ def _stop(step: str, detail: str) -> str:
 def _escalated(output: str) -> dict:
     """The escalated result for a phase land whose command exits 1 with `output`, as the loop's `_escalate` makes it."""
     deps = _deps(output)
-    return chair_exec._escalate(LAND, chair_exec._land_phase(LAND, deps, {}))
+    return chair_exec._escalate(LAND, chair_exec.perform_land_phase(LAND, deps, {}))
 
 
 def test_a_fetch_phase_branch_stop_escalates_with_the_named_reason() -> None:
