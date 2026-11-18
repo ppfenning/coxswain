@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.startup_timing import STARTUP_MULTIPLE, check_ceiling, time_baseline, time_command
+from tests.startup_timing import STARTUP_MULTIPLE, check_rounds, time_rounds
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -18,8 +18,9 @@ HEAVY_MODULES = ("psycopg", "duckdb", "pyarrow")
 # Measured on the finished code (two sessions, 7 timed runs each, macOS, warm cache):
 #   cox --help                  median 49 ms  (about 72 ms before the command modules went lazy)
 #   cox route chair status      median 55 ms
-# These are never asserted. They are passed to check_ceiling so a failure message prints them.
-# The pass condition is the cox median relative to a `python -c pass` baseline (STARTUP_MULTIPLE).
+# These are never asserted. They are passed to check_rounds so a failure message prints them.
+# The pass condition is the median, over interleaved rounds, of cox's time over a `python -c pass` spawned in the
+# same round (STARTUP_MULTIPLE; tests/startup_timing.py says why the rounds interleave).
 HELP_TARGET_S = 0.25
 CHAIR_STATUS_TARGET_S = 0.30
 
@@ -61,9 +62,7 @@ def profile(tmp_path: Path) -> Path:
 
 
 def _assert_relative_startup(argv: list[str], absolute_target: float) -> None:
-    baseline = time_baseline(_env(), TIMED_RUNS, REPO_ROOT)
-    cox = time_command(argv, _env(), TIMED_RUNS, REPO_ROOT)
-    result = check_ceiling(cox, baseline, STARTUP_MULTIPLE, absolute_target)
+    result = check_rounds(time_rounds(argv, _env(), TIMED_RUNS, REPO_ROOT), STARTUP_MULTIPLE, absolute_target)
     assert result.ok, result.message
 
 
