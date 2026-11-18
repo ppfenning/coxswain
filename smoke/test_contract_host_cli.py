@@ -40,6 +40,17 @@ def test_a_host_is_added_resized_drained_reactivated_and_removed_through_the_sto
     assert HOST not in _ok(sandbox, "list").stdout
 
 
+def test_a_login_is_merged_into_the_hosts_versions_and_leaves_its_beat(sandbox):
+    _ok(sandbox, "add", HOST, "--ssh", "lane-a.invalid", "--capacity", "2")
+    # cox sent `--login-ok/--reason/--failures/--by`; the store CLI takes `--login-json`, so every login exited 2
+    _ok(sandbox, "login", HOST, "false", "--reason", "expired", "--failures", "2")
+    row = _rows(sandbox)[HOST]
+    assert row["versions_json"] == {"login_ok": False, "reason": "expired", "login_failures": 2}
+    assert row["beat_at"] == ""
+    _ok(sandbox, "login", HOST, "true")
+    assert _rows(sandbox)[HOST]["versions_json"] == {"login_ok": True, "reason": None, "login_failures": 0}
+
+
 def test_remove_refuses_an_active_host_and_the_store_keeps_it(sandbox):
     _ok(sandbox, "add", HOST, "--ssh", "lane-a.invalid", "--capacity", "2")
     refused = sandbox.cox("host", "remove", HOST)
