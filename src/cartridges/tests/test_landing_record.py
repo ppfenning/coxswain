@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 
 from core import landing_record as lr
+from core.jsontypes import ShapeError
 
 NOW = "2026-11-12T10:00:00Z"
 LATER = "2026-11-12T10:05:00Z"
@@ -203,3 +204,19 @@ def test_follow_up_ids_take_the_first_free_number() -> None:
     assert lr.follow_up_id("aim-slack", {"aim-slack"}) == "aim-slack-2"
     assert lr.follow_up_id("aim-slack", {"aim-slack", "aim-slack-2"}) == "aim-slack-3"
     assert lr.follow_up_id("aim-slack-2", {"aim-slack", "aim-slack-2"}) == "aim-slack-3"
+
+
+def test_a_stored_record_reads_back_as_itself():
+    stored = {**record(p1={"state": "merged", "tasks": ["t1"], "merge_sha": "m" * 40}), "pr": None, "future_key": 1}
+    assert lr.record_from_store(stored) is stored
+
+
+@pytest.mark.parametrize(("stored", "named"), [
+    ([], "expected an object"),
+    ({"initiative": "i", "phases": {"p1": {"tasks": "t1"}}}, r"landing record\.phases\.p1\.tasks: expected a list"),
+    ({"initiative": "i", "pr": {"url": 5}}, r"landing record\.pr"),
+    ({"initiative": "i", "adopted": "yes"}, r"landing record\.adopted: expected bool"),
+])
+def test_a_malformed_stored_record_is_refused_naming_the_bad_key(stored, named):
+    with pytest.raises(ShapeError, match=named):
+        lr.record_from_store(stored)

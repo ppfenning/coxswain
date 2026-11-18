@@ -1,6 +1,6 @@
 """The contract every chair-loop planner reads: the facts a tick takes and the actions it returns.
 
-Pure shapes and two pure helpers. No I/O and no harness or store imports. The edge gathers
+Pure shapes and a few pure helpers. No I/O and no harness or store imports. The edge gathers
 the facts and executes the actions; the planners in between are pure. `stale_candidates` is
 filled in by the facts edge and consumed by the stale planner; `stall_candidates` likewise,
 consumed by the stall planner. `tuning` likewise, consumed by the lane-tuning and tier-proposal planners.
@@ -16,6 +16,7 @@ from agent_tools.chair_land_backoff import LandRefusal
 from agent_tools.chair_land_conflict import LandConflict
 from agent_tools.chair_no_progress import NoProgress
 from agent_tools.chair_stall_alarm import StallFacts
+from core.jsontypes import ShapeError, conform
 
 EASTERN = ZoneInfo("America/New_York")  # every time the chair prints for an operator is shown in this zone
 STALE_CHECKOUT_CAUSE = "stale_checkout"  # the needs_chair cause for a lane host whose checkout environment is stale
@@ -905,6 +906,15 @@ class PlanTick(Protocol):
     def __call__(self, facts: Facts, now: datetime | None = None) -> list[Action]:
         """plan_tick(facts, now) -> list[action]: the whole tick, lease first, then lands, recover and fill, then at most one housekeeping when now is given."""
         ...
+
+
+def action_from_store(raw: object) -> Action:
+    """Pure. An action read back from disk or the store as an `Action`: `ShapeError` when it is not an object, names
+    no kind or a kind that is not an `ActionKind`, or carries a key `Action` names with a value of the wrong type."""
+    action = conform(Action, raw, "action")
+    if "kind" not in action:
+        raise ShapeError("action: missing kind")
+    return action
 
 
 def stamp(action: Action, epoch: int) -> Action:

@@ -11,6 +11,7 @@ import json
 import pytest
 
 from core import run_record, workstore
+from core.jsontypes import ShapeError
 
 # The keys a live record carries, in the shapes `lifecycle-propose` and `harness.epic` write them.
 CODE_RECORD = json.loads("""
@@ -102,3 +103,15 @@ def test_the_body_a_record_was_built_on_is_named_only_when_the_record_carries_it
     assert run_record.record_body_sha({"ticket_body": "\nBody.\n"}) == workstore.body_sha("Body.")
     assert run_record.record_body_sha({"body_sha": "abcdef012345"}) == "abcdef012345"
     assert run_record.record_body_sha({"body_sha": "", "ticket_body": None}) is None
+
+
+def test_a_saved_task_record_reads_back_as_itself():
+    assert run_record.task_record_from_store(CODE_RECORD) is CODE_RECORD  # the shapes the writers write
+    saved = {"run_id": "r1", "cause": "tests_failed", "cause_why": None, "change_facts": {"checks": []}, "verify": ["a"]}
+    assert run_record.task_record_from_store(saved) is saved
+
+
+@pytest.mark.parametrize("bad", [["r1"], {"run_id": 7}, {"cause": ["schema"]}, {"body_sha": {"x": 1}}])
+def test_a_malformed_task_record_is_refused(bad):
+    with pytest.raises(ShapeError, match="task record"):
+        run_record.task_record_from_store(bad)

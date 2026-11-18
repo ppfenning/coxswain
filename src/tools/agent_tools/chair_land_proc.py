@@ -19,7 +19,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, cast
 
-from agent_tools.chair_types import Action
+from agent_tools.chair_types import Action, action_from_store
+from core.jsontypes import ShapeError
 
 TIMEOUT_CODE = 124
 
@@ -71,9 +72,12 @@ def parse_spec(text: str) -> LandSpec | None:
     if d is None:
         return None
     argv = d.get("argv")
+    try:
+        action = action_from_store(d.get("action"))
+    except ShapeError:
+        return None
     well_formed = (
         isinstance(d.get("key"), str)
-        and isinstance(d.get("action"), dict)
         and isinstance(argv, list)
         and all(isinstance(a, str) for a in argv)
         and isinstance(d.get("repo"), str)
@@ -84,7 +88,7 @@ def parse_spec(text: str) -> LandSpec | None:
     )
     if not well_formed:
         return None
-    return LandSpec(d["key"], d["action"], cast(list[str], argv), d["repo"], d["timeout_s"], d["started_at"], d["host"], d["pid"])
+    return LandSpec(d["key"], action, cast(list[str], argv), d["repo"], d["timeout_s"], d["started_at"], d["host"], d["pid"])
 
 
 def parse_outcome(text: str) -> LandOutcome | None:
