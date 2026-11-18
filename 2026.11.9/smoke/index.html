@@ -7057,37 +7057,83 @@ weighed.</p>
   offline, is hermetic, and starts as cheaply as Postgres does. It drives <code>forge_forgejo</code> end to end. It cannot prove
   the <code>gh</code> argv or the JSON <code>cox</code> parses from <code>gh</code>: Forgejo serves neither GitHub's REST v3 nor its GraphQL, and its
   merge and check semantics differ from GitHub's in detail.</li>
-<li><strong>B, a recorded HTTP replay (rejected).</strong> It would run the real <code>gh</code> binary, but a replay returns what GitHub said
-  on the day of the recording, so it cannot notice that GitHub or <code>gh</code> changed, which is the drift a contract test
-  exists to catch. Recordings carry tokens to scrub, each new call needs a new recording, and <code>gh</code> would need a
-  certificate it trusts for the replay host.</li>
-<li><strong>C, a sandbox repository on GitHub (designed, not built).</strong> The only option that proves the <code>gh</code> boundary against
-  the real service. It needs the network and a secret, it is slow and rate limited, and fork pull requests cannot run
-  it.</li>
+<li><strong>B, recorded GitHub answers replayed to the real <code>gh</code> (built: <code>test_contract_gh.py</code>).</strong> This was first rejected
+  for three reasons. Two of them do not hold. <code>gh</code> needs no certificate for the replay: for its local-development host
+  <code>github.localhost</code> it speaks plain http to <code>api.github.localhost</code>, and Go's client sends that through <code>HTTP_PROXY</code>. <code>HTTPS_PROXY</code> names the replay too, so nothing gh asks of any host reaches the network.
+  The recordings carry no token either: the recorder adds its own on the way out and never writes one down, and it
+  replaces every git identity (an object with a <code>name</code> and an <code>email</code>) with the sandbox's own. The third reason holds:
+  a replay returns what GitHub said on the day it was recorded, so it cannot notice GitHub's API changing. What it
+  does notice is a change on either side of the process boundary, which is what H1.4's contract tests are for. <code>cox</code>
+  might build an argv that <code>gh</code> refuses, or ask <code>gh</code> something new. A <code>gh</code> release might rename a <code>--json</code> field,
+  change an exit code, or ask the API something the recording lacks. Any of these fails the test: a request with no
+  recorded answer gets a 599 and is listed. The tests run in every CI run, offline, in about a second each.</li>
+<li><strong>C, a sandbox repository on GitHub (not built).</strong> The only option that proves the API as it is today. It needs
+  the network, a secret and a repository the token may write to, which nobody has provisioned. It is slow and rate
+  limited, and fork pull requests cannot run it. Recording mode covers its read half against the real service on
+  demand: <code>COX_SMOKE_GH_RECORD=1 COX_SMOKE_GH_TOKEN=&lt;token&gt; pytest -q smoke/test_contract_gh.py</code> runs the same tests
+  against api.github.com and rewrites their recordings. Its write half, a merge that really merges, still waits for a
+  sandbox repository.</li>
 </ul>
-<p>A forge-neutral flow is tested once, through Forgejo. What is specific to <code>gh</code> is argv building and output parsing,
-which sit in pure functions that unit tests cover. <strong>C</strong> covers the rest, as follows, when it is built:</p>
-<ul>
-<li>A throwaway repository the project owns, with a fine-grained token scoped to it alone (contents, pull requests,
-  statuses, actions read), held as a repository secret.</li>
-<li>A workflow on a weekly schedule, on <code>workflow_dispatch</code>, and as a step of the release cut. Never on pull requests:
-  a fork cannot read the secret, and a forge outage must not block a land.</li>
-<li>Tests marked <code>github</code>, skipped without the secret, each one an entry point as the forge tests here are: a land
-  through <code>forge_github</code> (<code>gh pr create</code>, <code>gh pr checks</code>, <code>gh pr merge --squash --delete-branch</code>), <code>merge_state</code> and
-  <code>update_branch</code> on a pull request behind its base, and <code>cox upgrade</code> on an edge machine whose checkout comes from
-  the sandbox repository, which runs <code>gh run list</code> (<code>forge_github.ci_runs_argv</code> and <code>parse_green_shas</code>) against real
-  workflow runs.</li>
-<li>The test repository is reset to one commit on <code>main</code> at the start of each run, and every branch and pull request a
-  run creates carries the run id, so a killed run's leftovers are found and closed by the next.</li>
-</ul>
+<p><strong>What the recordings are.</strong> One JSON file per test under <code>smoke/gh_recordings/</code>, each answer filed by method and
+path (query parameters sorted), or for GraphQL by the operation's kind, name and variables. The recorder forwards
+only reads: GET, and GraphQL queries. It refuses every write with a 599, with one exception: a branch deletion, which
+it forwards only after a GET has shown the branch is already gone, so GitHub answers 422 and nothing changes. The
+subject is this repository, which is public. Pull request #1061 is merged and carries one task, and its head commit
+and the <code>ci.yml</code> push runs on main are recorded too. <code>gh_recordings/*.json</code> names the <code>gh</code> version that recorded it.</p>
+<table>
+<thead>
+<tr>
+<th>Test</th>
+<th>Boundary</th>
+<th><code>gh</code> command</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>test_pr_view_reads_every_field_a_land_needs</code></td>
+<td><code>forge_github.read_pr</code>, <code>pr_land.carried_tasks</code></td>
+<td><code>gh pr view --json number,state,url,headRefName,headRefOid,baseRefName,body</code></td>
+</tr>
+<tr>
+<td><code>test_cox_pr_land_of_a_merged_pr_marks_the_task_it_carries_done</code></td>
+<td><code>cox pr land</code></td>
+<td><code>gh pr view</code>, then the store's mark-done</td>
+</tr>
+<tr>
+<td><code>test_check_rows_of_a_commit_read_its_check_runs_and_statuses</code></td>
+<td><code>forge_github.pr_check_rows</code></td>
+<td><code>gh api --paginate .../check-runs</code> and <code>.../status</code></td>
+</tr>
+<tr>
+<td><code>test_required_checks_of_main_are_read</code></td>
+<td><code>forge_github.read_required_for_base</code>: exactly <code>["test"]</code>, the recorded ruleset's one required check</td>
+<td><code>gh api .../rules/branches/main</code></td>
+</tr>
+<tr>
+<td><code>test_run_list_finds_the_green_ci_push_runs_on_main</code></td>
+<td><code>cli_install._edge_run</code>, <code>forge_github.ci_runs_argv</code> and <code>parse_green_shas</code>, as <code>cox upgrade</code> on the edge channel runs them</td>
+<td><code>gh run list --workflow ci.yml --branch main --event push --json headSha,status,conclusion</code></td>
+</tr>
+<tr>
+<td><code>test_pr_checks_watch_of_a_finished_pr_lists_no_failing_check</code></td>
+<td><code>chair_revert_ports.GhForgePort.wait_checks</code>, the chair's revert path</td>
+<td><code>gh pr checks &lt;n&gt; --watch</code></td>
+</tr>
+<tr>
+<td><code>test_pr_merge_of_a_merged_pr_reads_as_merged</code></td>
+<td><code>forge_github.merge_pr</code></td>
+<td><code>gh pr merge &lt;n&gt; --squash --delete-branch</code> on a pull request that is already merged</td>
+</tr>
+</tbody>
+</table>
 <h2 id="known-fakes">Known fakes</h2>
 <p>Each fake below stands in for a boundary that no real test covers yet. Each one names the test that will retire it.</p>
 <ul>
 <li><code>tests/devtools/gh_stub.py</code> is a <code>gh</code> executable put on PATH by <code>tests/devtools/test_release_rerun_e2e.py</code>. The
   release rerun test runs the real <code>python -m devtools release</code> against real git repositories with bare origins. The
   stub stores pull requests and releases in a JSON file and merges into the bare origin with real git. It cannot
-  notice a change in <code>gh</code>'s argv or JSON. It is retired by the scheduled contract tests against a sandbox GitHub
-  repository (option C above). Those tests cover each <code>gh</code> command the release uses: <code>pr create</code>, <code>pr list</code>,
+  notice a change in <code>gh</code>'s argv or JSON. It is retired by contract tests of those commands, recorded as
+  <code>test_contract_gh.py</code>'s are (option B above), or by option C. Such tests would cover each <code>gh</code> command the release uses: <code>pr create</code>, <code>pr list</code>,
   <code>pr checks</code>, <code>pr merge</code>, <code>release create</code>, <code>release edit</code>, <code>release view</code>, <code>run list</code>, <code>run view</code>, <code>workflow run</code>,
   and the <code>api</code> read of the branch protection's required checks.</li>
 </ul>
