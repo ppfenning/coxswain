@@ -77,6 +77,11 @@ without mocks in `tests/test_smoke_plan.py`.
   `src/graphs` holds it. The provider profile names the scripted runner and declares tool use, which the gate requires of a runner that edits files.
   `launchable.scripted(answers)` writes the answers the scripted runner replays, for a launch and for `--scripted` alike, and `launchable.run(argv, cwd)` runs a harness argv.
 
+  `launchable.lifecycle(repo, run_id)` makes one scripted lifecycle run, for the tests that read what a run left.
+- **`lake_install`** (once per session, only when a lake test runs) and **`lake_sandbox`** (per test): a second
+  install of this tree with `[postgres,lake]`, and the same sandbox with that install's `cox` first on PATH. Every
+  other test keeps running without the lake's packages.
+
 ## Harness tests
 
 Every node of a graph is a model call. The release rehearsal and the forge tests avoid models by never running a
@@ -101,6 +106,29 @@ records `runner: scripted`, so a run whose approvals were canned answers never r
 | `test_harness_launch.py` (epic) | `cox route launch epic` -> `shell.py epic` -> `harness.cli.main` -> `_run_graph` -> `run_epic` | The launch returns with its pid file and launch record, and the detached harness completes the one-task epic with nothing quarantined. `epic/ship/p1` carries the built file, here and on origin. No worktree stays registered, the task is `approved` by `epic-driver:ship-1` and the run is `ok`. The `cox runs land ... --gate full --apply` that the run names then puts the file on origin's main and marks the task done. |
 | `test_harness_launch.py` (dead run) | `cox route launch epic` | With no answers file, the harness takes its lease and then cannot build its runner. The store records the run `error` with its end time, and the lease is free, so the next launch, with the answers written, runs `ship-2` to completion. |
 | `test_harness_launch.py` (lifecycle) | `shell.py lifecycle --scripted ... --repo ... --result-out ...`, the generic `_run_graph` branch | The patch is applied in a worktree of the repository and both checks pass there. The gate records one gated proposal, the result file says so, the worktree is removed, and the store has the run `ok`. |
+
+## Operator commands and the feed
+
+| Test | Entry point | What it proves |
+| --- | --- | --- |
+| `test_operator_commands.py` (stats) | `cox stats ingest`, `cox stats series` | A scripted harness run's records load into `stats.db`, and `series` reports the run. A second ingest adds no row. |
+| `test_operator_commands.py` (usage) | `cox usage assess` | With a `spend:` weekly ceiling of $10, the verdict is `go` with no spend. After one $12.50 node call is written through the store's own writer, it is `stop`, exit 4, at 125% of the ceiling. |
+| `test_operator_commands.py` (courier) | `cox courier send`, `inbox`, `ack` | A reference that does not resolve is refused. A sent `coxswain://task/t1` is listed for its label only, lives in the store's bus and not in `courier.jsonl`, and is gone from the inbox once acked. An unknown id is refused. |
+| `test_lake.py` | `cox lake sync`, `query`, `doctor` | On `lake_install`, the run in the store syncs into the Iceberg lake, `cox lake query` reads it back, and `cox lake doctor` reports the runs table's snapshot. Without the extra, `cox lake doctor` names the install command. |
+| `test_dash_feed.py` | `cox dash --once`, `cox dash --feed` | The snapshot towpath reads is schema 1, with the run, the history, the queued initiative and its ready task, and the board. A second `--feed` prints what the first one publishes, computes nothing of its own while the first holds the lock, and takes over once the first exits. `--feed --once` is refused. |
+| `test_contract_host_cli.py` | `cox host add`, `capacity`, `drain`, `activate`, `remove`, `login` | Each write reaches `harness.store_cli host`, and the row read back through the store's own `host list` matches. A login is merged into the host's versions and leaves its beat alone. A refusal prints the store's reason. |
+
+**Bugs found while building these tests, each fixed in its own commit.** None showed in the unit tests, which replace
+the store CLI with doubles or install every extra at once.
+
+- `cox host remove` sent `host delete`, which the store CLI did not have, so every remove failed with "invalid
+  choice". The store CLI now has `host delete`, which deletes only a draining host.
+- `cox host login` sent `--login-ok`, `--reason`, `--failures` and `--by`. The store CLI's `host login` takes one
+  `--login-json`, so every login exited 2. Its unit test's `FakeStore` accepted the wrong argv.
+- A store refusal reached the operator as `store_cli exit 3: {}`. `agent_tools.store_cli.runner` returned the
+  refusal's bare stdout payload instead of the reason on stderr.
+- The `lake` extra did not install pyarrow, so `cox lake sync` failed on the install that `cox lake` itself tells a
+  person to make.
 
 ## Contract tests
 
