@@ -8,6 +8,7 @@ by the smoke tests themselves.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -546,3 +547,97 @@ def object_store_provider_text(storage_url: str, endpoint: str, bucket: str = GA
         f"  secret_key_env: {GARAGE_SECRET_KEY_ENV}\n",
         "  path_style: true\n",
     ])
+
+
+# --- the harness, offline ------------------------------------------------------------------------------------------
+
+# The roles a team binds for the epic: the base contract's required five, and the two validators the phase graph runs.
+SMOKE_SKILLS = {
+    "plan": "smoke-skills:plan",
+    "build": "smoke-skills:build",
+    "review_charter": "smoke-skills:review",
+    "work_state_arm": "smoke-skills:work-state",
+    "work_item_arm": "smoke-skills:work-item",
+    "validate_chunk": "smoke-skills:validate-chunk",
+    "validate_phase": "smoke-skills:validate-phase",
+}
+
+
+# The file the scripted build adds, and the probe a target repository's own venv holds (`<repo>/.venv/bin`).
+SMOKE_NOTE = "notes/t1.txt"
+LANE_PROBE = "smoke-lane-probe"
+LANE_PROBE_TEXT = "#!/bin/sh\nexit 0\n"
+
+
+def smoke_checks(env_out: str) -> tuple[dict[str, str], ...]:
+    """The checks the team cartridge runs on every built task, in the worktree the build made.
+
+    `note` passes only once the patch is applied there. `lane-probe` passes only when `<repo>/.venv/bin` is on the
+    check's PATH, which is the first prefix `cox route launch` gives the harness (`route.child_env`); a lane's real
+    checks (`uv run pytest`, `ruff`) are found the same way. `lane-env` writes the trace dir and PATH the harness was
+    given to `env_out`, and fails when the trace dir is unset, so a test can hold both to what cox should have built."""
+    return (
+        {"name": "note", "cmd": f"grep -qx ok {SMOKE_NOTE}"},
+        {"name": "lane-probe", "cmd": f"command -v {LANE_PROBE}"},
+        {"name": "lane-env", "cmd": f"printenv AGENT_GRAPHS_TRACE_DIR PATH > {env_out}"},
+    )
+
+
+def lane_env(env: Mapping[str, str], repo: str, trace_dir: str) -> dict[str, str]:
+    """`env` as a lane gives it to a harness started by hand: `<repo>/.venv/bin` first on PATH and the trace dir set,
+    for the one test that runs the harness's entry point directly rather than through `cox route launch`."""
+    return {**env, "PATH": f"{repo}/.venv/bin:{env.get('PATH', '')}", "AGENT_GRAPHS_TRACE_DIR": trace_dir}
+
+
+def lane_env_lines(text: str) -> tuple[str, str] | None:
+    """(trace dir, PATH) from what the `lane-env` check wrote; None when it wrote anything else."""
+    lines = text.splitlines()
+    return (lines[0], lines[1]) if len(lines) == 2 else None
+
+
+def team_cartridge_text(team: str, worktree_root: str, checks: Sequence[Mapping[str, str]] = ()) -> str:
+    """A team cartridge over `base`: the smoke skills bound, worktrees under `worktree_root`, and `checks` run on each
+    built task. JSON is YAML, so the cartridge loader reads it as written."""
+    landing: dict[str, object] = {"worktree_root": worktree_root, "checks": [dict(c) for c in checks]}
+    return json.dumps({"team": team, "extends": "base", "version": 1, "skills": SMOKE_SKILLS, "landing_areas": landing},
+                      indent=2) + "\n"
+
+
+def skill_plugin_files(skills: Mapping[str, str] = SMOKE_SKILLS) -> dict[str, str]:
+    """`{relative path: text}` of the one plugin that holds every skill `skills` binds: its manifest and a SKILL.md
+    per skill. The scripted runner never reads a body; the cartridge loader refuses a binding with none."""
+    plugins = {name.split(":", 1)[0] for name in skills.values()}
+    if len(plugins) != 1:
+        raise ValueError(f"the smoke skills name one plugin, not {sorted(plugins)}")
+    files = {".claude-plugin/plugin.json": json.dumps({"name": plugins.pop()}) + "\n"}
+    for name in skills.values():
+        skill = name.split(":", 1)[1]
+        files[f"skills/{skill}/SKILL.md"] = f"---\nname: {skill}\ndescription: smoke\n---\n\nThe {skill} skill.\n"
+    return files
+
+
+def new_file_patch(path: str, text: str) -> str:
+    """A unified diff that adds `path` holding the one line `text`."""
+    return f"diff --git a/{path} b/{path}\nnew file mode 100644\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1 @@\n+{text}\n"
+
+
+def scripted_epic_responses(patch: str, files: Sequence[str]) -> dict[str, object]:
+    """`--scripted` answers for a one-task epic whose build returns `patch`: every role the run calls, approving."""
+    return {
+        "plan": {"steps": ["write the file"], "files_expected": list(files), "out_of_scope": []},
+        "build": {"patch": patch, "summary": "built", "files_touched": list(files), "commands_run": []},
+        "review_charter": {"verdict": "approve", "findings": [], "rationale": "matches the charter"},
+        "validate_chunk": {"satisfied": True, "gaps": [], "reasoning": "the description is satisfied"},
+        "validate_phase": {"goal_met": True, "partial": False, "missing": [], "quarantine_blocks_dependents": False,
+                           "reasoning": "the pieces add up"},
+        "work_state_arm": {"applied": True, "detail": "state moved"},
+    }
+
+
+def scripted_provider_profile_text(storage_url: str, scripted: str) -> str:
+    """The provider profile of a sandbox that runs graphs offline: the store, the harness's scripted runner replaying
+    the answers at `scripted`, an empty tier map (the profile loader requires the block; no model is named), and tool
+    use declared, which the gate requires of a runner that edits files. `cox route launch` passes the harness only
+    this profile, so this is how a real launch runs offline end to end."""
+    return (provider_profile_text(storage_url) + f"runner: scripted\nscripted: {scripted}\ntiers: {{}}\n"
+            "capabilities:\n  tool_use: true\n")

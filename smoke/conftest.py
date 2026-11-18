@@ -298,6 +298,83 @@ def repo(sandbox: Sandbox, tmp_path: Path) -> Repo:
     return Repo(path=path, origin=origin)
 
 
+# --- the harness, launched -----------------------------------------------------------------------------------------
+
+TEAM = "smoke"
+
+
+@dataclass(frozen=True)
+class Launchable:
+    """The sandbox set up so `cox route launch` can start the harness and run it offline: a team cartridge over the
+    tree's `base`, a profile naming it, `shell.py` beside the install's venv as a checkout's `src/graphs` holds it,
+    and a provider profile whose runner is the harness's scripted one (`plan.scripted_provider_profile_text`)."""
+
+    sandbox: Sandbox
+    cartridges: Path
+    skills: Path
+    worktrees: Path
+
+    def harness_flags(self) -> list[str]:
+        """The team, cartridge, skills, profile and workspace flags `cox route launch` passes the harness."""
+        config = self.sandbox.home / ".config" / "agent-tools"
+        return ["--team", TEAM, "--cartridges-dir", str(self.cartridges), "--skills-root", str(self.skills),
+                "--provider-profile", str(config / "provider.yaml"), "--runs-dir", str(self.sandbox.workspace / "runs"),
+                "--assume", "a", "--workdir", str(self.sandbox.workspace)]
+
+    @property
+    def answers(self) -> Path:
+        """The canned answers the provider profile's scripted runner replays (`plan.scripted_provider_profile_text`)."""
+        return self.sandbox.home / "scripted.json"
+
+    def scripted(self, responses: object) -> Path:
+        """Write `responses` as the answers the scripted runner replays, for a launch and for `--scripted` alike."""
+        path = self.answers
+        path.write_text(json.dumps(responses), encoding="utf-8")
+        return path
+
+    @property
+    def lane_env_file(self) -> Path:
+        """Where the `lane-env` check writes the trace dir and PATH the harness was given (`plan.smoke_checks`)."""
+        return self.sandbox.home / "lane-env.txt"
+
+    def run(self, argv: list[str], cwd: Path, repo: Path, run_id: str, timeout: float = 300) -> subprocess.CompletedProcess[str]:
+        """Run a harness argv by hand from `cwd`, in the environment a lane gives it (`plan.lane_env`): the one
+        `cox route launch` would build, which the launch tests hold cox to."""
+        trace = self.sandbox.workspace / "runs" / f"{run_id}-trace"
+        return _run(argv, env=plan.lane_env(self.sandbox.env, str(repo), str(trace)), cwd=cwd, timeout=timeout)
+
+
+@pytest.fixture
+def launchable(sandbox: Sandbox, repo: Repo, tmp_path: Path) -> Launchable:
+    # The launcher a checkout carries at src/graphs/shell.py; the package does not ship it, so the install has none.
+    shutil.copy2(ROOT / "src" / "graphs" / "shell.py", sandbox.install.root / "shell.py")
+    cartridges, worktrees = tmp_path / "cartridges", tmp_path / "worktrees"
+    shutil.copytree(ROOT / "src" / "cartridges" / "cartridges" / "base", cartridges / "base")
+    (cartridges / TEAM).mkdir()
+    (cartridges / TEAM / "cartridge.yaml").write_text(plan.team_cartridge_text(TEAM, str(worktrees), plan.smoke_checks(str(sandbox.home / "lane-env.txt"))), encoding="utf-8")
+    # The target repository's own venv, holding the probe `lane-probe` looks for; git ignores it, as a real one is.
+    probe = repo.path / ".venv" / "bin" / plan.LANE_PROBE
+    probe.parent.mkdir(parents=True)
+    probe.write_text(plan.LANE_PROBE_TEXT, encoding="utf-8")
+    probe.chmod(0o755)
+    with open(repo.path / ".git" / "info" / "exclude", "a", encoding="utf-8") as exclude:
+        exclude.write(".venv/\n")
+    skills = tmp_path / "skills"
+    for relative, text in plan.skill_plugin_files().items():
+        (skills / relative).parent.mkdir(parents=True, exist_ok=True)
+        (skills / relative).write_text(text, encoding="utf-8")
+    config = sandbox.home / ".config" / "agent-tools"
+    provider = config / "provider.yaml"
+    provider.write_text(plan.scripted_provider_profile_text(sandbox.store_url, str(sandbox.home / "scripted.json")),
+                        encoding="utf-8")
+    (config / "profile.yaml").write_text(
+        plan.routing_profile_text(team=TEAM, workspace=str(sandbox.workspace), harness_dir=str(sandbox.install.root),
+                                  provider_profile=str(provider), extra={"cartridges_dir": str(cartridges), "skills_roots": f"[{skills}]", "assume": "a"}),
+        encoding="utf-8",
+    )
+    return Launchable(sandbox=sandbox, cartridges=cartridges, skills=skills, worktrees=worktrees)
+
+
 # --- the sandbox forge ---------------------------------------------------------------------------------------------
 
 API_TIMEOUT_S = 15

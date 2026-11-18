@@ -38,7 +38,7 @@ from harness.digest import build_digest
 from harness.lane_workers import lane_workers_from
 from harness.registry import GraphSpec
 from harness.resolve import overlay_path, resolve_cartridge, role_skill_bodies
-from harness.runners import build_runner
+from harness.runners import build_runner, runner_name
 from harness.store_dialect import default_url
 from harness.store_graphs import derive_definition, register
 from harness.store_lease import acquire, release
@@ -126,7 +126,8 @@ def _begin_store_run(
     host: str,
 ) -> Store | None:
     """Open the run-record store, register the graph and write the run row; None (after one line) if any of it fails."""
-    url = profile_storage_url(read_provider_profile(args.provider_profile), args.runs_dir)
+    provider = read_provider_profile(args.provider_profile)
+    url = profile_storage_url(provider, args.runs_dir)
     conn = None
     try:
         if url == default_url(args.runs_dir):
@@ -144,6 +145,8 @@ def _begin_store_run(
             "cartridge_team": cartridge.get("team"),
             "overlay_sha": cartridge.get("overlay_sha"),
             "provider_profile": provider_profile,
+            # a scripted run's approvals are canned answers: the row says so, so they never pass for a model's
+            "runner": runner_name(args.scripted, provider),
         }
         launch = {
             "launched_by": os.environ.get("AGENT_GRAPHS_LAUNCHED_BY") or "cli",

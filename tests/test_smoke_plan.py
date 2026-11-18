@@ -1,6 +1,7 @@
 """The smoke suite's pure core (smoke/plan.py): example inputs in, outputs checked. No I/O, no mocks."""
 
 import pytest
+import yaml
 
 from smoke import plan
 
@@ -315,3 +316,50 @@ def test_the_object_store_provider_names_the_credential_variables_never_their_va
     assert "  endpoint: http://127.0.0.1:41000" in text.splitlines()
     assert f"  access_key_env: {plan.GARAGE_ACCESS_KEY_ENV}" in text.splitlines()
     assert f"  secret_key_env: {plan.GARAGE_SECRET_KEY_ENV}" in text.splitlines()
+
+
+def test_the_team_cartridge_extends_base_binds_every_smoke_skill_and_carries_its_checks():
+    cart = yaml.safe_load(plan.team_cartridge_text("smoke", "/w", plan.smoke_checks("/h/lane-env.txt")))
+    assert (cart["team"], cart["extends"]) == ("smoke", "base")
+    assert cart["skills"] == plan.SMOKE_SKILLS
+    assert cart["landing_areas"] == {"worktree_root": "/w", "checks": [
+        {"name": "note", "cmd": "grep -qx ok notes/t1.txt"},
+        {"name": "lane-probe", "cmd": "command -v smoke-lane-probe"},
+        {"name": "lane-env", "cmd": "printenv AGENT_GRAPHS_TRACE_DIR PATH > /h/lane-env.txt"}]}
+
+
+def test_a_hand_started_harness_gets_the_repo_venv_first_and_the_trace_dir():
+    assert plan.lane_env({"PATH": "/a:/b", "X": "1"}, "/r", "/t") == {"PATH": "/r/.venv/bin:/a:/b", "X": "1",
+                                                                      "AGENT_GRAPHS_TRACE_DIR": "/t"}
+
+
+def test_the_lane_env_file_is_read_as_its_two_lines():
+    assert plan.lane_env_lines("/runs/x-trace\n/r/.venv/bin:/i/bin\n") == ("/runs/x-trace", "/r/.venv/bin:/i/bin")
+    assert plan.lane_env_lines("/only/one\n") is None
+
+
+def test_the_skill_plugin_holds_a_manifest_and_one_body_per_bound_skill():
+    files = plan.skill_plugin_files({"plan": "p:plan", "build": "p:build"})
+    assert sorted(files) == [".claude-plugin/plugin.json", "skills/build/SKILL.md", "skills/plan/SKILL.md"]
+    assert files[".claude-plugin/plugin.json"] == '{"name": "p"}\n'
+    assert files["skills/plan/SKILL.md"].startswith("---\nname: plan\n")
+    with pytest.raises(ValueError, match="one plugin"):
+        plan.skill_plugin_files({"plan": "p:plan", "build": "q:build"})
+
+
+def test_a_new_file_patch_adds_one_line():
+    patch = plan.new_file_patch("a/b.txt", "ok")
+    assert patch.splitlines()[1:] == ["new file mode 100644", "--- /dev/null", "+++ b/a/b.txt", "@@ -0,0 +1 @@", "+ok"]
+
+
+def test_the_scripted_epic_answers_every_role_the_cartridge_binds_but_the_item_arm():
+    answers = plan.scripted_epic_responses("PATCH", ["x.txt"])
+    assert set(answers) == set(plan.SMOKE_SKILLS) - {"work_item_arm"}
+    assert answers["build"]["patch"] == "PATCH" and answers["build"]["files_touched"] == ["x.txt"]
+    assert answers["review_charter"]["verdict"] == "approve"
+
+
+def test_the_offline_provider_profile_names_the_scripted_runner_and_its_answers():
+    profile = yaml.safe_load(plan.scripted_provider_profile_text("postgresql://127.0.0.1/x", "/h/scripted.json"))
+    assert profile == {"storage_url": "postgresql://127.0.0.1/x", "runner": "scripted", "scripted": "/h/scripted.json",
+                       "tiers": {}, "capabilities": {"tool_use": True}}
