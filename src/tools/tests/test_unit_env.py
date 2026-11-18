@@ -100,31 +100,59 @@ def test_merged_values_lets_a_later_file_win_as_systemd_does() -> None:
 
 
 def test_plan_load_takes_only_what_the_shell_lacks_and_names_what_it_overrides() -> None:
-    process = {"GARAGE_ACCESS_KEY_ID": "old", "EMPTY": "", "SAME": "v"}
-    file_values = {"GARAGE_ACCESS_KEY_ID": "new", "GARAGE_SECRET_ACCESS_KEY": "s", "EMPTY": "x", "SAME": "v"}
-    load = unit_env.plan_load(process, file_values)
+    process = {"GARAGE_ACCESS_KEY_ID": "old", "EMPTY": "", "SAME": "v", "QUOTED": "q"}
+    file_values = {"GARAGE_ACCESS_KEY_ID": "new", "GARAGE_SECRET_ACCESS_KEY": "s", "EMPTY": "x", "SAME": "v",
+                   "QUOTED": '"q"'}
+    load = unit_env.plan_load(process, file_values, "linux")
     assert load.loaded == {"GARAGE_SECRET_ACCESS_KEY": "s"}
-    assert load.overridden == ("GARAGE_ACCESS_KEY_ID", "EMPTY")  # an empty shell value overrides too; an equal one does not
-    assert load.unsafe == ()
+    # an empty shell value overrides too; one equal to the file's value as the unit reads it (quotes stripped) does not
+    assert load.overridden == ("GARAGE_ACCESS_KEY_ID", "EMPTY")
+    assert load.skipped == ()
 
 
-def test_plan_load_skips_a_value_a_unit_would_read_differently() -> None:
-    values = unit_env.parse_env('Q="abc"\nS=a b\nOK=plain\n')
-    load = unit_env.plan_load({}, values)
-    assert load.loaded == {"OK": "plain"}
-    assert load.unsafe == ("Q", "S")
+# Each row: the line in the env file, then the value a hand run loads on linux and on darwin (None: skipped, noted).
+# systemd keeps $ and % literal, strips quotes and a backslash; launchd's sh does the same but expands $ and backticks.
+VALUE_ROWS = [
+    ("K=a$HOME%hb", "a$HOME%hb", None),
+    ("K=x%%y", "x%%y", "x%%y"),
+    ('K="q v"', "q v", "q v"),
+    ("K=a\\b", "ab", "ab"),
+    ("K=", "", ""),
+    ("K='a$b'", "a$b", "a$b"),
+    ("K=a\\$b", "a$b", "a$b"),
+    ('K="p`w"', "p`w", None),
+]
+
+
+@pytest.mark.parametrize(("line", "linux", "darwin"), VALUE_ROWS)
+def test_a_value_loads_as_the_units_on_each_platform_read_it(line: str, linux: str | None, darwin: str | None) -> None:
+    values = unit_env.parse_env(line + "\n")
+    for platform, expected in (("linux", linux), ("darwin", darwin)):
+        load = unit_env.plan_load({}, values, platform)
+        if expected is None:
+            assert load.loaded == {} and load.skipped == (("K", unit_env.SH_EXPANDS),), platform
+        else:
+            assert load.loaded == {"K": expected} and load.skipped == (), platform
+
+
+@pytest.mark.parametrize("raw", ['"open', "'open", "a b", "trailing\\", '"a\\nb"'])
+def test_what_systemd_and_sh_would_read_differently_is_skipped_on_both(raw: str) -> None:
+    for platform in ("linux", "darwin"):
+        load = unit_env.plan_load({}, {"K": raw}, platform)
+        assert load.loaded == {} and load.skipped == (("K", unit_env.UNPARSEABLE),)
 
 
 def test_load_notes_name_files_and_variables_and_never_a_value() -> None:
-    load = unit_env.plan_load({"K": "shell-secret"}, {"K": "file-secret", "N": "n-secret", "Q": '"q-secret"'})
+    file_values = {"K": "file-secret", "N": "n-secret", "Q": '"q-secret', "D": "$d-secret"}
+    load = unit_env.plan_load({"K": "shell-secret"}, file_values, "darwin")
     notes = unit_env.load_notes(load, ["/u.env"], ["/gone.env"], ["/bad.env"])
     assert notes == [
         "env: skipped /bad.env: not UTF-8 text",
         "env: /gone.env, which a unit names, does not exist",
         "env: loaded N from /u.env, as the units read it",
         "env: the shell's K override /u.env; unset them to use the file's",
-        "env: not loaded Q from /u.env: a unit would read the value differently (quotes, spaces, $, % or empty); "
-        "rewrite it as NAME=value with a plain value",
+        f"env: not loaded Q from /u.env: {unit_env.UNPARSEABLE}",
+        f"env: not loaded D from /u.env: {unit_env.SH_EXPANDS}",
     ]
     assert not any("secret" in line for line in notes)
-    assert unit_env.load_notes(unit_env.plan_load({}, {}), ["/d.env"], [], []) == []
+    assert unit_env.load_notes(unit_env.plan_load({}, {}, "linux"), ["/d.env"], [], []) == []

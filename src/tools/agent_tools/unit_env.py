@@ -135,25 +135,90 @@ def merged_values(texts: Iterable[str | None]) -> dict[str, str]:
     return merged
 
 
+_DQ_ESCAPABLE = frozenset('"\\$`')  # what a backslash escapes inside double quotes the same way in systemd and sh
+UNPARSEABLE = "its quotes or backslashes do not read the same in systemd and sh; rewrite it"
+SH_EXPANDS = "launchd's sh would expand its $ or backtick; put the value in single quotes or drop them"
+
+
+def unquote(raw: str) -> str | None:
+    """`raw` as both systemd's EnvironmentFile= and sh's `.` read it: single quotes keep everything literal, double
+    quotes keep all but a backslash before `"`, a backslash, `$` or a backtick, and outside quotes a backslash keeps
+    the next character. None for what the two would read differently: an unbalanced quote, a trailing backslash,
+    another escape inside double quotes, or unquoted whitespace (sh would run the rest as a command)."""
+    out: list[str] = []
+    quote: str | None = None
+    chars = iter(raw)
+    for char in chars:
+        if quote == "'":
+            if char == "'":
+                quote = None
+            else:
+                out.append(char)
+        elif char == "\\":
+            escaped = next(chars, None)
+            if escaped is None or (quote == '"' and escaped not in _DQ_ESCAPABLE):
+                return None
+            out.append(escaped)
+        elif char in "'\"" and (quote is None or char == quote):
+            quote = char if quote is None else None
+        elif quote is None and char.isspace():
+            return None
+        else:
+            out.append(char)
+    return None if quote is not None else "".join(out)
+
+
+def sh_expands(raw: str) -> bool:
+    """Whether `raw` has an unescaped `$` or backtick outside single quotes, which sh would expand."""
+    quote: str | None = None
+    escaped = False
+    for char in raw:
+        if escaped:
+            escaped = False
+        elif quote == "'":
+            quote = None if char == "'" else quote
+        elif char == "\\":
+            escaped = True
+        elif char in "'\"" and (quote is None or char == quote):
+            quote = char if quote is None else None
+        elif char in "$`":
+            return True
+    return False
+
+
+def unit_value(raw: str, platform: str) -> tuple[str | None, str | None]:
+    """`(value, None)` as the units on `platform` read `raw` (a value `parse_env` split off), else `(None, why it is
+    skipped)`. `%` and an empty value load as written everywhere. On darwin the agent sources the file with sh, so a
+    `$` or backtick sh would expand is skipped rather than guessed at; systemd keeps both literal."""
+    value = unquote(raw)
+    if value is None:
+        return None, UNPARSEABLE
+    if platform == "darwin" and sh_expands(raw):
+        return None, SH_EXPANDS
+    return value, None
+
+
 @dataclass(frozen=True)
 class EnvLoad:
     """What a hand run takes from the units' files: `loaded` is set in the process; `overridden` names the variables
-    the shell sets to a value other than the file's (the empty string included), which the shell keeps; `unsafe` names
-    file values a unit would read differently (quotes, spaces, `$`, `%`, empty), which are not loaded."""
+    the shell sets to a value other than the file's (the empty string included), which the shell keeps; `skipped`
+    pairs each file variable not loaded with why (`UNPARSEABLE`, `SH_EXPANDS`)."""
 
     loaded: dict[str, str]
     overridden: tuple[str, ...]
-    unsafe: tuple[str, ...]
+    skipped: tuple[tuple[str, str], ...]
 
 
-def plan_load(process_env: Mapping[str, str], file_values: Mapping[str, str]) -> EnvLoad:
-    """The process environment wins: a name it sets, even to the empty string, is never taken from the file."""
-    missing = {name: value for name, value in file_values.items() if name not in process_env}
-    unsafe = unsafe_values(missing)
+def plan_load(process_env: Mapping[str, str], file_values: Mapping[str, str], platform: str) -> EnvLoad:
+    """`file_values` as `parse_env` split them, read the way the units on `platform` (a `sys.platform` value) read
+    them, by `unit_value`. The process environment wins: a name it sets, even to the empty string, is never taken from
+    the file."""
+    read = {name: unit_value(raw, platform) for name, raw in file_values.items()}
+    values = {name: value for name, (value, _) in read.items() if value is not None}
     return EnvLoad(
-        loaded={name: value for name, value in missing.items() if name not in unsafe},
-        overridden=tuple(name for name, value in file_values.items() if name in process_env and process_env[name] != value),
-        unsafe=tuple(unsafe),
+        loaded={name: value for name, value in values.items() if name not in process_env},
+        overridden=tuple(name for name, value in values.items() if name in process_env and process_env[name] != value),
+        skipped=tuple((name, why) for name, (_, why) in read.items() if why is not None and name not in process_env),
     )
 
 
@@ -161,14 +226,14 @@ def load_notes(load: EnvLoad, files: list[str], absent: list[str], unreadable: l
     """The lines a hand run prints about the units' env: names and paths only, never a value. `absent` are files a
     unit names that do not exist; `unreadable` are unit or env files skipped as not UTF-8."""
     where = ", ".join(files)
+    reasons = dict.fromkeys(why for _, why in load.skipped)
     return [
         *(f"env: skipped {path}: not UTF-8 text" for path in unreadable),
         *(f"env: {path}, which a unit names, does not exist" for path in absent),
         *([f"env: loaded {', '.join(load.loaded)} from {where}, as the units read it"] if load.loaded else []),
         *([f"env: the shell's {', '.join(load.overridden)} override {where}; unset them to use the file's"]
           if load.overridden else []),
-        *([f"env: not loaded {', '.join(load.unsafe)} from {where}: a unit would read the value differently "
-           "(quotes, spaces, $, % or empty); rewrite it as NAME=value with a plain value"] if load.unsafe else []),
+        *(f"env: not loaded {', '.join(n for n, w in load.skipped if w == why)} from {where}: {why}" for why in reasons),
     ]
 
 
