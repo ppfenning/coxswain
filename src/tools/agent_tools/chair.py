@@ -11,11 +11,12 @@ import os
 import socket
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Protocol, TypedDict
 
 from agent_tools import store_cli, store_dialect
+from core.jsontypes import is_dict, is_list
 
 __all__ = [
     "CHAIR_FILENAME",
@@ -72,15 +73,34 @@ DEFAULT_LEASE_TTL_SECONDS = DEFAULT_HEARTBEAT_MINUTES * 60
 # Top-level boolean in chair.json: the holder has lent the routine ticks. `take` never sets it, so a lend ends with its holder.
 LENT_KEY = "routine_lent"
 
+_Record = dict[str, object]  # chair.json as decoded: a lock record whose values are read, never trusted
 
-def lend_routine(record: dict[str, Any], on: bool) -> dict[str, Any]:
+
+class _LeaseSidecar(TypedDict):
+    holder: str
+    epoch: int
+
+
+class _Sleeper(Protocol):
+    def sleep(self, seconds: float, /) -> None: ...
+
+
+def _iso(record: Mapping[str, object], key: str) -> datetime.datetime:
+    """The record's `key` as a datetime. KeyError when absent, TypeError when not text, ValueError when not ISO: the errors that read a record as stale."""
+    value = record[key]
+    if not isinstance(value, str):
+        raise TypeError(f"{key} is not text")
+    return datetime.datetime.fromisoformat(value)
+
+
+def lend_routine(record: _Record, on: bool) -> _Record:
     """Pure. A copy of `record` with `LENT_KEY` True when `on`, and without the key when not."""
     if on:
         return {**record, LENT_KEY: True}
     return {key: value for key, value in record.items() if key != LENT_KEY}
 
 
-def lease_ttl_for(record: dict[str, Any] | None, now: datetime.datetime, margin_seconds: int = DEFAULT_LEASE_TTL_SECONDS) -> int:
+def lease_ttl_for(record: _Record | None, now: datetime.datetime, margin_seconds: int = DEFAULT_LEASE_TTL_SECONDS) -> int:
     """Pure: whole seconds from `now` to an aware, future `until` rounded up, plus the margin; never below the default TTL."""
     until = _until(record)
     if until is None or until <= now:
@@ -88,19 +108,19 @@ def lease_ttl_for(record: dict[str, Any] | None, now: datetime.datetime, margin_
     return max(math.ceil((until - now).total_seconds()) + margin_seconds, DEFAULT_LEASE_TTL_SECONDS)
 
 
-def _is_holder(record: dict[str, Any], session: str, pid: int, host: str) -> bool:
+def _is_holder(record: _Record, session: str, pid: int, host: str) -> bool:
     """A caller holds `record` only when its session, pid and host all match what     was recorded — the label alone is not proof of identity."""
     return record.get("session") == session and record.get("pid") == pid and record.get("host") == host
 
 
-def liveness(record: dict[str, Any] | None, pid_alive_: bool, now: datetime.datetime, host: str, heartbeat_minutes: int = DEFAULT_HEARTBEAT_MINUTES) -> str:
+def liveness(record: _Record | None, pid_alive_: bool, now: datetime.datetime, host: str, heartbeat_minutes: int = DEFAULT_HEARTBEAT_MINUTES) -> str:
     """Pure: pid_alive_ is consulted only when record's host is host; a fresh heartbeat from another host is live regardless.
     A silent heartbeat on this host with an aware `until` not yet passed reads live while the pid is alive and crashed once it is dead.
     Without such an `until`, or on another host, a silent heartbeat reads stale."""
     if record is None:
         return "none"
     try:
-        heartbeat_at = datetime.datetime.fromisoformat(record["heartbeat_at"])
+        heartbeat_at = _iso(record, "heartbeat_at")
         age = now - heartbeat_at
     except (KeyError, TypeError, ValueError):
         return "stale"
@@ -114,10 +134,12 @@ def liveness(record: dict[str, Any] | None, pid_alive_: bool, now: datetime.date
     return "live"
 
 
-def _until(record: dict[str, Any] | None) -> datetime.datetime | None:
+def _until(record: _Record | None) -> datetime.datetime | None:
     """The record's `until` as an aware datetime; a missing, malformed or naive one reads as None."""
+    if record is None:
+        return None
     try:
-        parsed = datetime.datetime.fromisoformat(record["until"])
+        parsed = _iso(record, "until")
     except (KeyError, TypeError, ValueError):
         return None
     return parsed if parsed.tzinfo else None
@@ -127,47 +149,53 @@ _NO_SPAN = datetime.timedelta(0)
 _MAX_SPAN = datetime.timedelta(days=365)
 
 
-def _window(record: dict[str, Any]) -> datetime.timedelta | None:
+def _window(record: _Record) -> datetime.timedelta | None:
     """The renewal span: `window_seconds` if numeric, else `until - taken_at`. None unless `until` and `taken_at` are aware and the span is positive and at most a year."""
     stored = record.get("window_seconds")
     try:
-        taken_at = datetime.datetime.fromisoformat(record["taken_at"])
-        span = datetime.timedelta(seconds=stored) if isinstance(stored, int | float) and not isinstance(stored, bool) else _until(record) - taken_at
+        taken_at = _iso(record, "taken_at")
+        if isinstance(stored, int | float) and not isinstance(stored, bool):
+            span = datetime.timedelta(seconds=stored)
+        else:
+            until = _until(record)
+            if until is None:  # a missing or naive `until` has no span
+                return None
+            span = until - taken_at
     except (KeyError, TypeError, ValueError, OverflowError):
         return None
     return span if taken_at.tzinfo and _until(record) is not None and _NO_SPAN < span <= _MAX_SPAN else None
 
 
-def expired(record: dict[str, Any] | None, now: datetime.datetime) -> bool:
+def expired(record: _Record | None, now: datetime.datetime) -> bool:
     """Pure: the record carries an `until` before `now`. No `until` never expires."""
     until = _until(record)
     return until is not None and until < now
 
 
-def hours_left(record: dict[str, Any] | None, now: datetime.datetime) -> float | None:
+def hours_left(record: _Record | None, now: datetime.datetime) -> float | None:
     """Pure: hours from `now` to the record's `until`, negative once past; None with no usable `until`."""
     until = _until(record)
     return None if until is None else (until - now).total_seconds() / 3600
 
 
-def extend(record: dict[str, Any], now: datetime.datetime, hours: float) -> dict[str, Any]:
+def extend(record: _Record, now: datetime.datetime, hours: float) -> _Record:
     """Pure: a copy of `record` whose `until` is `hours` after `now`; `window_seconds` records the span a loop beat renews."""
     span = datetime.timedelta(hours=hours)
     return {**record, "until": (now + span).isoformat(), "window_seconds": span.total_seconds()}
 
 
-def _held_by_line(record: dict[str, Any]) -> str:
+def _held_by_line(record: _Record) -> str:
     until = f" until {record['until']}" if "until" in record else ""
     return f"held by {record.get('session', '?')} (pid {record.get('pid', '?')}) on {record.get('host', '?')}{until}"
 
 
-def displaced_line(record: dict[str, Any]) -> str:
+def displaced_line(record: _Record) -> str:
     """Pure: one line naming the session, pid and host a take displaced."""
     return f"chair: displaced {record.get('session', '?')} (pid {record.get('pid', '?')}) on {record.get('host', '?')}"
 
 
 def take(
-    record: dict[str, Any] | None,
+    record: _Record | None,
     session: str,
     pid: int,
     host: str,
@@ -179,23 +207,24 @@ def take(
     hours: float | None = None,
     model: str | None = None,
     cwd: str | None = None,
-) -> tuple[dict[str, Any] | None, str]:
+) -> tuple[_Record | None, str]:
     """Pure. A live record past its `until` is taken like a stale one, and under `steal` a live holder other than the caller is taken too; the caller's own live record still returns None so the CLI retakes its lease. `hours` stamps the new record's `until`; a None `model`, `claude_session` or `cwd` leaves its key absent. `session_id` repeats `claude_session`, the key bare `cox` resumes by."""
     state = liveness(record, pid_alive_, now, host, heartbeat_minutes)
-    lapsed = state == "live" and expired(record, now)
-    if state == "live" and not lapsed and (not steal or same_holder(record, session, pid, host)):
-        return None, f"chair: {_held_by_line(record)}"
-    if (lapsed or state in ("stale", "crashed")) and not steal:
-        why = f"takeover expired at {record['until']}" if lapsed else state
-        return None, f"chair: {_held_by_line(record)} ({why}; pass --steal to take over)"
+    if record is not None:
+        lapsed = state == "live" and expired(record, now)
+        if state == "live" and not lapsed and (not steal or same_holder(record, session, pid, host)):
+            return None, f"chair: {_held_by_line(record)}"
+        if (lapsed or state in ("stale", "crashed")) and not steal:
+            why = f"takeover expired at {record['until']}" if lapsed else state
+            return None, f"chair: {_held_by_line(record)} ({why}; pass --steal to take over)"
     taken_at = now.isoformat()
-    base = {"session": session, "pid": pid, "host": host, "taken_at": taken_at, "heartbeat_at": taken_at, "runs": [], "claude_session": claude_session}
-    extras = {**({"model": model} if model is not None else {}), **({"session_id": claude_session} if claude_session else {}), **({"cwd": cwd} if cwd else {})}
-    new_record = {**base, **extras}
+    base: _Record = {"session": session, "pid": pid, "host": host, "taken_at": taken_at, "heartbeat_at": taken_at, "runs": [], "claude_session": claude_session}
+    extras: _Record = {**({"model": model} if model is not None else {}), **({"session_id": claude_session} if claude_session else {}), **({"cwd": cwd} if cwd else {})}
+    new_record: _Record = {**base, **extras}
     return (new_record if hours is None else extend(new_record, now, hours)), ""
 
 
-def same_holder(record: dict[str, Any] | None, session: str, pid: int, host: str) -> bool:
+def same_holder(record: _Record | None, session: str, pid: int, host: str) -> bool:
     """Pure: the record names this session, pid and host. No record names no one."""
     return record is not None and _is_holder(record, session, pid, host)
 
@@ -205,7 +234,7 @@ def claude_session_from_env(environ: Mapping[str, str]) -> str | None:
     return environ.get("CLAUDE_CODE_SESSION_ID") or environ.get("CLAUDE_SESSION_ID") or None
 
 
-def is_caller_holder(record: dict[str, Any] | None, environ: Mapping[str, str], host: str) -> bool:
+def is_caller_holder(record: _Record | None, environ: Mapping[str, str], host: str) -> bool:
     """Pure. The caller holds `record` when it is on the record's host and its CLAUDE_PID equals the recorded pid, or its Claude session id equals the recorded one."""
     if record is None or record.get("host") != host:
         return False
@@ -215,16 +244,17 @@ def is_caller_holder(record: dict[str, Any] | None, environ: Mapping[str, str], 
     return by_pid or (recorded_session is not None and recorded_session == claude_session_from_env(environ))
 
 
-def resolve_holder_label(record: dict[str, Any] | None, state: str, environ: Mapping[str, str], host: str, explicit: str | None) -> str | None:
+def resolve_holder_label(record: _Record | None, state: str, environ: Mapping[str, str], host: str, explicit: str | None) -> str | None:
     """Pure. An explicit label stands, so a mismatch still reaches `guard`. Without one, a live record the caller holds names its own session."""
     if explicit:
         return explicit
     if record is not None and state == "live" and is_caller_holder(record, environ, host):
-        return record.get("session")
+        session = record.get("session")
+        return session if isinstance(session, str) else None
     return None
 
 
-def adopt_session(record: dict[str, Any] | None, state: str, environ: Mapping[str, str], host: str) -> dict[str, Any] | None:
+def adopt_session(record: _Record | None, state: str, environ: Mapping[str, str], host: str) -> _Record | None:
     """Pure. A live lease the caller holds by pid but that recorded no session gets the caller's, so a later bare `cox` can resume it. Returns `record` itself when nothing changes."""
     sid = claude_session_from_env(environ)
     if record is None or state != "live" or sid is None or holder_session_id(record) or not is_caller_holder(record, environ, host):
@@ -232,21 +262,22 @@ def adopt_session(record: dict[str, Any] | None, state: str, environ: Mapping[st
     return {**record, "session_id": sid, "claude_session": sid}
 
 
-def holder_session_id(record: Mapping[str, Any]) -> str | None:
-    return record.get("session_id") or record.get("claude_session") or None
+def holder_session_id(record: Mapping[str, object]) -> str | None:
+    found = record.get("session_id") or record.get("claude_session") or None
+    return found if isinstance(found, str) else None
 
 
-def release_requested(record: dict[str, Any] | None) -> bool:
+def release_requested(record: _Record | None) -> bool:
     """Pure. A takeover has asked the record's holder to release."""
     return record is not None and bool(record.get("release_requested_by"))
 
 
-def request_release(record: dict[str, Any], by: str, now: datetime.datetime) -> dict[str, Any]:
+def request_release(record: _Record, by: str, now: datetime.datetime) -> _Record:
     """Pure. A copy of `record` carrying the takeover's request; `beat` keeps unknown keys, so it stays until the holder honours it."""
     return {**record, "release_requested_by": by, "release_requested_at": now.isoformat()}
 
 
-def session_line(record: dict[str, Any] | None, state: str, environ: Mapping[str, str], host: str) -> str:
+def session_line(record: _Record | None, state: str, environ: Mapping[str, str], host: str) -> str:
     """Pure. The one SessionStart line: this session holds a live chair (`taken_over_from` on the lease, when present, names who it replaced), or it does not."""
     if record is None:
         return "chair: none"
@@ -258,7 +289,7 @@ def session_line(record: dict[str, Any] | None, state: str, environ: Mapping[str
     return f"chair: held by {record.get('session', '?')} on {record.get('host', '?')}; not the chair"
 
 
-def settle_resumed(record: dict[str, Any] | None, state: str, environ: Mapping[str, str], host: str) -> dict[str, Any] | None:
+def settle_resumed(record: _Record | None, state: str, environ: Mapping[str, str], host: str) -> _Record | None:
     """Pure. The `resumed` stamp belongs to the one SessionStart line that announces it, so the holder's copy drops it. Returns `record` itself when nothing changes."""
     if record is None or not record.get("resumed") or state != "live" or not is_caller_holder(record, environ, host):
         return record
@@ -266,7 +297,7 @@ def settle_resumed(record: dict[str, Any] | None, state: str, environ: Mapping[s
 
 
 def beat(
-    record: dict[str, Any] | None,
+    record: _Record | None,
     session: str,
     pid: int,
     host: str,
@@ -274,15 +305,16 @@ def beat(
     run_id: str | None = None,
     claude_session: str | None = None,
     extend_window: bool = False,
-) -> tuple[dict[str, Any] | None, str]:
+) -> tuple[_Record | None, str]:
     """Pure. A None `claude_session` keeps the recorded one, so a beat from a shell without the env var does not erase it. Under `extend_window` a usable window moves `until` to `now` plus that window."""
     if record is None or not _is_holder(record, session, pid, host):
         return None, f"chair: not held by {session} (pid {pid}) on {host}"
-    existing_runs = record.get("runs", [])
+    recorded_runs = record.get("runs", [])
+    existing_runs = recorded_runs if is_list(recorded_runs) else []
     runs = existing_runs if run_id is None or run_id in existing_runs else [*existing_runs, run_id]
     kept = claude_session if claude_session is not None else record.get("claude_session")
     window = _window(record) if extend_window else None
-    renewed = {} if window is None else {"until": (now + window).isoformat(), "window_seconds": window.total_seconds()}
+    renewed: _Record = {} if window is None else {"until": (now + window).isoformat(), "window_seconds": window.total_seconds()}
     return {**record, "heartbeat_at": now.isoformat(), "runs": runs, "claude_session": kept, **renewed}, ""
 
 
@@ -291,7 +323,7 @@ def honour_release_request(runs_dir: Path | str, session: str, pid: int, host: s
     runs_dir = Path(runs_dir)
     with locked(runs_dir):
         record = read(runs_dir)
-        if not (release_requested(record) and _is_holder(record, session, pid, host)):
+        if record is None or not (release_requested(record) and _is_holder(record, session, pid, host)):
             return False
         release_lease(runs_dir, session, pid, host)
         write(runs_dir, None)
@@ -321,8 +353,8 @@ def beat_loop(
     *,
     runs_dir: Path | str,
     interval: float | None = None,
-    clock=time,
-    alive=os.kill,
+    clock: _Sleeper = time,
+    alive: Callable[[int, int], None] = os.kill,
     environ: Mapping[str, str] = os.environ,
 ) -> int:
     """Edge. Beats the chair at `runs_dir` for `label`/`pid` every `interval`
@@ -330,6 +362,7 @@ def beat_loop(
     prints `beat`'s reason and returns 2 the first time it can't renew, 0 once
     `alive(pid, 0)` raises `ProcessLookupError`. A `PermissionError` from
     `alive` means the pid is alive but unsignallable, same as `pid_alive`."""
+    runs_dir = Path(runs_dir)
     tick = DEFAULT_HEARTBEAT_MINUTES * 60 / 2 if interval is None else interval
     host = socket.gethostname()
     print(BEAT_LOOP_DEPRECATION, file=sys.stderr)
@@ -367,7 +400,7 @@ def beat_loop(
                 return 0
 
 
-def release(record: dict[str, Any] | None, session: str, pid: int, host: str) -> tuple[dict[str, Any] | None, str]:
+def release(record: _Record | None, session: str, pid: int, host: str) -> tuple[_Record | None, str]:
     """Pure."""
     if record is None:
         return None, "chair: no lock held"
@@ -376,7 +409,7 @@ def release(record: dict[str, Any] | None, session: str, pid: int, host: str) ->
     return None, ""
 
 
-def guard(record: dict | None, holder: str, state: str) -> str | None:
+def guard(record: _Record | None, holder: str, state: str) -> str | None:
     """The one-line refusal when a LIVE lock belongs to another holder, else None."""
     if record is None or state != "live" or record.get("session") == holder:
         return None
@@ -392,8 +425,9 @@ def chair_path(runs_dir: Path) -> Path:
 leader_path = chair_path
 
 
-def read(runs_dir: Path) -> dict[str, Any] | None:
-    """Edge. Tries chair.json first; falls back to leader.json so a lock taken before this rename is not orphaned."""
+def read(runs_dir: Path) -> _Record | None:
+    """Edge. Tries chair.json first; falls back to leader.json so a lock taken before this rename is not orphaned.
+    A record that decodes to anything but an object reads as `{}`, which `liveness` calls stale."""
     runs_dir = Path(runs_dir)
     try:
         text = chair_path(runs_dir).read_text(encoding="utf-8")
@@ -402,10 +436,13 @@ def read(runs_dir: Path) -> dict[str, Any] | None:
             text = (runs_dir / _LEGACY_LEADER_FILENAME).read_text(encoding="utf-8")
         except FileNotFoundError:
             return None
-    return json.loads(text)
+    record: object = json.loads(text)
+    if record is None:
+        return None
+    return record if is_dict(record) else {}
 
 
-def write(runs_dir: Path, record: dict[str, Any] | None) -> None:
+def write(runs_dir: Path, record: _Record | None) -> None:
     """Edge. Always clears the legacy leader.json too, so a lock read through the fallback is actually released, and a beat leaves at most one lock file behind."""
     runs_dir = Path(runs_dir)
     path = chair_path(runs_dir)
@@ -421,7 +458,7 @@ def write(runs_dir: Path, record: dict[str, Any] | None) -> None:
     legacy.unlink(missing_ok=True)
 
 
-def lease_holder(session: str, pid: int, host: str) -> str:
+def lease_holder(session: str, pid: object, host: str) -> str:
     """Pure. The one holder string the store lease sees for a (session, pid, host) triple."""
     return f"{session}@{host}:{pid}"
 
@@ -451,14 +488,14 @@ def _lease_path(runs_dir: Path) -> Path:
     return Path(runs_dir) / LEASE_FILENAME
 
 
-def _read_lease(runs_dir: Path, holder: str) -> dict[str, Any] | None:
+def _read_lease(runs_dir: Path, holder: str) -> _LeaseSidecar | None:
     """Edge. The sidecar record when it is this holder's and carries an integer epoch, else None."""
     try:
-        parsed = json.loads(_lease_path(runs_dir).read_text(encoding="utf-8"))
+        parsed: object = json.loads(_lease_path(runs_dir).read_text(encoding="utf-8"))
     except (FileNotFoundError, ValueError):
         return None
-    if isinstance(parsed, dict) and parsed.get("holder") == holder and isinstance(parsed.get("epoch"), int):
-        return parsed
+    if is_dict(parsed) and parsed.get("holder") == holder and isinstance(epoch := parsed.get("epoch"), int):
+        return {"holder": holder, "epoch": epoch}
     return None
 
 
@@ -526,16 +563,18 @@ def pid_alive(pid: int) -> bool:
     return True
 
 
-def clear(runs_dir: Path, force: bool = False) -> tuple[Path, dict[str, Any]] | None:
+def clear(runs_dir: Path, force: bool = False) -> tuple[Path, _Record] | None:
     """Edge. Removes whichever lock file is present unless its recorded pid is live and force is False; returns the path and holder removed, or None."""
     runs_dir = Path(runs_dir)
     primary = chair_path(runs_dir)
     path = primary if primary.exists() else runs_dir / _LEGACY_LEADER_FILENAME
     try:
-        record = json.loads(path.read_text(encoding="utf-8"))
+        decoded: object = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
-    if pid_alive(record.get("pid")) and not force:
+    record: _Record = decoded if is_dict(decoded) else {}  # a record that is not an object names no live pid
+    pid = record.get("pid")
+    if isinstance(pid, int) and pid_alive(pid) and not force:
         return None
     path.unlink(missing_ok=True)
     return path, record

@@ -13,7 +13,7 @@ def _review_action(entry: ReviewPr) -> list[Action]:
                 "repo": entry["repo"],
                 "url": entry["url"],
                 "merged_at": entry["merged_at"],
-            }  # type: ignore[list-item]  # plan_tick stamps the epoch
+            }
         ]
     if entry["state"] == "closed":
         return [
@@ -24,7 +24,7 @@ def _review_action(entry: ReviewPr) -> list[Action]:
                 "task_id": entry["task_id"],
                 "url": entry["url"],
                 "cause": REVIEW_CLOSED_CAUSE,
-            }  # type: ignore[list-item]
+            }
         ]
     return []
 

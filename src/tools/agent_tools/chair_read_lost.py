@@ -8,7 +8,6 @@ the one `run_exited` applies, keyed here by run id rather than by initiative: a 
 from collections.abc import Collection, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 from agent_tools import epic, run_store
 from agent_tools.chair_facts import run_initiative
@@ -16,7 +15,7 @@ from agent_tools.chair_read_exits import exit_rows, row_exited
 from agent_tools.chair_read_remote_unfetched import is_remote_unfetched
 from agent_tools.remote_lane import fetched_record_path, remote_record_path
 
-Row = Mapping[str, Any]
+Row = Mapping[str, object]
 
 DEFAULT_THRESHOLD_S = 600
 

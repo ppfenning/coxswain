@@ -4,8 +4,6 @@ The shapers are pure and `gather_facts` calls each source once. The only clock i
 No retry state is stored: `harness_failures` is counted from run history on every call.
 """
 
-from typing import Any
-
 from agent_tools.chair_facts_derive import DEFAULT_HOUSEKEEPING_HOURS as DEFAULT_HOUSEKEEPING_HOURS
 from agent_tools.chair_facts_derive import DEFAULT_STALE_DAYS as DEFAULT_STALE_DAYS
 from agent_tools.chair_facts_derive import dispatch_facts as dispatch_facts
@@ -29,7 +27,7 @@ from core import module_facade
 # H9 (docs/hardening.md): the facts live in the part modules above.
 # This module answers for every name they define, and a write (a test's monkeypatch) reaches every part that
 # holds the name (core.module_facade). Callers' names are re-exported here, typed; the rest resolve on read.
-def __getattr__(name: str) -> Any:
+def __getattr__(name: str) -> object:
     return module_facade.attribute(__name__, name)
 
 

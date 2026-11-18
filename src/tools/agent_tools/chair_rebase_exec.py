@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol
 
 from agent_tools.chair_rebase import backup_ref
-from agent_tools.chair_types import Action, ActionKind
+from agent_tools.chair_types import Action, ActionKind, action_text
 
 if TYPE_CHECKING:
     from agent_tools.chair_exec import Result
@@ -26,24 +26,24 @@ class RebasePort(Protocol):
 
 
 def _moved_stop(action: Action, tip: str) -> Action:
-    initiative, phase, branch = action["initiative"], action["phase"], action["branch"]
+    initiative, phase, branch = action_text(action, "initiative"), action_text(action, "phase"), action_text(action, "branch")
     return {
         "kind": ActionKind.NEEDS_CHAIR, "initiative": initiative, "phase": phase, "cause": "rebase_tip_moved",
         "epoch": action.get("epoch", 0),
         "reason": f"initiative {initiative} phase {phase}: {branch} is at {tip[:8]}, "
-        f"not the planned {action['tip'][:8]}; nothing was changed",
+        f"not the planned {action_text(action, 'tip')[:8]}; nothing was changed",
     }
 
 
 def _moved(action: Action, tip: str) -> Result:
-    reason = f"branch {action['branch']} moved since planning"
+    reason = f"branch {action_text(action, 'branch')} moved since planning"
     return {"action": action, "status": "refused", "reason": reason, "needs_chair": _moved_stop(action, tip)}
 
 
 def perform_rebase(action: Action, port: RebasePort) -> Result:
     """Recreates only after the backup ref is confirmed; at base with that backup present is a no-op."""
-    branch, base = action["branch"], action["base"]
-    ref = backup_ref(branch, action["tip"])
+    branch, base = action_text(action, "branch"), action_text(action, "base")
+    ref = backup_ref(branch, action_text(action, "tip"))
     try:
         tip = port.branch_tip(branch)
         if tip is None:
@@ -55,7 +55,7 @@ def perform_rebase(action: Action, port: RebasePort) -> Result:
                 if port.ref_exists(ref)
                 else _moved(action, tip)
             )
-        if tip != action["tip"]:
+        if tip != action_text(action, "tip"):
             return _moved(action, tip)
         if not port.ref_exists(ref):
             port.create_ref(ref, tip)

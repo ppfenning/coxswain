@@ -18,7 +18,7 @@ import sqlite3
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import TypedDict, cast
 
 from agent_tools import (
     run_store,
@@ -30,7 +30,7 @@ from agent_tools import (
     stats_tiers,
     stats_tiers_cmd,
 )
-from agent_tools.chair_types import HostTuning, MeterFacts, TuningFacts
+from agent_tools.chair_types import DispatchFacts, HostTuning, MeterFacts, TuningFacts
 from agent_tools.store_dialect import connect_readonly_url, is_postgres
 
 WINDOW_DAYS = 7
@@ -42,8 +42,23 @@ ROLE_KEYS = {
 }
 READ_ERRORS = (*run_store._DB_ERRORS, RuntimeError, OSError)
 
-Row = dict[str, Any]
-Rows = Sequence[Mapping[str, Any]]
+
+
+class TierStat(TypedDict):
+    """One role's row at one tier; `chair_tune_tiers.TierRow` is what the rules read it back as."""
+
+    role: str
+    tier: str
+    model: str
+    runs: int
+    approval_pct: float | None
+    cost_per_approved: float | None
+    settings_key: str | None
+    current: bool
+
+
+Row = TierStat
+Rows = Sequence[Mapping[str, object]]
 
 
 def settings_key_for(role: str) -> str | None:
@@ -52,15 +67,16 @@ def settings_key_for(role: str) -> str | None:
     return key if key is not None and settings_model.setting_for("cartridge", key) is not None else None
 
 
-def current_tiers(cartridge: dict) -> dict[str, str]:
+def current_tiers(cartridge: dict[str, object]) -> dict[str, str]:
     """Role to its configured tier, read through the settings model; a role whose key the cartridge lacks is absent."""
     values = {r.key: r.value for rows in settings_model.rows(cartridge, {}, {}).values() for r in rows}
-    return cast(dict[str, str], {role: values[key] for role, key in ROLE_KEYS.items() if isinstance(values.get(key), str)})
+    return {role: value for role, key in ROLE_KEYS.items() if isinstance(value := values.get(key), str)}
 
 
-def _model_key(row: Mapping[str, Any]) -> str | None:
+def _model_key(row: Mapping[str, object]) -> str | None:
     """The model id, else the alias, as `cox stats tiers` keys a call."""
-    return row.get("model_id") if row.get("model_id") is not None else row.get("model")
+    key = row.get("model_id") if row.get("model_id") is not None else row.get("model")
+    return key if isinstance(key, str) else None
 
 
 def _approval(summary: stats_tiers.ModelSummary, tasks: Rows, calls: Rows) -> float | None:
@@ -81,10 +97,10 @@ def _cost(summary: stats_tiers.ModelSummary, models: Mapping[str, Mapping[str, s
 def _tier_partition(tier: str, joined: Rows, tasks: Rows, calls: Rows, current: Mapping[str, str]) -> list[Row]:
     models = stats_models.summarise(stats_models_cmd.to_model_calls(joined))
     candidates = [
-        {
-            "role": s.role, "tier": tier, "model": s.model, "runs": s.tasks, "approval_pct": approval,
-            "cost_per_approved": cost, "settings_key": settings_key_for(s.role), "current": current.get(s.role) == tier,
-        }
+        TierStat(
+            role=s.role, tier=tier, model=s.model, runs=s.tasks, approval_pct=approval,
+            cost_per_approved=cost, settings_key=settings_key_for(s.role), current=current.get(s.role) == tier,
+        )
         for s in stats_tiers.summarise(stats_tiers_cmd.to_tier_rows(joined))
         for approval, cost in [(_approval(s, tasks, calls), _cost(s, models))]
     ]
@@ -97,7 +113,7 @@ def _tier_partition(tier: str, joined: Rows, tasks: Rows, calls: Rows, current: 
 
 def tier_rows(joined: Rows, gate_tasks: Rows, gate_calls: Rows, current: Mapping[str, str]) -> list[Row]:
     """`TierRow`-shaped dicts from `stats_query.tier_call_rows` and `gates_inputs` output, as the module says."""
-    tiers = sorted({r["tier"] for r in joined if r.get("tier")})
+    tiers = sorted({tier for r in joined if isinstance(tier := r.get("tier"), str) and tier})
     return [
         row
         for tier in tiers
@@ -112,7 +128,7 @@ def meter_facts(used_fraction: float, week_elapsed_fraction: float) -> MeterFact
     return {"weekly_fraction_used": used_fraction, "week_elapsed_fraction": week_elapsed_fraction}
 
 
-def current_lanes(dispatch: Mapping[str, Any]) -> dict[str, int]:
+def current_lanes(dispatch: DispatchFacts) -> dict[str, int]:
     """Host to lane count: the local machine under "" at `max_in_flight`, a lane host only when it carries a capacity."""
     return {"": int(dispatch["max_in_flight"]), **{h["name"]: int(h["capacity"]) for h in dispatch["hosts"] if "capacity" in h}}
 
@@ -125,18 +141,18 @@ def host_facts(lanes: Mapping[str, int], bounds: Mapping[str, tuple[int, int]]) 
     }
 
 
-def last_tuned_at(rows: Iterable[Mapping[str, Any]]) -> str | None:
+def last_tuned_at(rows: Iterable[Mapping[str, object]]) -> str | None:
     """The greatest `ts` among tune_lanes and propose_tiers rows, whatever their status; None with none."""
     found = [str(r["ts"]) for r in rows if r.get("kind") in TUNING_KINDS and r.get("ts")]
     return max(found) if found else None
 
 
 def tuning_facts(
-    stats: Sequence[Mapping[str, Any]], last: str | None, used_fraction: float, week_elapsed_fraction: float,
+    stats: Sequence[Mapping[str, object]], last: str | None, used_fraction: float, week_elapsed_fraction: float,
     lanes: Mapping[str, int], bounds: Mapping[str, tuple[int, int]],
 ) -> TuningFacts:
     return {
-        "stats": cast("list[dict[str, object]]", list(stats)), "meter": meter_facts(used_fraction, week_elapsed_fraction),
+        "stats": [dict(row) for row in stats], "meter": meter_facts(used_fraction, week_elapsed_fraction),
         "hosts": host_facts(lanes, bounds), "last_tuned_at": last,
     }
 

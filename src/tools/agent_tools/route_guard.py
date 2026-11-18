@@ -59,7 +59,7 @@ def resolve_target(store: Sequence[Mapping], id: str) -> Target:
     return NotFound(id)
 
 
-def fresh_initiative_id(intake_id: str, rows: Sequence[Mapping]) -> str:
+def fresh_initiative_id(intake_id: str, rows: Sequence[Mapping[str, object]]) -> str:
     """`rows` are queue rows. Only a dropped initiative with the intake id forces a new id; a live one keeps it. The new id is the first `id-N`, N from 2, that no initiative row uses in any state."""
     initiatives = [row for row in rows if row.get("kind") == "initiative"]
     taken = frozenset(row.get("task_id") for row in initiatives)

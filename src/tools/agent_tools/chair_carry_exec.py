@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol
 
 from agent_tools import chair_carry
-from agent_tools.chair_types import Action
+from agent_tools.chair_types import Action, CarryTask, action_text
 from agent_tools.land import pr_footer
 
 if TYPE_CHECKING:  # the later wiring item imports this module from chair_exec; a runtime import would cycle
@@ -57,26 +57,33 @@ def _stopped(stop: Action) -> Result:
     return {"action": stop, "status": "escalated", "reason": stop.get("reason", "")}
 
 
+def _picks(action: Action) -> list[CarryTask]:
+    """The picks a carry names; KeyError, as indexing raised, when the action carries none."""
+    if "picks" not in action:
+        raise KeyError("picks")
+    return action["picks"]
+
+
 def _pr_text(action: Action) -> tuple[str, str]:
     """Title and body for the carry PR; the body ends with the footer the land path adds."""
-    title = f"Carry {action['initiative']} {action['phase']}"
-    tasks = [f"- {pick['task']} ({pick['commit']})" for pick in action["picks"]]
+    title = f"Carry {action_text(action, 'initiative')} {action_text(action, 'phase')}"
+    tasks = [f"- {pick['task']} ({pick['commit']})" for pick in _picks(action)]
     return title, "\n".join([title, "", *tasks, "", pr_footer(None)])
 
 
 def _finish(action: Action, store: StorePort, diverged: list[str]) -> Result:
-    for pick in action["picks"]:
+    for pick in _picks(action):
         store.mark_landed(pick["task"], pick["run"])  # an already-on-main pick is marked with its own run
         store.set_done(pick["task"])
     return {"action": action, "status": "done", "reason": "; ".join(diverged)}
 
 
 def perform_carry(action: Action, git: GitPort, forge: ForgePort, store: StorePort) -> Result:
-    initiative, phase, picks = action["initiative"], action["phase"], action["picks"]
+    initiative, phase, picks = action_text(action, "initiative"), action_text(action, "phase"), _picks(action)
     diverged: list[str] = []
     for host, branch in dict.fromkeys((p["host"], p["branch"]) for p in picks):
         diverged.extend(git.fetch_branch(host, branch) or [])
-    git.create_branch_from_main(action["pr_branch"])
+    git.create_branch_from_main(action_text(action, "pr_branch"))
     picked = 0
     for pick in picks:
         if git.already_on_main(pick["commit"]):
@@ -90,9 +97,9 @@ def perform_carry(action: Action, git: GitPort, forge: ForgePort, store: StorePo
     failing = git.run_checks()
     if failing:
         return _stopped(chair_carry.checks_failed_stop(initiative, phase, failing))
-    git.push(action["pr_branch"])
+    git.push(action_text(action, "pr_branch"))
     title, body = _pr_text(action)
-    pr = forge.open_pr(action["pr_branch"], title, body)
+    pr = forge.open_pr(action_text(action, "pr_branch"), title, body)
     failing = forge.wait_checks(pr)
     if failing:
         return _stopped(chair_carry.checks_failed_stop(initiative, phase, failing))

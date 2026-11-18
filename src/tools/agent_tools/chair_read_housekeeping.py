@@ -8,7 +8,7 @@ from agent_tools import run_store
 SKIPPED_STATUSES = frozenset({"dry_run", "refused"})
 
 
-def latest_housekeeping(rows: Iterable[Mapping]) -> str | None:
+def latest_housekeeping(rows: Iterable[Mapping[str, object]]) -> str | None:
     """The greatest `ts` among rows whose `kind` is `housekeeping`; None with no such row.
 
     A row whose `status` is `dry_run` or `refused` did not actually run housekeeping, and a row

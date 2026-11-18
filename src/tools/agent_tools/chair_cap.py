@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import yaml
 
+from core.jsontypes import is_dict, is_list, is_mapping
 
-def _load(text: str | None) -> dict:
+
+def _load(text: str | None) -> dict[str, object]:
     try:
-        data = yaml.safe_load(text) if text is not None else None
+        data: object = yaml.safe_load(text) if text is not None else None
     except yaml.YAMLError:
         return {}
-    return data if isinstance(data, dict) else {}
+    return data if is_dict(data) else {}
 
 
 LOCAL_LANES = ("any", "decompose")
@@ -18,8 +20,8 @@ LOCAL_LANES = ("any", "decompose")
 
 def _dispatch_key(text: str | None, key: str) -> object:
     policy = _load(text).get("policy")
-    dispatch = policy.get("dispatch") if isinstance(policy, dict) else None
-    return dispatch.get(key) if isinstance(dispatch, dict) else None
+    dispatch = policy.get("dispatch") if is_mapping(policy) else None
+    return dispatch.get(key) if is_mapping(dispatch) else None
 
 
 def cap_from_cartridge(text: str | None) -> int | None:
@@ -39,4 +41,4 @@ def extends_of(text: str | None) -> list[str]:
     parents = _load(text).get("extends")
     if isinstance(parents, str):
         return [parents]
-    return [p for p in parents if isinstance(p, str)] if isinstance(parents, list) else []
+    return [p for p in parents if isinstance(p, str)] if is_list(parents) else []

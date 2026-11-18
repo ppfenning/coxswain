@@ -6,8 +6,6 @@ Argv spellings follow `cox runs land --help` and `cox route launch epic|decompos
 
 from __future__ import annotations
 
-from typing import Any
-
 from agent_tools.chair_exec_act import escalation as escalation
 from agent_tools.chair_exec_act import lane_writer as lane_writer
 from agent_tools.chair_exec_act import perform as perform
@@ -63,7 +61,7 @@ __all__ = [
 # H9 (docs/hardening.md): the executor lives in the part modules above.
 # This module answers for every name they define, and a write (a test's monkeypatch) reaches every part that
 # holds the name (core.module_facade). Callers' names are re-exported here, typed; the rest resolve on read.
-def __getattr__(name: str) -> Any:
+def __getattr__(name: str) -> object:
     return module_facade.attribute(__name__, name)
 
 

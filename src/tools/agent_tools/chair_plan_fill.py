@@ -4,13 +4,21 @@ Pure. free_lanes comes from the caller; only host_free_slots reads dispatch and 
 """
 from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import datetime
-from typing import NamedTuple, cast
+from typing import NamedTuple
 
 from agent_tools import chair_login_watch, host_load
 from agent_tools.chair_plan_recover import budget_verdict
 from agent_tools.chair_schedule import Schedule
 from agent_tools.chair_steer import steer_check
-from agent_tools.chair_types import Action, ActionKind, Facts, InitiativeFacts, RunningInitiative, SteerPolicy
+from agent_tools.chair_types import (
+    Action,
+    ActionKind,
+    Facts,
+    InitiativeFacts,
+    RunningInitiative,
+    SteerPolicy,
+    action_text,
+)
 from agent_tools.checkout_env import blocks_launch, host_env_verdict, sync_instruction
 
 # name, weight (a host's share of new placements; its capacity when the hosts table sets none),
@@ -21,7 +29,7 @@ HostSlot = tuple[str, int, frozenset[str], int, int]
 class HostEnv(NamedTuple):
     """host_env: host name to its versions record; reported: `host|repo` keys a stale_checkout already named."""
 
-    records: Mapping[str, Mapping]
+    records: Mapping[str, Mapping[str, object]]
     reported: frozenset[str]
 
 
@@ -102,7 +110,7 @@ def _after_placing(hosts: Sequence[HostSlot], actions: Sequence[Action]) -> list
 def _barred_hosts(initiative: InitiativeFacts, hosts: Sequence[HostSlot], env: HostEnv) -> dict[str, str]:
     """Host name to a blocking verdict for the initiative's repo_dir, for each host with a free lane."""
     repo_dir = initiative.get("repo_dir", "")
-    verdicts = {name: host_env_verdict(dict(env.records.get(name, {})), repo_dir) for name, *_, free, _ in hosts if free > 0}
+    verdicts = {name: host_env_verdict(env.records.get(name, {}), repo_dir) for name, *_, free, _ in hosts if free > 0}
     return {name: verdict for name, verdict in verdicts.items() if blocks_launch(verdict)}
 
 
@@ -183,7 +191,7 @@ def _walk_candidates(
 
 def _once_per_reason(actions: Sequence[Action]) -> list[Action]:
     """The first action for each distinct reason: several initiatives skipping one host name it once."""
-    return [a for n, a in enumerate(actions) if a["reason"] not in {b["reason"] for b in actions[:n]}]
+    return [a for n, a in enumerate(actions) if action_text(a, "reason") not in {action_text(b, "reason") for b in actions[:n]}]
 
 
 def budget_skips(facts: Facts, initiatives: Sequence[InitiativeFacts], now: datetime | None) -> dict[str, str]:
@@ -272,8 +280,9 @@ def _scheduled_walk(
         launches, steers = _scheduled_walk(tail, by_id, running, streaks, local_left, hosts, env, policy, launch_budget)
         return launches, [steer, *steers]
     claim: list[RunningInitiative] = [{"id": initiative_id, "repo": repo, "surfaces": surfaces}] if repo and surfaces else []
-    named: Action = {} if host is None else {"host": host}
-    action: Action = {"kind": ActionKind.LAUNCH_EPIC, "initiative": initiative_id, **named}
+    action: Action = {"kind": ActionKind.LAUNCH_EPIC, "initiative": initiative_id}
+    if host is not None:
+        action["host"] = host
     launches, steers = _scheduled_walk(
         tail, by_id, [*running, *claim], streaks, local_left - (host is None), _after_placing(hosts, [action]), env, policy,
         _spent(launch_budget),
@@ -297,6 +306,8 @@ def scheduled_launches(
     A placement on a local host in `schedule_inputs` carries no host. Only the first placement of an initiative
     counts. The gates of `_epic_launches` apply, and a launch one withholds is dropped, never replaced.
     launch_budget, when not None, is the most launches returned, local and hosted together."""
+    if "schedule_inputs" not in facts:
+        raise KeyError("schedule_inputs")
     local = {h["name"] for h in facts["schedule_inputs"]["hosts"] if h["local"]}
     open_ = [
         i
@@ -344,7 +355,7 @@ def _wants_pull(facts: Facts, lanes_left: int) -> bool:
         and facts["sources_configured"]
         and not has_ready
         and not facts["intake"]
-        and (facts.get("pull_age_s") is None or cast(int, facts["pull_age_s"]) >= PULL_MIN_AGE_S)
+        and ((age := facts.get("pull_age_s")) is None or age >= PULL_MIN_AGE_S)
     )
 
 

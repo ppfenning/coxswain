@@ -60,7 +60,7 @@ def source_config(profile: Mapping, name: str) -> SourceConfig | None:
 def intake_links(files: Mapping[str, str]) -> frozenset[str]:
     fields = (route.parse_frontmatter(text)[0] for text in files.values())
     links = (field.get("link") for field in fields)
-    return frozenset(link for link in links if link is not None)
+    return frozenset(link for link in links if isinstance(link, str))
 
 
 # Adapters that name a vendor live outside this repository and register here by name, so no vendor is compiled in.

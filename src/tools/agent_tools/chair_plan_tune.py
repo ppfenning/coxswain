@@ -30,7 +30,15 @@ def _tuned_within_a_day(last_tuned_at: str | None, now: datetime) -> bool:
 def _tier_row(row: dict[str, object]) -> TierRow | None:
     if any(key not in row for key in _REQUIRED_ROW_KEYS):
         return None
-    return TierRow(**{key: row[key] for key in _ROW_KEYS if key in row})  # type: ignore[arg-type]
+    role, tier, model, runs, approval_pct, cost_per_approved, settings_key = (row[key] for key in _REQUIRED_ROW_KEYS)
+    current = row.get("current", False)
+    if not (
+        isinstance(role, str) and isinstance(tier, str) and isinstance(model, str) and isinstance(runs, int)
+        and isinstance(approval_pct, int | float) and isinstance(cost_per_approved, int | float)
+        and isinstance(settings_key, str) and isinstance(current, bool)
+    ):
+        return None
+    return TierRow(role, tier, model, runs, approval_pct, cost_per_approved, settings_key, current)
 
 
 def _tune_lanes(change: LaneChange, meter: WeeklyFractions) -> Action:

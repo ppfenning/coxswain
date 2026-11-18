@@ -10,7 +10,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, NamedTuple, cast
+from typing import NamedTuple
 
 from agent_tools import (
     chair_chat,
@@ -47,9 +47,10 @@ from agent_tools.chair_types import Action, ActionKind, EpicView, Facts, PlanTic
 from agent_tools.ci_gate import DEFAULT_QUEUED_BOUND_SECONDS, CiGate, evaluate_gate
 from agent_tools.forge_status import StatusReader
 from agent_tools.notify_cards import card_events, pending_cards
-from agent_tools.notify_core import NotifyConfig
+from agent_tools.notify_core import Event, NotifyConfig
 from agent_tools.notify_dispatch import dispatch
 from agent_tools.notify_events import events_from_tick
+from core.jsontypes import is_dict, is_list
 
 __all__ = [
     "CHAT_CONSUMER", "CHAT_REF", "DEFAULT_INTERVAL", "FACTS_BOUND_SECONDS", "LAND_BEAT_INTERVAL", "RELEASE_HOLD_OFF_SECONDS", "TAKEOVER_GRACE_SECONDS",
@@ -73,15 +74,15 @@ Perform = Callable[[list[Action], chair_exec.Deps, Callable[[], int], bool], lis
 PlanHeld = Callable[[Facts, datetime, CiGate], TickPlan]
 
 
-def _read_meter_doc() -> dict | None:
+def _read_meter_doc() -> dict[str, object] | None:
     """The raw JSON of the local meter file, so a fresh reading forwards unchanged; None when `usage_meter.read` finds none."""
     if usage_meter.read() is None:
         return None
     try:
-        doc = json.loads(usage_meter.DEFAULT_PATH.read_text())
+        doc: object = json.loads(usage_meter.DEFAULT_PATH.read_text())
     except (OSError, ValueError):  # ValueError covers JSONDecodeError and UnicodeDecodeError
         return None
-    return doc if isinstance(doc, dict) else None
+    return doc if is_dict(doc) else None
 
 
 def no_lands_to_stop() -> None:
@@ -181,8 +182,8 @@ class LaneTick(NamedTuple):
 class ReasonState:
     """The why-not-launched lines of the last tick; cleared as `tick_timed` starts, so a failed tick leaves none."""
 
-    lines: list[str] = field(default_factory=list)
-    items: list[dict] = field(default_factory=list)  # the same reasons as data: {"initiative", "reason"}
+    lines: list[str] = field(default_factory=list[str])
+    items: list[dict[str, str | None]] = field(default_factory=list[dict[str, str | None]])  # the same reasons as data: {"initiative", "reason"}
 
 
 class TickOverrun(Exception):
@@ -211,10 +212,10 @@ class ChatDeps:
     """The edges of the directive step. `read` gives the courier's entries, latest state each; `save` also takes the epics
     the tick saw, so a session can print them without the lease. `ack` marks one entry read by `CHAT_CONSUMER`."""
 
-    read: Callable[[], list[dict]]
+    read: Callable[[], list[dict[str, object]]]
     load: Callable[[], chair_chat.DirectiveState]
-    save: Callable[[chair_chat.DirectiveState, list[dict]], None]
-    append: Callable[[dict], None]
+    save: Callable[[chair_chat.DirectiveState, list[dict[str, object]]], None]
+    append: Callable[[dict[str, object]], None]
     ack: Callable[[str], object]
 
 
@@ -239,11 +240,11 @@ class RunDeps:
     gather: Gather = gather_facts
     plan: PlanTick = plan_tick
     perform: Perform = chair_exec.perform
-    meter_doc: Callable[[], dict | None] = _read_meter_doc
+    meter_doc: Callable[[], dict[str, object] | None] = _read_meter_doc
     stop_lands: Callable[[], object] = no_lands_to_stop
     install_sigterm: Callable[[], Callable[[], object]] = sigterm_as_interrupt
     runs_dir: Path | None = None  # None writes no tick status to the lease
-    read_action: Callable[[Path], dict | None] = dash_chair_action.read_current_action
+    read_action: Callable[[Path], dict[str, str] | None] = dash_chair_action.read_current_action
     write_tick_status: Callable[[Path, int, str], bool] = chair_tick_status.write_tick_status
     status_reader: StatusReader | None = None
     queued_since: Callable[[], tuple[float, ...]] = no_queued_lands
@@ -274,7 +275,7 @@ class RunDeps:
     save_cache: Callable[[], None] | None = None  # run on every live stop, before the lease is released
     force_holder: bool = False  # a dry run plans as the holder even behind a live foreign lease; a live tick never reads it
     # Notifier: `notify` is `dispatch`'s call shape; `notify_config` None is the off state; no `workspace` skips the step.
-    notify: Callable[[list, NotifyConfig | None, Path, float], list[str]] = dispatch
+    notify: Callable[[list[Event], NotifyConfig | None, Path, float], list[str]] = dispatch
     notify_config: NotifyConfig | None = None
     workspace: Path | None = None
     # The lease-only renewal run from the loop's own thread; it returns a refusal line or "" and touches no tick state. None starts no thread.
@@ -443,14 +444,13 @@ def _publish_meter(deps: RunDeps, dry_run: bool, now: datetime) -> None:
     with contextlib.suppress(Exception):
         doc = deps.meter_doc()
         meter = None if doc is None else usage_meter.parse(doc)
-        if meter is None or not usage_meter.fresh(meter, now):
+        if doc is None or meter is None or not usage_meter.fresh(meter, now):
             return
         # `status` is required: the store's record-action refuses a line without ts, epoch, kind and status.
-        reading = cast(Mapping[str, Any], doc)  # meter is not None only when doc is not None
-        deps.exec_deps.record(cast(Action, {
+        deps.exec_deps.record({
             "kind": "meter", "status": "recorded",
-            "five_hour": reading.get("five_hour"), "seven_day": reading["seven_day"], "observed_at": reading["observed_at"],
-        }))
+            "five_hour": doc.get("five_hour"), "seven_day": doc["seven_day"], "observed_at": doc["observed_at"],
+        })
 
 
 def _pull_step(deps: RunDeps, dry_run: bool) -> str:
@@ -528,7 +528,7 @@ def _publish_status(deps: RunDeps, dry_run: bool, line: str, now: datetime, stag
         return
     timing = {"stage_seconds": stage_seconds} if stage_seconds else {}
     with contextlib.suppress(Exception):
-        deps.exec_deps.record(cast(Action, {"kind": "status", "status": "recorded", "line": line, "at": now.isoformat(), **timing}))
+        deps.exec_deps.record({"kind": "status", "status": "recorded", "line": line, "at": now.isoformat(), **timing})
 
 
 def _publish_tick_status(deps: RunDeps, dry_run: bool, line: str, now: datetime) -> None:
@@ -606,43 +606,52 @@ def _gather_bounded(deps: RunDeps, sources: dict[str, float], now: datetime, clo
     return result
 
 
-def unacked_chat(entries: Sequence[dict]) -> list[dict]:
+def _acks(entry: Mapping[str, object]) -> list[object]:
+    acks = entry.get("acks", [])
+    return acks if is_list(acks) else []
+
+
+def unacked_chat(entries: Sequence[dict[str, object]]) -> list[dict[str, object]]:
     """The entries addressed to the chair on the chat topic that `CHAT_CONSUMER` has not acked."""
     return [
         e for e in entries
         if e.get("to") == "chair" and e.get("topic") == chair_chat.LABEL
-        and not e.get("ack") and CHAT_CONSUMER not in e.get("acks", [])
+        and not e.get("ack") and CHAT_CONSUMER not in _acks(e)
     ]
 
 
 def _as_planned_actions(actions: Sequence[Action]) -> list[chair_chat.PlannedAction]:
     """The planned actions in the shape `chair_chat.answer` reads: kind, the epic as topic, and scalar fields as strings."""
+    return [_planned_action(a) for a in actions]
+
+
+def _planned_action(a: Action) -> chair_chat.PlannedAction:
     scalar = (str, int, float, bool)
     skipped = ("kind", "epic", "initiative", "epoch", "fields")
-    return [
-        {
-            "kind": a["kind"],
-            "topic": str(a.get("epic") or a.get("initiative") or ""),
-            "fields": {
-                **{k: str(v) for k, v in a.items() if k not in skipped and isinstance(v, scalar)},
-                **{str(k): str(v) for k, v in (a.get("fields") or {}).items()},
-            },
-            "key": str(a.get("key", "")),
-            **cast(chair_chat.PlannedAction, {"event": str(a["event"])} if a.get("event") else {}),
-        }
-        for a in actions
-    ]
+    planned: chair_chat.PlannedAction = {
+        "kind": a["kind"],
+        "topic": str(a.get("epic") or a.get("initiative") or ""),
+        "fields": {
+            **{k: str(v) for k, v in a.items() if k not in skipped and isinstance(v, scalar)},
+            **{str(k): str(v) for k, v in (a.get("fields") or {}).items()},
+        },
+        "key": str(a.get("key", "")),
+    }
+    event = a.get("event")
+    if event:
+        planned["event"] = str(event)
+    return planned
 
 
-def _epic_snapshot(epics: Sequence[EpicView]) -> list[dict]:
+def _epic_snapshot(epics: Sequence[EpicView]) -> list[dict[str, object]]:
     return [{"epic_id": e["epic_id"], "levels": e["levels"], "exited": e["exited"]} for e in epics]
 
 
-def _event_entry(event: dict[str, object]) -> dict:
+def _event_entry(event: chair_chat.Event) -> dict[str, object]:
     """A courier entry for one event `apply_directives` returned, addressed to the session that sent the directive.
 
     The id is the directive's id plus the event name, so a repeat of the step folds into the same entry."""
-    fields = {str(k): str(v) for k, v in dict(event["fields"]).items()}  # type: ignore[call-overload]
+    fields = {str(k): str(v) for k, v in event["fields"].items()}
     name = str(event["event"])
     return courier.send(
         CHAT_REF, "chair", fields.get("sender", "session"), f"{name}: {fields.get('kind', '')}",
@@ -650,7 +659,7 @@ def _event_entry(event: dict[str, object]) -> dict:
     )
 
 
-def _answer_entry(message: chair_chat.ChatMessage, text: str) -> dict:
+def _answer_entry(message: chair_chat.ChatMessage, text: str) -> dict[str, object]:
     """The `chat_answer` entry for a question; its `question` field is the question's id, which `cox route chair converse ask` matches."""
     return courier.send(
         CHAT_REF, "chair", message["sender"], text, f"{message['id']}.answer",
@@ -766,7 +775,7 @@ def tick_timed(
     notice = next_gate_record(deps.gate_state.paused, gate, planned.held_for_ci, deps.current_epoch()) if acting and gate.paused else None
     # Fresh lane checkout actions ride the planned list: perform records each needs_chair, and the notify step pushes it.
     # perform fences an action with no epoch, so each carries the current one.
-    stamped = [{**a, "epoch": deps.current_epoch()} for a in lane.fresh]
+    stamped: list[Action] = [{**a, "epoch": deps.current_epoch()} for a in lane.fresh]
     actions = [*planned.actions, *stamped, *([notice] if notice is not None else [])]
     results, perform_s = chair_timing.timed(clock, deps.perform, actions, deps.exec_deps, deps.current_epoch, dry_run)
     if not dry_run:

@@ -17,7 +17,7 @@ def phase_keys(approved: Sequence[ApprovedTask]) -> list[str]:
     return sorted({f"{t['run']}:{t['phase']}" for t in approved if t["run"]})
 
 
-def recorded_keys(keys: Sequence[str], manifests: Mapping[str, Sequence[Mapping]], file_exists: Callable[[str], bool]) -> list[str]:
+def recorded_keys(keys: Sequence[str], manifests: Mapping[str, Sequence[Mapping[str, object]]], file_exists: Callable[[str], bool]) -> list[str]:
     """The keys with a phase record: a manifest of the key's run whose `run_id` is the key, else a file for the key."""
     named: dict[str, Collection[object]] = {run: {m.get("run_id") for m in ms} for run, ms in manifests.items()}
     return [k for k in keys if k in named.get(k.rpartition(":")[0], ()) or file_exists(k)]
@@ -29,4 +29,5 @@ def read_phase_records(runs_dir: Path, approved: Sequence[ApprovedTask]) -> list
     if not keys:
         return []
     root = Path(runs_dir)
-    return recorded_keys(keys, run_store.all_phase_manifests(root), lambda key: (root / f"{key}.json").exists())
+    manifests: dict[str, list[dict[str, object]]] = run_store.all_phase_manifests(root)
+    return recorded_keys(keys, manifests, lambda key: (root / f"{key}.json").exists())

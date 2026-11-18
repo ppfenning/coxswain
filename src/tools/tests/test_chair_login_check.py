@@ -187,9 +187,9 @@ def test_the_reason_keeps_only_the_first_200_characters_of_output() -> None:
 
 
 def test_login_ok_keeps_its_tuple_runner_contract() -> None:
-    assert chair_login_check._login_ok("shed", "u@shed", lambda argv: (0, LOGGED_IN)) is True
-    assert chair_login_check._login_ok("shed", "u@shed", lambda argv: (1, REJECTED)) is False
-    assert chair_login_check._login_ok("shed", "u@shed", lambda argv: (1, "refused")) is None
+    assert chair_login_check.probe_login("shed", "u@shed", lambda argv: (0, LOGGED_IN)) is True
+    assert chair_login_check.probe_login("shed", "u@shed", lambda argv: (1, REJECTED)) is False
+    assert chair_login_check.probe_login("shed", "u@shed", lambda argv: (1, "refused")) is None
 
 
 def test_login_ok_runs_the_verb_without_the_probe_so_a_dashboard_poll_spends_no_turn(monkeypatch) -> None:
@@ -200,8 +200,8 @@ def test_login_ok_runs_the_verb_without_the_probe_so_a_dashboard_poll_spends_no_
         seen.append(argv)
         return 0, LOGGED_IN
 
-    chair_login_check._login_ok("shed", "u@shed", run)
-    chair_login_check._login_ok("host-b", "", run)
+    chair_login_check.probe_login("shed", "u@shed", run)
+    chair_login_check.probe_login("host-b", "", run)
 
     assert seen == [ssh_argv("u@shed", token_status_argv()), token_status_argv()]
     assert not any("--probe" in part for argv in seen for part in argv)

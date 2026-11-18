@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from typing import cast
 
 from agent_tools import route
 
+Row = Mapping[str, object]
 
-def _phase_parents(items: Sequence[Mapping]) -> dict[str, set[str]]:
+
+def _needs(item: Row) -> Sequence[object]:
+    """The ids a row needs; an absent or empty value is none."""
+    needs = item.get("needs")
+    return cast(Sequence[object], needs) if isinstance(needs, list | tuple) else []
+
+
+def _phase_parents(items: Sequence[Row]) -> dict[str, set[str]]:
     """Phase B has parent A when a task in B needs a task in A that is not done; a done need adds none.
 
     Mirrors `phase_parents` in the graphs harness, which this package does not import.
@@ -17,7 +26,7 @@ def _phase_parents(items: Sequence[Mapping]) -> dict[str, set[str]]:
     edges = [
         (str(item.get("phase") or ""), phase_of.get(str(need)))
         for item in items
-        for need in item.get("needs") or []
+        for need in _needs(item)
         if state_of.get(str(need)) != "done"
     ]
     return {
@@ -27,7 +36,7 @@ def _phase_parents(items: Sequence[Mapping]) -> dict[str, set[str]]:
     }
 
 
-def launchable_phases(items: Sequence[Mapping], land_at: str) -> dict[str, list[str]]:
+def launchable_phases(items: Sequence[Row], land_at: str) -> dict[str, list[str]]:
     """Phase id to its ready task ids, for phases whose parent tasks are all met under `land_at`.
 
     At `initiative` a parent phase is met only once it is merged into the initiative branch, whole: every task of it
@@ -42,10 +51,10 @@ def launchable_phases(items: Sequence[Mapping], land_at: str) -> dict[str, list[
     parents = _phase_parents(items)
     whole_parents = is_initiative(land_at)
 
-    def met(item: Mapping) -> bool:
+    def met(item: Row) -> bool:
         return route.is_met_need(item, land_at=land_at)
 
-    def on_initiative_branch(item: Mapping) -> bool:
+    def on_initiative_branch(item: Row) -> bool:
         """At `initiative`, work of another phase is there to build on only once that phase merged into the initiative
         branch: the item is done or dropped, or approved with the merged flag (which the landing record sets)."""
         return item.get("state") in ("done", "dropped") or (item.get("state") == "approved" and bool(item.get("merged")))
@@ -54,12 +63,12 @@ def launchable_phases(items: Sequence[Mapping], land_at: str) -> dict[str, list[
         there = on_initiative_branch if whole_parents else met
         return all(there(item) for item in items if str(item.get("phase") or "") in parents[phase])
 
-    def needs_met(item: Mapping) -> bool:
-        def one(need: Mapping) -> bool:
+    def needs_met(item: Row) -> bool:
+        def one(need: Row) -> bool:
             same_phase = str(need.get("phase") or "") == str(item.get("phase") or "")
             return met(need) if same_phase or not whole_parents else on_initiative_branch(need)
 
-        return all(str(need) in by_id and one(by_id[str(need)]) for need in item.get("needs") or [])
+        return all(str(need) in by_id and one(by_id[str(need)]) for need in _needs(item))
 
     launchable = {
         phase: [

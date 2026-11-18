@@ -19,7 +19,7 @@ import copy
 from collections import Counter
 from collections.abc import Callable, Collection, Hashable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import cast
 
 __all__ = ["MAX_AGE_S", "ReaderCache", "TableCounters", "is_fresh", "store_note", "table_stamp"]
 
@@ -47,7 +47,7 @@ def is_fresh(stored: Stamp | None, stored_at: float, stamp: Stamp | None, now: f
 class _Entry:
     stamp: Stamp
     at: float
-    value: Any
+    value: object
 
 
 class ReaderCache:
@@ -71,7 +71,7 @@ class ReaderCache:
         entry = self._entries.get((name, key))
         if entry is not None and is_fresh(entry.stamp, entry.at, stamp, now, self._max_age_s):
             self.reuses[name] += 1
-            return copy.deepcopy(entry.value)  # a copy, as a fresh read is: a caller that edits its rows edits only its own
+            return cast(T, copy.deepcopy(entry.value))  # the name keys one reader, so its entry holds that reader's T; a copy, as a fresh read is: a caller that edits its rows edits only its own
         self.full_reads[name] += 1
         value = read()
         if stamp is None:

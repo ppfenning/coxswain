@@ -450,7 +450,7 @@ def newest_run_hosts(runs_dir: Path, initiatives: Collection[str]) -> dict[str, 
     return {i: (r["host"] or "") for i, r in rows.items() if r is not None}
 
 
-def hosts(runs_dir: Path) -> list[dict]:
+def hosts(runs_dir: Path) -> list[dict[str, object]]:
     """Edge. The `hosts` table's rows by name; empty with no store, no table, or an unreadable store. Read every chair tick, so it never raises."""
     try:
         opened = open_store(runs_dir)
@@ -824,7 +824,7 @@ def run_spans(runs_dir: Path, since: str) -> list[tuple[str, str, str | None]]:
     return spans
 
 
-def _read_file(path: Path) -> dict | None:
+def _read_file(path: Path) -> dict[str, object] | None:
     try:
         loaded = json.loads(path.read_text())
     except (OSError, ValueError):
@@ -929,27 +929,27 @@ def usages(runs_dir: Path) -> dict[str, dict]:
     return {**files, **store_usages(runs_dir, exclude=files)}
 
 
-def _manifest_files(runs_dir: Path) -> dict[str, list[dict]]:
+def _manifest_files(runs_dir: Path) -> dict[str, list[dict[str, object]]]:
     """Run id to its parsing `<run_id>:<phase>.json` manifests, sorted by file name. The phase follows the last colon."""
     named = [
         (path.name.removesuffix(".json").rpartition(":")[0], path)
         for path in sorted(Path(runs_dir).glob("*:*.json"))
         if not path.name.endswith(".usage.json")
     ]
-    by_run: dict[str, list[dict]] = {}
+    by_run: dict[str, list[dict[str, object]]] = {}
     for run_id, path in named:
         if (body := _read_file(path)) is not None:
             by_run.setdefault(run_id, []).append(body)
     return by_run
 
 
-def _manifest_record(record_json: Any) -> dict | None:
+def _manifest_record(record_json: Any) -> dict[str, object] | None:
     record = json_cell(record_json)
     found = record.get("manifest_record") if isinstance(record, dict) else None
     return found if isinstance(found, dict) else None
 
 
-def _store_manifests(runs_dir: Path) -> dict[str, list[dict]]:
+def _store_manifests(runs_dir: Path) -> dict[str, list[dict[str, object]]]:
     """Run id to the `manifest_record` of each of its `phases` rows, ended run or not, ordered by the row's ts."""
     opened = open_store(runs_dir)
     if opened is None:
@@ -961,20 +961,20 @@ def _store_manifests(runs_dir: Path) -> dict[str, list[dict]]:
         return {}
     finally:
         conn.close()
-    by_run: dict[str, list[dict]] = {}
+    by_run: dict[str, list[dict[str, object]]] = {}
     for row in rows:
         if (manifest := _manifest_record(row["record_json"])) is not None:
             by_run.setdefault(row["run_id"], []).append(manifest)
     return by_run
 
 
-def phase_manifests(runs_dir: Path, run_id: str) -> list[dict]:
+def phase_manifests(runs_dir: Path, run_id: str) -> list[dict[str, object]]:
     """The run's manifest files when any parse, else the `manifest_record` of its store phases, else []."""
     from_files = _manifest_files(Path(runs_dir)).get(run_id)
     return from_files or _store_manifests(Path(runs_dir)).get(run_id, [])
 
 
-def all_phase_manifests(runs_dir: Path) -> dict[str, list[dict]]:
+def all_phase_manifests(runs_dir: Path) -> dict[str, list[dict[str, object]]]:
     """Run id to phase manifests: every run with manifest files, then each store run that has none."""
     files = _manifest_files(Path(runs_dir))
     stored = {rid: ms for rid, ms in _store_manifests(Path(runs_dir)).items() if rid not in files}
@@ -1046,7 +1046,7 @@ def _parquet_call_events(rows: Sequence[Mapping[str, Any]], call_id: str) -> lis
     return _json_objects(r["event"] for r in mine if isinstance(r.get("event"), str))
 
 
-def task_record(runs_dir: Path, run_id: str, phase_id: str, task_id: str) -> dict | None:
+def task_record(runs_dir: Path, run_id: str, phase_id: str, task_id: str) -> dict[str, object] | None:
     """Edge: one task's record from the store, None when it has none or cannot say (the caller falls back to the file)."""
     found = harness_store_api().task_record(store_url_for(Path(runs_dir)), run_id, phase_id, task_id)
     return found if isinstance(found, dict) else None
@@ -1109,15 +1109,15 @@ def _stamp(found: store_api.TableStamp | store_api.Failed | store_api.NotAvailab
     return (found.count, zlib.crc32(json.dumps([found.newest, found.digest]).encode()))
 
 
-def _rows(found: Sequence[Mapping[str, Any]] | store_api.Failed | store_api.NotAvailable) -> list[dict] | None:
+def _rows(found: Sequence[Mapping[str, Any]] | store_api.Failed | store_api.NotAvailable) -> list[dict[str, Any]] | None:
     """Pure: the rows as plain dicts, None when the store could not say."""
     return [dict(row) for row in found] if isinstance(found, list) else None
 
 
-def _versioned(cache: StampCache, key: Any, stamp: Stamp | None, read_rows: Callable[[], list[dict] | None]) -> list[dict]:
+def _versioned(cache: StampCache, key: Any, stamp: Stamp | None, read_rows: Callable[[], list[dict[str, Any]] | None]) -> list[dict[str, Any]]:
     """Edge: rows from `cache` keyed by the probe's stamp, as copies. A failed full read is [] and is never stored."""
 
-    def full() -> list[dict]:
+    def full() -> list[dict[str, Any]]:
         rows = read_rows()
         if rows is None:
             raise _ReadFailed
@@ -1129,14 +1129,14 @@ def _versioned(cache: StampCache, key: Any, stamp: Stamp | None, read_rows: Call
         return []
 
 
-def work_items(runs_dir: Path, initiative: str | None = None, cache: StampCache | None = None) -> list[dict]:
+def work_items(runs_dir: Path, initiative: str | None = None, cache: StampCache | None = None) -> list[dict[str, Any]]:
     """Edge: `work_items` rows from the store, optionally for one initiative.
 
     Empty when the table or the store is missing or unreadable, so an old store reads as an empty one.
     With a cache, a probe of the row count, greatest updated_at and a digest of every row decides whether the stored rows still stand."""
     url = store_url_for(Path(runs_dir))
 
-    def read_rows() -> list[dict] | None:
+    def read_rows() -> list[dict[str, Any]] | None:
         return _rows(harness_store_api().work_item_rows(url, initiative))
 
     if cache is None:
@@ -1233,7 +1233,7 @@ def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def _queue_rows(found: Sequence[Mapping[str, Any]] | store_api.Failed | store_api.NotAvailable) -> list[dict] | None:
+def _queue_rows(found: Sequence[Mapping[str, Any]] | store_api.Failed | store_api.NotAvailable) -> list[dict[str, Any]] | None:
     """Pure: each row with every queue and claim key present (None when absent) and extras kept; None when the store
     could not say."""
     blank = dict.fromkeys((*_QUEUE_COLUMNS, *_CLAIM_KEYS))
@@ -1241,13 +1241,13 @@ def _queue_rows(found: Sequence[Mapping[str, Any]] | store_api.Failed | store_ap
     return None if rows is None else [{**blank, **row} for row in rows]
 
 
-def read_queue(runs_dir: Path, initiative: str | None = None, kind: str | None = None, cache: StampCache | None = None) -> list[dict]:
+def read_queue(runs_dir: Path, initiative: str | None = None, kind: str | None = None, cache: StampCache | None = None) -> list[dict[str, Any]]:
     """Edge: queue rows from the store, optionally for one initiative and kind. Empty when the table or store is unavailable.
 
     With a cache, a probe of the table's version decides whether the stored rows still stand."""
     url = store_url_for(Path(runs_dir))
 
-    def read_rows() -> list[dict] | None:
+    def read_rows() -> list[dict[str, Any]] | None:
         return _queue_rows(harness_store_api().queue_rows(url, initiative, kind))
 
     if cache is None:

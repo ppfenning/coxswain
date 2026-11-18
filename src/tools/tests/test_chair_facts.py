@@ -699,16 +699,16 @@ def test_gather_facts_fills_every_key_from_the_fakes():
     queue = {"batch_size": 3, "wait_s": 90}
     deps = replace(_deps(), phase_records=lambda tasks: [], merge_queue=lambda: queue, host_load_ceiling=lambda: 0.8)
     facts = gather_facts(deps, NOW)
-    # login_hosts is not yet declared on Facts: a later task adds it there once the login watch reads it.
+    # land_freeze is gathered only while a freeze is set, and these fakes set none.
     # tuning, landed_main and land_outcomes are all filled in gather_facts now.
     # chat_epics is gathered only when the deps supply work_rows, and these fakes do not.
     # live_phases is gathered only when the deps supply it, and these fakes do not.
     # previous_schedule_feed is read by the planner; no task gathers it yet.
     # merged_prs is read by plan_missed_closes; the facts edge does not gather it yet. handled_keys is gathered from the deps.
     declared = set(Facts.__annotations__) - {
-        "chat_epics", "live_phases", "schedule_inputs", "previous_schedule_feed", "merged_prs",
+        "chat_epics", "live_phases", "schedule_inputs", "previous_schedule_feed", "merged_prs", "land_freeze",
     }
-    assert set(facts) == declared | {"login_hosts"}
+    assert set(facts) == declared
     assert facts["dispatch"] == {"max_in_flight": 2, "live_runs": 1, "hosts": []}
     assert facts["initiatives"][0]["landed"] == {"z"}
     assert facts["approved"][0]["phase_done"] is True

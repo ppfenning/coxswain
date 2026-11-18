@@ -9,7 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
-from agent_tools.chair_types import Action
+from agent_tools.chair_types import Action, action_text
 from agent_tools.store_cli import Failed, Landed, StateSet
 
 if TYPE_CHECKING:
@@ -64,11 +64,12 @@ def refusal(action: Action) -> str:
 
 def review_steps(action: Action) -> list[Step]:
     """Set done, stamp landed with the PR url and merge time, then delete the agents/ branch here and on the host."""
-    run, task_id, repo, host = action["run"], action["task_id"], action["repo"], action.get("host", "")
+    run, task_id, repo = action_text(action, "run"), action_text(action, "task_id"), action_text(action, "repo")
+    host = action.get("host", "")
     pattern = f"agents/{run}/{task_id}"
     return [
-        SetDone(action["initiative"], task_id),
-        MarkLanded(run, action["phase"], task_id, action["url"], action.get("merged_at")),
+        SetDone(action_text(action, "initiative"), task_id),
+        MarkLanded(run, action_text(action, "phase"), task_id, action_text(action, "url"), action.get("merged_at")),
         DeleteBranch(repo, pattern, ""),
         *([DeleteBranch(repo, pattern, host)] if host else []),
     ]

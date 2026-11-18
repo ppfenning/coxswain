@@ -12,20 +12,20 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any
 
 from agent_tools import queue_export, store_cli
 from agent_tools.land import approved_reason
+from core.jsontypes import is_dict
 
 __all__ = ["apply_fetched_approvals", "apply_ready_to_approved", "approved_task_ids"]
 
 
-def _task_id(record: Mapping[str, Any]) -> str:
+def _task_id(record: Mapping[str, object]) -> str:
     """A task record written by the harness names its task under `ticket`; `task` is kept for older readers."""
     return str(record.get("task") or record.get("ticket") or "")
 
 
-def approved_task_ids(records: Iterable[Mapping[str, Any]]) -> list[str]:
+def approved_task_ids(records: Iterable[Mapping[str, object]]) -> list[str]:
     """The task id of every record whose review and arbitration verdicts approve it (`land.approved_reason` is None)."""
     return [_task_id(record) for record in records if _task_id(record) and approved_reason(dict(record)) is None]
 
@@ -51,15 +51,15 @@ def apply_ready_to_approved(text: str) -> tuple[str | None, str | None]:
     return None, "chair_apply_fetch: ticket has no state field"
 
 
-def _task_records(runs_dir: Path, run: str) -> list[dict[str, Any]]:
+def _task_records(runs_dir: Path, run: str) -> list[dict[str, object]]:
     """Edge. Every parseable dict under `runs/<run>/tasks/<phase>/<task>.json`; a bad file is skipped, not raised."""
-    records = []
+    records: list[dict[str, object]] = []
     for path in sorted((runs_dir / run / "tasks").glob("*/*.json")):
         try:
             parsed = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if isinstance(parsed, dict):
+        if is_dict(parsed):
             records.append(parsed)
     return records
 

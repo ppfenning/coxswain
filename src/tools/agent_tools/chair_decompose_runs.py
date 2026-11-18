@@ -4,7 +4,6 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
 
 from agent_tools import route, run_store
 from agent_tools.chair_decompose_streak import DecomposeRun
@@ -12,6 +11,7 @@ from agent_tools.chair_facts import run_initiative
 from agent_tools.chair_read_cache import Stamp, StampCache, file_stamp
 from agent_tools.chair_read_exits import exit_rows, row_exited
 from agent_tools.store_dialect import is_postgres
+from core.jsontypes import is_list, is_mapping
 
 REFUSAL_MARKERS = ("approved but not executed", "initiative-decompose failed:")
 LINT_REFUSAL_MARKER = "initiative-decompose failed:"  # the reach lint's refusal; such a run wrote nothing
@@ -45,23 +45,22 @@ def log_wrote_items(run_id: str, log: str) -> bool | None:
     return int(recorded.group(1)) > 0 if recorded else None
 
 
-def _is_count(value: Any) -> bool:
+def _is_count(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
-def parse_run(record: Any) -> DecomposeRun:
+def parse_run(record: object) -> DecomposeRun:
     """The run's own log decides wrote_items; `task_items`, the initiative's task count (None means unknown), is the fallback.
 
     The fallback reads zero as a run that wrote nothing, since no run can have created an item the store lacks.
     Unknown, or an unreadable record, reads as wrote_items True, so it never joins a streak or blocks an intake."""
-    get = record.get if isinstance(record, Mapping) else (lambda key: None)
-    run_id, log, items = get("run_id"), get("log"), get("task_items")
-    readable = isinstance(run_id, str) and (log is None or isinstance(log, str)) and (items is None or _is_count(items))
-    if not readable:
+    fields: Mapping[str, object] = record if is_mapping(record) else {}
+    run_id, log, items = fields.get("run_id"), fields.get("log"), fields.get("task_items")
+    if not (isinstance(run_id, str) and (log is None or isinstance(log, str)) and (items is None or _is_count(items))):
         return DecomposeRun(run_id=run_id if isinstance(run_id, str) else "", wrote_items=True, refusal_line=None)
-    verdict = log_wrote_items(cast(str, run_id), log or "")
+    verdict = log_wrote_items(run_id, log or "")
     return DecomposeRun(
-        run_id=cast(str, run_id), wrote_items=items != 0 if verdict is None else verdict, refusal_line=refusal_line(log or "")
+        run_id=run_id, wrote_items=items != 0 if verdict is None else verdict, refusal_line=refusal_line(log or "")
     )
 
 
@@ -70,7 +69,7 @@ def parse_run(record: Any) -> DecomposeRun:
 NOT_STARTED = frozenset({"refused"})
 
 
-def select_runs(rows: Sequence[Mapping[str, Any]], intake_id: str) -> list[Mapping[str, Any]]:
+def select_runs(rows: Sequence[Mapping[str, object]], intake_id: str) -> list[Mapping[str, object]]:
     """The `runs` rows whose id is `<intake_id>-<n>`, oldest `launched_at` first, leaving out runs that never started."""
     own = (
         r for r in rows
@@ -79,7 +78,7 @@ def select_runs(rows: Sequence[Mapping[str, Any]], intake_id: str) -> list[Mappi
     return sorted(own, key=lambda r: str(r.get("launched_at") or ""))
 
 
-def parse_when(value: Any) -> datetime | None:
+def parse_when(value: object) -> datetime | None:
     """An ISO time as a timezone-aware datetime, a naive one read as UTC; None for anything else."""
     if not isinstance(value, str) or not value:
         return None
@@ -134,7 +133,7 @@ def _log_facts(runs_dir: Path, run_id: str, cache: StampCache | None = None) -> 
 def _task_items(runs_dir: Path, initiative: str) -> int | None:
     """The initiative's work item count; None when the store cannot say, which `run_store.work_items` would read as empty."""
     found = run_store.harness_store_api().work_item_rows(run_store.store_url_for(runs_dir), initiative)
-    return len(found) if isinstance(found, list) else None
+    return len(found) if is_list(found) else None
 
 
 def _log_key(runs_dir: Path, run_id: str) -> tuple[str, str, str]:
@@ -166,15 +165,15 @@ def read_decompose_runs(runs_dir: Path, intake_id: str, cache: StampCache | None
 
     With a cache, the exit rows, the task count and each run's log facts are keyed by file stamp, so an unchanged
     file is not read again. Entries not seen in this call are dropped, so give each intake its own cache."""
+    exits_key, items_key = ("decompose-exits", str(runs_dir)), ("decompose-items", str(runs_dir), intake_id)
     if cache is None:
         items = _task_items(runs_dir, intake_id)
         rows = exit_rows(runs_dir)
     else:
         stamp = _store_stamp(runs_dir)
-        exits_key, items_key = ("decompose-exits", str(runs_dir)), ("decompose-items", str(runs_dir), intake_id)
         items = cache.get(items_key, stamp, lambda: _task_items(runs_dir, intake_id))
         rows = cache.get(exits_key, stamp, lambda: exit_rows(runs_dir))
-    out = []
+    out: list[DecomposeRun] = []
     for row in select_runs(rows, intake_id):
         exited = row_exited(row)
         run = parse_run({"run_id": str(row["run_id"]), "log": None, "task_items": items if exited else None})

@@ -7,7 +7,7 @@ import re
 from collections.abc import Mapping, Sequence
 from itertools import accumulate
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from agent_tools import repo_path, run_store
 from agent_tools.route_profile import _frontmatter, _header_value, _Raw
@@ -347,7 +347,7 @@ def _shared_surfaces(members: list) -> list:
     return [surface for surface in order if counts[surface] > 1]
 
 
-def merge_same_phase(items: list) -> tuple[list, list]:
+def merge_same_phase(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Same-phase tickets whose state is `ready` or `todo` and whose
     `surfaces` intersect, transitively, collapse into one merged ticket per
     connected component; a ticket in `approved`, `in_progress`, or `done`

@@ -11,13 +11,13 @@ from xml.sax.saxutils import escape
 from agent_tools.chair_restart import RESTART_EXIT_CODE
 
 # cli.py and setup_install.py still call these through chair_service; the rules now live in unit_env.
-from agent_tools.unit_env import (  # noqa: F401
+from agent_tools.unit_env import (
     environment_file_line,
-    export_lines,
     launchd_arguments,
-    unit_environment_file,
-    unsafe_values,
 )
+from agent_tools.unit_env import export_lines as export_lines
+from agent_tools.unit_env import unit_environment_file as unit_environment_file
+from agent_tools.unit_env import unsafe_values as unsafe_values
 
 UNIT_NAME = "coxswain-chair.service"
 WATCHDOG_SERVICE_NAME = "coxswain-chair-watchdog.service"
@@ -148,7 +148,11 @@ def chair_plist_path[Home: PurePath](home: Home) -> Home:
 
 def service_file[Home: PurePath](platform: str, home: Home) -> Home | None:
     """Where `setup install` puts the chair service file; None for a platform with no service manager supported."""
-    return {"linux": unit_path, "darwin": chair_plist_path}.get(platform, lambda _home: None)(home)
+    if platform == "linux":
+        return unit_path(home)
+    if platform == "darwin":
+        return chair_plist_path(home)
+    return None
 
 
 def chair_plist_text(

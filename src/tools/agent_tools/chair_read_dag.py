@@ -2,8 +2,8 @@
 
 The check is `core.workstore.validate_dag`, the one the epic driver runs through `read_initiative`."""
 
-from collections.abc import Iterator, Mapping, Sequence
-from typing import Any
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from typing import TypedDict, cast
 
 from core.landing_record import phase_cycle, phase_parents
 from core.workstore import DONE, DROPPED, WorkStoreError, validate_dag
@@ -11,7 +11,24 @@ from core.workstore import DONE, DROPPED, WorkStoreError, validate_dag
 _CYCLE = "dependency cycle: "
 
 
-def _first_problem(items: Sequence[Mapping[str, Any]], foreign: Mapping[str, str], message: str) -> str:
+class _Item(TypedDict):
+    """One ticket row as `validate_dag` and `phase_parents` read it."""
+
+    id: object
+    needs: list[object]
+    state: object
+    phase: object
+
+
+def _needs_of(row: Mapping[str, object]) -> list[object]:
+    """The row's `needs` as a list; a missing or empty one reads as none, and one that is not iterable raises TypeError."""
+    raw: object = row.get("needs") or []
+    if not isinstance(raw, Iterable):
+        raise TypeError(f"'{type(raw).__name__}' object is not iterable")
+    return list(cast(Iterable[object], raw))
+
+
+def _first_problem(items: Sequence[_Item], foreign: Mapping[str, str], message: str) -> str:
     """The first problem in row order: a missing need, then a dropped one, then the cycle, then the first line of `message`."""
     ids = {str(i["id"]) for i in items}
     dropped = {str(i["id"]) for i in items if i.get("state") == DROPPED}
@@ -46,17 +63,17 @@ class _Foreign(Mapping[str, str]):
         return self._any_other
 
 
-def dag_problems(rows: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+def dag_problems(rows: Sequence[Mapping[str, object]]) -> dict[str, str]:
     """Initiative id to its first work-store DAG problem; a valid initiative has no entry.
 
     A need on a task of another initiative is not dangling. A cycle reads `cycle: a -> b -> a`."""
     initiatives = list(dict.fromkeys(str(r["initiative"]) for r in rows))
     # Grouped once: building each initiative's items and foreign map from every row made this quadratic in the board.
-    own: dict[str, list[dict[str, Any]]] = {i: [] for i in initiatives}
+    own: dict[str, list[_Item]] = {i: [] for i in initiatives}
     owners: dict[str, list[tuple[str, str]]] = {}
     for r in rows:
         own[str(r["initiative"])].append(
-            {"id": r["id"], "needs": list(r.get("needs") or []), "state": r.get("state"), "phase": r.get("phase")}
+            {"id": r["id"], "needs": _needs_of(r), "state": r.get("state"), "phase": r.get("phase")}
         )
         owners.setdefault(str(r["id"]), []).append((str(r["initiative"]), str(r.get("state"))))
 

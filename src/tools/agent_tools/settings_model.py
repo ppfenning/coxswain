@@ -156,7 +156,7 @@ def setting_for(scope: str, key: str) -> Setting | None:
     return _seat_setting(key) if scope == "cartridge" and key.startswith("crew.") else None
 
 
-def rows(cartridge: dict, profile: dict, tracked: dict[str, bool]) -> dict[str, list[SettingRow]]:
+def rows(cartridge: dict[str, object], profile: dict[str, object], tracked: dict[str, bool]) -> dict[str, list[SettingRow]]:
     """Rows grouped by section in `SECTIONS` order; a setting absent from its document yields no row."""
     docs = {"cartridge": cartridge, "profile": profile}
     found = [(s, _get(docs[s.scope], s.path)) for s in (*REGISTRY, *_seat_settings(cartridge))]

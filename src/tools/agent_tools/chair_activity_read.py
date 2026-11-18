@@ -5,13 +5,30 @@ from __future__ import annotations
 import glob
 import json
 import re
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from pathlib import Path
-from typing import Literal, NamedTuple
+from typing import Literal, NamedTuple, TypedDict, cast
 
 import yaml
 
 from agent_tools.stats_chair import catalog_prices
+from core.jsontypes import is_dict
+
+
+class AgentTranscript(TypedDict):
+    """One background agent of a session: its id, its parsed `.meta.json` and its transcript lines."""
+
+    agent_id: str
+    meta: dict[str, object] | None
+    lines: list[str]
+
+
+class SessionTranscript(TypedDict):
+    """One session of a workspace: its id, its transcript lines and its agents."""
+
+    session_id: str
+    lines: list[str]
+    agents: list[AgentTranscript]
 
 
 def _read_text(path: Path) -> str | None:
@@ -28,12 +45,12 @@ def _read_lines(path: Path) -> list[str]:
         return []
 
 
-def _parse_meta(text: str | None) -> dict | None:
+def _parse_meta(text: str | None) -> dict[str, object] | None:
     try:
-        meta = json.loads(text) if text is not None else None
+        meta: object = json.loads(text) if text is not None else None
     except ValueError:
         return None
-    return meta if isinstance(meta, dict) else None
+    return meta if is_dict(meta) else None
 
 
 def resolve_session(transcripts: Iterable[str], agent_dirs: Iterable[str], session: str) -> tuple[str, str]:
@@ -49,12 +66,12 @@ def resolve_session(transcripts: Iterable[str], agent_dirs: Iterable[str], sessi
 
 def _transcripts(projects_dir: Path, session: str) -> list[Path]:
     """Session ids hold no dot, so `<id>.bak.jsonl` style neighbours are not sessions."""
-    paths = Path(projects_dir).glob(f"*/{glob.escape(session)}*.jsonl") if session else []
+    paths: Iterable[Path] = Path(projects_dir).glob(f"*/{glob.escape(session)}*.jsonl") if session else []
     return sorted(p for p in paths if "." not in p.stem)
 
 
 def _agent_dirs(projects_dir: Path, session: str) -> list[Path]:
-    dirs = Path(projects_dir).glob(f"*/{glob.escape(session)}*/subagents") if session else []
+    dirs: Iterable[Path] = Path(projects_dir).glob(f"*/{glob.escape(session)}*/subagents") if session else []
     return sorted(d for d in dirs if "." not in d.parent.name)
 
 
@@ -82,7 +99,7 @@ def resolve_by_content(hits: Mapping[Path, bool], session: str) -> tuple[str, Pa
 
 def _content_hits(projects_dir: Path, session: str) -> dict[Path, bool]:
     """Edge: for each `*/<stem>.jsonl` with no dot in the stem, whether its text contains `session`. An unreadable file is a miss."""
-    paths = Path(projects_dir).glob("*/*.jsonl") if session else []
+    paths: Iterable[Path] = Path(projects_dir).glob("*/*.jsonl") if session else []
     return {p: session in (_read_text(p) or "") for p in sorted(paths) if "." not in p.stem}
 
 
@@ -95,10 +112,10 @@ def _resolve(projects_dir: Path, session: str) -> tuple[str, str, Path | None]:
     return (status, resolved, None)
 
 
-def _agents_from_metas(metas: Iterable[Path]) -> list[dict]:
+def _agents_from_metas(metas: Iterable[Path]) -> list[AgentTranscript]:
     """Agents of the `agent-*.meta.json` paths, sorted by agent_id. An unreadable or non-JSON meta file is skipped."""
     found = ((path.name.removeprefix("agent-").removesuffix(".meta.json"), path) for path in metas)
-    agents = (
+    agents: Iterator[AgentTranscript] = (
         {
             "agent_id": agent_id,
             "meta": _parse_meta(_read_text(path)),
@@ -109,11 +126,11 @@ def _agents_from_metas(metas: Iterable[Path]) -> list[dict]:
     return sorted((a for a in agents if a["meta"] is not None), key=lambda a: a["agent_id"])
 
 
-def read_agents(projects_dir: Path, session: str) -> list[dict]:
+def read_agents(projects_dir: Path, session: str) -> list[AgentTranscript]:
     """Agents of the one session `session` names, sorted by agent_id; empty when none or ambiguous. An unreadable or non-JSON meta file is skipped."""
     _, resolved, transcript = _resolve(projects_dir, session)
     pattern = f"*/{glob.escape(resolved)}/subagents/agent-*.meta.json"
-    metas = (
+    metas: Iterable[Path] = (
         transcript.parent.glob(f"{glob.escape(transcript.stem)}/subagents/agent-*.meta.json")
         if transcript
         else (Path(projects_dir).glob(pattern) if resolved else [])
@@ -126,21 +143,19 @@ def project_folder_name(workspace: Path) -> str:
     return re.sub(r"[^A-Za-z0-9]", "-", str(workspace))
 
 
-def read_project_sessions(projects_dir: Path, workspace: Path) -> list[dict]:
+def read_project_sessions(projects_dir: Path, workspace: Path) -> list[SessionTranscript]:
     """Every session of `workspace` as {session_id, lines, agents}, sorted by session_id. Stems with a dot are not sessions; nothing raises."""
     folder = Path(projects_dir) / project_folder_name(workspace)
     transcripts = (p for p in folder.glob("*.jsonl") if "." not in p.stem and p.is_file())
-    return sorted(
-        (
-            {
-                "session_id": path.stem,
-                "lines": _read_lines(path),
-                "agents": _agents_from_metas(folder.glob(f"{glob.escape(path.stem)}/subagents/agent-*.meta.json")),
-            }
-            for path in transcripts
-        ),
-        key=lambda s: s["session_id"],
+    sessions: Iterator[SessionTranscript] = (
+        {
+            "session_id": path.stem,
+            "lines": _read_lines(path),
+            "agents": _agents_from_metas(folder.glob(f"{glob.escape(path.stem)}/subagents/agent-*.meta.json")),
+        }
+        for path in transcripts
     )
+    return sorted(sessions, key=lambda s: s["session_id"])
 
 
 def read_session_lines(projects_dir: Path, session: str) -> list[str]:
@@ -160,7 +175,7 @@ class Entry(NamedTuple):
     offset: int
     lines: tuple[str, ...]
     done: int
-    meta: dict | None = None
+    meta: dict[str, object] | None = None
 
 
 Cache = Mapping[Path, Entry]
@@ -252,7 +267,7 @@ def _refreshed(
     return {path: entry for path, entry in pairs if entry is not None}
 
 
-def _agents_cached(metas: Iterable[Path], cache: Cache) -> tuple[dict[Path, Entry], list[dict]]:
+def _agents_cached(metas: Iterable[Path], cache: Cache) -> tuple[dict[Path, Entry], list[AgentTranscript]]:
     """Cached counterpart of `_agents_from_metas`: the entries seen and the agents."""
     metas_seen = _refreshed(metas, cache, refresh_meta)
     valid = {
@@ -261,7 +276,7 @@ def _agents_cached(metas: Iterable[Path], cache: Cache) -> tuple[dict[Path, Entr
         if entry.meta is not None
     }
     lines_seen = _refreshed(valid.values(), cache, refresh_entry)
-    agents = [
+    agents: list[AgentTranscript] = [
         {
             "agent_id": path.name.removeprefix("agent-").removesuffix(".meta.json"),
             "meta": metas_seen[path].meta,
@@ -272,7 +287,7 @@ def _agents_cached(metas: Iterable[Path], cache: Cache) -> tuple[dict[Path, Entr
     return ({**metas_seen, **lines_seen}, sorted(agents, key=lambda a: a["agent_id"]))
 
 
-def read_project_sessions_cached(projects_dir: Path, workspace: Path, cache: Cache) -> tuple[Cache, list[dict]]:
+def read_project_sessions_cached(projects_dir: Path, workspace: Path, cache: Cache) -> tuple[Cache, list[SessionTranscript]]:
     """`read_project_sessions` past the `cache` of the last call: (new cache, sessions). A file that grew is read from its offset; the new cache holds only files seen now."""
     folder = Path(projects_dir) / project_folder_name(workspace)
     transcripts = [p for p in folder.glob("*.jsonl") if "." not in p.stem and p.is_file()]
@@ -281,7 +296,7 @@ def read_project_sessions_cached(projects_dir: Path, workspace: Path, cache: Cac
         path: _agents_cached(folder.glob(f"{glob.escape(path.stem)}/subagents/agent-*.meta.json"), cache)
         for path in transcripts
     }
-    sessions = [
+    sessions: list[SessionTranscript] = [
         {
             "session_id": path.stem,
             "lines": list(lines_seen[path].lines) if path in lines_seen else [],
@@ -307,11 +322,11 @@ def read_session_lines_cached(projects_dir: Path, session: str, cache: Cache) ->
     return (seen, list(seen[matches[0]].lines) if matches and matches[0] in seen else [])
 
 
-def read_agents_cached(projects_dir: Path, session: str, cache: Cache) -> tuple[Cache, list[dict]]:
+def read_agents_cached(projects_dir: Path, session: str, cache: Cache) -> tuple[Cache, list[AgentTranscript]]:
     """`read_agents` past the `cache`: (new cache, agents)."""
     _, resolved, transcript = _resolve(projects_dir, session)
     pattern = f"*/{glob.escape(resolved)}/subagents/agent-*.meta.json"
-    metas = (
+    metas: Iterable[Path] = (
         transcript.parent.glob(f"{glob.escape(transcript.stem)}/subagents/agent-*.meta.json")
         if transcript
         else (Path(projects_dir).glob(pattern) if resolved else [])
@@ -324,14 +339,24 @@ def session_status(projects_dir: Path, session: str) -> str:
     return _resolve(projects_dir, session)[0]
 
 
-def _catalog_candidates(profile: Mapping) -> list[Path]:
+def _profile_path(profile: Mapping[str, object], key: str) -> Path | None:
+    """The profile's `key` as a path; None when it is unset or empty."""
+    value = profile.get(key)
+    if isinstance(value, Path):
+        return value
+    return Path(value) if isinstance(value, str) and value else None
+
+
+def _catalog_candidates(profile: Mapping[str, object]) -> list[Path]:
     """Catalog locations in priority order: beside the provider profile, then under the cartridges dir."""
-    beside = [Path(profile["provider_profile"]).parent / "catalog.yaml"] if profile.get("provider_profile") else []
-    under = [Path(profile["cartridges_dir"]) / "providers" / "catalog.yaml"] if profile.get("cartridges_dir") else []
+    provider_profile = _profile_path(profile, "provider_profile")
+    cartridges_dir = _profile_path(profile, "cartridges_dir")
+    beside = [provider_profile.parent / "catalog.yaml"] if provider_profile else []
+    under = [cartridges_dir / "providers" / "catalog.yaml"] if cartridges_dir else []
     return [*beside, *under]
 
 
-def catalog_for_profile(profile: Mapping | None, read_text: Callable[[Path], str | None] | None = None) -> object | None:
+def catalog_for_profile(profile: Mapping[str, object] | None, read_text: Callable[[Path], str | None] | None = None) -> object | None:
     """The parsed first readable catalog.yaml for `profile`; None when none is readable or the YAML is invalid."""
     if not profile:
         return None
@@ -341,13 +366,13 @@ def catalog_for_profile(profile: Mapping | None, read_text: Callable[[Path], str
     if first is None:
         return None
     try:
-        return yaml.safe_load(first)
+        return cast(object, yaml.safe_load(first))
     except yaml.YAMLError:
         return None
 
 
 def prices_for_profile(
-    profile: Mapping | None,
+    profile: Mapping[str, object] | None,
     read_text: Callable[[Path], str | None] | None = None,
 ) -> dict[str, dict[str, float]]:
     """model -> price from the first readable catalog.yaml for `profile`; {} when none is readable or the YAML is invalid."""
@@ -355,6 +380,6 @@ def prices_for_profile(
     return {} if catalog is None else catalog_prices(catalog)
 
 
-def catalog_status(profile: Mapping | None, read_text: Callable[[Path], str | None] | None = None) -> str:
+def catalog_status(profile: Mapping[str, object] | None, read_text: Callable[[Path], str | None] | None = None) -> str:
     """ok when `prices_for_profile` finds at least one price, else missing."""
     return "ok" if prices_for_profile(profile, read_text) else "missing"

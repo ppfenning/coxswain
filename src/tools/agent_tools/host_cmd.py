@@ -261,7 +261,7 @@ def removed_line(row: Row) -> str:
     return f"{row['name']}: {json.dumps(dict(row), sort_keys=True, default=str)}\n  restore: {restore}"
 
 
-def beat_argv(name: str, versions: dict) -> list[str]:
+def beat_argv(name: str, versions: Mapping[str, object]) -> list[str]:
     return ["host", "beat", name, "--versions", json.dumps(versions, sort_keys=True)]
 
 

@@ -17,7 +17,7 @@ def chat_path(runs_dir: Path) -> Path:
     return Path(runs_dir) / CHAT_FILENAME
 
 
-def append_line(existing: str, entry: Mapping) -> str:
+def append_line(existing: str, entry: Mapping[str, object]) -> str:
     return existing + json.dumps(dict(entry)) + "\n"
 
 

@@ -126,15 +126,15 @@ def initiative_held_as(text: str, value: str) -> str:
     return _join(eol, _with_line(_with_line(lines, "held", "held: true"), "hold_reason", line), rest)
 
 
-def initiative_row_held_as(row: Mapping, value: str) -> dict:
+def initiative_row_held_as(row: Mapping[str, object], value: str) -> dict[str, object]:
     return _initiative_row_held(row, value)
 
 
-def initiative_row_of(rows: Sequence[Mapping], initiative: str) -> Mapping | None:
+def initiative_row_of(rows: Sequence[Mapping[str, object]], initiative: str) -> Mapping[str, object] | None:
     return _initiative_row(rows, initiative)
 
 
-def is_held_initiative(row: Mapping) -> bool:
+def is_held_initiative(row: Mapping[str, object]) -> bool:
     return _was_held(row)
 
 

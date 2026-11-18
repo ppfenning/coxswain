@@ -14,7 +14,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import Any, assert_never, cast
+from typing import assert_never, cast
 
 from agent_tools import (
     base_branch,
@@ -72,9 +72,10 @@ from agent_tools.chair_phase_quarantine import Quarantined, release_commands
 from agent_tools.chair_rebase_exec import perform_rebase
 from agent_tools.chair_revert_exec import MERGED, RevertResult, perform_revert
 from agent_tools.chair_schedule import SCHEDULE_FILE
-from agent_tools.chair_types import Action, ActionKind, is_fenced
+from agent_tools.chair_types import Action, ActionKind, action_text, is_fenced
 from agent_tools.land import LAND_CONFLICT_KEY, conflict_note
 from agent_tools.pytest_tmp_sweep import sweep_pytest_tmp
+from core.jsontypes import is_mapping
 
 
 def _ticket_file(work_dir: Path, initiative: str, task_id: str) -> Path | None:
@@ -88,7 +89,7 @@ def _refused_note(action: Action, deps: Deps, reason: str) -> Result:
     The next tick's sort then finds the key handled and plans the needs_chair report, never another model call."""
     _publish({**action, "epic": action.get("initiative", "")}, deps, "needs_attention", {"action": str(action["kind"]), "reason": reason})
     if deps.mark_handled is not None and action.get("key"):
-        deps.mark_handled(action["key"])
+        deps.mark_handled(action_text(action, "key"))
     return make_result(action, "refused", reason)
 
 
@@ -118,7 +119,7 @@ def _annotate_objection(action: Action, deps: Deps) -> Result:
     return make_result(action, "done", f"annotated {task}" if warning is None else f"annotated {task}; {warning}")
 
 
-def _quarantined_row(action: Action, deps: Deps) -> tuple[Mapping[str, Any] | None, Result | None]:
+def _quarantined_row(action: Action, deps: Deps) -> tuple[Mapping[str, object] | None, Result | None]:
     """The action's store row while it is still quarantined, else the result that ends the action with nothing written."""
     initiative, task = action.get("initiative", ""), action.get("task_id", "")
     if not initiative or not task or not action.get("key"):
@@ -131,7 +132,13 @@ def _quarantined_row(action: Action, deps: Deps) -> tuple[Mapping[str, Any] | No
     return stored, None
 
 
-def taken_back(current: Mapping[str, Any], before: Mapping[str, Any], added: Mapping[str, Any], removed: Collection[str]) -> dict[str, Any]:
+def _extra_of(row: Mapping[str, object]) -> dict[str, object]:
+    """The `extra` of a queue row as a fresh dict; empty when it has none."""
+    extra = row.get("extra")
+    return dict(extra) if is_mapping(extra) else {}
+
+
+def taken_back(current: Mapping[str, object], before: Mapping[str, object], added: Mapping[str, object], removed: Collection[str]) -> dict[str, object]:
     """Pure. `current` extra with only this action's own change undone: each key it added that still holds its value
     comes out, and each key it removed that nobody has written since comes back. Another writer's keys stay."""
     kept = {k: v for k, v in current.items() if not (k in added and v == added[k])}
@@ -139,16 +146,16 @@ def taken_back(current: Mapping[str, Any], before: Mapping[str, Any], added: Map
 
 
 def _mark_then_move(
-    action: Action, deps: Deps, stored: Mapping[str, Any], added: Mapping[str, Any], removed: Collection[str], state: store_cli.WorkState, done: str
+    action: Action, deps: Deps, stored: Mapping[str, object], added: Mapping[str, object], removed: Collection[str], state: store_cli.WorkState, done: str
 ) -> Result:
     """Edge. Mark the quarantined row `stored` first (its extra with `added` set and `removed` taken out), then move it to
     `state` with a compare-and-set on quarantined.
 
     The key is marked handled only when both writes landed. A refused move re-reads the row and takes back only this
     action's own mark (`taken_back`), so a writer that moved the row meanwhile keeps what it wrote."""
-    initiative, task = action["initiative"], action["task_id"]
+    initiative, task = action_text(action, "initiative"), action_text(action, "task_id")
     key = {"initiative": initiative, "task_id": task}
-    before = dict(stored.get("extra") or {})
+    before = _extra_of(stored)
     extra = {**{k: v for k, v in before.items() if k not in removed}, **added}
     refused_row = run_store.upsert_row_detail(deps.runs_dir, {**key, "extra": extra})
     if refused_row:
@@ -156,14 +163,14 @@ def _mark_then_move(
     written = store_cli.set_state(deps.runs_dir, initiative, task, state, "chair-loop", "quarantined")
     if isinstance(written, store_cli.StateSet):
         if deps.mark_handled is not None:
-            deps.mark_handled(action["key"])
+            deps.mark_handled(action_text(action, "key"))
         return make_result(action, "done", done)
     now = next((r for r in run_store.read_queue(deps.runs_dir, initiative, kind="task") if r.get("task_id") == task), None)
     if now is None:
         unrestored = "the row could not be read back"
     else:
         unrestored = run_store.upsert_row_detail(
-            deps.runs_dir, {**key, "extra": taken_back(dict(now.get("extra") or {}), before, added, removed)}
+            deps.runs_dir, {**key, "extra": taken_back(_extra_of(now), before, added, removed)}
         )
     note = f"; the store did not take back the mark: {unrestored}" if unrestored else ""
     if isinstance(written, store_cli.StateRefused) and written.current not in (None, "quarantined") and not unrestored:
@@ -181,8 +188,8 @@ def _request_triage(action: Action, deps: Deps) -> Result:
     if ended is not None or stored is None:
         return ended or make_result(action, "failed", "no store row")
     reason = action.get("reason", "")
-    done = f"{action['task_id']} sent to triage" + (f": {reason}" if reason else "")
-    return _mark_then_move(action, deps, stored, {TRIAGE_FLAG: action["key"]}, (), "ready", done)
+    done = f"{action_text(action, 'task_id')} sent to triage" + (f": {reason}" if reason else "")
+    return _mark_then_move(action, deps, stored, {TRIAGE_FLAG: action_text(action, "key")}, (), "ready", done)
 
 
 def _hold_task(action: Action, deps: Deps) -> Result:
@@ -195,7 +202,7 @@ def _hold_task(action: Action, deps: Deps) -> Result:
     if ended is not None or stored is None:
         return ended or make_result(action, "failed", "no store row")
     reason = hold_text(action.get("reason", "") or "the chair held it")
-    return _mark_then_move(action, deps, stored, {HOLD_REASON: reason}, (TRIAGE_FLAG,), "blocked", f"{action['task_id']} held: {reason}")
+    return _mark_then_move(action, deps, stored, {HOLD_REASON: reason}, (TRIAGE_FLAG,), "blocked", f"{action_text(action, 'task_id')} held: {reason}")
 
 
 def _announce_hold(action: Action, deps: Deps) -> Result:
@@ -213,7 +220,7 @@ def _announce_hold(action: Action, deps: Deps) -> Result:
     except OSError as exc:
         return make_result(action, "failed", f"the courier entry for {task} was not written: {exc}")
     if deps.mark_handled is not None:
-        deps.mark_handled(action["key"])
+        deps.mark_handled(action_text(action, "key"))
     return make_result(action, "done", f"{task} announced: {reason}")
 
 
@@ -252,7 +259,7 @@ def _hold_initiative(action: Action, deps: Deps) -> Result:
     except OSError as exc:
         return make_result(action, "failed", f"{initiative} held, but its courier entry was not written: {exc}")
     if deps.mark_handled is not None and action.get("key"):
-        deps.mark_handled(action["key"])
+        deps.mark_handled(action_text(action, "key"))
     return make_result(action, "done", f"{initiative} held: {reason}{note}")
 
 
@@ -286,7 +293,7 @@ def _rescue(action: Action, deps: Deps) -> Result:
     A rescue that finds the task not eligible writes nothing, so the key is all that tells the next tick it ran."""
     result = perform_launch(action, deps)
     if result["status"] == "done" and deps.mark_handled is not None and action.get("key"):
-        deps.mark_handled(action["key"])
+        deps.mark_handled(action_text(action, "key"))
     return result
 
 
@@ -299,7 +306,7 @@ def _rebuild_quarantined(action: Action, deps: Deps, blocked: dict[str, Blocker]
         return {**cleared, "action": action}
     result = perform_launch({**action, "kind": ActionKind.RELAUNCH}, deps)
     if result["status"] == "done" and deps.mark_handled is not None and action.get("key"):
-        deps.mark_handled(action["key"])
+        deps.mark_handled(action_text(action, "key"))
     return {**result, "action": action}
 
 
@@ -343,7 +350,8 @@ def _close_initiative(action: Action, deps: Deps) -> Result:
     problem = _close_state_problem(state)
     if problem:
         return make_result(action, "failed", problem)
-    written = store_cli.set_state(deps.runs_dir, initiative, initiative, cast("store_cli.WorkState", str(state)), "chair-loop")
+    closing: store_cli.WorkState = "dropped" if state == "dropped" else "done"  # the state is done or dropped, checked above
+    written = store_cli.set_state(deps.runs_dir, initiative, initiative, closing, "chair-loop")
     if isinstance(written, store_cli.StateSet):
         return make_result(action, "done", f"closed {initiative} as {state}")
     return make_result(action, "failed", f"set-state {state} for {initiative}: {written}")
@@ -385,7 +393,7 @@ def _requeue_task(action: Action, deps: Deps) -> Result:
     if stored.get("state") != "approved":
         return make_result(action, "skipped", f"{task} is {stored.get('state')}, not approved")
     key = {"initiative": initiative, "task_id": task}
-    marked = {"extra": {**(stored.get("extra") or {}), LAND_CONFLICT_KEY: why}, "body": route_edit.append_note(stored.get("body") or "", conflict_note(why))}
+    marked = {"extra": {**_extra_of(stored), LAND_CONFLICT_KEY: why}, "body": route_edit.append_note(stored.get("body") or "", conflict_note(why))}
     refused_row = run_store.upsert_row_detail(deps.runs_dir, {**key, **marked})
     if refused_row:
         return make_result(action, "failed", f"the store did not take the reason of {task}: {refused_row}")
@@ -429,7 +437,8 @@ def _housekeeping(action: Action, deps: Deps) -> Result:
 
 def _send_note(deps: Deps, ref: courier.Reference, text: str) -> None:
     """Edge. One courier line for `ref` appended to `work_dir/courier.jsonl`, addressed to `deps.note_to`."""
-    sender = (chair.read(deps.runs_dir) or {}).get("session") or "chair"
+    session = (chair.read(deps.runs_dir) or {}).get("session")
+    sender = str(session) if session else "chair"
     entry = courier.send(ref, sender, deps.note_to, text, uuid.uuid4().hex)
     courier.append_file(deps.work_dir / "courier.jsonl", entry)
 
@@ -471,7 +480,7 @@ def _propose_tiers(action: Action, deps: Deps) -> Result:
     return make_result(action, "done", "proposed tiers to the inbox")
 
 
-def export_restores(planned: Mapping[str, str], rows: Sequence[Mapping[str, Any]]) -> list[str]:
+def export_restores(planned: Mapping[str, str], rows: Sequence[Mapping[str, object]]) -> list[str]:
     """Pure. The paths of `planned` (workspace-relative path to text) the board export would write back over, sorted:
     each one a store row renders to other text. A path no row renders is the workspace's own and stays written."""
     rendered = queue_export.export_rows([dict(r) for r in rows])
@@ -494,7 +503,7 @@ def _stale_to_draft(action: Action, deps: Deps) -> Result:
     except OSError:
         return make_result(action, "refused", f"no initiative.md at {initiative_path}")
     ticket_paths = ticket_paths_of(deps.work_dir, initiative)
-    ticket_texts = {}
+    ticket_texts: dict[str, str] = {}
     for task_id, path in ticket_paths.items():
         try:
             ticket_texts[task_id] = path.read_text(encoding="utf-8")
@@ -636,7 +645,7 @@ def _revert_land(action: Action, deps: Deps) -> Result:
     git, forge = deps.revert_ports(action)
     try:
         reverted = perform_revert(
-            action.get("repo", ""), cast(int, action.get("pr", 0)), action.get("commit", ""), action.get("reason", ""), git, forge
+            action.get("repo", ""), int(action.get("pr", 0)), action.get("commit", ""), action.get("reason", ""), git, forge
         )  # a revert_land's pr is the number of the land's pull request
     except Exception as exc:  # the edge: a port failure is a failed revert, and main is still red
         reverted = RevertResult("failed", "", f"revert raised {type(exc).__name__}: {exc}")
@@ -685,6 +694,8 @@ def _steer_reason(action: Action) -> str:
 
 def schedule_document(action: Action) -> str:
     """The text of `SCHEDULE_FILE`: the action's schedule object alone, as JSON."""
+    if "schedule" not in action:
+        raise KeyError("schedule")
     return json.dumps(action["schedule"], indent=2, sort_keys=True) + "\n"
 
 
@@ -789,10 +800,15 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
         case ActionKind.STEER_CLEAR:
             return make_result(action, "recorded", _steer_reason(action))
         case ActionKind.WAITING:
+            phase = action_text(action, "phase")
+            if "quarantined" not in action:
+                raise KeyError("quarantined")
+            if "awaiting_land" not in action:
+                raise KeyError("awaiting_land")
             return make_result(
                 action,
                 "recorded",
-                f"blocked by {action['phase']}: {action['quarantined']} quarantined, {action['awaiting_land']} awaiting land",
+                f"blocked by {phase}: {action['quarantined']} quarantined, {action['awaiting_land']} awaiting land",
             )
         case ActionKind.DEFERRED:
             return make_result(action, "recorded", _deferred_reason(action))
@@ -854,7 +870,7 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
             assert_never(kind)
 
 
-def notices_to_ack(tasks: list[dict], notices: list[dict]) -> list[str]:
+def notices_to_ack(tasks: list[dict[str, object]], notices: list[dict[str, object]]) -> list[str]:
     """Ids of the open land notices whose task is done, in first-seen order.
 
     A land notice is an unacked `coxswain://task/<id>` entry whose note mentions landing. Acked entries and
@@ -863,7 +879,7 @@ def notices_to_ack(tasks: list[dict], notices: list[dict]) -> list[str]:
     done = {t["id"] for t in tasks if t.get("state") == "done"}
     prefix = "coxswain://task/"
     return [
-        n["id"]
+        str(n["id"])
         for n in notices
         if not n.get("ack") and str(n.get("ref", "")).startswith(prefix)
         and str(n["ref"])[len(prefix):] in done and "land" in str(n.get("note", "")).lower()
@@ -880,7 +896,7 @@ def current_user() -> str:
 
 def _sweep_pytest_tmp(deps: Deps) -> list[str]:
     """Edge. Names of the stale `pytest-of-<user>` run directories removed at the tick's clock.
-    The module's age band is the only test of life. Any failure removes nothing here and stops nothing else."""
+    The module's age band is the only test of life. A failure removes nothing here and stops nothing else."""
     if deps.temp_root is None:
         return []
     try:
@@ -899,14 +915,14 @@ def _ack_done_land_notices(deps: Deps) -> list[str]:
         return []
     if not any(not n.get("ack") for n in notices):
         return []
-    tasks = []
+    tasks: list[dict[str, object]] = []
     for task_path in sorted((deps.work_dir / "work").glob("*/*/*.md")):
         try:
             fields, _ = route.parse_frontmatter(task_path.read_text(encoding="utf-8"))
         except OSError:
             continue
         tasks.append({"id": fields.get("id", task_path.stem), "state": fields.get("state", "todo")})
-    acked = []
+    acked: list[str] = []
     for message_id in notices_to_ack(tasks, notices):
         try:
             if courier.ack_file(path, message_id):
@@ -1053,7 +1069,8 @@ def perform(
     # After every action's result, so a caller that reads `results[0]` for its single action still gets that action's.
     if not dry_run and (removed := _sweep_pytest_tmp(deps)):
         swept = make_result(
-            {"kind": "pytest_tmp_sweep"},  # type: ignore[typeddict-item]  # not a planned kind, so no housekeeping timer moves
+            # not a planned kind (no `ActionKind` member), so no housekeeping timer moves
+            cast(Action, {"kind": "pytest_tmp_sweep"}),
             "done",
             f"removed stale pytest run directories: {', '.join(removed)}",
         )
@@ -1077,7 +1094,7 @@ LAND_CONFLICT_CAUSE = "land_conflict"
 _LAND_CONFLICT_ROUTE = "Rebase the phase branch onto main, or re-run the phase."
 
 
-def phase_task_states(rows: Sequence[Mapping[str, Any]], phase: str) -> list[str]:
+def phase_task_states(rows: Sequence[Mapping[str, object]], phase: str) -> list[str]:
     """The `state` of each work_items row in `phase`; rows are one initiative's, as `run_store.work_items` returns them."""
     return [str(row.get("state")) for row in rows if row.get("phase") == phase]
 
@@ -1099,7 +1116,7 @@ def _stopped_land(land: Action, result: Result) -> Result | None:
     reason = f"land {land_subject(land)} stopped at {step}: {detail}"
     raised = escalation(land)
     if step == "squash_phase":
-        return make_result({**raised, "cause": LAND_CONFLICT_CAUSE}, "escalated", f"{reason}. {_LAND_CONFLICT_ROUTE}")  # type: ignore[typeddict-item]
+        return make_result({**raised, "cause": LAND_CONFLICT_CAUSE}, "escalated", f"{reason}. {_LAND_CONFLICT_ROUTE}")
     return make_result(raised, "escalated", reason)
 
 

@@ -1,5 +1,7 @@
 """Pure remedy choice and reason trim for a quarantined task. No I/O, no clock."""
 
+from typing import TypedDict
+
 _REASON_LIMIT = 600
 
 _REMEDY_BY_CAUSE = {
@@ -54,6 +56,11 @@ def remedy_command(kind: str, run: str, task: str, repo: str, initiative: str = 
     return set_state_argv(initiative, task, "ready")
 
 
-def remedy_for(cause: str | None, run: str, task: str, repo: str, initiative: str = "") -> dict:
+class Remedy(TypedDict):
+    kind: str
+    command: list[str]
+
+
+def remedy_for(cause: str | None, run: str, task: str, repo: str, initiative: str = "") -> Remedy:
     kind = choose_remedy(cause)
-    return {"kind": kind, "command": remedy_command(kind, run, task, repo, initiative)}
+    return Remedy(kind=kind, command=remedy_command(kind, run, task, repo, initiative))

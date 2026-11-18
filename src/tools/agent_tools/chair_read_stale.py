@@ -76,7 +76,7 @@ def actions_query(token: str, now: datetime | None, window_days: int = ACTIONS_W
     return run_store.sql_for(f"SELECT * FROM chair_actions WHERE ts >= {{p}} OR kind IN ({marks})", token), (cutoff, *_KEPT_KINDS)
 
 
-def read_chair_actions(runs_dir: Path, now: datetime | None = None, window_days: int = ACTIONS_WINDOW_DAYS) -> list[dict]:
+def read_chair_actions(runs_dir: Path, now: datetime | None = None, window_days: int = ACTIONS_WINDOW_DAYS) -> list[dict[str, object]]:
     """Edge. The `chair_actions` rows from the last `window_days` before `now`; every row when `now` is None.
     `[]` with no store, no table, or the driver absent.
 
@@ -165,7 +165,7 @@ def read_stale_candidates(
     workspace_dir: Path,
     now: datetime,
     files: WorkFiles | None = None,
-    attempts: list[dict] | None = None,
+    attempts: Sequence[Row] | None = None,
     actions: Sequence[Row] | None = None,
 ) -> list[StaleCandidate]:
     """Edge. One row per board task not done, dropped or draft. `now` computes no age; `chair_stale.stale_reason` does.
@@ -177,6 +177,6 @@ def read_stale_candidates(
     candidates = [(p, text, item) for p, text, item in read_work_items(workspace_dir, "files", files) if item["state"] not in _EXCLUDED_STATES]
     changes = read_file_changes(workspace_dir) if candidates else None
     return [
-        _candidate(workspace_dir, (item["initiative"], p.parts[-2], p.stem), item["state"], item_body(text), attempts, actions, changes)
+        _candidate(workspace_dir, (str(item["initiative"]), p.parts[-2], p.stem), str(item["state"]), item_body(text), attempts, actions, changes)
         for p, text, item in candidates
     ]

@@ -1,6 +1,6 @@
 import pytest
 
-from agent_tools.chair_types import Action, ActionKind, Facts, action_from_store, is_fenced, stamp
+from agent_tools.chair_types import Action, ActionKind, Facts, action_from_store, action_text, is_fenced, stamp
 from core.jsontypes import ShapeError
 
 
@@ -146,3 +146,9 @@ def test_an_action_read_back_from_json_keeps_its_plain_kind_and_dispatches_as_it
 def test_a_malformed_action_read_back_is_refused_naming_the_bad_value(raw, named):
     with pytest.raises(ShapeError, match=named):
         action_from_store(raw)
+
+
+def test_action_text_reads_a_carried_key_and_raises_as_the_index_did_when_it_is_absent():
+    assert action_text({"kind": ActionKind.LAND, "initiative": "i"}, "initiative") == "i"
+    with pytest.raises(KeyError, match="phase"):
+        action_text({"kind": ActionKind.LAND}, "phase")

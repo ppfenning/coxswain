@@ -15,16 +15,18 @@ from agent_tools.chair_read_quarantined import (
 from agent_tools.chair_types import HandoffStop
 from agent_tools.chair_widen_ticket import widening_count
 from agent_tools.stats_chair import frontmatter_item
+from core.jsontypes import is_list, is_mapping
 
 
-def handoff_stops_from(items: Iterable[Mapping]) -> list[HandoffStop]:
+def handoff_stops_from(items: Iterable[Mapping[str, object]]) -> list[HandoffStop]:
     """One row per ready or blocked item with an attempt on its current body, in input order.
 
     `reason` is the newest such attempt's. `surfaces` keeps each string as written, '(new)' suffix included."""
-    rows = []
+    rows: list[HandoffStop] = []
     for item in items:
         body = str(item.get("body") or "")
-        attempts = [a for a in item.get("attempts") or [] if isinstance(a, Mapping)]
+        recorded: object = item.get("attempts") or []
+        attempts = [a for a in recorded if is_mapping(a)] if is_list(recorded) else []
         on_body = attempts_on_current_body(attempts, body)
         raw = item.get("surfaces")
         if item.get("state") in OPEN_STATES and on_body:
@@ -34,14 +36,14 @@ def handoff_stops_from(items: Iterable[Mapping]) -> list[HandoffStop]:
                     "task_id": str(item.get("task_id") or ""),
                     "state": str(item.get("state")),
                     "reason": newest_reason(on_body),
-                    "surfaces": [s for s in raw if isinstance(s, str)] if isinstance(raw, list) else [],
+                    "surfaces": [s for s in raw if isinstance(s, str)] if is_list(raw) else [],
                     "widenings": widening_count(body),
                 }
             )
     return rows
 
 
-def _item(path: Path, text: str, work_item: Mapping) -> dict | None:
+def _item(path: Path, text: str, work_item: Mapping[str, object]) -> dict[str, object] | None:
     """The core's input for one ticket; None for one that cannot be read."""
     try:
         attempts = frontmatter_item(text, path.stem).get("attempts")
@@ -51,7 +53,7 @@ def _item(path: Path, text: str, work_item: Mapping) -> dict | None:
             "state": work_item["state"],
             "body": item_body(text),
             "surfaces": work_item.get("surfaces"),
-            "attempts": attempts if isinstance(attempts, list) else [],
+            "attempts": attempts if is_list(attempts) else [],
         }
     except Exception:
         return None

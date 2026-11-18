@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from core.jsontypes import is_dict, is_list
+
 __all__ = ["RestartRecord", "bump", "read_record", "record_path", "restart_note", "with_note", "write_record"]
 
 _WINDOW = timedelta(hours=24)
@@ -65,11 +67,14 @@ def read_record(path: Path) -> RestartRecord | None:
         doc = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    times = doc.get("times") if isinstance(doc, dict) else None
-    reason = doc.get("reason") if isinstance(doc, dict) else None
-    if not isinstance(times, list) or not all(isinstance(t, str) for t in times) or not isinstance(reason, str):
+    times = doc.get("times") if is_dict(doc) else None
+    reason = doc.get("reason") if is_dict(doc) else None
+    if not is_list(times) or not isinstance(reason, str):
         return None
-    return RestartRecord(times=tuple(times), reason=reason)
+    stamps = tuple(t for t in times if isinstance(t, str))
+    if len(stamps) != len(times):
+        return None
+    return RestartRecord(times=stamps, reason=reason)
 
 
 def write_record(path: Path, record: RestartRecord) -> None:

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import Any, Literal, NotRequired, Protocol, TypedDict
+from typing import Literal, NotRequired, Protocol, TypedDict
 
 from agent_tools import (
     base_branch,
@@ -39,8 +39,9 @@ from agent_tools.chair_read_land_conflicts import rev_parse_commit as rev_parse
 from agent_tools.chair_rebase_exec import RebasePort
 from agent_tools.chair_revert_exec import ForgePort as RevertForgePort
 from agent_tools.chair_revert_exec import GitPort as RevertGitPort
-from agent_tools.chair_types import Action, ActionKind
+from agent_tools.chair_types import Action, ActionKind, action_text
 from agent_tools.remote_argv import ssh_argv, sync_argv
+from core.jsontypes import is_list, is_mapping
 
 Status = Literal[
     "fenced", "dry_run", "skipped", "refused", "recorded", "done", "failed", "landed", "not_landed", "escalated", "busy",
@@ -111,12 +112,12 @@ class Deps:
     run: Run  # (exit code, output); the only door to cox and git
     delete_branches: Callable[[str, str], tuple[list[str], str]]  # (repo, pattern) -> (deleted names, error text)
     acquire_lease: Callable[..., str]  # (holder, host), (holder, host, steal=True) over an expired takeover, or (holder, host, steal=True, takeback=True) over a session -> refusal line or ""
-    record: Callable[[Action], None]
+    record: Callable[[Mapping[str, object]], None]  # an action, or a `status` or `meter` line that is not one
     run_id: Callable[[Action], str]  # the run whose task a land applies to; "" when unknown
     repo_for: Callable[[Action], str]  # the repository a clear_branches acts in; "" when unknown
     ssh_for: Callable[[str], str] = lambda host: ""  # a lane host's name -> its ssh destination; "" when the hosts table has none
     intake_id: Callable[[str], str] = _no_intake_id  # an intake path -> the id in its frontmatter; "" when it has none
-    initiative_rows: Callable[[], Sequence[Mapping]] = _no_initiative_rows  # queue rows, read at the edge
+    initiative_rows: Callable[[], Sequence[Mapping[str, object]]] = _no_initiative_rows  # queue rows, read at the edge
     runs_dir: Path = field(default_factory=lambda: Path("."))  # a fetch_exit's task records and remote record live here
     work_dir: Path = field(default_factory=lambda: Path("."))  # a fetch_exit's ticket files live under work_dir/work/<initiative>
     now: Callable[[], str] = lambda: datetime.now(UTC).isoformat()  # the tick's clock, passed to plan_stale_draft
@@ -129,8 +130,8 @@ class Deps:
     # inbox to the human at start. A session label such as "chair-2026-09-27" would reach only that
     # one session, so the generic label is used here.
     note_to: str = "chair"
-    check_login: Callable[[str], dict] | None = None  # a check_login's host name -> the hosts row cox host beat prints
-    probe_host: Callable[[str], dict] | None = None  # a probe_host's host name -> the hosts row, or {}
+    check_login: Callable[[str], dict[str, object]] | None = None  # a check_login's host name -> the hosts row cox host beat prints
+    probe_host: Callable[[str], dict[str, object]] | None = None  # a probe_host's host name -> the hosts row, or {}
     log_retention_days: int = 7  # the profile's log_retention_days: traces and run logs kept locally, in days
     launch_stagger_s: float = 20.0  # the profile's chair.launch_stagger_s: seconds between two launches on one host in a tick; 0 is none
     harness_python: str = "python"  # the interpreter the trace prune runs under; the harness venv's python when one is configured
@@ -173,22 +174,25 @@ class TargetUnreadable(RuntimeError):
     """The initiative's target branch cannot be told. A step that meets it refuses: landing on the default would be a wrong merge."""
 
 
-def initiative_row(initiative: str, rows: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+def initiative_row(initiative: str, rows: Sequence[Mapping[str, object]]) -> Mapping[str, object] | None:
     """Pure. The queue row of kind initiative named `initiative`, else None."""
     return next((r for r in rows if r.get("kind") == "initiative" and r.get("initiative") == initiative), None)
 
 
 def target_for(
     initiative: str,
-    rows: Sequence[Mapping[str, Any]],
-    epics: Mapping[str, Mapping[str, Any]],
+    rows: Sequence[Mapping[str, object]],
+    epics: Mapping[str, Mapping[str, object]],
     cartridge_target: str | None,
 ) -> str | None:
     """Pure. The branch `initiative` lands on, from its queue row and its epic's definition."""
     row = initiative_row(initiative, rows)
     epic = queue_rows.epic_of_row(row) if row is not None else None
     initiative_branch = queue_rows.target_branch_of_row(row) if row is not None else None
-    epic_branch = (epics.get(epic) or {}).get("target_branch") if epic is not None else None
+    from core.landing import valid_branch  # lazy: core sits beside agent_tools in one venv
+
+    declared = (epics.get(epic) or {}).get("target_branch") if epic is not None else None
+    epic_branch = None if declared is None else valid_branch(declared, "epic")  # a non-string raises, as `resolved_target` does
     return resolved_target(cartridge_target, epic_branch, initiative_branch)
 
 
@@ -292,10 +296,16 @@ def land_refusal(action: Action, code: int, output: str) -> Action | None:
     }
 
 
-def phase_action(action: Action) -> Action:
+class _PhaseField(TypedDict, total=False):
+    phase: str
+
+
+def phase_action(action: Action) -> _PhaseField:
     """`{"phase": ...}` for a land_phase, which carries no task_id, so its needs_chair still names what failed; else empty."""
     phase = action.get("phase", "")
-    return {"phase": phase} if phase else {}
+    if phase:
+        return {"phase": phase}
+    return {}
 
 
 def land_subject(action: Action) -> str:
@@ -410,7 +420,7 @@ def make_result(action: Action, status: Status, reason: str = "") -> Result:
 
 def recorded_action(result: Result) -> Action:
     """The action with its outcome attached; the reason keeps its last 600 characters, where a traceback's failing frame is."""
-    return {**result["action"], "status": result["status"], "reason": tail(result["reason"], _REASON_CAP)}  # type: ignore[typeddict-item]
+    return {**result["action"], "status": result["status"], "reason": tail(result["reason"], _REASON_CAP)}
 
 
 def _land_result(action: Action, repo: str, code: int, output: str) -> Result:
@@ -536,7 +546,7 @@ def local_repo_path(repo: str, home: str = "") -> str:
     return repo_path.expand(repo, home or os.path.expanduser("~"))
 
 
-def _live_runs_line(runs: Sequence[Mapping[str, Any]]) -> str:
+def _live_runs_line(runs: Sequence[Mapping[str, object]]) -> str:
     """The refusal line naming each live run with its pid and state; "" when `runs` is empty."""
     named = "; ".join(f"{r['run']} pid {r['pid']} {r['state']}" for r in runs)
     return f"clear refused, a run of this initiative is live: {named}" if runs else ""
@@ -666,7 +676,7 @@ def _with_head(action: Action, deps: Deps, repo: str) -> Action:
     """The land_phase action with `head` set to the tip of its phase branch just before the land; unchanged, with no `head` key, when the branch does not resolve."""
     initiative, phase = action.get("initiative", ""), action.get("phase", "")
     tip = deps.rev_parse(repo, f"epic/{initiative}/{phase}") if initiative and phase else None
-    return {**action, "head": tip} if tip else action  # type: ignore[typeddict-item]
+    return {**action, "head": tip} if tip else action
 
 
 def perform_land_phase(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
@@ -703,6 +713,8 @@ def _land_by_task(action: Action, refused: str, deps: Deps, blocked: dict[str, B
     """A land_phase refused for a missing phase record, landed by task in the same tick: its `task_runs` as a
     partial_land's task lands, siblings backed up and restored. The result keeps the land_phase action, so its row
     clears or counts toward the phase's backoff as a land_phase's would; the refusal leads the reason."""
+    if "task_runs" not in action:
+        raise KeyError("task_runs")
     by_task: Action = {**action, "task_ids": list(action["task_runs"]), "quarantined": 0}
     result = perform_partial_phase(by_task, deps, blocked)
     reason = "\n".join(filter(None, [refused.strip(), "landing by task instead", result["reason"]]))
@@ -719,7 +731,15 @@ def perform_partial_phase(action: Action, deps: Deps, blocked: dict[str, Blocker
         return make_result(action, "skipped", f"an earlier land in {repo} ({blocked[repo].label}) was not counted")
     if not partial_land.steps(action):  # recorded, not escalated: the run is learned once it is fetched
         return make_result(action, "recorded", "no approved task of the phase has a known run yet")
-    return partial_land.perform_partial_land(action, deps.run, lambda land: perform_land(land, deps, blocked))  # type: ignore[return-value]
+    raw = partial_land.perform_partial_land(action, deps.run, lambda land: perform_land(land, deps, blocked))
+    result = make_result(raw["action"], raw["status"], raw["reason"])
+    if "commit" in raw:
+        result["commit"] = raw["commit"]
+    if "landed_commits" in raw:
+        result["landed_commits"] = raw["landed_commits"]
+    if "needs_chair" in raw:
+        result["needs_chair"] = raw["needs_chair"]
+    return result
 
 
 def _land_blocks_clear(landing: list[dict[str, str]], repo: str, initiative: str) -> bool:
@@ -792,17 +812,17 @@ def perform_lease(action: Action, deps: Deps) -> Result:
 
 def _rendered_value(value: object) -> object:
     """A list renders as the flat-list literal `_frontmatter` writes and `parse_frontmatter` reads back; anything else is unchanged."""
-    if isinstance(value, list):
-        return route._Raw("[" + ", ".join(route.yaml_scalar(v) for v in value) + "]")
+    if is_list(value):
+        return route._Raw("[" + ", ".join(route.yaml_scalar(str(v)) for v in value) + "]")
     return value
 
 
-def _initiative_tickets(work_dir: Path, initiative: str) -> list[dict]:
+def _initiative_tickets(work_dir: Path, initiative: str) -> list[dict[str, object]]:
     """Edge. Every ticket under `work/<initiative>/*/*.md`, `work_item`'s fields plus `body` for `merge_same_phase`.
 
     A missing initiative directory reads as no tickets, not an error.
     """
-    tickets = []
+    tickets: list[dict[str, object]] = []
     for task_path in sorted((work_dir / "work" / initiative).glob("*/*.md")):
         if task_path.name == "initiative.md":
             continue
@@ -825,11 +845,18 @@ def ticket_paths_of(work_dir: Path, initiative: str) -> dict[str, Path]:
     }
 
 
-def _write_ticket(work_dir: Path, item: dict) -> None:
+def _write_ticket(work_dir: Path, item: Mapping[str, object]) -> None:
     """Edge. `item` re-rendered to frontmatter and written back to `work_dir/work/<initiative>/<file>`, the shape `_initiative_tickets` read it from."""
     fields = [(key, _rendered_value(value)) for key, value in item.items() if key not in ("initiative", "file", "body")]
     text = route._frontmatter(fields, item.get("body", ""))
-    (work_dir / "work" / item["initiative"] / item["file"]).write_text(text, encoding="utf-8")
+    (work_dir / "work" / str(item["initiative"]) / str(item["file"])).write_text(text, encoding="utf-8")
+
+
+def _events_of(row: Mapping[str, object] | None) -> list[object]:
+    """The `events` a queue row's `extra` carries; empty when it has none."""
+    extra = None if row is None else row.get("extra")
+    events = extra.get("events") if is_mapping(extra) else None
+    return events if is_list(events) else []
 
 
 def _merge_and_write(work_dir: Path, runs_dir: Path, initiative: str) -> str:
@@ -845,7 +872,7 @@ def _merge_and_write(work_dir: Path, runs_dir: Path, initiative: str) -> str:
     stored_heads = [r for r in run_store.read_queue(runs_dir, initiative, kind="initiative") if r.get("task_id") == initiative]
     if not stored_heads:
         return f"merge of {initiative} refused: the store has no initiative row; no ticket file written"
-    seen_events = (stored_heads[0].get("extra") or {}).get("events", [])
+    seen_events = _events_of(stored_heads[0])
     by_id = {item["id"]: item for item in merged_items}
     changed = [by_id[ticket_id] for merge in merges for ticket_id in merge["members"] if ticket_id in by_id]
     paths = [work_dir / "work" / initiative / item["file"] for item in changed]
@@ -864,7 +891,7 @@ def _merge_and_write(work_dir: Path, runs_dir: Path, initiative: str) -> str:
         # write_merge_rows returns task ids only; a refused initiative row shows as an event count that did not grow.
         heads = run_store.read_queue(runs_dir, initiative, kind="initiative")
         head = next((r for r in heads if r.get("task_id") == initiative), None)
-        recorded = ((head or {}).get("extra") or {}).get("events", [])
+        recorded = _events_of(head)
         refused = [] if len(recorded) >= len(seen_events) + len(events) else [initiative]
     if refused:
         # Rows upserted before the refusal would leave a merged survivor in the store beside unmerged files.
@@ -880,14 +907,15 @@ def _merge_and_write(work_dir: Path, runs_dir: Path, initiative: str) -> str:
 
 def perform_launch(action: Action, deps: Deps) -> Result:
     initiative_id = ""
-    if action.get("kind") == "launch_decompose" and action.get("intake_ids"):
-        idea = action["intake_ids"][0]
+    intake_ids = action.get("intake_ids")
+    if action.get("kind") == "launch_decompose" and intake_ids:
+        idea = intake_ids[0]
         chosen_id = decompose_id(idea, deps.intake_id(idea))
         if isinstance(chosen_id, Refusal):
             return make_result(action, "refused", chosen_id.reason)
         initiative_id = route_guard.fresh_initiative_id(chosen_id, deps.initiative_rows())
     if action.get("kind") in ("launch_epic", "relaunch") and action.get("initiative"):
-        failure = _merge_and_write(deps.work_dir, deps.runs_dir, action["initiative"])
+        failure = _merge_and_write(deps.work_dir, deps.runs_dir, action_text(action, "initiative"))
         if failure:
             return make_result(action, "failed", failure)
     argv = argv_for(action, initiative_id, deps.ids_mode, deps.label)
@@ -898,10 +926,10 @@ def perform_launch(action: Action, deps: Deps) -> Result:
         return make_result(action, "done", output)
     if chair_lease_refusal.parse_lease_refusal(output) is not None:  # the previous run's lease has not expired: not a broken launch
         return make_result(action, chair_lease_refusal.STATUS, output)
-    missing = idea_miss_path(output) if action.get("kind") == "launch_decompose" and action.get("intake_ids") else None
-    if missing is not None:
+    missing = idea_miss_path(output) if action.get("kind") == "launch_decompose" and intake_ids else None
+    if missing is not None and intake_ids:
         # The recorded row carries the miss, which `chair_facts.decompose_miss_facts` counts into the planner's backoff.
-        fingerprint = deps.intake_fingerprint(action["intake_ids"][0])
+        fingerprint = deps.intake_fingerprint(intake_ids[0])
         missed: Action = {**action, "idea_missing": missing}
         if fingerprint is not None:
             missed["fingerprint"] = fingerprint
@@ -924,7 +952,7 @@ def _fetched_host(runs_dir: Path, run: str) -> str:
     except OSError:
         return ""
     record = remote_lane.parse_remote_record(text)
-    return record["host"] if record else ""
+    return str(record["host"]) if record else ""
 
 
 def fetch_status(code: int, message: str) -> Status:
@@ -966,10 +994,10 @@ def perform_widen_ticket(action: Action, deps: Deps) -> Result:
     return make_result(action, "done", reason if warning is None else f"{reason}; {warning}")
 
 
-def run_exited_ids(entries: list[dict], run: str) -> list[str]:
+def run_exited_ids(entries: list[dict[str, object]], run: str) -> list[str]:
     """Ids of the unacked `run_exited` entries that announce `run`, in first-seen order."""
     return [
-        e["id"] for e in entries
+        str(e["id"]) for e in entries
         if not e.get("ack") and (parsed := courier.parse_run_exited(e)) is not None and parsed[0] == run
     ]
 
@@ -982,7 +1010,7 @@ def _ack_run_exited(run: str, deps: Deps) -> list[str]:
         entries = courier.entries(courier.read_text(path))
     except (OSError, ValueError):
         return []
-    acked = []
+    acked: list[str] = []
     for message_id in run_exited_ids(entries, run):
         try:
             if courier.ack_file(path, message_id):

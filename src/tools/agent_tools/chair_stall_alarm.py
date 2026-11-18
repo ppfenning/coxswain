@@ -28,7 +28,12 @@ import hashlib
 import re
 from collections.abc import Collection, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any, TypedDict
+from typing import TYPE_CHECKING, TypedDict
+
+from core.jsontypes import is_mapping
+
+if TYPE_CHECKING:  # chair_types imports this module for StallFacts, so the import runs only for the checker
+    from agent_tools.chair_types import Action, Facts
 
 DEFAULT_LAND_HOURS = 6.0
 DEFAULT_LAUNCH_MINUTES = 60.0
@@ -120,13 +125,15 @@ def _number(value: object, default: float) -> float:
 def resolve_settings(value: object) -> Settings:
     """The profile's raw `chair.stall_alarm` mapping, each key a number of at least 0 (0 turns its check off), else its
     default. `repeat_ticks` is a whole number of at least 2, since one failure is not a repeat; 1 reads as the default."""
-    raw = value if isinstance(value, Mapping) else {}
+    raw: Mapping[str, object] = value if is_mapping(value) else {}
     ticks = raw.get("repeat_ticks")
-    whole = not isinstance(ticks, bool) and isinstance(ticks, int | float) and ticks == int(ticks) and (ticks == 0 or ticks >= 2)
+    repeat_ticks = DEFAULT_REPEAT_TICKS
+    if not isinstance(ticks, bool) and isinstance(ticks, int | float) and ticks == int(ticks) and (ticks == 0 or ticks >= 2):
+        repeat_ticks = int(ticks)
     return {
         "land_hours": _number(raw.get("land_hours"), DEFAULT_LAND_HOURS),
         "launch_minutes": _number(raw.get("launch_minutes"), DEFAULT_LAUNCH_MINUTES),
-        "repeat_ticks": int(ticks) if whole else DEFAULT_REPEAT_TICKS,  # type: ignore[arg-type]
+        "repeat_ticks": repeat_ticks,
     }
 
 
@@ -155,7 +162,13 @@ def _oldest(stamps: Sequence[object]) -> str | None:
     return min(dated)[1] if dated else None
 
 
-def land_facts(records: Sequence[Mapping[str, Any]]) -> tuple[str | None, dict[str, str]]:
+def _phase_records(record: Mapping[str, object]) -> list[Mapping[str, object]]:
+    """The mapping values of a landing record's `phases`; an absent or empty `phases` has none."""
+    phases = record.get("phases")
+    return [p for p in phases.values() if is_mapping(p)] if is_mapping(phases) else []
+
+
+def land_facts(records: Sequence[Mapping[str, object]]) -> tuple[str | None, dict[str, str]]:
     """From the store's landing records: the newest land (a phase `merged` into its initiative branch, or a record
     `landed`), and each open initiative with its record's creation. Open is any state but landed or draft."""
     lands = [
@@ -163,8 +176,8 @@ def land_facts(records: Sequence[Mapping[str, Any]]) -> tuple[str | None, dict[s
         *(
             p.get("updated_at")
             for r in records
-            for p in (r.get("phases") or {}).values()
-            if isinstance(p, Mapping) and p.get("state") == "merged"
+            for p in _phase_records(r)
+            if p.get("state") == "merged"
         ),
     ]
     live = {
@@ -175,13 +188,13 @@ def land_facts(records: Sequence[Mapping[str, Any]]) -> tuple[str | None, dict[s
     return _newest(lands), dict(sorted(live.items()))
 
 
-def _by_time(docs: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+def _by_time(docs: Sequence[Mapping[str, object]]) -> list[Mapping[str, object]]:
     """The rows in time order; a row with no readable time is left out. Equal times keep their given order."""
     dated = [(d, n, doc) for n, doc in enumerate(docs) if (d := parse_ts(doc.get("ts"))) is not None]
     return [doc for _, _, doc in sorted(dated, key=lambda t: (t[0], t[1]))]
 
 
-def last_launch_at(docs: Sequence[Mapping[str, Any]]) -> str | None:
+def last_launch_at(docs: Sequence[Mapping[str, object]]) -> str | None:
     """The time of the newest done launch row; None with none in the rows."""
     return _newest([d.get("ts") for d in docs if d.get("kind") in LAUNCH_KINDS and d.get("status") == "done"])
 
@@ -197,15 +210,15 @@ def action_key(kind: str, target: str) -> str:
     return f"{REPEAT}:{kind}:{target}"
 
 
-def _attempts(docs: Sequence[Mapping[str, Any]]) -> dict[tuple[str, str], list[Mapping[str, Any]]]:
+def _attempts(docs: Sequence[Mapping[str, object]]) -> dict[tuple[str, str], list[Mapping[str, object]]]:
     """Each action's attempts in time order; alarm and needs_chair rows are reports, not attempts."""
-    attempts: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+    attempts: dict[tuple[str, str], list[Mapping[str, object]]] = {}
     for doc in _by_time([d for d in docs if d.get("kind") and d.get("kind") not in _NOT_ATTEMPTS]):
         attempts.setdefault((str(doc["kind"]), str(doc.get("target") or "")), []).append(doc)
     return attempts
 
 
-def attempt_heads(docs: Sequence[Mapping[str, Any]]) -> dict[str, Head]:
+def attempt_heads(docs: Sequence[Mapping[str, object]]) -> dict[str, Head]:
     """Each action's newest attempt, by `action_key`: what tells a broken streak from one that only went quiet."""
     return {
         action_key(kind, target): {
@@ -217,7 +230,7 @@ def attempt_heads(docs: Sequence[Mapping[str, Any]]) -> dict[str, Head]:
     }
 
 
-def failure_streaks(docs: Sequence[Mapping[str, Any]], repeat_ticks: int) -> list[Streak]:
+def failure_streaks(docs: Sequence[Mapping[str, object]], repeat_ticks: int) -> list[Streak]:
     """Per action (kind and target), its newest attempts in a row that failed with the same reason, when they number at
     least `repeat_ticks`; none when `repeat_ticks` is 0. Sorted by kind and target."""
     if repeat_ticks < 2:
@@ -242,7 +255,7 @@ def failure_streaks(docs: Sequence[Mapping[str, Any]], repeat_ticks: int) -> lis
     return found
 
 
-def open_alarms(docs: Sequence[Mapping[str, Any]]) -> dict[str, OpenAlarm]:
+def open_alarms(docs: Sequence[Mapping[str, object]]) -> dict[str, OpenAlarm]:
     """The stalls raised and not yet cleared, by key, from the done alarm rows in time order: the last row per key wins."""
     opened: dict[str, OpenAlarm] = {}
     for doc in _by_time([d for d in docs if d.get("kind") in ALARM_KINDS and d.get("status") == "done" and d.get("stall")]):
@@ -256,7 +269,7 @@ def open_alarms(docs: Sequence[Mapping[str, Any]]) -> dict[str, OpenAlarm]:
 
 
 def stall_facts(
-    settings: Settings, records: Sequence[Mapping[str, Any]], docs: Sequence[Mapping[str, Any]]
+    settings: Settings, records: Sequence[Mapping[str, object]], docs: Sequence[Mapping[str, object]]
 ) -> StallFacts:
     """Everything the three checks read: the landing records' land facts, and the action rows' launches, first row,
     attempt heads, failure streaks and open alarms."""
@@ -351,17 +364,19 @@ def repeat_ending(key: str, heads: Mapping[str, Head], now: datetime) -> str:
     return "standing" if same else "broken"
 
 
-def plan_alarms(standing: Sequence[Stall], facts: StallFacts, now: datetime, paused: bool = False) -> list[dict[str, Any]]:
+def plan_alarms(standing: Sequence[Stall], facts: StallFacts, now: datetime, paused: bool = False) -> list[Action]:
     """One stall_alarm per standing stall not raised already, then for each raised stall no longer standing one
     stall_clear: the all-clear, or, for a same-failure stall that only went quiet, a `quiet` one that closes it unsaid.
     Under the hard stop (`paused`) a raised no-land or no-launch stall is not judged, so it is neither cleared nor raised."""
     keys = {s["key"] for s in standing}
     opened = facts["open"]
-    raised = [
-        {"kind": RAISE, "stall": s["key"], "since": s["since"], "subject": s["subject"], "detail": s["detail"]}
+    from agent_tools.chair_types import ActionKind  # chair_types imports this module, so a top-level import is a cycle
+
+    raised: list[Action] = [
+        {"kind": ActionKind.STALL_ALARM, "stall": s["key"], "since": s["since"], "subject": s["subject"], "detail": s["detail"]}
         for s in standing if s["key"] not in opened
     ]
-    cleared: list[dict[str, Any]] = []
+    cleared: list[Action] = []
     for key, alarm in sorted(opened.items()):
         if key in keys:
             continue
@@ -372,26 +387,34 @@ def plan_alarms(standing: Sequence[Stall], facts: StallFacts, now: datetime, pau
         if ending == "standing":
             continue
         quiet = ending == "quiet"
-        cleared.append({
-            "kind": CLEAR, "stall": key, "since": alarm["since"], "subject": alarm["subject"],
-            "detail": f"{'expired' if quiet else 'cleared'}: {alarm['detail']}", **({"quiet": True} if quiet else {}),
-        })
+        clear: Action = {
+            "kind": ActionKind.STALL_CLEAR, "stall": key, "since": alarm["since"], "subject": alarm["subject"],
+            "detail": f"{'expired' if quiet else 'cleared'}: {alarm['detail']}",
+        }
+        if quiet:
+            clear["quiet"] = True
+        cleared.append(clear)
     return [*raised, *cleared]
 
 
+def _count(value: object) -> int:
+    """`int(value or 0)` for a count read off the idle-stall inputs."""
+    return int(value) if isinstance(value, int | float | str) and value else 0
+
+
 def plan_stall_alarm(
-    facts: Mapping[str, Any], planned: Collection[Mapping[str, Any]], now: datetime, *, launch_paused: bool = False
-) -> list[dict[str, Any]]:
+    facts: Facts, planned: Collection[Action], now: datetime, *, launch_paused: bool = False
+) -> list[Action]:
     """The tick's alarm actions from `facts["stall_alarm"]` (none without it), `facts["idle_stall"]`'s free lanes,
     ready count and open idle line, the held initiatives, and the tick's planned actions, which say whether the chair's
     own idle line goes out this tick. `launch_paused` is the hard stop."""
     alarm = facts.get("stall_alarm")
     if not alarm:
         return []
-    idle = facts.get("idle_stall") or {}
+    idle: Mapping[str, object] = facts.get("idle_stall") or {}
     gate: Gate = {
-        "free_lanes": int(idle.get("free_lanes") or 0),
-        "ready": int(idle.get("ready") or 0) + int(idle.get("queued") or 0),
+        "free_lanes": _count(idle.get("free_lanes")),
+        "ready": _count(idle.get("ready")) + _count(idle.get("queued")),
         "subject": next((str(i["id"]) for i in facts.get("initiatives") or [] if i.get("ready_tasks")), ""),
         "held": frozenset(facts.get("held_initiatives") or ()) | frozenset(facts.get("no_progress") or {}),
         "idle_raised": bool(idle.get("open_signature"))
