@@ -256,13 +256,24 @@ token.
 
 A shell you open yourself, by ssh or at the terminal, does not read that file.
 So `cox upgrade` and `cox setup doctor` read it themselves when you run them by
-hand. They read the file the installed upgrade unit names (its
-`EnvironmentFile=` line, or the file the launchd agent sources). If no upgrade
-unit names one, they try the chair unit, then the lander unit, then the default
-`~/.config/agent-tools/garage.env`. A variable that your shell already sets
-keeps its value. The rest come from the file. The command prints the names it
-loaded, never the values. `cox setup doctor --json` loads the file without
-printing anything.
+hand. They read the files the installed upgrade unit names: every
+`EnvironmentFile=` line, with `%h` as your home and a later file winning, or the
+file the launchd agent sources. If no upgrade unit names one, they try the chair
+unit, then the lander unit, then the default `~/.config/agent-tools/garage.env`.
+
+A variable that your shell already sets keeps its value, even when it is empty.
+The rest come from the file. The command prints names and paths, never values:
+
+- the variables it loaded;
+- the shell variables that override a different value in the file (if you
+  rotated a key in the file, unset the old one in your shell);
+- any value it did not load because a unit would read it differently, such as
+  a quoted value (`K="abc"`), one with a space, `$` or `%`, or an empty one.
+  Rewrite those as plain `NAME=value`;
+- a file a unit names that does not exist, and a file skipped because it is
+  not UTF-8 text.
+
+`cox setup doctor --json` loads the file without printing anything.
 
 On an edge machine, `cox upgrade` with no `--to` does these steps:
 
