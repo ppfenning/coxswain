@@ -15,7 +15,12 @@ commit, and the push runs of ci.yml on main.
 
 from __future__ import annotations
 
-from smoke import plan
+import shutil
+import subprocess
+
+import pytest
+
+from smoke import gh_replay, plan
 
 SLUG = plan.GH_SLUG
 MERGED_PR = 1061
@@ -108,3 +113,16 @@ from agent_tools import forge_github
 print(json.dumps(list(forge_github.merge_pr(Path("."), {MERGED_PR}))))
 """)
     assert merged[0] is True, merged
+
+
+def test_a_stray_https_request_never_leaves_the_machine_and_is_named(sandbox, tmp_path):
+    # Not through `github`, whose teardown fails on any miss: this test wants the miss.
+    gh = shutil.which("gh")
+    if gh is None:
+        pytest.skip("no gh on PATH")
+    with gh_replay.serving(gh_replay.Replay([])) as server:
+        env = {**sandbox.env, **plan.gh_env(server.proxy, str(tmp_path / "gh-config"))}
+        done = subprocess.run([gh, "api", "https://api.github.com/zen"], env=env, capture_output=True, text=True,
+                              timeout=60)
+    assert done.returncode != 0, done.stdout
+    assert server.misses == ["CONNECT api.github.com:443 (an https request; only the replay host is answered)"], server.misses

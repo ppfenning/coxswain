@@ -43,6 +43,15 @@ class _Handler(BaseHTTPRequestHandler):
 
     do_GET = do_POST = do_PATCH = do_PUT = do_DELETE = _answer
 
+    def do_CONNECT(self) -> None:
+        """An https request through the proxy (HTTPS_PROXY names it too) asks to tunnel to its host. Nothing here
+        answers https, so the tunnel is refused and the request is listed as a miss, named at the test's teardown."""
+        with self.server.lock:
+            self.server.misses.append(f"CONNECT {self.path} (an https request; only the replay host is answered)")
+        self.send_response(599)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def log_message(self, format: str, *args: object) -> None:
         pass
 
