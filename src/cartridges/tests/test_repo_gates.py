@@ -181,6 +181,7 @@ SPLIT_FROM: dict[str, frozenset[str]] = {
         "src/tools/agent_tools/cli_doctor.py",
         "src/tools/agent_tools/cli_host.py",
         "src/tools/agent_tools/cli_install.py",
+        "src/tools/agent_tools/cli_lake.py",
         "src/tools/agent_tools/cli_land.py",
         "src/tools/agent_tools/cli_land_steps.py",
         "src/tools/agent_tools/cli_leader.py",
@@ -191,6 +192,8 @@ SPLIT_FROM: dict[str, frozenset[str]] = {
         "src/tools/agent_tools/cli_runs.py",
         "src/tools/agent_tools/cli_runs_fetch.py",
         "src/tools/agent_tools/cli_setup_store.py",
+        "src/tools/agent_tools/cli_stats.py",
+        "src/tools/agent_tools/cli_usage.py",
         "src/tools/agent_tools/cli_views.py",
     }),
 }

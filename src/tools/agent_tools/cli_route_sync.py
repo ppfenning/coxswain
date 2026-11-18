@@ -19,11 +19,9 @@ from pathlib import Path
 
 import yaml
 
-from agent_tools.cli import (
-    _lake_provider,
-    _profile_path,
-    _read_text_or_none,
-    _resolve_profile_or_refuse,
+from agent_tools.cli_common import _profile_path, _read_text_or_none
+from agent_tools.cli_lake import _lake_provider
+from agent_tools.cli_lazy import (
     bounded_run,
     card_keys,
     chair_capacity,
@@ -50,6 +48,7 @@ from agent_tools.cli import (
     work_state,
 )
 from agent_tools.cli_runs_fetch import _UNLABELED, _holder_label
+from agent_tools.cli_stats import _resolve_profile_or_refuse
 
 
 def _resolved_tracker(profile: dict, runs_dir: Path) -> str:

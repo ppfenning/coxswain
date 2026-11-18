@@ -16,9 +16,9 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
-from agent_tools.cli import (
-    _LazyHandler,
-    _read_text_or_none,
+from agent_tools.cli import _LazyHandler
+from agent_tools.cli_common import _read_text_or_none
+from agent_tools.cli_lazy import (
     bounded_run,
     cleanup,
     forge,

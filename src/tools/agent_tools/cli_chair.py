@@ -19,15 +19,10 @@ from collections.abc import Callable, Collection, Hashable, Iterable, Mapping, S
 from pathlib import Path
 from typing import Any
 
-from agent_tools.cli import (
-    _chair_meter,
-    _initiative_texts,
-    _json_or,
-    _profile_month,
-    _read_text_or_none,
-    _reconcile_ceilings,
-    _resolved_pacing_policy,
-    _stored_work_items,
+from agent_tools.cli_board import _chair_export_hook
+from agent_tools.cli_common import _initiative_texts, _read_text_or_none, _stored_work_items, workspace_git_on
+from agent_tools.cli_land import _check_capacity, _read_epics
+from agent_tools.cli_lazy import (
     chair,
     chair_capacity,
     chair_dash_sync,
@@ -94,11 +89,8 @@ from agent_tools.cli import (
     store_cli,
     usage_meter,
     usage_window,
-    workspace_git_on,
     workspace_sync,
 )
-from agent_tools.cli_board import _chair_export_hook
-from agent_tools.cli_land import _check_capacity, _read_epics
 from agent_tools.cli_leader import _chat_deps
 from agent_tools.cli_route import _live_runs
 from agent_tools.cli_route_launch import _lane_sync_ssh, _live_by_host, _pid_probe_ssh, _shadowed_note
@@ -112,6 +104,8 @@ from agent_tools.cli_route_sync import (
 )
 from agent_tools.cli_runs import _approved_branch_merged, _repo_for, _wrongly_released_merged
 from agent_tools.cli_runs_fetch import _lane_host_candidates, _profile_lane_hosts, _store_held_records
+from agent_tools.cli_stats import _json_or
+from agent_tools.cli_usage import _chair_meter, _profile_month, _reconcile_ceilings, _resolved_pacing_policy
 
 
 @dataclasses.dataclass(frozen=True)

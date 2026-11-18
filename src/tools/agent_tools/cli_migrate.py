@@ -18,11 +18,24 @@ from pathlib import Path
 
 import yaml
 
-from agent_tools.cli import (
-    STORE_DOUBLE_ENV,
-    _lake_provider,
-    _now_iso,
-    _read_text_or_none,
+from agent_tools.cli_chair_service import _chair_unit_text, _ChairUnitRefusal
+from agent_tools.cli_common import STORE_DOUBLE_ENV, _now_iso, _read_text_or_none
+from agent_tools.cli_doctor import (
+    _doctor_home_rows,
+    _install_run,
+    _marketplace_listing,
+    _marketplace_plugins,
+    _migrate_cartridge_links,
+    _migrate_install_bins,
+    _migrate_link,
+    _migrate_observe_hosts,
+    _migrate_old_root,
+    _migrate_profile,
+)
+from agent_tools.cli_host import _origin_url
+from agent_tools.cli_install import _checkout_facts, _load_lazy_modules, _migrate_kind, _offered_tags
+from agent_tools.cli_lake import _lake_provider
+from agent_tools.cli_lazy import (
     bounded_run,
     chair_read_lease,
     chair_service,
@@ -43,21 +56,6 @@ from agent_tools.cli import (
     upgrade_plan,
     work_state,
 )
-from agent_tools.cli_chair_service import _chair_unit_text, _ChairUnitRefusal
-from agent_tools.cli_doctor import (
-    _doctor_home_rows,
-    _install_run,
-    _marketplace_listing,
-    _marketplace_plugins,
-    _migrate_cartridge_links,
-    _migrate_install_bins,
-    _migrate_link,
-    _migrate_observe_hosts,
-    _migrate_old_root,
-    _migrate_profile,
-)
-from agent_tools.cli_host import _origin_url
-from agent_tools.cli_install import _checkout_facts, _load_lazy_modules, _migrate_kind, _offered_tags
 from agent_tools.cli_route import _paths_apply_files, _paths_apply_rows
 from agent_tools.cli_runs_fetch import _profile_lane_hosts
 

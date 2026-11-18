@@ -12,11 +12,9 @@ from pathlib import Path
 
 import yaml
 
-from agent_tools.cli import (
-    _lake_provider,
-    _now_iso,
-    _profile_path,
-    _read_text_or_none,
+from agent_tools.cli_common import _now_iso, _profile_path, _read_text_or_none
+from agent_tools.cli_lake import _lake_provider
+from agent_tools.cli_lazy import (
     bounded_run,
     chair_facts,
     host_cmd,

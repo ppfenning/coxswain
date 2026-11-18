@@ -19,13 +19,14 @@ import uuid
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
-from agent_tools.cli import (
-    _CHAIR_RUN_INTERVAL,
-    _lake_provider,
-    _profile_path,
-    _read_text_or_none,
+from agent_tools.cli import _CHAIR_RUN_INTERVAL, build_parser
+from agent_tools.cli_chair import _chair_once_exit, _chair_run_deps, _chair_unwired_sources
+from agent_tools.cli_common import _profile_path, _read_text_or_none
+from agent_tools.cli_host import _chair_heads, _chair_service_host_repos, _origin_url
+from agent_tools.cli_lake import _lake_provider
+from agent_tools.cli_land import _leader_pid_alive, _leader_read_or_refuse
+from agent_tools.cli_lazy import (
     bounded_run,
-    build_parser,
     chair,
     chair_holder,
     chair_land_freeze,
@@ -45,9 +46,6 @@ from agent_tools.cli import (
     unit_env,
     work_state,
 )
-from agent_tools.cli_chair import _chair_once_exit, _chair_run_deps, _chair_unwired_sources
-from agent_tools.cli_host import _chair_heads, _chair_service_host_repos, _origin_url
-from agent_tools.cli_land import _leader_pid_alive, _leader_read_or_refuse
 from agent_tools.cli_leader import _is_chair_run_command, _pid_command
 from agent_tools.cli_route import _courier_profile
 from agent_tools.cli_runs import _leader_heartbeat_minutes, _leader_runs_dir_or_refuse

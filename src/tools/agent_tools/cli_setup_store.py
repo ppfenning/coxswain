@@ -9,9 +9,8 @@ import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
-from agent_tools.cli import (
-    _profile_path,
-    _read_text_or_none,
+from agent_tools.cli_common import _profile_path, _read_text_or_none
+from agent_tools.cli_lazy import (
     bounded_run,
     claude_token,
     route,

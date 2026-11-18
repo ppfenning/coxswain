@@ -19,12 +19,15 @@ import tomllib
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
-from agent_tools.cli import (
-    _LAZY_MODULES,
-    _dev_moved,
-    _now_iso,
-    _profile_path,
-    _read_text_or_none,
+from agent_tools.cli import _LAZY_MODULES, _dev_moved
+from agent_tools.cli_chair_service import (
+    _chair_service_environment_file,
+    _chair_unit_inputs,
+    _ChairUnitRefusal,
+    _write_private,
+)
+from agent_tools.cli_common import _now_iso, _profile_path, _read_text_or_none
+from agent_tools.cli_lazy import (
     bounded_run,
     chair_service,
     dash_binary,
@@ -45,12 +48,6 @@ from agent_tools.cli import (
     upgrade_edge,
     upgrade_exec,
     upgrade_plan,
-)
-from agent_tools.cli_chair_service import (
-    _chair_service_environment_file,
-    _chair_unit_inputs,
-    _ChairUnitRefusal,
-    _write_private,
 )
 from agent_tools.cli_runs import _leader_runs_dir_or_refuse
 

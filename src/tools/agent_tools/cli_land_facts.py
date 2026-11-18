@@ -9,18 +9,9 @@ import subprocess
 from collections.abc import Collection, Sequence
 from pathlib import Path
 
-from agent_tools.cli import (
-    _read_text_or_none,
-    bounded_run,
-    chair_facts,
-    forge,
-    forge_github,
-    land,
-    phase_status,
-    route,
-    run_store,
-)
+from agent_tools.cli_common import _read_text_or_none
 from agent_tools.cli_land_steps import _generated_tree, _git_out
+from agent_tools.cli_lazy import bounded_run, chair_facts, forge, forge_github, land, phase_status, route, run_store
 from agent_tools.cli_runs_fetch import _branch_exists
 
 
