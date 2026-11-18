@@ -566,29 +566,29 @@ def _chair_freeze_lands(a: argparse.Namespace) -> int:
 
 def _lander_once(a: argparse.Namespace) -> int:
     from agent_tools import lander_cli
-    return lander_cli._once(a)
+    return lander_cli.cmd_once(a)
 
 
 def _lander_run(a: argparse.Namespace) -> int:
     from agent_tools import lander_cli
-    return lander_cli._run(a)
+    return lander_cli.cmd_run(a)
 
 
 def _lander_status(a: argparse.Namespace) -> int:
     from agent_tools import lander_cli
-    return lander_cli._status(a)
+    return lander_cli.cmd_status(a)
 
 
 def _lander_adopt(a: argparse.Namespace) -> int:
     from agent_tools import lander_cli
-    return lander_cli._adopt(a)
+    return lander_cli.cmd_adopt(a)
 
 
 def _lander_backlog(a: argparse.Namespace) -> int:
     from agent_tools import lander_cli
-    return lander_cli._backlog(a)
+    return lander_cli.cmd_backlog(a)
 
 
 def _lander_service(a: argparse.Namespace) -> int:
     from agent_tools import lander_cli
-    return lander_cli._service(a)
+    return lander_cli.cmd_service(a)

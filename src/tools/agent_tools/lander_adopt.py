@@ -22,7 +22,6 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from agent_tools import lander
 from core import landing_record as lr
@@ -67,7 +66,7 @@ class Plan:
         return out
 
 
-def find_task(repo: Path, task: Mapping[str, Any], phase_branch: str, parent_ref: str) -> TaskFinding:
+def find_task(repo: Path, task: lander.Row, phase_branch: str, parent_ref: str) -> TaskFinding:
     """Edge (reads git). What adopt does with one task."""
     ident, phase, state = str(task["id"]), str(task.get("phase") or ""), str(task.get("state"))
     commit = str(task.get("merged_commit") or "")
@@ -86,7 +85,7 @@ def find_task(repo: Path, task: Mapping[str, Any], phase_branch: str, parent_ref
     return TaskFinding(ident, phase, "ready", f"{missing}; the approval cannot be found, so the task builds again")
 
 
-def _after(tasks: Sequence[Mapping[str, Any]], findings: Sequence[TaskFinding]) -> list[dict[str, Any]]:
+def _after(tasks: Sequence[lander.Row], findings: Sequence[TaskFinding]) -> list[dict[str, object]]:
     """The task rows as they will read once the findings are applied."""
     new_state = {f.task: {"done": "done", "ready": "ready"}.get(f.action) for f in findings}
     return [{**t, "state": new_state.get(str(t["id"])) or t.get("state")} for t in tasks]
@@ -99,7 +98,8 @@ def plan(ports: lander.Ports, initiative: str) -> Plan:
     tasks, meta = ports.tasks(initiative), ports.meta(initiative)
     if not tasks:
         return Plan(initiative, skip="it has no tasks")
-    own, cartridge = meta.get("initiative") or {"id": initiative}, meta.get("cartridge") or {}
+    own: Mapping[str, object] = meta.get("initiative") or {"id": initiative}
+    cartridge: Mapping[str, object] = meta.get("cartridge") or {}
     try:
         land_at = resolve_land_at(cartridge, own.get("land_at"))
     except ValueError as exc:
@@ -107,7 +107,7 @@ def plan(ports: lander.Ports, initiative: str) -> Plan:
     if not is_initiative(land_at):
         return Plan(initiative, skip="it lands at task, which keeps no landing record")
     try:
-        repo = lander.ports_repo(ports, {"initiative": initiative, "repo": own.get("repo") or ""})
+        repo = lander.ports_repo(ports, {"initiative": initiative, "repo": str(own.get("repo") or "")})
     except LookupError as exc:
         return Plan(initiative, skip=str(exc))
     if lg.rev(repo, "HEAD") is None:
@@ -166,7 +166,8 @@ def apply(ports: lander.Ports, found: Plan, send_back: Callable[[str, str, str],
         return found.lines()
     if ls.get_record(ports.conn, initiative) is not None:
         return [f"{initiative}: skipped: it has a landing record already"]
-    repo = lander.ports_repo(ports, {"initiative": initiative, "repo": (ports.meta(initiative).get("initiative") or {}).get("repo") or ""})
+    repo = lander.ports_repo(ports, {"initiative": initiative,
+                                     "repo": str((ports.meta(initiative).get("initiative") or {}).get("repo") or "")})
     events: list[str] = []
     for finding in found.tasks:
         if finding.action == "done":
@@ -190,7 +191,7 @@ def apply(ports: lander.Ports, found: Plan, send_back: Callable[[str, str, str],
                                    parent_ref=lander.parent_ref_of(repo, found.parent), now=ports.now(), adopted=True)
     if record is None:
         return [*events, f"{initiative}: stopped: no record was made: {why}"]
-    events.append(f"{initiative}: record made on {record['branch']}")
+    events.append(f"{initiative}: record made on {lander.record_text(record, 'branch')}")
     if found.landed:
         ls.put_record(ports.conn, lr.with_state({**record, "state": "assembled"}, "landed", ports.now()))
         return [*events, f"{initiative}: recorded landed"]
@@ -204,5 +205,5 @@ def apply(ports: lander.Ports, found: Plan, send_back: Callable[[str, str, str],
 
 def candidates(ports: lander.Ports, initiatives: Sequence[str]) -> list[str]:
     """The initiatives with no landing record, in the order given."""
-    have = {str(r["initiative"]) for r in ls.list_records(ports.conn)}
+    have = {lander.record_text(r, "initiative") for r in ls.list_records(ports.conn)}
     return [i for i in initiatives if i not in have]
