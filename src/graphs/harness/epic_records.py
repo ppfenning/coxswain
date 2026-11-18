@@ -8,24 +8,30 @@ import logging
 import sqlite3
 import subprocess
 import time
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, cast
 
 import yaml
 
+from core.jsontypes import is_list, is_mapping
 from harness import work_mirror
 from harness.courier_adapter import publish_run_exited
 from harness.epic_context import Ctx, StoreRetry
-from harness.epic_types import Quarantine, phase_record
+from harness.epic_types import EpicItem, ItemRef, Quarantine, as_list, as_mapping, phase_record
 from harness.resume import save_result
+from harness.store_dialect import Connection, JsonObject
 from harness.store_lease import assert_epoch, renew
 from harness.store_pause import clear_paused, is_paused
 from harness.store_write import Store, upsert_work_item
 from harness.surface_heal import heal_bare_filenames, heal_new_markers, notes_out_of_surfaces
 from harness.waves import widest_wave
+
+if TYPE_CHECKING:  # annotation only: a module-level store_read import loads store_traces early (see `mirror_read`)
+    from harness.store_read import WorkItemReadRow
+    from harness.store_types import QueueRow
 
 epic_log = logging.getLogger("harness.epic")  # the driver's logger keeps its name across the split (H9)
 
@@ -69,7 +75,7 @@ def mirror_by(ctx: Ctx) -> str:
     return f"epic-driver:{ctx.run_id}"
 
 
-def _file_times(items: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+def _file_times(items: Sequence[Mapping[str, object]]) -> dict[str, str]:
     """Task id to the ISO mtime of its work file; an item with no readable file has no entry."""
     times: dict[str, str] = {}
     for item in items:
@@ -79,14 +85,14 @@ def _file_times(items: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     return times
 
 
-def _upsert_row(store: Store, row: Mapping[str, Any]) -> None:
+def _upsert_row(store: Store, row: Mapping[str, object]) -> None:
     upsert_work_item(
-        store.conn, row["initiative"], row["task_id"], row["phase"], row["state"], row["needs"],
-        row["updated_at"], row["updated_by"],
+        store.conn, str(row["initiative"]), str(row["task_id"]), str(row["phase"]), str(row["state"]),
+        [str(n) for n in as_list(row["needs"])], str(row["updated_at"]), str(row["updated_by"]),
     )  # fmt: skip
 
 
-def repair_file_state(item: Mapping[str, Any], new_state: str) -> bool:
+def repair_file_state(item: Mapping[str, object], new_state: str) -> bool:
     """Rewrite only the `state:` line of the item's work file, bytes otherwise kept. False when it could not."""
     if not item.get("path"):
         return False
@@ -103,7 +109,7 @@ def repair_file_state(item: Mapping[str, Any], new_state: str) -> bool:
     return True
 
 
-def _mirror_read_store(ctx: Ctx, items: Sequence[dict[str, Any]], rows: Sequence[Mapping[str, Any]]) -> None:
+def _mirror_read_store(ctx: Ctx, items: Sequence[EpicItem], rows: Sequence[WorkItemReadRow]) -> None:
     """work_state: store. A row wins over its file: the file's state line is repaired and `items` follows the row.
 
     `items` is the driver's own copy, so the ready and needs checks that read it see the store's state. A task with
@@ -117,22 +123,23 @@ def _mirror_read_store(ctx: Ctx, items: Sequence[dict[str, Any]], rows: Sequence
         row_state = None if row is None else row["state"]
         decision = work_mirror.authority_decision("store", file_state, row_state)
         if decision == work_mirror.USE_STORE_REWRITE_FILE:
-            if repair_file_state(item, cast(str, row_state)):
+            stored = cast(str, row_state)
+            if repair_file_state(item, stored):
                 epic_log.warning("work file state rewritten from the store: task=%s old=%s new=%s", task, file_state, row_state)
             else:
                 epic_log.warning("work file state not rewritable, store state used: task=%s file=%s", task, file_state)
-            item["state"] = row_state
+            item["state"] = stored
         elif decision == work_mirror.USE_FILE_AND_UPSERT:
             new = work_mirror.item_row(ctx.initiative_id, item, times.get(str(task)) or utc_now(), mirror_by(ctx))
             _upsert_row(ctx_store(ctx), new)
         if row is not None:
             # A merge and its handoff live only in the row, so `ready_tasks` sees a merged parent in any run.
-            item["merged"] = bool(row.get("merged"))
-            item["merged_commit"] = row.get("merged_commit")
-            item["handoff"] = row.get("handoff")
+            item["merged"] = row["merged"]
+            item["merged_commit"] = row["merged_commit"]
+            item["handoff"] = row["handoff"]
 
 
-def mirror_read(ctx: Ctx, items: Sequence[dict[str, Any]]) -> None:
+def mirror_read(ctx: Ctx, items: Sequence[EpicItem]) -> None:
     """Mirror the files' state into work_items. Under work_state files the files stay authoritative: `items` is never touched.
 
     Under work_state store a stored row wins: see `_mirror_read_store`. A ctx with no work_state reads as files.
@@ -167,7 +174,7 @@ def store_authoritative(ctx: Ctx) -> bool:
     return ctx.store is not None and getattr(ctx, "work_state", "files") == "store"
 
 
-def read_store_rows(ctx: Ctx) -> list[Mapping[str, Any]] | None:
+def read_store_rows(ctx: Ctx) -> list[WorkItemReadRow] | None:
     """The initiative's work_items rows as the store holds them now; None under files or when the read fails.
 
     The one store read of the done-wins check. A failure is logged and reads as no rows, as `mirror_read` does.
@@ -183,18 +190,18 @@ def read_store_rows(ctx: Ctx) -> list[Mapping[str, Any]] | None:
         return None
 
 
-def store_fresh(items: Sequence[Mapping[str, Any]], rows: Sequence[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
+def store_fresh(items: Sequence[EpicItem], rows: Sequence[WorkItemReadRow] | None) -> list[EpicItem]:
     """Copies of `items` where a task whose row says done takes the row's state, merged flag and merged commit."""
-    done = {str(r["task_id"]): r for r in rows or () if r.get("state") == "done"}
+    done = {r["task_id"]: r for r in rows or () if r["state"] == "done"}
     return [
-        {**item, "state": "done", "merged": bool(done[k].get("merged")), "merged_commit": done[k].get("merged_commit")}
-        if (k := str(item["id"])) in done
-        else dict(item)
+        {**item, "state": "done", "merged": done[k]["merged"], "merged_commit": done[k]["merged_commit"]}
+        if (k := item["id"]) in done
+        else item.copy()
         for item in items
     ]
 
 
-def store_first(ctx: Ctx, item: dict[str, Any], state: str) -> str | None:
+def store_first(ctx: Ctx, item: ItemRef, state: str) -> str | None:
     """work_state: store. Move `item` to `state` in the store, compare-and-set on the state the mover read.
 
     None when the store accepted, so the driver writes the file line itself. Otherwise the refusal reason: nothing else runs.
@@ -269,13 +276,13 @@ def default_branch_commit(ctx: Ctx) -> str:
     return (named or "").strip()
 
 
-def without_correction_lint(ticket: Mapping[str, Any], original: Mapping[str, Any]) -> dict[str, Any]:
+def without_correction_lint(ticket: Mapping[str, object], original: Mapping[str, object]) -> dict[str, object]:
     """`ticket` without its `correction:` lint entries.
 
     A correction quotes the tree at one commit, so it goes stale once the code or the body changes. It is
     recomputed at each launch and handed to the builder, never stored.
     """
-    kept = [n for n in ticket.get("lint") or [] if not str(n).startswith("correction:")]
+    kept = [n for n in as_list(ticket.get("lint")) if not str(n).startswith("correction:")]
     rest = {k: v for k, v in ticket.items() if k != "lint"}
     return {**rest, "lint": kept} if kept or "lint" in original else rest
 
@@ -301,21 +308,21 @@ def frontmatter_key_lines(key: str, value: Sequence[str]) -> list[str]:
     return yaml.safe_dump({key: list(value)}, default_flow_style=None, allow_unicode=True).rstrip().split("\n")
 
 
-def heal_surfaces(task: Mapping[str, Any], paths: frozenset[str]) -> dict[str, Any]:
+def heal_surfaces(task: Mapping[str, object], paths: frozenset[str]) -> dict[str, object]:
     """Bare filenames resolved or left out with a note, notes moved to lint, then missing surfaces marked `(new)`.
 
     An unmarked bare name that no repository file shares is a new file at the repository root, so it is not
     handed to heal_bare_filenames, which would drop it; heal_new_markers marks it `(new)` as before.
     """
     names = {p.rsplit("/", 1)[-1] for p in paths}
-    surfaces = [str(s) for s in task.get("surfaces") or []]
+    surfaces = [str(s) for s in as_list(task.get("surfaces"))]
     root_new = [
         s for s in surfaces
         if "/" not in s and not s.strip().endswith("(new)") and s.strip() not in names
         and s.strip() and not any(c.isspace() or c in "*?[]" for c in s.strip()) and s.strip() != ".."
     ]
     resolved = heal_bare_filenames({**task, "surfaces": [s for s in surfaces if s not in root_new]}, paths)
-    kept = {**resolved, "surfaces": [*cast(Iterable[Any], resolved.get("surfaces") or []), *root_new]}
+    kept = {**resolved, "surfaces": [*as_list(resolved.get("surfaces")), *root_new]}
     return heal_new_markers(notes_out_of_surfaces(kept), paths)
 
 
@@ -328,7 +335,7 @@ def _rewrite_frontmatter_surfaces(path: Path, surfaces: Sequence[str], notes: Se
     end = next((i for i, line in enumerate(lines[1:], 1) if line.strip() == "---"), None)
     if lines[0].strip() != "---" or end is None:
         raise ValueError(f"{path}: no frontmatter block")
-    lint: list[str] = list(dict.fromkeys([*((yaml.safe_load("\n".join(lines[1:end])) or {}).get("lint") or []), *notes]))
+    lint: list[str] = list(dict.fromkeys([*(str(n) for n in as_list(as_mapping(yaml.safe_load("\n".join(lines[1:end]))).get("lint"))), *notes]))
     front = lines[1:end]
     for key, value in (("surfaces", surfaces), ("lint", lint)):
         at = next((i for i, line in enumerate(front) if line.startswith(f"{key}:")), None)
@@ -366,18 +373,18 @@ def write_healed_surfaces(ctx: Ctx, task: str, surfaces: Sequence[str], notes: S
     if stale is not None:
         epic_log.warning("healed surfaces not written: task=%s: %s", task, stale)
         return
-    row: Mapping[str, Any] | None = None
+    from harness import store_queue  # not module level: see `mirror_read`
+
+    row: QueueRow | None = None
     if ctx.store is not None:
         try:
-            from harness import store_queue  # not module level: see `mirror_read`
-
             row = next((r for r in store_queue.read(ctx.store.conn, ctx.initiative_id) if r["task_id"] == task), None)
         except Exception as exc:
             epic_log.warning("healed surfaces: store row not read: task=%s: %s: %s", task, type(exc).__name__, exc)
         if row is None:
             epic_log.warning("healed surfaces not written to the store row: task=%s: no row", task)
-    extra = dict(cast(Mapping[str, Any], (row or {}).get("extra") or {}))
-    row_lint = [str(n) for n in extra.get("lint") or []]
+    extra = dict(as_mapping(row["extra"] if row is not None else None))
+    row_lint = [str(n) for n in as_list(extra.get("lint"))]
     lint = list(dict.fromkeys([*row_lint, *notes]))
     if path:
         try:
@@ -417,13 +424,13 @@ def quarantine_row(ctx: Ctx, phase: str, task: str, *, approved_is_open: bool = 
 
         row = next((r for r in store_read.work_items(ctx_store(ctx).conn, ctx.initiative_id) if r["task_id"] == task), None)
         current = None if row is None else str(row["state"])
-        if row_should_quarantine(ctx.work_state, current, approved_is_open=approved_is_open):
+        if current is not None and row_should_quarantine(ctx.work_state, current, approved_is_open=approved_is_open):
             store_first(ctx, {"id": task, "phase": phase, "state": current}, "quarantined")
     except Exception as exc:
         epic_log.warning("quarantined state not written to the store row: task=%s: %s: %s", task, type(exc).__name__, exc)
 
 
-def mirror_write(ctx: Ctx, item: Mapping[str, Any] | None, state: str) -> None:
+def mirror_write(ctx: Ctx, item: Mapping[str, object] | None, state: str) -> None:
     """Upsert one task's work_items row after an arm wrote `state` to its file. Errors are logged, never raised.
 
     Under work_state store the row was already written by `store_first`, before the file, so nothing is upserted.
@@ -458,19 +465,21 @@ def is_stale_epoch(reason: str) -> bool:
 
 
 # Only a store error is retried in the pause wait; a bug there still raises with its traceback.
-_STORE_ERRORS: tuple[type[Exception], ...] = (sqlite3.Error,)
-try:  # the postgres driver is an optional extra
-    import psycopg
+def _store_errors() -> tuple[type[Exception], ...]:
+    try:  # the postgres driver is an optional extra
+        import psycopg
+    except ImportError:  # pragma: no cover - depends on what is installed
+        return (sqlite3.Error,)
+    return (sqlite3.Error, psycopg.Error)
 
-    _STORE_ERRORS = (*_STORE_ERRORS, psycopg.Error)
-except ImportError:  # pragma: no cover - depends on what is installed
-    pass
+
+_STORE_ERRORS = _store_errors()
 
 _PAUSE_LEASE_TTL = 120  # seconds; matches the CLI's own `_LEASE_TTL` (harness/cli_launch.py) heartbeat renew.
 
 
 def _wait_while_paused(
-    conn: Any,
+    conn: Connection,
     run_id: str,
     lease_name: str,
     epoch: int,
@@ -483,7 +492,7 @@ def _wait_while_paused(
 ) -> None:
     """Block while paused; a lost lease or a store down for `attempts` tries ends the run as SIGTERM does (143)."""
 
-    def retried(call: Callable[[], Any]) -> Any:
+    def retried[T](call: Callable[[], T]) -> T:
         error: Exception | None = None
         for attempt in range(max(1, attempts)):
             if attempt:
@@ -522,35 +531,29 @@ def clear_pause_if_held(
         epic_log.warning("pause flag clear failed for %s: %s: %s", run_id, type(exc).__name__, exc)
 
 
-def _awaits_land(phase: Mapping[str, Any]) -> bool:
+def _awaits_land(phase: Mapping[str, object]) -> bool:
     """A phase waiting on a land."""
     return phase.get("status") == "awaiting_land"
 
 
-def build_outcome(result: Mapping[str, Any]) -> dict[str, Any]:
+def build_outcome(result: Mapping[str, object]) -> dict[str, object]:
     """The run's outcome from its epic result: totals, phase-grain quarantines, phases waiting on a parent.
 
     A waiting phase is a blocked record with `parents` entries: a parent did not complete, so it built nothing.
     """
-    blocked = [
-        {"phase": q["phase"], "reason": q["reason"]}
-        for q in result.get("quarantined") or []
-        if q.get("grain") == "phase"
-    ]
+    quarantined = [as_mapping(q) for q in as_list(result.get("quarantined"))]
+    phases = [as_mapping(p) for p in as_list(result.get("phases"))]
+    blocked = [{"phase": q["phase"], "reason": q["reason"]} for q in quarantined if q.get("grain") == "phase"]
     blocked_ids = {b["phase"] for b in blocked}
     waiting = [
         p["phase"]
-        for p in result.get("phases") or []
-        if p.get("status") == "blocked" and len(p.get("parents") or []) >= 1 and p["phase"] not in blocked_ids
+        for p in phases
+        if p.get("status") == "blocked" and len(as_list(p.get("parents"))) >= 1 and p["phase"] not in blocked_ids
     ]
-    awaiting_land = any(_awaits_land(p) for p in result.get("phases") or [])
-    interrupted = [
-        {"phase": p["phase"], "reason": p.get("reason")}
-        for p in result.get("phases") or []
-        if p.get("status") == "interrupted"
-    ]
+    awaiting_land = any(_awaits_land(p) for p in phases)
+    interrupted = [{"phase": p["phase"], "reason": p.get("reason")} for p in phases if p.get("status") == "interrupted"]
     return {
-        "totals": dict(result.get("totals") or {}),
+        "totals": dict(as_mapping(result.get("totals"))),
         "blocked": blocked,
         "waiting": waiting,
         **({"interrupted": interrupted} if interrupted else {}),
@@ -559,8 +562,8 @@ def build_outcome(result: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def unlanded_tasks(
-    tasks: Sequence[Mapping[str, Any]], run_id: str, repo: Path | str
-) -> list[tuple[Mapping[str, Any], str]]:
+    tasks: Sequence[Mapping[str, object]], run_id: str, repo: Path | str
+) -> list[tuple[Mapping[str, object], str]]:
     """Tasks approved but not landed, each with the `cox runs land` command a human runs for it.
 
     `outcome == "landed"` only ever meant "merged into the phase stack, not quarantined", never a claim that
@@ -572,13 +575,19 @@ def unlanded_tasks(
     return [(t, f"cox runs land {run_id} --repo {repo} --task {t['id']} --apply") for t in approved + merged]
 
 
-def _integration_rows(record: Mapping[str, Any], key: str) -> list[Mapping[str, Any]]:
+def _integration_rows(record: Mapping[str, object], key: str) -> list[Mapping[str, object]]:
     """The check rows under `key`, shaped like `checks` rows; none when the key is absent, empty or not a list."""
     rows = record.get(key)
-    return [r for r in rows if isinstance(r, Mapping)] if isinstance(rows, list) else []
+    return [r for r in rows if is_mapping(r)] if is_list(rows) else []
 
 
-def _integration_counts(tasks: Sequence[Mapping[str, Any]], phases: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+def _count(row: Mapping[str, object], key: str) -> int:
+    """`row`'s `counts` entry under `key` as a number; 0 when it is absent or not one."""
+    n = as_mapping(row.get("counts")).get(key, 0)
+    return n if isinstance(n, int) else 0
+
+
+def _integration_counts(tasks: Sequence[Mapping[str, object]], phases: Sequence[Mapping[str, object]]) -> dict[str, int]:
     """Integration totals kept apart from the unit `tests_run`; a task or level with no integration rows counts in none."""
     task_rows = [_integration_rows(t, "integration") for t in tasks]
     level_rows = [_integration_rows(p, "level_integration") for p in phases]
@@ -588,7 +597,7 @@ def _integration_counts(tasks: Sequence[Mapping[str, Any]], phases: Sequence[Map
         "integration_levels_passed": sum(1 for rows in level_rows if rows and all(r.get("passed") for r in rows)),
         "integration_levels_failed": sum(1 for rows in level_rows if rows and not all(r.get("passed") for r in rows)),
         **{
-            f"integration_rows_{k}": sum((r.get("counts") or {}).get(k, 0) for rows in task_rows for r in rows)
+            f"integration_rows_{k}": sum(_count(r, k) for rows in task_rows for r in rows)
             for k in ("passed", "failed", "error")
         },
     }
@@ -599,18 +608,18 @@ def build_result(
     run_id: str,
     date: str,
     initiative_id: str,
-    phases: Sequence[Mapping[str, Any]],
-    tasks: Sequence[Mapping[str, Any]],
-    quarantined: Sequence[Mapping[str, Any]],
-    proposals: Sequence[Mapping[str, Any]],
+    phases: Sequence[Mapping[str, object]],
+    tasks: Sequence[Mapping[str, object]],
+    quarantined: Sequence[Mapping[str, object]],
+    proposals: Sequence[Mapping[str, object]],
     stacks_rebased: int,
     paused_until: str | None,
     repo: Path | str,
     land_at: str | None = None,
     waves: Sequence[Sequence[str]] = (),
-    lane: Mapping[str, Any] | None = None,
-    lane_databases: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
+    lane: Mapping[str, object] | None = None,
+    lane_databases: Sequence[Mapping[str, object]] | None = None,
+) -> dict[str, object]:
     """The epic result from the lists as they stand: whole at a normal end, partial when a phase raised."""
     unlanded = unlanded_tasks(tasks, run_id, repo)
     return {
@@ -651,7 +660,7 @@ def build_result(
 
 
 def record_run_exit(
-    store: Store, run_id: str, status: str, retry: StoreRetry, result: Mapping[str, Any] | None = None
+    store: Store, run_id: str, status: str, retry: StoreRetry, result: Mapping[str, object] | None = None
 ) -> None:
     """Stamp the run's end, then store its outcome, each retried for the full exit window. A failure is logged and never changes the run's exit."""
     ended_at = utc_now()
@@ -688,8 +697,8 @@ def wait_if_paused_here(ctx: Ctx) -> None:
 
 
 def _task_record_mirror(
-    store: Store | None, result: Mapping[str, Any], run_id: str, phase: str, task: str, ts: str
-) -> tuple[str, str, str, dict[str, Any], str] | None:
+    store: Store | None, result: Mapping[str, object], run_id: str, phase: str, task: str, ts: str
+) -> tuple[str, str, str, dict[str, object], str] | None:
     """Arguments for `Store.record_task_record`, or None with no store to mirror into.
 
     The record is the JSON round trip the file gets, so the row equals the saved file.
@@ -699,7 +708,7 @@ def _task_record_mirror(
     return (run_id, phase, task, json.loads(json.dumps(dict(result), default=str)), ts)
 
 
-def save_task_result(ctx: Ctx, result: Mapping[str, Any], *, phase: str, task: str) -> None:
+def save_task_result(ctx: Ctx, result: Mapping[str, object], *, phase: str, task: str) -> None:
     """Save the result file, then mirror it into the store. The file stays authoritative.
 
     A mirror failure is a warning, never a failed run. The file write is outside the try.
@@ -711,7 +720,7 @@ def save_task_result(ctx: Ctx, result: Mapping[str, Any], *, phase: str, task: s
 
         def mirror() -> None:
             if fence_reason(ctx) is None:
-                cast(Store, store).record_task_record(*cast(tuple[str, str, str, dict[str, Any], str], args))
+                cast(Store, store).record_task_record(*cast(tuple[str, str, str, dict[str, object], str], args))
 
         if args is not None and store is not None:
             ctx.retry.write(mirror, END_WRITE_WINDOW_S)
@@ -723,13 +732,13 @@ def record_phase(ctx: Ctx, record: Mapping[str, object]) -> None:
     """Store the phase's record, checked as the store will hold it: a record that is not JSON is refused here."""
     if ctx.store is not None and fence_reason(ctx) is None:
         checked = phase_record(record)
-        row = {**checked, "run_id": f"{ctx.run_id}:{checked['phase']}", "ts": utc_now(), "principal": PRINCIPAL}
+        row = {**checked, "run_id": f"{ctx.run_id}:{record['phase']}", "ts": utc_now(), "principal": PRINCIPAL}
         store = ctx.store
         ctx.retry.write(lambda: store.record_phase(row, epoch=ctx.epoch), END_WRITE_WINDOW_S)
 
 
 def record_tasks(
-    ctx: Ctx, phase: str, task_records: Sequence[Mapping[str, Any]], quarantined: Sequence[Mapping[str, Any]]
+    ctx: Ctx, phase: str, task_records: Sequence[Mapping[str, object]], quarantined: Sequence[Mapping[str, object]]
 ) -> None:
     """One row per task at its final state: the store keeps the first row for a (run, task)."""
     if ctx.store is None or fence_reason(ctx) is not None:
@@ -768,11 +777,11 @@ class Execution:
     merged: dict[str, bool]
     moved: dict[str, bool]
     quarantined: list[Quarantine]
-    review_pr: dict[str, str] = field(default_factory=dict)
+    review_pr: dict[str, str] = field(default_factory=dict[str, str])
     escalated: frozenset[str] = frozenset()
-    notes: dict[str, str] = field(default_factory=dict)
-    draft_detail: dict[str, str] = field(default_factory=dict)
-    push_warnings: list[str] = field(default_factory=list)  # origin pushes that failed; the branch stays local
-    commits: dict[str, str] = field(default_factory=dict)  # task -> the commit its merge made on the phase branch
-    builds: dict[str, Mapping[str, Any]] = field(default_factory=dict)  # task -> its build result, for the handoff
-    handoffs: dict[str, dict[str, Any]] = field(default_factory=dict)  # task -> the handoff stored with its merge
+    notes: dict[str, str] = field(default_factory=dict[str, str])
+    draft_detail: dict[str, str] = field(default_factory=dict[str, str])
+    push_warnings: list[str] = field(default_factory=list[str])  # origin pushes that failed; the branch stays local
+    commits: dict[str, str] = field(default_factory=dict[str, str])  # task -> the commit its merge made on the phase branch
+    builds: dict[str, Mapping[str, object]] = field(default_factory=dict[str, Mapping[str, object]])  # task -> its build result, for the handoff
+    handoffs: dict[str, JsonObject] = field(default_factory=dict[str, JsonObject])  # task -> the handoff stored with its merge

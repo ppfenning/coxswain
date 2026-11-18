@@ -18,11 +18,14 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Literal, NotRequired, Required, TypedDict, cast
 
+from core.workstore import WorkItem
 from harness.store_dialect import Json, JsonObject
 
 __all__ = [
     "Attempt",
     "AttemptRow",
+    "EpicItem",
+    "ItemRef",
     "MalformedRecord",
     "PhaseRecord",
     "Quarantine",
@@ -64,6 +67,24 @@ class TaskRecord(TypedDict, total=False):
     proposals: list[Json] | None
     failed_node: str | None
     failed_node_reason: str | None
+
+
+class EpicItem(WorkItem, total=False):
+    """A work item as the driver holds it: the work file's `core.workstore.WorkItem` plus what the driver adds as the run
+    goes (the store row's `handoff`, the review and arbitration verdicts it saw). In-process only, with no constructor."""
+
+    handoff: Json
+    review_verdict: str
+    arbitration_verdict: str
+
+
+class ItemRef(TypedDict):
+    """The part of a work item a state move reads and updates: which task, in which phase, in which state. An
+    `EpicItem` is one; so is the stub the driver makes for a task it holds only a row of. In-process only."""
+
+    id: str
+    phase: str
+    state: str
 
 
 class AttemptRow(TypedDict):
@@ -142,8 +163,8 @@ class PhaseRecord(TypedDict, total=False):
     """What one phase did, as `run_phase_tasks` builds it. `phase` and `status` are always there; the rest as the phase
     got to them. `task_records` are the phase's own per-task entries, not the run task records above."""
 
-    phase: str
-    status: str
+    phase: Required[str]
+    status: Required[str]
     parent: str | None
     parents: list[str]
     assembled_from: list[str]

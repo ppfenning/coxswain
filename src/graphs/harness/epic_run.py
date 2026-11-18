@@ -43,7 +43,7 @@ from harness.epic_records import (
     unlanded_tasks,
 )
 from harness.epic_triage import close_runner
-from harness.epic_types import PhaseRecord, Quarantine, TaskEntry
+from harness.epic_types import EpicItem, PhaseRecord, Quarantine, TaskEntry
 from harness.lane_workers import lane_workers_from
 from harness.lanes import lane_bound
 from harness.scheduler import plan_launches
@@ -185,7 +185,7 @@ def run_epic(
         # tasks never become ready within this run. The arm remains the single
         # writer of the store on disk; this is the driver keeping its own copy
         # honest about what the arm just did.
-        items = [dict(item) for item in initiative.get("items") or []]
+        items = [EpicItem(**item) for item in initiative.get("items") or []]
         mirror_read(ctx, items)
         if is_initiative(ctx.land_at):
             # Before any phase: the initiative branch is cut from its parent and recorded, so every phase forks from it.
@@ -245,19 +245,18 @@ def run_epic(
             for phase in sorted(parents):
                 if missing := sorted(parents[phase] - named - seed):
                     gap, branch = unmerged.get(missing[0], ("", ""))
-                    missing_branch: PhaseRecord = {"missing_branch": branch} if branch else {}
-                    add_phase(
-                        {
-                            "phase": phase,
-                            "status": "blocked",
-                            "parents": sorted(parents[phase]),
-                            "reason": gap or (
-                                f"parent phase '{missing[0]}' is outside this run and its tasks are not all met "
-                                f"under land_at {ctx.land_at}; dependents do not run"
-                            ),
-                            **missing_branch,
-                        }
-                    )
+                    blocked: PhaseRecord = {
+                        "phase": phase,
+                        "status": "blocked",
+                        "parents": sorted(parents[phase]),
+                        "reason": gap or (
+                            f"parent phase '{missing[0]}' is outside this run and its tasks are not all met "
+                            f"under land_at {ctx.land_at}; dependents do not run"
+                        ),
+                    }
+                    if branch:
+                        blocked["missing_branch"] = branch
+                    add_phase(blocked)
             scope = frozenset(p for p in parents if p not in {str(r["phase"]) for r in phases})
 
         tally = _Tally()
@@ -389,7 +388,7 @@ def _run_lanes(
     ctx: Ctx,
     *,
     initiative: Mapping[str, Any],
-    items: list[dict[str, Any]],
+    items: list[EpicItem],
     parents: Mapping[str, set[str]],
     waves: Sequence[Sequence[str]],
     add_phase: Callable[[PhaseRecord], None],
@@ -460,7 +459,7 @@ def _run_lanes(
             if not fresh or any(i["state"] not in ("done", "dropped") for i in fresh):
                 return False
             for item, new in zip(mine, fresh, strict=True):
-                item.update({k: new[k] for k in ("state", "merged", "merged_commit")})
+                item.update(state=new["state"], merged=new["merged"], merged_commit=new["merged_commit"])
         return True
 
     def parent_block(phase: str) -> PhaseRecord | None:

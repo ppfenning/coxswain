@@ -7,8 +7,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, Literal, cast
+from typing import Literal, cast
 
+from core.jsontypes import is_dict, is_mapping
 from core.workstore import WorkStoreError, record_attempt
 from graphs._contract import proposal
 from harness import termination
@@ -30,24 +31,30 @@ from harness.epic_records import (
     utc_now,
     wait_if_paused_here,
 )
-from harness.epic_types import PhaseRecord, Quarantine, TaskEntry, as_list
+from harness.epic_types import PhaseRecord, Quarantine, TaskEntry, as_list, as_mapping
 from harness.escalate import escalate_self_modification
 from harness.resume import load_result
 from harness.store_write import Store
 from harness.worktree import apply_patch, create_worktree, remove_worktree
-from runner.protocol import LimitStop
+from runner.protocol import LimitStop, NodeRunner
+
+
+def item_path(item: Mapping[str, object] | None) -> str | None:
+    """The work file path of `item`, if it has one."""
+    path = (item or {}).get("path")
+    return path if isinstance(path, str) else None
 
 
 def quarantine_task(
     ctx: Ctx,
-    by_id: Mapping[str, dict[str, Any]],
+    by_id: Mapping[str, Mapping[str, object]],
     *,
     phase: str,
     task: str,
     reason: str,
     kind: Literal["refused", "no_work", "unverified", "infra", "rescue_failed", "stale_base"],
     detail: str | None = None,
-    result: Mapping[str, Any] | None = None,
+    result: Mapping[str, object] | None = None,
     cause: tuple[str, str] | None = None,
     approved_is_open: bool = False,
 ) -> Quarantine:
@@ -107,7 +114,7 @@ def quarantine_task(
     if patch_kept:
         entry["patch_kept"] = True
     ts = utc_now()
-    path = (by_id.get(task) or {}).get("path")
+    path = item_path(by_id.get(task))
     if path:
         with contextlib.suppress(WorkStoreError, OSError):
             record_attempt(
@@ -138,7 +145,7 @@ def quarantine_task(
     return entry
 
 
-def _cause_of(runner: Any, kind: str, reason: str, result: Mapping[str, Any] | None, task: str) -> tuple[str, str]:
+def _cause_of(runner: NodeRunner, kind: str, reason: str, result: Mapping[str, object] | None, task: str) -> tuple[str, str]:
     """(cause, why): the rule first, then the model. Only `LimitStop` escapes: the account's limit is not the task's cause."""
     ruled = classify_cause(kind, reason)
     if ruled is not None:
@@ -153,7 +160,7 @@ def _cause_of(runner: Any, kind: str, reason: str, result: Mapping[str, Any] | N
 
 
 def record_task_cause(
-    ctx: Ctx, phase: str, task: str, cause: str, cause_why: str, item: Mapping[str, Any] | None = None,
+    ctx: Ctx, phase: str, task: str, cause: str, cause_why: str, item: Mapping[str, object] | None = None,
 ) -> None:
     """Put the cause, and the body the task was built on (`body_stamp(item)`), on this run's saved result, which
     mirrors it into the store row: file and row stay equal.
@@ -190,6 +197,8 @@ def stale_phase(record: PhaseRecord, reason: str) -> PhaseRecord:
     returned once fenced, move from `quarantined` to `interrupted`. Merged and otherwise quarantined tasks stay.
     """
     record["reason"] = reason
+    if "quarantined" not in record or "task_records" not in record:
+        raise KeyError("a phase record with no quarantined or task_records cannot be stopped on a fence")
     if not is_stale_epoch(reason):
         record["status"] = "blocked"
         record["quarantined"].append(
@@ -213,7 +222,7 @@ def stale_phase(record: PhaseRecord, reason: str) -> PhaseRecord:
     return record
 
 
-def _fenced_task_entry(entry: Mapping[str, Any]) -> bool:
+def _fenced_task_entry(entry: Mapping[str, object]) -> bool:
     """A task quarantine entry that `quarantine_task` returned because the lease was already lost."""
     return entry.get("grain") == "task" and is_stale_epoch(str(entry.get("reason")))
 
@@ -308,12 +317,12 @@ def trim_phase(ctx: Ctx, phase: str) -> str | None:
 
 
 def phase_status(
-    verdict: Mapping[str, Any] | None,
+    verdict: Mapping[str, object] | None,
     *,
     validated: bool,
-    ready: Sequence[Mapping[str, Any]],
-    quarantined: Sequence[Mapping[str, Any]],
-    items: Sequence[Mapping[str, Any]],
+    ready: Sequence[Mapping[str, object]],
+    quarantined: Sequence[Mapping[str, object]],
+    items: Sequence[Mapping[str, object]],
     phase: str,
     landed: bool,
     branch: str,
@@ -351,7 +360,7 @@ def phase_status(
     return "complete", ""
 
 
-def _finding_entries(result: Mapping[str, Any], chunk: Mapping[str, Any]) -> list[tuple[str, str]]:
+def _finding_entries(result: Mapping[str, object], chunk: Mapping[str, object]) -> list[tuple[str, str]]:
     """Every (text, file) a review, adversary or validate verdict wrote for one task.
 
     Only a review finding's `file` is structured: REVIEW_SCHEMA requires it on
@@ -360,11 +369,11 @@ def _finding_entries(result: Mapping[str, Any], chunk: Mapping[str, Any]) -> lis
     reasoning string carry no such field — `("text", "")` — and are matched on
     their own prose in `_cited_surface` below.
     """
-    review = (result.get("review") or {}).get("findings") or []
-    adversary = (result.get("adversary") or {}).get("objections") or []
+    review = [as_mapping(f) for f in as_list(as_mapping(result.get("review")).get("findings"))]
+    adversary = [as_mapping(o) for o in as_list(as_mapping(result.get("adversary")).get("objections"))]
     entries = [(str(f.get("detail") or ""), str(f.get("file") or "")) for f in review]
     entries += [(f"{o.get('claim') or ''} {o.get('why_wrong') or ''}".strip(), "") for o in adversary]
-    entries += [(str(g), "") for g in chunk.get("gaps") or []]
+    entries += [(str(g), "") for g in as_list(chunk.get("gaps"))]
     entries.append((str(chunk.get("reasoning") or ""), ""))
     return entries
 
@@ -377,10 +386,10 @@ def _cited_surface(text: str, file: str, surfaces: Sequence[str]) -> str | None:
 
 
 def _consolidation_pairs(
-    built: Mapping[str, Mapping[str, Any]],
+    built: Mapping[str, Mapping[str, object]],
     surviving: Sequence[str],
-    chunk_by_task: Mapping[str, Mapping[str, Any]],
-    by_id: Mapping[str, Mapping[str, Any]],
+    chunk_by_task: Mapping[str, Mapping[str, object]],
+    by_id: Mapping[str, Mapping[str, object]],
 ) -> list[dict[str, str]]:
     """One entry per pair of surviving tasks a finding names as blocked on a file the other owns.
 
@@ -396,11 +405,11 @@ def _consolidation_pairs(
     seen: set[frozenset[str]] = set()
     pairs: list[dict[str, str]] = []
     for task in surviving:
-        entries = _finding_entries(built[task]["result"], chunk_by_task.get(task) or {})
+        entries = _finding_entries(as_mapping(built[task]["result"]), chunk_by_task.get(task) or {})
         for other in surviving:
             if other == task or frozenset({task, other}) in seen:
                 continue
-            surfaces = [str(s) for s in (by_id.get(other) or {}).get("surfaces") or []]
+            surfaces = [str(s) for s in as_list((by_id.get(other) or {}).get("surfaces"))]
             if not surfaces:
                 continue
             for text, file in entries:
@@ -413,12 +422,12 @@ def _consolidation_pairs(
     return pairs
 
 
-def state_move_apply(path: str | None, state: str) -> dict[str, Any]:
+def state_move_apply(path: str | None, state: str) -> dict[str, object]:
     """The `apply` payload the code arm reads; empty when no path is known, so the gate falls back to the model arm."""
     return {"apply": {"path": str(path), "state": state}} if path else {}
 
 
-def item_apply(path: str | None, item: Mapping[str, Any]) -> dict[str, Any]:
+def item_apply(path: str | None, item: Mapping[str, object]) -> dict[str, object]:
     """The `apply` payload for item_create and item_update; empty when no path is known."""
     return {"apply": {"path": str(path), "item": dict(item)}} if path else {}
 
@@ -428,12 +437,12 @@ def build_batch(
     *,
     phase: str,
     surviving: Sequence[str],
-    built: Mapping[str, Mapping[str, Any]],
+    built: Mapping[str, Mapping[str, object]],
     escalated: set[str],
-    chunk_by_task: Mapping[str, Mapping[str, Any]],
-    rebase: Mapping[str, Any] | None,
-    by_id: Mapping[str, Mapping[str, Any]],
-) -> tuple[list[dict[str, Any]], dict[int, tuple[str, str]]]:
+    chunk_by_task: Mapping[str, Mapping[str, object]],
+    rebase: Mapping[str, object] | None,
+    by_id: Mapping[str, Mapping[str, object]],
+) -> tuple[list[dict[str, object]], dict[int, tuple[str, str]]]:
     """Everything this phase asks for, in task-id order, plus what each slot means.
 
     The slot map is by identity rather than by target string, because the same
@@ -441,11 +450,13 @@ def build_batch(
     the driver has to know, at execution time, which branch a given proposal
     was about. Reparsing a target would be a second encoding of the same fact.
     """
-    batch: list[dict[str, Any]] = []
+    batch: list[dict[str, object]] = []
     slots: dict[int, tuple[str, str]] = {}
 
     for task in surviving:
-        for item in built[task]["proposals"]:
+        for item in as_list(built[task]["proposals"]):
+            if not is_dict(item):
+                continue
             batch.append(item)
             if item.get("kind") in DRAFT_KINDS:
                 slots[id(item)] = ("draft", task)
@@ -456,7 +467,7 @@ def build_batch(
             kind="merge_stack",
             target=f"{ctx.draft_branch(phase, task)} -> {ctx.phase_branch(phase)}",
             evidence=[
-                *built[task]["evidence"],
+                *[e for e in as_list(built[task]["evidence"]) if is_mapping(e)],
                 {
                     "check": "validate_chunk",
                     "output": (
@@ -475,7 +486,7 @@ def build_batch(
             # is impossible to earn" true rather than merely intended.
             merged, _ = escalate_self_modification(
                 [merge],
-                patch=str((built[task]["result"].get("build") or {}).get("patch") or ""),
+                patch=str(as_mapping(as_mapping(built[task]["result"]).get("build")).get("patch") or ""),
                 cartridge=ctx.cartridge,
                 ledger_path=ctx.ledger_path,
             )
@@ -495,16 +506,16 @@ def build_batch(
             evidence=[
                 {
                     "check": "review_charter verdict",
-                    "output": str((built[task]["result"].get("review") or {}).get("verdict")),
+                    "output": str(as_mapping(as_mapping(built[task]["result"]).get("review")).get("verdict")),
                 },
-                *built[task]["evidence"],
+                *[e for e in as_list(built[task]["evidence"]) if is_mapping(e)],
             ],
             rationale=f"{task} was built, checked and reviewed in this run",
             # `approved`, never `done`: the apply arm writes the state this names, and only
             # `cox runs land` writes `done`, after the merge (tools #153).
             suggested_action=f"mark {task} approved",
         )
-        move = {**move, **state_move_apply((by_id.get(task) or {}).get("path"), "approved")}
+        move = {**move, **state_move_apply(item_path(by_id.get(task)), "approved")}
         batch.append(move)
         slots[id(move)] = ("state_move", task)
 
@@ -627,13 +638,14 @@ def _holds(ctx: Ctx, commit_branch: str | None, branch: str) -> bool:
     return ok
 
 
-def _gather_branch_facts(ctx: Ctx, records: Sequence[Mapping[str, Any]]) -> dict[str, BranchFacts]:
+def _gather_branch_facts(ctx: Ctx, records: Sequence[Mapping[str, object]]) -> dict[str, BranchFacts]:
     """Per task id, the git facts `end_of_run_refusal` judges. The only part of the audit that reads git."""
     facts: dict[str, BranchFacts] = {}
     for record in records:
         task = str(record["id"])
         merged = bool(record.get("merged"))
-        draft = record.get("draft")
+        recorded = record.get("draft")
+        draft = recorded if isinstance(recorded, str) else None
         branch = ctx.phase_branch(str(record["phase"])) if merged else ctx.scratch_branch(task)
         facts[task] = BranchFacts(
             branch=branch,
@@ -646,7 +658,7 @@ def _gather_branch_facts(ctx: Ctx, records: Sequence[Mapping[str, Any]]) -> dict
 
 
 def audit_approved_kept(
-    ctx: Ctx, by_id: Mapping[str, dict[str, Any]], tasks: Sequence[TaskEntry], quarantined: list[Quarantine]
+    ctx: Ctx, by_id: Mapping[str, Mapping[str, object]], tasks: Sequence[TaskEntry], quarantined: list[Quarantine]
 ) -> None:
     """Quarantine each task this run moved to approved whose work is no longer on a branch. Never recovers it."""
     approved = [t for t in tasks if t.get("state") == "approved" and not t.get("quarantine")]

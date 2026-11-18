@@ -141,7 +141,7 @@ from harness.epic_triage import (
     triage_failure_hold,
     triage_initiative_context,
 )
-from harness.epic_types import PhaseRecord, Quarantine, as_list, as_mapping
+from harness.epic_types import EpicItem, PhaseRecord, Quarantine, as_list, as_mapping
 from harness.escalate import escalate_self_modification
 from harness.gate import apply_arm_for, gate
 from harness.handoff import plan_context
@@ -151,6 +151,12 @@ from harness.stale_base import is_patch_empty, stale_base_reason, wrong_reposito
 from harness.surface_heal import malformed_surfaces, notes_out_of_surfaces
 from harness.ticket_check import check_ticket, ticket_lookups
 from harness.worktree import registry_lock
+
+
+class _Assembled(TypedDict, total=False):
+    """The phase record's `assembled_from`, there only for a phase that is a join of several parents."""
+
+    assembled_from: list[str]
 
 
 class _TaskExtras(TypedDict, total=False):
@@ -166,7 +172,7 @@ def run_phase_tasks(
     initiative: Mapping[str, Any],
     phase: str,
     parents: tuple[str, ...],
-    items: list[dict[str, Any]],
+    items: list[EpicItem],
     only: frozenset[str] | None = None,
 ) -> PhaseRecord:
     """One phase: branch, fan out, check, validate, gate, execute, record.
@@ -187,7 +193,7 @@ def run_phase_tasks(
     pr_ref = ctx.pr_branch_ref() if is_initiative(ctx.land_at) and (stacked or ctx.initiative_branch) else None
     base_ref = pr_ref or (ctx.phase_branch(parent) if parent else ctx.default_ref)
     quarantined: list[Quarantine] = []
-    assembled: PhaseRecord = {"assembled_from": list(parents)} if len(parents) > 1 and not pr_ref else {}
+    assembled: _Assembled = {"assembled_from": list(parents)} if len(parents) > 1 and not pr_ref else {}
     record: PhaseRecord = {
         "phase": phase,
         "parent": parent,
@@ -406,7 +412,7 @@ def run_phase_tasks(
         record.update(status="blocked", reason=paused)
         return record
     with ctx.items_lock:
-        handoffs = {str(i["id"]): i["handoff"] for i in items if i.get("handoff")}
+        handoffs = {str(i["id"]): as_mapping(i["handoff"]) for i in items if i.get("handoff")}
 
     # A dropped task is terminal like a done one: it never gets rebuilt or
     # re-reviewed, and never blocks the phase behind it.
@@ -447,7 +453,7 @@ def run_phase_tasks(
     for task_id, why in sorted(unreadable.items()):
         with ctx.items_lock:
             live = next((i for i in items if str(i["id"]) == task_id), None)
-        held = live if live is not None else next(dict(i) for i in all_ready if str(i["id"]) == task_id)
+        held = live if live is not None else next(i for i in all_ready if str(i["id"]) == task_id)
         text, not_held = hold_task(ctx, held, why)
         print(f"  attempts: {task_id} held for a person: {text}" + (f" (the hold was not written: {not_held})" if not_held else ""))
     all_ready = [item for item in all_ready if str(item["id"]) not in unreadable]
@@ -468,7 +474,9 @@ def run_phase_tasks(
         for item in all_ready
     }
     caused_by_id = {
-        task_id: with_stored_causes({"attempts": counted}, stored_causes(ctx, task_id))["attempts"] if counted else counted
+        task_id: [as_mapping(a) for a in as_list(with_stored_causes({"attempts": counted}, stored_causes(ctx, task_id))["attempts"])]
+        if counted
+        else counted
         for task_id, counted in counted_by_id.items()
     }
     cap_by_id = {task_id: attempt_cap_for(caused) for task_id, caused in caused_by_id.items()}
@@ -478,7 +486,7 @@ def run_phase_tasks(
     # A task the chair flagged for triage (its row's `TRIAGE_FLAG`) is triaged too, whatever its attempt count: a
     # failure that needs a tweak gets its instruction before any rebuild.
     triage_batch: list[dict[str, Any]] = []
-    amended: dict[str, dict[str, Any]] = {}  # task id -> the item rebuilt on its append-only amended body
+    amended: dict[str, EpicItem] = {}  # task id -> the item rebuilt on its append-only amended body
     # Unread rows hide the chair's flag: a task with any attempt might be one it asked triage for, so it is not built
     # in this run, before or without triage. It stays ready, and the next run reads its row.
     unread = {str(item["id"]) for item in all_ready if item.get("attempts")} if read_rows is None else set()
@@ -536,7 +544,7 @@ def run_phase_tasks(
         )
         def hold(task_id: str, reason: str) -> None:
             """Leave the task for a person with the mark; it is not built in this run either way."""
-            text, why = hold_task(ctx, shared.get(task_id) or dict(all_ready_by_id[task_id]), reason)
+            text, why = hold_task(ctx, shared.get(task_id) or all_ready_by_id[task_id].copy(), reason)
             print(f"  triage: {task_id} held for a person: {text}" + (f" (the hold was not written: {why})" if why else ""))
 
         # A triage that could not run (its graph raised, or every answer it gave was refused) is not the task's
@@ -567,7 +575,7 @@ def run_phase_tasks(
                 hold(task_id, f"triage {class_}: {diagnosis}" + (f" Next: {action}" if action else ""))
                 continue
             if effect == "drop":
-                why = drop_task(ctx, items, shared.get(task_id) or dict(all_ready_by_id[task_id]))
+                why = drop_task(ctx, items, shared.get(task_id) or all_ready_by_id[task_id].copy())
                 if why is None:
                     print(f"  triage: {task_id} dropped: {diagnosis}")
                 else:
@@ -578,7 +586,7 @@ def run_phase_tasks(
                 # A sibling triaged in this same run may itself be dropped or folded: its answer could lose this scope.
                 why = (
                     f"{into} is itself being triaged in this run" if into in capped_ids
-                    else combine_task(ctx, items, shared.get(task_id) or dict(all_ready_by_id[task_id]), into)
+                    else combine_task(ctx, items, shared.get(task_id) or all_ready_by_id[task_id].copy(), into)
                 )
                 if why is None:
                     folded.add(into)
@@ -694,7 +702,7 @@ def run_phase_tasks(
     # refusals in a different order each time.
     over_budget = [
         task for task in to_run
-        if task.get("budget_usd") is not None and cap is not None and task["budget_usd"] > cap
+        if task.get("budget_usd") is not None and isinstance(cap, int | float) and task["budget_usd"] > cap
     ]
     for task in over_budget:
         task_id = str(task["id"])
@@ -758,11 +766,12 @@ def run_phase_tasks(
             continue
         healed_by_id[task_id] = healed
         known = {str(n) for n in task.get("lint") or []}
-        heal_notes[task_id] = [str(n) for n in healed.get("lint") or [] if str(n) not in known]
+        heal_notes[task_id] = [str(n) for n in as_list(healed.get("lint")) if str(n) not in known]
+        healed_surfaces = [str(s) for s in as_list(healed.get("surfaces"))]
         write_healed_surfaces(
-            ctx, task_id, healed["surfaces"], heal_notes[task_id], str(task["path"]) if task.get("path") else None
+            ctx, task_id, healed_surfaces, heal_notes[task_id], str(task["path"]) if task.get("path") else None
         )
-        changed = [str(s) for s in healed["surfaces"] if s not in task["surfaces"]]
+        changed = [s for s in healed_surfaces if s not in task["surfaces"]]
         label = "ticket check" if checked != prepared else "surfaces"
         extra = f", {len(corrections)} correction(s)" if corrections else ""
         print(f"  {label}: {task_id} healed ({', '.join(changed) or 'surfaces unchanged'}){extra}")
