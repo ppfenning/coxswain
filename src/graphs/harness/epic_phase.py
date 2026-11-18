@@ -172,6 +172,14 @@ def _attempts(task: Mapping[str, object]) -> list[Mapping[str, object]]:
     return [as_mapping(a) for a in as_list(task.get("attempts"))]
 
 
+def over_build_cap(budget: float, cap: object) -> bool:
+    """Pure. A task's `budget_usd` above `policy.build_budget_usd_max`. A cap that is not a number raises TypeError, as
+    comparing against it always did: a cap never fails open."""
+    if isinstance(cap, bool) or not isinstance(cap, int | float):
+        raise TypeError(f"policy.build_budget_usd_max must be a number, not {type(cap).__name__} {cap!r}")
+    return budget > cap
+
+
 def run_phase_tasks(
     ctx: Ctx,
     *,
@@ -708,7 +716,7 @@ def run_phase_tasks(
     # refusals in a different order each time.
     over_budget = [
         task for task in to_run
-        if (budget := task.get("budget_usd")) is not None and isinstance(cap, int | float) and budget > cap
+        if (budget := task.get("budget_usd")) is not None and cap is not None and over_build_cap(budget, cap)
     ]
     for task in over_budget:
         task_id = str(task["id"])
