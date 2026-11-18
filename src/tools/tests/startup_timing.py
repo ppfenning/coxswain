@@ -26,6 +26,18 @@ CHAIR_STATUS_TARGET_S = 0.30
 # there; on 3.14 that regression measures about 8.2x locally. So 3.14 keeps 8x and 3.15+ gets 12x.
 STARTUP_MULTIPLE = 12.0 if sys.version_info >= (3, 15) else 8.0
 
+# `cox route chair status` gets its own bound: a multiple AND an excess floor, and a check fails only past both.
+# Measured 2026-11-18 (Linux, py3.14, 3 sessions of 7 interleaved rounds each, quiet and with every core busy):
+#   clean        5.8-7.3x, cox 90-200 ms over the baseline (CI: 8.09x at 173 ms over, 8.17x at 122 ms over)
+#   2x (cox run twice per sample)  13.0-14.4x, 197-437 ms over
+# The multiple, 10.5x, is 28% over the worst clean CI ratio and 19% under the lowest 2x ratio. The ratio holds still
+# under load but jumps when a fast runner's baseline is a few ms: 8.17x came from a 17 ms baseline. The floor, 150 ms,
+# covers that case. It is over every clean excess measured on a fast host (90 ms local, 122 ms on CI) and under the
+# smallest 2x excess (197 ms, on the fastest, quietest host). A loaded host lifts the excess past the floor, but there
+# the ratio stays at 7.1-7.3x. The import-set check in test_cli_startup.py catches the heavy-import regressions first.
+CHAIR_STATUS_MULTIPLE = 12.0 if sys.version_info >= (3, 15) else 10.5
+CHAIR_STATUS_MIN_EXCESS_S = 0.150
+
 BASELINE_ARGV = (sys.executable, "-c", "pass")
 
 
@@ -62,18 +74,21 @@ def time_rounds(
     return rounds
 
 
-def check_rounds(rounds: Sequence[Round], multiple: float, absolute_target: float) -> StartupResult:
-    """Pass when the median per-round cox/baseline ratio is at most `multiple`; the absolute target is reported only."""
+def check_rounds(rounds: Sequence[Round], multiple: float, absolute_target: float, min_excess_s: float = 0.0) -> StartupResult:
+    """Fail only when the median per-round cox/baseline ratio is over `multiple` and the median per-round excess,
+    cox's time minus the baseline's, is over `min_excess_s`. The absolute target is reported only."""
     per_round, ratio = ratios(rounds)
     if ratio is None:
         return StartupResult(False, f"no round with a positive baseline among {len(rounds)}")
-    if ratio <= multiple:
+    excess = statistics.median(c - b for c, b in rounds if b > 0)
+    if ratio <= multiple or excess <= min_excess_s:
         return StartupResult(True, "")
     cox = statistics.median(c for c, _ in rounds)
     baseline = statistics.median(b for _, b in rounds)
+    floor = f" and its median excess {excess:.3f}s exceeds the {min_excess_s:.3f}s floor" if min_excess_s > 0 else ""
     return StartupResult(
         False,
         f"cox took a median {cox:.3f}s against a {baseline:.3f}s interpreter baseline over {len(per_round)} "
-        f"interleaved rounds: median ratio {ratio:.2f}x exceeds the {multiple:.2f}x multiple "
+        f"interleaved rounds: median ratio {ratio:.2f}x exceeds the {multiple:.2f}x multiple{floor} "
         f"(documented local target {absolute_target:.2f}s)",
     )

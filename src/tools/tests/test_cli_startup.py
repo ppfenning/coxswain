@@ -8,7 +8,13 @@ from pathlib import Path
 
 import pytest
 
-from tests.startup_timing import STARTUP_MULTIPLE, check_rounds, time_rounds
+from tests.startup_timing import (
+    CHAIR_STATUS_MIN_EXCESS_S,
+    CHAIR_STATUS_MULTIPLE,
+    STARTUP_MULTIPLE,
+    check_rounds,
+    time_rounds,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -61,8 +67,9 @@ def profile(tmp_path: Path) -> Path:
     return path
 
 
-def _assert_relative_startup(argv: list[str], absolute_target: float) -> None:
-    result = check_rounds(time_rounds(argv, _env(), TIMED_RUNS, REPO_ROOT), STARTUP_MULTIPLE, absolute_target)
+def _assert_relative_startup(argv: list[str], absolute_target: float, multiple: float = STARTUP_MULTIPLE,
+                             min_excess_s: float = 0.0) -> None:
+    result = check_rounds(time_rounds(argv, _env(), TIMED_RUNS, REPO_ROOT), multiple, absolute_target, min_excess_s)
     assert result.ok, result.message
 
 
@@ -87,4 +94,5 @@ def test_route_chair_status_does_not_import_the_forge_or_land_modules(profile: P
 # (quarantined an approved task on 2026-10-30); it passed alone.
 @pytest.mark.serial
 def test_route_chair_status_startup_relative_to_baseline(profile: Path) -> None:
-    _assert_relative_startup(_cox("route", "chair", "status", "--profile", str(profile)), CHAIR_STATUS_TARGET_S)
+    _assert_relative_startup(_cox("route", "chair", "status", "--profile", str(profile)), CHAIR_STATUS_TARGET_S,
+                             CHAIR_STATUS_MULTIPLE, CHAIR_STATUS_MIN_EXCESS_S)
