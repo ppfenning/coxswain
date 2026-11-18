@@ -65,7 +65,7 @@ def test_unit_environment_file_reads_the_file_a_launchd_agent_sources() -> None:
 
 def test_unit_environment_files_reads_every_line_indented_or_not_and_expands_h() -> None:
     text = "[Service]\nEnvironmentFile=-/etc/a.env\n  EnvironmentFile=%h/.config/b.env\nEnvironmentFile=-/c%%.env\n"
-    assert unit_env.unit_environment_files(text, "/srv/home") == ["/etc/a.env", "/srv/home/.config/b.env", "/c%.env"]
+    assert unit_env.unit_environment_files(text, "/srv/hh") == ["/etc/a.env", "/srv/hh/.config/b.env", "/c%.env"]
 
 
 def test_unit_environment_files_reads_the_launchd_agents_file_and_nothing_from_a_unit_without_one() -> None:
