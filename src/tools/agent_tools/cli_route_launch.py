@@ -81,7 +81,7 @@ def _leader_launched_by(record: dict | None, pid_alive_: bool, now: datetime.dat
 _LAUNCH_SETTLE_S = 2.0  # how long a fresh launch is watched for an immediate death before it is reported as started
 
 
-# The line the harness prints once its run holds the lease (src/graphs/harness/cli.py); seeing it ends the wait early.
+# The line the harness prints once its run holds the lease (src/graphs/harness/cli_launch.py); seeing it ends the wait early.
 _LAUNCH_STARTED_MARKER = "graph started: "
 _IDEA_FILE_SUFFIXES = frozenset({".md", ".markdown", ".txt"})
 

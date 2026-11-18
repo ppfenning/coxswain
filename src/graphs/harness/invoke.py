@@ -140,7 +140,7 @@ def invoke_graphs(
                 # diagnosis, the rest of the fan-out finishes.
                 failures.append(f"{invocation.id}: {_bounded(str(exc))}")
     except SystemExit:
-        # A SIGTERM arrives here as SystemExit (harness/cli.py `_exit_on_sigterm`):
+        # A SIGTERM arrives here as SystemExit (harness/cli_main.py `_exit_on_sigterm`):
         # drop the queue and leave; `main` stops the nodes already running.
         pool.shutdown(wait=False, cancel_futures=True)
         raise

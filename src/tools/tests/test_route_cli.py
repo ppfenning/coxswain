@@ -1832,7 +1832,7 @@ def test_a_backend_that_logs_the_started_marker_ends_the_wait_before_the_timeout
 
 
 def test_the_harness_prints_the_marker_the_launcher_waits_for():
-    harness_cli = Path(__file__).resolve().parents[2] / "graphs" / "harness" / "cli.py"
+    harness_cli = Path(__file__).resolve().parents[2] / "graphs" / "harness" / "cli_launch.py"
     assert f'print(f"{_LAUNCH_STARTED_MARKER}{{run_id}}", flush=True)' in harness_cli.read_text(encoding="utf-8")
 
 
