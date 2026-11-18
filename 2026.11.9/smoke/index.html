@@ -6747,8 +6747,8 @@ without mocks in <code>tests/test_smoke_plan.py</code>.</p>
 <li><strong><code>forge_repo</code></strong> (per test): a new repository on the forge with one commit on <code>main</code>, cloned at <code>~/src/app</code> with
   the forge as its http origin. <code>forge_repo.report(sha, state)</code> reports a commit status, as a CI job would.
   <code>forge_repo.pull(n)</code> and <code>forge_repo.branch_tip(branch)</code> read back what the forge holds. A branch answer is read
-  by the forge's own <code>forge_forgejo.parse_branch_tip</code>, imported from this tree: the one exception to the rule below
-  that a smoke test does not import the code under test, so there is one reader of that answer, not two.</li>
+  by the forge's own <code>forge_forgejo.parse_branch_tip</code>, imported from this tree: one of two exceptions to the rule below
+  that a smoke test does not import the code under test, so there is one reader of that answer, not two. The other is <code>test_unit_env_doctor.py</code>, which judges the doctor's rows by <code>doctor.failing_required</code>, the rule <code>cox upgrade</code> rolls back on.</li>
 <li><strong><code>edge_machine</code></strong> (per test): an edge machine laid out as <code>cox setup install</code> lays a home out. Its checkout at
   <code>~/.local/share/coxswain/installs/coxswain</code> is this tree, cloned from the forge (<code>edge_origin</code>, once per module:
   this tree's tracked files as one commit, so an untracked local file never reaches it, plus one newer commit, both reported green). The checkout sits at the older commit, its
@@ -6758,6 +6758,11 @@ without mocks in <code>tests/test_smoke_plan.py</code>.</p>
   writes</strong> both: a sync adds the packages it fetched to the caller's cache, and when no Python 3.14 is there uv may
   install one into the caller's interpreter folder. Everything else of uv's stays in the sandbox, and a user
   <code>uv.toml</code> (under the real <code>~/.config/uv</code>) is not read, since HOME and XDG_CONFIG_HOME point into the sandbox.</li>
+<li><strong><code>object_store</code></strong> (once per session): a single-node Garage container (<code>plan.GARAGE_IMAGE</code>, pinned by digest)
+  with its S3 port on one loopback port only and its state on tmpfs. The fixture gives the node a layout, imports a
+  key it chose (so no output it reads carries the secret), creates one bucket and grants the key on it. It is
+  labelled and reaped like the Postgres container. The <code>install</code> carries the <code>traces</code> extra, so the doctor's bucket
+  probe has pyarrow.</li>
 </ul>
 <h2 id="contract-tests">Contract tests</h2>
 <p>Each contract test fails if its boundary drifts. The first three contract files were checked by putting a drift back
@@ -6812,6 +6817,11 @@ into a scratch copy of the tree and confirming that they fail.</p>
 <td>A quiet tick that reads the store again, or a write that re-reads readers of other tables (H6).</td>
 </tr>
 <tr>
+<td><code>test_unit_env_doctor.py</code></td>
+<td>a hand-run <code>cox setup doctor</code> to the units' env file</td>
+<td>The object_store keys held only in the file the upgrade unit names (written by <code>cox upgrade --install-timer --environment-file</code>) and missing from the shell: the required rows fail and a good <code>cox upgrade</code> rolls back. Also a file value overriding one the shell already sets (the shell must win). Each test failed with the doctor's loading taken out.</td>
+</tr>
+<tr>
 <td><code>test_sandbox.py</code></td>
 <td>the harness itself</td>
 <td>A child interpreter importing another checkout. It also checks that <code>cox</code> resolves the profile the sandbox HOME names, and that every path <code>cox route context</code> reports is under the sandbox or the install. It does not prove that <code>cox</code> opens no other file; the environment the sandbox builds is what keeps the real home out of reach.</td>
@@ -6846,7 +6856,7 @@ rows dropped from the verdict, the rollback test fails.</p>
 <tr>
 <td><code>test_edge_upgrade.py</code></td>
 <td><code>cox upgrade</code> on an edge machine</td>
-<td>H5: with no token file (an advisory doctor row), the move to the newer green commit stands, prints the advisory warning, and is recorded <code>upgraded</code>. With the store on a closed port (a required row), the move rolls back to the older commit, the record says <code>rolled_back</code>, and the next run holds that commit instead of retrying it. The git, <code>uv sync</code>, tool reinstall and doctor all run for real.</td>
+<td>H5: with no token file (an advisory doctor row), the move to the newer green commit stands, prints the advisory warning, and is recorded <code>upgraded</code>. With the store on a closed port (a required row), the move rolls back to the older commit, the record says <code>rolled_back</code>, and the next run holds that commit instead of retrying it. The git, <code>uv sync</code>, tool reinstall and doctor all run for real. With <code>FORGEJO_BASE_URL</code> and <code>FORGEJO_TOKEN</code> only in <code>~/.config/agent-tools/garage.env</code> and not in the shell, a hand-run <code>cox upgrade</code> loads them and upgrades. With the load in <code>cli_install._upgrade</code> taken out, it refuses, because its CI query falls back to <code>gh</code>.</td>
 </tr>
 </tbody>
 </table>

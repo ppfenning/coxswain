@@ -6900,6 +6900,29 @@ launchd agents get its values as <code>EnvironmentVariables</code>. It keeps the
 <code>NAME=value</code> lines the file already has and sets <code>CLAUDE_CODE_OAUTH_TOKEN</code>
 from the token that <code>cox setup token</code> stored. Run it again after you change the
 token.</p>
+<p>A shell you open yourself, by ssh or at the terminal, does not read that file.
+So <code>cox upgrade</code> and <code>cox setup doctor</code> read it themselves when you run them by
+hand. They read the files the installed upgrade unit names: every
+<code>EnvironmentFile=</code> line, with <code>%h</code> as your home and a later file winning, or the
+file the launchd agent sources. If no upgrade unit names one, they try the chair
+unit, then the lander unit, then the default <code>~/.config/agent-tools/garage.env</code>.</p>
+<p>A variable that your shell already sets keeps its value, even when it is empty.
+The rest come from the file, read the way the units read it. Surrounding quotes
+and backslash escapes are removed (<code>"q v"</code> gives <code>q v</code>, <code>a\b</code> gives <code>ab</code>). <code>%</code>
+and an empty value (<code>E=</code>) load as written. On Linux, <code>$</code> loads as written too,
+as systemd keeps it. The command prints names and paths, never values:</p>
+<ul>
+<li>the variables it loaded;</li>
+<li>the shell variables that override a different value in the file (if you
+  rotated a key in the file, unset the old one in your shell);</li>
+<li>any value it did not load. One is an unbalanced quote, unquoted space or
+  other escape that systemd and <code>sh</code> would read differently. On macOS, the
+  other is a <code>$</code> or backtick outside single quotes, which the launchd agent's
+  <code>sh</code> would expand. Put such a value in single quotes;</li>
+<li>a file a unit names that does not exist, and a file skipped because it is
+  not UTF-8 text.</li>
+</ul>
+<p><code>cox setup doctor --json</code> loads the file without printing anything.</p>
 <p>On an edge machine, <code>cox upgrade</code> with no <code>--to</code> does these steps:</p>
 <ol>
 <li>It finds the newest commit on <code>origin/main</code> whose <code>ci</code> workflow passed on
