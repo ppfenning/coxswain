@@ -51,6 +51,13 @@ def test_a_login_is_merged_into_the_hosts_versions_and_leaves_its_beat(sandbox):
     assert _rows(sandbox)[HOST]["versions_json"] == {"login_ok": True, "reason": None, "login_failures": 0}
 
 
+def test_a_write_the_store_refuses_names_its_reason(sandbox):
+    # the refusal's stdout is `{}` and its reason is on stderr; cox printed "host: store_cli exit 3: {}"
+    refused = sandbox.cox("host", "drain", "ghost")
+    assert refused.returncode == 1, refused.stdout + refused.stderr
+    assert refused.stdout.strip() == "host: store_cli exit 3: error: no host ghost"
+
+
 def test_remove_refuses_an_active_host_and_the_store_keeps_it(sandbox):
     _ok(sandbox, "add", HOST, "--ssh", "lane-a.invalid", "--capacity", "2")
     refused = sandbox.cox("host", "remove", HOST)
