@@ -67,6 +67,7 @@ from harness.epic_execute import (
     record_attempts,
     records_after,
     stored_causes,
+    unreadable_reason,
     with_record_attempts,
     with_stored_causes,
     without_cause,
@@ -432,6 +433,16 @@ def run_phase_tasks(
         for item in all_ready
     } if store_authoritative(ctx) else {}
     all_ready = [with_record_attempts(item, [a for a, _ in recorded.get(str(item["id"]), [])]) for item in all_ready]
+    # A record the driver could not read leaves the count or the resume unsure (`unreadable_reason`): the task is held
+    # for a person rather than built, so a malformed record can never relaunch it or resume it from an older patch.
+    unreadable = {task_id: why for task_id, found in recorded.items() if (why := unreadable_reason(found)) is not None}
+    for task_id, why in sorted(unreadable.items()):
+        with ctx.items_lock:
+            live = next((i for i in items if str(i["id"]) == task_id), None)
+        held = live if live is not None else next(dict(i) for i in all_ready if str(i["id"]) == task_id)
+        text, not_held = hold_task(ctx, held, why)
+        print(f"  attempts: {task_id} held for a person: {text}" + (f" (the hold was not written: {not_held})" if not_held else ""))
+    all_ready = [item for item in all_ready if str(item["id"]) not in unreadable]
     record_patches = {task_id: rescue_select.patch_of(found[-1][1]) for task_id, found in recorded.items() if found}
     attempts_by_id = {str(item["id"]): build_attempts(item.get("attempts") or []) for item in all_ready}
     # A rewritten ticket starts a fresh count. Triage still gets the whole history for its repeat guard.

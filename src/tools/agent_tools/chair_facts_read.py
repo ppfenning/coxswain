@@ -470,7 +470,7 @@ def _on_body(attempts: Sequence[Row], key: Key) -> list[Row]:
 # A stoppage is the harness's, not the task's: a limit, a login, the infrastructure, a stale base, an interrupted run.
 # A failed rescue checks work already built. Neither counts toward `chair.quarantine_hold_after`, whatever cause the
 # attempt carries: a rescue_failed attempt may name code or review. The kinds are the ones the epic's cap skips
-# (`harness.epic._build_attempts`).
+# (`harness.epic.build_attempts`).
 _NOT_A_FAILURE = frozenset({HARNESS_CAUSE, RESCUE_FAILED_CAUSE})
 _NOT_A_BUILD = frozenset({"rescue_failed", "infra", "interrupted"})
 

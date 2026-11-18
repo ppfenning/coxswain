@@ -141,7 +141,7 @@ PYTHON_PROJECT_FILES = ("pyproject.toml", "setup.cfg", "pytest.ini", "setup.py",
 
 def resolved_checks(cartridge_checks: Sequence[dict[str, Any]], repo_checks: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     """The cartridge's checks, then the repo's `.agent-checks` entries whose `cmd` the cartridge does not already run.
-    The chair's rule (`_Ctx.checks` in harness/epic.py), so the land runs what the build was held to."""
+    The chair's rule (`Ctx.checks` in harness/epic_context.py), so the land runs what the build was held to."""
     known = {c.get("cmd") for c in cartridge_checks}
     return [*cartridge_checks, *(c for c in repo_checks if c.get("cmd") not in known)]
 

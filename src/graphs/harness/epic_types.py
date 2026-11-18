@@ -94,6 +94,7 @@ class Attempt(TypedDict):
     arbitration: NotRequired[JsonObject]
     fix_loop: NotRequired[JsonObject]
     evidence: NotRequired[list[Json]]
+    malformed: NotRequired[str]  # why its task record was refused: an attempt with no verdicts
 
 
 class PhaseRecord(TypedDict, total=False):
@@ -151,7 +152,7 @@ _ATTEMPT_ROW: dict[str, Kind] = {
 _ATTEMPT: dict[str, Kind] = {
     "run": "str", "phase": "str", "reason": "str", "ts": "str", "kind": "str", "patch_kept": "bool",
     "body_sha": "str", "cause": "str?", "cause_why": "str", "review": "object", "adversary": "object",
-    "arbitration": "object", "fix_loop": "object", "evidence": "list",
+    "arbitration": "object", "fix_loop": "object", "evidence": "list", "malformed": "str",
 }  # fmt: skip
 _PHASE_RECORD: dict[str, Kind] = {
     "phase": "str", "status": "str", "parent": "str?", "parents": "list", "assembled_from": "list", "branch": "str",

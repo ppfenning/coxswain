@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -358,14 +358,36 @@ def stored_causes(ctx: Ctx, task: str) -> list[AttemptRow]:
 
 
 def _attempt_rows(cols: Sequence[str], rows: Iterable[Sequence[object]]) -> list[AttemptRow]:
-    """Each selected `attempts` row by column name; a row the store holds malformed is logged and left out."""
+    """Each selected `attempts` row by column name. A row the store holds malformed is still an attempt: it is kept,
+    with its text columns read as text and no cause (`malformed_attempt_row`), and logged. A dropped row would let a
+    repeat through: `rescue_select.eligible` counts the `rescue_failed` rows, the attempt cap the causes."""
     read: list[AttemptRow] = []
     for row in rows:
+        raw = dict(zip(cols, row, strict=True))
         try:
-            read.append(attempt_row(dict(zip(cols, row, strict=True))))
+            read.append(attempt_row(raw))
         except MalformedRecord as exc:
-            epic_log.warning("attempts row skipped: %s", exc)
+            epic_log.warning("attempts row kept with no cause: %s", exc)
+            read.append(malformed_attempt_row(raw))
     return read
+
+
+def malformed_attempt_row(raw: Mapping[str, object]) -> AttemptRow:
+    """Pure. A malformed `attempts` row as an attempt with no cause: each selected text column as text (None when
+    unset), `seq` when it is an int. Nothing selected is dropped, so the row still counts where rows are counted."""
+
+    def text(key: str) -> str | None:
+        value = raw.get(key)
+        return None if value is None else str(value)
+
+    seq = raw.get("seq")
+    row: AttemptRow = {"run_id": text("run_id") or "", "phase_id": text("phase_id"), "cause": None}
+    if isinstance(seq, int) and not isinstance(seq, bool):
+        row["seq"] = seq
+    for key in ("kind", "reason", "ts"):
+        if key in raw:
+            row[key] = text(key)
+    return row
 
 
 def _run_number(run: str) -> int:
@@ -403,8 +425,50 @@ def _record_attempt(run: str, phase: str, record: TaskRecord, ts: str) -> Attemp
     })
 
 
+def _refused_attempt(run: str, phase: str, raw: object, why: str, ts: str) -> Attempt:
+    """The attempt a task record stands for when `task_record` refused it: never dropped, since under work_state store
+    the records are the attempts the cap counts. It keeps the record's cause when that is text, reads none of its
+    verdicts, and names what was wrong in `malformed`; `unreadable_reason` holds a task such an attempt leaves unsure."""
+    from core import run_record  # not module level: see `_record_attempt`
+
+    fields = as_mapping(raw)
+    cause, cause_why, date = fields.get("cause"), fields.get("cause_why"), fields.get("date")
+    named = cause.strip() if isinstance(cause, str) else ""
+    because = cause_why.strip() if isinstance(cause_why, str) else ""
+    kind = run_record.record_kind(because) if named else ""
+    return as_attempt({
+        "run": run, "phase": phase, "ts": date if isinstance(date, str) and date else ts, "malformed": why,
+        "reason": f"the task record of run {run} is malformed, so its verdicts were not read: {why}",
+        **({"cause": named, "cause_why": because} if named else {}),
+        **({"kind": kind} if kind else {}),
+    })
+
+
+def unreadable_reason(found: Sequence[tuple[Mapping[str, object], object]]) -> str | None:
+    """Pure. Why a task's run task records (`caused_records`, oldest first) leave its next build unsafe, else None.
+
+    The newest record refused: a rebuild would resume from an older attempt's patch. A refused record with no cause:
+    it cannot be told apart from a record that names none, which is no attempt, so the cap cannot count it."""
+    if found and "malformed" in found[-1][0]:
+        newest = found[-1][0]
+        return (
+            f"the newest task record (run {newest.get('run')}) is malformed ({newest.get('malformed')}); a rebuild would "
+            "resume from an older attempt's patch, so a person decides"
+        )
+    causeless = next((a for a, _ in found if "malformed" in a and not a.get("cause")), None)
+    if causeless is not None:
+        return (
+            f"the task record of run {causeless.get('run')} is malformed ({causeless.get('malformed')}) and names no cause, "
+            "so the attempt cap cannot count it; a person decides"
+        )
+    return None
+
+
 def caused_records(ctx: Ctx, phase: str, task: str) -> list[tuple[Attempt, TaskRecord]]:
     """(attempt, record) for each of the task's run task records that names a cause, oldest first.
+
+    A record `task_record` refuses (or a record file that is not JSON) is never dropped: it is an attempt with no
+    verdicts and an empty record (`_refused_attempt`), whether or not it names a cause.
 
     Under work_state store nothing writes an attempt into the work file: these records are the attempts. This machine's
     record files under the runs directory are read first; the store's copy (`task_records`) adds the runs another lane
@@ -412,34 +476,57 @@ def caused_records(ctx: Ctx, phase: str, task: str) -> list[tuple[Attempt, TaskR
 
     A run's number orders them, its `ts` only within one run: one initiative's runs never overlap (its
     `runs:<initiative>` lease), and the minimal record an invoke failure leaves has no date, only its file's time."""
-    found: dict[str, tuple[TaskRecord, str]] = {}
+    found: dict[str, tuple[TaskRecord | _Refused, str]] = {}
     for path in sorted(Path(ctx.runs_dir).glob(f"*/tasks/{phase}/{task}.json")):
         try:
-            record = task_record(json.loads(path.read_text(encoding="utf-8")))
+            text = path.read_text(encoding="utf-8")
             stamp = datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat()
-        except (OSError, ValueError):  # MalformedRecord is a ValueError: a record no reader can trust is no record
+        except OSError:
             continue
-        found[path.parts[-4]] = (record, stamp)
+        found[path.parts[-4]] = (_read_record(text), stamp)
     if ctx.store is not None:
         try:
             from harness import store_read  # not module level: see `mirror_read`
 
             for row in store_read.task_records_of(ctx.store.conn, phase, task):
                 if isinstance(row["record_json"], Mapping):
-                    try:
-                        stored = task_record(row["record_json"])
-                    except MalformedRecord as exc:
-                        epic_log.warning("task record of %s/%s in %s skipped: %s", phase, task, row["run_id"], exc)
-                        continue
-                    found.setdefault(str(row["run_id"]), (stored, str(row.get("updated_at") or "")))
+                    found.setdefault(str(row["run_id"]), (_checked_record(row["record_json"]), str(row.get("updated_at") or "")))
         except Exception as exc:
             epic_log.warning("task records of %s/%s not read from the store: %s: %s", phase, task, type(exc).__name__, exc)
-    caused = [
-        (_run_number(run), attempt["ts"], stamp, attempt, record)
-        for run, (record, stamp) in found.items()
-        if _record_initiative(run, record) == ctx.initiative_id and (attempt := _record_attempt(run, phase, record, stamp)) is not None
-    ]
+    caused: list[tuple[int, str, str, Attempt, TaskRecord]] = []
+    for run, (record, stamp) in found.items():
+        if isinstance(record, _Refused):
+            if _record_initiative(run, as_mapping(record.raw)) == ctx.initiative_id:
+                epic_log.warning("task record of %s/%s in %s is malformed, read as a causal attempt: %s", phase, task, run, record.why)
+                refused = _refused_attempt(run, phase, record.raw, record.why, stamp)
+                caused.append((_run_number(run), refused["ts"], stamp, refused, {}))
+        elif _record_initiative(run, record) == ctx.initiative_id and (attempt := _record_attempt(run, phase, record, stamp)):
+            caused.append((_run_number(run), attempt["ts"], stamp, attempt, record))
     return [(attempt, record) for *_, attempt, record in sorted(caused, key=lambda t: t[:3])]
+
+
+@dataclass(frozen=True)
+class _Refused:
+    """A task record `task_record` refused: what it held, and why."""
+
+    raw: object
+    why: str
+
+
+def _checked_record(raw: object) -> TaskRecord | _Refused:
+    try:
+        return task_record(raw)
+    except MalformedRecord as exc:
+        return _Refused(raw, str(exc))
+
+
+def _read_record(text: str) -> TaskRecord | _Refused:
+    """A record file's text as a task record, or refused: a file that is not JSON is refused too."""
+    try:
+        raw = json.loads(text)
+    except ValueError as exc:
+        return _Refused(None, f"not JSON: {exc}")
+    return _checked_record(raw)
 
 
 def record_attempts(ctx: Ctx, phase: str, task: str) -> list[Attempt]:
