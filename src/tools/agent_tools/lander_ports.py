@@ -14,14 +14,15 @@ import sqlite3
 import subprocess
 import threading
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 from agent_tools import courier, forge, lander, repo_path, route, run_store, work_state
 from agent_tools.forge import ForgeModule
 from agent_tools.store_url import read_provider_profile
-from core.jsontypes import is_list, is_mapping
+from core.jsontypes import is_mapping
 from core.landing_record import LandingRecord, record_from_store
 from harness.store_dialect import Connection
 
@@ -95,11 +96,20 @@ def _frontmatter(path: Path) -> dict[str, object]:
 
 
 def _ids(value: object) -> list[str]:
-    return [str(n) for n in value] if is_list(value) else []
+    """A row's `needs` as ids: none when absent or empty; TypeError, as iterating it raised, when it is not iterable."""
+    raw: object = value or []
+    if not isinstance(raw, Iterable):
+        raise TypeError(f"'{type(raw).__name__}' object is not iterable")
+    return [str(n) for n in cast(Iterable[object], raw)]
 
 
-def _mapping_or_empty(value: object) -> Mapping[str, object]:
-    return value if is_mapping(value) else {}
+def _extra(value: object) -> Mapping[str, object]:
+    """A row's `extra`: empty when absent; TypeError, as spreading it raised, when it is not a mapping. Read as empty,
+    it would drop the initiative's repo, on_blocked and held."""
+    raw: object = value or {}
+    if not is_mapping(raw):
+        raise TypeError(f"an extra must be a mapping, not {type(raw).__name__}")
+    return raw
 
 
 def task_rows(store_rows: Sequence[Mapping[str, object]], files: Mapping[str, Mapping[str, object]]) -> list[dict[str, object]]:
@@ -300,7 +310,7 @@ def split_initiative(ws: Path, conn: Connection, repo: Path, initiative: str, ph
         store_queue.upsert(conn, {
             **{k: v for k, v in head.items() if k not in ("holder", "epoch", "expires_at", "issue_number", "project_item_id")},
             "initiative": follow, "task_id": follow, "title": f"{head.get('title') or initiative} (follow-up)",
-            "extra": {**_mapping_or_empty(head.get("extra")), "id": follow, "split_from": initiative},
+            "extra": {**_extra(head.get("extra")), "id": follow, "split_from": initiative},
             "updated_at": stamp, "updated_by": worker,
         })
     record = landing_store.get_record(conn, initiative)
@@ -401,7 +411,7 @@ def build(ws: Path, profile: Mapping[str, object], *, worker: str | None = None,
         head = next((r for r in rows if r.get("kind") == "initiative"), None)
         if head is None:
             return _frontmatter(work / initiative / "initiative.md"), files_of(initiative)
-        extra = _mapping_or_empty(head.get("extra"))
+        extra = _extra(head.get("extra"))
         own: dict[str, object] = {**extra, "title": head.get("title") or extra.get("title") or initiative}
         return own, {
             str(r["task_id"]): {"title": r.get("title") or r["task_id"], "phase": r.get("phase"), "state": r.get("state"),

@@ -91,6 +91,13 @@ class WaveRow(TypedDict):
     green_tip: str | None
 
 
+class Hold(TypedDict, total=False):
+    """Why the lander holds an initiative (its record and its branch disagree), and since when."""
+
+    reason: str
+    since: str
+
+
 class LandingRecord(TypedDict, total=False):
     """One initiative's landing record. Every key is optional on read: a record may predate a field."""
 
@@ -111,6 +118,7 @@ class LandingRecord(TypedDict, total=False):
     updated_at: str
     error: str
     landed_pr: str
+    held: Hold | None  # set by the lander's reconcile; absent or None means not held
 
 
 class StateFields(TypedDict, total=False):

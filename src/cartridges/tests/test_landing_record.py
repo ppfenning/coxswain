@@ -207,7 +207,8 @@ def test_follow_up_ids_take_the_first_free_number() -> None:
 
 
 def test_a_stored_record_reads_back_as_itself():
-    stored = {**record(p1={"state": "merged", "tasks": ["t1"], "merge_sha": "m" * 40}), "pr": None, "future_key": 1}
+    stored = {**record(p1={"state": "merged", "tasks": ["t1"], "merge_sha": "m" * 40}), "pr": None, "future_key": 1,
+              "held": {"reason": "origin's branch lacks p1", "since": NOW}}
     assert lr.record_from_store(stored) is stored
 
 
@@ -216,6 +217,8 @@ def test_a_stored_record_reads_back_as_itself():
     ({"initiative": "i", "phases": {"p1": {"tasks": "t1"}}}, r"landing record\.phases\.p1\.tasks: expected a list"),
     ({"initiative": "i", "pr": {"url": 5}}, r"landing record\.pr"),
     ({"initiative": "i", "adopted": "yes"}, r"landing record\.adopted: expected bool"),
+    ({"initiative": "i", "held": "the branch moved"}, r"landing record\.held"),
+    ({"initiative": "i", "held": {"reason": 3}}, r"landing record\.held"),
 ])
 def test_a_malformed_stored_record_is_refused_naming_the_bad_key(stored, named):
     with pytest.raises(ShapeError, match=named):

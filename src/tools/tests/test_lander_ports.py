@@ -302,3 +302,10 @@ def test_a_split_moves_each_row_whole_and_gives_the_follow_up_its_own_row(ws: Pa
     assert (moved["b"]["title"], moved["b"]["body"], moved["b"]["needs"], moved["b"]["phase"]) == ("Task B", "the text of b", ["a"], "p2")
     assert (moved[follow]["kind"], moved[follow]["extra"]["split_from"], moved[follow]["title"]) == ("initiative", "demo", "Demo title (follow-up)")
     assert "b" not in {r["task_id"] for r in store_queue.read(ports.conn, "demo")}
+
+
+def test_a_needs_is_read_as_its_ids_and_one_that_is_not_iterable_raises_rather_than_reading_as_none():
+    rows = lander_ports.task_rows([{"task_id": "b", "phase": "p1", "state": "ready", "needs": "a"}], {})
+    assert rows[0]["needs"] == ["a"]  # as the base iterated it
+    with pytest.raises(TypeError):
+        lander_ports.task_rows([{"task_id": "b", "phase": "p1", "state": "ready", "needs": 5}], {})

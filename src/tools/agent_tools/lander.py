@@ -287,14 +287,14 @@ def tell_unreadable(memo: Mapping[str, object], state: str) -> tuple[dict[str, o
     return {**after, "told": reason_key(reason)}, reason
 
 
-def held_after(held: Mapping[str, object] | None, reason: str | None, now: str) -> tuple[dict[str, object] | None, bool]:
+def held_after(held: lr.Hold | None, reason: str | None, now: str) -> tuple[lr.Hold | None, bool]:
     """Pure. The record's `held` once reconciliation found `reason` (None: the record and the branch agree), and
     whether that is news to tell: a new hold, a changed reason, or a hold lifted. An unchanged hold is not told twice."""
     old = str((held or {}).get("reason") or "")
     if reason is None:
         return None, bool(old)
     if reason == old:
-        return dict(held or {}), False
+        return lr.Hold(**(held or {})), False
     return {"reason": reason, "since": now}, True
 
 
@@ -551,10 +551,9 @@ def land_initiative(ports: Ports, initiative: str, *, merge: bool = True, refres
     return close("done", f"{initiative} landed on {parent}", events)
 
 
-def _held(record: lr.LandingRecord) -> Mapping[str, object] | None:
-    """Pure. The hold the record carries (`reason`, `since`), or None."""
-    raw = record.get("held")
-    return raw if is_mapping(raw) and raw else None
+def _held(record: lr.LandingRecord) -> lr.Hold | None:
+    """Pure. The hold the record carries (`reason`, `since`), or None; `record_from_store` has checked its shape."""
+    return record.get("held") or None
 
 
 def held_note(record: lr.LandingRecord) -> str:
@@ -1141,8 +1140,8 @@ def reconcile(ports: Ports, initiative: str) -> list[str]:
             if held is None:
                 events.append(f"reconcile: {initiative}: the record and origin's {record_text(record, 'branch')} agree again; the hold is lifted")
             else:
-                ports.notify("needs_chair", {"initiative": initiative, "reason": f"held: {held['reason']}"})
-                events.append(f"reconcile: {initiative} is held: {held['reason']}")
+                ports.notify("needs_chair", {"initiative": initiative, "reason": f"held: {held.get("reason", "")}"})
+                events.append(f"reconcile: {initiative} is held: {held.get("reason", "")}")
         return events
     finally:
         store_lease.release(ports.conn, ops.branch_lease(initiative), ports.worker, int(lease.epoch or 0))
