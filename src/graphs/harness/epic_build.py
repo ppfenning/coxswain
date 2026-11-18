@@ -9,9 +9,10 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
 from time import monotonic
-from typing import Any
+from typing import TypedDict
 
 from core import workstore
+from core.jsontypes import is_dict, is_mapping
 from graphs.delivery.budget_estimate import estimate_budget
 from graphs.delivery.lifecycle_propose import DEFAULT_FIX_ATTEMPTS
 from harness import pool_edge, warm_pool
@@ -48,7 +49,7 @@ from harness.epic_branches import (
 from harness.epic_context import Ctx, git_in
 from harness.epic_phase_branch import trace_evidence
 from harness.epic_records import epic_log, save_task_result, wait_if_paused_here
-from harness.epic_types import PhaseRecord, as_list
+from harness.epic_types import BuildRecord, PhaseRecord, as_list, as_mapping
 from harness.escalate import touched_paths
 from harness.integration_scope import scope_integration
 from harness.invoke import Invocation, invoke_graphs
@@ -58,7 +59,24 @@ from harness.lane_database_drop import drop_lane_database
 from harness.worktree import apply_patch, create_worktree, keep_worktree, link_venv, read_lock, remove_worktree
 
 
-def _checks_log(ctx: Ctx, phase: str, task: str) -> dict[str, Any]:
+class _ChecksLog(TypedDict):
+    """The `run_checks` arguments that say where a run's check output is logged."""
+
+    log_dir: Path
+    log_prefix: str
+
+
+def _as_int(value: object) -> int:
+    """`value` when it is an int, else 0: a count a result left out."""
+    return value if isinstance(value, int) else 0
+
+
+def _as_float(value: object) -> float:
+    """`value` as a float when it is a number or a numeral, else 0.0."""
+    return float(value) if isinstance(value, int | float | str) else 0.0
+
+
+def _checks_log(ctx: Ctx, phase: str, task: str) -> _ChecksLog:
     """`run_checks` log arguments: `runs/<run>/checks/<phase>/<task>/<n>.log`, so tasks never overwrite each other."""
     return {"log_dir": ctx.runs_dir / ctx.run_id / "checks" / phase / task, "log_prefix": f"checks/{phase}/{task}/"}
 
@@ -69,15 +87,26 @@ def _ledger_dir(worktree: Path) -> Path | None:
     return (worktree / out).resolve() if ok and out else None
 
 
-def _gate_checks(worktree: Path, checks: Sequence[Mapping[str, Any]], **kw: Any) -> list[dict[str, Any]]:
+def _gate_checks(
+    worktree: Path,
+    checks: Sequence[Mapping[str, object]],
+    *,
+    env: Mapping[str, str] | None = None,
+    log_dir: Path | None = None,
+    log_prefix: str = "",
+) -> list[dict[str, object]]:
     """`run_checks` for a task gate or style pass: a pass on this tree and command is reused and recorded."""
     ledger = _ledger_dir(worktree)
     if ledger is None:
-        return run_checks(worktree, checks, **kw)
-    return run_checks_reusing(worktree, checks, ledger_dir=ledger, run=run_checks, **kw)
+        return list(run_checks(worktree, checks, env=env, log_dir=log_dir, log_prefix=log_prefix))
+    return list(
+        run_checks_reusing(
+            worktree, checks, ledger_dir=ledger, run=run_checks, env=env, log_dir=log_dir, log_prefix=log_prefix
+        )
+    )
 
 
-def _reused_names(results: Sequence[Mapping[str, Any]]) -> list[str]:
+def _reused_names(results: Sequence[Mapping[str, object]]) -> list[str]:
     return [str(r.get("name")) for r in results if r.get("reused")]
 
 
@@ -86,12 +115,12 @@ def _nul_paths(listing: str) -> list[str]:
 
 
 def _lane_checks(
-    worktree: Path, base: str, checks: Sequence[Mapping[str, Any]]
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    worktree: Path, base: str, checks: Sequence[Mapping[str, object]]
+) -> tuple[list[dict[str, object]], dict[str, object]]:
     """The checks the task's patch can affect, and the selection; every check, with a reason, on any error."""
     known = [c for c in (pytest_component(str(check.get("cmd", ""))) for check in checks) if c]
 
-    def everything(why: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    def everything(why: str) -> tuple[list[dict[str, object]], dict[str, object]]:
         return [dict(c) for c in checks], {
             "components_run": known,
             "components_skipped": [],
@@ -120,37 +149,38 @@ def _lane_checks(
     return list(scoped.checks), scoped.selection
 
 
-def _tests_run(results: Sequence[Mapping[str, Any]]) -> int:
-    return sum((r.get("counts") or {}).get(k, 0) for r in results for k in ("passed", "failed", "error"))
+def _tests_run(results: Sequence[Mapping[str, object]]) -> int:
+    return sum(_as_int(as_mapping(r.get("counts")).get(k, 0)) for r in results for k in ("passed", "failed", "error"))
 
 
-def _cpu_seconds_total(results: Sequence[Mapping[str, Any]]) -> float:
-    return round(sum(r.get("cpu_seconds", 0.0) for r in results), 3)
+def _cpu_seconds_total(results: Sequence[Mapping[str, object]]) -> float:
+    return round(sum(_as_float(r.get("cpu_seconds", 0.0)) for r in results), 3)
 
 
-def _scope_figures(selection: Mapping[str, Any], results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def _scope_figures(selection: Mapping[str, object], results: Sequence[Mapping[str, object]]) -> dict[str, object]:
     """Per-component counts and their totals under the dash feed's key names; {} when the selection has no counts."""
     tests = selection.get("tests")
     if not tests:
         return {}
+    per_component = as_mapping(tests).values()
     return {
         "tests": tests,
         "totals": {
-            "tests_selected": sum(t["selected"] for t in tests.values()),
-            "tests_total": sum(t["total"] for t in tests.values()),
+            "tests_selected": sum(_as_int(as_mapping(t)["selected"]) for t in per_component),
+            "tests_total": sum(_as_int(as_mapping(t)["total"]) for t in per_component),
             "cpu_seconds": _cpu_seconds_total(results),
         },
     }
 
 
-def _scope_clause(figures: Mapping[str, Any]) -> str:
-    totals = figures.get("totals")
+def _scope_clause(figures: Mapping[str, object]) -> str:
+    totals = as_mapping(figures.get("totals"))
     if not totals:
         return ""
     return f"; tests {totals['tests_selected']} of {totals['tests_total']}, cpu {totals['cpu_seconds']:.1f}s"
 
 
-def _scope_record(selection: Mapping[str, Any], results: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], str]:
+def _scope_record(selection: Mapping[str, object], results: Sequence[Mapping[str, object]]) -> tuple[dict[str, object], str]:
     """The `check_scope` record and the `checks:scope` row text for one run of the scoped checks."""
     tests_run, figures = _tests_run(results), _scope_figures(selection, results)
     row = f"{render_selection(selection)}; tests_run={tests_run}{_scope_clause(figures)}"
@@ -165,7 +195,7 @@ def run_level_checks(ctx: Ctx, phase: str, record: PhaseRecord) -> None:
     checks = ctx.level_checks
     if not checks:
         return
-    log = {"log_dir": ctx.runs_dir / ctx.run_id / "checks" / phase / "level", "log_prefix": f"checks/{phase}/level/"}
+    log = _ChecksLog(log_dir=ctx.runs_dir / ctx.run_id / "checks" / phase / "level", log_prefix=f"checks/{phase}/level/")
     with repo_gate_lock(ctx.repo):
         results = run_checks(ctx.phase_worktree(phase), checks, env=checks_env(ctx, {}, phase, "@level"), **log)
     record["level_checks"] = results
@@ -173,7 +203,7 @@ def run_level_checks(ctx: Ctx, phase: str, record: PhaseRecord) -> None:
         record["status"], record["reason"] = "partial", reason
 
 
-def _level_integration_reason(phase: str, creation: Mapping[str, Any], results: Sequence[Mapping[str, Any]]) -> str:
+def _level_integration_reason(phase: str, creation: Mapping[str, str], results: Sequence[Mapping[str, object]]) -> str:
     """A line naming the level and what stopped its integration gate; '' when the database exists and every row passed."""
     if setup := creation_failure(creation):
         return f"level {phase}: {setup}"
@@ -200,12 +230,12 @@ def run_level_integration(ctx: Ctx, phase: str, base: str, record: PhaseRecord) 
         record["status"], record["reason"] = "partial", f"level {phase} integration paths unreadable: {listing}"
         return
     scoped = scope_integration(checks, _nul_paths(listing))
-    results: list[dict[str, Any]] = []
+    results: list[dict[str, object]] = []
     if scoped.checks and not creation_failure(creation):
-        log = {
-            "log_dir": ctx.runs_dir / ctx.run_id / "checks" / phase / "level-integration",
-            "log_prefix": f"checks/{phase}/level-integration/",
-        }
+        log = _ChecksLog(
+            log_dir=ctx.runs_dir / ctx.run_id / "checks" / phase / "level-integration",
+            log_prefix=f"checks/{phase}/level-integration/",
+        )
         with repo_gate_lock(ctx.repo):
             results = run_checks(worktree, list(scoped.checks), env=checks_env(ctx, lane, phase, "@level-integration"), **log)
     record["level_integration"], record["level_integration_scope"] = results, scoped.selection
@@ -235,7 +265,7 @@ def drop_lane(ctx: Ctx, phase: str, task: str) -> None:
     if name is None or ctx.test_database is None:
         return
     ctx.lane_drops.append(
-        drop_lane_database(ctx.test_database.get("drop"), name, lane_env(ctx.test_database, ctx.run_id, phase, task))
+        {**drop_lane_database(ctx.test_database.get("drop"), name, lane_env(ctx.test_database, ctx.run_id, phase, task))}
     )
 
 
@@ -295,8 +325,8 @@ def settle_pool(ctx: Ctx, *, keep_worktrees: bool) -> None:
 
 
 def build_task(
-    ctx: Ctx, *, phase: str, task: str, result: Mapping[str, Any], verify: Sequence[str] = ()
-) -> dict[str, Any]:
+    ctx: Ctx, *, phase: str, task: str, result: Mapping[str, object], verify: Sequence[str] = ()
+) -> BuildRecord:
     """Build and check one task; its pytest scratch directory is removed as soon as its checks have run."""
     try:
         return _build_task_checked(ctx, phase=phase, task=task, result=result, verify=verify)
@@ -305,8 +335,8 @@ def build_task(
 
 
 def _build_task_checked(
-    ctx: Ctx, *, phase: str, task: str, result: Mapping[str, Any], verify: Sequence[str] = ()
-) -> dict[str, Any]:
+    ctx: Ctx, *, phase: str, task: str, result: Mapping[str, object], verify: Sequence[str] = ()
+) -> BuildRecord:
     """Apply one task's patch on a scratch branch off the phase branch, and check it.
 
     Returns the record whose evidence rows the gate will read. Whether the tests
@@ -315,10 +345,10 @@ def _build_task_checked(
     not claims — so a failure here quarantines WITH the evidence attached rather
     than proposing a merge and hoping.
     """
-    patch = str((result.get("build") or {}).get("patch") or "")
+    patch = str(as_mapping(result.get("build")).get("patch") or "")
     worktree = ctx.task_worktree(phase, task)
     branch = ctx.scratch_branch(task)
-    record: dict[str, Any] = {"id": task, "phase": phase, "branch": branch, "evidence": []}
+    record: BuildRecord = {"id": task, "phase": phase, "branch": branch, "evidence": []}
 
     started = monotonic()
     if ctx.pool is None:
@@ -345,7 +375,7 @@ def _build_task_checked(
     if not ok:
         record["quarantine"] = f"patch did not apply: {detail}"
         return record
-    record["evidence"].extend(trace_evidence(getattr(ctx.runner, "calls", None) or [], task, patch))
+    record["evidence"].extend(dict(row) for row in trace_evidence(getattr(ctx.runner, "calls", None) or [], task, patch))
 
     # Commit BEFORE the checks run, so the branch holds exactly the applied
     # patch and nothing else. Checks execute things — a test run drops
@@ -382,16 +412,17 @@ def _build_task_checked(
                 record["lint_fixed"] = True
                 build_field = result.get("build")
                 _, folded = git_in("-C", str(worktree), "diff", ctx.phase_branch(phase), "HEAD")
-                if isinstance(build_field, dict) and folded:
+                if is_dict(build_field) and folded:
                     build_field["patch"] = folded + "\n"
 
     if ctx.checks:
         scoped, selection = _lane_checks(worktree, ctx.phase_branch(phase), ctx.checks)
         results = _gate_checks(worktree, scoped, env=env, **_checks_log(ctx, phase, task))
         record["checks"] = results
-        record["evidence"].extend(checks_evidence(results))
-        record["check_scope"], row = _scope_record(selection, results)
-        record["check_scope"]["reused"] = _reused_names(results)
+        record["evidence"].extend(dict(row) for row in checks_evidence(results))
+        scope, row = _scope_record(selection, results)
+        scope["reused"] = _reused_names(results)
+        record["check_scope"] = scope
         record["check_cpu_seconds"] = _cpu_seconds_total(results)
         record["evidence"].append({"check": "checks:scope", "output": row})
         reason = quarantine_reason(results)
@@ -404,12 +435,12 @@ def _build_task_checked(
     if verify:
         ran = run_checks(worktree, [{"name": str(i), "cmd": cmd} for i, cmd in enumerate(verify, 1)], env=env)
         record["verify"] = ran
-        record["evidence"].extend(checks_evidence(ran, prefix="verify", always_tail=True))
+        record["evidence"].extend(dict(row) for row in checks_evidence(ran, prefix="verify", always_tail=True))
     return record
 
 
-def verify_of(by_id: Mapping[str, Mapping[str, Any]], task: str) -> list[str]:
-    return [str(c) for c in (by_id.get(task) or {}).get("verify") or []]
+def verify_of(by_id: Mapping[str, Mapping[str, object]], task: str) -> list[str]:
+    return [str(c) for c in as_list(as_mapping(by_id.get(task)).get("verify"))]
 
 
 _BUDGET_HISTORY_DAYS = 30
@@ -440,7 +471,7 @@ def _budget_history(ctx: Ctx) -> list[tuple[str, int, float]]:
 
 
 def lifecycle_invocation(
-    ctx: Ctx, task: Mapping[str, Any], *, body: str, fix_attempts: int | None
+    ctx: Ctx, task: Mapping[str, object], *, body: str, fix_attempts: int | None
 ) -> Invocation:
     # Every build task resolves a budget and where it came from, never
     # nothing. A ticket's own `budget_usd` wins outright and is checked
@@ -449,11 +480,12 @@ def lifecycle_invocation(
     # is ever called, and never through `quarantine_task` here. An estimate
     # is already clamped to [1.00, 4.00], so it can never reach that cap or
     # the quarantine path either.
+    build_budget_usd: object
     if task.get("budget_usd") is not None:
         build_budget_usd, build_budget_source = task["budget_usd"], "ticket"
     else:
         build_budget_usd, _source = estimate_budget(
-            _budget_history(ctx), str(getattr(ctx, "repo", "")), len(task.get("surfaces") or [])
+            _budget_history(ctx), str(getattr(ctx, "repo", "")), len(as_list(task.get("surfaces")))
         )
         build_budget_source = "estimate"
     return Invocation(
@@ -466,9 +498,9 @@ def lifecycle_invocation(
             "ticket_title": task.get("title") or "",
             "ticket_body": body,
             "cartridge": ctx.cartridge,
-            "surfaces": list(task.get("surfaces") or []),
-            "patterns": list(task.get("patterns") or []),
-            "tier": dict(task.get("tier") or {}),
+            "surfaces": as_list(task.get("surfaces")),
+            "patterns": as_list(task.get("patterns")),
+            "tier": dict(as_mapping(task.get("tier"))),
             **({"fix_attempts": fix_attempts} if fix_attempts is not None else {}),
             "build_budget_usd": build_budget_usd,
             "build_budget_source": build_budget_source,
@@ -476,7 +508,7 @@ def lifecycle_invocation(
     )
 
 
-def _style_fix(ctx: Ctx, *, phase: str, task: str, result: Mapping[str, Any], build: dict[str, Any]) -> bool:
+def _style_fix(ctx: Ctx, *, phase: str, task: str, result: Mapping[str, object], build: BuildRecord) -> bool:
     """One `style_pass` over an approved build whose lint failed, then the checks again.
 
     The seat is a model and no reviewer sees its edit, so it is bounded three
@@ -492,7 +524,9 @@ def _style_fix(ctx: Ctx, *, phase: str, task: str, result: Mapping[str, Any], bu
     before = collected_test_ids(worktree)
     if before is None:
         return False  # no floor can be measured, so no model call is worth buying
-    patch = str((result.get("build") or {}).get("patch") or "")
+    patch = str(as_mapping(result.get("build")).get("patch") or "")
+    if "checks" not in build:
+        raise KeyError("checks")
     edit = ctx.runner.run(
         role="style_pass",
         tier="standard",
@@ -521,7 +555,7 @@ def _style_fix(ctx: Ctx, *, phase: str, task: str, result: Mapping[str, Any], bu
         return False
     _, folded = git_in("-C", str(worktree), "diff", ctx.phase_branch(phase), "HEAD")
     build_field = result.get("build")
-    if isinstance(build_field, dict) and folded:
+    if is_dict(build_field) and folded:
         build_field["patch"] = folded + "\n"
     scoped, selection = _lane_checks(worktree, ctx.phase_branch(phase), ctx.checks)
     try:
@@ -529,14 +563,15 @@ def _style_fix(ctx: Ctx, *, phase: str, task: str, result: Mapping[str, Any], bu
     finally:
         _remove_scratch(ctx, phase, task)
     build["checks"] = results
-    build["check_scope"], scope_row = _scope_record(selection, results)
-    build["check_scope"]["reused"] = _reused_names(results)
+    scope, scope_row = _scope_record(selection, results)
+    scope["reused"] = _reused_names(results)
+    build["check_scope"] = scope
     build["check_cpu_seconds"] = _cpu_seconds_total(results)
     # Only `checks:` rows are replaced; `verify:` rows stay as run before the style edit.
     build["evidence"] = [
         *(row for row in build["evidence"] if not str(row.get("check")).startswith("checks:")),
         {"check": "style_pass", "output": f"edit applied after approval, not reviewed: {', '.join(paths)}"},
-        *checks_evidence(results),
+        *(dict(row) for row in checks_evidence(results)),
         {"check": "checks:scope", "output": f"style pass: {scope_row}"},
     ]
     build["quarantine"] = quarantine_reason(results)
@@ -545,13 +580,13 @@ def _style_fix(ctx: Ctx, *, phase: str, task: str, result: Mapping[str, Any], bu
 
 def refix_task(
     ctx: Ctx,
-    by_id: Mapping[str, Mapping[str, Any]],
+    by_id: Mapping[str, Mapping[str, object]],
     *,
     phase: str,
     task: str,
-    result: dict[str, Any],
-    build: dict[str, Any],
-) -> tuple[dict[str, Any], dict[str, Any]]:
+    result: dict[str, object],
+    build: BuildRecord,
+) -> tuple[dict[str, object], BuildRecord]:
     """Send an approved build whose checks failed back through the fix loop, while attempts remain.
 
     The loop approved this build, and a configured check then failed on it: a
@@ -566,8 +601,8 @@ def refix_task(
     lifecycle run, and each one leaves an evidence row saying what it spent.
     """
     limit = DEFAULT_FIX_ATTEMPTS if ctx.fix_attempts is None else ctx.fix_attempts
-    spent = float((result.get("fix_loop") or {}).get("attempts") or 1)
-    item = {**(by_id.get(task) or {}), "id": task}
+    spent = _as_float(as_mapping(result.get("fix_loop")).get("attempts") or 1)
+    item = {**as_mapping(by_id.get(task)), "id": task}
     routes: list[str] = []
     while build.get("quarantine") and "checks" in build:
         left = limit + 1 - spent
@@ -585,17 +620,17 @@ def refix_task(
             "phase": phase,
             "reason": f"approved, then failed its configured checks:\n{check_feedback(build['checks'])}",
         }
-        last_patch = str((result.get("build") or {}).get("patch") or "")
-        history = [*(item.get("attempts") or []), failed]
+        last_patch = str(as_mapping(result.get("build")).get("patch") or "")
+        history = [*(a for a in as_list(item.get("attempts")) if is_mapping(a)), failed]
         # The revise starts from the patch that just failed its checks, in a tree of its own, not from a reference.
         attempt = attempt_tree(ctx, phase, f"{task}--refix{len(routes) + 1}", last_patch) if last_patch.strip() else None
         carried = (
-            resume_body(item.get("body") or "", history, attempt[1])
+            resume_body(str(item.get("body") or ""), history, attempt[1])
             if attempt is not None
-            else carry_forward(item.get("body") or "", history, last_patch, limit=PATCH_FOR_VALIDATION_CHARS)
+            else carry_forward(str(item.get("body") or ""), history, last_patch, limit=PATCH_FOR_VALIDATION_CHARS)
         )
         body, permitted = permit_outside_surfaces(
-            carried, item.get("surfaces") or [], str(build.get("quarantine") or "")
+            carried, [str(s) for s in as_list(item.get("surfaces"))], str(build.get("quarantine") or "")
         )
         refix = lifecycle_invocation(ctx, {**item, "surfaces": permitted}, body=body, fix_attempts=max(int(left) - 1, 0))
         refix_run = f"{ctx.run_id}:{phase}:refix{len(routes) + 1}"
@@ -616,7 +651,7 @@ def refix_task(
         result.setdefault("phase", phase)
         result.update(body_stamp(item))
         save_task_result(ctx, result, phase=phase, task=task)
-        spent += float((result.get("fix_loop") or {}).get("attempts") or 1)
+        spent += _as_float(as_mapping(result.get("fix_loop")).get("attempts") or 1)
         routes.append("revise")
         names = ", ".join(str(c["name"]) for c in build["checks"] if not c.get("passed"))
         _release_task(ctx, phase, task)
@@ -629,7 +664,7 @@ def refix_task(
     return result, ({**build, "refix": routes} if routes else build)
 
 
-def unapproved(result: Mapping[str, Any]) -> str | None:
+def unapproved(result: Mapping[str, object]) -> str | None:
     """Why the fix loop refused this task, or None when it approved it.
 
     Read from the loop's own record, not re-derived. `lifecycle-propose` emits a
@@ -647,24 +682,23 @@ def unapproved(result: Mapping[str, Any]) -> str | None:
     reach a validator as though it were current.
     """
     if any(
-        isinstance(item, Mapping) and item.get("kind") == "draft_pr_create"
-        for item in result.get("proposals") or []
+        is_mapping(item) and item.get("kind") == "draft_pr_create"
+        for item in as_list(result.get("proposals"))
     ):
         return None
-    loop = result.get("fix_loop") or {}
+    loop = as_mapping(result.get("fix_loop"))
     stopped = str(loop.get("stopped") or "") or "the reviewers did not approve the build"
     attempts = loop.get("attempts")
     counted = f" after {attempts} build attempt{'s' if attempts != 1 else ''}" if attempts else ""
-    arbitration = result.get("arbitration")
-    arbitration = arbitration if isinstance(arbitration, Mapping) else {}
+    arbitration = as_mapping(result.get("arbitration"))
     if arbitration.get("verdict"):
         verdict = str(arbitration["verdict"])
         reasoning = str(arbitration.get("reasoning") or "").split(". ", 1)[0].split(".", 1)[0]
         detail = f", sided_with {arbitration.get('sided_with')}: {reasoning}"
     else:
-        verdict = str((result.get("review") or {}).get("verdict") or "") or "none recorded"
-        objections = (result.get("adversary") or {}).get("objections") or []
-        detail = f": {objections[0].get('claim') or ''}" if objections else ""
+        verdict = str(as_mapping(result.get("review")).get("verdict") or "") or "none recorded"
+        objections = as_list(as_mapping(result.get("adversary")).get("objections"))
+        detail = f": {as_mapping(objections[0]).get('claim') or ''}" if objections else ""
     return (
         f"the fix loop stopped: {stopped}{counted}; the last review verdict was "
         f"'{verdict}'{detail} and no build was approved"
@@ -693,14 +727,14 @@ WORK_STATES = ("files", "store")
 POSTGRES_URL_PREFIXES = ("postgresql://", "postgresql+psycopg://", "postgres://")
 
 
-def checked_work_state(value: Any) -> str:
+def checked_work_state(value: object) -> str:
     """`value` when it is one of WORK_STATES; anything else is refused, never read as the default."""
     if value not in WORK_STATES:
         raise ValueError(f"provider profile 'work_state' must be one of {', '.join(WORK_STATES)}, not {value!r}")
     return str(value)
 
 
-def work_state_of(profile: Mapping[str, Any]) -> str:
+def work_state_of(profile: Mapping[str, object]) -> str:
     """The profile's `work_state`: which side owns a task's state. An absent key means store when `storage_url` is Postgres, else files."""
     if "work_state" in profile:
         return checked_work_state(profile["work_state"])
@@ -709,7 +743,7 @@ def work_state_of(profile: Mapping[str, Any]) -> str:
     return "files"
 
 
-def body_stamp(item: Mapping[str, Any] | None) -> dict[str, str]:
+def body_stamp(item: Mapping[str, object] | None) -> dict[str, str]:
     """`{"body_sha": ...}` of the work item's own body, the ticket the build was on; {} for an item with no body.
 
     The item's text, not the prompt's: a carried-forward history is not the ticket. Under work_state store the record is

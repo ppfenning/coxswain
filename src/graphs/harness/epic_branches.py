@@ -9,9 +9,10 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import gettempdir
-from typing import Any, cast
+from typing import cast
 
 from core import landing_record, workstore
+from core.jsontypes import is_mapping
 from core.landing import TemplateError, initiative_branch_name, pr_branch_name, resolve_push_initiative
 from core.landing_record import INTEGRATE_PHASE
 from harness import bounded_proc, landing_git, landing_ops, landing_store
@@ -21,7 +22,7 @@ from harness.digest import build_digest
 from harness.epic_context import Ctx, git_in
 from harness.epic_phase_branch import branch_exists, publish_branch
 from harness.epic_records import END_WRITE_WINDOW_S, ctx_store, utc_now
-from harness.epic_types import EpicItem, PhaseRecord
+from harness.epic_types import EpicItem, PhaseRecord, as_list, as_mapping
 from harness.invoke import Invocation, invoke_graphs
 from harness.lane_pytest_tmp import lane_scratch_dir, lane_tmp_env, run_scratch_root
 from harness.lane_workers import workers_env
@@ -162,7 +163,7 @@ def _compose_with_attempt(ctx: Ctx, phase: str, tree: Path, patch: str) -> str |
 
 def invoke_from_attempt(
     ctx: Ctx, phase: str, inv: Invocation, tree: Path, attempt_sha: str, *, run_id: str
-) -> tuple[list[dict[str, Any]], list[str]]:
+) -> tuple[list[dict[str, object]], list[str]]:
     """Edge. Run one rebuild with the runner reading the attempt's tree, then make its result's patch the whole change.
 
     The record keeps both: `patch` is what is applied to the phase tip, `change` is what the rebuild did to the last
@@ -173,10 +174,10 @@ def invoke_from_attempt(
     )
     results, _, failures = invoke_graphs([inv], specs=ctx.specs, runner=view, run_id=run_id, max_parallel=1)
     for result in results:
-        build_part = result.get("build") if isinstance(result.get("build"), dict) else None
-        change = str((build_part or {}).get("patch") or "")
+        build_part = as_mapping(result.get("build"))
+        change = str(build_part.get("patch") or "")
         combined = _compose_with_attempt(ctx, phase, tree, change) if change.strip() else None
-        if build_part is not None and combined is not None:
+        if build_part and combined is not None:
             result["build"] = {**build_part, "patch": combined, "resumed_from": attempt_sha, "change": change}
     return results, failures
 
@@ -185,15 +186,15 @@ PREVIOUS_OBJECTION_HEADING = "## Previous run's objection (recorded by the harne
 PREVIOUS_OBJECTION_CHARS = 600
 
 
-def previous_objection_block(result: Mapping[str, Any] | None, cap: int = PREVIOUS_OBJECTION_CHARS) -> str:
+def previous_objection_block(result: Mapping[str, object] | None, cap: int = PREVIOUS_OBJECTION_CHARS) -> str:
     """The previous run's last adversary objection, else its last review finding, under a heading; '' with neither.
 
     `cap` bounds the text after the heading, not the heading itself.
     """
     if not isinstance(result, Mapping):
         return ""
-    objections = [o for o in (result.get("adversary") or {}).get("objections") or [] if isinstance(o, Mapping)]
-    findings = [f for f in (result.get("review") or {}).get("findings") or [] if isinstance(f, Mapping)]
+    objections = [o for o in as_list(as_mapping(result.get("adversary")).get("objections")) if is_mapping(o)]
+    findings = [f for f in as_list(as_mapping(result.get("review")).get("findings")) if is_mapping(f)]
     if objections:
         last = objections[-1]
         text = f"{last.get('claim') or ''} {last.get('why_wrong') or ''}".strip()
@@ -210,7 +211,7 @@ def previous_objection_block(result: Mapping[str, Any] | None, cap: int = PREVIO
 def permit_outside_surfaces(body: str, surfaces: Sequence[str], reason: str) -> tuple[str, list[str]]:
     """Body and surfaces with the files named by an outside-surfaces `reason` added, once each.
 
-    Original surfaces keep their order and come first. Any other reason returns both unchanged.
+    Original surfaces keep their order and come first. A reason that names none returns both unchanged.
     """
     extra = tuple(f for f in dict.fromkeys(outside_surface_files(reason)) if f not in surfaces)
     if not extra:
@@ -239,13 +240,18 @@ def _landing_stamp() -> str:
     return landing_ops.stamp(datetime.now(UTC))
 
 
-def _initiative_branch_for(ctx: Ctx, initiative: Mapping[str, Any]) -> str:
+def _recorded_branch(record: Mapping[str, object]) -> str:
+    """The landing record's branch; a record that has none raises `KeyError`."""
+    return str(record["branch"])
+
+
+def _initiative_branch_for(ctx: Ctx, initiative: Mapping[str, object]) -> str:
     """The initiative branch's name: the landing record's, else a `pr/<initiative>` an earlier release left, else the
     cartridge's template (default `init/<id>`). A template field the initiative lacks refuses the run by name."""
     conn = ctx.store.conn if ctx.store is not None else None
     record = landing_store.get_record(conn, ctx.initiative_id) if conn is not None else None
     if record is not None:
-        return str(record["branch"])
+        return _recorded_branch(record)
     legacy = pr_branch_name(ctx.initiative_id)
     if landing_git.branch_ref(ctx.repo, legacy) is not None:
         return legacy
@@ -255,7 +261,7 @@ def _initiative_branch_for(ctx: Ctx, initiative: Mapping[str, Any]) -> str:
         raise ValueError(f"{ctx.initiative_id}: {exc}") from exc
 
 
-def start_initiative(ctx: Ctx, initiative: Mapping[str, Any]) -> str:
+def start_initiative(ctx: Ctx, initiative: Mapping[str, object]) -> str:
     """Edge. Start the initiative's landing record on first use (cutting its branch from the parent) and return the
     branch name. A record that exists is kept as it is: the parent it names no longer floats."""
     name = _initiative_branch_for(ctx, initiative)
@@ -266,19 +272,20 @@ def start_initiative(ctx: Ctx, initiative: Mapping[str, Any]) -> str:
         if tip is None:
             raise RuntimeError(why)
         return name
+    epic = initiative.get("epic")
     record, why = ctx.retry.write(
         lambda: landing_ops.start_record(
             ctx_store(ctx).conn, ctx.repo, initiative=ctx.initiative_id, branch=name,
             parent=ctx.default_ref.removeprefix("origin/"), parent_ref=ctx.default_ref, now=_landing_stamp(),
-            land_at=ctx.land_at, epic=initiative.get("epic"),
+            land_at=ctx.land_at, epic=epic if isinstance(epic, str) else None,
         ),
         END_WRITE_WINDOW_S,
     )
     if record is None:
         raise RuntimeError(f"{ctx.initiative_id}: {why}")
     if resolve_push_initiative(ctx.cartridge) == "early":
-        publish_branch(ctx, str(record["branch"]))
-    return str(record["branch"])
+        publish_branch(ctx, _recorded_branch(record))
+    return _recorded_branch(record)
 
 
 def _take_parent_forward(ctx: Ctx) -> tuple[str, str, landing_git.Merge] | None:
@@ -340,7 +347,7 @@ def behind_parent(
     return f"{parent} was not merged into {branch}: {detail or status}; no phase builds on the old base"
 
 
-def _integrate_path(items: Sequence[Mapping[str, Any]], task: str) -> Path | None:
+def _integrate_path(items: Sequence[Mapping[str, object]], task: str) -> Path | None:
     """The work file for a new integrate task, beside the initiative's others (`<work>/<initiative>/<phase>/<task>.md`);
     None when no task of it has a file."""
     found = next((Path(str(i["path"])) for i in items if i.get("path")), None)
@@ -376,7 +383,7 @@ def _file_integrate(
     )
     if marked.status == "error":
         return None, f"the integrate base could not be prepared: {marked.detail}"
-    item: dict[str, Any] = {
+    item: dict[str, object] = {
         "id": ident, "phase": INTEGRATE_PHASE, "state": "ready", "needs": [], "surfaces": [],
         "title": f"Integrate with {parent}: resolve the conflicts",
         "body": landing_ops.rectify_body(parent, INTEGRATE_PHASE, paths or marked.paths, ""),
@@ -430,14 +437,14 @@ def _merge_checks(ctx: Ctx, phase: str) -> landing_git.Checks | None:
     return run
 
 
-def unmerged_approved(rows: Sequence[Mapping[str, Any]]) -> list[str]:
+def unmerged_approved(rows: Sequence[Mapping[str, object]]) -> list[str]:
     """Pure. Ids of the approved tasks among `rows` that are not merged into their phase branch, in row order: the tasks
     that keep a phase from merging into the initiative branch. A task is merged when its row says so (`merged`, which
     the store reads as a recorded `merged_commit`); a task is never judged merged from branch ancestry here."""
     return [str(r["id"]) for r in rows if r.get("state") == "approved" and not r.get("merged")]
 
 
-def merge_into_initiative(ctx: Ctx, phase: str, items: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+def merge_into_initiative(ctx: Ctx, phase: str, items: Sequence[Mapping[str, object]]) -> dict[str, object] | None:
     """Edge. Merge one built phase into the initiative branch, through the land queue's own operation.
 
     None when the phase is not built (a task is still open) or this run has no store. A conflict or a red check comes
@@ -448,7 +455,7 @@ def merge_into_initiative(ctx: Ctx, phase: str, items: Sequence[Mapping[str, Any
         return None
     with ctx.items_lock:
         rows = [
-            {"id": i["id"], "phase": i.get("phase"), "state": i.get("state"), "needs": list(i.get("needs") or []),
+            {"id": i["id"], "phase": i.get("phase"), "state": i.get("state"), "needs": as_list(i.get("needs")),
              "merged": bool(i.get("merged")), "merged_commit": i.get("merged_commit")}
             for i in items
         ]
@@ -495,7 +502,7 @@ def _fetch_initiative(ctx: Ctx, branch: str) -> str | None:
     return None
 
 
-def parent_gap(ctx: Ctx, parent: str, items: Sequence[Mapping[str, Any]]) -> tuple[str, str] | None:
+def parent_gap(ctx: Ctx, parent: str, items: Sequence[Mapping[str, object]]) -> tuple[str, str] | None:
     """Edge. Why the initiative branch in this clone does not hold parent phase `parent` yet; None when it does.
 
     (reason, the branch that is missing here or ""). The landing record says whether the phase merged, and git says
@@ -666,9 +673,9 @@ def resolve_default_ref(repo: Path, base: str | None) -> str:
         if not fetched:
             raise RuntimeError(f"git fetch origin failed in {repo}: {detail[:200]}")
     tracked_ok, tracked_out = git_in(*git, "for-each-ref", "--format=%(refname:short)", "refs/remotes/origin")
-    known = (set(local_out.split()) if local_ok else set()) | (
-        {name.removeprefix("origin/") for name in tracked_out.split()} if tracked_ok else set()
-    )
+    local_names = set(local_out.split()) if local_ok else set[str]()
+    tracked_names = {name.removeprefix("origin/") for name in tracked_out.split()} if tracked_ok else set[str]()
+    known = local_names | tracked_names
     ref = origin_ref(
         base,
         origin_out.strip() if origin_ok else None,
@@ -678,7 +685,7 @@ def resolve_default_ref(repo: Path, base: str | None) -> str:
     return ref if has_origin else ref.removeprefix("origin/")
 
 
-def level_failure_reason(phase: str, results: Sequence[Mapping[str, Any]]) -> str:
+def level_failure_reason(phase: str, results: Sequence[Mapping[str, object]]) -> str:
     """A line naming the level and its first failing level check; '' when every row passed."""
     failing = next((r for r in results if not r.get("passed")), None)
     return "" if failing is None else f"level {phase} failed level check {failing.get('name')}"
@@ -712,9 +719,13 @@ class PhaseRunner:
     A name the shared runner lacks stays absent, as the duck-typed `hasattr` checks expect.
     """
 
+    _shared: object
+    _own: dict[str, object]
+    _view: PhaseRunner | None
+
     def __init__(
         self,
-        shared: Any,
+        shared: object,
         repo_dir: Path,
         repo_digest: str | None,
         check_commands: list[str],
@@ -734,10 +745,14 @@ class PhaseRunner:
         object.__setattr__(self, "_view", view)
 
     @property
-    def __class__(self) -> type:  # so `super()` and `isinstance` inside the shared runner's methods accept this view
+    def __class__(self) -> type[object]:  # so `super()` and `isinstance` inside the shared runner's methods accept this view
         return type(self._shared)
 
-    def __getattr__(self, name: str) -> Any:
+    @__class__.setter
+    def __class__(self, value: type[object]) -> None:  # unreached: `__setattr__` takes every assignment first
+        object.__setattr__(self._shared, "__class__", value)
+
+    def __getattr__(self, name: str) -> object:
         if name in ("_shared", "_own", "_view"):
             raise AttributeError(name)
         if name == "_inner" and self._view is not None:
@@ -751,7 +766,7 @@ class PhaseRunner:
             return types.MethodType(value.__func__, self)
         return value
 
-    def __setattr__(self, name: str, value: Any) -> None:
+    def __setattr__(self, name: str, value: object) -> None:
         if name in self._own:
             self._own[name] = value
         elif self._view is not None and not name.startswith("_"):

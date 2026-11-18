@@ -23,7 +23,7 @@ def _tail(text: str) -> str:
     return text.strip()[-DETAIL_TAIL_CHARS:]
 
 
-def _record(name: str, status: str, detail: str) -> dict:
+def _record(name: str, status: str, detail: str) -> dict[str, str]:
     return {"name": name, "status": status, "detail": detail}
 
 
@@ -31,8 +31,8 @@ def drop_lane_database(
     drop_cmd: str | None,
     name: str,
     env: Mapping[str, str],
-    run: Callable = subprocess.run,
-) -> dict:
+    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> dict[str, str]:
     if not drop_cmd:
         return _record(name, "pending", "no drop command; listed for cleanup by the operator")
     try:

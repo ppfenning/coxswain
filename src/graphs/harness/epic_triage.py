@@ -5,9 +5,10 @@ from __future__ import annotations
 import difflib
 from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, cast
+from typing import Literal, NamedTuple, cast
 
 from core import workstore
+from core.jsontypes import is_mapping
 from core.landing import DEFAULT_LAND_AT
 from harness import rescue_select
 from harness.base_check import Expected, expected_merges, gaps
@@ -30,7 +31,7 @@ from harness.epic_records import (
     store_first,
     store_fresh,
 )
-from harness.epic_types import EpicItem, Quarantine
+from harness.epic_types import EpicItem, Quarantine, as_list, as_mapping
 from harness.gate import apply_arm_for
 from harness.phase_remote import Kind, fetch_branch
 from harness.stale_base import missing_paths, ticket_paths
@@ -71,7 +72,7 @@ def is_append_only(old_body: str, new_body: str) -> bool:
     return new_body.startswith(old_body) and bool(new_body[len(old_body):].strip())
 
 
-def _read_ticket(item: Mapping[str, Any]) -> tuple[bytes, dict[str, Any]] | None:
+def _read_ticket(item: Mapping[str, object]) -> tuple[bytes, dict[str, object]] | None:
     """The item's work file as raw bytes and parsed item; None when it has no file or the file cannot be read."""
     if not item.get("path"):
         return None
@@ -81,7 +82,7 @@ def _read_ticket(item: Mapping[str, Any]) -> tuple[bytes, dict[str, Any]] | None
         return None
 
 
-def _kept_append_only(before: Mapping[str, Any], after: Mapping[str, Any]) -> bool:
+def _kept_append_only(before: Mapping[str, object], after: Mapping[str, object]) -> bool:
     """True when `after` is `before` with text appended to the body and every other field unchanged."""
     old, new = str(before.get("body") or ""), str(after.get("body") or "")
     return (
@@ -93,7 +94,7 @@ def _kept_append_only(before: Mapping[str, Any], after: Mapping[str, Any]) -> bo
 
 def apply_amend_directly(
     ctx: Ctx,
-    proposal: dict[str, Any],
+    proposal: Mapping[str, object],
     item: EpicItem,
     *,
     old_body: str,
@@ -109,7 +110,7 @@ def apply_amend_directly(
     the ramp is not eligible, the check is false, the cartridge names no model arm, or there is no readable ticket file.
     """
     before = _read_ticket(item)
-    arm = apply_arm_for("ticket_amend", cast(dict[str, Any], ctx.cartridge))
+    arm = apply_arm_for("ticket_amend", ctx.cartridge)
     if (
         proposal.get("ramp") != "eligible"
         or not is_append_only(old_body, new_body)
@@ -147,7 +148,7 @@ _HOLD_REASON_MAX = 600
 _CLOSED_FOR_COMBINE = frozenset({"done", "dropped", "approved"})
 
 
-def read_queue_rows(ctx: Ctx) -> dict[str, dict[str, Any]] | None:
+def read_queue_rows(ctx: Ctx) -> dict[str, dict[str, object]] | None:
     """Task id to the initiative's store queue row, `extra` included; {} with no store, None when the read fails.
 
     None is not "nothing flagged": the caller cannot tell which task the chair asked triage for."""
@@ -162,12 +163,12 @@ def read_queue_rows(ctx: Ctx) -> dict[str, dict[str, Any]] | None:
         return None
 
 
-def row_extra(row: Mapping[str, Any] | None) -> dict[str, Any]:
+def row_extra(row: Mapping[str, object] | None) -> dict[str, object]:
     extra = (row or {}).get("extra")
-    return dict(extra) if isinstance(extra, Mapping) else {}
+    return dict(as_mapping(extra))
 
 
-def _update_row(ctx: Ctx, task: str, change: Callable[[dict[str, Any]], dict[str, Any]]) -> str | None:
+def _update_row(ctx: Ctx, task: str, change: Callable[[dict[str, object]], dict[str, object]]) -> str | None:
     """Write `change(row)` onto one task's queue row as the store holds it now; None when written, else why not.
 
     A stale leader, a missing row, a `change` that raises or a store error writes nothing."""
@@ -190,12 +191,12 @@ def _update_row(ctx: Ctx, task: str, change: Callable[[dict[str, Any]], dict[str
     return None
 
 
-def record_triage(ctx: Ctx, task: str, entry: Mapping[str, Any]) -> None:
+def record_triage(ctx: Ctx, task: str, entry: Mapping[str, object]) -> None:
     """The chair's flag comes off the row and the verdict is kept, so a request is answered once and a repeat is seen."""
 
-    def change(row: dict[str, Any]) -> dict[str, Any]:
+    def change(row: dict[str, object]) -> dict[str, object]:
         extra = {k: v for k, v in row_extra(row).items() if k != workstore.TRIAGE_FLAG}
-        records = [r for r in extra.get(workstore.TRIAGE_RECORDS) or [] if isinstance(r, Mapping)]
+        records = [r for r in as_list(extra.get(workstore.TRIAGE_RECORDS)) if is_mapping(r)]
         return {"extra": {**extra, workstore.TRIAGE_RECORDS: [*records, dict(entry)]}}
 
     if ctx.store is not None and (why := _update_row(ctx, task, change)) is not None:
@@ -205,7 +206,7 @@ def record_triage(ctx: Ctx, task: str, entry: Mapping[str, Any]) -> None:
 def drop_stale_triage_flag(ctx: Ctx, task: str) -> None:
     """The chair's flag comes off a row whose request predates the task's fresh start; nothing else on the row changes."""
 
-    def change(row: dict[str, Any]) -> dict[str, Any]:
+    def change(row: dict[str, object]) -> dict[str, object]:
         return {"extra": {k: v for k, v in row_extra(row).items() if k != workstore.TRIAGE_FLAG}}
 
     if ctx.store is not None and (why := _update_row(ctx, task, change)) is not None:
@@ -274,9 +275,9 @@ def _rewrite_file_needs(path: Path, needs: Sequence[str]) -> None:
     path.write_text("\n".join(["---", *front, *lines[end:]]), encoding="utf-8")
 
 
-def _closes_cycle(items: Sequence[Mapping[str, Any]]) -> bool:
+def _closes_cycle(items: Sequence[Mapping[str, object]]) -> bool:
     """Whether the needs among `items` (a need outside them ignored) contain a cycle."""
-    needs = {str(i["id"]): [str(n) for n in i.get("needs") or []] for i in items}
+    needs = {str(i["id"]): [str(n) for n in as_list(i.get("needs"))] for i in items}
     state: dict[str, int] = {}  # 1 on the path, 2 finished
 
     def visit(node: str) -> bool:
@@ -290,7 +291,7 @@ def _closes_cycle(items: Sequence[Mapping[str, Any]]) -> bool:
     return any(state.get(node) is None and visit(node) for node in needs)
 
 
-def combined_needs(items: Sequence[Mapping[str, Any]], source: str, into: str) -> dict[str, list[str]] | None:
+def combined_needs(items: Sequence[Mapping[str, object]], source: str, into: str) -> dict[str, list[str]] | None:
     """Pure. The needs a combine of `source` into `into` writes: each task that needs `source` needs `into` instead,
     and `into` takes on `source`'s own needs, so the folded scope still waits for what it waited for. In order,
     deduplicated, never naming the task itself or `source`. None when the move would close a cycle among the tasks
@@ -298,30 +299,30 @@ def combined_needs(items: Sequence[Mapping[str, Any]], source: str, into: str) -
     changed: dict[str, list[str]] = {}
     for item in items:
         task = str(item["id"])
-        needs = [str(n) for n in item.get("needs") or []]
+        needs = [str(n) for n in as_list(item.get("needs"))]
         if task == source or source not in needs:
             continue
         moved = dict.fromkeys(into if n == source else n for n in needs)
         changed[task] = [n for n in moved if n != task]
     by_id = {str(i["id"]): i for i in items}
-    inherited = [str(n) for n in (by_id.get(source) or {}).get("needs") or []]
-    own = changed.get(into, [str(n) for n in (by_id.get(into) or {}).get("needs") or []])
+    inherited = [str(n) for n in as_list((by_id.get(source) or {}).get("needs"))]
+    own = changed.get(into, [str(n) for n in as_list((by_id.get(into) or {}).get("needs"))])
     grown = [n for n in dict.fromkeys([*own, *inherited]) if n not in (into, source)]
     if grown != own or into in changed:
         changed[into] = grown
-    projected = [{**i, "needs": changed.get(str(i["id"]), list(i.get("needs") or []))} for i in items if str(i["id"]) != source]
+    projected = [{**i, "needs": changed.get(str(i["id"]), list(as_list(i.get("needs"))))} for i in items if str(i["id"]) != source]
     return None if _closes_cycle(projected) else changed
 
 
-def dropped_needs(items: Sequence[Mapping[str, Any]], source: str) -> dict[str, list[str]]:
+def dropped_needs(items: Sequence[Mapping[str, object]], source: str) -> dict[str, list[str]]:
     """Pure. Each task that needs `source`, to its needs without it, in order. The work store refuses a task that is
     not done and needs a dropped one (`validate_dag`); a done or dropped task's needs are no longer read, so it is left
     as it is."""
     return {
-        str(item["id"]): [str(n) for n in item.get("needs") or [] if str(n) != source]
+        str(item["id"]): [str(n) for n in as_list(item.get("needs")) if str(n) != source]
         for item in items
         if str(item["id"]) != source and item.get("state") not in ("done", "dropped")
-        and source in [str(n) for n in item.get("needs") or []]
+        and source in [str(n) for n in as_list(item.get("needs"))]
     }
 
 
@@ -350,7 +351,7 @@ def _move_needs(ctx: Ctx, by_id: Mapping[str, EpicItem], moves: Mapping[str, Seq
     refused, the ones already written are put back and `({}, why)` comes back."""
     before: dict[str, list[str]] = {}
     for task, needs in moves.items():
-        old = [str(n) for n in by_id[task].get("needs") or []]
+        old = [str(n) for n in as_list(by_id[task].get("needs"))]
         why = _write_needs(ctx, by_id[task], needs)
         if why is not None:
             _restore_needs(ctx, by_id, before)
@@ -384,7 +385,7 @@ def drop_task(ctx: Ctx, items: list[EpicItem], item: EpicItem) -> str | None:
     return None
 
 
-def _folded_section(item: Mapping[str, Any]) -> str:
+def _folded_section(item: Mapping[str, object]) -> str:
     """This task's scope as the sibling's body carries it: a heading naming the task, then its own body."""
     task = str(item["id"])
     return f"## Folded in from {task}: {item.get('title') or task}\n\n{str(item.get('body') or '').strip()}".strip()
@@ -455,7 +456,7 @@ def amend_in_store(
     The ticket file, a cache of the row, gets the same body; a file it cannot write is logged, not a failure."""
     task = str(item["id"])
 
-    def change(row: dict[str, Any]) -> dict[str, Any]:
+    def change(row: dict[str, object]) -> dict[str, object]:
         if str(row.get("body") or "").strip() != old_body.strip():
             raise ValueError("the stored body is not the one triage read")
         return {"body": new_body}
@@ -471,14 +472,14 @@ def amend_in_store(
     return {**item, "body": new_body}, None
 
 
-def triage_initiative_context(initiative: Mapping[str, Any], items: Sequence[Mapping[str, Any]], task: str) -> dict[str, Any]:
+def triage_initiative_context(initiative: Mapping[str, object], items: Sequence[Mapping[str, object]], task: str) -> dict[str, object]:
     """What triage reads beside the task: the initiative's goal, its phases with any goal recorded, and every sibling."""
     goal = "\n\n".join(x for x in (str(initiative.get("title") or ""), str(initiative.get("body") or "").strip()) if x)
     recorded = {
-        str(p.get("id")): str(p.get("goal") or "") for p in initiative.get("phases") or [] if isinstance(p, Mapping)
+        str(p.get("id")): str(p.get("goal") or "") for p in as_list(initiative.get("phases")) if is_mapping(p)
     }
     names = list(dict.fromkeys([
-        *(str(p.get("id")) if isinstance(p, Mapping) else str(p) for p in initiative.get("phases") or []),
+        *(str(p.get("id")) if is_mapping(p) else str(p) for p in as_list(initiative.get("phases"))),
         *(str(i.get("phase")) for i in items),
     ]))
     return {
@@ -486,14 +487,14 @@ def triage_initiative_context(initiative: Mapping[str, Any], items: Sequence[Map
         "phases": [{"id": p, "goal": recorded.get(p, "")} for p in names],
         "siblings": [
             {"id": str(i["id"]), "phase": str(i.get("phase") or ""), "state": str(i.get("state") or ""),
-             "title": str(i.get("title") or ""), "needs": [str(n) for n in i.get("needs") or []]}
+             "title": str(i.get("title") or ""), "needs": [str(n) for n in as_list(i.get("needs"))]}
             for i in items
             if str(i["id"]) != task
         ],
     }
 
 
-def newest_attempt_text(attempts: Sequence[Mapping[str, Any]]) -> str:
+def newest_attempt_text(attempts: Sequence[Mapping[str, object]]) -> str:
     """One line naming the newest attempt by `ts` (ties keep list order); the reason is cut to 120 characters."""
     newest = sorted(attempts, key=lambda a: str(a.get("ts") or ""))[-1:]
     if not newest:
@@ -503,13 +504,13 @@ def newest_attempt_text(attempts: Sequence[Mapping[str, Any]]) -> str:
     return f"newest attempt: kind {a.get('kind') or 'unrecorded'}, cause {a.get('cause') or 'unrecorded'}, reason {reason}"
 
 
-def build_attempts(attempts: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+def build_attempts(attempts: Sequence[Mapping[str, object]]) -> list[Mapping[str, object]]:
     """The attempts that count toward the cap: `infra`, `rescue_failed` and `interrupted` are not builds."""
     not_a_build = {"infra", rescue_select.RESCUE_KIND, INTERRUPTED_KIND}
     return [a for a in attempts if a.get("kind") not in not_a_build]
 
 
-def attempt_cap_reason(attempts: Sequence[Mapping[str, Any]]) -> str:
+def attempt_cap_reason(attempts: Sequence[Mapping[str, object]]) -> str:
     """The refusal's reason, naming every earlier run so a person has the history."""
     history = "; ".join(f"{a.get('run')}: {a.get('reason')}" for a in attempts)
     return (
@@ -647,12 +648,12 @@ def quarantine_missing_merges(
     )
 
 
-def stale_base_missing(ctx: Ctx, phase: str, item: Mapping[str, Any]) -> tuple[str, ...]:
+def stale_base_missing(ctx: Ctx, phase: str, item: Mapping[str, object]) -> tuple[str, ...]:
     """Ticket files absent from the level worktree's head; empty when its tracked paths cannot be read."""
     ok, listing = git_in("-C", str(ctx.phase_worktree(phase)), "ls-tree", "-r", "--name-only", "HEAD")
     if not ok:
         return ()
-    named = ticket_paths([str(s) for s in item.get("surfaces") or []], str(item.get("body") or ""))
+    named = ticket_paths([str(s) for s in as_list(item.get("surfaces"))], str(item.get("body") or ""))
     return missing_paths(named, listing.splitlines())
 
 
@@ -665,7 +666,7 @@ def invoke_failure_kind(failure: str) -> Literal["infra", "no_work"]:
 def buildable(
     items: list[EpicItem],
     phase: str,
-    foreign: Mapping[str, Any],
+    foreign: Mapping[str, str],
     only: frozenset[str] | None = None,
     land_at: str = DEFAULT_LAND_AT,
 ) -> list[EpicItem]:
@@ -678,7 +679,7 @@ def buildable(
     return [item for item in ready if item.get("state") != "dropped" and (only is None or str(item["id"]) in only)]
 
 
-def earlier_merged(items: Sequence[Mapping[str, Any]], phase: str, in_run: Collection[str]) -> list[Mapping[str, Any]]:
+def earlier_merged(items: Sequence[Mapping[str, object]], phase: str, in_run: Collection[str]) -> list[Mapping[str, object]]:
     """The phase's approved items outside this run, in item order, with or without a stored handoff."""
     return [
         item
@@ -687,7 +688,7 @@ def earlier_merged(items: Sequence[Mapping[str, Any]], phase: str, in_run: Colle
     ]
 
 
-def close_runner(runner: Any) -> Exception | None:
+def close_runner(runner: object) -> Exception | None:
     """Close the shared runner's threads once, after every phase. The failure is returned, for the caller to raise last."""
     close = getattr(runner, "close", None)
     if not callable(close):
@@ -700,7 +701,7 @@ def close_runner(runner: Any) -> Exception | None:
 
 
 def base_expected(
-    ctx: Ctx, phase: str, parents: Sequence[str], items: Sequence[EpicItem], runnable: Sequence[Mapping[str, Any]]
+    ctx: Ctx, phase: str, parents: Sequence[str], items: Sequence[EpicItem], runnable: Sequence[Mapping[str, object]]
 ) -> tuple[Expected, ...]:
     """Approved, merged tasks the phase base must hold. A task done in the store is landed and is never checked."""
     rows = read_store_rows(ctx)
