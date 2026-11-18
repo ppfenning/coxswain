@@ -30,6 +30,7 @@ from harness.epic_records import (
     store_first,
     store_fresh,
 )
+from harness.epic_types import Quarantine
 from harness.gate import apply_arm_for
 from harness.phase_remote import Kind, fetch_branch
 from harness.stale_base import missing_paths, ticket_paths
@@ -98,7 +99,7 @@ def apply_amend_directly(
     old_body: str,
     new_body: str,
     phase: str,
-    quarantined: list[dict[str, Any]],
+    quarantined: list[Quarantine],
     by_id: Mapping[str, dict[str, Any]],
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Apply an append-only `ticket_amend` outside the gate, then judge the file the arm wrote, not the body predicted.
@@ -613,7 +614,7 @@ def _merge_missing(ctx: Ctx, phase: str, item: dict[str, Any]) -> str | _MergeUn
 
 
 def quarantine_missing_merges(
-    ctx: Ctx, phase: str, items: Sequence[dict[str, Any]], quarantined: list[dict[str, Any]]
+    ctx: Ctx, phase: str, items: Sequence[dict[str, Any]], quarantined: list[Quarantine]
 ) -> str | None:
     """Quarantine each merged task whose commit is gone, one by one. No other item, row or file is touched.
 

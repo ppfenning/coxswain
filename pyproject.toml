@@ -218,6 +218,7 @@ strict = [
     # H2: the epic driver's parts go strict one by one as each is typed (harness/epic*.py).
     "src/graphs/harness/epic.py",
     "src/graphs/harness/epic_context.py",
+    "src/graphs/harness/epic_phase_branch.py",
     "src/graphs/harness/epic_types.py",
     "src/graphs/harness/store*.py",
     "src/tools/agent_tools/chair_types.py",

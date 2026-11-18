@@ -48,7 +48,7 @@ from harness.epic_branches import (
 from harness.epic_context import Ctx, git_in
 from harness.epic_phase_branch import trace_evidence
 from harness.epic_records import epic_log, save_task_result, wait_if_paused_here
-from harness.epic_types import as_list
+from harness.epic_types import PhaseRecord, as_list
 from harness.escalate import touched_paths
 from harness.integration_scope import scope_integration
 from harness.invoke import Invocation, invoke_graphs
@@ -157,7 +157,7 @@ def _scope_record(selection: Mapping[str, Any], results: Sequence[Mapping[str, A
     return {**selection, "tests_run": tests_run, **figures}, row
 
 
-def run_level_checks(ctx: Ctx, phase: str, record: dict[str, Any]) -> None:
+def run_level_checks(ctx: Ctx, phase: str, record: PhaseRecord) -> None:
     """Run the level checks once in the level's worktree, under the repo gate lock, and fold the result into `record`.
 
     No level checks configured: nothing runs and `record` gains no key. A failure marks the level, never a task.
@@ -181,7 +181,7 @@ def _level_integration_reason(phase: str, creation: Mapping[str, Any], results: 
     return "" if failing is None else f"level {phase} failed integration check {failing.get('name')}"
 
 
-def run_level_integration(ctx: Ctx, phase: str, base: str, record: dict[str, Any]) -> None:
+def run_level_integration(ctx: Ctx, phase: str, base: str, record: PhaseRecord) -> None:
     """Run the touched-package integration checks once on the level's own database, after the level checks.
 
     `base` is the ref the level was cut from. Nothing runs, and `record` gains no key, without both

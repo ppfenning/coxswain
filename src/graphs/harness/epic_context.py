@@ -22,6 +22,7 @@ from graphs._spec import GraphSpec
 from harness import pool_edge
 from harness.check_gate import gate_checks
 from harness.checks import check_timeout
+from harness.epic_types import PhaseRecord
 from harness.store_dialect import Connection, connect
 from harness.store_retry import retry_store_write
 from harness.store_write import Store
@@ -166,7 +167,7 @@ class Ctx:
     items_lock: threading.Lock = field(default_factory=threading.Lock, compare=False, repr=False)
     # Run-level and mutable: the future of each phase this run launched, so a dependent that starts early can wait for the cut.
     # The scheduler thread sets one key per launch and workers only `get`, each atomic, and a parent is set before any dependent starts.
-    launched: dict[str, Future[Any]] = field(default_factory=dict[str, Future[Any]], compare=False, repr=False)
+    launched: dict[str, Future[PhaseRecord]] = field(default_factory=dict[str, Future[PhaseRecord]], compare=False, repr=False)
     # Run-level and mutable: the repositories whose phase branch fetch failed while checking merged commits, faulted once.
     merge_fetch_faults: set[str] = field(default_factory=set[str], compare=False, repr=False)
 
