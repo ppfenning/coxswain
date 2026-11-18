@@ -116,17 +116,28 @@ def _clean_env(home: Path, bins: list[str]) -> dict[str, str]:
 
 @pytest.fixture(scope="session")
 def install(tmp_path_factory: pytest.TempPathFactory) -> Install:
+    return _install(tmp_path_factory, "install", "postgres,traces")
+
+
+@pytest.fixture(scope="session")
+def lake_install(tmp_path_factory: pytest.TempPathFactory) -> Install:
+    """A second install of this tree, with the `lake` extra too (pyiceberg, duckdb, pyarrow): built only for the
+    tests that use it, so every other test keeps running without the lake's packages, as `install` does."""
+    return _install(tmp_path_factory, "lake-install", "postgres,traces,lake")
+
+
+def _install(tmp_path_factory: pytest.TempPathFactory, name: str, extras: str) -> Install:
     uv = shutil.which("uv")
     if uv is None:
         _unavailable(plan.unavailable("no uv on PATH to install cox from this tree", required=_required()))
-    root = tmp_path_factory.mktemp("install")
+    root = tmp_path_factory.mktemp(name)
     venv = root / ".venv"
     version = f"{sys.version_info.major}.{sys.version_info.minor}"
     _must([uv, "venv", "--quiet", "--python", version, str(venv)])
     python = venv / "bin" / "python"
     # --reinstall-package: uv caches a local build by its pyproject's mtime, so without it an edited .py file would
     # install the previous build. The drift check below proves the install is this tree either way.
-    _must([uv, "pip", "install", "--quiet", "--python", str(python), "--reinstall-package", "coxswain", f"{ROOT}[postgres,traces]"])
+    _must([uv, "pip", "install", "--quiet", "--python", str(python), "--reinstall-package", "coxswain", f"{ROOT}[{extras}]"])
     env = _clean_env(root / "home", [str(venv / "bin")])
     site = Path(_must([str(python), "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"], env=env).stdout.strip())
     drift = _install_drift(site)
@@ -332,6 +343,14 @@ class Launchable:
         path.write_text(json.dumps(responses), encoding="utf-8")
         return path
 
+    def lifecycle(self, repo: Path, run_id: str) -> subprocess.CompletedProcess[str]:
+        """One scripted lifecycle run that builds and checks `plan.SMOKE_NOTE` in `repo`, recorded in the store."""
+        responses = plan.scripted_epic_responses(plan.new_file_patch(plan.SMOKE_NOTE, "ok"), [plan.SMOKE_NOTE])
+        argv = [str(self.sandbox.install.python), str(self.sandbox.install.root / "shell.py"), "lifecycle",
+                *self.harness_flags(), "--run-id", run_id, "--ticket", f"Add {plan.SMOKE_NOTE}", "--repo", str(repo),
+                "--scripted", str(self.scripted(responses))]
+        return self.run(argv, cwd=self.sandbox.workspace, repo=repo, run_id=run_id)
+
     @property
     def lane_env_file(self) -> Path:
         """Where the `lane-env` check writes the trace dir and PATH the harness was given (`plan.smoke_checks`)."""
@@ -373,6 +392,14 @@ def launchable(sandbox: Sandbox, repo: Repo, tmp_path: Path) -> Launchable:
         encoding="utf-8",
     )
     return Launchable(sandbox=sandbox, cartridges=cartridges, skills=skills, worktrees=worktrees)
+
+
+@pytest.fixture
+def lake_sandbox(sandbox: Sandbox, lake_install: Install) -> Sandbox:
+    """The same sandbox (home, workspace, store), with `cox` from the install that has the `lake` extra."""
+    path = sandbox.env["PATH"].split(os.pathsep)
+    lake_path = [str(lake_install.bin) if entry == str(sandbox.install.bin) else entry for entry in path]
+    return replace(sandbox, install=lake_install, env={**sandbox.env, "PATH": os.pathsep.join(lake_path)})
 
 
 # --- the sandbox forge ---------------------------------------------------------------------------------------------
