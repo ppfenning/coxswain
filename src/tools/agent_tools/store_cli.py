@@ -115,9 +115,17 @@ def land_lease_name(task: str) -> str:
     return f"land:{task}"
 
 
+def answer(code: int, stdout: str, stderr: str) -> str:
+    """Pure. What a store CLI call answered: its stdout on success, else its stderr, which says why. A refusal's
+    stdout is a bare payload such as `{}`, so preferring it printed "store_cli exit 3: {}" with the reason dropped.
+    Either stream stands in when the other is empty."""
+    first, second = (stdout, stderr) if code == 0 else (stderr, stdout)
+    return first or second
+
+
 def runner(runs_dir: Path) -> Callable[[list[str]], tuple[int, str]]:
     """Edge. A function that runs `harness.store_cli <args>` in process against the store for `runs_dir`, returning
-    its exit code and its stdout (its stderr when stdout is empty), as the child process used to."""
+    its exit code and what it answered: `answer` picks stdout or stderr."""
     from harness import store_cli as harness_store_cli
 
     url = _url(runs_dir)
@@ -125,7 +133,7 @@ def runner(runs_dir: Path) -> Callable[[list[str]], tuple[int, str]]:
     def run(args: list[str]) -> tuple[int, str]:
         out, err = io.StringIO(), io.StringIO()
         code = harness_store_cli.main([*args, "--store-url", url], out, err)
-        return code, out.getvalue() or err.getvalue()
+        return code, answer(code, out.getvalue(), err.getvalue())
 
     return run
 
