@@ -409,6 +409,15 @@ case "$2" in
   *) exit 1 ;;
 esac
 """
+# The two proof jobs first, then more than a pipe buffer (64 KiB) of other jobs: a lookup that pipes the list into a
+# reader which exits on its match leaves the writer blocked on a full pipe, and so always SIGPIPEs it.
+GH_MANY_JOBS = """#!/bin/bash
+case "$2" in
+  */jobs) printf '%s\\t%s\\n' 11 "proof / proof-macos" 12 "proof / proof-linux"
+          for i in $(seq 100 6000); do printf '%s\\t%s\\n' "$i" "build / job-$i"; done ;;
+  *) exit 1 ;;
+esac
+"""
 CURL = """#!/bin/bash
 case "${@: -1}" in
   https://api.test/repos/o/r/actions/jobs/11/logs) cat "$STUB_DIR/macos.log" ;;
@@ -419,10 +428,10 @@ esac
 VERSION_MISS = "2026-10-12T17:00:00.0Z version: expected '999.0.0', first output line was 'cox 0.38.0'\n"
 
 
-def _failed_steps(tmp_path: Path, macos_log: str, linux_log: str) -> dict:
+def _failed_steps(tmp_path: Path, macos_log: str, linux_log: str, gh: str = GH) -> dict:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    for name, body in (("gh", GH), ("curl", CURL)):
+    for name, body in (("gh", gh), ("curl", CURL)):
         (bin_dir / name).write_text(body)
         (bin_dir / name).chmod(0o755)
     (tmp_path / "macos.log").write_text(macos_log)
@@ -440,6 +449,12 @@ def _failed_steps(tmp_path: Path, macos_log: str, linux_log: str) -> dict:
 
 def test_a_version_miss_on_a_real_release_names_check_version(tmp_path):
     steps = _failed_steps(tmp_path, VERSION_MISS, VERSION_MISS)
+    assert steps == {"macos_failed_step": CHECK_VERSION, "linux_failed_step": CHECK_VERSION}
+
+
+def test_a_long_job_list_names_each_platform_without_a_sigpipe(tmp_path):
+    """The job lookup reads the list from a here-string: no writer is left to SIGPIPE once awk exits on its match."""
+    steps = _failed_steps(tmp_path, VERSION_MISS, VERSION_MISS, gh=GH_MANY_JOBS)
     assert steps == {"macos_failed_step": CHECK_VERSION, "linux_failed_step": CHECK_VERSION}
 
 
