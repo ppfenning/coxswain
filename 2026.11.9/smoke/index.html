@@ -940,6 +940,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#operator-commands-and-the-feed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operator commands and the feed
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#contract-tests" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6630,6 +6641,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#operator-commands-and-the-feed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operator commands and the feed
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#contract-tests" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6738,7 +6760,7 @@ run of both together took 3 min 13 s while other work loaded the machine.</p>
 sandbox environment, the profile text, whether the install is this tree) is a pure function in <code>smoke/plan.py</code>, tested
 without mocks in <code>tests/test_smoke_plan.py</code>.</p>
 <ul>
-<li><strong><code>install</code></strong> (once per session): <code>cox</code> installed from this checkout into a venv of its own with <code>uv pip install</code>.
+<li><strong><code>install</code></strong> (once per session): <code>cox</code> installed from this checkout, with <code>[postgres,traces,lake]</code>, into a venv of its own with <code>uv pip install</code>.
   The install is not editable. Before any test runs, the fixture compares every installed module, and every file
   <code>[tool.setuptools.package-data]</code> lists, with the tree. A stale build or another checkout therefore cannot stand in
   for this one (#1184, #1185). The venv sits at <code>&lt;install&gt;/.venv</code>. A profile whose <code>harness_dir</code> is <code>&lt;install&gt;</code>
@@ -6796,6 +6818,7 @@ without mocks in <code>tests/test_smoke_plan.py</code>.</p>
   <code>launchable.scripted(answers)</code> writes the answers the scripted runner replays, for a launch and for <code>--scripted</code> alike, and <code>launchable.run(argv, cwd)</code> runs a harness argv.</p>
 </li>
 </ul>
+<p><code>launchable.lifecycle(repo, run_id)</code> makes one scripted lifecycle run, for the tests that read what a run left.</p>
 <h2 id="harness-tests">Harness tests</h2>
 <p>Every node of a graph is a model call. The release rehearsal and the forge tests avoid models by never running a
 graph. These tests run graphs, offline. The provider profile names the harness's own scripted runner
@@ -6838,6 +6861,61 @@ records <code>runner: scripted</code>, so a run whose approvals were canned answ
 </tr>
 </tbody>
 </table>
+<h2 id="operator-commands-and-the-feed">Operator commands and the feed</h2>
+<table>
+<thead>
+<tr>
+<th>Test</th>
+<th>Entry point</th>
+<th>What it proves</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>test_operator_commands.py</code> (stats)</td>
+<td><code>cox stats ingest</code>, <code>cox stats series</code></td>
+<td>A scripted harness run's records load into <code>stats.db</code>, and <code>series</code> reports the run. A second ingest adds no row.</td>
+</tr>
+<tr>
+<td><code>test_operator_commands.py</code> (usage)</td>
+<td><code>cox usage assess</code></td>
+<td>With a <code>spend:</code> weekly ceiling of $10, the verdict is <code>go</code> with no spend. After one $12.50 node call is written through the store's own writer, it is <code>stop</code>, exit 4, at 125% of the ceiling.</td>
+</tr>
+<tr>
+<td><code>test_operator_commands.py</code> (courier)</td>
+<td><code>cox courier send</code>, <code>inbox</code>, <code>ack</code></td>
+<td>A reference that does not resolve is refused. A sent <code>coxswain://task/t1</code> is listed for its label only, lives in the store's bus and not in <code>courier.jsonl</code>, and is gone from the inbox once acked. An unknown id is refused.</td>
+</tr>
+<tr>
+<td><code>test_lake.py</code></td>
+<td><code>cox lake sync</code>, <code>query</code>, <code>doctor</code></td>
+<td>The run in the store syncs into the Iceberg lake, <code>cox lake query</code> reads it back, and <code>cox lake doctor</code> reports the runs table's snapshot.</td>
+</tr>
+<tr>
+<td><code>test_dash_feed.py</code></td>
+<td><code>cox dash --once</code>, <code>cox dash --feed</code></td>
+<td>The snapshot towpath reads is schema 1, with the run, the history, the queued initiative and its ready task, and the board. A second <code>--feed</code> prints what the first one publishes, computes nothing of its own while the first holds the lock, and takes over once the first exits. <code>--feed --once</code> is refused.</td>
+</tr>
+<tr>
+<td><code>test_contract_host_cli.py</code></td>
+<td><code>cox host add</code>, <code>capacity</code>, <code>drain</code>, <code>activate</code>, <code>remove</code>, <code>login</code></td>
+<td>Each write reaches <code>harness.store_cli host</code>, and the row read back through the store's own <code>host list</code> matches. A login is merged into the host's versions and leaves its beat alone. A refusal prints the store's reason.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Bugs found while building these tests, each fixed in its own commit.</strong> None showed in the unit tests, which replace
+the store CLI with doubles or install every extra at once.</p>
+<ul>
+<li><code>cox host remove</code> sent <code>host delete</code>, which the store CLI did not have, so every remove failed with "invalid
+  choice". The store CLI now has <code>host delete</code>, which deletes only a draining host and takes no <code>--by</code>, since the
+  hosts table keeps no record of a removed row.</li>
+<li><code>cox host login</code> sent <code>--login-ok</code>, <code>--reason</code>, <code>--failures</code> and <code>--by</code>. The store CLI's <code>host login</code> takes one
+  <code>--login-json</code>, so every login exited 2. Its unit test's <code>FakeStore</code> accepted the wrong argv.</li>
+<li>A store refusal reached the operator as <code>store_cli exit 3: {}</code>. <code>agent_tools.store_cli.runner</code> returned the
+  refusal's bare stdout payload instead of the reason on stderr.</li>
+<li>The <code>lake</code> extra did not install pyarrow, so <code>cox lake sync</code> failed on the install that <code>cox lake</code> itself tells a
+  person to make.</li>
+</ul>
 <h2 id="contract-tests">Contract tests</h2>
 <p>Each contract test fails if its boundary drifts. The first three contract files were checked by putting a drift back
 into a scratch copy of the tree and confirming that they fail.</p>
