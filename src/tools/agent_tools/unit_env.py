@@ -7,6 +7,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from xml.sax.saxutils import unescape
 
+from agent_tools import forge_forgejo
 from agent_tools.claude_token import TOKEN_ENV
 
 # Only variables some module already reads, imported from the module that defines each name.
@@ -211,7 +212,8 @@ _DQ_ESCAPABLE = frozenset('"\\$`')  # what a backslash escapes inside double quo
 _SH_TERMINATORS = frozenset(";&|<>()")
 _SH_BLANK = frozenset(" \t")
 SH_EXPANDS = "launchd's sh would expand its $ or backtick; put the value in single quotes or drop them"
-SH_SYNTAX = "launchd's sh would read its ; & | < > ( ) or ~ as syntax; put the value in single quotes"
+SH_SYNTAX = ("launchd's sh would read its ; & | < > ( ) as syntax, or expand a ~ that starts the value or follows "
+             "a :; put the value in single quotes")
 SH_COMMAND = ("the text after a space on its line is a command, which sh runs with this value set for that command "
               "only; the line does not change the variable, which keeps any earlier value")
 SH_LEADING = ("it starts with whitespace, so sh runs what follows as a command with the variable set empty for that "
@@ -227,7 +229,7 @@ class _ShWord:
     name: str | None  # set when the word is an assignment: a plain identifier, then an unquoted `=`
     value: str  # the text after the `=` (the whole word when not an assignment), quotes and escapes removed
     expands: bool  # a `$` or backtick outside single quotes
-    tilde: bool  # an unquoted `~`
+    tilde: bool  # an unquoted `~` sh expands: at the value's start or after an unquoted `:` (`x~y` is literal)
     open: bool = False  # a quote in it never closes
 
 
@@ -236,7 +238,7 @@ def _sh_word(text: str, i: int) -> tuple[_ShWord, int]:
     outside single quotes joins the lines, as sh does; a single-quoted word may span lines."""
     out: list[str] = []
     name: str | None = None
-    plain, expands, tilde, start = True, False, False, 0
+    plain, expands, tilde, start, colon_last = True, False, False, 0, False
     n = len(text)
     while i < n:
         char = text[i]
@@ -245,15 +247,15 @@ def _sh_word(text: str, i: int) -> tuple[_ShWord, int]:
                 i += 2
                 continue
             out.append(text[i + 1:i + 2])
-            plain, i = False, i + 2
+            plain, colon_last, i = False, False, i + 2
         elif char == "'":
             end = text.find("'", i + 1)
             if end < 0:
                 return _ShWord(name, "", expands, tilde, open=True), n
             out.append(text[i + 1:end])
-            plain, i = False, end + 1
+            plain, colon_last, i = False, False, end + 1
         elif char == '"':
-            plain, i = False, i + 1
+            plain, colon_last, i = False, False, i + 1
             while True:
                 if i >= n:
                     return _ShWord(name, "", expands, tilde, open=True), n
@@ -276,7 +278,9 @@ def _sh_word(text: str, i: int) -> tuple[_ShWord, int]:
             if char == "=" and name is None and plain and _NAME.fullmatch("".join(out)):
                 name, start = "".join(out), len(out) + 1
             expands = expands or char in "$`"
-            tilde = tilde or char == "~"
+            at_value_start = not out or (name is not None and len(out) == start)
+            tilde = tilde or (char == "~" and (at_value_start or colon_last))
+            colon_last = char == ":"
             out.append(char)
             i += 1
     joined = "".join(out[start:]) if name is not None else "".join(out)
@@ -284,8 +288,9 @@ def _sh_word(text: str, i: int) -> tuple[_ShWord, int]:
 
 
 def _sh_command(text: str, i: int) -> tuple[list[_ShWord], str, int]:
-    """The words of the simple command at `text[i]` (comments dropped), how it ended (`newline`, `eof`,
-    `terminator` for `; & | < > ( )`, `open` for a quote that never closes) and the index after it."""
+    """The words of the simple command at `text[i]` (comments dropped), how it ended (`newline`, `eof`, `;` with
+    the index just after it, `terminator` for `& | < > ( )` with the index after its line, `open` for a quote that
+    never closes) and the index after it."""
     words: list[_ShWord] = []
     n = len(text)
     while True:
@@ -298,6 +303,8 @@ def _sh_command(text: str, i: int) -> tuple[list[_ShWord], str, int]:
             return words, "eof", i
         if text[i] == "\n":
             return words, "newline", i + 1
+        if text[i] == ";":
+            return words, ";", i + 1
         if text[i] in _SH_TERMINATORS:
             end = text.find("\n", i)
             return words, "terminator", n if end < 0 else end + 1
@@ -314,7 +321,8 @@ def read_sh_env(text: str) -> tuple[dict[str, str], tuple[tuple[str, str], ...]]
     V to `abcW=1` and never W); a CRLF line's `\\r` stays in the value; an open quote is a syntax error, and nothing
     from that line on is set. Returns the values sh sets that this reads the same, and each name skipped with why:
     `SH_EXPANDS`, `SH_SYNTAX`, `SH_CR` and `SH_OPEN_QUOTE` drop any earlier value (sh assigns something there);
-    `SH_COMMAND` and `SH_LEADING` keep it."""
+    `SH_COMMAND` and `SH_LEADING` keep it. `V=1;W=2` sets both; `V=1;cmd` is skipped as `SH_SYNTAX`. A `~` is
+    skipped only where sh expands it."""
     values: dict[str, str] = {}
     skipped: dict[str, str] = {}
 
@@ -330,6 +338,10 @@ def read_sh_env(text: str) -> tuple[dict[str, str], tuple[tuple[str, str], ...]]
         args = words[1:] if exported else words
         assignments = [w for w in (args if exported else _leading_assignments(args)) if w.name is not None]
         command_follows = not exported and len(assignments) < len(args) and bool(assignments)
+        if ended == ";" and not _assignments_only(_sh_command(text, i)[0]):
+            ended = "terminator"  # `V=1;cmd`: only another assignment after the `;` is read; skip the rest of the line
+            end = text.find("\n", i)
+            i = len(text) if end < 0 else end + 1
         if ended == "open":  # a syntax error: this line and every one after it set nothing
             for word in [*assignments, *(w for w in words if w.open and w not in assignments)]:
                 skip(word.name or "", SH_OPEN_QUOTE)
@@ -350,6 +362,12 @@ def read_sh_env(text: str) -> tuple[dict[str, str], tuple[tuple[str, str], ...]]
                 values[name] = word.value
                 skipped.pop(name, None)
     return values, tuple(skipped.items())
+
+
+def _assignments_only(words: list[_ShWord]) -> bool:
+    """Whether a command is only assignments (an `export ` prefix allowed), or empty: what may follow a `;`."""
+    args = words[1:] if words and words[0].name is None and words[0].value == "export" else words
+    return all(word.name is not None for word in args)
 
 
 def _leading_assignments(words: list[_ShWord]) -> list[_ShWord]:
@@ -406,12 +424,17 @@ def plan_load(process_env: Mapping[str, str], file_values: Mapping[str, str],
     )
 
 
+# Names a note may always print: ENV_KEYS, and the forge's address and token, which a hand-run upgrade reads to ask
+# Forgejo which commits passed CI.
+DECLARED_BASE = frozenset({*ENV_KEYS, forge_forgejo.BASE_URL_ENV, forge_forgejo.DEFAULT_TOKEN_ENV})
+
+
 def declared_names(*profiles: object) -> frozenset[str]:
-    """The variable names a note may print: `ENV_KEYS`, and every plain name a profile declares as the value of a
+    """The variable names a note may print: `DECLARED_BASE`, and every plain name a profile declares as the value of a
     `*_env` key (`access_key_env: GARAGE_ACCESS_KEY_ID`, `forgejo_token_env: ...`), at any depth. Any other name in
     an env file may be a secret pasted on a line of its own (base32 or base64 padded with `=` parses as NAME=value),
     so it is counted, never printed."""
-    found: set[str] = set(ENV_KEYS)
+    found: set[str] = set(DECLARED_BASE)
     stack: list[object] = list(profiles)
     while stack:
         item = stack.pop()
@@ -436,11 +459,16 @@ def printable_names(names: Iterable[str], declared: frozenset[str]) -> str:
 
 
 def load_notes(load: EnvLoad, files: list[str], absent: list[str], unreadable: list[str],
-               declared: frozenset[str] = frozenset(ENV_KEYS)) -> list[str]:
+               declared: frozenset[str] = DECLARED_BASE) -> list[str]:
     """The lines a hand run prints about the units' env: paths and `printable_names` only, never a value. `absent`
     are files a unit names that do not exist; `unreadable` are unit or env files skipped as not UTF-8."""
     where = ", ".join(files)
-    reasons = dict.fromkeys(why for _, why in load.skipped)
+    # A name whose later line kept its earlier value is loaded; it gets one note, saying both.
+    kept = {name: why for name, why in load.skipped if name in load.loaded and why in _KEEPS_EARLIER}
+    fresh = [name for name in load.loaded if name not in kept]
+    unset = [(name, why) for name, why in load.skipped if name not in kept]
+    reasons = dict.fromkeys(why for _, why in unset)
+    kept_reasons = dict.fromkeys(kept.values())
 
     def names(items: Iterable[str]) -> str:
         return printable_names(items, declared)
@@ -448,10 +476,12 @@ def load_notes(load: EnvLoad, files: list[str], absent: list[str], unreadable: l
     return [
         *(f"env: skipped {path}: not UTF-8 text" for path in unreadable),
         *(f"env: {path}, which a unit names, does not exist" for path in absent),
-        *([f"env: loaded {names(load.loaded)} from {where}, as the units read it"] if load.loaded else []),
+        *([f"env: loaded {names(fresh)} from {where}, as the units read it"] if fresh else []),
+        *(f"env: loaded {names(n for n, w in kept.items() if w == why)} from {where} as an earlier line sets it; "
+          f"a later line: {why}" for why in kept_reasons),
         *([f"env: the shell's {names(load.overridden)} override {where}; unset them to use the file's"]
           if load.overridden else []),
-        *(f"env: a line in {where} did not set {names(n for n, w in load.skipped if w == why)}: {why}"
+        *(f"env: a line in {where} did not set {names(n for n, w in unset if w == why)}: {why}"
           for why in reasons),
     ]
 
