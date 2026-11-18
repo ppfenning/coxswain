@@ -199,3 +199,42 @@ def test_a_malformed_rescue_failed_row_is_kept_so_a_rescue_never_repeats(tmp_pat
     eligible, why = rescue_select.eligible(epic.with_stored_rescues(alone, [row]), "diff")
     assert not eligible, why
 
+
+def _records_ctx(tmp_path, store: Store) -> epic.Ctx:
+    return epic.Ctx(
+        repo=tmp_path, cartridge={}, runner=None, specs={}, run_id=f"{INITIATIVE}-3", date="2026-11-18", max_parallel=1,
+        ledger_path=tmp_path / "ledger", provider_profile="p", runs_dir=tmp_path / "runs", worktree_root=tmp_path / "wt",
+        assume=None, fix_attempts=None, initiative_id=INITIATIVE, default_ref="main", store=store,
+    )
+
+
+RECORD = {"initiative": INITIATIVE, "cause": "review", "cause_why": "the reviewer said revise", "review": {"verdict": "revise"}}
+
+
+def test_a_store_record_that_is_not_an_object_is_still_the_newest_attempt_and_holds_the_task(tmp_path) -> None:
+    """Review of #1243: a `task_records` row whose `record_json` is not an object was skipped, as a refused one was."""
+    store = _store(_work(), flagged=())
+    now = datetime.now(UTC).isoformat()
+    store.record_task_record(f"{INITIATIVE}-1", PHASE, "t1-probe", RECORD, now)
+    store.record_task_record(f"{INITIATIVE}-2", PHASE, "t1-probe", RECORD, now)
+    store.conn.execute(
+        "UPDATE task_records SET record_json = ? WHERE run_id = ?", ('"skipped"', f"{INITIATIVE}-2")
+    )  # another lane's run 2, held only in the store, with a record that is a bare string
+    found = epic.caused_records(_records_ctx(tmp_path, store), PHASE, "t1-probe")
+    assert [(a["run"], "malformed" in a) for a, _ in found] == [(f"{INITIATIVE}-1", False), (f"{INITIATIVE}-2", True)]
+    assert f"newest task record (run {INITIATIVE}-2) is malformed" in str(epic.unreadable_reason(found))
+
+
+def test_a_record_file_that_cannot_be_read_is_an_attempt_unless_the_store_holds_a_readable_copy(tmp_path) -> None:
+    store = _store(_work(), flagged=())
+    unreadable = result_path(tmp_path / "runs", f"{INITIATIVE}-1", PHASE, "t1-probe")
+    unreadable.mkdir(parents=True)  # a path read_text cannot read, as root or not: an OSError
+    ctx = _records_ctx(tmp_path, store)
+    ((attempt, record),) = epic.caused_records(ctx, PHASE, "t1-probe")
+    assert attempt["run"] == f"{INITIATIVE}-1" and "could not be read" in attempt["malformed"] and record == {}
+    assert epic.unreadable_reason([(attempt, record)]) is not None
+
+    store.record_task_record(f"{INITIATIVE}-1", PHASE, "t1-probe", RECORD, datetime.now(UTC).isoformat())
+    ((attempt, record),) = epic.caused_records(ctx, PHASE, "t1-probe")
+    assert "malformed" not in attempt and attempt["cause"] == "review" and record["review"] == {"verdict": "revise"}
+

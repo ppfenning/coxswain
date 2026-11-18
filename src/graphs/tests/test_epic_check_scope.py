@@ -66,7 +66,7 @@ def tree(repo: Path) -> Path:  # noqa: F811
 
 @pytest.fixture
 def lane(monkeypatch) -> dict:
-    """Every lane `run_checks` call as its commands, with the context and record `_build_task` returned."""
+    """Every lane `run_checks` call as its commands, with the context and record `build_task` returned."""
     seen: dict = {"lane_calls": [], "ctx": None, "record": None}
     build = epic.build_task
 

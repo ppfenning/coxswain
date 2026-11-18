@@ -494,7 +494,8 @@ def unreadable_reason(found: Sequence[tuple[Mapping[str, object], object]]) -> s
 def caused_records(ctx: Ctx, phase: str, task: str) -> list[tuple[Attempt, TaskRecord]]:
     """(attempt, record) for each of the task's run task records that names a cause, oldest first.
 
-    A record `task_record` refuses (or a record file that is not JSON) is never dropped: it is an attempt with no
+    A record `task_record` refuses, a record file that is not JSON or cannot be read, and a store row whose `record_json`
+    is not an object are never dropped: each is an attempt with no
     verdicts and an empty record (`_refused_attempt`), whether or not it names a cause.
 
     Under work_state store nothing writes an attempt into the work file: these records are the attempts. This machine's
@@ -505,19 +506,23 @@ def caused_records(ctx: Ctx, phase: str, task: str) -> list[tuple[Attempt, TaskR
     `runs:<initiative>` lease), and the minimal record an invoke failure leaves has no date, only its file's time."""
     found: dict[str, tuple[TaskRecord | _Refused, str]] = {}
     for path in sorted(Path(ctx.runs_dir).glob(f"*/tasks/{phase}/{task}.json")):
-        try:
-            text = path.read_text(encoding="utf-8")
-            stamp = datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat()
-        except OSError:
-            continue
-        found[path.parts[-4]] = (_read_record(text), stamp)
+        found[path.parts[-4]] = _read_record_file(path)
     if ctx.store is not None:
         try:
             from harness import store_read  # not module level: see `mirror_read`
 
             for row in store_read.task_records_of(ctx.store.conn, phase, task):
-                if isinstance(row["record_json"], Mapping):
-                    found.setdefault(str(row["run_id"]), (_checked_record(row["record_json"]), str(row.get("updated_at") or "")))
+                stored = row["record_json"]
+                record = (
+                    _checked_record(stored)
+                    if isinstance(stored, Mapping)
+                    else _Refused(stored, f"record_json is {type(stored).__name__}, not an object")
+                )
+                run, held = str(row["run_id"]), found.get(str(row["run_id"]))
+                # The file is read first; the store's copy stands in when there is no file, or the file was refused and
+                # the store's copy reads.
+                if held is None or (isinstance(held[0], _Refused) and not isinstance(record, _Refused)):
+                    found[run] = (record, str(row.get("updated_at") or ""))
         except Exception as exc:
             epic_log.warning("task records of %s/%s not read from the store: %s: %s", phase, task, type(exc).__name__, exc)
     caused: list[tuple[int, str, str, Attempt, TaskRecord]] = []
@@ -554,6 +559,20 @@ def _read_record(text: str) -> TaskRecord | _Refused:
     except ValueError as exc:
         return _Refused(None, f"not JSON: {exc}")
     return _checked_record(raw)
+
+
+def _read_record_file(path: Path) -> tuple[TaskRecord | _Refused, str]:
+    """A record file as (record, its file time). A file that cannot be read is refused, never skipped: it is a run's
+    attempt all the same. Its time is "" when even its stat fails."""
+    try:
+        stamp = datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat()
+    except OSError:
+        stamp = ""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        return _Refused(None, f"the record file could not be read: {type(exc).__name__}: {exc}"), stamp
+    return _read_record(text), stamp
 
 
 def record_attempts(ctx: Ctx, phase: str, task: str) -> list[Attempt]:

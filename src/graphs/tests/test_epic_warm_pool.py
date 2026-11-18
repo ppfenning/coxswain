@@ -46,7 +46,7 @@ def _lock(root: Path, text: str) -> None:
 
 
 def _spy_builds(monkeypatch) -> list[tuple[dict, Path]]:
-    """Every `_build_task` record with the worktree path the lane held when it returned."""
+    """Every `build_task` record with the worktree path the lane held when it returned."""
     seen: list[tuple[dict, Path]] = []
     real = epic.build_task
 

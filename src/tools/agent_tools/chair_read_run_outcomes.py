@@ -1,8 +1,8 @@
 """Edge reader: the newest ended runs of each initiative, as `chair_no_progress.RunOutcome` rows, from the run store.
 
 A run counts once its `runs` row has an `ended_at`. Its phase states come from its `phases` rows (`record_json`'s
-`status` and `reason`, as the epic's `_record_phase` writes them), and its task states from its `tasks` rows (the
-explicit `state` column the epic's `_record_tasks` writes, one row per task at its final state in the run). Only an
+`status` and `reason`, as the epic's `record_phase` writes them), and its task states from its `tasks` rows (the
+explicit `state` column the epic's `record_tasks` writes, one row per task at its final state in the run). Only an
 initiative's own series (`<initiative>-N`) is read, the one the chair launches and relaunches; a phase run
 (`<initiative>.<phase>-N`) is a series of its own. An initiative whose newest run has not ended is left out: what it
 will end with is not known yet. A missing or unreadable store reads as no runs, so the guard holds nothing.

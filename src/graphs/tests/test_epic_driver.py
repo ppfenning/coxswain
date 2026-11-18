@@ -3803,7 +3803,7 @@ def _taken_over_during(monkeypatch, store: Store, name: str, epoch: int) -> None
 
 
 class _FakeTime:
-    """Stands in for the `time` module `_wait_if_paused` reaches through: `sleep` never blocks for real."""
+    """Stands in for the `time` module `wait_if_paused_here` reaches through: `sleep` never blocks for real."""
 
     def __init__(self, on_sleep) -> None:
         self._on_sleep = on_sleep
@@ -4377,7 +4377,7 @@ def test_a_task_mirror_that_exhausts_its_window_still_leads_to_an_exit_record_at
 def test_a_pause_clear_that_exhausts_its_window_does_not_skip_the_exit_record(
     repo, cart, tmp_path, store, monkeypatch
 ) -> None:
-    pytest.importorskip("psycopg")  # `_clear_pause_if_held` only swallows the driver's own error classes
+    pytest.importorskip("psycopg")  # `clear_pause_if_held` only swallows the driver's own error classes
     store.record_run({"run_id": "epic-pause"}, {})
     events = _flaky_store_writes(monkeypatch, pause_fails=-1)
     clock = _FakeClock()

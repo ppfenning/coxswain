@@ -383,7 +383,7 @@ def _row(i: int) -> dict:
 
 
 def _epic_ctx(cart, path, store):
-    """The fields of the epic driver's `_Ctx` its policy step reads."""
+    """The fields of the epic driver's `Ctx` its policy step reads."""
     return SimpleNamespace(cartridge=cart, ledger_path=path, provider_profile=PROFILE, store=store)
 
 

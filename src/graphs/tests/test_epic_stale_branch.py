@@ -2,7 +2,7 @@
 
 Sixteen initiative branches were 18 to 51 commits behind `main`, six of them in conflict: the parent was resolved once,
 when the branch was cut, and only the lander took it forward, at land time. Now each run merges the parent into the
-initiative branch first. A reused phase branch then takes the initiative tip (`_refresh_level`), and a new one is cut
+initiative branch first. A reused phase branch then takes the initiative tip (`refresh_level`), and a new one is cut
 from it. When the merge conflicts, the run files a rectify task in the `integrate` phase, on a branch holding the
 conflicted merge, and every other phase waits until it has merged.
 
