@@ -3,16 +3,11 @@
 from __future__ import annotations
 
 import argparse
-import contextlib
 import dataclasses
-import importlib
-import importlib.metadata
-import importlib.util
 import json
 import os
 import platform
 import shutil
-import socket
 import subprocess
 import sys
 import tomllib
@@ -37,11 +32,9 @@ from agent_tools.cli_lazy import (
     home_paths,
     install,
     install_exec,
-    notify,
     records,
     remote_argv,
     route,
-    run_store,
     schema,
     setup_install,
     setup_receipts,
@@ -49,7 +42,6 @@ from agent_tools.cli_lazy import (
     upgrade_exec,
     upgrade_plan,
 )
-from agent_tools.cli_runs import _leader_runs_dir_or_refuse
 
 
 def _migrate_kind(path: Path) -> str:
@@ -814,45 +806,17 @@ def _versions(a: argparse.Namespace) -> int:
     return 0
 
 
-def _release_notification(event) -> notify.Notification | None:
-    """Pure. The notice for one deploy event: `deployed` is low, `deploy_failed` critical, `released` normal; any other kind None.
-    `notify.notifications` is not used: it names only run events, so it would drop every deploy kind."""
-    detail = event.detail
-    if event.kind == "deployed":
-        return notify.Notification(f"{event.run} deployed", str(detail.get("host", "")), "low")
-    if event.kind == "deploy_failed":
-        return notify.Notification(f"{event.run} deploy failed", f"{detail.get('host', '')} failed at {detail.get('step', '')}", "critical")
-    if event.kind == "released":
-        return notify.Notification(f"{event.run} released", str(detail.get("version", "")), "normal")
-    return None
-
-
-def _release_notify(event) -> None:
-    """Edge. Sends the event's notice the way `cox runs notify` does: notify-send when installed, else one printed line.
-    A notifier that cannot start never changes the deploy's exit code."""
-    note = _release_notification(event)
-    if note is None:
-        return
-    if shutil.which("notify-send") is None:
-        print(f"[{note.urgency}] {note.title}: {note.body}")
-        return
-    with contextlib.suppress(OSError):
-        bounded_run.completed(notify.notify_argv(note))
+RELEASE_DEPLOY_UNAVAILABLE = (
+    "cox release deploy: not available. Its host-by-host edge (agent_tools.release_deploy_edge) was never built, so this"
+    " machine cannot upgrade the others yet; run `cox upgrade` on each host instead."
+)
 
 
 def _release_deploy(a: argparse.Namespace) -> int:
-    """Edge. Hands the hosts rows and this host's name to the deploy edge and returns its exit code."""
-    _, runs_dir, rc = _leader_runs_dir_or_refuse(a)
-    if rc is not None:
-        return rc
-    # `cox upgrade` replaces this tool's environment mid-run, so import everything first. The edge is imported here and
-    # is not a `_LazyModule`: a registered one would make `_load_lazy_modules` fail on every install before it lands.
-    edge = importlib.import_module("agent_tools.release_deploy_edge")
-    _load_lazy_modules()
-    rows = run_store.hosts(runs_dir)
-    return edge.deploy_release(
-        a.version, rows, socket.gethostname(), lambda argv: _real_run(list(argv), None), _release_notify
-    )
+    """`release deploy VERSION` refuses with exit 2 and says why. The command shipped (#900) wired to an edge module
+    that never landed, so it raised ImportError; the per-host core, release_deploy.py, waits for that edge."""
+    print(RELEASE_DEPLOY_UNAVAILABLE, file=sys.stderr)
+    return 2
 
 
 def _release(a: argparse.Namespace) -> int:
