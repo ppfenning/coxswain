@@ -30,8 +30,9 @@ APPLY_SCHEMA = {
 }
 
 
-def apply_arm_for(kind: str, cartridge: dict[str, Any]) -> str | None:
-    spec = (cartridge.get("write_kinds") or {}).get(kind)
+def apply_arm_for(kind: str, cartridge: Mapping[str, object]) -> str | None:
+    kinds = cartridge.get("write_kinds")
+    spec = kinds.get(kind) if isinstance(kinds, Mapping) else None
     return spec.get("apply_arm") if isinstance(spec, Mapping) else None
 
 

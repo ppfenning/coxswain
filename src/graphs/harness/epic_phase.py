@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, TypedDict, cast
 
 from core import ledger, workstore
+from core.jsontypes import is_dict, is_mapping
 from core.landing import is_initiative, land_gate_level
 from core.landing_record import INTEGRATE_PHASE
 from core.manifest import append_ledger, build_manifest, gate_diff
@@ -141,7 +142,7 @@ from harness.epic_triage import (
     triage_failure_hold,
     triage_initiative_context,
 )
-from harness.epic_types import EpicItem, PhaseRecord, Quarantine, as_list, as_mapping
+from harness.epic_types import BuildRecord, EpicItem, PhaseRecord, Quarantine, as_list, as_mapping
 from harness.escalate import escalate_self_modification
 from harness.gate import apply_arm_for, gate
 from harness.handoff import plan_context
@@ -531,7 +532,7 @@ def run_phase_tasks(
                         "attempts": attempts_by_id[task_id],
                         "initiative_context": triage_initiative_context(initiative, context_items, task_id),
                         "triaged": [
-                            dict(r) for r in row_extra(queue_rows.get(task_id)).get(workstore.TRIAGE_RECORDS) or [] if isinstance(r, Mapping)
+                            dict(r) for r in as_list(row_extra(queue_rows.get(task_id)).get(workstore.TRIAGE_RECORDS)) if isinstance(r, Mapping)
                         ],
                     },
                 )
@@ -908,7 +909,7 @@ def run_phase_tasks(
         result.update(body_stamp(by_id.get(str(result.get("ticket")))))
         save_task_result(ctx, result, phase=phase, task=str(result.get("ticket")))
 
-    built: dict[str, dict[str, Any]] = {}
+    built: dict[str, BuildRecord] = {}
     surviving: list[str] = []
     escalated: set[str] = set()
 
@@ -979,23 +980,25 @@ def run_phase_tasks(
             # The result file was saved before the checks ran. `runs detail` reads that file, so the
             # per-check results (excerpt and log name) go into it under `change_facts`, as the
             # task record below carries them.
-            facts = {**(final.get("change_facts") or {}), "checks": build["checks"]}
+            facts = {**as_mapping(final.get("change_facts")), "checks": build["checks"]}
             save_task_result(ctx, {**final, "change_facts": facts}, phase=phase, task=task)
 
         # Evidence first, escalation second — the same order `cli.py` uses, and
         # for the same reason: the gate should see the tests' opinion of a
         # governance change too.
-        for item in final.get("proposals") or []:
-            if item.get("kind") in DRAFT_KINDS:
-                item.setdefault("evidence", []).extend(build["evidence"])
+        for item in as_list(final.get("proposals")):
+            if is_dict(item) and item.get("kind") in DRAFT_KINDS:
+                evidence = item.setdefault("evidence", [])
+                if isinstance(evidence, list):
+                    evidence.extend(build["evidence"])
 
         # A change to the rules is not whatever kind the graph called it. This
         # runs after emission and before the policy split, which is the only
         # window where no streak on a mundane kind can carry a governance edit
         # past the gate.
         build["proposals"], hits = escalate_self_modification(
-            final.get("proposals") or [],
-            patch=str((final.get("build") or {}).get("patch") or ""),
+            [p for p in as_list(final.get("proposals")) if is_mapping(p)],
+            patch=str(as_mapping(final.get("build")).get("patch") or ""),
             cartridge=ctx.cartridge,
             ledger_path=ctx.ledger_path,
         )
@@ -1007,7 +1010,7 @@ def run_phase_tasks(
         arbitration = final.get("arbitration")
         for item in build["proposals"]:
             if item.get("escalated_from") == "draft_pr_create":
-                item["review_verdict"] = str((final.get("review") or {}).get("verdict") or "")
+                item["review_verdict"] = str(as_mapping(final.get("review")).get("verdict") or "")
                 item["arbitration_verdict"] = str(
                     arbitration.get("verdict") if isinstance(arbitration, Mapping) else arbitration or ""
                 )
@@ -1026,7 +1029,7 @@ def run_phase_tasks(
                 # land here too, not only on the `phase_state` a survivor's
                 # validator sees.
                 "change_facts": {
-                    **(build["result"].get("change_facts") or {}),
+                    **as_mapping(build["result"].get("change_facts")),
                     **({"checks": build["checks"]} if "checks" in build else {}),
                 },
                 "governance_hits": hits,
@@ -1041,7 +1044,7 @@ def run_phase_tasks(
             }
         )
         if build.get("quarantine"):
-            reason = build["quarantine"]
+            reason = str(build["quarantine"])
             # A harness fault is not an attempt: the build was never actually
             # tried, so recording one here would burn the same two-strike cap
             # a real failure does. Mirrors the attempt-cap refusal above,
@@ -1108,14 +1111,14 @@ def run_phase_tasks(
                     "description": str((by_id.get(task) or {}).get("body") or ""),
                     "evidence": built[task]["evidence"],
                     "change_facts": {
-                        **(built[task]["result"].get("change_facts") or {}),
+                        **as_mapping(built[task]["result"].get("change_facts")),
                         **({"checks": built[task]["checks"]} if "checks" in built[task] else {}),
                     },
-                    "review_verdict": str((built[task]["result"].get("review") or {}).get("verdict") or ""),
+                    "review_verdict": str(as_mapping(built[task]["result"].get("review")).get("verdict") or ""),
                     # The patch is machine evidence — the diff git applied — not
                     # the builder's account of it. A validator without it said,
                     # in its own words, that it could not verify anything.
-                    "patch": str((built[task]["result"].get("build") or {}).get("patch") or "")[:PATCH_FOR_VALIDATION_CHARS],
+                    "patch": str(as_mapping(built[task]["result"].get("build")).get("patch") or "")[:PATCH_FOR_VALIDATION_CHARS],
                     # Where `validate_chunk`'s needs_evidence, if any, gets
                     # read from — still on disk here, since validation runs
                     # before the merges that would retire it.
@@ -1130,7 +1133,7 @@ def run_phase_tasks(
                     "description": str(item.get("body") or ""),
                     "evidence": [],
                     "change_facts": {
-                        k: list((item.get("handoff") or {}).get(k) or []) for k in ("files_changed", "interfaces_added", "decisions")
+                        k: as_list(as_mapping(item.get("handoff")).get(k)) for k in ("files_changed", "interfaces_added", "decisions")
                     },
                     "review_verdict": "approve",
                     "patch": "",
@@ -1219,7 +1222,7 @@ def run_phase_tasks(
 
     state = Execution(
         landed={}, merged={}, moved={}, quarantined=quarantined, escalated=frozenset(escalated),
-        builds={task: (built[task]["result"].get("build") or {}) for task in surviving},
+        builds={task: as_mapping(built[task]["result"].get("build")) for task in surviving},
     )  # fmt: skip
     diffs: list[dict[str, Any]] = []
 
@@ -1288,9 +1291,9 @@ def run_phase_tasks(
             task_record["status"] = "approved"
         if task in state.review_pr:
             task_record["review_pr"] = state.review_pr[task]
-        verdicts = (built.get(task) or {}).get("result") or {}
+        verdicts = as_mapping((built.get(task) or {}).get("result"))
         task_record["outcome"] = task_outcome(
-            str((verdicts.get("review") or {}).get("verdict") or "") or None,
+            str(as_mapping(verdicts.get("review")).get("verdict") or "") or None,
             # A skipped arbiter is recorded as a string, not a mapping.
             str(cast(Mapping[str, Any], verdicts.get("arbitration") if isinstance(verdicts.get("arbitration"), Mapping) else {}).get("verdict") or "") or None,
             task_record.get("quarantine"),

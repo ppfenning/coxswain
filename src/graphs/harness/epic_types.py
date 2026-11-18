@@ -24,6 +24,7 @@ from harness.store_dialect import Json, JsonObject
 __all__ = [
     "Attempt",
     "AttemptRow",
+    "BuildRecord",
     "EpicItem",
     "ItemRef",
     "MalformedRecord",
@@ -145,6 +146,30 @@ class TaskEntry(TypedDict, total=False):
     review_pr: object
     outcome: object
     reason: str | None
+
+
+class BuildRecord(TypedDict, total=False):
+    """What building and checking one task left: the record `build_task` makes and the fix loop's re-entry returns, and
+    the phase then adds the task's result, its proposals and the governance hits. In-process only, with no constructor.
+    `id`, `phase`, `branch` and `evidence` are set as the record starts; a build that stops early leaves the rest out."""
+
+    id: Required[str]
+    phase: Required[str]
+    branch: Required[str]
+    evidence: Required[list[dict[str, object]]]
+    quarantine: str | None
+    setup: dict[str, object]
+    test_database: str
+    lint_fix_checks: list[str]
+    lint_fixed: bool
+    checks: list[dict[str, object]]
+    check_scope: dict[str, object]
+    check_cpu_seconds: float
+    verify: list[dict[str, object]]
+    refix: list[str]
+    result: dict[str, object]
+    proposals: list[dict[str, object]]
+    governance_hits: list[str]
 
 
 class Quarantine(TypedDict, total=False):

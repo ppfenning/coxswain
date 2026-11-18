@@ -23,7 +23,7 @@ def _tail(text: str) -> str:
     return text.strip()[-DETAIL_TAIL_CHARS:]
 
 
-def _record(name: str, status: str, detail: str) -> dict:
+def _record(name: str, status: str, detail: str) -> dict[str, str]:
     return {"name": name, "status": status, "detail": detail}
 
 
@@ -33,8 +33,8 @@ def create_lane_database(
     name: str,
     env: Mapping[str, str],
     cwd: str,
-    run: Callable = subprocess.run,
-) -> dict:
+    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> dict[str, str]:
     if not create_cmd:
         return _record(name, "skipped", "no create command was configured")
     try:

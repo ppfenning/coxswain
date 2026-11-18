@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Sequence
+from typing import Any
 
 GH_TIMEOUT_SECONDS = 120
 GIT_TIMEOUT_SECONDS = 60
@@ -44,7 +45,7 @@ def timeout_line(argv: Sequence[str], timeout: float) -> str:
     return f"{' '.join(argv[:2])} timed out after {timeout:g} seconds"
 
 
-def completed(argv: Sequence[str], timeout: float | None = None, **kwargs) -> subprocess.CompletedProcess:
+def completed(argv: Sequence[str], timeout: float | None = None, **kwargs: Any) -> subprocess.CompletedProcess[Any]:
     """Edge. `subprocess.run(argv, timeout=..., **kwargs)`; a timeout returns exit 124 with `timeout_line` as stderr,
     or appended to stdout when stderr is merged into it, and printed to this process's stderr when not captured."""
     limit = default_timeout(argv) if timeout is None else timeout

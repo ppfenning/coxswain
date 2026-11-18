@@ -6,6 +6,8 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 from harness import epic as epic_module
 from harness.epic import Ctx, PhaseRunner, run_phase_tasks
 from harness.runners import _DelegatingFastPath
@@ -116,6 +118,14 @@ def test_a_phase_view_overrides_the_three_names_and_leaves_the_shared_runner_alo
     assert leaf.repo_dir is None
     assert leaf.assigned == []
     assert not hasattr(PhaseRunner(object(), Path("/wt/a"), None, []), "repo_dir")
+
+
+def test_a_phase_view_refuses_a_new_class_rather_than_retype_the_shared_runner() -> None:
+    leaf = Recording({})
+    view = PhaseRunner(leaf, Path("/wt/a"), "digest", ["pytest"])
+    with pytest.raises(TypeError, match="read-only"):
+        object.__setattr__(view, "__class__", dict)
+    assert type(leaf) is Recording and view.__class__ is Recording
 
 
 def test_items_lock_stays_out_of_comparison_and_repr() -> None:
