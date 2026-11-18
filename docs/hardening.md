@@ -255,7 +255,9 @@ New code follows this, and code a change touches is moved toward it.
    outside tests (`.github/check_unwired.py`; an epic lane diffs against its phase branch, `COX_LANE_BASE`). It
    catches a name nothing calls, not a caller that passes the wrong arguments (the lane-sync guard that was never
    passed its paths): that is the smoke suite's to prove. A def the same diff removes from another file counts as
-   moved, not added, so H9's splits of cli.py and epic.py pass with their callers unchanged.
+   moved, not added, so H9's splits of cli.py and epic.py pass with their callers unchanged. CI also runs its main
+   scan (`--all`) over the whole tree: every public symbol has a caller, an entry point on the allowlist, or a line
+   on the debt list (`.github/unwired-debt.txt`), which names the work that owes its wiring and only shrinks.
 6. **Review asks two questions.** Task review, arbitration and `validate_phase` ask: is the logic pure and tested
    without mocks, and which smoke test runs the entry point that reaches this change? A mock the patch adds to a
    unit test, or no such smoke test, means revise. The smoke half applies as the smoke suite grows: where an entry

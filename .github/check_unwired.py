@@ -26,10 +26,17 @@ An entry point a name cannot reach (a command looked up by a computed name, a pl
 one `path::name  # reason` per line; the reason is required, and an entry whose path or name no longer exists is
 refused.
 
-Usage: python .github/check_unwired.py [--base REF] [--root DIR] [--allow FILE]. Stdlib only.
+The main scan (--all) judges the whole tree instead of a diff: every public symbol under src/ needs a caller, and a
+use on any line counts. It is the gate for what a diff cannot see: a change that deletes a symbol's last caller.
+Unfinished work, a helper whose wiring is owed by a named intake, goes in the debt list (.github/unwired-debt.txt),
+in the allowlist's format, with that intake as the reason. The list only shrinks: an entry that is gone or wired
+is a note to drop it, never a failure, since the change that wires or deletes one need not touch the list.
+
+Usage: python .github/check_unwired.py [--all] [--base REF] [--root DIR] [--allow FILE] [--debt FILE]. Stdlib only.
 The base is --base, else $COX_LANE_BASE (an epic lane's phase branch, exported by the harness), else origin/main.
 The diff runs from the base's merge base with HEAD to the working tree, plus untracked files.
-Exits 0 when every added symbol is referenced, 1 when one is not, 2 when git or the allowlist is unusable.
+Exits 0 when every added symbol is referenced, 1 when one is not, 2 when git, the allowlist or the debt list is
+unusable.
 """
 
 import argparse
@@ -45,6 +52,7 @@ from typing import NamedTuple
 
 GIT_TIMEOUT = 60
 DEFAULT_ALLOW = ".github/unwired-allow.txt"
+DEFAULT_DEBT = ".github/unwired-debt.txt"
 DEFAULT_BASE = "origin/main"
 LANE_BASE_VAR = "COX_LANE_BASE"
 TEST_DIRS = frozenset({"tests", "test", "smoke", "fixtures"})
@@ -85,6 +93,7 @@ class Ref(NamedTuple):
 class Allowlist(NamedTuple):
     entries: frozenset[tuple[str, str]]
     errors: tuple[str, ...]
+    stale: tuple[str, ...] = ()
 
 
 # ── pure core ────────────────────────────────────────────────────────────────
@@ -307,10 +316,11 @@ def defined_names(path: str, source: str) -> frozenset[str]:
     return frozenset(names | {pathlib.PurePosixPath(path).stem})
 
 
-def parse_allowlist(text: str, sources: Mapping[str, str]) -> Allowlist:
-    """`path::name  # reason` lines; the reason is required, and the path must exist and define the name."""
+def parse_entries(text: str, sources: Mapping[str, str], label: str = "allowlist") -> Allowlist:
+    """`path::name  # reason` lines; the reason is required. An entry whose path or name is gone is `stale`."""
     entries: set[tuple[str, str]] = set()
     errors: list[str] = []
+    stale: list[str] = []
     for number, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -319,16 +329,42 @@ def parse_allowlist(text: str, sources: Mapping[str, str]) -> Allowlist:
         path, sep, name = entry.strip().partition("::")
         name = name.strip()
         if not sep or not path or not name:
-            errors.append(f"allowlist line {number}: expected `path::name  # reason`, got {raw!r}")
+            errors.append(f"{label} line {number}: expected `path::name  # reason`, got {raw!r}")
         elif not reason.strip():
-            errors.append(f"allowlist line {number}: {entry.strip()} has no reason; say why nothing calls it by name")
+            errors.append(f"{label} line {number}: {entry.strip()} has no reason; say why nothing calls it by name")
         elif path not in sources:
-            errors.append(f"allowlist line {number}: {path} does not exist; drop the entry")
+            stale.append(f"{label} line {number}: {path} does not exist; drop the entry")
         elif name not in defined_names(path, sources[path]):
-            errors.append(f"allowlist line {number}: {path} defines no {name}; drop the entry")
+            stale.append(f"{label} line {number}: {path} defines no {name}; drop the entry")
         else:
             entries.add((path, name))
-    return Allowlist(frozenset(entries), tuple(errors))
+    return Allowlist(frozenset(entries), tuple(errors), tuple(stale))
+
+
+def parse_allowlist(text: str, sources: Mapping[str, str]) -> Allowlist:
+    """The allowlist refuses a stale entry: an entry point that is gone must not excuse a new symbol of its name."""
+    parsed = parse_entries(text, sources)
+    in_order = sorted(parsed.errors + parsed.stale, key=lambda problem: int(problem.split()[2].rstrip(":")))
+    return Allowlist(parsed.entries, tuple(in_order))
+
+
+def parse_debt(text: str, sources: Mapping[str, str]) -> Allowlist:
+    """The debt list only shrinks, often in a change that never opened it (a delete, a wiring), so a stale entry
+    is a note to drop it, not a failure; a missing reason is still refused."""
+    return parse_entries(text, sources, "debt list")
+
+
+def whole_tree(paths: Iterable[str]) -> tuple[Change, ...]:
+    """The main scan: every in-scope file as if the diff added it, so every public symbol under src/ needs a caller."""
+    return tuple(Change("A", None, path) for path in sorted(paths) if in_scope(path))
+
+
+def split_debt(
+    found: Sequence[Symbol], debt: frozenset[tuple[str, str]]
+) -> tuple[tuple[Symbol, ...], frozenset[tuple[str, str]]]:
+    """(the unwired symbols the debt list does not explain, the debt entries that are wired now)."""
+    keys = {(symbol.path, symbol.name) for symbol in found}
+    return tuple(symbol for symbol in found if (symbol.path, symbol.name) not in debt), debt - keys
 
 
 def unwired(
@@ -390,6 +426,22 @@ def report(added: Sequence[Symbol], found: Sequence[Symbol]) -> tuple[str, ...]:
     )
 
 
+def scan_report(
+    total: int, found: Sequence[Symbol], debt: int, resolved: Iterable[tuple[str, str]]
+) -> tuple[str, ...]:
+    """The main scan's lines: each unexplained symbol, then a note for each debt entry that is wired now."""
+    lines = [
+        f"{symbol.path}:{symbol.line}: unwired: {symbol.kind} {symbol.name} has no reference outside tests;"
+        " call it, delete it, allowlist an entry point with its reason, or list unfinished work in the debt list"
+        for symbol in found
+    ]
+    lines += [f"unwired: {path}::{name} is wired now; drop it from the debt list" for path, name in sorted(resolved)]
+    if not found:
+        lines.append(f"unwired: {total} public symbol(s) under src/, each referenced outside tests, allowlisted,"
+                     f" or one of {debt} on the debt list")
+    return tuple(lines)
+
+
 # ── glue ─────────────────────────────────────────────────────────────────────
 
 
@@ -421,22 +473,27 @@ def main(argv: Sequence[str], environ: Mapping[str, str]) -> int:
     parser.add_argument("--base", default=default_base(environ))
     parser.add_argument("--root", default=".")
     parser.add_argument("--allow", default=DEFAULT_ALLOW)
+    parser.add_argument("--debt", default=DEFAULT_DEBT)
+    parser.add_argument("--all", action="store_true", help="the main scan: every public symbol under src/, not a diff")
     args = parser.parse_args(argv)
     try:
         root = pathlib.Path(_git(pathlib.Path(args.root), "rev-parse", "--show-toplevel").strip())
-        base = _git(root, "merge-base", args.base, "HEAD").strip()
-        changes = parse_name_status(_git(root, "diff", "--name-status", "-z", "-M", base, "--", "src"))
-        diff = _git(
-            root, "diff", "-U0", "-M", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", base
-        )
         untracked = [p for p in _git(root, "ls-files", "-z", "--others", "--exclude-standard").split("\0") if p]
-        changes += tuple(Change("A", None, path) for path in untracked if path.startswith("src/"))
         tracked = [p for p in _git(root, "ls-files", "-z").split("\0") if p]
-        old = {
-            change.old: _git(root, "show", f"{base}:{change.old}")
-            for change in changes
-            if change.old and in_scope(change.old)
-        }
+        if args.all:
+            changes, diff, old = (), "", {}
+        else:
+            base = _git(root, "merge-base", args.base, "HEAD").strip()
+            changes = parse_name_status(_git(root, "diff", "--name-status", "-z", "-M", base, "--", "src"))
+            diff = _git(
+                root, "diff", "-U0", "-M", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", base
+            )
+            changes += tuple(Change("A", None, path) for path in untracked if path.startswith("src/"))
+            old = {
+                change.old: _git(root, "show", f"{base}:{change.old}")
+                for change in changes
+                if change.old and in_scope(change.old)
+            }
     except GitError as error:
         print(f"unwired: cannot read the diff: {error}", file=sys.stderr)
         return 2
@@ -444,19 +501,27 @@ def main(argv: Sequence[str], environ: Mapping[str, str]) -> int:
     readable = (path for path in paths if path.endswith(".py") or pathlib.PurePosixPath(path).suffix in TEXT_SUFFIXES)
     sources = {path: text for path in readable if not is_test_path(path) and (text := _read(root, path)) is not None}
     allow = parse_allowlist(_read(root, args.allow) or "", sources)
-    if allow.errors:
-        print("\n".join(allow.errors), file=sys.stderr)
+    debt = parse_debt(_read(root, args.debt) or "", sources)
+    if allow.errors or debt.errors:
+        print("\n".join(allow.errors + debt.errors), file=sys.stderr)
         return 2
+    if debt.stale:
+        print("\n".join(debt.stale), file=sys.stderr)
+    if args.all:
+        changes = whole_tree(sources)
+        added_lines = {path: all_lines(source) for path, source in sources.items()}
+    else:
+        added_lines = {**parse_added_lines(diff), **{p: all_lines(sources[p]) for p in untracked if p in sources}}
     new = {change.new: _read(root, change.new) or "" for change in changes if change.status != "D"}
-    added_lines = {**parse_added_lines(diff), **{p: all_lines(sources[p]) for p in untracked if p in sources}}
     try:
         added = added_symbols(changes, old, new)
         private = added_private(changes, old, new)
     except SyntaxError as error:
         print(f"unwired: cannot parse {error.filename}: {error.msg}", file=sys.stderr)
         return 2
-    found = unwired(added, sources, added_lines, private, allow.entries)
-    print("\n".join(report(added, found)))
+    found, resolved = split_debt(unwired(added, sources, added_lines, private, allow.entries), debt.entries)
+    lines = scan_report(len(added), found, len(debt.entries), resolved) if args.all else report(added, found)
+    print("\n".join(lines))
     return 1 if found else 0
 
 

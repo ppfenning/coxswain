@@ -2,3 +2,27 @@
 # a command looked up by a computed name, a hook the host calls by convention.
 # One per line: `src/path/to/module.py::name  # why nothing calls it by name`. The reason is required, and an entry
 # whose path no longer exists fails the check. A helper that is simply not wired yet does not belong here.
+
+# Graphs: harness/registry.py walks the graphs package with pkgutil and imports every module that has a SPEC.
+src/graphs/graphs/ops/epic_reconcile.py::epic_reconcile  # graph module, discovered by harness/registry.py's package walk
+src/graphs/graphs/ops/retro_propose.py::retro_propose  # graph module, discovered by harness/registry.py's package walk
+
+# Commands a person runs as `python -m <module>`, documented where they are used.
+src/graphs/harness/graphdoc.py::graphdoc  # `python -m harness.graphdoc`, docs/customize/write-a-graph.md
+src/graphs/harness/store_backfill.py::store_backfill  # `python -m harness.store_backfill`, src/graphs/docs/STORAGE.md
+src/graphs/harness/store_card_keys.py::store_card_keys  # `python -m harness.store_card_keys URL`, run by a person (its docstring)
+src/graphs/harness/store_classify.py::store_classify  # `python -m harness.store_classify`, docs/releases/0.18.0.md
+src/tools/agent_tools/store_restore_drill.py::store_restore_drill  # `-m agent_tools.store_restore_drill` in ops/store-backup/coxswain-store-drill.service
+
+# pytest calls its hooks by name; the suites' conftest.py files import them.
+src/graphs/harness/serial_tests.py::pytest_collection_modifyitems  # pytest hook
+src/graphs/harness/serial_tests.py::pytest_sessionfinish  # pytest hook
+
+# sources.adapter_for imports `agent_tools.source_<name>` by a computed name.
+src/tools/agent_tools/source_folder.py::source_folder  # source adapter, imported by name in sources.adapter_for
+src/tools/agent_tools/source_github.py::source_github  # source adapter, imported by name in sources.adapter_for
+src/tools/agent_tools/sources.py::SourceAdapter  # the Protocol every adapter module, built-in or a coxswain.sources plugin, implements
+
+# Contract gates the suite runs on purpose: no runtime caller, by design.
+src/graphs/harness/store_dialect.py::forbidden_constructs  # the store's portability lint; the store suites run it over every statement
+src/tools/agent_tools/dash_contract.py::manifest_findings  # checks the dash_contract.json towpath pins; tests/test_dash_contract.py runs it
