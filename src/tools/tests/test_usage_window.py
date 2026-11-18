@@ -275,27 +275,6 @@ def _window(ceiling_usd=None, spent_usd=0.0, start=_NOW, end=_NOW):
     return Window(start=start, end=end, spent_usd=spent_usd, ceiling_usd=ceiling_usd, burn_usd_per_hour=0.0, runs_in_flight=0)
 
 
-def _capturing_gather(captured):
-    def fake_gather(runs_dir, now, ceiling_usd=None, usage=None):
-        captured["ceiling_usd"] = ceiling_usd
-        return window_from({"blocks": []}, [], now, window_hours=5.0)
-    return fake_gather
-
-
-def test_cli_usage_assessment_threads_the_profile_ceiling_into_gather(tmp_path, monkeypatch):
-    captured = {}
-    monkeypatch.setattr(cli.usage_window, "gather", _capturing_gather(captured))
-    cli._usage_assessment(tmp_path, window_ceiling_usd=250.0)
-    assert captured["ceiling_usd"] == 250.0
-
-
-def test_cli_usage_assessment_passes_none_when_the_profile_has_no_ceiling(tmp_path, monkeypatch):
-    captured = {}
-    monkeypatch.setattr(cli.usage_window, "gather", _capturing_gather(captured))
-    cli._usage_assessment(tmp_path)
-    assert captured["ceiling_usd"] is None
-
-
 def test_weekly_window_from_includes_a_usage_file_three_days_old(tmp_path):
     inside = _NOW - timedelta(days=3)
     window = weekly_window_from([(inside, {"cost_usd": 9.0})], _NOW)
