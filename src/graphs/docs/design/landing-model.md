@@ -26,7 +26,7 @@ that is built is the unit that lands.
 New mode beside `--task`; the default when the run record shows more than one task in the phase.
 
 - **Precondition, pure:** `phase_landable(items, records) -> str | None` — every work item in the phase is
-  `done` or `dropped` (§3), and every `done` item has a task record whose `_approved` (`land.py:41`) is None.
+  `done` or `dropped` (§3), and every `done` item has a task record whose `approved_reason` (`land.py:124`) is None.
   Returns the first reason it is not; the edge prints it and exits 2.
 - **Plan** (`land_plan` gains a `phase` branch of logic; same step vocabulary, `cli.py:272-310` executes it):
   `pick_branch epic/<initiative>/<phase>` → `checks` (§4, run in a fresh worktree of that branch) → `push`
