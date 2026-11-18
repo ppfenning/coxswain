@@ -2,7 +2,7 @@
 read as.
 
 The guards each narrow `object` to a container of `object`. `conform` is the validating constructor behind the
-records read from the store (`landing_record.record_from_store`, `store_read.task_record_from_store`,
+records read from the store (`landing_record.record_from_store`, `run_record.task_record_from_store`,
 `chair_types.action_from_store`): it walks the declared type, TypedDicts included, and raises `ShapeError` naming the
 first value that does not fit, so a malformed row fails where it is read rather than where it is used.
 """
