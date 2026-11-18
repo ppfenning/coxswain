@@ -451,3 +451,61 @@ def test_end_to_end_an_h9_split_with_callers_unchanged_passes_and_a_new_helper_i
     added = check(repo)
     assert added.returncode == 1
     assert "function step_6" in added.stdout and "step_1" not in added.stdout
+
+
+# ── the main scan (--all) and the debt list ──────────────────────────────────
+
+
+def test_the_main_scan_adds_every_in_scope_file():
+    paths = ["src/pkg/core.py", "src/pkg/tests/test_core.py", "README.md", "src/pkg/_private.py"]
+    assert check_unwired.whole_tree(paths) == (Change("A", None, "src/pkg/_private.py"), Change("A", None, CORE))
+
+
+def test_the_debt_list_reports_a_stale_entry_without_refusing_it_but_refuses_a_missing_reason():
+    text = f"{CORE}::helper  # owed by the router intake\n{CORE}::gone  # wired since\n{CORE}::bare\n"
+    debt = check_unwired.parse_debt(text, {CORE: "def helper(): ...\n"})
+    assert debt.entries == frozenset({(CORE, "helper")})
+    assert len(debt.errors) == 1 and "has no reason" in debt.errors[0] and debt.errors[0].startswith("debt list line 3")
+    assert len(debt.stale) == 1 and "defines no gone" in debt.stale[0]
+
+
+def test_split_debt_keeps_the_unexplained_and_names_the_entries_wired_since():
+    owed, new = Symbol(CORE, "owed", "function", 1), Symbol(CORE, "new", "function", 2)
+    found, resolved = check_unwired.split_debt((owed, new), frozenset({(CORE, "owed"), (CORE, "wired")}))
+    assert found == (new,) and resolved == frozenset({(CORE, "wired")})
+
+
+def test_the_scan_report_names_each_unexplained_symbol_then_each_entry_to_drop():
+    new = Symbol(CORE, "new", "function", 2)
+    lines = check_unwired.scan_report(5, (new,), 1, {(CORE, "wired")})
+    assert lines[0].startswith(f"{CORE}:2: unwired: function new has no reference outside tests")
+    assert lines[1] == f"unwired: {CORE}::wired is wired now; drop it from the debt list"
+    assert check_unwired.scan_report(5, (), 1, ()) == (
+        "unwired: 5 public symbol(s) under src/, each referenced outside tests, allowlisted, or one of 1 on the debt list",
+    )
+
+
+def test_end_to_end_the_main_scan_fails_on_a_helper_the_base_already_had(repo: Path):
+    add_unwired_helper(repo)
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    assert check(repo).returncode == 0, "the diff adds nothing"
+    scan = check(repo, "--all")
+    assert scan.returncode == 1 and f"{CORE}:5: unwired: function count" in scan.stdout
+
+
+def test_end_to_end_a_debt_entry_explains_it_and_a_stale_one_is_only_a_note(repo: Path):
+    add_unwired_helper(repo)
+    write(repo, ".github/unwired-debt.txt", f"{CORE}::count  # owed by the counting intake\n{CORE}::gone  # deleted\n")
+    scan = check(repo, "--all")
+    assert scan.returncode == 0, scan.stdout + scan.stderr
+    assert "one of 1 on the debt list" in scan.stdout and "defines no gone" in scan.stderr
+    write(repo, ".github/unwired-debt.txt", f"{CORE}::count\n")
+    refused = check(repo, "--all")
+    assert refused.returncode == 2 and "has no reason" in refused.stderr
+
+
+def test_end_to_end_the_main_scan_notes_a_debt_entry_that_is_wired_now(repo: Path):
+    write(repo, ".github/unwired-debt.txt", f"{CORE}::parse  # was owed\n")
+    scan = check(repo, "--all")
+    assert scan.returncode == 0
+    assert f"{CORE}::parse is wired now; drop it from the debt list" in scan.stdout

@@ -30,6 +30,10 @@ jobs:
       # H10 item 5: a public symbol the change adds under src/ with no reference outside tests fails the job
       - name: unwired (no added symbol without a caller)
         run: uv run python .github/check_unwired.py --base "origin/${{ github.base_ref || 'main' }}"
+      # The main scan: every public symbol under src/ has a caller, an allowlisted entry point, or a line on the debt
+      # list (.github/unwired-debt.txt), so a change that deletes a symbol's last caller fails too
+      - name: unwired main scan (no symbol without a caller, an entry point or a debt line)
+        run: uv run python .github/check_unwired.py --all
       - name: pytest root
         run: uv run pytest -q -n auto
       - name: pytest tools
