@@ -101,8 +101,8 @@ def _unit_env_loaded(note: Callable[[str], None] | None = None):
     default = unit_env.env_file_path(str(home))
     files = unit_env.units_environment_files([unit_env.decode_text(data) for _, data in unit_reads], default, str(home))
     file_reads = [(path, _read_bytes_or_none(Path(path).expanduser())) for path in files]
-    values = unit_env.merged_values(unit_env.decode_text(data) for _, data in file_reads)
-    load = unit_env.plan_load(os.environ, values, sys.platform)
+    values, skipped = unit_env.read_env_files((unit_env.decode_text(data) for _, data in file_reads), sys.platform)
+    load = unit_env.plan_load(os.environ, values, skipped)
     absent = [path for path, data in file_reads if data is None and path != default]
     for line in unit_env.load_notes(load, files, absent, unit_env.undecodable([*unit_reads, *file_reads])):
         if note is not None:
