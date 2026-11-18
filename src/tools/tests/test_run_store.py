@@ -773,15 +773,34 @@ def test_lease_row_is_shared_by_x_2_and_x_3(tmp_path):
     assert first == run_store.lease_row(tmp_path, "x-3")
 
 
-def test_lease_row_reads_the_leases_table_once_per_window(tmp_path, monkeypatch):
+def _counting_opens(tmp_path, monkeypatch, clock):
+    """A store with one `runs:x` lease row, the windows' clock set to `clock`, and the list each `open_store` appends to."""
     lease_rows_table(tmp_path, ("status", "progress"), ("runs:x", "host-a", 1, "2026-09-25T12:02:00Z", "2026-09-25T12:00:00Z", "running", "p"))
     opens = []
     real_open = run_store.open_store
     monkeypatch.setattr(run_store, "open_store", lambda runs_dir: opens.append(runs_dir) or real_open(runs_dir))
+    monkeypatch.setattr(run_store, "_snapshot_clock", clock)
+    return opens
+
+
+def test_lease_row_reads_the_leases_table_once_per_window(tmp_path, monkeypatch):
+    # The clock stands still: on the real one, a window boundary passing between the first and last read is a second
+    # window, and so a second read.
+    opens = _counting_opens(tmp_path, monkeypatch, lambda: 10 * run_store.LEASE_SNAPSHOT_S + 0.5)
     assert run_store.lease_row(tmp_path, "x-3") is not None
     assert run_store.lease_row(tmp_path, "x-4") is not None
     assert run_store.lease_row(tmp_path, "y-1") is None
     assert len(opens) == 1
+
+
+def test_lease_row_reads_the_leases_table_again_once_the_clock_crosses_into_the_next_window(tmp_path, monkeypatch):
+    now = [11 * run_store.LEASE_SNAPSHOT_S - 0.001]
+    opens = _counting_opens(tmp_path, monkeypatch, lambda: now[0])
+    assert run_store.lease_row(tmp_path, "x-3") is not None
+    now[0] += 0.002
+    assert run_store.lease_row(tmp_path, "x-4") is not None
+    assert run_store.lease_row(tmp_path, "y-1") is None
+    assert len(opens) == 2
 
 
 NOW = "2026-09-25T12:00:00Z"
