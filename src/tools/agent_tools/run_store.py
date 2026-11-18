@@ -273,10 +273,17 @@ def lease_name_for(run_id: str) -> str:
 
 def lease(runs_dir: Path, run_id: str) -> tuple[str, str, str] | None:
     """Edge. The (holder, expires_at, heartbeat_at) of the store lease for `run_id`'s prefix; None with no store, no row, or an unreadable store."""
-    return lease_table_for(str(runs_dir), int(time.monotonic() // LEASE_SNAPSHOT_S)).get(lease_name_for(run_id))
+    return lease_table_for(str(runs_dir), _snapshot_window()).get(lease_name_for(run_id))
 
 
 LEASE_SNAPSHOT_S = 2  # one read of the leases table serves every liveness check within this window
+_snapshot_clock: Callable[[], float] = time.monotonic  # the windows' clock; a test swaps in one it moves by hand
+
+
+def _snapshot_window() -> int:
+    """Edge. The `LEASE_SNAPSHOT_S` window the clock is in now. Windows are aligned buckets, so two reads a moment apart
+    fall in two windows when a boundary passes between them, and each window reads the table once."""
+    return int(_snapshot_clock() // LEASE_SNAPSHOT_S)
 
 
 @functools.lru_cache(maxsize=8)
@@ -318,7 +325,7 @@ def _leases_columns(conn: Any, token: str) -> set[str]:
 
 def lease_row(runs_dir: Path, run_id: str) -> LeaseRow | None:
     """Edge. The full store lease row for `run_id`'s prefix; None with no store, no row, or an unreadable store."""
-    return _lease_rows(str(runs_dir), int(time.monotonic() // LEASE_SNAPSHOT_S)).get(lease_name_for(run_id))
+    return _lease_rows(str(runs_dir), _snapshot_window()).get(lease_name_for(run_id))
 
 
 @functools.lru_cache(maxsize=8)
@@ -394,7 +401,7 @@ def live_lanes(runs_dir: Path, now: str) -> list[Lane]:
 
     A lease with no run row is skipped. `phases` is `running_phases` of the lease's progress, read in the same snapshot.
     Empty with no store or an unreadable one."""
-    rows = _lease_rows(str(runs_dir), int(time.monotonic() // LEASE_SNAPSHOT_S))
+    rows = _lease_rows(str(runs_dir), _snapshot_window())
     live = sorted((n, r.heartbeat_at, running_phases(r.progress)) for n, r in rows.items() if n.startswith("runs:") and r.expires_at > now)
     return _joined_lanes(runs_dir, live)
 
@@ -404,7 +411,7 @@ def lost_lanes(runs_dir: Path, now: str) -> list[Lane]:
 
     A release writes a 1970 `expires_at`, so a released lease is never listed. A lane whose host died stops renewing, and
     its lease lapses a ttl after its last beat, so it is listed here and not in `live_lanes`."""
-    table = lease_table_for(str(runs_dir), int(time.monotonic() // LEASE_SNAPSHOT_S))
+    table = lease_table_for(str(runs_dir), _snapshot_window())
     lapsed = sorted((n, beat, 1) for n, (_, expires, beat) in table.items() if n.startswith("runs:") and beat < expires <= now)
     return _joined_lanes(runs_dir, lapsed)
 
