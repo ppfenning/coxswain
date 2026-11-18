@@ -298,6 +298,41 @@ def held_after(held: lr.Hold | None, reason: str | None, now: str) -> tuple[lr.H
     return {"reason": reason, "since": now}, True
 
 
+UNREADABLE_KEY = "unreadable:"  # the lander_notices key prefix of a landing-record row that does not read
+
+
+def unreadable_reason(found: lr.Unreadable) -> str:
+    """Pure. What the chair is told about a landing-record row that does not read as a record."""
+    return (f"the landing record of {found.initiative} cannot be read, so nothing of it merges or lands until the row "
+            f"is repaired by hand: {found.why}")
+
+
+def unreadable_notices(told: Mapping[str, str], unreadable: Sequence[lr.Unreadable]) -> tuple[list[lr.Unreadable], list[str]]:
+    """Pure. (the rows to tell the chair about, the notice keys to forget). `told` is what was told already, key ->
+    `reason_key` of the reason. A row is told once per stall: again only when its reason changes. A told row that
+    reads again (or has gone) is forgotten, so its next stall is told as new."""
+    now_bad = {f"{UNREADABLE_KEY}{u.initiative}": u for u in unreadable}
+    tell = [u for key, u in now_bad.items() if told.get(key) != reason_key(unreadable_reason(u))]
+    return tell, sorted(key for key in told if key.startswith(UNREADABLE_KEY) and key not in now_bad)
+
+
+def without_unreadable(items: Sequence[Row], unreadable: Sequence[lr.Unreadable]) -> list[Row]:
+    """Pure. The queue items a pass may work: none of an initiative whose landing record does not read. Its items stay
+    queued as they are, for the pass that reads the row again."""
+    bad = {u.initiative for u in unreadable}
+    return [i for i in items if str(i["initiative"]) not in bad]
+
+
+def pass_failure_notice(told: str | None, failure: str | None) -> tuple[str | None, str | None]:
+    """Pure. (what is remembered as told, the reason to tell or None) after a pass that failed with `failure`, or
+    succeeded (None). A failure is told once while it repeats; a different one is told; a pass that succeeds clears
+    the memory, so the same failure coming back later is told again."""
+    if failure is None:
+        return None, None
+    key = reason_key(failure)
+    return key, None if told == key else failure
+
+
 @dataclass(frozen=True)
 class Lane:
     """One repository's work for a pass: the initiatives to reconcile and the queue items to perform."""
@@ -494,7 +529,9 @@ def land_initiative(ports: Ports, initiative: str, *, merge: bool = True, refres
         return close("failed", f"{initiative} has no landing record")
     if _held(record):
         return close("waiting", held_note(record))
-    record, stack_events, below = _restack(ports, record)
+    record, stack_events, below, unknown = _restack(ports, record)
+    if unknown is not None:
+        return close("waiting", unknown)
     first = _other_land_on_parent(ports, ls.get_item(ports.conn, ident) or {})
     if first is not None:
         return close("waiting", f"{first} is landing on {record.get('parent')} first")
@@ -592,20 +629,35 @@ def _unheld_at_merge(repo: Path, record: lr.LandingRecord) -> str | None:
     return f"{name} lacks recorded commit(s) {', '.join(s[:12] for s in missing)}: the merge waits until it holds them"
 
 
-def _restack(ports: Ports, record: lr.LandingRecord) -> tuple[lr.LandingRecord, list[str], str | None]:
-    """The stack step of a land. (the record, events, the initiative this one is still stacked on or None).
+def stack_unread_note(initiative: str, parent: str, below: lr.Unreadable) -> str:
+    """Pure. Why a land waits on a layer below whose landing record does not read."""
+    return (f"{initiative} is stacked on {parent}, and the landing record of {below.initiative}, which may be that "
+            f"layer, cannot be read ({below.why}): whether it has landed is unknown, so the land waits")
+
+
+def _restack(ports: Ports, record: lr.LandingRecord) -> tuple[lr.LandingRecord, list[str], str | None, str | None]:
+    """The stack step of a land. (the record, events, the initiative this one is still stacked on or None, why the
+    layer below is unknown or None).
 
     When the record's parent is another initiative's branch, that initiative is the layer below. While it has not
     landed this one waits on it. Once it has, this one moves down onto that initiative's own parent: the record's
     parent changes, the open pull request is retargeted, and the new parent is merged forward by the ordinary
-    refresh. Nothing is rebased."""
+    refresh. Nothing is rebased. A layer below whose landing record does not read (`lr.layer_below`) is unknown: the
+    land waits, and nothing is written."""
     parent = str(record.get("parent") or "")
-    below = next((r for r in ls.list_records(ports.conn)
-                  if r.get("branch") == parent and r.get("initiative") != record.get("initiative")), None)
+    table = ls.list_records(ports.conn)
+    # Only a row that names no branch needs the epic's settings to be judged; the others never read them.
+    initiative = record_text(record, "initiative")
+    meta: LandMeta = ports.meta(initiative) if any(not u.branch for u in table.unreadable) else {}
+    epic_branch = meta.get("epic_branch")
+    below = lr.layer_below(record, table, stacked=bool(meta.get("epic_stack")),
+                           epic_branch=str(epic_branch) if epic_branch else None)
     if below is None:
-        return record, [], None
+        return record, [], None, None
+    if isinstance(below, lr.Unreadable):
+        return record, [], None, stack_unread_note(initiative, parent, below)
     if below.get("state") != "landed":
-        return record, [], record_text(below, "initiative")
+        return record, [], record_text(below, "initiative"), None
     new_parent, initiative = str(below.get("parent") or ""), record_text(record, "initiative")
     updated: lr.LandingRecord = {**record, "parent": new_parent, "updated_at": ports.now()}
     pr = updated.get("pr")
@@ -617,7 +669,7 @@ def _restack(ports: Ports, record: lr.LandingRecord) -> tuple[lr.LandingRecord, 
         ok, why = ports.forge.retarget(ports_repo(ports, record), record_text(record, "branch"), new_parent)
         events.append(f"{initiative}: pull request retargeted to {new_parent}" if ok
                       else f"{initiative}: pull request not retargeted to {new_parent}: {why}")
-    return updated, events, None
+    return updated, events, None, None
 
 
 def land_epics(ports: Ports) -> list[str]:
@@ -626,13 +678,19 @@ def land_epics(ports: Ports) -> list[str]:
     The epic's record is kept under `epic:<id>`. The pull request is opened once and left for the gate that merges it."""
     events: list[str] = []
     by_epic: dict[str, list[lr.LandingRecord]] = {}
-    for record in ls.list_records(ports.conn):
+    table = ls.list_records(ports.conn)
+    for record in table.records:
         epic_id = record.get("epic")
         if epic_id and not record_text(record, "initiative").startswith("epic:"):
             by_epic.setdefault(str(epic_id), []).append(record)
+    unread = [(u, _filed_epic(ports, u)) for u in table.unreadable if not u.initiative.startswith("epic:")]
     for epic, members in sorted(by_epic.items()):
         key = f"epic:{epic}"
-        if ls.get_record(ports.conn, key) is not None or any(m.get("state") != "landed" for m in members):
+        if ls.has_record(ports.conn, key) or any(m.get("state") != "landed" for m in members):
+            continue
+        maybe = [u.initiative for u, filed in unread if lr.maybe_in_epic(u, epic, filed)]
+        if maybe:
+            events.append(f"epic {epic}: waits: the landing record of {', '.join(maybe)} cannot be read, and may be one of its initiatives")
             continue
         meta = ports.meta(record_text(members[0], "initiative"))
         branch, parent = meta.get("epic_branch"), meta.get("epic_parent")
@@ -652,6 +710,18 @@ def land_epics(ports: Ports) -> list[str]:
                                    "created_at": now, "updated_at": now})
         events.append(f"epic {epic}: every initiative has landed; opened {url} from {branch} to {parent}")
     return events
+
+
+def _filed_epic(ports: Ports, found: lr.Unreadable) -> str | None:
+    """The epic the unreadable row's initiative file names, or None: no file, none named, or not read. Asked only when
+    the row's own JSON cannot say (`lr.maybe_in_epic` reads None as "maybe in any epic")."""
+    if found.epic is not None:
+        return None
+    try:
+        epic = (ports.meta(found.initiative).get("initiative") or {}).get("epic")
+    except Exception:  # an initiative whose files cannot be read: its epic is unknown
+        return None
+    return str(epic) if epic else None
 
 
 def _open_pr(ports: Ports, record: lr.LandingRecord, tasks: Sequence[Row], meta: LandMeta, repo: Path,
@@ -839,7 +909,7 @@ def sweep(ports: Ports, initiatives: Collection[str] | None = None) -> list[str]
     and an initiative with a blocked phase has its `on_blocked` policy applied. With `initiatives`, only those: a lane
     sweeps its own, so a record is only ever read and written by the lane that owns it."""
     events: list[str] = []
-    for record in ls.list_records(ports.conn):
+    for record in ls.list_records(ports.conn).records:
         if not live(record) or (initiatives is not None and record_text(record, "initiative") not in initiatives):
             continue
         initiative = record_text(record, "initiative")
@@ -1149,20 +1219,42 @@ def reconcile(ports: Ports, initiative: str) -> list[str]:
 
 # -- the pass -----------------------------------------------------------------------------------------------------
 
+def tell_unreadable_rows(ports: Ports, unreadable: Sequence[lr.Unreadable]) -> list[str]:
+    """Tell the chair once per stall of each landing-record row that does not read (`unreadable_notices`), and forget
+    the ones that read again. The memory is `lander_notices`, never the row: the row is the evidence, left as it is."""
+    tell, cleared = unreadable_notices(ls.told(ports.conn, UNREADABLE_KEY), unreadable)
+    events: list[str] = []
+    for found in tell:
+        reason = unreadable_reason(found)
+        ports.notify("needs_chair", {"initiative": found.initiative, "reason": reason})
+        ls.remember(ports.conn, f"{UNREADABLE_KEY}{found.initiative}", reason_key(reason), ports.now())
+        events.append(f"unreadable: {reason}")
+    for key in cleared:
+        ls.forget(ports.conn, key)
+        events.append(f"unreadable: the landing record of {key.removeprefix(UNREADABLE_KEY)} reads again")
+    return events
+
+
 def plan_pass(ports: Ports) -> list[Lane]:
     """The shared start of a pass, which writes no initiative's record: the epics' pull requests, then the pass's
     work split into one lane per repository. Everything per initiative (the sweep, the alarm, reconciliation, the
-    items) happens in the lane that owns it, so a record has one writer in a pass while lanes run side by side."""
+    items) happens in the lane that owns it, so a record has one writer in a pass while lanes run side by side.
+
+    A landing-record row that does not read stops only its own initiative: its items are left out of the pass, the
+    chair is told once, and every other initiative's pass goes on."""
     for line in land_epics(ports):
         ports.log(line)
-    records = [r for r in ls.list_records(ports.conn) if live(r)]
+    table = ls.list_records(ports.conn)
+    for line in tell_unreadable_rows(ports, table.unreadable):
+        ports.log(line)
+    records = [r for r in table.records if live(r)]
     where: dict[str, str] = {}
     for record in records:
         try:
             where[record_text(record, "initiative")] = str(ports_repo(ports, record))
         except LookupError:
             continue
-    return lanes(records, ls.claimable(ls.list_items(ports.conn), ports.now()), where)
+    return lanes(records, without_unreadable(ls.claimable(ls.list_items(ports.conn), ports.now()), table.unreadable), where)
 
 
 def run_lane(ports: Ports, lane: Lane, *, phase_cap: int = 2, land_cap: int = 1, land_batch_size: int = 1) -> list[Outcome]:

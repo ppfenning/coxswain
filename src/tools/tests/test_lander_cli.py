@@ -54,7 +54,7 @@ def test_status_shows_live_initiatives_by_derived_state_and_the_open_queue_with_
         "",
         "phase_merge:demo:p2: queued, waiting 2h05m, 2 attempt(s): conflict in shared.txt",
     ]
-    assert lander_cli.status_lines({"initiatives": [], "queue": []}) == ["no initiative is in flight", "", "the land queue is empty"]
+    assert lander_cli.status_lines({"initiatives": [], "unreadable": [], "queue": []}) == ["no initiative is in flight", "", "the land queue is empty"]
 
 
 def test_the_lander_group_is_in_the_command_table_with_its_commands() -> None:

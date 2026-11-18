@@ -44,7 +44,7 @@ def adopt(world: World, initiative: str) -> list[str]:
 
 def snapshot(world: World) -> tuple:
     refs = run(world.repo, "for-each-ref", "--format=%(refname) %(objectname)")
-    return refs, ls.list_records(world.conn), ls.list_items(world.conn), [dict(r) for rows in world.rows.values() for r in rows]
+    return refs, list(ls.list_records(world.conn).records), ls.list_items(world.conn), [dict(r) for rows in world.rows.values() for r in rows]
 
 
 def assert_nothing_lost(world: World, initiative: str) -> None:
@@ -172,4 +172,4 @@ def test_an_initiative_whose_repository_is_not_known_is_skipped_and_git_never_ru
     found = lander_adopt.plan(world.ports, "nowhere")
     assert found.skip == "nowhere: its repository is not known on this machine"
     assert lander_adopt.apply(world.ports, found, world.send_back) == ["nowhere: skipped: nowhere: its repository is not known on this machine"]
-    assert ls.list_records(world.conn) == []
+    assert ls.list_records(world.conn) == lr.Listing()

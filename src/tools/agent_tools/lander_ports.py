@@ -23,7 +23,7 @@ from agent_tools import courier, forge, lander, repo_path, route, run_store, wor
 from agent_tools.forge import ForgeModule
 from agent_tools.store_url import read_provider_profile
 from core.jsontypes import is_mapping
-from core.landing_record import LandingRecord, record_from_store
+from core.landing_record import LandingRecord, Listing
 from harness.store_dialect import Connection
 
 WAIT_CHECKS_S = 1800.0  # the bound on a wait for a forge that cannot poll its checks once
@@ -54,37 +54,61 @@ def connect(runs_dir: Path) -> Connection:
     return conn
 
 
-def _sqlite_records(path: Path) -> list[LandingRecord]:
+def _sqlite_listing(path: Path) -> Listing:
     """Edge. The records of a sqlite store, read-only: no file is created, no journal mode is set, nothing is touched."""
+    from core.landing_record import listing
+
     if not path.is_file():
-        return []
+        return Listing()
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5.0)
     try:
-        rows = conn.execute("SELECT record_json FROM landing_records ORDER BY initiative").fetchall()
+        # A store no opener has migrated yet has no landing table, and so no records: that is a true empty read.
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'landing_records'").fetchone() is None:
+            return Listing()
+        rows = conn.execute("SELECT initiative, record_json FROM landing_records ORDER BY initiative").fetchall()
     finally:
         conn.close()
-    return [record_from_store(json.loads(row[0]) or {}) for row in rows]
+    return listing((str(initiative), raw) for initiative, raw in rows)
+
+
+# A fault in the code, not the store: a renamed helper, a missing module. A reader that turns a store it cannot reach
+# into "no records" must still raise these, or a rename reads as an empty store on every call and nobody is told.
+PROGRAM_FAULTS: tuple[type[BaseException], ...] = (AttributeError, ImportError, NameError, TypeError)
+
+
+def read_listing(runs_dir: Path) -> Listing:
+    """Edge. The landing-record table, for a reader that only looks: never migrates, and writes nothing. A row that
+    does not read is in `unreadable`, apart from the rest. Raises when the store cannot be read at all."""
+    from harness import landing_store
+    from harness.store_dialect import connect as open_url
+
+    url = run_store.store_url_for(Path(runs_dir))
+    if url.startswith("sqlite:"):
+        return _sqlite_listing(run_store.sqlite_path(url))
+    conn = open_url(url)
+    try:
+        return landing_store.list_records(conn)
+    finally:
+        conn.close()
 
 
 def read_records(runs_dir: Path, log: Callable[[str], None] | None = None) -> list[LandingRecord]:
-    """Edge. Every landing record, for a reader that only looks (the chair's tick). Never migrates and never raises:
-    a store with no landing tables yet, or one that cannot be reached, reads as no records, so nothing reads as merged."""
+    """Edge. Every landing record that reads, for a reader that only looks (the chair's tick). Never migrates and
+    never raises: a store with no landing tables yet, or one that cannot be reached, reads as no records, so nothing
+    reads as merged. A row that does not read is left out, with a note: the others still read. A fault in this code
+    (`PROGRAM_FAULTS`) is raised, never read as an empty store."""
     try:
-        from harness import landing_store
-        from harness.store_dialect import connect as open_url
-
-        url = run_store.store_url_for(Path(runs_dir))
-        if url.startswith("sqlite:"):
-            return _sqlite_records(run_store.sqlite_path(url))
-        conn = open_url(url)
-        try:
-            return landing_store.list_records(conn)
-        finally:
-            conn.close()
+        table = read_listing(runs_dir)
+    except PROGRAM_FAULTS:
+        raise
     except Exception as exc:
         if log is not None:
             log(f"note: landing records not read ({type(exc).__name__}: {exc}); no phase reads as merged this tick")
         return []
+    if log is not None:
+        for found in table.unreadable:
+            log(f"note: the landing record of {found.initiative} cannot be read ({found.why}); none of its phases reads as merged")
+    return list(table.records)
 
 
 def _frontmatter(path: Path) -> dict[str, object]:
@@ -347,15 +371,19 @@ def needed_initiatives(work: Path, initiative: str) -> list[str]:
     return found
 
 
-def stack_base(ws: Path, initiative: str, epic: str, epic_branch: str | None, records: Sequence[Mapping[str, object]]) -> str | None:
-    """Edge (reads). With `epic_stack` on, the branch `initiative` forks from: see `core.landing.stack_parent`."""
-    from core.landing import stack_parent
+def stack_base(ws: Path, initiative: str, epic: str, epic_branch: str | None, table: Listing) -> tuple[str | None, str | None]:
+    """Edge (reads). With `epic_stack` on, (the branch `initiative` forks from, why it is held instead): see
+    `core.landing.stack_parent`. A needed initiative whose landing record does not read makes the base unknown
+    (`core.landing.stack_unknown`): the initiative is held with the reason, never cut from the epic branch."""
+    from core.landing import stack_parent, stack_unknown
 
     members = {
-        str(r["initiative"]): {"branch": r.get("branch"), "landed": r.get("state") == "landed"}
-        for r in records if r.get("epic") == epic
+        lander.record_text(r, "initiative"): {"branch": r.get("branch"), "landed": r.get("state") == "landed"}
+        for r in table.records if r.get("epic") == epic
     }
-    return stack_parent(needed_initiatives(Path(ws) / "work", initiative), members, epic_branch)
+    needs = needed_initiatives(Path(ws) / "work", initiative)
+    held = stack_unknown(needs, members, {u.initiative: u.why for u in table.unreadable})
+    return (None, f"{initiative} is held: {held}") if held is not None else (stack_parent(needs, members, epic_branch), None)
 
 
 def send_back(ws: Path, conn: Connection, worker: str, mode: str) -> Callable[[str, str, str], str | None]:
@@ -509,9 +537,12 @@ def build(ws: Path, profile: Mapping[str, object], *, worker: str | None = None,
 
     def notify(kind: str, fields: Mapping[str, object]) -> None:
         initiative = str(fields.get("initiative") or "")
-        note = f"lander: {kind}: {initiative}" + (f" phase {fields['phase']}" if fields.get("phase") else "") + f": {fields.get('reason') or ''}"
+        subject = f"{initiative}" + (f" phase {fields['phase']}" if fields.get("phase") else "") + ": " if initiative else ""
+        note = f"lander: {kind}: {subject}{fields.get('reason') or ''}"
+        # A notice about the lander itself (a failed pass) names no initiative: it rides the lander's own reference.
+        ref = courier.Reference("initiative", initiative) if initiative else courier.Reference("proposal", "lander")
         entry = courier.send(
-            courier.Reference("initiative", initiative), name, "chair", note.strip(), uuid.uuid4().hex,
+            ref, name, "chair", note.strip(), uuid.uuid4().hex,
             event="needs_attention", fields={k: v if isinstance(v, str) else json.dumps(v) for k, v in fields.items()},
             topic=initiative or None,
         )

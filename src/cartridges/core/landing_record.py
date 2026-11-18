@@ -15,8 +15,11 @@ task's `merged` flag, and a merged task holds no files.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Collection, Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from dataclasses import replace as dataclass_replace
 from typing import TypedDict, Unpack, cast
 
 from core.jsontypes import conform, is_mapping
@@ -133,6 +136,65 @@ def record_from_store(raw: object) -> LandingRecord:
     """Pure. A decoded `record_json` as a `LandingRecord`; `ShapeError` when it is not an object or a key it names is
     malformed. Keys the record does not name pass, as a record may carry more than its readers name."""
     return conform(LandingRecord, raw, "landing record")
+
+
+@dataclass(frozen=True)
+class Unreadable:
+    """A landing-record row that does not read as a record: `initiative` is the row's own `initiative` column, `why`
+    the reason. `branch` is the branch the row's JSON names when it decodes far enough to say, else "": a reader that
+    must know whether this row is the layer below another initiative compares it, and treats "" as unknown. `epic` is
+    the epic the JSON names, "" when it names none (`epic` is null), and None when it cannot say (the row does not
+    decode, or has no `epic` key, or a malformed one): a reader treats None as "maybe in any epic"."""
+
+    initiative: str
+    why: str
+    branch: str = ""
+    epic: str | None = None
+
+
+@dataclass(frozen=True)
+class Listing:
+    """The landing-record table, read: the rows that read as records, and the ones that do not, each by initiative.
+
+    One malformed row never hides the others. A reader decides what an unreadable row means for it; none of them
+    writes into it, so the row stays as the evidence of what went wrong."""
+
+    records: tuple[LandingRecord, ...] = ()
+    unreadable: tuple[Unreadable, ...] = ()
+
+    def initiatives(self) -> set[str]:
+        """Every initiative with a row, readable or not: the ones that have a landing record."""
+        return {str(r.get("initiative")) for r in self.records} | {u.initiative for u in self.unreadable}
+
+
+def read_row(initiative: str, raw: object) -> LandingRecord | Unreadable:
+    """Pure. One row of `landing_records`, from its `initiative` column and its `record_json` cell (text, bytes, an
+    already-decoded value, or None), as the record or as `Unreadable` with the reason. A row whose JSON does not parse,
+    is not an object, has a malformed key, or names another initiative (or none) than its column is unreadable."""
+    try:
+        decoded = json.loads(raw) if isinstance(raw, str | bytes | bytearray) else raw
+    except ValueError as exc:
+        return Unreadable(initiative, f"record_json is not JSON: {exc}")
+    fields: Mapping[str, object] = decoded if is_mapping(decoded) else {}
+    branch, epic = fields.get("branch"), fields.get("epic")
+    named_epic = None if "epic" not in fields else "" if epic is None else epic if isinstance(epic, str) else None
+    unreadable = Unreadable(initiative, "", branch if isinstance(branch, str) else "", named_epic)
+    try:
+        record = record_from_store(decoded)
+    except ValueError as exc:
+        return dataclass_replace(unreadable, why=str(exc))
+    named = record.get("initiative")
+    if named != initiative:
+        why = "record_json names no initiative" if named is None else f"record_json names initiative {named!r}, not its row's"
+        return dataclass_replace(unreadable, why=why)
+    return record
+
+
+def listing(rows: Iterable[tuple[str, object]]) -> Listing:
+    """Pure. `(initiative column, record_json cell)` rows, in order, split into the records and the unreadable rows."""
+    read = [read_row(str(initiative), raw) for initiative, raw in rows]
+    return Listing(tuple(r for r in read if not isinstance(r, Unreadable)),
+                   tuple(r for r in read if isinstance(r, Unreadable)))
 
 
 def natural_key(name: str) -> list[int | str]:
@@ -417,16 +479,54 @@ def follow_up_id(initiative: str, taken: Collection[str]) -> str:
     return f"{stem}-{number}"
 
 
-def stack_resolved_parent(record: LandingRecord, records: Sequence[LandingRecord]) -> str:
-    """The branch `record`'s initiative takes forward now: its recorded parent, or, while that parent is the branch of
-    a lower initiative that has landed, that initiative's own parent, layer by layer down the stack.
+def stack_resolved_parent(record: LandingRecord, table: Listing, *, stacked: bool,
+                          epic_branch: str | None) -> tuple[str, Unreadable | None]:
+    """Pure. (the branch `record`'s initiative takes forward now, the unreadable row that makes it unknown or None).
 
-    A landed initiative's branch is deleted, so its name is no commit to merge. The lander moves the record down only
-    at land time (`_restack`, which retargets the pull request too); a run reads the same answer and writes nothing."""
+    The branch is its recorded parent, or, while that parent is the branch of a lower initiative that has landed,
+    that initiative's own parent, layer by layer down the stack (`layer_below` at each layer). A landed initiative's
+    branch is deleted, so its name is no commit to merge. A layer that may be a row that does not read stops the walk:
+    whether it landed is unknown, so the caller holds rather than takes forward a branch that may be gone. The lander
+    moves the record down only at land time (`_restack`, which retargets the pull request too); a run reads the same
+    answer and writes nothing."""
     parent, seen = str(record.get("parent") or ""), {str(record.get("initiative"))}
     while True:
-        below = next((r for r in records if r.get("branch") == parent and str(r.get("initiative")) not in seen), None)
-        if below is None or below.get("state") != "landed":
-            return parent
+        probe: LandingRecord = {"initiative": str(record.get("initiative")), "parent": parent, "epic": record.get("epic")}
+        below = layer_below(probe, table, stacked=stacked, epic_branch=epic_branch)
+        if isinstance(below, Unreadable):
+            return parent, below
+        if below is None or str(below.get("initiative")) in seen or below.get("state") != "landed":
+            return parent, None
         seen.add(str(below.get("initiative")))
         parent = str(below.get("parent") or parent)
+
+
+def maybe_in_epic(found: Unreadable, epic: str, filed: str | None) -> bool:
+    """Pure. Whether the row that does not read may be a member of `epic`, so the epic's pull request must wait.
+
+    The epic its JSON names decides. When the JSON cannot say, `filed` (the epic its initiative's own file names, None
+    when there is no file or it names none) decides only when it names an epic; else the row may be in any epic."""
+    if found.epic is not None:
+        return found.epic == epic
+    return filed is None or filed == epic
+
+
+def layer_below(record: LandingRecord, table: Listing, *, stacked: bool, epic_branch: str | None) -> LandingRecord | Unreadable | None:
+    """Pure. The layer `record` is stacked on: the other initiative whose branch is its parent, read or unreadable.
+
+    A readable record whose branch is the parent is the layer below. Else an unreadable row is, when its JSON names
+    that branch, or, in a stacked epic (`stacked`), when it names no branch, the parent is neither the epic branch nor
+    any readable record's, and the row is of the same epic or its epic is unknown: that row may be the layer below and
+    nobody can tell. A row of another epic never holds this one. None when there is no layer below (the parent is a
+    base branch), so the land goes on."""
+    parent, initiative = str(record.get("parent") or ""), record.get("initiative")
+    others = [r for r in table.records if r.get("initiative") != initiative]
+    below = next((r for r in others if r.get("branch") == parent), None)
+    if below is not None or not parent:
+        return below
+    named = next((u for u in table.unreadable if u.branch == parent and u.initiative != initiative), None)
+    if named is not None or not stacked or parent == epic_branch:
+        return named
+    epic = record.get("epic") or ""
+    return next((u for u in table.unreadable if not u.branch and u.initiative != initiative
+                 and (u.epic is None or u.epic == epic)), None)

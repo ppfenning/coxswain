@@ -1405,9 +1405,16 @@ def _initiative_target_branch(profile: dict, repo: Path | None, ws: Path, initia
         if epic and initiative and not fields.get("target_branch") and resolve_epic_stack(cartridge, epic.get("epic_stack")):
             # A stacked epic: an initiative that needs an unlanded initiative of the same epic forks from its branch.
             from agent_tools import lander_ports
-            resolved = lander_ports.stack_base(
-                ws, initiative, str(epic_id), epic["target_branch"], lander_ports.read_records(ws / "runs")
-            ) or resolved
+            try:
+                table = lander_ports.read_listing(ws / "runs")
+            except lander_ports.PROGRAM_FAULTS:
+                raise
+            except Exception as exc:  # no records read is not "no initiative below": the base is unknown
+                return None, f"{initiative} is held: the landing records could not be read ({type(exc).__name__}: {exc}), so its stack base is unknown"
+            stacked, held = lander_ports.stack_base(ws, initiative, str(epic_id), epic["target_branch"], table)
+            if held is not None:
+                return None, held
+            resolved = stacked or resolved
         return resolved, None
     except ValueError as exc:
         return None, str(exc)
