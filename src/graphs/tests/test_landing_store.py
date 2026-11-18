@@ -37,10 +37,45 @@ def test_a_record_reads_back_as_written_and_a_second_write_replaces_it(conn):
 def test_records_list_by_initiative_and_filter_by_state(conn):
     ls.put_record(conn, _record("b", "landed"))
     ls.put_record(conn, _record("a"))
-    assert [r["initiative"] for r in ls.list_records(conn)] == ["a", "b"]
-    assert [r["initiative"] for r in ls.list_records(conn, states=("landed",))] == ["b"]
+    assert [r["initiative"] for r in ls.list_records(conn).records] == ["a", "b"]
+    assert [r["initiative"] for r in ls.list_records(conn, states=("landed",)).records] == ["b"]
     ls.delete_record(conn, "a")
-    assert [r["initiative"] for r in ls.list_records(conn)] == ["b"]
+    assert [r["initiative"] for r in ls.list_records(conn).records] == ["b"]
+
+
+def _put_raw(conn, initiative, record_json, state="building"):
+    p = conn.dialect.placeholder
+    conn.execute(f"INSERT INTO landing_records (initiative, repo, state, record_json, created_at, updated_at) "
+                 f"VALUES ({p}, 'r', {p}, {p}, {p}, {p})", (initiative, state, record_json, T0, T0))
+
+
+def test_one_malformed_row_is_listed_apart_and_stops_only_its_own_initiatives_reads(conn):
+    """The bug: one row that did not read made `list_records` raise for the whole table."""
+    ls.put_record(conn, _record("a"))
+    _put_raw(conn, "b", '{"initiative": "b", "phases": [1]}')
+    ls.put_record(conn, _record("c", "landed"))
+    table = ls.list_records(conn)
+    assert [r["initiative"] for r in table.records] == ["a", "c"]
+    assert [(u.initiative, "phases" in u.why) for u in table.unreadable] == [("b", True)]
+    assert [u.initiative for u in ls.list_records(conn, states=("building",)).unreadable] == ["b"], "the state column still filters"
+    assert ls.list_records(conn, states=("landed",)).unreadable == ()
+    assert ls.get_record(conn, "a") == _record("a")
+    with pytest.raises(ls.UnreadableRecord, match="landing record of b cannot be read") as raised:
+        ls.get_record(conn, "b")
+    assert raised.value.unreadable.initiative == "b"
+    assert ls.has_record(conn, "b") and ls.has_record(conn, "a") and not ls.has_record(conn, "z")
+    assert ls.read_record(conn, "z") is None
+
+
+def test_a_notice_is_remembered_by_key_until_it_is_forgotten(conn):
+    assert ls.told(conn, "unreadable:") == {}
+    ls.remember(conn, "unreadable:b", "reason one", T0)
+    ls.remember(conn, "other:x", "elsewhere", T0)
+    assert ls.told(conn, "unreadable:") == {"unreadable:b": "reason one"}
+    ls.remember(conn, "unreadable:b", "reason two", T1)
+    assert ls.told(conn, "unreadable:") == {"unreadable:b": "reason two"}
+    ls.forget(conn, "unreadable:b")
+    assert ls.told(conn, "unreadable:") == {} and ls.told(conn, "other:") == {"other:x": "elsewhere"}
 
 
 def test_item_ids_are_one_per_phase_merge_and_one_per_initiative_land():

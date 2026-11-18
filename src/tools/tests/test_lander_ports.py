@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from agent_tools import lander_ports
+from core import landing_record as lr
 from harness import landing_ops, store_work_state
 
 ID = ("-c", "user.email=t@invalid", "-c", "user.name=t")
@@ -83,7 +84,7 @@ def test_the_ports_read_the_workspace(ws: Path, ports) -> None:
 def test_the_landing_tables_exist_after_connecting(ports) -> None:
     from harness import landing_store
 
-    assert landing_store.list_records(ports.conn) == [] and landing_store.list_items(ports.conn) == []
+    assert landing_store.list_records(ports.conn).records == () and landing_store.list_items(ports.conn) == []
 
 
 def test_notify_appends_one_courier_entry_for_the_chair(ws: Path, ports) -> None:
@@ -186,6 +187,31 @@ def test_reading_the_records_for_the_chair_leaves_no_trace_and_never_raises(tmp_
     assert len(notes) == 1 and notes[0].startswith("note: landing records not read (")
 
 
+def test_a_fault_in_the_reading_code_is_raised_never_read_as_an_empty_store() -> None:
+    """Finding 1: a renamed helper raised AttributeError, the broad except read it as "no records", and every stacked
+    initiative was held on every tick with nobody told why. A store that cannot be reached still reads as empty."""
+    assert AttributeError in lander_ports.PROGRAM_FAULTS and ImportError in lander_ports.PROGRAM_FAULTS
+    not_a_path: object = None  # what a caller holding the wrong value hands in: a fault in the code, not the store
+    with pytest.raises(TypeError):
+        lander_ports.read_records(not_a_path, lambda line: None)  # pyright: ignore[reportArgumentType]
+
+
+def test_one_malformed_row_leaves_the_chairs_read_of_every_other_record_and_is_named(ws: Path, ports) -> None:
+    """The bug: one row that did not read made the chair read no records at all."""
+    from harness import landing_store
+
+    landing_store.put_record(ports.conn, {"initiative": "demo", "repo": "r", "branch": "init/demo", "parent": "main",
+                                          "state": "building", "phases": {"p1": {"state": "merged"}}, "updated_at": NOW})
+    ports.conn.execute("INSERT INTO landing_records (initiative, repo, state, record_json, created_at, updated_at) "
+                       "VALUES ('bad', 'r', 'building', '{\"initiative\": \"bad\", \"phases\": [1]}', '', '')")
+    notes: list[str] = []
+    (read,) = lander_ports.read_records(ws / "runs", notes.append)
+    assert read["initiative"] == "demo"
+    assert len(notes) == 1 and notes[0].startswith("note: the landing record of bad cannot be read (")
+    table = lander_ports.read_listing(ws / "runs")
+    assert [u.initiative for u in table.unreadable] == ["bad"] and [r["initiative"] for r in table.records] == ["demo"]
+
+
 def test_send_back_moves_an_approved_work_file_to_ready_and_lists_the_workspaces_initiatives(ws: Path, ports) -> None:
     move = lander_ports.send_back(ws, ports.conn, "lander-test", "files")
     assert move("demo", "a", "commit 000000000000 is not in this clone") is None
@@ -241,10 +267,19 @@ def test_a_stacked_initiative_is_based_on_the_unlanded_initiative_its_tasks_need
     write(ws / "work" / "second" / "p1" / "s1.md", {"id": "s1", "title": "S1", "state": "ready", "needs": ["a"]})
     assert lander_ports.needed_initiatives(ws / "work", "second") == ["demo"]
     assert lander_ports.needed_initiatives(ws / "work", "demo") == []
-    records = [{"initiative": "demo", "epic": "x", "branch": "init/demo", "state": "building"}]
-    assert lander_ports.stack_base(ws, "second", "x", "epic-x", records) == "init/demo"
-    assert lander_ports.stack_base(ws, "second", "x", "epic-x", [{**records[0], "state": "landed"}]) == "epic-x"
-    assert lander_ports.stack_base(ws, "second", "other-epic", "epic-x", records) == "epic-x"
+    records: tuple[lr.LandingRecord, ...] = ({"initiative": "demo", "epic": "x", "branch": "init/demo", "state": "building"},)
+    assert lander_ports.stack_base(ws, "second", "x", "epic-x", lr.Listing(records)) == ("init/demo", None)
+    assert lander_ports.stack_base(ws, "second", "x", "epic-x", lr.Listing(({**records[0], "state": "landed"},))) == ("epic-x", None)
+    assert lander_ports.stack_base(ws, "second", "other-epic", "epic-x", lr.Listing(records)) == ("epic-x", None)
+
+
+def test_a_stacked_initiative_whose_needed_initiatives_record_does_not_read_is_held_not_cut_from_the_epic_branch(ws: Path) -> None:
+    """The bug: the chair read no records at all and cut the new layer from the epic branch. Now it is held."""
+    write(ws / "work" / "second" / "initiative.md", {"id": "second", "title": "Second", "epic": "x"})
+    write(ws / "work" / "second" / "p1" / "s1.md", {"id": "s1", "title": "S1", "state": "ready", "needs": ["a"]})
+    table = lr.Listing((), (lr.Unreadable("demo", "record_json is not JSON"),))
+    base, held = lander_ports.stack_base(ws, "second", "x", "epic-x", table)
+    assert base is None and held is not None and "demo" in held and "record_json is not JSON" in held
 
 
 def test_the_forge_wrapper_retargets_through_the_modules_pr_edit_and_says_when_it_cannot() -> None:

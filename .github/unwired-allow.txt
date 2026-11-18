@@ -7,6 +7,10 @@
 src/graphs/graphs/ops/epic_reconcile.py::epic_reconcile  # graph module, discovered by harness/registry.py's package walk
 src/graphs/graphs/ops/retro_propose.py::retro_propose  # graph module, discovered by harness/registry.py's package walk
 
+# Migrations: harness/store_migrate.default_modules walks the harness package for store_ddl_NNNN and calls each one's
+# `statements(dialect)` through the module object.
+src/graphs/harness/store_ddl_0019.py::statements  # migration module, discovered by store_migrate.default_modules' package walk
+
 # Commands a person runs as `python -m <module>`, documented where they are used.
 src/graphs/harness/graphdoc.py::graphdoc  # `python -m harness.graphdoc`, docs/customize/write-a-graph.md
 src/graphs/harness/store_backfill.py::store_backfill  # `python -m harness.store_backfill`, src/graphs/docs/STORAGE.md

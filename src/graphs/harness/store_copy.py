@@ -37,6 +37,7 @@ import harness.store_ddl_0015 as ddl15
 import harness.store_ddl_0016 as ddl16
 import harness.store_ddl_0017 as ddl17
 import harness.store_ddl_0018 as ddl18
+import harness.store_ddl_0019 as ddl19
 from harness.store_dialect import Connection, insert_ignore, upsert
 from harness.store_migrate import open_store
 
@@ -64,12 +65,13 @@ _ORDER = (
     "land_queue",
     "courier_log",
     "cartridge_snapshots",
+    "lander_notices",
 )
 
 # Tables whose rows change after they are first written. Every other table in _ORDER is append-only.
 _REFRESH = frozenset(
     {"runs", "phases", "tasks", "task_records", "work_items", "leases", "hosts", "id_sequence", "landing_records",
-     "land_queue"}
+     "land_queue", "lander_notices"}
 )
 
 
@@ -111,6 +113,7 @@ def tables() -> tuple[Table, ...]:
             *ddl16.TABLES,
             *ddl17.TABLES,
             *ddl18.TABLES,
+            *ddl19.TABLES,
         )
     )
 

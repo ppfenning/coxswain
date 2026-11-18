@@ -93,8 +93,9 @@ def _after(tasks: Sequence[lander.Row], findings: Sequence[TaskFinding]) -> list
 
 def plan(ports: lander.Ports, initiative: str) -> Plan:
     """Reads only. What adopting `initiative` would do on this machine."""
-    if ls.get_record(ports.conn, initiative) is not None:
-        return Plan(initiative, skip="it has a landing record already")
+    present = present_skip(ls.read_record(ports.conn, initiative))
+    if present is not None:
+        return Plan(initiative, skip=present)
     tasks, meta = ports.tasks(initiative), ports.meta(initiative)
     if not tasks:
         return Plan(initiative, skip="it has no tasks")
@@ -164,8 +165,9 @@ def apply(ports: lander.Ports, found: Plan, send_back: Callable[[str, str, str],
     initiative = found.initiative
     if found.skip:
         return found.lines()
-    if ls.get_record(ports.conn, initiative) is not None:
-        return [f"{initiative}: skipped: it has a landing record already"]
+    present = present_skip(ls.read_record(ports.conn, initiative))
+    if present is not None:
+        return [f"{initiative}: skipped: {present}"]
     repo = lander.ports_repo(ports, {"initiative": initiative,
                                      "repo": str((ports.meta(initiative).get("initiative") or {}).get("repo") or "")})
     events: list[str] = []
@@ -203,7 +205,35 @@ def apply(ports: lander.Ports, found: Plan, send_back: Callable[[str, str, str],
     return events
 
 
+def present_skip(found: lr.LandingRecord | lr.Unreadable | None) -> str | None:
+    """Pure. Why adopt leaves an initiative alone because it has a landing-record row, or None when it has none. A row
+    that does not read is present too: adopting over it would write a fresh record over the history of its merged
+    phases, so it is left for a person to repair."""
+    if found is None:
+        return None
+    if isinstance(found, lr.Unreadable):
+        return f"its landing record cannot be read and is left as it is ({found.why})"
+    return "it has a landing record already"
+
+
+def unrecorded(initiatives: Sequence[str], table: lr.Listing) -> list[str]:
+    """Pure. The initiatives with no landing-record row, readable or not, in the order given (`present_skip`)."""
+    rows = _rows(table)
+    return [i for i in initiatives if present_skip(rows.get(i)) is None]
+
+
+def left_alone(initiatives: Sequence[str], table: lr.Listing) -> list[str]:
+    """Pure. What adopt says of each initiative named that it leaves alone because its row does not read: a person
+    who named it is told why nothing was adopted, and that the row was left as it is."""
+    rows = _rows(table)
+    found = [(i, rows.get(i)) for i in initiatives]
+    return [f"{i}: skipped: {present_skip(row)}" for i, row in found if isinstance(row, lr.Unreadable) and present_skip(row)]
+
+
+def _rows(table: lr.Listing) -> dict[str, lr.LandingRecord | lr.Unreadable]:
+    return {**{str(r.get("initiative")): r for r in table.records}, **{u.initiative: u for u in table.unreadable}}
+
+
 def candidates(ports: lander.Ports, initiatives: Sequence[str]) -> list[str]:
-    """The initiatives with no landing record, in the order given."""
-    have = {lander.record_text(r, "initiative") for r in ls.list_records(ports.conn)}
-    return [i for i in initiatives if i not in have]
+    """The initiatives with no landing record, in the order given (`unrecorded`)."""
+    return unrecorded(initiatives, ls.list_records(ports.conn))

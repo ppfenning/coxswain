@@ -365,6 +365,20 @@ def stack_parent(needs: Sequence[str], members: Mapping[str, Mapping[str, object
     return epic_branch
 
 
+def stack_unknown(needs: Sequence[str], members: Mapping[str, Mapping[str, object]], unreadable: Mapping[str, str]) -> str | None:
+    """Pure. Why `stack_parent` cannot be trusted, or None. `unreadable` maps each initiative whose landing record
+    does not read to the reason. A needed initiative met before `stack_parent`'s answer whose record is unreadable may
+    be the unlanded layer to fork from, or may have landed: nobody can tell, so the new initiative is held rather than
+    cut from the epic branch. A need after the answer does not change it."""
+    for need in needs:
+        if need in unreadable:
+            return f"the landing record of {need}, which it needs, cannot be read ({unreadable[need]}); its base is unknown"
+        member = members.get(need) or {}
+        if member.get("branch") and not member.get("landed"):
+            return None
+    return None
+
+
 def resolve_phase_cap(cartridge: Mapping[str, object]) -> int:
     """How many phase merges run at once: `landing_areas.phase_cap`, default 2."""
     return _cap(_landing(cartridge).get("phase_cap"), DEFAULT_PHASE_CAP, "landing_areas.phase_cap")
