@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -88,20 +89,23 @@ def test_popen_runner_returns_exit_code_and_merged_output(tmp_path: Path) -> Non
     assert sorted(output.split()) == ["err", "out"]
 
 
-# The child prints "half", starts a heartbeat grandchild, then hangs. argv[1] is the heartbeat file, argv[2] the pid
-# file, argv[3] "escape" to put the grandchild in its own session so a group kill cannot reach it.
+# The child starts a heartbeat grandchild and prints "half" once the grandchild has written its own pid, then hangs.
+# $1 is the heartbeat file, $2 the pid file, $3 "escape" to start the grandchild under setsid, in its own session, so a
+# group kill cannot reach it. The grandchild writes its pid from inside that session, so "half" means the tree is up.
+# The tree is POSIX sh, not Python: it has to be up before the 2-second timeout fires, and on a loaded runner one
+# interpreter start can take longer than that. The heartbeat ends on its own after 30 seconds, so a tree killed before
+# it was up leaks nothing.
 HUNG_TREE = """
-import subprocess, sys, time
-beat = "import time\\nwhile True:\\n    open(%r, 'a').write('x')\\n    time.sleep(0.05)" % sys.argv[1]
-grandchild = subprocess.Popen([sys.executable, "-c", beat], start_new_session=sys.argv[3] == "escape")
-open(sys.argv[2], "w").write(str(grandchild.pid))
-print("half", flush=True)
-time.sleep(30)
+beat='echo $$ > "$1"; i=0; while [ $i -lt 600 ]; do printf x >> "$0"; sleep 0.05; i=$((i+1)); done'
+if [ "$3" = escape ]; then setsid sh -c "$beat" "$1" "$2" & else sh -c "$beat" "$1" "$2" & fi
+while [ ! -s "$2" ]; do :; done
+echo half
+exec sleep 30
 """
 
 
 def hung_tree(tmp_path: Path, mode: str) -> list[str]:
-    return [sys.executable, "-c", HUNG_TREE, str(tmp_path / "beat"), str(tmp_path / "pid"), mode]
+    return ["sh", "-c", HUNG_TREE, "sh", str(tmp_path / "beat"), str(tmp_path / "pid"), mode]
 
 
 def test_popen_runner_kills_the_whole_process_group_on_timeout(tmp_path: Path) -> None:
@@ -114,6 +118,7 @@ def test_popen_runner_kills_the_whole_process_group_on_timeout(tmp_path: Path) -
     assert (first > 0, beat.stat().st_size == first) == (True, True)
 
 
+@pytest.mark.skipif(shutil.which("setsid") is None, reason="needs util-linux setsid to escape the group")
 def test_popen_runner_gives_up_on_a_descendant_that_escaped_the_group(tmp_path: Path) -> None:
     """The unreaped-child case: a real grandchild in its own session holds the pipe; the runner still returns within
     the timeout plus REAP_SECONDS for the read and REAP_SECONDS for the wait."""
