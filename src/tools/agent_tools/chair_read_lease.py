@@ -4,16 +4,29 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, cast
+from typing import NotRequired, TypedDict
 
 from agent_tools import chair, run_store
 from agent_tools.chair import LEASE_NAME
 
-Row = dict[str, Any]
+
+class LeaseRecord(TypedDict):
+    """The lease row as the chair reads it; `until`, `expired`, `lent` and `session_held` come from the holder's chair.json."""
+
+    holder: str
+    host: str
+    epoch: int
+    released: bool
+    stale: bool
+    until: NotRequired[str]
+    expired: NotRequired[bool]
+    lent: NotRequired[bool]
+    session_held: NotRequired[bool]
+
 
 # FactsDeps names no absent value. `{}` would read as held by nobody, and `chair_plan._lease_gate` would stand by forever.
 # A lease never taken reads as released, so the gate plans `take_lease`.
-ABSENT: Mapping[str, Any] = MappingProxyType({"holder": "", "host": "", "epoch": 0, "released": True, "stale": False})
+ABSENT: Mapping[str, object] = MappingProxyType({"holder": "", "host": "", "epoch": 0, "released": True, "stale": False})
 
 # The released shape in this repo's own fixtures keeps the holder and expires the row at the Unix epoch
 # (tests/test_epic_and_cli.py). A null holder is the shape of a released lease (`harness.store_api.LeaseReleased`). Both read as released.
@@ -33,51 +46,62 @@ def _host(holder: str) -> str:
     return holder.partition("@")[2].rpartition(":")[0]
 
 
-def lease_record(row: Mapping[str, Any] | None, now: datetime) -> Row:
+def _absent() -> LeaseRecord:
+    return {"holder": "", "host": "", "epoch": 0, "released": True, "stale": False}
+
+
+def _epoch(row: Mapping[str, object]) -> int:
+    epoch = row.get("epoch") or 0
+    if not isinstance(epoch, (int, float, str)):
+        raise TypeError("lease epoch is not a number")
+    return int(epoch)
+
+
+def lease_record(row: Mapping[str, object] | None, now: datetime) -> LeaseRecord:
     """Stale is an expiry at or before `now`, or one that does not parse."""
     if row is None:
-        return dict(ABSENT)
-    holder = row["holder"] or ""
+        return _absent()
+    holder = str(row["holder"] or "")
     expiry = _expiry(row["expires_at"])
     return {
         "holder": holder,
         "host": _host(holder),
-        "epoch": int(row.get("epoch") or 0),
+        "epoch": _epoch(row),
         "released": not holder or expiry == _RELEASED_AT,
         "stale": expiry is None or expiry <= now,
     }
 
 
-def read_lease(runs_dir: Path, now: datetime, *, pid_alive: Callable[[int], bool] = chair.pid_alive, host: str | None = None) -> Row:
+def read_lease(runs_dir: Path, now: datetime, *, pid_alive: Callable[[int], bool] = chair.pid_alive, host: str | None = None) -> LeaseRecord:
     """Edge. `ABSENT` with no store, no row, or an unreadable store. `host` defaults to this machine's name."""
     # `run_store.lease` asks for a `runs:<prefix>` name, so the read reuses its private `_open`. Only holder and expires_at are
     # known columns (`run_store.lease_table_for` selects them); `SELECT *` keeps a missing epoch column from reading as no lease.
     opened = run_store.open_store(runs_dir)
     if opened is None:
-        return dict(ABSENT)
+        return _absent()
     conn, mark = opened
     try:
         row = conn.execute(f"SELECT * FROM leases WHERE name = {mark}", (LEASE_NAME,)).fetchone()
-    except run_store._DB_ERRORS:
-        return dict(ABSENT)
+    except run_store.db_error_types():
+        return _absent()
     finally:
         conn.close()
     return _with_takeover(lease_record(None if row is None else dict(row), now), runs_dir, now, pid_alive=pid_alive, host=host)
 
 
-def _lent(lease: Row, record: Mapping[str, Any]) -> bool:
+def _lent(lease: LeaseRecord, record: Mapping[str, object]) -> bool:
     """The holder's own chair.json record, already matched to the lease, marks the routine ticks lent. A released lease lends nothing."""
     return not lease["released"] and record.get("routine_lent") is True
 
 
-def _session_held(lease: Row, record: Mapping[str, Any]) -> bool:
+def _session_held(lease: LeaseRecord, record: Mapping[str, object]) -> bool:
     """A matched record with no `until`, no `taken_over_from` stamp and no lent routine ticks: a session that took the lease informally."""
     return not lease["released"] and "until" not in record and "taken_over_from" not in record and record.get("routine_lent") is not True
 
 
 def _with_takeover(
-    lease: Row, runs_dir: Path, now: datetime, *, pid_alive: Callable[[int], bool] = chair.pid_alive, host: str | None = None
-) -> Row:
+    lease: LeaseRecord, runs_dir: Path, now: datetime, *, pid_alive: Callable[[int], bool] = chair.pid_alive, host: str | None = None
+) -> LeaseRecord:
     """Edge. Adds `until` and `expired` from chair.json when it is this lease holder's record and carries an `until`.
     Adds `lent` when that record is the holder's and its `routine_lent` is true, with or without an `until`.
     Adds `session_held` when that record is the holder's and carries no `until`, `taken_over_from` or lent routine ticks.
@@ -89,15 +113,24 @@ def _with_takeover(
         return lease
     if record is None:
         return lease
-    if chair.lease_holder(str(record.get("session")), cast(int, record.get("pid")), str(record.get("host"))) != lease["holder"]:
+    if chair.lease_holder(str(record.get("session")), record.get("pid"), str(record.get("host"))) != lease["holder"]:
         return lease
-    lent = {"lent": True} if _lent(lease, record) else {}
+    lent = _lent(lease, record)
     if "until" not in record:
-        return {**lease, **lent, **({"session_held": True} if _session_held(lease, record) else {})}
+        unmarked: LeaseRecord = {**lease}
+        if lent:
+            unmarked["lent"] = True
+        if _session_held(lease, record):
+            unmarked["session_held"] = True
+        return unmarked
     expired = chair.expired(record, now)
-    taken = {**lease, "until": str(record["until"]), "expired": expired, **lent}
+    taken: LeaseRecord = {**lease, "until": str(record["until"]), "expired": expired}
+    if lent:
+        taken["lent"] = True
     pid = record.get("pid")
     if expired or lease["released"] or not isinstance(pid, int):
         return taken
     local = socket.gethostname() if host is None else host
-    return {**taken, "stale": False} if chair.liveness(record, pid_alive(pid), now, local) == "live" else taken
+    if chair.liveness(record, pid_alive(pid), now, local) == "live":
+        taken["stale"] = False
+    return taken

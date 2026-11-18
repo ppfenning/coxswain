@@ -130,7 +130,7 @@ def runner(runs_dir: Path) -> Callable[[list[str]], tuple[int, str]]:
     return run
 
 
-def reply_row(code: int, output: str) -> dict:
+def reply_row(code: int, output: str) -> dict[str, object]:
     """Pure. The row a store CLI call printed. A non-zero exit is `{STORE_ERROR: "store_cli exit N: <output>"}`, never a
     row, so a write the store did not take is reported; an unparseable or non-object reply on exit 0 is an empty row."""
     if code != 0:

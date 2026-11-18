@@ -4,7 +4,6 @@ from pathlib import Path
 from agent_tools import chair_read_live
 from agent_tools.chair_read_live import (
     Lease,
-    _phase_pidfiles,
     live_phases,
     phase_pidfile_index,
     pidfile_index,
@@ -56,10 +55,9 @@ def test_another_initiatives_phase_lease_is_not_matched(tmp_path: Path):
     assert read_live_phases(tmp_path, ["init"], NOW) == []
 
 
-def test_the_pidfile_glob_for_init_skips_init2(tmp_path: Path):
-    for name in ("init.p1.pid", "init.p2-3.pid", "init2.p1.pid", "init.pid", "init.p1.extra.pid"):
-        (tmp_path / name).write_text("1")
-    assert [(phase, p.name) for phase, p in _phase_pidfiles(tmp_path, "init")] == [("p1", "init.p1.pid"), ("p2", "init.p2-3.pid")]
+def test_the_phase_pidfiles_of_init_skip_init2():
+    names = ["init.p1.pid", "init.p2-3.pid", "init2.p1.pid", "init.pid", "init.p1.extra.pid"]
+    assert phase_pidfile_index(names).get("init") == [("p1", "init.p1.pid"), ("p2", "init.p2-3.pid")]
 
 
 def test_a_live_pidfile_yields_the_pair_and_a_dead_one_does_not(tmp_path: Path, monkeypatch):

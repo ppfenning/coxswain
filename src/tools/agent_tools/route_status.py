@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import os
 from collections.abc import Callable, Collection, Mapping, Sequence
+from typing import Any
 
 from agent_tools import intake_queue, release_gate, run_store
 from agent_tools.intake_state import intake_group, intake_index
@@ -415,7 +416,7 @@ def _parse_field(line: str):
     return key, raw
 
 
-def parse_frontmatter(text: str) -> tuple:
+def parse_frontmatter(text: str) -> tuple[dict[str, str | list[str]], str]:
     """The inverse of `_frontmatter`: `(fields, body)` from `---`-delimited
     text of the shape `_frontmatter` writes. `text` with no leading `---`
     line, or with an opening `---` and no closing one, comes back as
@@ -464,7 +465,7 @@ def _after_list(value: object) -> list:
     return [str(value)] if value else []
 
 
-def _intake_entry(filename: str, text: str) -> dict:
+def _intake_entry(filename: str, text: str) -> dict[str, Any]:
     fields, body = parse_frontmatter(text)
     stem = os.path.splitext(os.path.basename(filename))[0]
     entry_id = fields.get("id", stem)
@@ -486,7 +487,7 @@ def _intake_entry(filename: str, text: str) -> dict:
     }
 
 
-def intake_entries(files: dict) -> list:
+def intake_entries(files: dict[str, str]) -> list[dict[str, Any]]:
     """Rows for the intake queue, the `intake` input `render_context` and
     `context_document` already accept: one `{"id", "title", "initiative",
     "done", "path", "after", "held", "stage", "priority", "epic", "target_release", "repo"}` per file in `files`
@@ -511,7 +512,7 @@ STATES = frozenset({"todo", "ready", "in_progress", "blocked", "done", "dropped"
 TERMINAL = frozenset({"done", "dropped"})
 
 
-def is_merged(row: Mapping) -> bool:
+def is_merged(row: Mapping[str, object]) -> bool:
     """A store row's merge flag, `extra["merged"]`: set on an `approved` task once its PR has merged."""
     extra = row.get("extra")
     return isinstance(extra, Mapping) and bool(extra.get("merged"))
@@ -526,23 +527,24 @@ def is_awaiting_merge(item: Mapping) -> bool:
     return item["state"] == "approved" and not item.get("merged")
 
 
-def is_met_need(item: Mapping, *, land_at: str = DEFAULT_LAND_AT) -> bool:
+def is_met_need(item: Mapping[str, object], *, land_at: str = DEFAULT_LAND_AT) -> bool:
     """A need in the same initiative is met per `core.landing.need_met`: `done`, `dropped`, or `approved` that is merged or above `land_at` task."""
-    return _need_met(land_at, item["state"], bool(item.get("merged")))
+    state = item["state"]
+    return _need_met(land_at, state if isinstance(state, str) else None, bool(item.get("merged")))
 
 
-def state_word(item: Mapping) -> str:
+def state_word(item: Mapping[str, object]) -> str:
     """The word a status line shows: `merged` for an approved item carrying the merge flag, else its state."""
-    return "merged" if item["state"] == "approved" and item.get("merged") else item["state"]
+    return "merged" if item["state"] == "approved" and item.get("merged") else str(item["state"])
 
 
-def initiative_states(ids: list, items: list) -> dict:
+def initiative_states(ids: Sequence[str], items: Sequence[Mapping[str, object]]) -> dict[str, bool]:
     """`id -> True` when it has at least one item and every item naming it is `"done"` or `"dropped"`; an id with no items is not done."""
     own = {i: [item for item in items if item["initiative"] == i] for i in ids}
     return {i: bool(own[i]) and all(item["state"] in TERMINAL for item in own[i]) for i in ids}
 
 
-def intake_groups(intake: list, initiatives: list) -> dict:
+def intake_groups(intake: list[dict[str, Any]], initiatives: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     """queued has no `initiative`; decomposed names one not yet `done`, or predates the field but is cited by some initiative's text; landed names one `done`, or predates the field and is uncited. An intake named by an initiative's `intake` field is decomposed, or landed when every such initiative is done."""
     by_id = {i["id"]: i for i in initiatives}
     naming = intake_index(initiatives)
@@ -596,11 +598,11 @@ def remote_lane_entries(lanes: Sequence) -> list:
     ]
 
 
-def _ready_unblocked(item: dict, done_ids: set) -> bool:
+def _ready_unblocked(item: Mapping, done_ids: set) -> bool:
     return item["state"] == "ready" and all(need in done_ids for need in item["needs"])
 
 
-def _blockers_of(item: dict, own_items: list) -> list[dict]:
+def _blockers_of(item: Mapping, own_items: Sequence) -> list[Mapping]:
     """`blocked` siblings a task sits behind: one it names in `needs`, or one
     in an earlier phase. A held item is not done, so work behind it is not ready.
     """
@@ -667,7 +669,7 @@ def state_problems(items: list) -> list[str]:
     return [f"{item['initiative']}: {item['file']}: unknown state {item['state']!r}" for item in bad]
 
 
-def with_store_states(items: list, rows: list[dict], mode: str) -> list:
+def with_store_states(items: list[dict[str, object]], rows: Sequence[Mapping[str, object]], mode: str) -> list[dict[str, object]]:
     """Under mode "store", each item's `state` is the store row's; an item with no row keeps its file state. Any other mode returns `items` as given."""
     if mode != "store":
         return items
@@ -676,7 +678,7 @@ def with_store_states(items: list, rows: list[dict], mode: str) -> list:
     return [item if row.get("state") is None else {**item, "state": row["state"], **_merged_key(row)} for item, row in found]
 
 
-def _initiative_summary(initiative_id: str, own_items: list, land_at: str = DEFAULT_LAND_AT):
+def _initiative_summary(initiative_id: str, own_items: Sequence[Mapping[str, object]], land_at: str = DEFAULT_LAND_AT) -> dict[str, object] | None:
     """`None` when nothing to report. An item outside `STATES` makes the
     whole initiative unlaunchable (`ready` 0) until fixed, regardless of
     what its siblings are. Otherwise an `approved` item counts as neither
@@ -689,10 +691,10 @@ def _initiative_summary(initiative_id: str, own_items: list, land_at: str = DEFA
     awaiting_merge = sum(1 for item in own_items if is_awaiting_merge(item))
     done_ids = {item["id"] for item in own_items if is_met_need(item, land_at=land_at)}
 
-    def counts_ready(item: dict) -> bool:
+    def counts_ready(item: Mapping) -> bool:
         return _ready_unblocked(item, done_ids) and not _blockers_of(item, own_items)
 
-    ready_phases = sorted({item["phase"] for item in own_items if counts_ready(item)})
+    ready_phases = sorted({str(item["phase"]) for item in own_items if counts_ready(item)})
     if not ready_phases:
         if not awaiting_merge:
             return None
@@ -709,7 +711,7 @@ def _initiative_summary(initiative_id: str, own_items: list, land_at: str = DEFA
     return summary
 
 
-def initiative_summaries(items: list, *, land_at: str = DEFAULT_LAND_AT) -> list:
+def initiative_summaries(items: Sequence[Mapping[str, object]], *, land_at: str = DEFAULT_LAND_AT) -> list[dict[str, object]]:
     """One row per initiative with a task ready to run, the `initiatives`
     input `render_context` and `context_document` already accept: `items`
     are work items with at least `id`, `initiative`, `phase`, `state`,
@@ -720,7 +722,7 @@ def initiative_summaries(items: list, *, land_at: str = DEFAULT_LAND_AT) -> list
     initiative, whose state meets the need under `land_at` (`is_met_need`). An initiative with no ready,
     unblocked task is omitted. Sorted by initiative id.
     """
-    initiative_ids = sorted({item["initiative"] for item in items})
+    initiative_ids = sorted({str(item["initiative"]) for item in items})
     summaries = [
         _initiative_summary(
             initiative_id,
@@ -749,7 +751,7 @@ def latest_groups_file(names: list) -> str | None:
     return max(names) if names else None
 
 
-def work_item(fields: dict, *, initiative: str, phase_dir: str, stem: str) -> dict:
+def work_item(fields: Mapping[str, object], *, initiative: str, phase_dir: str, stem: str) -> dict[str, object]:
     """A work item row for `initiative_summaries`, filled in from the path
     the caller read it from wherever frontmatter left a gap: `id` falls
     back to `stem`, `phase` to `phase_dir`, `state` to `"todo"`, `needs` to

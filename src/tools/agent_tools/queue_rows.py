@@ -63,7 +63,7 @@ def requires_of(fields: Any) -> list[str]:
     return _strs(fields.get("requires")) if isinstance(fields, Mapping) else []
 
 
-def row_requires(row: Row) -> list[str]:
+def row_requires(row: Mapping[str, object]) -> list[str]:
     """`requires:` from a parsed or stored row. It stays in `extra`, not a lifted field: the store's work_items
     table has no requires column, so a lifted key would never persist and every import would read as changed."""
     return requires_of(row.get("extra"))

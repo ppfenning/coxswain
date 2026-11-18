@@ -155,7 +155,7 @@ def alarm_event(action: Mapping) -> Event:
     return Event("all_clear", f"stall_clear:{stall}:{since}", f"All clear: {stall.partition(':')[0]}", detail)
 
 
-def events_from_tick(facts: Mapping, actions: Sequence[Mapping]) -> list[Event]:
+def events_from_tick(facts: Mapping[str, object], actions: Sequence[Mapping[str, object]]) -> list[Event]:
     """Events in first-seen key order, one per key, the first action that carries a remedy winning; then the stall
     alarm's raises and all-clears; queue_empty comes last, when facts show nothing left to run."""
     alarms = list({

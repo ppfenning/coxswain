@@ -3,14 +3,25 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import TypedDict
 
 
-def _num(row: Mapping[str, Any], key: str) -> float:
-    return row.get(key) or 0
+class _Node(TypedDict):
+    role: str
+    tier: str
+    model: str
+    calls: int
+    turns: int
+    tokens: int
+    cost_usd: float
 
 
-def _group(key: tuple[str, str, str], rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def _num(row: Mapping[str, object], key: str) -> float:
+    value = row.get(key)
+    return value if isinstance(value, int | float) and value else 0
+
+
+def _group(key: tuple[str, str, str], rows: Sequence[Mapping[str, object]]) -> _Node:
     role, tier, model = key
     return {
         "role": role,
@@ -23,7 +34,7 @@ def _group(key: tuple[str, str, str], rows: Sequence[Mapping[str, Any]]) -> dict
     }
 
 
-def group_spend_nodes(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def group_spend_nodes(rows: Sequence[Mapping[str, object]]) -> list[_Node]:
     """Sum by (role, tier, model_alias); order by cost descending, then role, tier, model ascending."""
     keys = {(str(r.get("role")), str(r.get("tier")), str(r.get("model_alias"))) for r in rows}
     groups = [

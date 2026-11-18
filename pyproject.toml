@@ -92,9 +92,9 @@ pythonVersion = "3.14"
 include = ["coxswain", "src/tools/agent_tools", "src/graphs/harness", "src/graphs/runner", "src/graphs/graphs", "src/cartridges/core", "src/cartridges/providers"]
 extraPaths = ["src/tools", "src/graphs", "src/cartridges"]
 typeCheckingMode = "basic"
-# At the basic level only: `chair_types.Action` is one total=False TypedDict for every kind, so `action["phase"]` on a
-# kind that always carries a phase reads as a maybe-missing key. A warning until Action is a union per kind; the
-# strict modules below keep it an error.
+# At the basic level only: `chair_types.Action` is one total=False TypedDict for every kind (only `kind` is required), so
+# `action["phase"]` on a kind that always carries a phase reads as a maybe-missing key. The strict modules below keep it
+# an error and read such a key through `chair_types.action_text`, which raises KeyError as the index did.
 reportTypedDictNotRequiredAccess = "warning"
 # H2's remainder: the modules that do not pass the basic level yet, so the check skips them. The list only shrinks:
 # a module leaves it in the change that makes it pass, and none of the strict set is ever on it.
@@ -128,7 +128,6 @@ exclude = [
     "src/graphs/runner/system_one.py",
     "src/tools/agent_tools/analytics_snapshot.py",
     "src/tools/agent_tools/bounded_run.py",
-    "src/tools/agent_tools/chair.py",
     "src/tools/agent_tools/cleanup.py",
     "src/tools/agent_tools/cli.py",
     "src/tools/agent_tools/cli_board.py",
@@ -220,5 +219,5 @@ strict = [
     "src/graphs/harness/epic_context.py",
     "src/graphs/harness/epic_types.py",
     "src/graphs/harness/store*.py",
-    "src/tools/agent_tools/chair_types.py",
+    "src/tools/agent_tools/chair*.py",
 ]

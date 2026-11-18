@@ -324,3 +324,14 @@ def test_the_dash_feed_shows_a_held_task_blocked_with_its_reason():
     rows = [{"task_id": "t3", "phase": "p1", "state": "blocked", "extra": {HOLD_REASON: HELD["reason"]}}]
     [entry] = dash_feed_tasks.task_entries(rows, {}, {}, {})
     assert (entry["state"], entry["reason"]) == ("blocked", HELD["reason"])
+
+
+def test_a_marked_rows_extra_is_copied_and_one_that_is_no_mapping_raises_rather_than_being_wiped():
+    from agent_tools.chair_exec_act import _extra_of
+
+    held = {"held": True, "attempts": [{"cause": "x"}], "priority": 2}
+    assert _extra_of({"task_id": "t1", "extra": held}) == held
+    assert _extra_of({"task_id": "t1", "extra": held}) is not held
+    assert _extra_of({"task_id": "t1"}) == {} == _extra_of({"task_id": "t1", "extra": None})
+    with pytest.raises(TypeError, match="not a mapping"):
+        _extra_of({"task_id": "t1", "extra": '{"held": true}'})

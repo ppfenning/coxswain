@@ -12,10 +12,10 @@ from __future__ import annotations
 
 from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
-from typing import Any
 
 from agent_tools import run_store
 from agent_tools.chair_no_progress import RunOutcome
+from core.jsontypes import is_dict
 from core.workstore import run_series
 
 READ_ERRORS = (*run_store._DB_ERRORS, RuntimeError, OSError)
@@ -30,7 +30,7 @@ def newest_runs(runs: Sequence[tuple[str, bool]], initiatives: Collection[str], 
         series, number = run_series(run)
         if series in wanted and number >= 0:
             numbered.setdefault(series, []).append((number, run, ended))
-    found = {}
+    found: dict[str, list[str]] = {}
     for initiative, own in sorted(numbered.items()):
         ordered = sorted(own, reverse=True)
         if ordered[0][2]:
@@ -39,7 +39,7 @@ def newest_runs(runs: Sequence[tuple[str, bool]], initiatives: Collection[str], 
 
 
 def outcomes_from_rows(
-    newest: Mapping[str, Sequence[str]], phase_rows: Sequence[Mapping[str, Any]], task_rows: Sequence[Mapping[str, Any]]
+    newest: Mapping[str, Sequence[str]], phase_rows: Sequence[Mapping[str, object]], task_rows: Sequence[Mapping[str, object]]
 ) -> dict[str, list[RunOutcome]]:
     """Pure. Each initiative's runs in `newest` order, with the status and reason of each of its phase rows and the
     `state` of each of its task rows. A phase record that does not decode reads as one with no status."""
@@ -47,8 +47,8 @@ def outcomes_from_rows(
     reasons: dict[str, dict[str, str]] = {}
     tasks: dict[str, dict[str, str]] = {}
     for row in phase_rows:
-        record = run_store.json_cell(row.get("record_json"))
-        record = record if isinstance(record, dict) else {}
+        decoded = run_store.json_cell(row.get("record_json"))
+        record = decoded if is_dict(decoded) else {}
         phases.setdefault(str(row["run_id"]), {})[str(row["phase_id"])] = str(record.get("status") or "")
         reasons.setdefault(str(row["run_id"]), {})[str(row["phase_id"])] = str(record.get("reason") or "")
     for row in task_rows:

@@ -5,7 +5,7 @@ Pure. Takes the facts, returns actions. No pacing, no run history, no I/O.
 from collections.abc import Collection, Mapping, Sequence
 from datetime import UTC, datetime
 from functools import reduce
-from typing import Literal, cast
+from typing import Literal
 
 from agent_tools import chair_sort
 from agent_tools.chair_launch_budget import DEFAULT_MAX_LAUNCHES_PER_HOUR, Launch, RunOutcome, Verdict, launch_budget
@@ -26,6 +26,7 @@ from agent_tools.chair_types import (
     ReadyTask,
     RunningInitiative,
     SteerPolicy,
+    action_text,
 )
 from agent_tools.run_death_cause import SCHEMA_VERSION_CAUSE
 
@@ -90,7 +91,7 @@ def _first_cause(q: QuarantineFacts) -> str:
 def _reason_text(q: QuarantineFacts) -> str:
     """The first and newest attempt's reason for a ticket or code quarantine with two or more, each cut to 300 characters;
     the newest reason cut to 600 otherwise. `reasons` is every attempt's reason on the current body, oldest first."""
-    reasons: Sequence[str] = cast(Mapping[str, Sequence[str]], q).get("reasons") or []
+    reasons: Sequence[str] = q.get("reasons") or []
     if q["cause"] in TRIAGED_CAUSES and len(reasons) >= 2:
         return f"first: {reasons[0].strip()[:_HALF_REASON]} | latest: {reasons[-1].strip()[:_HALF_REASON]}"
     return trim_reason(q.get("reason"))
@@ -112,7 +113,7 @@ def _quarantine_action(q: QuarantineFacts, kind: Recovery) -> Action:
             "remedy": remedy["kind"],
             "command": remedy["command"],
         }
-    return {"kind": cast(ActionKind, kind), "task_id": q["task_id"], "initiative": q["initiative"]}
+    return {"kind": ActionKind(kind), "task_id": q["task_id"], "initiative": q["initiative"]}
 
 
 def _blocks(q: QuarantineFacts, kind: Recovery) -> bool:
@@ -137,13 +138,18 @@ def _hold_reason(q: QuarantineFacts, kind: Recovery, hold_after: int) -> str:
 def _tweak_actions(q: QuarantineFacts, kind: Recovery, handled: Collection[str], hold_after: int) -> list[Action]:
     """A failure that needs a tweak: one triage request per task state, else one hold per state, else the chair."""
     run = q.get("run", "")
-    base: Action = {"task_id": q["task_id"], "initiative": q["initiative"], "cause": q["cause"]}
     if kind == "triage" and (key := chair_sort.triage_key(q["task_id"], run)) not in handled:
-        return [{**base, "kind": ActionKind.REQUEST_TRIAGE, "key": key, "reason": trim_reason(q.get("reason"))}]
+        return [{
+            "task_id": q["task_id"], "initiative": q["initiative"], "cause": q["cause"],
+            "kind": ActionKind.REQUEST_TRIAGE, "key": key, "reason": trim_reason(q.get("reason")),
+        }]
     hold = chair_sort.hold_key(q["task_id"], run)
     if hold in handled:
         return [_quarantine_action(q, "needs_chair")]
-    return [{**base, "kind": ActionKind.HOLD_TASK, "key": hold, "reason": _hold_reason(q, kind, hold_after)}]
+    return [{
+        "task_id": q["task_id"], "initiative": q["initiative"], "cause": q["cause"],
+        "kind": ActionKind.HOLD_TASK, "key": hold, "reason": _hold_reason(q, kind, hold_after),
+    }]
 
 
 def _rescue_actions(q: QuarantineFacts, handled: Collection[str]) -> list[Action]:
@@ -165,9 +171,8 @@ def _sorted_action(q: QuarantineFacts, handled: Collection[str], recovery: Recov
         keyed, state = q, q["task_state_key"]
     else:
         return None
-    base: Action = {"task_id": q["task_id"], "initiative": q["initiative"]}
     if chair_sort.classify(keyed, state, handled) == "rebuild_on_main":
-        return [{**base, "kind": ActionKind.REBUILD_QUARANTINED, "key": chair_sort.state_key(q["task_id"], state)}]
+        return [{"task_id": q["task_id"], "initiative": q["initiative"], "kind": ActionKind.REBUILD_QUARANTINED, "key": chair_sort.state_key(q["task_id"], state)}]
     return []
 
 
@@ -198,7 +203,11 @@ def _quarantine_actions(
         emitted = kind not in ("none", "relaunch") and (kind == "needs_chair" or q["initiative"] not in chair)
         return [_quarantine_action(q, kind)] if emitted else []
 
-    return [a for q in quarantines for a in (cast(list[Action], named[id(q)]) if named[id(q)] is not None else plain(q))]
+    out: list[Action] = []
+    for q in quarantines:
+        got = named[id(q)]
+        out.extend(got if got is not None else plain(q))
+    return out
 
 
 def _first_unmet_need(t: ReadyTask, landed: set[str]) -> str | None:
@@ -312,7 +321,7 @@ def _relaunch_actions(
 ) -> list[Action]:
     """The relaunch pair per relaunchable initiative. A refused one plans no pair; a relaunch_loop refusal plans
     one needs_chair naming both runs, unless its `<run1>|<run2>` key is already in `reported`."""
-    refusals = {} if refused is None else refused
+    refusals: Mapping[str, Verdict] = {} if refused is None else refused
     return [
         action
         for i in initiatives
@@ -344,9 +353,9 @@ def _waiting_actions(initiatives: list[InitiativeFacts], blocked: set[str]) -> l
 def _invalid_dag_actions(initiatives: list[InitiativeFacts]) -> list[Action]:
     """One `invalid_dag (<problem>)` needs_chair per initiative whose task DAG is invalid, started or not."""
     return [
-        {"kind": ActionKind.NEEDS_CHAIR, "initiative": i["id"], "cause": f"invalid_dag ({i['dag_problem']})"}
+        {"kind": ActionKind.NEEDS_CHAIR, "initiative": i["id"], "cause": f"invalid_dag ({problem})"}
         for i in initiatives
-        if i.get("dag_problem")
+        if (problem := i.get("dag_problem"))
     ]
 
 
@@ -365,7 +374,7 @@ def _schema_death_actions(deaths: dict[str, list[str]]) -> list[Action]:
 
 def _without_schema_dead_launches(actions: list[Action], deaths: dict[str, list[str]]) -> list[Action]:
     """Drop a retry or rescue for a schema-dead initiative: both start a run on the stale graphs."""
-    return [a for a in actions if not (a["kind"] in {"retry", "rescue"} and a["initiative"] in deaths)]
+    return [a for a in actions if not (a["kind"] in {"retry", "rescue"} and action_text(a, "initiative") in deaths)]
 
 
 _LAUNCHES = {"relaunch", "retry", "rescue"}
@@ -373,7 +382,7 @@ _LAUNCHES = {"relaunch", "retry", "rescue"}
 
 def _without_over_budget(actions: list[Action], over: Collection[str]) -> list[Action]:
     """Drop a retry or rescue for an initiative the launch budget refuses; a needs_chair stays."""
-    return [a for a in actions if not (a["kind"] in _RETRIES and a["initiative"] in over)]
+    return [a for a in actions if not (a["kind"] in _RETRIES and action_text(a, "initiative") in over)]
 
 
 def _entry(i: InitiativeFacts) -> RunningInitiative | None:
@@ -390,7 +399,7 @@ def _steer(
     policy: SteerPolicy | None,
 ) -> tuple[Action, RunningInitiative | None]:
     """The action to return for a launch, and the running entry it claims; a deferral claims nothing."""
-    i = by_id.get(a["initiative"])
+    i = by_id.get(action_text(a, "initiative"))
     entry = None if i is None else _entry(i)
     if entry is None:
         return a, None
@@ -400,10 +409,10 @@ def _steer(
 
 def _without_deferred_clears(before: list[Action], after: list[Action]) -> list[Action]:
     """A deferred relaunch takes its paired clear_branches with it: the clear prunes epic/<initiative>/* branches."""
-    deferred = {a["initiative"] for a in before if a["kind"] == "relaunch"} - {
-        a["initiative"] for a in after if a["kind"] == "relaunch"
+    deferred = {action_text(a, "initiative") for a in before if a["kind"] == "relaunch"} - {
+        action_text(a, "initiative") for a in after if a["kind"] == "relaunch"
     }
-    return [a for a in after if not (a["kind"] == "clear_branches" and a["initiative"] in deferred)]
+    return [a for a in after if not (a["kind"] == "clear_branches" and action_text(a, "initiative") in deferred)]
 
 
 def _steered(actions: list[Action], facts: Facts) -> list[Action]:
@@ -434,7 +443,7 @@ def claimed_by(actions: list[Action], facts: Facts) -> list[RunningInitiative]:
     """
     by_id = {i["id"]: i for i in facts["initiatives"]}
     entries = (
-        e for a in actions if a["kind"] in _LAUNCHES and (i := by_id.get(a["initiative"])) is not None and (e := _entry(i))
+        e for a in actions if a["kind"] in _LAUNCHES and (i := by_id.get(action_text(a, "initiative"))) is not None and (e := _entry(i))
     )
     return list({e["id"]: e for e in entries}.values())
 
@@ -461,7 +470,7 @@ def _over_budget(facts: Facts, now: datetime | None, initiatives: Collection[str
 
 
 def _retry_initiatives(actions: list[Action]) -> set[str]:
-    return {a["initiative"] for a in actions if a["kind"] in _RETRIES}
+    return {action_text(a, "initiative") for a in actions if a["kind"] in _RETRIES}
 
 
 def _quarantine_plan(facts: Facts) -> list[Action]:
@@ -480,10 +489,15 @@ def _held_actions(held: list[HeldTask], handled: Collection[str]) -> list[Action
     until its key is handled, so the inbox gets one entry per hold reason."""
     actions: list[Action] = []
     for h in held:
-        base: Action = {"initiative": h["initiative"], "task_id": h["task_id"], "reason": h["reason"]}
-        actions.append({**base, "kind": ActionKind.NEEDS_CHAIR, "cause": f"{HELD_CAUSE} {h['task_id']}"})
+        actions.append({
+            "initiative": h["initiative"], "task_id": h["task_id"], "reason": h["reason"],
+            "kind": ActionKind.NEEDS_CHAIR, "cause": f"{HELD_CAUSE} {h['task_id']}",
+        })
         if (key := chair_sort.announce_key(h["task_id"], h["reason"])) not in handled:
-            actions.append({**base, "kind": ActionKind.ANNOUNCE_HOLD, "key": key})
+            actions.append({
+                "initiative": h["initiative"], "task_id": h["task_id"], "reason": h["reason"],
+                "kind": ActionKind.ANNOUNCE_HOLD, "key": key,
+            })
     return actions
 
 
@@ -566,11 +580,15 @@ def plan_lost_runs(facts: Facts, now: datetime | None = None) -> list[Action]:
     """
     deaths = facts.get("schema_deaths", {})
     over = _over_budget(facts, now, facts.get("lost_runs", {}))
+
+    def _mark_lost(initiative: str, run: str) -> Action:
+        return {"kind": ActionKind.MARK_LOST, "initiative": initiative, "run": run}
+
     return [
         action
         for initiative, run in facts.get("lost_runs", {}).items()
         for action in (
-            cast(Action, {"kind": ActionKind.MARK_LOST, "initiative": initiative, "run": run}),
+            _mark_lost(initiative, run),
             *([] if initiative in deaths or initiative in over else relaunch_pair(initiative)),
         )
     ]

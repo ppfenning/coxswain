@@ -73,7 +73,7 @@ def token_status_argv(probe: bool = False) -> list[str]:
     return ["cox", "setup", "token", "status", "--probe"] if probe else ["cox", "setup", "token", "status"]
 
 
-def json_object_in(output: str) -> dict | None:
+def json_object_in(output: str) -> dict[str, object] | None:
     """The first JSON object in `output`, or None. A login shell can print startup noise around it."""
     decoder = json.JSONDecoder()
     for start, char in enumerate(output):

@@ -7,10 +7,11 @@ team cartridge's `policy.dispatch.max_in_flight` wins over it, and the pacing fi
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from agent_tools import chair_cap
+from core.jsontypes import is_mapping
 
 # The graphs dispatch loop's default (`_DEFAULT_MAX_IN_FLIGHT` in harness/cos.py), used when no cartridge or policy file names a cap.
 DEFAULT_MAX_IN_FLIGHT = 3
@@ -35,7 +36,7 @@ def _cartridge_text(cartridges_dir: Path, name: str, shipped_dir: Path = _SHIPPE
 def _first_along_extends[T](cartridges_dir: Path, team: str, read: Callable[[str | None], T | None]) -> T | None:
     """The first non-None `read` along the team cartridge and its `extends` chain, read from `cartridges_dir`, or
     from the shipped cartridges for a name it lacks."""
-    pending, seen = [team], set()
+    pending, seen = [team], set[str]()
     while pending:
         name = pending.pop(0)
         if name in seen:
@@ -54,25 +55,29 @@ def _cartridge_cap(cartridges_dir: Path, team: str) -> int | None:
     return _first_along_extends(cartridges_dir, team, chair_cap.cap_from_cartridge)
 
 
-def chair_local_lanes(profile: dict) -> str:
+def chair_local_lanes(profile: Mapping[str, object]) -> str:
     """`policy.dispatch.local_lanes` along the team cartridge and its `extends` chain, else "any"."""
     cartridges_dir, team = profile.get("cartridges_dir"), profile.get("team")
-    if not (cartridges_dir and isinstance(team, str) and team):
+    if not (cartridges_dir and isinstance(cartridges_dir, str | Path) and isinstance(team, str) and team):
         return "any"
     found = _first_along_extends(Path(cartridges_dir).expanduser(), team, chair_cap.local_lanes_from_cartridge)
     return found if found is not None else "any"
 
 
-def chair_max_in_flight(runs_dir: Path, profile: dict) -> int:
+def chair_max_in_flight(runs_dir: Path, profile: Mapping[str, object]) -> int:
     """The lane cap: the team cartridge's `policy.dispatch.max_in_flight`, else its `extends` chain's, else `<runs_dir>/policy.pacing.json`'s, else 3."""
     cartridges_dir, team = profile.get("cartridges_dir"), profile.get("team")
-    from_cartridge = _cartridge_cap(Path(cartridges_dir).expanduser(), team) if cartridges_dir and isinstance(team, str) and team else None
+    from_cartridge = (
+        _cartridge_cap(Path(cartridges_dir).expanduser(), team)
+        if cartridges_dir and isinstance(cartridges_dir, str | Path) and isinstance(team, str) and team
+        else None
+    )
     if from_cartridge is not None:
         return from_cartridge
     text = _read_text_or_none(Path(runs_dir) / "policy.pacing.json")
     try:
-        raw = json.loads(text) if text is not None else {}
+        raw: object = json.loads(text) if text is not None else {}
     except json.JSONDecodeError:
         raw = {}
-    value = raw.get("max_in_flight") if isinstance(raw, dict) else None
+    value = raw.get("max_in_flight") if is_mapping(raw) else None
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else DEFAULT_MAX_IN_FLIGHT

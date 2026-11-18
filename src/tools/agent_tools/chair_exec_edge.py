@@ -9,7 +9,6 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import Any
 
 from agent_tools import (
     chair,
@@ -44,7 +43,7 @@ from agent_tools.chair_exec_land import (
     target_for,
     ticket_paths_of,
 )
-from agent_tools.chair_types import Action, LandTrigger
+from agent_tools.chair_types import Action, LandTrigger, action_text
 from agent_tools.land import approve_to_done
 from agent_tools.remote_argv import LANE_HOST_TIMEOUT_S, incoming_ref, probe_argv
 
@@ -118,26 +117,28 @@ def read_intake_id(workspace: Path, path: str) -> str:
     return value if isinstance(value, str) else ""
 
 
-def _host_row(runs_dir: Path, host: str) -> dict:
+def _host_row(runs_dir: Path, host: str) -> dict[str, object]:
     """Edge. The hosts-table row named `host`; an empty row when the table has none by that name."""
-    return next((row for row in run_store.hosts(runs_dir) if str(row.get("name")) == host), {})
+    empty: dict[str, object] = {}
+    return next((row for row in run_store.hosts(runs_dir) if str(row.get("name")) == host), empty)
 
 
-def _cli_run(runs_dir: Path, argv: list[str]) -> dict:
+def _cli_run(runs_dir: Path, argv: list[str]) -> dict[str, object]:
     """Edge. Runs `argv` through `store_cli.runner(runs_dir)`; `store_cli.reply_row` of what it answers."""
     return store_cli.reply_row(*store_cli.runner(runs_dir)(argv))
 
 
-def _login_runner_and_env(profile: dict) -> tuple[str, tuple[str, ...]]:
+def _login_runner_and_env(profile: Mapping[str, object]) -> tuple[str, tuple[str, ...]]:
     """A provider profile's check_login `runner` (its `runner` key, or today's default `"claude-code"`) and
     `env_names`: the tuple of whichever of `auth_env`, `endpoint_env` the profile sets, in that order,
     skipping an absent one."""
-    runner = profile.get("runner") or "claude-code"
-    env_names = tuple(v for v in (profile.get("auth_env"), profile.get("endpoint_env")) if v)
+    named = profile.get("runner")
+    runner = str(named) if named else "claude-code"
+    env_names = tuple(str(v) for v in (profile.get("auth_env"), profile.get("endpoint_env")) if v)
     return runner, env_names
 
 
-def _check_login_edge(runs_dir: Path, ssh_run: Callable[[list[str]], ArgvResult], provider_profile: Callable[[], dict], host: str) -> dict:
+def _check_login_edge(runs_dir: Path, ssh_run: Callable[[list[str]], ArgvResult], provider_profile: Callable[[], dict[str, object]], host: str) -> dict[str, object]:
     """Edge. `check_login_on_host` for `host`, its ssh and versions read from the hosts table, "now" read
     from the clock at call time -- never at `edge_deps` construction time. Its `runner` and `env_names`
     come from `provider_profile()`, resolved fresh on each call through `_login_runner_and_env`."""
@@ -151,7 +152,7 @@ def _check_login_edge(runs_dir: Path, ssh_run: Callable[[list[str]], ArgvResult]
     )
 
 
-def _probe_host_edge(runs_dir: Path, ssh_run: Callable[[list[str]], ArgvResult], host: str) -> dict:
+def _probe_host_edge(runs_dir: Path, ssh_run: Callable[[list[str]], ArgvResult], host: str) -> dict[str, object]:
     """Edge. One `probe_argv` ssh to `host`, its ssh read from the hosts table, "now" read at call time. Always
     merges probe_checked_at through `cox host login`. Exit 0 also sets the host active and clears the unreachable
     fields; any other exit changes nothing else. Never writes beat_at. A write the store refuses is answered in place of
@@ -307,13 +308,13 @@ class _StoreEdge:
         """Stamps the PR url `open_pr` returned. With no PR (every pick already on main) there is nothing to stamp."""
         if not self.forge.pr_url:
             return
-        result = store_cli.mark_landed(self.runs_dir, run, self.action["phase"], task, self.forge.pr_url, self.now())
+        result = store_cli.mark_landed(self.runs_dir, run, action_text(self.action, "phase"), task, self.forge.pr_url, self.now())
         error = chair_apply_review.stamped_reason(result)
         if error:
             raise RuntimeError(error)
 
     def set_done(self, task: str) -> None:
-        initiative = self.action["initiative"]
+        initiative = action_text(self.action, "initiative")
         error = chair_apply_review.set_done_reason(store_cli.set_state(self.runs_dir, initiative, task, "done", "chair"))
         if error:
             raise RuntimeError(error)
@@ -377,7 +378,7 @@ def _target_branch_edge(runs_dir: Path, workspace: Path, cartridge_target: str |
     if row is None and (workspace / "work" / initiative / "initiative.md").is_file():
         raise TargetUnreadable(f"{initiative} has an initiative file but no queue row, so the store may be unreadable")
     epic = queue_rows.epic_of_row(row) if row is not None and queue_rows.target_branch_of_row(row) is None else None
-    epics: dict[str, Mapping[str, Any]] = {}
+    epics: dict[str, Mapping[str, object]] = {}
     path = workspace / "epics" / f"{epic}.md"
     if epic is not None and path.is_file():
         try:
@@ -390,7 +391,7 @@ def _target_branch_edge(runs_dir: Path, workspace: Path, cartridge_target: str |
         raise TargetUnreadable(str(exc)) from exc
 
 
-def lease_guard(record: dict[str, Any] | None, own: tuple[str, int, str], pid_alive_: bool, now: datetime, host: str) -> str:
+def lease_guard(record: dict[str, object] | None, own: tuple[str, int, str], pid_alive_: bool, now: datetime, host: str) -> str:
     """Pure. The refusal line when a foreign holder is live and unexpired, else "". A passed `until` reads live in `chair.liveness`, so it is excluded here to keep the expired takeover working."""
     if record is None or chair.same_holder(record, *own):
         return ""
@@ -399,7 +400,7 @@ def lease_guard(record: dict[str, Any] | None, own: tuple[str, int, str], pid_al
     return f"chair: held by {record.get('session', '?')} (live)"
 
 
-def foreign_holder_gone(record: dict[str, Any] | None, own: tuple[str, int, str], pid_alive_: bool, now: datetime) -> bool:
+def foreign_holder_gone(record: dict[str, object] | None, own: tuple[str, int, str], pid_alive_: bool, now: datetime) -> bool:
     """Pure. A foreign holder is dead or expired: `until` passed, or its pid is dead on this host. A pid on another host says nothing."""
     if record is None or chair.same_holder(record, *own):
         return False
@@ -427,12 +428,12 @@ def edge_deps(
     pid: int,
     run_id: Callable[[Action], str],
     repo_for: Callable[[Action], str],
-    record: Callable[[Action], None],
+    record: Callable[[Mapping[str, object]], None],
     host: str,
     harness_python: str,
     log_retention_days: int = 7,
     ids_mode: str = "slug",
-    provider_profile: Callable[[], dict] = lambda: {},
+    provider_profile: Callable[[], dict[str, object]] = lambda: {},
     dry_run: bool = False,
     cartridge_target: str | None = None,
     lane_capacity: int | None = None,

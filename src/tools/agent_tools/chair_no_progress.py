@@ -15,9 +15,12 @@ gets N fresh runs before the guard can hold it again. No I/O, no clock.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
 from core.workstore import counts_after
+
+if TYPE_CHECKING:  # chair_types imports NoProgress from here, so the runtime import sits inside plan_no_progress
+    from agent_tools.chair_types import Action, Facts
 
 DEFAULT_NO_PROGRESS_AFTER = 2  # `chair.no_progress_after` when the profile does not set it; 0 turns the guard off
 CAUSE = "no_progress"
@@ -98,12 +101,14 @@ def no_progress_key(initiative: str, newest_run: str) -> str:
     return f"{CAUSE}:{initiative}:{newest_run}"
 
 
-def plan_no_progress(facts: Mapping[str, Any]) -> list[dict[str, Any]]:
+def plan_no_progress(facts: Facts) -> list[Action]:
     """One hold_initiative per initiative in `facts["no_progress"]` that is not held already and whose key is not handled."""
+    from agent_tools.chair_types import ActionKind  # chair_types imports this module, so a top-level import is a cycle
+
     held = frozenset(facts.get("held_initiatives", []))
     handled = frozenset(facts.get("handled_keys", []))
     return [
-        {"kind": "hold_initiative", "initiative": initiative, "cause": CAUSE, "reason": found["reason"], "key": key}
+        {"kind": ActionKind.HOLD_INITIATIVE, "initiative": initiative, "cause": CAUSE, "reason": found["reason"], "key": key}
         for initiative, found in sorted((facts.get("no_progress") or {}).items())
         if initiative not in held and (key := no_progress_key(initiative, found["runs"][0])) not in handled
     ]

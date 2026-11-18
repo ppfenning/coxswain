@@ -7,12 +7,13 @@ with no file at all."""
 import hashlib
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path, PurePosixPath
-from typing import Any, cast
+from typing import NotRequired, TypedDict
 
 from agent_tools import route, run_store
 from agent_tools.chair_phase_quarantine import row_mark
 from agent_tools.chair_read_cache import StampCache, file_stamp
 from agent_tools.stats_chair import frontmatter_item
+from core.jsontypes import is_list, is_mapping
 
 OPEN_STATES = ("ready", "blocked")
 QUARANTINED = "quarantined"
@@ -20,7 +21,23 @@ RUNAWAY_CAUSE = "runaway"
 
 Row = dict[str, str]
 Attempt = Mapping[str, object]
-Item = tuple[str, str, str, Sequence[Attempt] | None]
+_NO_ATTEMPT: Attempt = {}  # what `max(..., default=)` falls back to: an attempt that names nothing; never written to
+
+
+class QueueFact(TypedDict):
+    """One quarantine fact `quarantined_from_rows` reads off a store queue row; `mark` only on a phase-revert quarantine."""
+
+    initiative: str
+    phase: str
+    task: str
+    run: str
+    body_sha: str
+    cause: str
+    reason: str
+    mark: NotRequired[dict[str, str]]
+
+
+Item = tuple[str, str, str, Sequence[object] | None]
 
 
 def _row(path: str) -> Row | None:
@@ -50,7 +67,7 @@ def item_body(text: str) -> str:
 
 def newest_reason(attempts: Sequence[Attempt]) -> str:
     """The stored `reason` text of the newest attempt by `ts`, uncut; empty with no attempt or no text."""
-    newest = max(attempts, key=lambda a: str(a.get("ts") or ""), default={})
+    newest = max(attempts, key=lambda a: str(a.get("ts") or ""), default=_NO_ATTEMPT)
     return str(newest.get("reason") or "")
 
 
@@ -59,17 +76,17 @@ def quarantined_rows(items: Iterable[Item]) -> list[Row]:
     in state quarantined with or without one, in input order.
 
     The row carries `run` and `reason` from the newest attempt on the current body by `ts`, both empty with none."""
-    rows = []
+    rows: list[Row] = []
     for path, state, body, attempts in items:
-        on_body = attempts_on_current_body([a for a in attempts or [] if isinstance(a, Mapping)], body)
+        on_body = attempts_on_current_body([a for a in attempts or [] if is_mapping(a)], body)
         row = _row(path) if (state in OPEN_STATES and on_body) or state == QUARANTINED else None
         if row is not None:
-            newest = max(on_body, key=lambda a: str(a.get("ts") or ""), default={})
+            newest = max(on_body, key=lambda a: str(a.get("ts") or ""), default=_NO_ATTEMPT)
             rows.append({**row, "run": str(newest.get("run") or ""), "reason": newest_reason(on_body)})
     return rows
 
 
-def store_only_quarantined(store_rows: Iterable[Mapping], seen: Iterable[Row]) -> list[Row]:
+def store_only_quarantined(store_rows: Iterable[Mapping[str, object]], seen: Iterable[Row]) -> list[Row]:
     """Pure: a row per store row in state quarantined whose ticket file was not read, in input order, `run` and
     `reason` empty: the store names the quarantine, so a missing file cannot hide it."""
     named = {(r["initiative"], r["task"]) for r in seen}
@@ -86,7 +103,7 @@ def _classify_cause(cause: str) -> str:
     return RUNAWAY_CAUSE if "runaway ceiling" in cause else cause
 
 
-def quarantined_from_rows(rows: Iterable[Mapping[str, Any]]) -> list[Row]:
+def quarantined_from_rows(rows: Iterable[Mapping[str, object]]) -> list[QueueFact]:
     """Quarantine facts for rows whose `state` is "quarantined": one row per queue row, in input order.
 
     A row already names its own quarantine, so no state or attempt-matching gate is needed to find one; the
@@ -96,33 +113,35 @@ def quarantined_from_rows(rows: Iterable[Mapping[str, Any]]) -> list[Row]:
 
     A row the chair's revert of a phase quarantined carries that quarantine's `mark` (`chair_phase_quarantine.row_mark`):
     its cause, reason and the initiative's newest run then."""
-    facts = []
+    facts: list[QueueFact] = []
     for row in rows:
         if row.get("state") != "quarantined":
             continue
         body = str(row.get("body") or "")
-        attempts = [a for a in (row.get("extra") or {}).get("attempts") or [] if isinstance(a, Mapping)]
+        extra = row.get("extra")
+        recorded = extra.get("attempts") if is_mapping(extra) else None
+        attempts = [a for a in (recorded if is_list(recorded) else []) if is_mapping(a)]
         on_body = attempts_on_current_body(attempts, body)
-        newest = max(on_body, key=lambda a: str(a.get("ts") or "")) if on_body else {}
-        facts.append(
-            {
-                "initiative": str(row.get("initiative") or ""),
-                "phase": str(row.get("phase") or ""),
-                "task": str(row.get("task_id") or ""),
-                "run": str(newest.get("run") or ""),
-                "body_sha": body_sha(body),
-                "cause": _classify_cause(str(newest.get("cause") or "")),
-                "reason": str(newest.get("reason") or ""),
-                **({"mark": mark} if (mark := row_mark(row.get("extra"))) is not None else {}),
-            }
-        )
+        newest = max(on_body, key=lambda a: str(a.get("ts") or "")) if on_body else _NO_ATTEMPT
+        fact: QueueFact = {
+            "initiative": str(row.get("initiative") or ""),
+            "phase": str(row.get("phase") or ""),
+            "task": str(row.get("task_id") or ""),
+            "run": str(newest.get("run") or ""),
+            "body_sha": body_sha(body),
+            "cause": _classify_cause(str(newest.get("cause") or "")),
+            "reason": str(newest.get("reason") or ""),
+        }
+        if (mark := row_mark(extra if is_mapping(extra) else None)) is not None:
+            fact["mark"] = mark
+        facts.append(fact)
     return facts
 
 
 WorkFiles = Mapping[Path, str]
 
 
-def store_work_files(root: Path, rows: Sequence[Mapping[str, Any]]) -> WorkFiles:
+def store_work_files(root: Path, rows: Sequence[Mapping[str, object]]) -> WorkFiles:
     """Pure. The same mapping `read_work_files` returns, rendered from the store's queue rows instead of read from
     disk: path to text for every initiative and task row with content, in path order. Nothing under `root` is opened,
     so a tick that reads its work from this cannot see a file the store has not got, and needs no checkout."""
@@ -138,7 +157,7 @@ def read_work_files(root: Path, cache: StampCache | None = None) -> WorkFiles:
     An unreadable file is left out, as the docket and approved readers already leave it out.
     With a cache, a file whose (mtime_ns, size) stamp is unchanged is not re-read."""
     paths = sorted([*root.glob("work/*/*/*.md"), *root.glob("work/*/initiative.md")])
-    texts = {}
+    texts: dict[Path, str] = {}
     for p in paths:
         try:
             if cache is None:
@@ -165,8 +184,8 @@ def initiative_files(root: Path, files: WorkFiles) -> dict[Path, str]:
 
 
 def read_work_items(
-    root: Path, mode: str, files: WorkFiles | None = None, store_rows: Sequence[Mapping] | None = None,
-) -> list[tuple[Path, str, dict]]:
+    root: Path, mode: str, files: WorkFiles | None = None, store_rows: Sequence[Mapping[str, object]] | None = None,
+) -> list[tuple[Path, str, dict[str, object]]]:
     """Edge. Every `work/<initiative>/<phase>/<task>.md` under `root` as (path, text, work item), in path order.
 
     The store is read, and overrides file state, only under mode "store", as `cli._stored_work_items` does.
@@ -177,12 +196,18 @@ def read_work_items(
         for p, text in texts.items()
     ]
     rows = store_rows if store_rows is not None else (run_store.work_items(root / "runs") if mode == "store" else [])
-    stored = route.with_store_states(items, cast(list[dict], rows), mode)
+    stored = route.with_store_states(items, rows, mode)
     return [(p, text, item) for (p, text), item in zip(texts.items(), stored, strict=True)]
 
 
+def _attempts_of(frontmatter: Mapping[str, object]) -> list[object] | None:
+    """The `attempts` of a ticket's frontmatter when it is a list; None otherwise."""
+    attempts = frontmatter.get("attempts")
+    return attempts if is_list(attempts) else None
+
+
 def read_quarantined(
-    root: Path, mode: str, files: WorkFiles | None = None, store_rows: Sequence[Mapping] | None = None,
+    root: Path, mode: str, files: WorkFiles | None = None, store_rows: Sequence[Mapping[str, object]] | None = None,
 ) -> list[Row]:
     """Edge. The open quarantines among `read_work_items(root, mode, files, store_rows)`, then, under mode "store",
     each store row in state quarantined that has no ticket file."""
@@ -190,9 +215,9 @@ def read_quarantined(
     found = quarantined_rows(
         (
             f"work/{item['initiative']}/{item['file']}",
-            item["state"],
+            str(item["state"]),
             item_body(text),
-            frontmatter_item(text, p.stem).get("attempts"),
+            _attempts_of(frontmatter_item(text, p.stem)),
         )
         for p, text, item in read_work_items(root, mode, files, rows)
     )

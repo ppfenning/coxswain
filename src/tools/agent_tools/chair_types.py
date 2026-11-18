@@ -5,9 +5,11 @@ the facts and executes the actions; the planners in between are pure. `stale_can
 filled in by the facts edge and consumed by the stale planner; `stall_candidates` likewise,
 consumed by the stall planner. `tuning` likewise, consumed by the lane-tuning and tier-proposal planners.
 """
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal, NotRequired, Protocol, TypedDict
+from typing import Literal, NotRequired, Protocol, Required, TypedDict
 from zoneinfo import ZoneInfo
 
 from agent_tools.chair_decompose_miss import DecomposeMiss
@@ -16,7 +18,7 @@ from agent_tools.chair_land_backoff import LandRefusal
 from agent_tools.chair_land_conflict import LandConflict
 from agent_tools.chair_no_progress import NoProgress
 from agent_tools.chair_stall_alarm import StallFacts
-from core.jsontypes import ShapeError, conform
+from core.jsontypes import conform
 
 EASTERN = ZoneInfo("America/New_York")  # every time the chair prints for an operator is shown in this zone
 STALE_CHECKOUT_CAUSE = "stale_checkout"  # the needs_chair cause for a lane host whose checkout environment is stale
@@ -271,6 +273,7 @@ class QuarantineFacts(TypedDict):
     task_state_key: NotRequired[str]  # names the harness state the task was quarantined in; absent leaves the quarantine unsorted
     held_objection: NotRequired[str]  # the review objection text holding the task; absent leaves a review quarantine unsorted
     failures: NotRequired[int]  # the task's own failures over every body, stoppages and rescues left out; absent means 0
+    tasks: NotRequired[list[dict[str, object]]]  # a stranded entry: every task of the run in row order, each with its task, run and remedy; absent on any other
 
 
 class EmptyDecomposeFacts(TypedDict):
@@ -396,12 +399,12 @@ class LandWatch(TypedDict):
     initiative: str
     phase: str
     repo: str
-    pr: int
+    pr: int | str  # as recorded; a store row may hand the number back as text
     commit: str  # the new main commit of the land
 
 
 class LandedMain(LandWatch):
-    ci: Literal["pending", "green", "red", "infra"]  # infra: the main run failed with no job past setup
+    ci: str  # pending, green, red or infra, as `read_main_ci` answered it; infra: the main run failed with no job past setup
     ci_output: str
     smoke: Literal["pending", "ok", "failed"]
     smoke_output: str
@@ -594,6 +597,14 @@ class RemoteUnfetched(dict[str, str]):
         self.decompose = decompose
 
 
+@dataclass(frozen=True)
+class LandFreeze:
+    """The operator's land freeze (`chair_land_freeze`): no land runs until `expires_at`, for `reason`."""
+
+    reason: str
+    expires_at: datetime
+
+
 class Facts(TypedDict):
     lease: LeaseFacts
     limits: LimitsFacts
@@ -717,6 +728,9 @@ class Facts(TypedDict):
     schedule_inputs: NotRequired[ScheduleInputs]  # the scheduler's inputs; absent means the edge did not read them
     # The previous tick's `chair_schedule.schedule_feed` form; absent means none was read, so the schedule is announced.
     previous_schedule_feed: NotRequired[dict[str, object]]
+    # The store's `hosts` rows, each with its `versions_json`, for the login watch and placement. Absent means none.
+    login_hosts: NotRequired[list[Mapping[str, object]]]
+    land_freeze: NotRequired[LandFreeze]  # the operator's land freeze, when one is set; absent means lands run
 
 
 class ActionKind(StrEnum):
@@ -774,6 +788,7 @@ class ActionKind(StrEnum):
     HOLD_INITIATIVE = "hold_initiative"
     STALL_ALARM = "stall_alarm"
     STALL_CLEAR = "stall_clear"
+    PYTEST_TMP_SWEEP = "pytest_tmp_sweep"  # recorded by the executor after a tick's actions; no planner plans it
 
 
 class Action(TypedDict, total=False):
@@ -817,7 +832,7 @@ class Action(TypedDict, total=False):
     entry for a held task. hold_initiative carries initiative, cause (`no_progress`), reason (starting `needs you:`) and key
     (`no_progress:<initiative>:<newest run>`): the initiative row and file are held with the reason, and one courier entry goes out."""
 
-    kind: ActionKind
+    kind: Required[ActionKind]  # every action names its kind; the other keys depend on it
     epoch: int | None
     status: str  # a recorded action line carries the outcome the executor wrote
     task_id: str
@@ -882,6 +897,7 @@ class Action(TypedDict, total=False):
     path: str  # a needs_chair for a held file names the file
     blob: str  # a needs_chair for a held file names the file's blob, so the same hand edit is reported once
     schedule: dict[str, object]  # a schedule_updated carries `chair_schedule._body`, written whole to the schedule file
+    head: str  # a land_phase names its phase branch's tip just before the land, when the branch resolves
 
 
 class PlanLands(Protocol):
@@ -911,10 +927,24 @@ class PlanTick(Protocol):
 def action_from_store(raw: object) -> Action:
     """Pure. An action read back from disk or the store as an `Action`: `ShapeError` when it is not an object, names
     no kind or a kind that is not an `ActionKind`, or carries a key `Action` names with a value of the wrong type."""
-    action = conform(Action, raw, "action")
-    if "kind" not in action:
-        raise ShapeError("action: missing kind")
-    return action
+    return conform(Action, raw, "action")
+
+
+# The keys of `Action` whose value is a str.
+ActionText = Literal[
+    "status", "task_id", "repo", "run", "initiative", "phase", "cause", "intake", "idea_missing", "fingerprint", "holder",
+    "host", "until", "reason", "remedy", "objection", "key", "since", "stall", "subject", "detail", "url", "other",
+    "other_phase", "partner_state", "pr_branch", "branch", "tip", "base", "body", "commit", "state", "epic", "land_at",
+    "event", "topic", "back_at", "signature", "path", "blob", "head",
+]
+
+
+def action_text(action: Action, key: ActionText) -> str:
+    """Pure. The str `key` that the action's kind always carries; KeyError, as `action[key]` raised, when it is absent."""
+    value = action.get(key)
+    if value is None:
+        raise KeyError(key)
+    return value
 
 
 def stamp(action: Action, epoch: int) -> Action:

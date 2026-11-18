@@ -1,9 +1,8 @@
 """Pure core: graph, estimates, hosts and a clock value in; one Schedule out; no clock, file or process."""
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import cast
 
 from agent_tools.chair_schedule_durations import Estimate
 from agent_tools.chair_schedule_graph import Key, Node
@@ -210,7 +209,7 @@ def plan_schedule(
         best = min(ready, key=lambda k: (*_weight(k, path.values, nodes), queue[k]))
         group = tuple(
             sorted(
-                (k for k in ready if _weight(k, path.values, nodes) == _weight(best, path.values, nodes)), key=cast(Callable[[Key], int], queue.get)
+                (k for k in ready if _weight(k, path.values, nodes) == _weight(best, path.values, nodes)), key=queue.__getitem__
             )
         )
         if len(group) > 1 and not any(set(group) <= set(t.keys) for t in ties):
@@ -324,7 +323,7 @@ def _span(late: timedelta) -> str:
     return f"{hours}h{minutes}m" if hours and minutes else f"{hours}h" if hours else f"{minutes}m"
 
 
-def _advice(schedule: Schedule, at: datetime) -> list[dict]:
+def _advice(schedule: Schedule, at: datetime) -> list[dict[str, str]]:
     if not schedule.misses_target or schedule.release_finish is None or schedule.target is None:
         return []
     last = schedule.critical_path[-1:] if schedule.critical_path else ()
@@ -333,7 +332,7 @@ def _advice(schedule: Schedule, at: datetime) -> list[dict]:
     return [{"kind": "miss", "text": text, "at": _iso(at)}]
 
 
-def _body(schedule: Schedule, at: datetime) -> dict:
+def _body(schedule: Schedule, at: datetime) -> dict[str, object]:
     return {
         "lanes": [
             {
@@ -371,12 +370,12 @@ def _body(schedule: Schedule, at: datetime) -> dict:
     }
 
 
-def schedule_updated_action(schedule: Schedule, at: datetime) -> dict:
+def schedule_updated_action(schedule: Schedule, at: datetime) -> dict[str, object]:
     """The `schedule_updated` action: the kind and the schedule body."""
     return {"kind": "schedule_updated", "schedule": _body(schedule, at)}
 
 
-def schedule_feed(schedule: Schedule, at: datetime) -> dict:
+def schedule_feed(schedule: Schedule, at: datetime) -> dict[str, object]:
     """The feed form of `dash_feed_schedule_v1.json`: schema, `at`, the schedule body and its action."""
     return {
         "schema": SCHEMA,

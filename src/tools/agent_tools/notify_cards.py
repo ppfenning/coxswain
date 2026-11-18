@@ -21,7 +21,7 @@ def _event(card: dict) -> Event:
     return Event("decision_card", f"decision_card:{card['id']}", title, body)
 
 
-def card_events(cards: list[dict]) -> list[Event]:
+def card_events(cards: list[dict[str, object]]) -> list[Event]:
     """One event per card without an answer."""
     return [_event(card) for card in cards if not card.get("answer")]
 
@@ -31,7 +31,7 @@ def _blob(rows: tuple[dict, ...]) -> str:
     return "".join(f"{json.dumps(row)}\n" for row in rows)
 
 
-def pending_cards(workspace) -> list[dict]:
+def pending_cards(workspace: Path | str) -> list[dict[str, object]]:
     """Open decisions in `<workspace>/courier.jsonl`; [] when there are none or the read fails."""
     try:
         blob = _blob(parse_log(courier_blob(Path(workspace))).rows)

@@ -9,6 +9,7 @@ import json
 import os
 
 from agent_tools.chair_revert_ports import Runner
+from core.jsontypes import is_dict, is_list
 
 __all__ = ["main_green_since"]
 
@@ -21,15 +22,15 @@ def _successful_shas(output: str) -> list[str]:
         runs = json.loads(output)
     except ValueError:
         return []
-    if not isinstance(runs, list):
+    if not is_list(runs):
         return []
     return [
-        run["headSha"]
+        sha
         for run in runs
-        if isinstance(run, dict)
+        if is_dict(run)
         and run.get("status") == "completed"
         and run.get("conclusion") == "success"
-        and isinstance(run.get("headSha"), str)
+        and isinstance(sha := run.get("headSha"), str)
     ]
 
 

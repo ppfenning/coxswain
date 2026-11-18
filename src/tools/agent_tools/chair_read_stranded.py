@@ -6,14 +6,14 @@ import os
 from collections import Counter
 from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
-from typing import Any
 
 from agent_tools import bounded_run, epic, land_manual, remote_lane, repo_path, runs_stranded
+from core.jsontypes import is_mapping
 
 KEYS = ("run", "task", "phase", "branch", "remedy", "expected")
 
 
-def keep_stranded_keys(rows: list[dict]) -> list[dict]:
+def keep_stranded_keys(rows: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
     """Plain dicts holding only `KEYS`, in input order. `expected` is what the producer set; `None` means it did not say."""
     return [{k: row.get(k) for k in KEYS} for row in rows]
 
@@ -55,16 +55,17 @@ def _read_log_texts(runs_dir: Path | str | None) -> dict[str, str]:
     return texts
 
 
-def _log_row_is_stale(run: str, item: dict) -> bool:
+def _log_row_is_stale(run: str, item: Mapping[str, object]) -> bool:
     """True for an item the record path also skips: rebuilt from this run, or sent back by a land conflict."""
     return runs_stranded.was_rebuilt({"run": run}, item) or runs_stranded.awaiting_rebuild(item)
 
 
-def _log_rows(run: str, text: str, items: list[dict], recorded: Collection[tuple[object, object]],
-              repo_exists: Callable[[str], bool], manual_of: Callable[[str], bool]) -> list[dict]:
+def _log_rows(run: str, text: str, items: list[dict[str, object]], recorded: Collection[tuple[object, object]],
+              repo_exists: Callable[[str], bool], manual_of: Callable[[str], bool]) -> list[dict[str, object]]:
     """Rows for one run's log approvals. The repo is the item's own, so no record is needed. A task with any record, or in two repos, yields none: the record path decides it. A `land: manual` repo gets its own remedy."""
-    lines = epic.summarize_log(text)["approved"]
-    found = [(repo, row) for repo in sorted({i["repo"] for i in items if i.get("repo")})
+    lines: list[str] = epic.summarize_log(text)["approved"]
+    repos = sorted({repo for i in items for repo in [i.get("repo")] if isinstance(repo, str) and repo})
+    found = [(repo, row) for repo in repos
              for row in runs_stranded.stranded_from_log(run, lines, items, repo)]
     per_task = Counter(row["task"] for _, row in found)
     return [
@@ -75,11 +76,11 @@ def _log_rows(run: str, text: str, items: list[dict], recorded: Collection[tuple
     ]
 
 
-def read_stranded(records: list[dict], items: list[dict],
+def read_stranded(records: list[dict[str, object]], items: list[dict[str, object]],
                    repo_exists: Callable[[str], bool] = _repo_exists,
                    branch_exists: Callable[[str, str], bool] = _branch_exists,
                    log_texts: Mapping[str, str] | None = None,
-                   runs_dir: Path | str | None = None) -> list[dict]:
+                   runs_dir: Path | str | None = None) -> list[dict[str, object]]:
     """Edge. `records` and `items` come from the caller: their loaders live in
     cli.py, which this module does not import. `repo_exists` defaults to a
     real directory check, on the recorded path expanded to this machine's
@@ -101,22 +102,28 @@ def read_stranded(records: list[dict], items: list[dict],
     return keep_stranded_keys(from_records + from_logs)
 
 
-def read_missing_repos(records: list[dict], items: list[dict],
+def read_missing_repos(records: list[dict[str, object]], items: list[dict[str, object]],
                         repo_exists: Callable[[str], bool] = _repo_exists) -> list[str]:
     """Edge. The repo paths `read_stranded` is skipping because `repo_exists` rejects them."""
     return runs_stranded.missing_repos(records, items, repo_exists)
 
 
-def stranded_from_rows(rows: Sequence[Mapping[str, Any]], records: Sequence[Mapping[str, Any]],
-                       manual_of: Callable[[str], bool] = _is_manual) -> list[dict]:
+def _extra_of(row: Mapping[str, object]) -> Mapping[str, object]:
+    """The row's `extra` when it is a mapping, else an empty one."""
+    extra = row.get("extra")
+    return extra if is_mapping(extra) else {}
+
+
+def stranded_from_rows(rows: Sequence[Mapping[str, object]], records: Sequence[Mapping[str, object]],
+                       manual_of: Callable[[str], bool] = _is_manual) -> list[dict[str, object]]:
     """The same rule as `read_stranded`, with each task's state taken from `rows` (kind "task") instead of files.
 
     `manual_of` reads the record's own repo, as in `read_stranded`; the items built here carry none."""
-    items = [
+    items: list[dict[str, object]] = [
         {
             "id": row.get("task_id"), "initiative": row.get("initiative"), "phase": row.get("phase"), "state": row.get("state"),
-            "land_conflict": (row.get("extra") or {}).get("land_conflict"),
-            "rebuilt_from": (row.get("extra") or {}).get("rebuilt_from"),
+            "land_conflict": _extra_of(row).get("land_conflict"),
+            "rebuilt_from": _extra_of(row).get("rebuilt_from"),
         }
         for row in rows
         if row.get("kind") == "task"

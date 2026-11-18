@@ -106,3 +106,10 @@ def test_arguments_are_not_mutated():
     before = [dict(item, needs=list(item["needs"])) for item in items]
     launchable_phases(items, "task")
     assert items == before
+
+
+def test_a_need_held_as_text_still_holds_its_task_back_and_a_need_that_is_no_list_raises():
+    rows = [{"id": "a", "phase": "p1", "state": "ready"}, {"id": "b", "phase": "p1", "state": "ready", "needs": "a"}]
+    assert launchable_phases(rows, "task") == {"p1": ["a"]}  # "a" iterates to the one need a, which is not met
+    with pytest.raises(TypeError):
+        launchable_phases([{"id": "b", "phase": "p1", "state": "ready", "needs": 5}], "task")

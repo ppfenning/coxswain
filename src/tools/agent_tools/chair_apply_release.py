@@ -9,7 +9,7 @@ Ticket frontmatter carries no verdict field, so "approved or done-with-verdict" 
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from agent_tools import queue_export, queue_rows, route_edit, run_store
@@ -66,9 +66,14 @@ def _ticket_path(work_dir: Path, initiative: str, task_id: str) -> Path | None:
     return next(iter(sorted((work_dir / "work" / initiative).glob(f"**/{task_id}.md"))), None)
 
 
-def _release_row(stored: dict, note: str) -> dict:
+def _release_row(stored: Mapping[str, object], note: str) -> dict[str, object]:
     """The partial row that gives the stored task `note` as the last paragraph of its body, once; never carries `state`."""
-    return {"initiative": stored["initiative"], "task_id": stored["task_id"], "body": route_edit.append_note(stored.get("body") or "", note)}
+    body = stored.get("body") or ""
+    return {
+        "initiative": stored["initiative"],
+        "task_id": stored["task_id"],
+        "body": route_edit.append_note(body if isinstance(body, str) else "", note),
+    }
 
 
 def _mirror_note(runs_dir: Path, work_dir: Path, path: Path, new_text: str, note: str) -> str:

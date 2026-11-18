@@ -8,31 +8,69 @@ items the builder was given. The builder itself is called, never copied.
 unknown: `max_in_flight` has no source in the profile or the pacing policy, so the caller passes it.
 unknown: `started` is taken as any task in the initiative already in_progress, approved, done or dropped.
 """
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import SupportsIndex, SupportsInt, TypedDict, cast
 
 from agent_tools import epic, queue_rows, route, run_store
 from agent_tools.chair_read_quarantined import WorkFiles, task_files
+from agent_tools.chair_types import ReadyTask
+from core.jsontypes import is_mapping
 
-Row = Mapping[str, Any]
+Row = Mapping[str, object]
+Item = dict[str, object]  # a work item as `route.work_item` builds it, with `updated_at` and `merged` where known
+
+
+class HeldRef(TypedDict):
+    """A ready task held behind approved, unmerged needs of its own phase."""
+
+    id: str
+    phase: str
+    needs: list[str]
+
+
+class DocketInitiative(TypedDict):
+    """One initiative of the docket: its ready, waiting and held tasks, and the ids of its landed ones."""
+
+    id: str
+    started: bool
+    ready_tasks: list[ReadyTask]
+    waiting_tasks: list[ReadyTask]
+    held_tasks: list[HeldRef]
+    landed: set[str]
+
+
+class Docket(TypedDict):
+    """The chair's docket: the initiatives rows, the lanes in use and the lane cap."""
+
+    initiatives: list[DocketInitiative]
+    busy_lanes: int
+    max_in_flight: int
+
 
 _BEGUN = frozenset({"in_progress", "approved"}) | route.TERMINAL
 
 
-def _task(i: Row) -> dict[str, Any]:
-    return {"id": i["id"], "phase": i["phase"], "needs": list(i["needs"]), "requires": queue_rows.requires_of(i)}
+def str_items(value: object) -> list[str]:
+    """`value` as a list of strings; a value that is not iterable raises TypeError, as `list(value)` did."""
+    if not isinstance(value, Iterable):
+        raise TypeError(f"'{type(value).__name__}' object is not iterable")
+    return [str(v) for v in cast(Iterable[object], value)]
+
+
+def _task(i: Row) -> ReadyTask:
+    return {"id": str(i["id"]), "phase": str(i["phase"]), "needs": str_items(i["needs"]), "requires": queue_rows.requires_of(i)}
 
 
 def _held_needs(task: Row, own: Sequence[Row]) -> list[str]:
     """Ids in `task`'s needs that sit in the task's own phase and are approved, not merged and not done, in needs order."""
-    held = {i["id"] for i in own if i["phase"] == task["phase"] and i["state"] == "approved" and not i.get("merged")}
-    return [n for n in task["needs"] if n in held]
+    held = {str(i["id"]) for i in own if i["phase"] == task["phase"] and i["state"] == "approved" and not i.get("merged")}
+    return [n for n in str_items(task["needs"]) if n in held]
 
 
-def _held_task(i: Row, own: Sequence[Row]) -> dict[str, Any]:
-    return {"id": i["id"], "phase": i["phase"], "needs": _held_needs(i, own)}
+def _held_task(i: Row, own: Sequence[Row]) -> HeldRef:
+    return {"id": str(i["id"]), "phase": str(i["phase"]), "needs": _held_needs(i, own)}
 
 
 def _land_at_of(land_at: Mapping[str, str] | None, initiative: str) -> str:
@@ -40,22 +78,22 @@ def _land_at_of(land_at: Mapping[str, str] | None, initiative: str) -> str:
     return route.DEFAULT_LAND_AT if land_at is None else land_at.get(initiative, "initiative")
 
 
-def _initiative_row(summary: Row, items: Sequence[Row], land_at: str = route.DEFAULT_LAND_AT) -> dict[str, Any]:
+def _initiative_row(summary: Row, items: Sequence[Row], land_at: str = route.DEFAULT_LAND_AT) -> DocketInitiative:
     own = [i for i in items if i["initiative"] == summary["id"]]
-    landed = {i["id"] for i in own if route.is_met_need(i, land_at=land_at)}
+    landed = {str(i["id"]) for i in own if route.is_met_need(i, land_at=land_at)}
     held = [i for i in own if i["state"] == "ready" and _held_needs(i, own)]
     held_ids = {i["id"] for i in held}
     ready = [
         i for i in own
-        if summary["ready"] and i["phase"] == summary["phase"] and i["state"] == "ready" and set(i["needs"]) <= landed
+        if summary["ready"] and i["phase"] == summary["phase"] and i["state"] == "ready" and set(str_items(i["needs"])) <= landed
         and i["id"] not in held_ids
     ]
     # A ready task behind a need that has not landed is carried, not dropped, so the planner can report it.
     # A held task stays here only while its approved need is unlanded (land_at task). At ticket or level the need
     # is landed, so the task shows in `held_tasks` alone.
-    waiting = [i for i in own if i["state"] == "ready" and not set(i["needs"]) <= landed]
+    waiting = [i for i in own if i["state"] == "ready" and not set(str_items(i["needs"])) <= landed]
     return {
-        "id": summary["id"],
+        "id": str(summary["id"]),
         "started": any(i["state"] in _BEGUN for i in own),
         "ready_tasks": [_task(i) for i in ready],
         "waiting_tasks": [_task(i) for i in waiting],
@@ -66,19 +104,22 @@ def _initiative_row(summary: Row, items: Sequence[Row], land_at: str = route.DEF
 
 def _priority(item: Row) -> int:
     """An item's `priority`; a missing key or a value that is not an int reads as 0."""
+    value = item.get("priority") or 0
+    if not isinstance(value, (str, bytes, bytearray, SupportsInt, SupportsIndex)):
+        return 0
     try:
-        return int(item.get("priority") or 0)
+        return int(value)
     except (TypeError, ValueError):
         return 0
 
 
-def _launchable(row: Row, items: Sequence[Row]) -> list[Row]:
+def _launchable(row: DocketInitiative, items: Sequence[Row]) -> list[Row]:
     """The items behind `row`'s `ready_tasks`: ready, needs landed, not held, not leased."""
     ids = {t["id"] for t in row["ready_tasks"]}
     return [i for i in items if i["initiative"] == row["id"] and i["id"] in ids]
 
 
-def _initiative_priority(row: Row, items: Sequence[Row]) -> int:
+def _initiative_priority(row: DocketInitiative, items: Sequence[Row]) -> int:
     """The highest priority among `row`'s launchable items, 0 when it has none."""
     return max((_priority(i) for i in _launchable(row, items)), default=0)
 
@@ -97,7 +138,7 @@ def _age(value: object) -> datetime | None:
     return None if parsed is None else (parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC))
 
 
-def _ready_age(row: Row, items: Sequence[Row]) -> datetime | None:
+def _ready_age(row: DocketInitiative, items: Sequence[Row]) -> datetime | None:
     """The earliest `updated_at` among `row`'s launchable items, None when none has one."""
     return min((a for i in _launchable(row, items) if (a := _age(i.get("updated_at"))) is not None), default=None)
 
@@ -105,26 +146,26 @@ def _ready_age(row: Row, items: Sequence[Row]) -> datetime | None:
 _NO_AGE = datetime.max.replace(tzinfo=UTC)
 
 
-def _by_priority(rows: Sequence[Row], items: Sequence[Row]) -> list[dict[str, Any]]:
+def _by_priority(rows: Sequence[DocketInitiative], items: Sequence[Row]) -> list[DocketInitiative]:
     """`rows` by priority descending, then oldest launchable task first with no age last, then id ascending."""
-    return cast(list[dict[str, Any]], sorted(rows, key=lambda r: (-_initiative_priority(r, items), _ready_age(r, items) or _NO_AGE, r["id"])))
+    return sorted(rows, key=lambda r: (-_initiative_priority(r, items), _ready_age(r, items) or _NO_AGE, r["id"]))
 
 
 def _initiative_rows(
     summaries: Sequence[Row], items: Sequence[Row], land_at: Mapping[str, str] | None = None
-) -> list[dict[str, Any]]:
+) -> list[DocketInitiative]:
     """One row per summary, then one per initiative `initiative_summaries` omitted that holds a waiting task.
 
     Wrong belief this guards: that an initiative missing from the summaries has nothing to report. The builder
     omits one whose only ready task waits on an unlanded need, and the chair must still say what it waits on."""
     listed = {s["id"] for s in summaries}
-    omitted = sorted({i["initiative"] for i in items if i["state"] == "ready" and i["initiative"] not in listed})
+    omitted = sorted({str(i["initiative"]) for i in items if i["state"] == "ready" and i["initiative"] not in listed})
     held = [
         _initiative_row({"id": initiative, "phase": None, "ready": 0}, items, _land_at_of(land_at, initiative))
         for initiative in omitted
     ]
     rows = [
-        *(_initiative_row(s, items, _land_at_of(land_at, s["id"])) for s in summaries),
+        *(_initiative_row(s, items, _land_at_of(land_at, str(s["id"]))) for s in summaries),
         *(row for row in held if row["waiting_tasks"]),
     ]
     return _by_priority(rows, items)
@@ -136,7 +177,7 @@ def docket_from_builder(
     busy_lanes: int,
     max_in_flight: int,
     land_at: Mapping[str, str] | None = None,
-) -> dict[str, Any]:
+) -> Docket:
     """`summaries` is `route.initiative_summaries(items)`; `items` are the work items it was built from.
 
     `land_at` maps initiative id to its land_at; None keeps every initiative strict, and an id missing from a
@@ -148,34 +189,40 @@ def docket_from_builder(
     }
 
 
-def work_store_ready(docket: Row) -> bool:
+def work_store_ready(docket: Docket) -> bool:
     return any(i["ready_tasks"] for i in docket["initiatives"])
 
 
 def is_claimed(row: Row, now: str) -> bool:
-    return bool(row["holder"]) and row["expires_at"] > now
+    if not row["holder"]:
+        return False
+    expires_at = row["expires_at"]
+    if not isinstance(expires_at, str):
+        raise TypeError(f"'>' not supported between instances of '{type(expires_at).__name__}' and 'str'")
+    return expires_at > now
 
 
-def _item_of(row: Row) -> dict[str, Any]:
+def _item_of(row: Row) -> Item:
+    extra = row.get("extra")
     return {
         "id": row["task_id"], "initiative": row["initiative"], "phase": row["phase"], "state": row["state"],
-        "merged": route.is_merged(row), "needs": list(row["needs"]), "requires": queue_rows.row_requires(cast(dict[str, Any], row)),
-        "priority": row.get("priority", (row.get("extra") or {}).get("priority")),
+        "merged": route.is_merged(row), "needs": str_items(row["needs"]), "requires": queue_rows.row_requires(row),
+        "priority": row.get("priority", extra.get("priority") if is_mapping(extra) else None),
         "updated_at": row.get("updated_at"),
     }
 
 
-def _with_item_ages(items: Sequence[Row], aged: Sequence[Row]) -> list[dict[str, Any]]:
+def _with_item_ages(items: Sequence[Row], aged: Sequence[Row]) -> list[Item]:
     """`items` lacking `updated_at` take it from the `aged` work item with the same initiative and id."""
     ages = {(a["initiative"], a["id"]): a.get("updated_at") for a in aged}
     return [{**i, "updated_at": i.get("updated_at") or ages.get((i["initiative"], i["id"]))} for i in items]
 
 
-def _summaries_by_land_at(items: Sequence[Row], land_at: Mapping[str, str]) -> list[dict[str, Any]]:
+def _summaries_by_land_at(items: Sequence[Item], land_at: Mapping[str, str]) -> list[Item]:
     """`route.initiative_summaries` run once per initiative, each under its own land_at; an id not in `land_at` keeps the default."""
     return [
         summary
-        for initiative in sorted({i["initiative"] for i in items})
+        for initiative in sorted({str(i["initiative"]) for i in items})
         for summary in route.initiative_summaries(
             [i for i in items if i["initiative"] == initiative], land_at=land_at.get(initiative, route.DEFAULT_LAND_AT)
         )
@@ -184,7 +231,7 @@ def _summaries_by_land_at(items: Sequence[Row], land_at: Mapping[str, str]) -> l
 
 def docket_from_rows(
     rows: Sequence[Row], now: str, aged: Sequence[Row] = (), land_at: Mapping[str, str] | None = None
-) -> list[dict[str, Any]]:
+) -> list[DocketInitiative]:
     """The builder's `initiatives` over the task rows, less each task a live lease holds (`holder` set, `expires_at` after ISO `now`).
 
     Queue rows carry no `updated_at` (`run_store._QUEUE_COLUMNS`), so ages come from `aged`, the `docket_work_items` rows,
@@ -196,10 +243,10 @@ def docket_from_rows(
     claimed = {(r["initiative"], r["task_id"]) for r in tasks if is_claimed(r, now)}
     judged = (
         None if land_at is None
-        else {i["initiative"]: land_at.get(i["initiative"], route.DEFAULT_LAND_AT) for i in items}
+        else {str(i["initiative"]): land_at.get(str(i["initiative"]), route.DEFAULT_LAND_AT) for i in items}
     )
     summaries = route.initiative_summaries(items) if judged is None else _summaries_by_land_at(items, judged)
-    unclaimed = [
+    unclaimed: list[DocketInitiative] = [
         {
             **i,
             "ready_tasks": [t for t in i["ready_tasks"] if (i["id"], t["id"]) not in claimed],
@@ -217,15 +264,15 @@ def docket_text(p: Path) -> str | None:
         return None
 
 
-def _with_store_ages(items: Sequence[Row], rows: Sequence[Row]) -> list[dict[str, Any]]:
+def _with_store_ages(items: Sequence[Item], rows: Sequence[Row]) -> list[Item]:
     """`items` with `updated_at` from the store row for the same initiative and task; an item with no row keeps its own."""
     ages = {(r.get("initiative"), r.get("task_id")): r.get("updated_at") for r in rows}
     return [{**i, "updated_at": ages.get((i["initiative"], i["id"])) or i.get("updated_at")} for i in items]
 
 
 def docket_work_items(
-    ws: Path, mode: str, files: WorkFiles | None = None, store_rows: Sequence[Mapping] | None = None,
-) -> list[dict]:
+    ws: Path, mode: str, files: WorkFiles | None = None, store_rows: Sequence[Row] | None = None,
+) -> list[Item]:
     """Every work item under `work/<initiative>/<phase>/<task>.md`, its state from the store under mode "store".
 
     `files` and `store_rows` stand in for the work-file and store reads when a tick already holds them."""
@@ -239,7 +286,7 @@ def docket_work_items(
         if p.name != "initiative.md"
     ]
     rows = store_rows if store_rows is not None else (run_store.work_items(ws / "runs") if mode == "store" else [])
-    return _with_store_ages(route.with_store_states(items, cast(list[dict], rows), mode), rows)
+    return _with_store_ages(route.with_store_states(items, rows, mode), rows)
 
 
 def local_runs(runs_dir: Path, now: str) -> tuple[int, set[str]]:
@@ -257,15 +304,15 @@ def busy_lane_count(runs_dir: Path, now: str) -> int:
 
 def read_docket(
     ws: Path, mode: str, max_in_flight: int, now: Callable[[], datetime] = lambda: datetime.now(UTC),
-    files: WorkFiles | None = None, store_rows: Sequence[Mapping] | None = None,
-) -> dict[str, Any]:
+    files: WorkFiles | None = None, store_rows: Sequence[Row] | None = None,
+) -> Docket:
     """Edge: the builder over the workspace `ws` and its store. `mode` is `work_state.work_state_mode`'s answer."""
     items = docket_work_items(ws, mode, files, store_rows)
     busy = busy_lane_count(ws / "runs", now().strftime("%Y-%m-%dT%H:%M:%SZ"))
     return docket_from_builder(route.initiative_summaries(items), items, busy, max_in_flight)
 
 
-def docket_source(ws: Path, mode: str, max_in_flight: int) -> Callable[[], dict[str, Any]]:
+def docket_source(ws: Path, mode: str, max_in_flight: int) -> Callable[[], Docket]:
     return lambda: read_docket(ws, mode, max_in_flight)
 
 

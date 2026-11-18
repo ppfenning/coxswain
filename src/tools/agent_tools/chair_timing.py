@@ -4,7 +4,6 @@ from __future__ import annotations
 import dataclasses
 import functools
 from collections.abc import Callable, Mapping
-from typing import Any
 
 __all__ = ["STAGES", "TOP_FIELDS", "Clock", "Stages", "format_timing", "ran", "timed", "wrap_callables"]
 
@@ -15,16 +14,16 @@ STAGES = ("facts", "plan", "perform", "export")
 TOP_FIELDS = 5
 
 
-def timed[T](clock: Clock, fn: Callable[..., T], *args: Any, **kwargs: Any) -> tuple[T, float]:
+def timed[**P, T](clock: Clock, fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> tuple[T, float]:
     """The call's value and the seconds `clock` counted around it. A call that raises is not timed."""
     start = clock()
     value = fn(*args, **kwargs)
     return value, clock() - start
 
 
-def _accumulating(name: str, fn: Callable[..., Any], clock: Clock, sink: dict[str, float]) -> Callable[..., Any]:
+def _accumulating[**P, T](name: str, fn: Callable[P, T], clock: Clock, sink: dict[str, float]) -> Callable[P, T]:
     @functools.wraps(fn)
-    def call(*args: Any, **kwargs: Any) -> Any:
+    def call(*args: P.args, **kwargs: P.kwargs) -> T:
         value, seconds = timed(clock, fn, *args, **kwargs)
         sink[name] = sink.get(name, 0.0) + seconds
         return value
@@ -32,7 +31,7 @@ def _accumulating(name: str, fn: Callable[..., Any], clock: Clock, sink: dict[st
     return call
 
 
-def wrap_callables(deps: Any, clock: Clock, sink: dict[str, float]) -> Any:
+def wrap_callables[D](deps: D, clock: Clock, sink: dict[str, float]) -> D:
     """`deps` with every callable dataclass field timed into `sink` (field name to summed seconds).
 
     `sink` is the caller's out-parameter. Fields are found with `dataclasses.fields`, so a new source is timed unasked.

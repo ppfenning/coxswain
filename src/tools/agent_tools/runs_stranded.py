@@ -77,12 +77,12 @@ def _row(record: dict, item: dict | None, base_of: Callable[[str], str] | None =
 _LIVE_STATES = frozenset({"ready", "approved"})
 
 
-def was_rebuilt(record: dict, item: dict | None) -> bool:
+def was_rebuilt(record: Mapping[str, Any], item: Mapping[str, Any] | None) -> bool:
     """True when a `route edit --rebuild` listed this record's run in the item's `rebuilt_from`, whatever the item's state now."""
     return bool(item) and record.get("run") in (item.get("rebuilt_from") or [])
 
 
-def awaiting_rebuild(item: dict | None) -> bool:
+def awaiting_rebuild(item: Mapping[str, Any] | None) -> bool:
     """True for a ready item a land conflict sent back: the relaunch rebuilds it, nothing is stranded."""
     return bool(item) and item.get("state") == "ready" and bool(item.get("land_conflict"))
 
@@ -124,11 +124,11 @@ def _carried(record: dict, item: dict | None, branch_exists: Callable[[str, str]
             and branch_exists(repo, branch))
 
 
-def stranded(records: Sequence[Mapping[str, Any]], items: list[dict],
+def stranded(records: Sequence[Mapping[str, Any]], items: list[dict[str, Any]],
              repo_exists: Callable[[str], bool] | None = None,
              branch_exists: Callable[[str, str], bool] | None = None,
              base_of: Callable[[str], str] | None = None,
-             manual_of: Callable[[str], bool] | None = None) -> list[dict]:
+             manual_of: Callable[[str], bool] | None = None) -> list[dict[str, Any]]:
     """Rows for approved, unlanded records whose matching item is `ready`
     or `approved`. `items` are expected to carry a resolved `repo` (the edge
     reads it from the initiative's own frontmatter, since a work item's
@@ -161,7 +161,7 @@ def _task_and_remedy(line: str) -> tuple[str, str | None] | None:
     return (task, (remedy or None) if dash else None) if task else None
 
 
-def stranded_from_log(run: str, approved_lines: list[str], items: list[dict], repo: str) -> list[dict]:
+def stranded_from_log(run: str, approved_lines: list[str], items: list[dict[str, Any]], repo: str) -> list[dict[str, Any]]:
     """Rows for a run log's approved-but-not-landed lines. A line yields a row only when its task id names exactly one item in `repo` and that item is `ready` or `approved`; the remedy is the line's own text, `branch` is `None` and `expected` is `False`: the caller knows the repo's landing mode."""
     in_repo = [item for item in items if item.get("repo") == repo]
     parsed = [p for p in map(_task_and_remedy, approved_lines) if p is not None]
@@ -173,7 +173,7 @@ def stranded_from_log(run: str, approved_lines: list[str], items: list[dict], re
     ]
 
 
-def missing_repos(records: list[dict], items: list[dict],
+def missing_repos(records: list[dict[str, Any]], items: list[dict[str, Any]],
                   repo_exists: Callable[[str], bool]) -> list[str]:
     """Sorted, de-duplicated repo paths of records `stranded` skips because
     the repo is missing. A record with a non-live item is not counted."""

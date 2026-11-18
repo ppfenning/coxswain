@@ -21,14 +21,15 @@ from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Protocol
 
 from agent_tools import land
 from agent_tools.chair_types import LandWait
 from agent_tools.forge_status import ForgeStatus
 from agent_tools.jsonl_log import parse_log
+from core.jsontypes import is_list, is_mapping
 
-Bodies = tuple[dict[str, Any], dict[str, Any]]
+Bodies = tuple[dict[str, object], dict[str, object]]
 CheckRead = Bodies | str  # a str is the failed read's error text
 RECENT = timedelta(days=2)
 MAX_ROWS = 10
@@ -38,13 +39,39 @@ _PR_URL = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/pull/\d+$")
 _RUNNING = frozenset({"in_progress", "completed"})
 
 
-def checks_started(check_runs: Mapping[str, Any], status: Mapping[str, Any]) -> bool | None:
+class Reply(Protocol):
+    """The part of a `subprocess.CompletedProcess` that a `gh` call's reader uses."""
+
+    @property
+    def returncode(self) -> int: ...
+
+    @property
+    def stdout(self) -> str | None: ...
+
+    @property
+    def stderr(self) -> str | None: ...
+
+
+def _field_values(body: Mapping[str, object], key: str, field: str) -> list[object]:
+    """The `field` of each entry in the body's `key` list; an absent or empty list gives none."""
+    entries: object = body.get(key) or []
+    if not is_list(entries):
+        raise TypeError(f"{key} is not a list")
+    values: list[object] = []
+    for entry in entries:
+        if not is_mapping(entry):
+            raise TypeError(f"an entry of {key} is not a mapping")
+        values.append(entry.get(field))
+    return values
+
+
+def checks_started(check_runs: Mapping[str, object], status: Mapping[str, object]) -> bool | None:
     """None when `land.check_poll_result` reads green or failed; else whether any check has begun."""
     rc, output = land.check_poll_result(dict(check_runs), dict(status))
     if land.wait_decision(rc, output, 0.0, 1.0) != "retry":
         return None
-    runs = [r.get("status") for r in check_runs.get("check_runs") or []]
-    states = [s.get("state") for s in status.get("statuses") or []]
+    runs = _field_values(check_runs, "check_runs", "status")
+    states = _field_values(status, "statuses", "state")
     return any(s in _RUNNING for s in runs) or any(s not in (None, "pending") for s in states)
 
 
@@ -53,7 +80,7 @@ def status_text(status: ForgeStatus) -> str | None:
     return (status.incident or "degraded") if status.degraded else None
 
 
-def _wait(row: Mapping[str, Any], read: CheckRead, forge_status: str | None) -> LandWait | None:
+def _wait(row: Mapping[str, object], read: CheckRead, forge_status: str | None) -> LandWait | None:
     started: bool | None = False
     status = forge_status
     if isinstance(read, str):
@@ -72,14 +99,14 @@ def _wait(row: Mapping[str, Any], read: CheckRead, forge_status: str | None) -> 
 
 
 def land_waits(
-    rows: Sequence[Mapping[str, Any]], reads: Mapping[str, CheckRead], forge_status: str | None
+    rows: Sequence[Mapping[str, object]], reads: Mapping[str, CheckRead], forge_status: str | None
 ) -> list[LandWait]:
     """One `LandWait` per row with checks not all complete; a failed read keeps the row and says so."""
-    waits = (_wait(r, reads.get(r["pr"], "no check read"), forge_status) for r in rows)
+    waits = (_wait(r, reads.get(str(r["pr"]), "no check read"), forge_status) for r in rows)
     return [w for w in waits if w is not None]
 
 
-def _when(row: Mapping[str, Any]) -> datetime | None:
+def _when(row: Mapping[str, object]) -> datetime | None:
     try:
         stamp = datetime.fromisoformat(str(row.get("ts") or ""))
     except ValueError:
@@ -87,9 +114,16 @@ def _when(row: Mapping[str, Any]) -> datetime | None:
     return stamp if stamp.tzinfo is not None else stamp.replace(tzinfo=UTC)
 
 
+def _merged(row: Mapping[str, object]) -> bool:
+    steps: object = row.get("steps_reached") or []
+    if not is_list(steps):
+        raise TypeError("steps_reached is not a list")
+    return "merge" in steps
+
+
 def unmerged_lands(
-    rows: Sequence[Mapping[str, Any]], now: datetime, recent: timedelta = RECENT, cap: int = MAX_ROWS
-) -> list[dict]:
+    rows: Sequence[Mapping[str, object]], now: datetime, recent: timedelta = RECENT, cap: int = MAX_ROWS
+) -> list[dict[str, object]]:
     """Newest-first, at most `cap`: per run and task, the newest row when it has a `pr`, no `merge`, and is recent."""
     parsed = [(w, r) for r in rows if (w := _when(r)) is not None]
     newest = {(r.get("run"), r.get("task")): (w, r) for w, r in parsed}
@@ -97,7 +131,7 @@ def unmerged_lands(
         (
             (w, r)
             for w, r in newest.values()
-            if r.get("pr") and "merge" not in (r.get("steps_reached") or []) and now - w <= recent
+            if r.get("pr") and not _merged(r) and now - w <= recent
         ),
         key=lambda pair: pair[0],
         reverse=True,
@@ -108,21 +142,21 @@ def unmerged_lands(
     ]
 
 
-def _failure(what: str, reply: Any) -> str:
+def _failure(what: str, reply: Reply) -> str:
     detail = (reply.stderr or "").strip() if isinstance(getattr(reply, "stderr", None), str) else ""
     return f"{what} failed: {detail or f'exit {reply.returncode}'}"
 
 
-def gh_checks(pr: str, timeout_s: float, run: Callable[..., Any] = subprocess.run) -> CheckRead:
+def gh_checks(pr: str, timeout_s: float, run: Callable[..., Reply] = subprocess.run) -> CheckRead:
     """The PR head's bodies from `land.rest_checks_argvs`, or the error text; `timeout_s` bounds the three `gh` calls."""
     match = _PR_URL.match(pr)
     if match is None:
         return f"not a github pull request url: {pr}"
     each = timeout_s / 3
-    opts: dict[str, Any] = {"capture_output": True, "text": True, "timeout": each, "check": False}
+    opts: dict[str, object] = {"capture_output": True, "text": True, "timeout": each, "check": False}
     repo = f"{match[1]}/{match[2]}"
 
-    def api(argv: list[str], key: str) -> dict[str, Any] | str:
+    def api(argv: list[str], key: str) -> dict[str, object] | str:
         reply = run([a.replace("{owner}/{repo}", repo) for a in argv], **opts)
         body = land.merge_pages(reply.stdout or "", key) if reply.returncode == 0 else None
         if body is None:
@@ -131,16 +165,21 @@ def gh_checks(pr: str, timeout_s: float, run: Callable[..., Any] = subprocess.ru
 
     try:
         view = run(["gh", "pr", "view", pr, "--json", "headRefOid", "--jq", ".headRefOid"], **opts)
-        if view.returncode != 0 or not view.stdout.strip():
+        head = (view.stdout or "").strip()
+        if view.returncode != 0 or not head:
             return _failure("gh pr view", view)
-        argvs = land.rest_checks_argvs(view.stdout.strip())
+        argvs = land.rest_checks_argvs(head)
         # The two api calls need only the head sha, so they run together; the first failure in key order is reported.
         with ThreadPoolExecutor(max_workers=2) as pool:
             replies = list(pool.map(api, argvs, ("check_runs", "statuses")))
     except (OSError, subprocess.SubprocessError) as exc:
         return f"{type(exc).__name__}: {exc}"
-    failed = next((r for r in replies if isinstance(r, str)), None)
-    return failed if failed is not None else (replies[0], replies[1])  # type: ignore[return-value]
+    first, second = replies
+    if isinstance(first, str):
+        return first
+    if isinstance(second, str):
+        return second
+    return first, second
 
 
 def cached_checks(
@@ -165,7 +204,7 @@ def cached_checks(
     return read
 
 
-def _safely(call: Callable[[], Any]) -> Any:
+def _safely[T](call: Callable[[], T]) -> T | Exception:
     try:
         return call()
     except Exception as exc:  # edge: a failed forge call never stops the tick
@@ -190,8 +229,8 @@ def read_lands_waiting(
     deadline = clock() + budget_s
     # Every read is submitted before any is awaited, so the PRs are read together; the budget gates each start.
     with ThreadPoolExecutor(max_workers=max(1, len(rows))) as pool:
-        started: dict[str, Future | str] = {
-            r["pr"]: pool.submit(_safely, lambda pr=r["pr"]: read_checks(pr, timeout_s)) if clock() < deadline
+        started: dict[str, Future[CheckRead | Exception] | str] = {
+            str(r["pr"]): pool.submit(_safely, lambda pr=str(r["pr"]): read_checks(pr, timeout_s)) if clock() < deadline
             else "budget exhausted"
             for r in rows
         }

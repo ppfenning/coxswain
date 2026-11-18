@@ -80,7 +80,9 @@ from __future__ import annotations
 import importlib
 import importlib.metadata
 import inspect
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+from typing import Protocol, cast
 
 DEFAULT = "local"
 ENTRY_POINT_GROUP = "coxswain.forges"
@@ -94,8 +96,25 @@ class ForgeNotSupported(ForgeError):
     """The forge has no pull-request host, so the operation has no meaning for it."""
 
 
-def forge_name(profile: Mapping) -> str:
-    return profile.get("forge") or DEFAULT
+class ForgeModule(Protocol):
+    """A forge module as the lander calls it: the five functions of the registry, and `pr_state`."""
+
+    def find_open_prs(self, repo: Path, branch: str) -> Sequence[object] | str: ...
+
+    def push(self, repo: Path, branch: str) -> tuple[bool, str]: ...
+
+    def open_pr(self, repo: Path, title: str, body: str, *, head: str | None = None,
+                base: str | None = None) -> tuple[bool, str]: ...
+
+    def wait_checks(self, repo: Path, timeout_s: float, *, ref: str = "HEAD") -> tuple[bool, str]: ...
+
+    def merge(self, repo: Path, step: Mapping[str, object]) -> tuple[bool, str]: ...
+
+    def pr_state(self, url: str) -> Mapping[str, object]: ...
+
+
+def forge_name(profile: Mapping[str, object]) -> str:
+    return str(profile.get("forge") or DEFAULT)
 
 
 REF_KEYWORDS = {"open_pr": ("head", "base"), "wait_checks": ("ref",)}
@@ -110,7 +129,7 @@ def missing_refs(module) -> list[str]:
             if not accepts(getattr(module, fn), name)]
 
 
-def pr_state(module, url: str) -> dict:
+def pr_state(module: object, url: str) -> dict[str, object]:
     """`module.pr_state(url)`, or `unknown` for a forge that has no such function."""
     fn = getattr(module, "pr_state", None)
     return fn(url) if fn else {"state": "unknown", "merged_at": None}
@@ -125,7 +144,7 @@ def list_open_prs_by_prefix(module, repo, prefix: str) -> list[dict] | str:
     return fn(repo, prefix) if fn else NOT_SUPPORTED
 
 
-def branch_prs(module, repo, branch: str) -> list[dict] | str:
+def branch_prs(module: object, repo: Path | str, branch: str) -> list[dict[str, object]] | str:
     """`module.find_branch_prs(repo, branch)`, or a reason for a forge that has no such function."""
     fn = getattr(module, "find_branch_prs", None)
     return fn(repo, branch) if fn else NOT_SUPPORTED
@@ -137,16 +156,16 @@ def close_pr(module, repo, number: int, comment: str) -> tuple[bool, str]:
     return fn(repo, number, comment) if fn else (False, NOT_SUPPORTED)
 
 
-def delete_branch(module, repo, branch: str) -> tuple[bool, str]:
+def delete_branch(module: object, repo: Path | str, branch: str) -> tuple[bool, str]:
     """`module.delete_branch(repo, branch)`, or `(False, reason)` for a forge that has no such function."""
     fn = getattr(module, "delete_branch", None)
     return fn(repo, branch) if fn else (False, NOT_SUPPORTED)
 
 
-def forge_for(name: str):
+def forge_for(name: str) -> ForgeModule | None:
     """The built-in `agent_tools.forge_<name>`, else the forge an installed package registers under `coxswain.forges`; None for neither."""
     try:
-        return importlib.import_module(f"agent_tools.forge_{name}")
+        return cast(ForgeModule, importlib.import_module(f"agent_tools.forge_{name}"))  # a dynamic import: no stub to check
     except ImportError:
         pass
     registered = [ep for ep in importlib.metadata.entry_points(group=ENTRY_POINT_GROUP) if ep.name == name]

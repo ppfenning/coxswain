@@ -10,7 +10,6 @@ leave it out.
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 from agent_tools import run_store
 from agent_tools.chair_facts import run_initiative
@@ -21,7 +20,7 @@ from agent_tools.host_cmd import host_rows_to_lane_hosts
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_argv import ssh_argv
 
-Row = Mapping[str, Any]
+Row = Mapping[str, object]
 Output = tuple[int, str] | None  # (exit code, stdout) of the pid check; None when ssh could not run or timed out
 
 # Exit 3 is "cannot tell": no readable pidfile, or no positive integer in it. Only a pid that was read is

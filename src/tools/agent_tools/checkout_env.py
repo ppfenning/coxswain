@@ -1,6 +1,9 @@
 """Verdict on a checkout's environment from two lock hashes. Pure: the beat edge reads and hashes."""
 
+from collections.abc import Mapping
 from typing import TypedDict
+
+from core.jsontypes import is_mapping
 
 CHECKOUT_ENV_KEY = "checkout_env"
 
@@ -34,14 +37,15 @@ def env_verdict(synced_hash: str | None, current_hash: str | None) -> str:
     return "stale"
 
 
-def host_env_verdict(versions: dict, repo: str) -> str:
+def host_env_verdict(versions: Mapping[str, object], repo: str) -> str:
     entries = versions.get(CHECKOUT_ENV_KEY)
-    if not isinstance(entries, dict):
+    if not is_mapping(entries):
         return "unknown"
     entry = entries.get(repo)
-    if not isinstance(entry, dict):
+    if not is_mapping(entry):
         return "unknown"
-    return env_verdict(entry.get("synced_hash"), entry.get("lock_hash"))
+    synced, lock = entry.get("synced_hash"), entry.get("lock_hash")
+    return env_verdict(synced if isinstance(synced, str) else None, lock if isinstance(lock, str) else None)
 
 
 def blocks_launch(verdict: str) -> bool:

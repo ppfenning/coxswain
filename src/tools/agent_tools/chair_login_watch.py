@@ -12,11 +12,11 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Any, cast
 
 from agent_tools.chair_types import Action, ActionKind
+from core.jsontypes import is_dict, is_mapping
 
-Row = Mapping[str, Any]
+Row = Mapping[str, object]
 
 DEFAULT_THRESHOLD_S = 1800
 # An idle host is beaten only by the login check, so placement must tolerate two missed check intervals.
@@ -54,17 +54,17 @@ def login_url_from_output(output: str) -> str | None:
     return found.group().rstrip(".,;:)]") if found else None
 
 
-def versions_of(row: Row) -> dict:
+def versions_of(row: Row) -> dict[str, object]:
     """`versions_json` as a dict: a JSON string from SQLite, already a mapping from a Postgres JSONB
     column."""
     raw = row.get("versions_json")
-    if isinstance(raw, Mapping):
+    if is_mapping(raw):
         return dict(raw)
     try:
-        parsed = json.loads(str(raw or "{}"))
+        parsed: object = json.loads(str(raw or "{}"))
     except ValueError:
         return {}
-    return parsed if isinstance(parsed, dict) else {}
+    return parsed if is_dict(parsed) else {}
 
 
 def _parsed(value: object) -> datetime | None:
@@ -112,10 +112,14 @@ def login_needs_chair(hosts: Sequence[Row]) -> list[Action]:
         for row in hosts
         if str(row.get("name") or "") in blocked
     }
-    return [
-        {"kind": ActionKind.NEEDS_CHAIR, "host": name, "cause": "login_lapsed", **cast(Action, {"url": urls[name]} if urls.get(name) else {})}
-        for name in sorted(blocked)
-    ]
+    actions: list[Action] = []
+    for name in sorted(blocked):
+        action: Action = {"kind": ActionKind.NEEDS_CHAIR, "host": name, "cause": "login_lapsed"}
+        url = urls[name]
+        if isinstance(url, str) and url:
+            action["url"] = url
+        actions.append(action)
+    return actions
 
 
 def is_unreachable_reply(returncode: int, output: str) -> bool:
@@ -140,15 +144,14 @@ def host_unreachable_needs_chair(hosts: Sequence[Row]) -> list[Action]:
     """One `host_unreachable` needs_chair action per `unreachable` row, sorted by name. `since` is
     omitted when the row holds no `unreachable_since`."""
     rows = sorted((row for row in hosts if row.get("state") == UNREACHABLE_STATE), key=lambda row: str(row.get("name") or ""))
-    return [
-        {
-            "kind": ActionKind.NEEDS_CHAIR,
-            "host": str(row.get("name") or ""),
-            "cause": "host_unreachable",
-            **cast(Action, {"since": since} if (since := versions_of(row).get(UNREACHABLE_SINCE_KEY)) else {}),
-        }
-        for row in rows
-    ]
+    actions: list[Action] = []
+    for row in rows:
+        action: Action = {"kind": ActionKind.NEEDS_CHAIR, "host": str(row.get("name") or ""), "cause": "host_unreachable"}
+        since = versions_of(row).get(UNREACHABLE_SINCE_KEY)
+        if isinstance(since, str) and since:
+            action["since"] = since
+        actions.append(action)
+    return actions
 
 
 def host_back_needs_chair(hosts: Sequence[Row], now: str) -> list[Action]:
@@ -160,20 +163,20 @@ def host_back_needs_chair(hosts: Sequence[Row], now: str) -> list[Action]:
         for row in hosts
         if row.get("state") == "active"
         for back_at in [versions_of(row).get(HOST_BACK_AT_KEY)]
-        if back_at and (parsed := _parsed(back_at)) is not None and 0 <= (now_parsed - parsed).total_seconds() <= BACK_WINDOW_S
+        if isinstance(back_at, str) and back_at and (parsed := _parsed(back_at)) is not None and 0 <= (now_parsed - parsed).total_seconds() <= BACK_WINDOW_S
     ]
     return [{"kind": ActionKind.NEEDS_CHAIR, "host": name, "cause": "host_back", "back_at": back_at} for name, back_at in sorted(returned)]
 
 
 def merge_login_versions(
-    versions: Mapping[str, Any],
+    versions: Mapping[str, object],
     login_ok: bool | None,
     checked_at: str,
     check: str = "claude_auth",
     reason: str | None = None,
     *,
     login_url: str | None = None,
-) -> dict:
+) -> dict[str, object]:
     """A new dict carrying every key of `versions` plus `login_ok`, `login_checked_at` and `check` set to
     the given values. `reason` and `login_url` are added only when not `None`; a `None` is dropped, never
     stored as a null. A stored `login_url` is dropped when the new one is `None`, so a passing check

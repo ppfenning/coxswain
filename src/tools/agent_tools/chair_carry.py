@@ -3,18 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from functools import reduce
 
 from agent_tools.chair_types import Action, ActionKind, CarryTask, StrandedPhase
 
 
 def _newest_per_task(rows: Sequence[CarryTask]) -> list[CarryTask]:
     """One row per task: the one with the highest run_seq, the newest run's newest commit."""
-    newest: dict[str, CarryTask] = reduce(
-        lambda acc, row: acc if row["task"] in acc and acc[row["task"]]["run_seq"] >= row["run_seq"] else {**acc, row["task"]: row},
-        rows,
-        {},
-    )
+    newest: dict[str, CarryTask] = {}
+    for row in rows:
+        if not (row["task"] in newest and newest[row["task"]]["run_seq"] >= row["run_seq"]):
+            newest[row["task"]] = row
     return [newest[task] for task in sorted(newest)]
 
 

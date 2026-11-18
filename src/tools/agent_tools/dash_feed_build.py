@@ -404,7 +404,7 @@ def _health(work_dir: Path, runs_dir: Path) -> dict:
     return {"skipped_total": sum(row["skipped"] for row in damaged), "logs": damaged}
 
 
-def open_needs_chair_ids(entries: list[dict]) -> list[str]:
+def open_needs_chair_ids(entries: Sequence[Mapping[str, object]]) -> list[str]:
     """The ids of unacknowledged courier entries that reach a person and are `needs_chair` refs, before the inbox cap."""
     refs = (_REF.fullmatch(str(e.get("ref") or "")) for e in entries if _reaches_a_person(str(e.get("to") or "")))
     return [m.group(2) for m in refs if m and m.group(1) == "needs_chair"]
@@ -462,7 +462,7 @@ def _chair_from_store_v1(
     }
 
 
-def iso_ts_row(row: dict) -> dict:
+def iso_ts_row(row: dict[str, object]) -> dict[str, object]:
     """`row` with a Postgres `datetime` ts as ISO text, the form `chair_today` reads."""
     ts = row.get("ts")
     return {**row, "ts": ts.isoformat()} if isinstance(ts, datetime) else row

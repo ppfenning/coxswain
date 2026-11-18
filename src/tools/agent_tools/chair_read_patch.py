@@ -6,6 +6,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from agent_tools import run_store
+from core.jsontypes import is_dict
 
 __all__ = ["has_patch", "newest_runs", "read_has_patch"]
 
@@ -15,10 +16,10 @@ def newest_runs(attempts: Iterable[Mapping[str, object]]) -> dict[tuple[object, 
     return {(a.get("initiative"), a.get("task")): a["run"] for a in attempts if a.get("run")}
 
 
-def has_patch(record: dict | None) -> bool:
+def has_patch(record: Mapping[str, object] | None) -> bool:
     """True only when `record["build"]["patch"]` is a string holding a non-whitespace character."""
     build = record.get("build") if isinstance(record, dict) else None
-    patch = build.get("patch") if isinstance(build, dict) else None
+    patch = build.get("patch") if is_dict(build) else None
     return isinstance(patch, str) and bool(patch.strip())
 
 

@@ -28,7 +28,8 @@ from agent_tools.chair_land_proc import (
 )
 
 if TYPE_CHECKING:
-    from agent_tools.chair_exec import Action, Result
+    from agent_tools.chair_exec import Result
+    from agent_tools.chair_types import Action
     from agent_tools.ci_gate import CiGate
 
 LAND_TIMEOUT_S = 45 * 60.0  # mirrors chair_exec.LAND_TIMEOUT_S: the bound the child puts on one `cox runs land`

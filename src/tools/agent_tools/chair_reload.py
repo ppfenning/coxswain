@@ -3,6 +3,8 @@
 import hashlib
 from collections.abc import Mapping, Sequence
 
+from core.jsontypes import is_object_mapping
+
 # Profile settings the chair captures once at start, so a change needs a new chair. Everything else is read from the
 # profile by a lambda on each tick. Sources in cli.py:
 # - `_chair_run_deps`: `harness_dir`, `workspace_dir`, `ids`, `notify`, `log_retention_days`, `weekly_reset`, the
@@ -43,17 +45,17 @@ def digest(text: bytes | str) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _leaves(tree: Mapping, prefix: str = "") -> dict[str, object]:
+def _leaves[K](tree: Mapping[K, object], prefix: str = "") -> dict[str, object]:
     """Dotted path to value for each non-mapping value; an empty mapping holds no leaf."""
 
-    def walk(key: object, value: object) -> dict[str, object]:
+    def walk(key: K, value: object) -> dict[str, object]:
         path = f"{prefix}{key}"
-        return _leaves(value, f"{path}.") if isinstance(value, Mapping) else {path: value}
+        return _leaves(value, f"{path}.") if is_object_mapping(value) else {path: value}
 
     return {path: value for key, child in tree.items() for path, value in walk(key, child).items()}
 
 
-def changed_keys(old: Mapping, new: Mapping) -> list[str]:
+def changed_keys[K](old: Mapping[K, object], new: Mapping[K, object]) -> list[str]:
     """Sorted dotted paths of the leaves that differ, were added or were removed."""
     before, after = _leaves(old), _leaves(new)
     return sorted(k for k in before.keys() | after.keys() if before.get(k, _MISSING) != after.get(k, _MISSING))

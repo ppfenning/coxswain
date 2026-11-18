@@ -14,7 +14,6 @@ import json
 from collections.abc import Collection, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 from agent_tools import courier
 from agent_tools.chair_idle_ready import IDLE_READY_CAUSE
@@ -22,23 +21,25 @@ from agent_tools.chair_read_stale import read_chair_actions
 from agent_tools.chair_types import DEADLOCK_CAUSE
 from agent_tools.dash_chair_today import row_ts
 from agent_tools.dash_feed import courier_blob, iso_ts_row, open_needs_chair_ids
+from core.jsontypes import is_dict
 
 CAUSE = "idle_stall"
 _OLDEST = datetime.min.replace(tzinfo=UTC)
 
 
-def _fields(row: Mapping[str, Any]) -> Mapping[str, Any]:
+def _fields(row: Mapping[str, object]) -> Mapping[str, object]:
     """The row with its `action_json` fields laid over it; a Postgres dict or a SQLite JSON string, else nothing."""
     raw = row.get("action_json")
+    parsed: object
     try:
         parsed = json.loads(raw) if isinstance(raw, str) else raw
     except ValueError:
         parsed = None
-    return {**row, **parsed} if isinstance(parsed, dict) else row
+    return {**row, **parsed} if is_dict(parsed) else row
 
 
 def open_idle_stall(
-    rows: Sequence[Mapping[str, Any]], open_items: Collection[str]
+    rows: Sequence[Mapping[str, object]], open_items: Collection[str]
 ) -> tuple[str | None, str | None]:
     """(signature, reason) of the newest open `idle_stall`, `deferred_land_deadlock` or `idle_ready` needs_chair row, else (None, None); a resolved one is not open."""
     flat = [_fields(iso_ts_row(dict(r))) for r in rows]
@@ -50,7 +51,7 @@ def open_idle_stall(
     return (str(newest[1]["signature"]), str(newest[1].get("reason") or "")) if newest is not None else (None, None)
 
 
-def read_idle_open(ws: Path, actions: Sequence[Mapping[str, Any]] | None = None) -> tuple[str | None, str | None]:
+def read_idle_open(ws: Path, actions: Sequence[Mapping[str, object]] | None = None) -> tuple[str | None, str | None]:
     """Edge. Never raises: no store, no table, an unreadable courier file or a database error gives (None, None).
 
     `actions` is the tick's shared `FactsDeps.actions()` rows. `needs_chair` is a kept kind, so the window never drops an open row."""

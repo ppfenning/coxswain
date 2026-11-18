@@ -6,6 +6,7 @@ import json
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 
+from agent_tools.chair_activity_read import SessionTranscript
 from agent_tools.stats_chair import chair_cost, lines_since
 
 _WINDOWS = ("five_hour", "weekly")
@@ -90,7 +91,9 @@ def _session_row(session: Mapping, day: str, prices: Prices) -> dict | None:
     }
 
 
-def session_rows(sessions: Sequence[Mapping], prices: Prices, windows: Mapping[str, Mapping]) -> dict[str, list[dict]]:
+def session_rows(
+    sessions: Sequence[SessionTranscript], prices: Prices, windows: Mapping[str, Mapping[str, object]]
+) -> dict[str, list[dict[str, object]]]:
     """Rows per window, newest session first; `lines_since` compares dates, so the ISO `start` is cut to its day."""
     return {
         name: sorted(
@@ -106,7 +109,7 @@ def session_rows(sessions: Sequence[Mapping], prices: Prices, windows: Mapping[s
     }
 
 
-def window_costs(sessions: Sequence[Mapping], prices: Prices, day: str) -> tuple[float, float]:
+def window_costs(sessions: Sequence[SessionTranscript], prices: Prices, day: str) -> tuple[float, float]:
     """(main transcripts, agent transcripts) dollars since `day`, unrounded."""
     sessions_usd = sum(chair_cost(lines_since(s["lines"], day), prices) for s in sessions)
     agents_usd = sum(chair_cost(lines_since(a["lines"], day), prices) for s in sessions for a in s["agents"])

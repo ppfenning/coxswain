@@ -7,7 +7,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Literal, SupportsFloat, SupportsIndex, SupportsInt
 
 from agent_tools import chair_smoke, forge, pacing, queue_rows
 from agent_tools.budget import MonthBudget
@@ -17,6 +17,7 @@ from agent_tools.chair_land_freeze import LandFreeze, read_freeze
 from agent_tools.chair_no_progress import RunOutcome
 from agent_tools.chair_phase_quarantine import marked_cause
 from agent_tools.chair_phases import launchable_phases
+from agent_tools.chair_read_docket import Docket, str_items
 from agent_tools.chair_read_land_conflicts import rev_parse_commit
 from agent_tools.chair_schedule_durations import END_KEY, MIX_KEY, SIZE_KEY, START_KEY
 from agent_tools.chair_types import (
@@ -25,9 +26,11 @@ from agent_tools.chair_types import (
     ApprovedTask,
     AwaitingFetch,
     DispatchFacts,
+    HandoffStop,
     HeldFile,
     HoldRecord,
     IdleStallInputs,
+    LandingFact,
     LandWatch,
     LeaseFacts,
     LimitsFacts,
@@ -44,9 +47,13 @@ from agent_tools.chair_types import (
     ScheduleInputs,
     SchedulePhase,
     ScheduleRunning,
+    StaleCandidate,
+    StallCandidate,
     WronglyReleased,
 )
 from agent_tools.land_batch_settings import merge_queue_setting
+from core.jsontypes import is_list, is_mapping
+from core.landing_record import LandingRecord
 
 HARNESS_CAUSE = "harness"
 RESCUE_FAILED_CAUSE = "rescue_failed"
@@ -55,7 +62,7 @@ LAUNCHING_VERDICTS = frozenset({"go", "go_degraded"})
 LAUNCH_KINDS = frozenset({"launch_epic", "relaunch", "retry", "rescue"})
 STEER_STATES = frozenset({"ready", "approved"})
 
-Row = Mapping[str, Any]
+Row = Mapping[str, object]
 
 
 def _package_version() -> str:
@@ -201,8 +208,8 @@ class FactsDeps:
     window: Callable[[], pacing.Window]
     weekly: Callable[[], pacing.Window | None]
     policy: Callable[[], pacing.Policy]
-    docket: Callable[[], Row]
-    approved: Callable[[], Sequence[Row]]
+    docket: Callable[[], Docket]
+    approved: Callable[[], Sequence[ApprovedTask]]
     quarantined: Callable[[], Sequence[Row]]
     stranded: Callable[[], Sequence[Row]]
     attempts: Callable[[], Sequence[Row]]
@@ -215,7 +222,7 @@ class FactsDeps:
     pid: int
     host: str
     idle_stall: Callable[[datetime], IdleStallInputs]  # now -> the idle-lanes stall inputs, stored unchanged
-    dispatch: Callable[[Row], DispatchFacts] | None = None  # docket -> lane facts; absent counts every busy lane as local
+    dispatch: Callable[[Docket], DispatchFacts] | None = None  # docket -> lane facts; absent counts every busy lane as local
     queue: Callable[[], Sequence[Row]] | None = None  # run_store.read_queue rows; absent or empty falls back to docket, intake, quarantined and stranded
     stranded_records: Callable[[], Sequence[Row]] | None = None  # paired with queue's task rows to build stranded; absent leaves stranded on the file reader
     drafts: Callable[[], int] | None = None
@@ -245,9 +252,9 @@ class FactsDeps:
     serial_files: Callable[[], object] | None = None  # raw profile top-level serial_files; absent means none
     host_load_ceiling: Callable[[], object] | None = None  # raw profile chair.host_load_ceiling; absent means no ceiling
     merge_queue: Callable[[], object] | None = None  # raw profile top-level merge_queue; absent means the queue is off
-    stale_candidates: Callable[[datetime], Sequence[Row]] | None = None  # chair_read_stale.read_stale_candidates; absent means no candidates
-    stall_candidates: Callable[[datetime], Sequence[Row]] | None = None  # chair_read_stall.read_stall_candidates; absent means no candidates
-    hosts: Callable[[], list[dict]] = lambda: []  # run_store.hosts(runs_dir) rows, stored verbatim under login_hosts
+    stale_candidates: Callable[[datetime], Sequence[StaleCandidate]] | None = None  # chair_read_stale.read_stale_candidates; absent means no candidates
+    stall_candidates: Callable[[datetime], Sequence[StallCandidate]] | None = None  # chair_read_stall.read_stall_candidates; absent means no candidates
+    hosts: Callable[[], list[dict[str, object]]] = lambda: []  # run_store.hosts(runs_dir) rows, stored verbatim under login_hosts
     window_source: Callable[[], str] = lambda: "est"  # "meter" when `window` built from a fresh meter entry this tick
     weekly_source: Callable[[], str] = lambda: "est"  # "meter" when `weekly` built from a fresh meter entry this tick
     runs_dir: Callable[[], str] = lambda: ""  # the runs directory `limits_facts` reads chair.hold.json from; absent means no hold is ever read
@@ -258,7 +265,7 @@ class FactsDeps:
     # The store's landing records (`harness.landing_store.list_records`). With it, an approved task of an initiative
     # that lands at `initiative` carries the merged flag exactly when the record says its phase merged. Absent means
     # the flag is left as each reader found it.
-    landing_records: Callable[[], Sequence[Mapping[str, Any]]] | None = None
+    landing_records: Callable[[], Sequence[LandingRecord]] | None = None
     live_phases: Callable[[], Sequence[tuple[str, str]]] | None = None  # live (initiative, phase) runs; absent means no phase runs live
     repos: Callable[[], Mapping[str, str]] | None = None  # initiative to its initiative.md `repo:`; absent means no repo is known
     actions: Callable[[], Sequence[Row]] | None = None  # windowed chair_actions rows, read once per gather (`windowed_actions`); absent means no steer streaks
@@ -270,7 +277,7 @@ class FactsDeps:
     phase_tasks: Callable[[], list[PhaseTasks]] = lambda: []  # per phase with an approved task, each task's state; absent means []
     phase_records: Callable[[list[ApprovedTask]], list[str]] | None = None  # approved tasks to the `<run>:<phase>` of theirs with a phase record; absent means unknown
     branch_counts: Callable[[], Sequence[Row]] = lambda: []  # per phase branch: ahead, behind, tip against main; absent means []
-    landing: Callable[[], Sequence[Row]] | None = None  # WorkerLands.landing; absent means []
+    landing: Callable[[], Sequence[LandingFact]] | None = None  # WorkerLands.landing; absent means []
     tuning: Callable[[datetime], tuple[Sequence[Row], str | None]] = lambda now: ([], None)  # chair_read_tuning.read_tuning bound to its db, runs dir and current tiers; absent means no rows and no last tune
     profile_stale: Callable[[], bool] = lambda: False  # read after sources_configured: this tick's profile re-read failed and the last good value was kept
     lane_bounds: Callable[[], Mapping[str, tuple[int, int]]] = lambda: {}  # host ("" local) to the cartridge's (min, max) lanes; absent means {}
@@ -279,14 +286,14 @@ class FactsDeps:
     green_since: Callable[[str, str], bool] = lambda repo, commit: False  # (repo, commit) to whether main went green after; absent means False
     land_hold: Callable[[], HoldRecord | None] = lambda: None  # chair_smoke.read_hold's result; absent means no hold
     land_outcomes: Callable[[], Mapping[str, list[str]]] = lambda: {}  # initiative to resolved outcomes, oldest first; absent means {}
-    handoff_stops: Callable[[], Sequence[Row]] = lambda: []  # chair_read_handoff_stops.read_handoff_stops rows; absent means []
+    handoff_stops: Callable[[], Sequence[HandoffStop]] = lambda: []  # chair_read_handoff_stops.read_handoff_stops rows; absent means []
     queue_files: Callable[[], list[QueueFile]] = lambda: []  # `read_queue_files` bound to the workspace and store; absent means []
     held_files: Callable[[], Sequence[HeldFile]] = lambda: []  # `queue_export.read_held_record` bound to the workspace; absent means []
     current_version: Callable[[], str] = _package_version  # the umbrella's current version, read once per tick; gates target_release
     rev_parse: Callable[[str, str], str | None] = rev_parse_commit  # (repo, ref) to the commit sha or None; read by `read_land_heads` for refused phases only
-    cartridge: Callable[[], Mapping[str, Any]] = lambda: {}  # the resolved team cartridge; {} when unreadable, so land_at reads the default
+    cartridge: Callable[[], Mapping[str, object]] = lambda: {}  # the resolved team cartridge; {} when unreadable, so land_at reads the default
     land_at_values: Callable[[], Mapping[str, str | None]] = lambda: {}  # initiative to its initiative.md `land_at:`; absent means {}
-    approved_branch_merged: Callable[[Row], bool] = lambda row: False  # approved row to whether its commit is on a phase or pr branch
+    approved_branch_merged: Callable[[ApprovedTask], bool] = lambda row: False  # approved row to whether its commit is on a phase or pr branch
     wrongly_released: Callable[[], Sequence[WronglyReleased]] = lambda: []  # ready tasks released while merged on a branch; absent means []
 
 
@@ -307,7 +314,7 @@ def read_queue_files(workspace: Path, rows: Sequence[Row], stored: Mapping[tuple
     return [entry(row) for row in rows if row.get("kind") == "task" and not is_contentless(row)]
 
 
-def forge_review_prs(runs_dir: str, forge_name: str, resolve: Callable[[str], Any] = forge.forge_for) -> list[ReviewPr]:
+def forge_review_prs(runs_dir: str, forge_name: str, resolve: Callable[[str], forge.ForgeModule | None] = forge.forge_for) -> list[ReviewPr]:
     """Edge. The one place a PR's state is read, through the forge registry. A missing forge gives state unknown."""
     # Imported here because the reader imports `run_initiative` from this module.
     from agent_tools.chair_read_review_prs import read_review_prs
@@ -336,23 +343,39 @@ def run_host_facts(raw: Mapping[str, str]) -> dict[str, str]:
     return {run: host for run, host in raw.items() if host}
 
 
+def int_of(value: object) -> int:
+    """`int(value)`: a str, bytes, or anything with `__int__` or `__index__`; any other value raises TypeError, as `int` does."""
+    if isinstance(value, (str, bytes, bytearray, SupportsInt, SupportsIndex)):
+        return int(value)
+    raise TypeError(f"int() argument must be a string, a bytes-like object or a real number, not {type(value).__name__!r}")
+
+
+def float_of(value: object) -> float:
+    """`float(value)`: a str, bytes, or anything with `__float__` or `__index__`; any other value raises TypeError, as `float` does."""
+    if isinstance(value, (str, bytes, bytearray, SupportsFloat, SupportsIndex)):
+        return float(value)
+    raise TypeError(f"float() argument must be a string or a real number, not {type(value).__name__!r}")
+
+
 def lease_facts(record: Row, session: str, pid: int, host: str) -> LeaseFacts:
     """`mine` needs this holder on a lease that is neither released nor stale."""
     holder = str(record.get("holder") or "")
     released = bool(record.get("released", False))
     stale = bool(record.get("stale", False))
-    return cast(LeaseFacts, {
+    facts: LeaseFacts = {
         "holder": holder,
         "host": str(record.get("host") or host),
-        "epoch": int(record.get("epoch") or 0),
+        "epoch": int_of(record.get("epoch") or 0),
         "mine": holder == lease_holder(session, pid, host) and not released and not stale,
         "released": released,
         "stale": stale,
         "expired": bool(record.get("expired", False)),
         "until": str(record.get("until") or ""),
         "lent": bool(record.get("lent", False)),
-        **({"session_held": bool(record["session_held"])} if "session_held" in record else {}),
-    })
+    }
+    if "session_held" in record:
+        facts["session_held"] = bool(record["session_held"])
+    return facts
 
 
 def weekly_fraction(weekly: pacing.Window | None) -> float:
@@ -408,7 +431,7 @@ def limits_facts(
     month_stopped = month_fraction is not None and month_fraction >= policy.weekly_hard_stop_fraction
     pace = pacing.weekly_pace(weekly, policy, now) if now is not None else None
     lane_fraction = pace.lane_fraction if pace is not None else 1.0
-    return cast(LimitsFacts, {
+    facts: LimitsFacts = {
         "hard_stop": fraction >= policy.weekly_hard_stop_fraction or month_stopped,
         "weekly_fraction": fraction,
         "hard_stop_fraction": policy.weekly_hard_stop_fraction,
@@ -422,8 +445,11 @@ def limits_facts(
         "window_source": window_source,
         "weekly_source": weekly_source,
         "smoke_hold": chair_smoke.read_hold(runs_dir) if runs_dir else None,
-        **({} if month is None else {"month_fraction": month_fraction, "month_verdict": month.verdict}),
-    })
+    }
+    if month is not None:
+        facts["month_fraction"] = month_fraction
+        facts["month_verdict"] = month.verdict
+    return facts
 
 
 Key = tuple[str, str, str]
@@ -547,12 +573,12 @@ def awaiting_fetch(quarantined: Sequence[Row], unfetched: Mapping[str, str]) -> 
     quarantine that names no run waits for any: the unfetched run may be the one that quarantined it. An older unfetched
     run never holds back a later quarantine. A decompose-only unfetched run writes no task record, so nothing waits on it.
     Each entry names the run it waits for; the status line shows it, so a waiting quarantine is never hidden."""
-    decompose = frozenset(getattr(unfetched, "decompose", ()))
+    decompose: frozenset[str] = frozenset(getattr(unfetched, "decompose", ()))
     return [
-        {"initiative": str(q["initiative"]), "task_id": str(q["task"]), "run": unfetched[q["initiative"]]}
+        {"initiative": initiative, "task_id": str(q["task"]), "run": unfetched[initiative]}
         for q in quarantined
-        if q["initiative"] in unfetched and q["initiative"] not in decompose
-        and run_ordinal(unfetched[q["initiative"]]) > run_ordinal(str(q.get("run") or ""))
+        if (initiative := str(q["initiative"])) in unfetched and initiative not in decompose
+        and run_ordinal(unfetched[initiative]) > run_ordinal(str(q.get("run") or ""))
     ]
 
 
@@ -604,10 +630,19 @@ def quarantine_facts(
     ]
 
 
+def _mark_of(row: Row) -> Mapping[str, str] | None:
+    """The chair's mark on a quarantine row (`chair_phase_quarantine.row_mark`); None when the row carries none."""
+    raw = row.get("mark")
+    if not is_mapping(raw):
+        return None
+    mark = {k: v for k, v in raw.items() if isinstance(v, str)}
+    return mark if len(mark) == len(raw) else None
+
+
 def _opened_quarantine(key: Key, attempts: Sequence[Row], has_patch: Callable[[str, str], bool], row: Row) -> QuarantineFacts:
     """One open quarantine. Its cause is the chair's own mark on the row while no attempt from a later run outdates it
     (`chair_phase_quarantine.marked_cause`), with the mark's reason; else the newest attempt's, else `QUARANTINED_CAUSE`."""
-    mark = marked_cause(row.get("mark"), [a for a in attempts if task_key(a) == key])
+    mark = marked_cause(_mark_of(row), [a for a in attempts if task_key(a) == key])
     if mark is None:
         return _quarantine(key, newest_cause(attempts, key) or QUARANTINED_CAUSE, attempts, has_patch, row)
     return _quarantine(key, mark["cause"], attempts, has_patch, {**row, "reason": mark["reason"] or row.get("reason") or ""})
@@ -632,10 +667,9 @@ def _stranded_entry(
 
     The run rides inside `tasks`, not as a top-level `run`: `launch_history_from_actions` reads that key as a quarantined run."""
     lead = next((k for k in keys if (k[0], k[2]) not in waiting), keys[0])
-    return cast(QuarantineFacts, {
-        **_quarantine(lead, STRANDED_CAUSE, attempts, has_patch),
-        "tasks": [{"task": k[2], "run": rows[k].get("run"), "remedy": rows[k].get("remedy")} for k in keys],
-    })
+    entry = _quarantine(lead, STRANDED_CAUSE, attempts, has_patch)
+    entry["tasks"] = [{"task": k[2], "run": rows[k].get("run"), "remedy": rows[k].get("remedy")} for k in keys]
+    return entry
 
 
 def store_approved_tasks(rows: Sequence[Row]) -> list[Row]:
@@ -655,7 +689,7 @@ def store_approved_tasks(rows: Sequence[Row]) -> list[Row]:
 
 def _surfaces_of(item: Row) -> list[str]:
     raw = item.get("surfaces")
-    return [x for x in raw if isinstance(x, str)] if isinstance(raw, list) else []
+    return [x for x in raw if isinstance(x, str)] if is_list(raw) else []
 
 
 def ticket_surfaces(items: Sequence[Row], ready_ids: Mapping[str, Collection[str]]) -> dict[str, list[str]]:
@@ -680,7 +714,7 @@ def phase_facts(rows: Sequence[Row], land_at: str, claimed: Collection[str] = fr
                 {
                     "id": i,
                     "phase": phase,
-                    "needs": [str(n) for n in by_id[i].get("needs") or []],
+                    "needs": str_items(by_id[i].get("needs") or []),
                     "requires": queue_rows.requires_of(by_id[i]),
                 }
                 for i in ids
@@ -692,7 +726,7 @@ def phase_facts(rows: Sequence[Row], land_at: str, claimed: Collection[str] = fr
     ]
 
 
-def with_landing_merged(items: Sequence[Row], records: Sequence[Mapping[str, Any]], land_at: Mapping[str, str]) -> list[Row]:
+def with_landing_merged(items: Sequence[Row], records: Sequence[LandingRecord], land_at: Mapping[str, str]) -> list[Row]:
     """Pure. `items` with the merged flag of each approved task set from the landing record, for initiatives at `initiative`.
 
     `merged` has one meaning there: the task's phase is merged into the initiative branch. A merged task holds no
@@ -706,8 +740,8 @@ def with_landing_merged(items: Sequence[Row], records: Sequence[Mapping[str, Any
     for item in items:
         own.setdefault(str(item["initiative"]), []).append(item)
     merged = {
-        initiative: set(lr.merged_tasks(cast("lr.LandingRecord | None", by_initiative.get(initiative)), [
-            {"id": str(r["id"]), "phase": str(r.get("phase") or ""), "state": r.get("state"), "needs": list(r.get("needs") or [])}
+        initiative: set(lr.merged_tasks(by_initiative.get(initiative), [
+            {"id": str(r["id"]), "phase": str(r.get("phase") or ""), "state": r.get("state"), "needs": str_items(r.get("needs") or [])}
             for r in rows
         ]))
         for initiative, rows in own.items()
@@ -747,7 +781,7 @@ def running_initiatives(
             and not (i.get("state") == "approved" and i.get("merged"))
         ]
 
-    return cast(list[RunningInitiative], [
+    live_rows: list[RunningInitiative] = [
         {
             "id": initiative,
             "repo": repos.get(initiative, ""),
@@ -757,7 +791,8 @@ def running_initiatives(
         }
         for initiative in sorted(set(live) | set(unlanded))
         if initiative in live or held(initiative)
-    ] + [
+    ]
+    phase_rows: list[RunningInitiative] = [
         {
             "id": initiative,
             "repo": repos.get(initiative, ""),
@@ -773,14 +808,17 @@ def running_initiatives(
             "state": "running",
         }
         for initiative, phase in sorted(set(live_phases))
-    ])
+    ]
+    return live_rows + phase_rows
 
 
 SCHEDULE_TERMINAL = frozenset({"done", "dropped"})
 SCHEDULE_WAITING = frozenset({"approved", "quarantined", "waiting", "in_progress"})  # held, but by no live run unless one is named
 
 
-def phase_status(states: Collection[str], launchable: bool, held: bool) -> str:
+def phase_status(
+    states: Collection[str], launchable: bool, held: bool
+) -> Literal["running", "complete", "waiting", "ready", "blocked"]:
     """`running` only when a live run `held` the phase. Otherwise `complete` when every task is terminal, `waiting` when a
     task is approved, quarantined, waiting or in progress with no live run, `ready` when launchable, else `blocked`.
     A `todo` task is the normal state of a later phase and never makes it running."""
@@ -806,10 +844,10 @@ def phase_parents(rows: Sequence[Row], *, open_only: bool) -> dict[str, set[str]
     phase_of = {str(r["id"]): str(r.get("phase") or "") for r in rows}
     state_of = {str(r["id"]): r.get("state") for r in rows}
     edges = {
-        (str(r.get("phase") or ""), phase_of[str(n)])
+        (str(r.get("phase") or ""), phase_of[n])
         for r in rows
-        for n in r.get("needs") or []
-        if str(n) in phase_of and not (open_only and state_of[str(n)] == "done")
+        for n in str_items(r.get("needs") or [])
+        if n in phase_of and not (open_only and state_of[n] == "done")
     }
     return {p: {q for here, q in edges if here == p and q and q != p} for p in set(phase_of.values()) if p}
 
@@ -825,20 +863,20 @@ def schedule_phases(
     parents = phase_parents(rows, open_only=True)
     launchable = launchable_phases(rows, land_at)
 
-    def one(phase: str) -> SchedulePhase:
+    def one(phase: str) -> SchedulePhase | None:
+        """The phase's row; None for a complete one, which the schedule leaves out."""
         own = [r for r in rows if str(r.get("phase") or "") == phase]
         states = [str(r.get("state")) for r in own]
-        return {
-            "id": phase,
-            "status": phase_status(states, phase in launchable, (initiative, phase) in live_phases),  # type: ignore[typeddict-item]
-            "parents": sorted(parents.get(phase, ())),
-            "size": _phase_size(own),
-            "mix": _phase_mix(own),
-            "surfaces": sorted({s for r in own if r.get("state") not in SCHEDULE_TERMINAL for s in _surfaces_of(r)}),
-        }
+        status = phase_status(states, phase in launchable, (initiative, phase) in live_phases)
+        parents_of = sorted(parents.get(phase, ()))
+        size, mix = _phase_size(own), _phase_mix(own)
+        surfaces = sorted({s for r in own if r.get("state") not in SCHEDULE_TERMINAL for s in _surfaces_of(r)})
+        if status == "complete":
+            return None
+        return {"id": phase, "status": status, "parents": parents_of, "size": size, "mix": mix, "surfaces": surfaces}
 
     phases = [one(p) for p in dict.fromkeys(str(r["phase"]) for r in rows if r.get("phase"))]
-    return [p for p in phases if p["status"] != "complete"]
+    return [p for p in phases if p is not None]
 
 
 def duration_records(
@@ -924,13 +962,19 @@ def _int(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
+def extra_value(row: Row, key: str) -> object:
+    """`key` in the row's `extra` mapping; None when the row has no `extra`."""
+    extra: object = row.get("extra") or {}
+    return extra.get(key) if is_mapping(extra) else None
+
+
 def release_target(work: Sequence[Row], open_ids: Collection[str]) -> str | None:
     """The earliest `release_target` an open initiative's work row states, else None."""
     found = [
         str(t)
         for r in work
         if r.get("kind") == "initiative" and r.get("initiative") in open_ids
-        if (t := r.get("release_target") or (r.get("extra") or {}).get("release_target"))
+        if (t := r.get("release_target") or extra_value(r, "release_target"))
     ]
     return min(found) if found else None
 
@@ -957,7 +1001,7 @@ def schedule_inputs_from_rows(
     ids = list(dict.fromkeys(str(r["initiative"]) for r in items))
     own = {i: [r for r in items if str(r["initiative"]) == i] for i in ids}
     priority = {
-        str(r["initiative"]): _int(r.get("priority", (r.get("extra") or {}).get("priority")))
+        str(r["initiative"]): _int(r.get("priority", extra_value(r, "priority")))
         for r in work
         if r.get("kind") == "initiative"
     }

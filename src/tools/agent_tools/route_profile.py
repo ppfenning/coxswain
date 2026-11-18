@@ -9,7 +9,7 @@ import zoneinfo
 from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 from types import MappingProxyType
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from agent_tools import card_keys, intake_fields, repo_path, upgrade_edge
 from agent_tools.intake_pull_map import PullMap, map_fields
@@ -309,7 +309,7 @@ def unknown_keys(text: str) -> list[tuple[str, int]]:
 _WARNED_KEYS: set[str] = set()  # only `parse_profile` touches this
 
 
-def parse_profile(text: str) -> dict:
+def parse_profile(text: str) -> dict[str, Any]:
     """The profile dict from `_parse_profile`; warns on stderr once per process per unknown key."""
     profile, unknown = _parse_profile(text)
     for key, lineno in unknown:
@@ -352,7 +352,7 @@ def phase_run_prefix(initiative_id: str, phase: str) -> str:
     return f"{initiative_id}.{phase}"
 
 
-def next_run_id(existing_names, prefix: str) -> str:
+def next_run_id(existing_names: Collection[str], prefix: str) -> str:
     """Return `<prefix>-<n>` for one past the highest n used by a name in
     existing_names with that prefix, or `<prefix>-1` when there is none.
 

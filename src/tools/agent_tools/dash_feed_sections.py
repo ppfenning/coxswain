@@ -585,7 +585,7 @@ def _local_login(local_name: str) -> bool | None:
     """Edge. Whether the token verb (`cox setup token status`, no probe, so no turn is spent per gather) says
     this machine is logged in, as `chair_login_check` reads it for a host named `socket.gethostname()`: True
     or False when the reply says so, None when it cannot be read."""
-    return chair_login_check._login_ok(local_name, "", _run_capturing)
+    return chair_login_check.probe_login(local_name, "", _run_capturing)
 
 
 def _local_versions(login_ok: bool | None, now: str) -> dict | None:

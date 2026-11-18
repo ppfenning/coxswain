@@ -9,13 +9,25 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
 
 from agent_tools.chair_exec import LAUNCH_KINDS, Result
 from agent_tools.chair_land_freeze import LandFreeze, status_text
 from agent_tools.chair_read_quarantined import RUNAWAY_CAUSE
 from agent_tools.chair_runnable import WaitingInitiative
-from agent_tools.chair_types import DEADLOCK_CAUSE, EASTERN, HELD_FILE_CAUSE, Action, Facts, QueueFile, ReviewPr
+from agent_tools.chair_types import (
+    DEADLOCK_CAUSE,
+    EASTERN,
+    HELD_FILE_CAUSE,
+    Action,
+    AwaitingFetch,
+    DispatchFacts,
+    Facts,
+    LandingFact,
+    LimitsFacts,
+    QueueFile,
+    ReviewPr,
+    action_text,
+)
 from agent_tools.notify import Notification
 from agent_tools.queue_export import is_ahead_of_store
 
@@ -58,8 +70,9 @@ def mode_of(actions: Sequence[Action], results: Sequence[Result]) -> str:
     standby = next((a for a in actions if a.get("kind") == "standby"), None)
     if results and all(r["status"] == "dry_run" for r in results):
         return "dry-run"
-    if standby is not None and standby.get("until"):
-        return f"standby: held by {standby.get('holder', '?').partition('@')[0]} until {standby['until']}"
+    until = standby.get("until") if standby is not None else None
+    if standby is not None and until:
+        return f"standby: held by {standby.get('holder', '?').partition('@')[0]} until {until}"
     if standby is not None:
         return f"standby holder={standby.get('holder', '?')} host={standby.get('host', '?')}"
     taken_from = takeback_holder(results)
@@ -85,7 +98,8 @@ def partial_land_text(action: Action) -> str:
 
 def _needs_scope(action: Action) -> str:
     """The file a held_file needs_chair names, so an intake (no initiative) is still named; else `_scope`."""
-    return action["path"] if action.get("cause") == HELD_FILE_CAUSE and action.get("path") else _scope(action)
+    path = action.get("path")
+    return path if action.get("cause") == HELD_FILE_CAUSE and path else _scope(action)
 
 
 def needs_chair_items(actions: Sequence[Action]) -> list[str]:
@@ -181,9 +195,12 @@ def steer_head_items(results: Sequence[Result]) -> list[str]:
     as is one missing either name. An initiative steered behind several others waits on each of their heads.
     """
     pairs = [
-        (a["initiative"], a["other"])
+        (initiative, other)
         for a in (r["action"] for r in results)
-        if a.get("kind") == "steer_clear" and a.get("initiative") and a.get("other") and a["initiative"] != a["other"]
+        if a.get("kind") == "steer_clear"
+        and (initiative := a.get("initiative"))
+        and (other := a.get("other"))
+        and initiative != other
     ]
     behind = {i: tuple(dict.fromkeys(o for j, o in pairs if j == i)) for i, _ in pairs}
     waiting = Counter(h for i in behind for h in _chain_heads(i, behind))
@@ -204,12 +221,12 @@ def deferred_items(results: Sequence[Result]) -> list[str]:
     ]
 
 
-def awaiting_fetch_items(waiting: Sequence[Mapping[str, Any]]) -> list[str]:
+def awaiting_fetch_items(waiting: Sequence[AwaitingFetch]) -> list[str]:
     """`awaiting fetch: <initiative>:<task> (run <run>)` per quarantine held back until that remote run is fetched."""
     return [f"awaiting fetch: {w.get('initiative', '?')}:{w.get('task_id', '?')} (run {w.get('run', '?')})" for w in waiting]
 
 
-def landing_fragment(landing: Sequence[Mapping[str, Any]]) -> str:
+def landing_fragment(landing: Sequence[LandingFact]) -> str:
     """Empty when none; else `landing N (2 coxswain, 1 dash)`, names being repo basenames (`?` for a land with no repo)."""
     if not landing:
         return ""
@@ -236,24 +253,24 @@ def would_items(results: Sequence[Result]) -> list[str]:
     ]
 
 
-def _five_hour(limits: dict) -> str:
+def _five_hour(limits: LimitsFacts) -> str:
     """`5h <fraction> (<source>)`; with no fraction, `5h none (<source>)` when the source is a meter (the plan has no five-hour limit), else `5h n/a`."""
     fraction = limits.get("five_hour_fraction")
     source = limits.get("window_source")
     if fraction is not None:
-        return f"5h {fraction:.0%} ({source if source is not None else 'est'})"
+        return f"5h {fraction:.0%} ({source})"
     if source in ("meter", "meter, store"):
         return f"5h none ({source})"
     return "5h n/a"
 
 
-def _weekly_pace(limits: dict) -> str:
+def _weekly_pace(limits: LimitsFacts) -> str:
     """` target <target>% <verdict>` for a judged pace; empty when `weekly_pace` is a `not_judged` string, absent, or has no target."""
     target, verdict = limits.get("weekly_target_fraction"), limits.get("weekly_pace")
     return "" if target is None or verdict in (None, "not_judged") else f" target {target:.0%} {verdict}"
 
 
-def _weekly(limits: dict) -> str:
+def _weekly(limits: LimitsFacts) -> str:
     """`weekly <fraction>/<hard stop fraction> (<source>)`, then the judged pace, then `since <window_start_day>` when the edge supplies one."""
     base = (
         f"weekly {limits['weekly_fraction']:.0%}/{limits['hard_stop_fraction']:.0%} ({limits.get('weekly_source', 'est')})"
@@ -299,14 +316,14 @@ def _freeze(facts: Facts, now: datetime) -> str | None:
     return status_text(freeze) if live else None
 
 
-def epics_fragment(epics: Sequence[Mapping[str, Any]]) -> str:
+def epics_fragment(epics: Sequence[Mapping[str, object]]) -> str:
     """`epics: <line>, ...` from `core.epics.format_epic_line`; empty when there is no epic."""
     from core.epics import format_epic_line  # lazy: core sits beside agent_tools in one venv
 
     return f"epics: {', '.join(format_epic_line(e) for e in epics)}" if epics else ""
 
 
-def lanes_text(dispatch: Mapping[str, Any]) -> str:
+def lanes_text(dispatch: DispatchFacts) -> str:
     """A host missing live_runs or capacity adds nothing to that side of L/C."""
     here = f"{dispatch['live_runs']}/{dispatch['max_in_flight']}"
     hosts = dispatch.get("hosts") or []
@@ -345,7 +362,7 @@ def format_status(
         lanes_text(dispatch),
         f"lands {lands_this_tick(results)}",
         *([f"drafts {drafts}"] if drafts > 0 else []),
-        f"limits {_five_hour(dict(limits))} {_weekly(dict(limits))}{stop}",
+        f"limits {_five_hour(limits)} {_weekly(limits)}{stop}",
         *([stall] if stall else []),
         *([freeze] if freeze else []),
         mode_of(actions, results),
@@ -374,7 +391,7 @@ def _stamp(now: datetime) -> str:
 
 def unlaunched_lines(actions: Sequence[Action], now: datetime) -> list[str]:
     """One line per unlaunched action, in the order given. `now` must be timezone-aware."""
-    return [f"{_stamp(now)} not launched {a['initiative']}: {a['reason']}" for a in actions if a["kind"] == "unlaunched"]
+    return [f"{_stamp(now)} not launched {action_text(a, 'initiative')}: {action_text(a, 'reason')}" for a in actions if a["kind"] == "unlaunched"]
 
 
 def echo_line(line: str) -> None:

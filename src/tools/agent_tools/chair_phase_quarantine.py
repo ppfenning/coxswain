@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Any, NamedTuple
+from typing import NamedTuple
 
 from agent_tools.chair_remedy import set_state_argv
+from core.jsontypes import is_mapping
 
 QUARANTINE_FROM = ("approved", "done")
 MARK_KEY = "quarantine_mark"  # extra key: {"cause", "reason", "run"} the chair's own quarantine wrote
@@ -28,7 +29,7 @@ def _run_number(run: str) -> int:
     return int(match.group(1)) if match else -1
 
 
-def phase_targets(rows: Iterable[Mapping[str, Any]], initiative: str, phase: str) -> list[Mapping[str, Any]]:
+def phase_targets(rows: Iterable[Mapping[str, object]], initiative: str, phase: str) -> list[Mapping[str, object]]:
     """The task rows of `initiative`'s `phase` a revert quarantines: those in a state the land carried, in input order."""
     return [
         r for r in rows
@@ -62,20 +63,23 @@ def release_commands(initiative: str, tasks: Iterable[str]) -> list[str]:
     return [" ".join(set_state_argv(initiative, task, "ready")) for task in tasks]
 
 
-def marked_extra(extra: Mapping[str, Any] | None, cause: str, reason: str, run: str) -> dict[str, Any]:
+def marked_extra(extra: Mapping[str, object] | None, cause: str, reason: str, run: str) -> dict[str, object]:
     """`extra` with the quarantine's mark set; every other key kept."""
     return {**(extra or {}), MARK_KEY: {"cause": cause, "reason": reason, "run": run}}
 
 
-def row_mark(extra: Mapping[str, Any] | None) -> dict[str, str] | None:
+def row_mark(extra: Mapping[str, object] | None) -> dict[str, str] | None:
     """The mark a row's `extra` carries, when it is a well-formed one."""
     mark = (extra or {}).get(MARK_KEY)
-    if not isinstance(mark, Mapping) or not isinstance(mark.get("cause"), str) or not mark["cause"]:
+    if not is_mapping(mark):
         return None
-    return {"cause": mark["cause"], "reason": str(mark.get("reason") or ""), "run": str(mark.get("run") or "")}
+    cause = mark.get("cause")
+    if not isinstance(cause, str) or not cause:
+        return None
+    return {"cause": cause, "reason": str(mark.get("reason") or ""), "run": str(mark.get("run") or "")}
 
 
-def marked_cause(mark: Mapping[str, str] | None, attempts: Sequence[Mapping[str, Any]]) -> Mapping[str, str] | None:
+def marked_cause(mark: Mapping[str, str] | None, attempts: Sequence[Mapping[str, object]]) -> Mapping[str, str] | None:
     """The mark, while no attempt of the task comes from a run newer than the one the mark names; else None."""
     if mark is None:
         return None

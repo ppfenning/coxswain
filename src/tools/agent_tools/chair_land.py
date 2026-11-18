@@ -12,6 +12,7 @@ import threading
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import cast
 
 from agent_tools.ci_gate import CiGate
 
@@ -92,7 +93,7 @@ class LandWorker:
         self._mutex = threading.Lock()
         self._running: dict[str, int] = {}
         self._limits: dict[str, int] = {}
-        self._queues: dict[str, deque[tuple[Land, LandHandle]]] = {}
+        self._queues: dict[str, deque[tuple[Land, LandHandle[object]]]] = {}
         self._beating = False
         self._stopped = False
         self._gate = UNPAUSED
@@ -109,7 +110,8 @@ class LandWorker:
             queue = self._queues.setdefault(repo, deque())
             full = self._running.get(repo, 0) >= self._limits[repo]
             outcome = may_start(self._running.get(repo, 0), self._limits[repo], len(queue), gate)
-            queue.append((land, handle))
+            # the queue holds lands of every result type: a land is always queued with the handle that takes its result
+            queue.append((land, cast(LandHandle[object], handle)))
             if full or gate.paused:
                 return Submitted(outcome, handle)
             first = self._claim(repo)
@@ -136,7 +138,7 @@ class LandWorker:
         with self._mutex:
             return bool(self._running) or any(self._queues.values())
 
-    def _claim(self, repo: str) -> tuple[Land, LandHandle]:
+    def _claim(self, repo: str) -> tuple[Land, LandHandle[object]]:
         """Caller holds the mutex. Counts one more land running in the repo and returns its oldest held land."""
         land, handle = self._queues[repo].popleft()
         self._running[repo] = self._running.get(repo, 0) + 1
@@ -145,12 +147,12 @@ class LandWorker:
             threading.Thread(target=self._beat_loop, daemon=True).start()
         return land, handle
 
-    def _land_loop(self, repo: str, land: Land, handle: LandHandle) -> None:
+    def _land_loop(self, repo: str, land: Land, handle: LandHandle[object]) -> None:
         handle.finish(self._execute(land))
         for queued_land, queued_handle in iter(lambda: self._next_queued(repo), None):
             queued_handle.finish(self._execute(queued_land))
 
-    def _next_queued(self, repo: str) -> tuple[Land, LandHandle] | None:
+    def _next_queued(self, repo: str) -> tuple[Land, LandHandle[object]] | None:
         with self._mutex:
             queue = self._queues.get(repo)
             others = self._running.get(repo, 0) - 1
@@ -167,7 +169,7 @@ class LandWorker:
                     self._limits.pop(repo, None)
             return None
 
-    def _execute(self, land: Land) -> LandResult:
+    def _execute(self, land: Land) -> LandResult[object]:
         """Edge. Never raises: the land's failure, of any kind, is the result's error."""
         try:
             return LandResult(land(), None, None)

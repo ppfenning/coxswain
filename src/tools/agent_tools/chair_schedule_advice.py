@@ -31,7 +31,7 @@ class Release(Protocol):
 
 class Schedule(Protocol):
     @property
-    def launches(self) -> Sequence: ...
+    def launches(self) -> Sequence[object]: ...
     @property
     def ties(self) -> Sequence[Sequence[Key]]: ...  # groups of nodes the schedule could not order
     @property

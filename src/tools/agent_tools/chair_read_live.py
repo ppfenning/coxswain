@@ -92,11 +92,6 @@ def live_phases(leases: Mapping[tuple[str, str], Lease | None], pid_live: Mappin
     return sorted(by_lease | by_pid)
 
 
-def _phase_pidfiles(runs_dir: Path, initiative: str) -> list[tuple[str, Path]]:
-    """Edge. `(phase, path)` for `<initiative>.<phase>.pid` and `<initiative>.<phase>-<N>.pid`; the phase has no dot."""
-    return [(phase, runs_dir / name) for phase, name in phase_pidfile_index(_pid_names(runs_dir)).get(initiative, [])]
-
-
 def _phase_leases(runs_dir: Path, initiative: str) -> dict[str, Lease]:
     """Edge. The `runs:<initiative>.<phase>` lease rows by phase; the whole-initiative `runs:<initiative>` row never matches."""
     own = re.compile("runs:" + re.escape(initiative) + r"\.([^.]+)")

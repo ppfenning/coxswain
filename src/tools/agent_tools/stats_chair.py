@@ -215,7 +215,7 @@ def _parsed_block(block: str) -> dict | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def frontmatter_item(text: str, stem: str) -> dict:
+def frontmatter_item(text: str, stem: str) -> dict[str, object]:
     """A work item's `---` frontmatter as a mapping with `id` defaulting to `stem`; only `id` when it does not parse."""
     close = text.find("\n---", 4) if text.startswith("---\n") else -1
     parsed = _parsed_block(text[4:close]) if close != -1 else None

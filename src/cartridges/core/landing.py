@@ -49,7 +49,7 @@ def _checked(value: object, where: str) -> str:
     raise ValueError(f"{where} land_at must be one of {allowed}, got {value!r}")
 
 
-def resolve_land_at(cartridge: Mapping[str, object], initiative_land_at: str | None) -> str:
+def resolve_land_at(cartridge: Mapping[str, object], initiative_land_at: object) -> str:
     """The initiative value, else the cartridge or overlay value, else `initiative`; every value given is validated,
     and every accepted spelling comes back canonical (`initiative` or `task`)."""
     landing = cartridge.get("landing_areas")
@@ -333,7 +333,7 @@ def _cap(value: object, default: int, where: str) -> int:
     raise ValueError(f"{where} must be a whole number of 1 or more, got {value!r}")
 
 
-def resolve_on_blocked(cartridge: Mapping[str, object], initiative_value: str | None = None) -> str:
+def resolve_on_blocked(cartridge: Mapping[str, object], initiative_value: object = None) -> str:
     """`hold` or `split`: the initiative's own value, else `landing_areas.on_blocked`, else `hold`."""
     configured = _one_of(_landing(cartridge).get("on_blocked"), ON_BLOCKED_VALUES, DEFAULT_ON_BLOCKED, "landing_areas.on_blocked")
     return _one_of(initiative_value, ON_BLOCKED_VALUES, configured, "initiative on_blocked")
@@ -345,7 +345,7 @@ def resolve_push_initiative(cartridge: Mapping[str, object]) -> str:
                    "landing_areas.push_initiative")
 
 
-def resolve_epic_stack(cartridge: Mapping[str, object], epic_value: bool | None = None) -> bool:
+def resolve_epic_stack(cartridge: Mapping[str, object], epic_value: object = None) -> bool:
     """Whether an epic's initiatives land as a stack on an epic branch: the epic file's `epic_stack`, else the cartridge's, else off."""
     configured = _flag(_landing(cartridge).get("epic_stack"), False, "landing_areas.epic_stack")
     return _flag(epic_value, configured, "epic epic_stack")

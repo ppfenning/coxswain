@@ -29,7 +29,7 @@ def classify_handoff(reason: str, surfaces: Sequence[str]) -> list[tuple[str, st
     if any(marker in lowered for marker in _DESIGN_MARKERS):
         return None
     sentences = _SENTENCE_END.split(reason)
-    pairs = []
+    pairs: list[tuple[str, str]] = []
     for path in outside:
         sentence = next(s for s in sentences if path in s)
         if any(marker in sentence.lower() for marker in _CREATE_MARKERS):

@@ -6,14 +6,13 @@ import json
 import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
 
 from agent_tools.jsonl_log import append_line
 
 ACTION_LOG = "chair.actions.jsonl"  # in the runs directory
 
 
-def action_line(action: Mapping[str, Any], epoch: int, ts: str) -> str:
+def action_line(action: Mapping[str, object], epoch: int, ts: str) -> str:
     """Pure: one JSON line {"ts", "epoch", **action}, keys sorted."""
     return json.dumps({"ts": ts, "epoch": epoch, **action}, sort_keys=True)
 
@@ -29,15 +28,16 @@ def recorder(
     now: Callable[[], str],
     store: Callable[[list[str]], tuple[int, str]] | None = None,
     holder: str = "",
-) -> Callable[[Mapping[str, Any]], None]:
+) -> Callable[[Mapping[str, object]], None]:
     """Edge: a `record(action)` that appends `action_line(action, epoch(), now())` plus a newline to runs_dir / ACTION_LOG.
 
     The append comes first and always. A `store` then records the same line; a failed write is one stderr line.
     """
 
-    def record(action: Mapping[str, Any]) -> None:
+    def record(action: Mapping[str, object]) -> None:
         line = action_line(action, epoch(), now())
-        append_line(runs_dir / ACTION_LOG, json.loads(line), sync=False)  # the log is not a record of truth: no fsync
+        entry: dict[str, object] = json.loads(line)
+        append_line(runs_dir / ACTION_LOG, entry, sync=False)  # the log is not a record of truth: no fsync
         if store is None:
             return
         code, output = store(record_action_argv(holder, line))

@@ -21,6 +21,7 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 # One value for every `gh` call in both packages; harness/bounded_proc.py carries the same number, since the graphs
 # package does not import this one, and a test holds the two equal.
@@ -164,7 +165,7 @@ def _words(argv: Sequence[str] | str) -> list[str]:
     return argv.split() if isinstance(argv, str) else list(argv)
 
 
-def completed(argv: Sequence[str] | str, timeout: float | None = None, **kwargs) -> subprocess.CompletedProcess:
+def completed(argv: Sequence[str] | str, timeout: float | None = None, **kwargs: Any) -> subprocess.CompletedProcess[Any]:
     """Edge. `subprocess.run(argv, timeout=..., **kwargs)` with `default_timeout(argv)` when none is given. A timeout
     returns exit 124 (raises CalledProcessError under `check=True`) with the failure line as stderr, or appended to
     stdout when stderr is merged into it; when stderr is not captured the line is printed to this process's stderr."""

@@ -1082,7 +1082,7 @@ def test_local_login_is_true_false_or_unknown_by_what_the_token_verb_said(monkey
             return code, output
 
         monkeypatch.setattr(dash_feed, "_run_capturing", run)
-        return dash_feed.chair_login_check._login_ok("m", "", dash_feed._run_capturing)
+        return dash_feed.chair_login_check.probe_login("m", "", dash_feed._run_capturing)
 
     replies = [
         says(0, '{"loggedIn": true, "tokenFile": true}'),

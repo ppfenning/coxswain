@@ -12,6 +12,7 @@ import tempfile
 from collections.abc import Callable, Mapping
 
 from agent_tools import chair_ci_jobs
+from core.jsontypes import is_dict, is_list
 
 __all__ = [
     "CI_WATCH_TIMEOUT_SECONDS",
@@ -230,32 +231,47 @@ def find_open_revert_pr(runner: Runner, repo: str, pr: int | str) -> str | None:
         runner,
         ["gh", "pr", "list", "--repo", repo, "--state", "open", "--head", head, "--json", "number,url,headRefName"],
     )
-    return next((p["url"] for p in json.loads(listed or "[]") if p.get("headRefName") == head), None)
+    found = json.loads(listed or "[]")
+    if not is_list(found):
+        return None
+    urls = (p.get("url") for p in found if is_dict(p) and p.get("headRefName") == head)
+    return next((url for url in urls if isinstance(url, str)), None)
 
 
-def _judged_run(rows: list[dict], commit: str) -> dict | None:
+def _database_id(row: Mapping[str, object]) -> int:
+    value = row["databaseId"]
+    if not isinstance(value, int):
+        raise TypeError(f"gh run list row has a non-integer databaseId: {value!r}")
+    return value
+
+
+def _judged_run(rows: object, commit: str) -> Mapping[str, object] | None:
     """The newest run (highest databaseId) whose headSha is `commit`; a row for any other commit is never judged."""
-    matching = [row for row in rows if row.get("headSha") == commit]
-    return max(matching, key=lambda row: row["databaseId"]) if matching else None
+    if not is_list(rows):
+        return None
+    matching = [row for row in rows if is_dict(row) and row.get("headSha") == commit]
+    return max(matching, key=_database_id) if matching else None
 
 
 _PASSING_JOBS = ("success", "skipped", "neutral")
 
 
-def _failed_jobs_line(payload: Mapping) -> str:
-    jobs = payload.get("jobs") or []
-    names = [job.get("name") or "unnamed" for job in jobs if job.get("conclusion") not in _PASSING_JOBS]
+def _failed_jobs_line(payload: Mapping[str, object]) -> str:
+    jobs = payload.get("jobs")
+    failed = [job for job in jobs if is_dict(job) and job.get("conclusion") not in _PASSING_JOBS] if is_list(jobs) else []
+    names = [name if isinstance(name := job.get("name"), str) and name else "unnamed" for job in failed]
     return f"jobs never started: {', '.join(names)}"
 
 
-def _jobs_payload(runner: Runner, repo: str, run_id: int) -> Mapping:
+def _jobs_payload(runner: Runner, repo: str, run_id: int) -> Mapping[str, object]:
     """Parsed `gh run view --json jobs`; an unreadable or malformed answer is empty, which never reads as infra."""
     code, out = runner(["gh", "run", "view", str(run_id), "--repo", repo, "--json", "jobs"])
+    payload: object
     try:
         payload = json.loads(out) if code == 0 else {}
     except ValueError:
         return {}
-    return payload if isinstance(payload, dict) else {}
+    return payload if is_dict(payload) else {}
 
 
 def main_ci_run(runner: Runner, repo: str, commit: str) -> tuple[str, str, int | None]:
@@ -270,7 +286,7 @@ def main_ci_run(runner: Runner, repo: str, commit: str) -> tuple[str, str, int |
     run = _judged_run(json.loads(listed or "[]"), commit)
     if run is None:
         return "pending", "", None
-    run_id = run["databaseId"]
+    run_id = _database_id(run)
     if run.get("status") in _PENDING_STATUSES:
         return "pending", "", run_id
     conclusion = run.get("conclusion")
