@@ -70,6 +70,19 @@ def test_help_startup_relative_to_baseline() -> None:
     _assert_relative_startup(_cox("--help"), HELP_TARGET_S)
 
 
+# Modules `cox route chair status` must not import: together about 14 ms of its startup, which #1248 added by
+# importing two names from forge_forgejo into unit_env (chair_service imports unit_env).
+CHAIR_STATUS_UNLOADED = ("agent_tools.forge_forgejo", "agent_tools.forge_github", "agent_tools.land", "agent_tools.chair_types")
+
+
+def test_route_chair_status_does_not_import_the_forge_or_land_modules(profile: Path) -> None:
+    proc = _run([sys.executable, "-X", "importtime", "-m", "agent_tools.cli", "route", "chair", "status",
+                 "--profile", str(profile)])
+    imported = {line.rsplit("|", 1)[1].strip() for line in proc.stderr.splitlines() if line.startswith("import time:")}
+    assert "agent_tools.chair_service" in imported, proc.stderr[-2000:]  # the command ran its real import path
+    assert sorted(imported.intersection(CHAIR_STATUS_UNLOADED)) == []
+
+
 # serial: its startup time is compared with a baseline, and `-n auto` contention skews the two runs differently
 # (quarantined an approved task on 2026-10-30); it passed alone.
 @pytest.mark.serial
