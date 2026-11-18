@@ -13,12 +13,12 @@ def _record() -> dict:
 
 
 def test_the_stale_epoch_reason_is_recognised_and_a_conflict_is_not() -> None:
-    assert epic._is_stale_epoch(STALE) is True
-    assert epic._is_stale_epoch(CONFLICT) is False
+    assert epic.is_stale_epoch(STALE) is True
+    assert epic.is_stale_epoch(CONFLICT) is False
 
 
 def test_a_stale_epoch_phase_is_interrupted_with_nothing_quarantined() -> None:
-    record = epic._stale_phase(_record(), STALE)
+    record = epic.stale_phase(_record(), STALE)
 
     assert record["status"] == "interrupted"
     assert record["quarantined"] == []
@@ -26,7 +26,7 @@ def test_a_stale_epoch_phase_is_interrupted_with_nothing_quarantined() -> None:
 
 
 def test_a_stale_epoch_phase_lists_its_tasks_as_interrupted() -> None:
-    record = epic._stale_phase(_record(), STALE)
+    record = epic.stale_phase(_record(), STALE)
 
     assert [(t["id"], t["grain"], t["reason"]) for t in record["interrupted"]] == [
         ("t1", "task", STALE),
@@ -35,7 +35,7 @@ def test_a_stale_epoch_phase_lists_its_tasks_as_interrupted() -> None:
 
 
 def test_a_phase_stopped_before_any_task_ran_has_an_empty_interrupted_list() -> None:
-    record = epic._stale_phase({**_record(), "task_records": []}, STALE)
+    record = epic.stale_phase({**_record(), "task_records": []}, STALE)
 
     assert (record["status"], record["interrupted"], record["quarantined"]) == ("interrupted", [], [])
 
@@ -44,7 +44,7 @@ def test_an_interrupted_attempt_does_not_grow_the_attempt_tally() -> None:
     build = {"run": "r1", "kind": "refused"}
     interrupted = {"run": "r2", "kind": epic.INTERRUPTED_KIND}
 
-    assert epic._build_attempts([build, interrupted]) == epic._build_attempts([build]) == [build]
+    assert epic.build_attempts([build, interrupted]) == epic.build_attempts([build]) == [build]
 
 
 def test_a_merged_task_and_a_task_quarantined_for_another_reason_are_not_interrupted() -> None:
@@ -54,17 +54,17 @@ def test_a_merged_task_and_a_task_quarantined_for_another_reason_are_not_interru
         {"id": "running", "merged": False, "status": "built"},
     ]
     held = {"id": "held", "phase": "p1", "grain": "task", "reason": "checks failed", "kind": "unverified"}
-    record = epic._stale_phase({**_record(), "task_records": task_records, "quarantined": [held]}, STALE)
+    record = epic.stale_phase({**_record(), "task_records": task_records, "quarantined": [held]}, STALE)
 
     assert [t["id"] for t in record["interrupted"]] == ["running"]
     assert record["quarantined"] == [held]
 
 
 def test_a_task_quarantined_once_fenced_moves_from_quarantined_to_interrupted(monkeypatch) -> None:
-    monkeypatch.setattr(epic, "_fenced", lambda _ctx: STALE)
-    entry = epic._quarantine_task(None, {}, phase="p1", task="t1", reason="checks failed", kind="unverified")
+    monkeypatch.setattr(epic, "fence_reason", lambda _ctx: STALE)
+    entry = epic.quarantine_task(None, {}, phase="p1", task="t1", reason="checks failed", kind="unverified")
     task_records = [{"id": "t1", "merged": False, "status": "quarantined", "quarantine": entry["reason"]}]
-    record = epic._stale_phase({**_record(), "task_records": task_records, "quarantined": [entry]}, STALE)
+    record = epic.stale_phase({**_record(), "task_records": task_records, "quarantined": [entry]}, STALE)
 
     assert record["quarantined"] == []
     assert [(t["id"], t["kind"]) for t in record["interrupted"]] == [("t1", epic.INTERRUPTED_KIND)]
@@ -72,7 +72,7 @@ def test_a_task_quarantined_once_fenced_moves_from_quarantined_to_interrupted(mo
 
 
 def test_an_interrupted_phase_reaches_the_blocked_line_and_the_outcome() -> None:
-    record = epic._stale_phase(_record(), STALE)
+    record = epic.stale_phase(_record(), STALE)
 
     assert epic.blocked_line(record) == f"phase p1: interrupted: {STALE}"
     outcome = epic.build_outcome({"phases": [record], "quarantined": [], "totals": {}})
@@ -81,7 +81,7 @@ def test_an_interrupted_phase_reaches_the_blocked_line_and_the_outcome() -> None
 
 
 def test_a_non_stale_failure_is_still_quarantined() -> None:
-    record = epic._stale_phase(_record(), CONFLICT)
+    record = epic.stale_phase(_record(), CONFLICT)
 
     assert record["status"] == "blocked"
     assert [q["kind"] for q in record["quarantined"]] == ["no_work"]

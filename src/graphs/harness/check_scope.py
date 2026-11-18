@@ -42,7 +42,7 @@ def _relative(path: str, component: str) -> str:
     return path[len(component) + 1 :]
 
 
-def _is_test_file(path: str) -> bool:
+def is_test_file(path: str) -> bool:
     name = posixpath.basename(path)
     return (name.startswith("test_") and name.endswith(".py")) or name.endswith("_test.py")
 
@@ -150,7 +150,7 @@ def select_checks(
     added = sorted(added_tests)
     tests_of = {k: [t for t in added if _under(t, k)] for k in known}
     sources = {
-        k: [p for p in changed_paths if _under(p, k) and p not in set(added) and not _is_test_file(p)] for k in known
+        k: [p for p in changed_paths if _under(p, k) and p not in set(added) and not is_test_file(p)] for k in known
     }
     components = import_map["components"]
     all_components = {*components, *known}

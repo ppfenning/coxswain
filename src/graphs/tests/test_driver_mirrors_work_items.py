@@ -41,7 +41,7 @@ def _by_task(ctx):
 
 
 def test_a_read_populates_rows_matching_the_files(ctx, items):
-    epic._mirror_read(ctx, items)
+    epic.mirror_read(ctx, items)
     rows = _by_task(ctx)
     assert {t: (r["phase"], r["state"], r["needs"], r["updated_by"]) for t, r in rows.items()} == {
         "t1": ("p1", "ready", [], f"epic-driver:{RUN}"),
@@ -50,8 +50,8 @@ def test_a_read_populates_rows_matching_the_files(ctx, items):
 
 
 def test_a_state_write_updates_the_row(ctx, items):
-    epic._mirror_read(ctx, items)
-    epic._mirror_write(ctx, items[0], "approved")
+    epic.mirror_read(ctx, items)
+    epic.mirror_write(ctx, items[0], "approved")
     rows = _by_task(ctx)
     assert (rows["t1"]["state"], rows["t1"]["updated_by"]) == ("approved", f"epic-driver:{RUN}")
     assert rows["t2"]["state"] == "ready"
@@ -64,8 +64,8 @@ def test_a_newer_differing_row_is_one_warning_and_the_files_still_pick_the_ready
         (INITIATIVE, "t1", "p1", "dropped", "[]", "2999-01-01T00:00:00+00:00", "alice"),
     )
     before = [dict(i) for i in items]
-    with caplog.at_level(logging.WARNING, logger=epic._log.name):
-        epic._mirror_read(ctx, items)
+    with caplog.at_level(logging.WARNING, logger=epic.epic_log.name):
+        epic.mirror_read(ctx, items)
     messages = [r.getMessage() for r in caplog.records]
     assert len(messages) == 1
     for part in (INITIATIVE, "t1", "file_state=ready", "store_state=dropped", "updated_by=alice"):
@@ -80,9 +80,9 @@ def test_a_failing_upsert_leaves_the_file_written_warns_and_raises_nothing(ctx, 
         raise RuntimeError("store down")
 
     monkeypatch.setattr(epic, "upsert_work_item", boom)
-    with caplog.at_level(logging.WARNING, logger=epic._log.name):
-        epic._mirror_read(ctx, items)
-        epic._mirror_write(ctx, items[0], "approved")
+    with caplog.at_level(logging.WARNING, logger=epic.epic_log.name):
+        epic.mirror_read(ctx, items)
+        epic.mirror_write(ctx, items[0], "approved")
     assert len(caplog.records) == 2
     assert all("store down" in r.getMessage() for r in caplog.records)
     assert "state: ready" in Path(items[0]["path"]).read_text()
@@ -90,9 +90,9 @@ def test_a_failing_upsert_leaves_the_file_written_warns_and_raises_nothing(ctx, 
 
 def test_no_store_is_a_no_op_and_logs_nothing(items, caplog):
     bare = type("Ctx", (), {"store": None, "initiative_id": INITIATIVE, "run_id": RUN})()
-    with caplog.at_level(logging.WARNING, logger=epic._log.name):
-        epic._mirror_read(bare, items)
-        epic._mirror_write(bare, items[0], "approved")
+    with caplog.at_level(logging.WARNING, logger=epic.epic_log.name):
+        epic.mirror_read(bare, items)
+        epic.mirror_write(bare, items[0], "approved")
     assert caplog.records == []
 
 
@@ -105,12 +105,12 @@ def test_file_times_omits_items_with_no_readable_file(tmp_path):
 
 def _moved(ctx, items, applied, monkeypatch):
     monkeypatch.setattr(epic, "auto_apply", lambda item, **_: (applied, "stub arm"))
-    monkeypatch.setattr(epic, "_unkept_work", lambda *_: None)  # the row write is under test, not the kept-branch gate
+    monkeypatch.setattr(epic, "unkept_work", lambda *_: None)  # the row write is under test, not the kept-branch gate
     ctx.epoch, ctx.cartridge, ctx.runner = None, {}, None
-    state = epic._Execution(landed={}, merged={}, moved={}, quarantined=[])
+    state = epic.Execution(landed={}, merged={}, moved={}, quarantined=[])
     by_id = {i["id"]: i for i in items}
     move = {"kind": "state_move", "target": "t1"}
-    epic._execute(ctx, move, slot="state_move", subject="t1", phase="p1", state=state, by_id=by_id)
+    epic.execute_cleared(ctx, move, slot="state_move", subject="t1", phase="p1", state=state, by_id=by_id)
     return state
 
 

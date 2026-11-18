@@ -8,36 +8,36 @@ from typing import Any
 
 from core.landing import need_met
 from harness.assembly import assemble
-from harness.checks import _tail_lines
+from harness.checks import tail_lines
 from harness.cos import pid_alive
-from harness.epic_context import _Ctx, _git
+from harness.epic_context import Ctx, git_in
 from harness.phase_remote import push_branch
 from harness.stack_refresh import guarded_refresh, refresh_record
 from harness.worktree import create_worktree, prune_registrations, registry_lock, release_stale_holders, remove_worktree
 from runner.claude_code_runner import files_touched_from_patch
 
 
-def _publish_branch(ctx: _Ctx, branch: str) -> str | None:
+def publish_branch(ctx: Ctx, branch: str) -> str | None:
     """Push `branch` to origin. None on success or with no origin, else a warning; a failed push never stops the build."""
     ok, detail = push_branch(ctx.repo, branch)
     return None if ok else f"push of {branch} failed: {detail}"
 
 
-def _note_push_failure(record: dict[str, Any], warning: str | None) -> None:
+def note_push_failure(record: dict[str, Any], warning: str | None) -> None:
     """Add `warning` to the phase record's `remote_push_failed`, a single string joined with '; '."""
     if warning:
         record["remote_push_failed"] = "; ".join(filter(None, [record.get("remote_push_failed"), warning]))
 
 
 # ── branch topology ─────────────────────────────────────────────────────────
-def _branch_exists(ctx: _Ctx, branch: str) -> bool:
-    ok, _ = _git("-C", str(ctx.repo), "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
+def branch_exists(ctx: Ctx, branch: str) -> bool:
+    ok, _ = git_in("-C", str(ctx.repo), "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
     return ok
 
 
-def _branch_ahead(ctx: _Ctx, branch: str) -> bool:
+def branch_ahead(ctx: Ctx, branch: str) -> bool:
     """True when `branch` holds commits the default ref lacks. A missing branch is not ahead."""
-    ok, out = _git("-C", str(ctx.repo), "rev-list", "--count", f"{ctx.default_ref}..refs/heads/{branch}")
+    ok, out = git_in("-C", str(ctx.repo), "rev-list", "--count", f"{ctx.default_ref}..refs/heads/{branch}")
     return ok and out.isdigit() and int(out) > 0
 
 
@@ -55,7 +55,7 @@ class _Opened(tuple):
         return opened
 
 
-def _run_alive(ctx: _Ctx) -> Callable[[str], bool]:
+def _run_alive(ctx: Ctx) -> Callable[[str], bool]:
     """A run is alive when it is this one, or its `<run_id>.pid` names a running process."""
     return lambda run_id: run_id == ctx.run_id or pid_alive(ctx.runs_dir / f"{run_id}.pid")
 
@@ -73,8 +73,8 @@ def _registered_on_branch(listing: str, path: Path, branch: str) -> bool:
     )
 
 
-def _open_phase_worktree(
-    ctx: _Ctx, phase: str, base_ref: str, parents: tuple[str, ...] = (), refs: Sequence[str] | None = None
+def open_phase_worktree(
+    ctx: Ctx, phase: str, base_ref: str, parents: tuple[str, ...] = (), refs: Sequence[str] | None = None
 ) -> _Opened:
     """Get a worktree on the phase branch. Returns (ok, detail, reused), with `.cleared` on the result.
 
@@ -97,13 +97,13 @@ def _open_phase_worktree(
     branch = ctx.phase_branch(phase)
     worktree = ctx.phase_worktree(phase)
     worktree.parent.mkdir(parents=True, exist_ok=True)
-    if _branch_exists(ctx, branch):
+    if branch_exists(ctx, branch):
         cleared = release_stale_holders(ctx.repo, branch, ctx.worktree_root, _run_alive(ctx))
-        listed, listing = _git("-C", str(ctx.repo), "worktree", "list", "--porcelain")
+        listed, listing = git_in("-C", str(ctx.repo), "worktree", "list", "--porcelain")
         if listed and _registered_on_branch(listing, worktree, branch):
             return _Opened(True, "", True, cleared)
         with registry_lock(ctx.repo):
-            ok, detail = _git("-C", str(ctx.repo), "worktree", "add", str(worktree), branch)
+            ok, detail = git_in("-C", str(ctx.repo), "worktree", "add", str(worktree), branch)
         return _Opened(ok, detail, True, cleared)
     ok, detail = create_worktree(ctx.repo, worktree, branch=branch, base=base_ref)
     wanted = [ctx.phase_branch(p) for p in parents] if refs is None else list(refs)
@@ -112,7 +112,7 @@ def _open_phase_worktree(
         if not assembled.ok:
             # Drop the half-made branch, or the next run reuses it as if it were assembled.
             remove_worktree(ctx.repo, worktree)
-            _git("-C", str(ctx.repo), "branch", "-D", branch)
+            git_in("-C", str(ctx.repo), "branch", "-D", branch)
             return _Opened(False, ASSEMBLY_FAILED + assembled.cause, False)
     return _Opened(ok, detail, False)
 
@@ -120,14 +120,14 @@ def _open_phase_worktree(
 ASSEMBLY_FAILED = "parent branches could not be assembled: "
 
 
-def _start_failure(detail: str, verb: str) -> str:
+def start_failure(detail: str, verb: str) -> str:
     """The reason for a phase whose worktree did not open; a failed assembly keeps its cause as the reason."""
     if detail.startswith(ASSEMBLY_FAILED):
         return detail
     return f"the phase worktree could not be {verb}: {detail}"
 
 
-def _required_refs(
+def required_refs(
     items: Sequence[Mapping[str, Any]],
     phase: str,
     parents: Collection[str],
@@ -168,7 +168,7 @@ def _required_refs(
     return sorted(refs)
 
 
-def _needs_other_phase(items: Sequence[Mapping[str, Any]], phase: str) -> bool:
+def needs_other_phase(items: Sequence[Mapping[str, Any]], phase: str) -> bool:
     """Does a task of `phase` need a task of another phase, whatever that task's state?"""
     phase_of = {str(i["id"]): i.get("phase") for i in items}
     return any(
@@ -179,14 +179,14 @@ def _needs_other_phase(items: Sequence[Mapping[str, Any]], phase: str) -> bool:
     )
 
 
-def _needs_missing(ctx: _Ctx, phase: str, refs: Sequence[str]) -> bool:
+def needs_missing(ctx: Ctx, phase: str, refs: Sequence[str]) -> bool:
     """Is any commit the phase branch needs absent from it?
 
     `merge-base --is-ancestor` is the whole question. A parent that merges unrelated work moves its
     head and changes nothing here, since only the commits the branch needs are asked about.
     """
     return any(
-        not _git("-C", str(ctx.repo), "merge-base", "--is-ancestor", ref, ctx.phase_branch(phase))[0] for ref in refs
+        not git_in("-C", str(ctx.repo), "merge-base", "--is-ancestor", ref, ctx.phase_branch(phase))[0] for ref in refs
     )
 
 
@@ -297,23 +297,23 @@ def outside_parents_complete(
     return {p for p in outside if any(i.get("phase") == p for i in view) and not open_in_phase(view, p, (), land_at)}
 
 
-def _phase_branch_cherry(ctx: _Ctx, phase: str, upstream: str | None = None) -> list[str]:
+def phase_branch_cherry(ctx: Ctx, phase: str, upstream: str | None = None) -> list[str]:
     """`git cherry -v` of the phase branch against `upstream` (main by default), patch-id semantics; empty if git fails."""
-    ok, out = _git("-C", str(ctx.repo), "cherry", "-v", upstream or ctx.default_ref, ctx.phase_branch(phase))
+    ok, out = git_in("-C", str(ctx.repo), "cherry", "-v", upstream or ctx.default_ref, ctx.phase_branch(phase))
     return out.splitlines() if ok else []
 
 
-def _recorded_merges(items: Iterable[Mapping[str, Any]], phase: str) -> tuple[str, ...]:
+def recorded_merges(items: Iterable[Mapping[str, Any]], phase: str) -> tuple[str, ...]:
     """The `merged_commit` each of `phase`'s tasks recorded, in item order: the shas a refresh must keep on the branch."""
     return tuple(str(i["merged_commit"]) for i in items if i.get("phase") == phase and i.get("merged_commit"))
 
 
-def _locked_merges(ctx: _Ctx, items: Iterable[Mapping[str, Any]], phase: str) -> tuple[str, ...]:
+def locked_merges(ctx: Ctx, items: Iterable[Mapping[str, Any]], phase: str) -> tuple[str, ...]:
     with ctx.items_lock:
-        return _recorded_merges(items, phase)
+        return recorded_merges(items, phase)
 
 
-def _rebase(ctx: _Ctx, phase: str, base_ref: str, recorded: Iterable[str] = ()) -> tuple[bool, str]:
+def rebase_phase_branch(ctx: Ctx, phase: str, base_ref: str, recorded: Iterable[str] = ()) -> tuple[bool, str]:
     """Bring the phase branch up to `base_ref`, or leave it untouched.
 
     Named for the `stack_rebase` write kind it executes, but it merges `base_ref` in rather than replaying the
@@ -332,9 +332,9 @@ def _rebase(ctx: _Ctx, phase: str, base_ref: str, recorded: Iterable[str] = ()) 
 
 
 def _rebase_reading_conflicts(
-    ctx: _Ctx, phase: str, base_ref: str, recorded: Iterable[str] = ()
+    ctx: Ctx, phase: str, base_ref: str, recorded: Iterable[str] = ()
 ) -> tuple[bool, str, tuple[str, ...]]:
-    """`_rebase`, plus the conflicting paths git listed before the abort cleared them."""
+    """`rebase_phase_branch`, plus the conflicting paths git listed before the abort cleared them."""
     branch = ctx.phase_branch(phase)
     result = guarded_refresh(ctx.phase_worktree(phase), branch, base_ref, recorded)
     if not result.ok:
@@ -342,17 +342,17 @@ def _rebase_reading_conflicts(
     return True, f"merged {base_ref} into {branch}", ()
 
 
-def _branch_has(ctx: _Ctx, ref: str, branch: str) -> bool:
-    return _git("-C", str(ctx.repo), "merge-base", "--is-ancestor", ref, branch)[0]
+def _branch_has(ctx: Ctx, ref: str, branch: str) -> bool:
+    return git_in("-C", str(ctx.repo), "merge-base", "--is-ancestor", ref, branch)[0]
 
 
-def _branch_head(ctx: _Ctx, branch: str) -> str:
-    ok, out = _git("-C", str(ctx.repo), "rev-parse", branch)
+def _branch_head(ctx: Ctx, branch: str) -> str:
+    ok, out = git_in("-C", str(ctx.repo), "rev-parse", branch)
     return out if ok else ""
 
 
-def _refresh_level(
-    ctx: _Ctx, record: dict[str, Any], phase: str, recorded: Iterable[str] = ()
+def refresh_level(
+    ctx: Ctx, record: dict[str, Any], phase: str, recorded: Iterable[str] = ()
 ) -> dict[str, Any] | None:
     """Bring a reused phase branch up to the initiative branch; the record to return when it blocks.
 
@@ -371,21 +371,21 @@ def _refresh_level(
         record["status"] = "blocked"
         record["reason"] = merged.reason
         record["quarantined"].append({"id": phase, "phase": phase, "grain": "phase", "reason": merged.reason})
-        _git("-C", str(ctx.phase_worktree(phase)), "checkout", "--detach", "-q")
+        git_in("-C", str(ctx.phase_worktree(phase)), "checkout", "--detach", "-q")
         return record
     after = _branch_head(ctx, branch)
     if after != before:
         record["refreshed"] = refresh_record(branch, onto, before, after)
         print(f"  {branch} brought up to {onto}")
         # The branch was published before it moved: origin gets the refreshed tip, or another host builds on the old one.
-        _note_push_failure(record, _publish_branch(ctx, branch))
+        note_push_failure(record, publish_branch(ctx, branch))
     return None
 
 
 # ── one task's build, applied and measured in a worktree the harness owns ────
 
 
-def _trace_evidence(calls: Sequence[Any], task: str, patch: str) -> list[dict[str, Any]]:
+def trace_evidence(calls: Sequence[Any], task: str, patch: str) -> list[dict[str, Any]]:
     """Evidence rows the harness itself observed, per docs/design/validator-reach.md §1.
 
     Commands are selected by `task_id` — stamped onto the call ledger by
@@ -408,7 +408,7 @@ def _trace_evidence(calls: Sequence[Any], task: str, patch: str) -> list[dict[st
         {
             "check": "command",
             "source": "trace",
-            "output": f"{entry.get('command', '')}\n{_tail_lines(str(entry.get('output') or ''))}",
+            "output": f"{entry.get('command', '')}\n{tail_lines(str(entry.get('output') or ''))}",
         }
         for entry in (call.get("commands_run") or [])
         if isinstance(entry, Mapping) and entry.get("source") == "trace"

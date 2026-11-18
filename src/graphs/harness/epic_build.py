@@ -18,7 +18,7 @@ from harness import pool_edge, warm_pool
 from harness.check_deps import load_dep_map
 from harness.check_gate import repo_gate_lock
 from harness.check_reuse import run_checks_reusing
-from harness.check_scope import _is_test_file, pytest_component, render_selection, select_checks
+from harness.check_scope import is_test_file, pytest_component, render_selection, select_checks
 from harness.checks import (
     check_feedback,
     checks_evidence,
@@ -31,23 +31,23 @@ from harness.checks import (
     run_checks,
 )
 from harness.epic_branches import (
-    _CHECK_FIX_PROMPT,
-    _IDENTITY,
-    _STYLE_PASS_SCHEMA,
+    CHECK_FIX_PROMPT,
+    IDENTITY,
     LIFECYCLE,
     PATCH_FOR_VALIDATION_CHARS,
-    _attempt_tree,
-    _carry_forward,
-    _checks_env,
-    _invoke_from_attempt,
-    _level_failure_reason,
-    _permit_outside_surfaces,
-    _resume_body,
-    _scratch_dir,
+    STYLE_PASS_SCHEMA,
+    attempt_tree,
+    carry_forward,
+    checks_env,
+    invoke_from_attempt,
+    level_failure_reason,
+    permit_outside_surfaces,
+    resume_body,
+    scratch_dir,
 )
-from harness.epic_context import _Ctx, _git
-from harness.epic_phase_branch import _trace_evidence
-from harness.epic_records import _log, _save_result, _wait_if_paused
+from harness.epic_context import Ctx, git_in
+from harness.epic_phase_branch import trace_evidence
+from harness.epic_records import epic_log, save_task_result, wait_if_paused_here
 from harness.escalate import touched_paths
 from harness.integration_scope import scope_integration
 from harness.invoke import Invocation, invoke_graphs
@@ -57,14 +57,14 @@ from harness.lane_database_drop import drop_lane_database
 from harness.worktree import apply_patch, create_worktree, keep_worktree, link_venv, read_lock, remove_worktree
 
 
-def _checks_log(ctx: _Ctx, phase: str, task: str) -> dict[str, Any]:
+def _checks_log(ctx: Ctx, phase: str, task: str) -> dict[str, Any]:
     """`run_checks` log arguments: `runs/<run>/checks/<phase>/<task>/<n>.log`, so tasks never overwrite each other."""
     return {"log_dir": ctx.runs_dir / ctx.run_id / "checks" / phase / task, "log_prefix": f"checks/{phase}/{task}/"}
 
 
 def _ledger_dir(worktree: Path) -> Path | None:
     """The repository's git common directory, shared by every worktree; None when git cannot say."""
-    ok, out = _git("-C", str(worktree), "rev-parse", "--git-common-dir")
+    ok, out = git_in("-C", str(worktree), "rev-parse", "--git-common-dir")
     return (worktree / out).resolve() if ok and out else None
 
 
@@ -99,8 +99,8 @@ def _lane_checks(
             "reason": dict.fromkeys(known or ["*"], f"fallback {why}"),
         }
 
-    ok, changed = _git("-C", str(worktree), "diff", "--name-only", "--no-renames", "-z", base, "HEAD")
-    added_ok, added = _git(
+    ok, changed = git_in("-C", str(worktree), "diff", "--name-only", "--no-renames", "-z", base, "HEAD")
+    added_ok, added = git_in(
         "-C", str(worktree), "diff", "--name-only", "--no-renames", "-z", "--diff-filter=A", base, "HEAD"
     )
     if not (ok and added_ok):
@@ -112,7 +112,7 @@ def _lane_checks(
             "test_reach": dep_map.test_reach,
             "unresolved": dep_map.unresolved,
         }
-        added_tests = [p for p in _nul_paths(added) if _is_test_file(p)]
+        added_tests = [p for p in _nul_paths(added) if is_test_file(p)]
         scoped = select_checks(checks, _nul_paths(changed), added_tests, import_map)
     except Exception as exc:  # fail open: whatever broke, the full list still runs
         return everything(f"import map failed: {type(exc).__name__}: {exc}")
@@ -156,7 +156,7 @@ def _scope_record(selection: Mapping[str, Any], results: Sequence[Mapping[str, A
     return {**selection, "tests_run": tests_run, **figures}, row
 
 
-def _run_level_checks(ctx: _Ctx, phase: str, record: dict[str, Any]) -> None:
+def run_level_checks(ctx: Ctx, phase: str, record: dict[str, Any]) -> None:
     """Run the level checks once in the level's worktree, under the repo gate lock, and fold the result into `record`.
 
     No level checks configured: nothing runs and `record` gains no key. A failure marks the level, never a task.
@@ -166,9 +166,9 @@ def _run_level_checks(ctx: _Ctx, phase: str, record: dict[str, Any]) -> None:
         return
     log = {"log_dir": ctx.runs_dir / ctx.run_id / "checks" / phase / "level", "log_prefix": f"checks/{phase}/level/"}
     with repo_gate_lock(ctx.repo):
-        results = run_checks(ctx.phase_worktree(phase), checks, env=_checks_env(ctx, {}, phase, "@level"), **log)
+        results = run_checks(ctx.phase_worktree(phase), checks, env=checks_env(ctx, {}, phase, "@level"), **log)
     record["level_checks"] = results
-    if reason := _level_failure_reason(phase, results):
+    if reason := level_failure_reason(phase, results):
         record["status"], record["reason"] = "partial", reason
 
 
@@ -180,7 +180,7 @@ def _level_integration_reason(phase: str, creation: Mapping[str, Any], results: 
     return "" if failing is None else f"level {phase} failed integration check {failing.get('name')}"
 
 
-def _run_level_integration(ctx: _Ctx, phase: str, base: str, record: dict[str, Any]) -> None:
+def run_level_integration(ctx: Ctx, phase: str, base: str, record: dict[str, Any]) -> None:
     """Run the touched-package integration checks once on the level's own database, after the level checks.
 
     `base` is the ref the level was cut from. Nothing runs, and `record` gains no key, without both
@@ -194,7 +194,7 @@ def _run_level_integration(ctx: _Ctx, phase: str, base: str, record: dict[str, A
     lane = lane_env(setting, ctx.run_id, phase, "level")
     name = ctx.lane_names[(phase, "level")] = database_name(next(iter(lane.values())))
     creation = create_lane_database(setting.get("create"), setting.get("schema", ""), name, lane, str(worktree))
-    ok, listing = _git("-C", str(worktree), "diff", "--name-only", "--no-renames", "-z", base, "HEAD")
+    ok, listing = git_in("-C", str(worktree), "diff", "--name-only", "--no-renames", "-z", base, "HEAD")
     if not ok:
         record["status"], record["reason"] = "partial", f"level {phase} integration paths unreadable: {listing}"
         return
@@ -206,14 +206,14 @@ def _run_level_integration(ctx: _Ctx, phase: str, base: str, record: dict[str, A
             "log_prefix": f"checks/{phase}/level-integration/",
         }
         with repo_gate_lock(ctx.repo):
-            results = run_checks(worktree, list(scoped.checks), env=_checks_env(ctx, lane, phase, "@level-integration"), **log)
+            results = run_checks(worktree, list(scoped.checks), env=checks_env(ctx, lane, phase, "@level-integration"), **log)
     record["level_integration"], record["level_integration_scope"] = results, scoped.selection
     if reason := _level_integration_reason(phase, creation, results):
         record["status"], record["reason"] = "partial", reason
 
 
-def _remove_scratch(ctx: _Ctx, phase: str, task: str) -> None:
-    shutil.rmtree(_scratch_dir(ctx, phase, task), ignore_errors=True)
+def _remove_scratch(ctx: Ctx, phase: str, task: str) -> None:
+    shutil.rmtree(scratch_dir(ctx, phase, task), ignore_errors=True)
 
 
 # The branch a lane's checks diff against: its phase branch, so the unwired check (.github/check_unwired.py)
@@ -221,13 +221,13 @@ def _remove_scratch(ctx: _Ctx, phase: str, task: str) -> None:
 LANE_BASE_VAR = "COX_LANE_BASE"
 
 
-def _lane_checks_env(ctx: _Ctx, phase: str, task: str) -> dict[str, str]:
+def _lane_checks_env(ctx: Ctx, phase: str, task: str) -> dict[str, str]:
     """The child environment for one lane's checks: its database, worker count, own temp directory and base branch."""
     lane = {**lane_env(ctx.test_database, ctx.run_id, phase, task), LANE_BASE_VAR: ctx.phase_branch(phase)}
-    return _checks_env(ctx, lane, phase, task)
+    return checks_env(ctx, lane, phase, task)
 
 
-def _drop_lane(ctx: _Ctx, phase: str, task: str) -> None:
+def drop_lane(ctx: Ctx, phase: str, task: str) -> None:
     """Remove the lane's scratch directory, then drop its database once its worktree is gone and list the outcome."""
     _remove_scratch(ctx, phase, task)
     name = ctx.lane_names.pop((phase, task), None)
@@ -238,7 +238,7 @@ def _drop_lane(ctx: _Ctx, phase: str, task: str) -> None:
     )
 
 
-def _lease_task(ctx: _Ctx, *, phase: str, task: str, branch: str) -> tuple[bool, str, dict[str, object]]:
+def _lease_task(ctx: Ctx, *, phase: str, task: str, branch: str) -> tuple[bool, str, dict[str, object]]:
     """Edge: lease the task's worktree from the pool. Returns (ok, failure detail, setup record)."""
     pool = ctx.pool
     assert pool is not None
@@ -260,7 +260,7 @@ def _lease_task(ctx: _Ctx, *, phase: str, task: str, branch: str) -> tuple[bool,
     return True, "", warm_pool.setup_record(lease.mode, lease.setup_seconds)
 
 
-def _release_task(ctx: _Ctx, phase: str, task: str) -> None:
+def _release_task(ctx: Ctx, phase: str, task: str) -> None:
     """Give back the task's pooled lease, or remove its worktree when it holds none."""
     held = ctx.pool_leases.pop((phase, task), None)
     if held is None:
@@ -269,7 +269,7 @@ def _release_task(ctx: _Ctx, phase: str, task: str) -> None:
         pool_edge.release(*held)
 
 
-def _settle_pool(ctx: _Ctx, *, keep_worktrees: bool) -> None:
+def settle_pool(ctx: Ctx, *, keep_worktrees: bool) -> None:
     """Edge, at epic end: release every lease still held (or move it out of the pool when kept), then trim.
 
     A kept worktree leaves its directory, so its index entry is dropped by trim's vanished-directory pass.
@@ -286,15 +286,15 @@ def _settle_pool(ctx: _Ctx, *, keep_worktrees: bool) -> None:
             else:
                 pool_edge.release(lease, digest)
         except Exception as exc:
-            _log.warning("pooled worktree for %s/%s not settled: %s: %s", phase, task, type(exc).__name__, exc)
+            epic_log.warning("pooled worktree for %s/%s not settled: %s: %s", phase, task, type(exc).__name__, exc)
     try:
         pool_edge.trim(ctx.repo, pool.pool_root, pool.keep, pool.clock)
     except Exception as exc:
-        _log.warning("pool trim for %s failed: %s: %s", ctx.run_id, type(exc).__name__, exc)
+        epic_log.warning("pool trim for %s failed: %s: %s", ctx.run_id, type(exc).__name__, exc)
 
 
-def _build_task(
-    ctx: _Ctx, *, phase: str, task: str, result: Mapping[str, Any], verify: Sequence[str] = ()
+def build_task(
+    ctx: Ctx, *, phase: str, task: str, result: Mapping[str, Any], verify: Sequence[str] = ()
 ) -> dict[str, Any]:
     """Build and check one task; its pytest scratch directory is removed as soon as its checks have run."""
     try:
@@ -304,7 +304,7 @@ def _build_task(
 
 
 def _build_task_checked(
-    ctx: _Ctx, *, phase: str, task: str, result: Mapping[str, Any], verify: Sequence[str] = ()
+    ctx: Ctx, *, phase: str, task: str, result: Mapping[str, Any], verify: Sequence[str] = ()
 ) -> dict[str, Any]:
     """Apply one task's patch on a scratch branch off the phase branch, and check it.
 
@@ -344,7 +344,7 @@ def _build_task_checked(
     if not ok:
         record["quarantine"] = f"patch did not apply: {detail}"
         return record
-    record["evidence"].extend(_trace_evidence(getattr(ctx.runner, "calls", None) or [], task, patch))
+    record["evidence"].extend(trace_evidence(getattr(ctx.runner, "calls", None) or [], task, patch))
 
     # Commit BEFORE the checks run, so the branch holds exactly the applied
     # patch and nothing else. Checks execute things — a test run drops
@@ -352,10 +352,10 @@ def _build_task_checked(
     # commit those byproducts, which then differ per task and collide as binary
     # conflicts at merge time. Found by running the whole driver against a real
     # repository, which is the only place a bug like this can live.
-    ok, detail = _git(*_IDENTITY, "-C", str(worktree), "add", "-A")
+    ok, detail = git_in(*IDENTITY, "-C", str(worktree), "add", "-A")
     if ok:
-        ok, detail = _git(
-            *_IDENTITY, "-C", str(worktree), "commit", "--allow-empty", "-q",
+        ok, detail = git_in(
+            *IDENTITY, "-C", str(worktree), "commit", "--allow-empty", "-q",
             "-m", f"epic {ctx.run_id}: {task}",
         )
     if not ok:
@@ -373,14 +373,14 @@ def _build_task_checked(
     record["lint_fixed"] = False
     if fixable:
         run_checks(worktree, fixable, env=env)
-        _, dirty = _git("-C", str(worktree), "status", "--porcelain")
+        _, dirty = git_in("-C", str(worktree), "status", "--porcelain")
         if dirty:
-            _git(*_IDENTITY, "-C", str(worktree), "add", "-A")
-            ok, detail = _git(*_IDENTITY, "-C", str(worktree), "commit", "-q", "--amend", "--no-edit")
+            git_in(*IDENTITY, "-C", str(worktree), "add", "-A")
+            ok, detail = git_in(*IDENTITY, "-C", str(worktree), "commit", "-q", "--amend", "--no-edit")
             if ok:
                 record["lint_fixed"] = True
                 build_field = result.get("build")
-                _, folded = _git("-C", str(worktree), "diff", ctx.phase_branch(phase), "HEAD")
+                _, folded = git_in("-C", str(worktree), "diff", ctx.phase_branch(phase), "HEAD")
                 if isinstance(build_field, dict) and folded:
                     build_field["patch"] = folded + "\n"
 
@@ -407,20 +407,20 @@ def _build_task_checked(
     return record
 
 
-def _verify_of(by_id: Mapping[str, Mapping[str, Any]], task: str) -> list[str]:
+def verify_of(by_id: Mapping[str, Mapping[str, Any]], task: str) -> list[str]:
     return [str(c) for c in (by_id.get(task) or {}).get("verify") or []]
 
 
 _BUDGET_HISTORY_DAYS = 30
 
 
-def _budget_history(ctx: _Ctx) -> list[tuple[str, int, float]]:
+def _budget_history(ctx: Ctx) -> list[tuple[str, int, float]]:
     """The last 30 days of landed build-task cost history for this run's repo, empty with no store.
 
     `ctx.date` bounds the window, never the wall clock, so an estimate stays
     reproducible from the run's own recorded inputs rather than from when it
     happened to run. Both `ctx.store` and `ctx.repo` are read with `getattr`:
-    `_lifecycle_invocation` is also called, in its own unit test, against a
+    `lifecycle_invocation` is also called, in its own unit test, against a
     bare stand-in object that carries neither, and that case gets no history
     rather than an `AttributeError`.
     """
@@ -438,14 +438,14 @@ def _budget_history(ctx: _Ctx) -> list[tuple[str, int, float]]:
     return store_read.build_task_history(store.conn, str(getattr(ctx, "repo", "")), since)
 
 
-def _lifecycle_invocation(
-    ctx: _Ctx, task: Mapping[str, Any], *, body: str, fix_attempts: int | None
+def lifecycle_invocation(
+    ctx: Ctx, task: Mapping[str, Any], *, body: str, fix_attempts: int | None
 ) -> Invocation:
     # Every build task resolves a budget and where it came from, never
     # nothing. A ticket's own `budget_usd` wins outright and is checked
     # against the cartridge's `build_budget_usd_max` cap further up in
     # `run_phase` (the `over_budget`/`runnable` split), before this function
-    # is ever called, and never through `_quarantine_task` here. An estimate
+    # is ever called, and never through `quarantine_task` here. An estimate
     # is already clamped to [1.00, 4.00], so it can never reach that cap or
     # the quarantine path either.
     if task.get("budget_usd") is not None:
@@ -475,11 +475,11 @@ def _lifecycle_invocation(
     )
 
 
-def _style_fix(ctx: _Ctx, *, phase: str, task: str, result: Mapping[str, Any], build: dict[str, Any]) -> bool:
+def _style_fix(ctx: Ctx, *, phase: str, task: str, result: Mapping[str, Any], build: dict[str, Any]) -> bool:
     """One `style_pass` over an approved build whose lint failed, then the checks again.
 
     The seat is a model and no reviewer sees its edit, so it is bounded three
-    ways. Its patch passes the coverage floor `_trim_phase` uses, no collected
+    ways. Its patch passes the coverage floor `trim_phase` uses, no collected
     test id may disappear. Only the paths it names are staged, because the
     checks have already written byproducts into this worktree. And the edit is
     recorded as an evidence row, for whoever reads the gate. True when the patch
@@ -488,19 +488,19 @@ def _style_fix(ctx: _Ctx, *, phase: str, task: str, result: Mapping[str, Any], b
     worktree, for a fall back to a revise.
     """
     worktree = ctx.task_worktree(phase, task)
-    before = _collected_ids(worktree)
+    before = collected_test_ids(worktree)
     if before is None:
         return False  # no floor can be measured, so no model call is worth buying
     patch = str((result.get("build") or {}).get("patch") or "")
     edit = ctx.runner.run(
         role="style_pass",
         tier="standard",
-        schema=_STYLE_PASS_SCHEMA,
+        schema=STYLE_PASS_SCHEMA,
         task=task,
-        wait_if_paused=lambda: _wait_if_paused(ctx),
+        wait_if_paused=lambda: wait_if_paused_here(ctx),
         context=list(ctx.cartridge.get("context") or []),
         prompt=(
-            f"{_CHECK_FIX_PROMPT}\n\nTicket: {task}\n\nFailing checks:\n{check_feedback(build['checks'])}"
+            f"{CHECK_FIX_PROMPT}\n\nTicket: {task}\n\nFailing checks:\n{check_feedback(build['checks'])}"
             f"\n\nApproved diff:\n{patch[:PATCH_FOR_VALIDATION_CHARS]}"
         ),
     ).get("patch")
@@ -508,17 +508,17 @@ def _style_fix(ctx: _Ctx, *, phase: str, task: str, result: Mapping[str, Any], b
         return False
     if not apply_patch(str(edit), worktree)[0]:
         return False
-    after = _collected_ids(worktree)
+    after = collected_test_ids(worktree)
     if after is None or not coverage_floor_holds(before, after):
-        _git("-C", str(worktree), "reset", "--hard", "-q")
-        _git("-C", str(worktree), "clean", "-fdq")
+        git_in("-C", str(worktree), "reset", "--hard", "-q")
+        git_in("-C", str(worktree), "clean", "-fdq")
         build["evidence"].append({"check": "style_pass", "output": "refused (coverage floor)"})
         return False
     paths = touched_paths(str(edit))
-    staged, _ = _git(*_IDENTITY, "-C", str(worktree), "add", "-A", "--", *paths)
-    if not staged or not _git(*_IDENTITY, "-C", str(worktree), "commit", "-q", "-m", "style pass")[0]:
+    staged, _ = git_in(*IDENTITY, "-C", str(worktree), "add", "-A", "--", *paths)
+    if not staged or not git_in(*IDENTITY, "-C", str(worktree), "commit", "-q", "-m", "style pass")[0]:
         return False
-    _, folded = _git("-C", str(worktree), "diff", ctx.phase_branch(phase), "HEAD")
+    _, folded = git_in("-C", str(worktree), "diff", ctx.phase_branch(phase), "HEAD")
     build_field = result.get("build")
     if isinstance(build_field, dict) and folded:
         build_field["patch"] = folded + "\n"
@@ -542,8 +542,8 @@ def _style_fix(ctx: _Ctx, *, phase: str, task: str, result: Mapping[str, Any], b
     return True
 
 
-def _refix(
-    ctx: _Ctx,
+def refix_task(
+    ctx: Ctx,
     by_id: Mapping[str, Mapping[str, Any]],
     *,
     phase: str,
@@ -587,48 +587,48 @@ def _refix(
         last_patch = str((result.get("build") or {}).get("patch") or "")
         history = [*(item.get("attempts") or []), failed]
         # The revise starts from the patch that just failed its checks, in a tree of its own, not from a reference.
-        attempt = _attempt_tree(ctx, phase, f"{task}--refix{len(routes) + 1}", last_patch) if last_patch.strip() else None
+        attempt = attempt_tree(ctx, phase, f"{task}--refix{len(routes) + 1}", last_patch) if last_patch.strip() else None
         carried = (
-            _resume_body(item.get("body") or "", history, attempt[1])
+            resume_body(item.get("body") or "", history, attempt[1])
             if attempt is not None
-            else _carry_forward(item.get("body") or "", history, last_patch, limit=PATCH_FOR_VALIDATION_CHARS)
+            else carry_forward(item.get("body") or "", history, last_patch, limit=PATCH_FOR_VALIDATION_CHARS)
         )
-        body, permitted = _permit_outside_surfaces(
+        body, permitted = permit_outside_surfaces(
             carried, item.get("surfaces") or [], str(build.get("quarantine") or "")
         )
-        refix = _lifecycle_invocation(ctx, {**item, "surfaces": permitted}, body=body, fix_attempts=max(int(left) - 1, 0))
+        refix = lifecycle_invocation(ctx, {**item, "surfaces": permitted}, body=body, fix_attempts=max(int(left) - 1, 0))
         refix_run = f"{ctx.run_id}:{phase}:refix{len(routes) + 1}"
         if attempt is not None:
-            retried, failures = _invoke_from_attempt(ctx, phase, refix, *attempt, run_id=refix_run)
+            retried, failures = invoke_from_attempt(ctx, phase, refix, *attempt, run_id=refix_run)
         else:
             retried, _, failures = invoke_graphs([refix], specs=ctx.specs, runner=ctx.runner, run_id=refix_run, max_parallel=1)
         why = failures[0] if failures else None
         if why is None and retried[0].get("failed_node") is not None:
             why = f"node '{retried[0]['failed_node']}' failed"
         if why is None:
-            why = _unapproved(retried[0])
+            why = unapproved(retried[0])
         if why is not None:
             build["evidence"].append({"check": "fix loop re-entry", "output": f"not approved: {why}"})
             break
         result = retried[0]
         result.setdefault("initiative", ctx.initiative_id)
         result.setdefault("phase", phase)
-        result.update(_body_stamp(item))
-        _save_result(ctx, result, phase=phase, task=task)
+        result.update(body_stamp(item))
+        save_task_result(ctx, result, phase=phase, task=task)
         spent += float((result.get("fix_loop") or {}).get("attempts") or 1)
         routes.append("revise")
         names = ", ".join(str(c["name"]) for c in build["checks"] if not c.get("passed"))
         _release_task(ctx, phase, task)
-        _drop_lane(ctx, phase, task)
-        _git("-C", str(ctx.repo), "branch", "-D", ctx.scratch_branch(task))
-        build = _build_task(ctx, phase=phase, task=task, result=result, verify=_verify_of(by_id, task))
+        drop_lane(ctx, phase, task)
+        git_in("-C", str(ctx.repo), "branch", "-D", ctx.scratch_branch(task))
+        build = build_task(ctx, phase=phase, task=task, result=result, verify=verify_of(by_id, task))
         build["evidence"].append(
             {"check": "fix loop re-entry", "output": f"revise after {names}: attempts spent {spent:g} of {limit + 1}"}
         )
     return result, ({**build, "refix": routes} if routes else build)
 
 
-def _unapproved(result: Mapping[str, Any]) -> str | None:
+def unapproved(result: Mapping[str, Any]) -> str | None:
     """Why the fix loop refused this task, or None when it approved it.
 
     Read from the loop's own record, not re-derived. `lifecycle-propose` emits a
@@ -708,7 +708,7 @@ def work_state_of(profile: Mapping[str, Any]) -> str:
     return "files"
 
 
-def _body_stamp(item: Mapping[str, Any] | None) -> dict[str, str]:
+def body_stamp(item: Mapping[str, Any] | None) -> dict[str, str]:
     """`{"body_sha": ...}` of the work item's own body, the ticket the build was on; {} for an item with no body.
 
     The item's text, not the prompt's: a carried-forward history is not the ticket. Under work_state store the record is
@@ -717,7 +717,7 @@ def _body_stamp(item: Mapping[str, Any] | None) -> dict[str, str]:
     return {"body_sha": workstore.body_sha(body)} if isinstance(body, str) else {}
 
 
-def _collected_ids(worktree: Path) -> set[str] | None:
+def collected_test_ids(worktree: Path) -> set[str] | None:
     """`pytest --collect-only -q` in `worktree`, read back as node ids.
 
     `None` means unmeasurable: pytest could not launch (mirrors `run_checks`'s

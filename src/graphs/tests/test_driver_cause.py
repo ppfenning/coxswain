@@ -5,7 +5,7 @@ import pytest
 
 import harness.store_read as read
 from core import workstore
-from harness.epic import EXIT_PAUSED, StoreMissing, _Ctx, _ctx_store, _quarantine_task, _save_result, _without_cause
+from harness.epic import EXIT_PAUSED, Ctx, StoreMissing, ctx_store, quarantine_task, save_task_result, without_cause
 from harness.resume import load_result
 from harness.store_write import Store, task_cause
 from runner.protocol import LimitStop
@@ -71,8 +71,8 @@ def patches() -> dict[str, str]:
     return {t: new_file_patch(f"{t}.txt") for t in TASK_IDS}
 
 
-def ctx(tmp_path: Path, store, runner) -> _Ctx:
-    return _Ctx(
+def ctx(tmp_path: Path, store, runner) -> Ctx:
+    return Ctx(
         repo=tmp_path,
         cartridge={},
         runner=runner,
@@ -92,8 +92,8 @@ def ctx(tmp_path: Path, store, runner) -> _Ctx:
     )
 
 
-def quarantine(c: _Ctx, *, kind: str, reason: str, result=None, by_id=None) -> dict:
-    return _quarantine_task(c, by_id or {}, phase="p1", task="t1", reason=reason, kind=kind, result=result)
+def quarantine(c: Ctx, *, kind: str, reason: str, result=None, by_id=None) -> dict:
+    return quarantine_task(c, by_id or {}, phase="p1", task="t1", reason=reason, kind=kind, result=result)
 
 
 def stored(conn, task: str = "t1", run: str = "r1", phase: str = "p1") -> tuple[tuple, tuple]:
@@ -118,7 +118,7 @@ def test_a_deterministic_kind_never_invokes_the_runner(tmp_path, store_conn):
 def test_an_unmatched_kind_invokes_the_runner_once_and_stores_its_answer_on_file_and_row(tmp_path, store_conn):
     runner = StubRunner()
     c = ctx(tmp_path, Store(store_conn), runner)
-    _save_result(c, REFUSED, phase="p1", task="t1")
+    save_task_result(c, REFUSED, phase="p1", task="t1")
     entry = quarantine(c, kind="refused", reason="the fix loop stopped", result=REFUSED)
     assert entry["kind"] == "refused"
     assert [call["role"] for call in runner.calls] == ["cause_classify"]
@@ -150,13 +150,13 @@ def test_the_cause_names_the_body_the_task_was_built_on_on_file_and_row(tmp_path
     # Under work_state store the record is the attempt: without the body, an amended ticket's earlier failures read as
     # failures of the new body, and the chair's stale count drafts the initiative.
     c = ctx(tmp_path, Store(store_conn), StubRunner())
-    _save_result(c, REFUSED, phase="p1", task="t1")
+    save_task_result(c, REFUSED, phase="p1", task="t1")
     quarantine(c, kind="infra", reason="apply arm raised", by_id={"t1": {"body": "\nread the vendor schema\n"}})
     on_file = load_result(c.runs_dir, "r1", "p1", "t1")
     assert on_file["body_sha"] == workstore.body_sha("read the vendor schema")
     assert read.task_record(store_conn, "r1", "p1", "t1") == on_file
     # A later run that reuses the saved result is not that quarantine: it carries neither its cause nor its body.
-    assert not {"cause", "cause_why", "body_sha"} & set(_without_cause(on_file))
+    assert not {"cause", "cause_why", "body_sha"} & set(without_cause(on_file))
 
 
 def test_a_failing_classifier_records_unknown_and_still_quarantines(tmp_path, store_conn):
@@ -269,4 +269,4 @@ def test_a_failed_task_record_mirror_keeps_the_attempt_and_the_file_and_warns(
 def test_a_store_call_on_a_run_without_a_store_names_the_fault(tmp_path):
     """A store call reached on a run that opened no store raises StoreMissing naming the run, not an AttributeError."""
     with pytest.raises(StoreMissing, match="run r1 of i reached a store call without an open store"):
-        _ctx_store(ctx(tmp_path, None, None))
+        ctx_store(ctx(tmp_path, None, None))

@@ -1,6 +1,6 @@
 import logging
 
-from harness.epic import _record_run_exit, _StoreRetry, build_outcome
+from harness.epic import StoreRetry, build_outcome, record_run_exit
 
 REASON = "phase branch coxswain/p1 is behind main and carries its own commits; rebase it through the gate"
 TOTALS = {"phases_complete": 1, "phases_partial": 0, "phases_blocked": 0, "tasks_quarantined": 0}
@@ -51,7 +51,7 @@ class _RaisingStore:
 def test_a_store_write_that_raises_is_logged_and_the_exit_still_returns(caplog):
     store = _RaisingStore()
     with caplog.at_level(logging.WARNING):
-        out = _record_run_exit(store, "r1", "ok", _StoreRetry(), {"phases": [], "quarantined": [], "totals": {}})
+        out = record_run_exit(store, "r1", "ok", StoreRetry(), {"phases": [], "quarantined": [], "totals": {}})
     assert out is None
     assert store.finished == [("r1", "ok")]
     assert "run outcome for r1 not recorded" in caplog.text

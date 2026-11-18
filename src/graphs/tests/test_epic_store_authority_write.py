@@ -28,7 +28,7 @@ def item(tmp_path):
 
 def _ctx(store_conn, work_state):
     fields = {"store": Store(store_conn), "initiative_id": INITIATIVE, "run_id": RUN, "work_state": work_state}
-    return type("Ctx", (), {**fields, "epoch": None, "cartridge": {}, "runner": None, "retry": epic._StoreRetry()})()
+    return type("Ctx", (), {**fields, "epoch": None, "cartridge": {}, "runner": None, "retry": epic.StoreRetry()})()
 
 
 def _put(ctx, item, state):
@@ -49,10 +49,10 @@ def _move(ctx, item, monkeypatch, events):
         return True, "stub arm"
 
     monkeypatch.setattr(epic, "auto_apply", arm)
-    monkeypatch.setattr(epic, "_unkept_work", lambda *_: None)  # these tests are about write order, not the kept-branch gate
-    state = epic._Execution(landed={}, merged={}, moved={}, quarantined=[])
+    monkeypatch.setattr(epic, "unkept_work", lambda *_: None)  # these tests are about write order, not the kept-branch gate
+    state = epic.Execution(landed={}, merged={}, moved={}, quarantined=[])
     move = {"kind": "state_move", "target": "t1"}
-    result = epic._execute(ctx, move, slot="state_move", subject="t1", phase="p1", state=state, by_id={"t1": item})
+    result = epic.execute_cleared(ctx, move, slot="state_move", subject="t1", phase="p1", state=state, by_id={"t1": item})
     return state, result
 
 
@@ -77,7 +77,7 @@ def test_a_failed_file_write_still_applies_warns_and_leaves_the_store_moved(stor
     _put(ctx, item, "ready")
     Path(item["path"]).unlink()
     events: list = []
-    with caplog.at_level(logging.WARNING, logger=epic._log.name):
+    with caplog.at_level(logging.WARNING, logger=epic.epic_log.name):
         state, (ok, detail) = _move(ctx, item, monkeypatch, events)
     assert (ok, events, state.moved) == (True, [], {"t1": True})
     assert detail == "store moved to approved; file state line written"
@@ -91,7 +91,7 @@ def test_a_mismatch_refuses_names_both_states_and_leaves_the_file_and_the_row(st
     ctx = _ctx(store_conn, "store")
     _put(ctx, item, "done")
     events: list = []
-    with caplog.at_level(logging.WARNING, logger=epic._log.name):
+    with caplog.at_level(logging.WARNING, logger=epic.epic_log.name):
         state, (ok, reason) = _move(ctx, item, monkeypatch, events)
     assert events == []
     assert ok is False
@@ -141,5 +141,5 @@ def test_files_mode_runs_the_arm_then_upserts_the_row_with_no_compare_and_set(st
 
 def test_store_mode_mirror_write_upserts_nothing(store_conn, item):
     ctx = _ctx(store_conn, "store")
-    epic._mirror_write(ctx, item, "approved")
+    epic.mirror_write(ctx, item, "approved")
     assert _row_state(ctx) is None

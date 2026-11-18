@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from harness.epic import _needs_missing, _open_phase_worktree, _open_view, _required_refs
+from harness.epic import _open_view, needs_missing, open_phase_worktree, required_refs
 from tests.test_epic_driver import (  # noqa: F401 -- cart and repo are fixtures
     Runner,
     cart,
@@ -51,9 +51,9 @@ def test_a_task_with_merged_needs_opens_before_its_parent_phase_completes() -> N
 
 def test_the_child_branch_is_cut_from_the_parents_tip_and_holds_its_other_work(repo, tmp_path) -> None:  # noqa: F811
     ctx, tree, sha_a, sha_slow = stack(repo, tmp_path)
-    refs = _required_refs(items_for(sha_a), PHASE, ("p1",), ctx.phase_branch, "main", cut=True)
+    refs = required_refs(items_for(sha_a), PHASE, ("p1",), ctx.phase_branch, "main", cut=True)
     assert refs == [ctx.phase_branch("p1")]
-    ok, detail, _ = _open_phase_worktree(ctx, PHASE, "main", ("p1",), refs)
+    ok, detail, _ = open_phase_worktree(ctx, PHASE, "main", ("p1",), refs)
     assert ok, detail
     assert is_ancestor(repo, sha_a, ctx.phase_branch(PHASE))
     assert is_ancestor(repo, sha_slow, ctx.phase_branch(PHASE))
@@ -61,27 +61,27 @@ def test_the_child_branch_is_cut_from_the_parents_tip_and_holds_its_other_work(r
 
 def test_a_parent_that_merges_unrelated_work_does_not_stale_the_child_branch(repo, tmp_path) -> None:  # noqa: F811
     ctx, tree, sha_a, _ = stack(repo, tmp_path)
-    needed = _required_refs(items_for(sha_a), PHASE, ("p1",), ctx.phase_branch, "main")
-    cut_from = _required_refs(items_for(sha_a), PHASE, ("p1",), ctx.phase_branch, "main", cut=True)
-    ok, detail, _ = _open_phase_worktree(ctx, PHASE, "main", ("p1",), cut_from)
+    needed = required_refs(items_for(sha_a), PHASE, ("p1",), ctx.phase_branch, "main")
+    cut_from = required_refs(items_for(sha_a), PHASE, ("p1",), ctx.phase_branch, "main", cut=True)
+    ok, detail, _ = open_phase_worktree(ctx, PHASE, "main", ("p1",), cut_from)
     assert ok, detail
     commit_file(tree, "unrelated.md", "unrelated")
     head = git("rev-parse", "HEAD", cwd=tree)
     # The old head check would call this branch stale.
     assert not is_ancestor(repo, head, ctx.phase_branch(PHASE))
     assert needed == [sha_a]
-    assert _needs_missing(ctx, PHASE, needed) is False
+    assert needs_missing(ctx, PHASE, needed) is False
 
 
 def test_a_needed_commit_missing_from_the_child_branch_reads_as_stale(repo, tmp_path) -> None:  # noqa: F811
     ctx, tree, sha_a, _ = stack(repo, tmp_path)
-    ok, detail, _ = _open_phase_worktree(ctx, PHASE, "main", ("p1",), [sha_a])
+    ok, detail, _ = open_phase_worktree(ctx, PHASE, "main", ("p1",), [sha_a])
     assert ok, detail
     commit_file(tree, "b.md", "b")
     sha_b = git("rev-parse", "HEAD", cwd=tree)
-    assert _needs_missing(ctx, PHASE, [sha_a]) is False
-    assert _needs_missing(ctx, PHASE, [sha_a, sha_b]) is True
-    assert _needs_missing(ctx, PHASE, [sha_b]) is True
+    assert needs_missing(ctx, PHASE, [sha_a]) is False
+    assert needs_missing(ctx, PHASE, [sha_a, sha_b]) is True
+    assert needs_missing(ctx, PHASE, [sha_b]) is True
 
 
 TASKS = ("t1-probe", "t2-bench", "t3-cutover")
@@ -178,7 +178,7 @@ def test_p2_is_reopened_on_its_branch_after_p1_moves_for_an_unrelated_merge(repo
 
 
 def test_a_needed_commit_missing_from_a_reused_branch_with_its_own_commits_blocks_it(repo, tmp_path) -> None:  # noqa: F811
-    from harness.epic import _run_phase
+    from harness.epic import run_phase_tasks
 
     first = _ctx(repo, tmp_path, "r1")
     trees = {name: tmp_path / f"parent-{name}" for name in ("pa", "pb")}
@@ -187,7 +187,7 @@ def test_a_needed_commit_missing_from_a_reused_branch_with_its_own_commits_block
         commit_file(tree, f"{name}.md", name)
     shas = {name: git("rev-parse", "HEAD", cwd=tree) for name, tree in trees.items()}
     refs = [shas["pa"], shas["pb"]]
-    ok, detail, _ = _open_phase_worktree(first, PHASE, "main", ("pa", "pb"), refs)
+    ok, detail, _ = open_phase_worktree(first, PHASE, "main", ("pa", "pb"), refs)
     assert ok, detail
     commit_file(first.phase_worktree(PHASE), "own.md", f"epic r1: merge t3-cutover into {PHASE}")
     # pb merges a second task after p2 was cut: p2 now lacks a commit it needs.
@@ -198,7 +198,7 @@ def test_a_needed_commit_missing_from_a_reused_branch_with_its_own_commits_block
         {"id": "tb", "phase": "pb", "state": "approved", "merged": True, "merged_commit": newer, "needs": []},
         {"id": "t3-cutover", "phase": PHASE, "state": "approved", "merged": True, "needs": ["ta", "tb"]},
     ]
-    record = _run_phase(_ctx(repo, tmp_path, "r2"), initiative={"id": "x"}, phase=PHASE, parents=("pa", "pb"), items=items)
+    record = run_phase_tasks(_ctx(repo, tmp_path, "r2"), initiative={"id": "x"}, phase=PHASE, parents=("pa", "pb"), items=items)
     assert record["reused_branch"] is True
     assert record["status"] == "blocked"
     assert "recreated" not in record
@@ -230,7 +230,7 @@ def write_commit(tree: Path, name: str, text: str) -> str:
 
 
 def test_a_conflicting_assembly_holds_the_starting_task_and_leaves_its_sibling(repo, tmp_path) -> None:  # noqa: F811
-    from harness.epic import ASSEMBLY_FAILED, _run_phase
+    from harness.epic import ASSEMBLY_FAILED, run_phase_tasks
 
     ctx = _ctx(repo, tmp_path, "r1")
     shas = {}
@@ -244,7 +244,7 @@ def test_a_conflicting_assembly_holds_the_starting_task_and_leaves_its_sibling(r
         {"id": "c", "phase": PHASE, "state": "ready", "needs": ["ta", "tb"]},
         {"id": "sibling", "phase": PHASE, "state": "ready", "needs": []},
     ]
-    record = _run_phase(
+    record = run_phase_tasks(
         ctx, initiative={"id": "x"}, phase=PHASE, parents=("pa", "pb"), items=items, only=frozenset({"c"})
     )
     assert record["status"] == "blocked"

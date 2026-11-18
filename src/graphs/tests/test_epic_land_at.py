@@ -53,7 +53,7 @@ def prs(monkeypatch) -> Forge:
 
     monkeypatch.setattr(epic_module, "_push_review_ref", lambda ctx, local, name: (True, ""))
     monkeypatch.setattr(epic_module, "_existing_pr", existing)
-    monkeypatch.setattr(epic_module, "_open_review_pr", open_pr)
+    monkeypatch.setattr(epic_module, "open_review_pr", open_pr)
     return forge
 
 

@@ -16,33 +16,33 @@ from core.cartridge import test_database_setting
 from core.landing import is_initiative, resolve_land_at
 from harness.checks import repo_checks
 from harness.courier_adapter import send as send_to_courier
-from harness.epic_batch import _audit_approved_kept
+from harness.epic_batch import audit_approved_kept
 from harness.epic_branches import (
-    _bring_forward,
-    _merge_into_initiative,
-    _parent_gap,
-    _run_scratch,
-    _start_initiative,
+    bring_forward,
+    merge_into_initiative,
+    parent_gap,
     resolve_default_ref,
+    run_scratch,
+    start_initiative,
 )
-from harness.epic_build import _drop_lane, _settle_pool, checked_work_state
-from harness.epic_context import PoolSetting, _Ctx, _StoreRetry, declared_phases, unreached_warning
-from harness.epic_phase import _run_phase
+from harness.epic_build import checked_work_state, drop_lane, settle_pool
+from harness.epic_context import Ctx, PoolSetting, StoreRetry, declared_phases, unreached_warning
+from harness.epic_phase import run_phase_tasks
 from harness.epic_phase_branch import awaiting_land_lines, blocked_line, outside_parents_complete
 from harness.epic_records import (
     LEASE_NAME,
-    _build_result,
-    _clear_pause_if_held,
-    _log,
-    _mirror_read,
-    _publish_run_exit,
-    _read_store_rows,
-    _record_phase,
-    _record_run_exit,
-    _store_fresh,
-    _unlanded,
+    build_result,
+    clear_pause_if_held,
+    epic_log,
+    mirror_read,
+    publish_run_exit,
+    read_store_rows,
+    record_phase,
+    record_run_exit,
+    store_fresh,
+    unlanded_tasks,
 )
-from harness.epic_triage import _close_runner
+from harness.epic_triage import close_runner
 from harness.lane_workers import lane_workers_from
 from harness.lanes import lane_bound
 from harness.scheduler import plan_launches
@@ -75,7 +75,7 @@ def run_epic(
     lease_name: str | None = None,
     work_state: str = "files",
     base: str | None = None,
-    retry: _StoreRetry | None = None,
+    retry: StoreRetry | None = None,
     headroom_usd: Callable[[], float | None] | None = None,
     est_task_usd: float = 0.0,
     only_phases: Collection[str] | None = None,
@@ -126,9 +126,9 @@ def run_epic(
         known = {str(i["phase"]) for i in initiative.get("items") or [] if i.get("phase")}
         if unknown := sorted(set(only_phases) - known):
             raise ValueError(f"unknown phase(s) {', '.join(unknown)}; the initiative's phases are {', '.join(sorted(known))}")
-    retry = retry or _StoreRetry.for_store(store)
+    retry = retry or StoreRetry.for_store(store)
     repo = Path(repo).expanduser()
-    ctx: _Ctx | None = None
+    ctx: Ctx | None = None
     result: dict[str, Any] | None = None
     # Bound before the `try` so the `finally` can build a partial result from whatever phases finished.
     phases: list[dict[str, Any]] = []
@@ -146,7 +146,7 @@ def run_epic(
             agent_checks_text = (repo / ".agent-checks").read_text(encoding="utf-8-sig")
         except (OSError, UnicodeDecodeError):
             agent_checks_text = ""
-        ctx = _Ctx(
+        ctx = Ctx(
             repo=repo,
             cartridge=cartridge,
             runner=runner,
@@ -185,22 +185,22 @@ def run_epic(
         # writer of the store on disk; this is the driver keeping its own copy
         # honest about what the arm just did.
         items = [dict(item) for item in initiative.get("items") or []]
-        _mirror_read(ctx, items)
+        mirror_read(ctx, items)
         if is_initiative(ctx.land_at):
             # Before any phase: the initiative branch is cut from its parent and recorded, so every phase forks from it.
-            ctx = replace(ctx, initiative_branch=_start_initiative(ctx, initiative))
+            ctx = replace(ctx, initiative_branch=start_initiative(ctx, initiative))
             # Then the branch takes its parent forward, so no phase builds on an old base (H4.2).
-            ctx = replace(ctx, parent_behind=_bring_forward(ctx, items))
+            ctx = replace(ctx, parent_behind=bring_forward(ctx, items))
 
         parents = phase_parents(items)
         named = None if only_phases is None else frozenset(only_phases)
         seed: frozenset[str] = frozenset()
         unmerged: dict[str, tuple[str, str]] = {}
         if named is not None:
-            seed = frozenset(outside_parents_complete(items, _read_store_rows(ctx), parents, named, ctx.land_at))
+            seed = frozenset(outside_parents_complete(items, read_store_rows(ctx), parents, named, ctx.land_at))
             if ctx.initiative_branch is not None:
                 # With an initiative branch a parent outside the run counts only once it is merged into that branch.
-                unmerged = {p: gap for p in sorted(seed) if (gap := _parent_gap(ctx, p, items)) is not None}
+                unmerged = {p: gap for p in sorted(seed) if (gap := parent_gap(ctx, p, items)) is not None}
                 seed = seed - set(unmerged)
             parents = {p: ps for p, ps in parents.items() if p in named}
         waves, cyclic = compute_waves(parents if named is None else {p: ps & named for p, ps in parents.items()})
@@ -221,7 +221,7 @@ def run_epic(
 
         def add_phase(record: dict[str, Any]) -> None:
             phases.append(record)
-            _record_phase(ctx, record)
+            record_phase(ctx, record)
             if (line := blocked_line(record)) is not None:
                 print(line)
             for line in awaiting_land_lines(record, run_id, repo):
@@ -269,8 +269,8 @@ def run_epic(
         phases.sort(key=lambda r: rank.get(str(r["phase"]), len(rank)))
 
         # A pause too: tasks approved before it can have lost their branch. The audit calls no model.
-        _audit_approved_kept(ctx, {str(i["id"]): i for i in items}, tasks, quarantined)
-        result = _build_result(
+        audit_approved_kept(ctx, {str(i["id"]): i for i in items}, tasks, quarantined)
+        result = build_result(
             run_id=run_id, date=date, initiative_id=ctx.initiative_id, phases=phases, tasks=tasks,
             quarantined=quarantined, proposals=proposals, stacks_rebased=stacks_rebased,
             paused_until=paused_until, repo=repo, land_at=ctx.land_at, waves=waves, lane=tally.lane,
@@ -282,32 +282,32 @@ def run_epic(
         # a signal delivered as KeyboardInterrupt or SystemExit — lands here.
         # A failed pause clear, even a bug in it, must not skip the exit record, the last write given up on.
         try:
-            _clear_pause_if_held(store, run_id, lease_name or LEASE_NAME, epoch, retry)
+            clear_pause_if_held(store, run_id, lease_name or LEASE_NAME, epoch, retry)
         finally:
             # Once, after the phase loop has drained: a phase's threads stay open while any other phase can still use them.
-            close_error = _close_runner(ctx.runner) if ctx is not None else None
+            close_error = close_runner(ctx.runner) if ctx is not None else None
             # A raise leaves no result, so the outcome is built from the phases that finished. A failure
             # building it is logged and must not replace the exception already in flight.
             if result is None and ctx is not None:
                 try:
-                    result = _build_result(
+                    result = build_result(
                         run_id=run_id, date=date, initiative_id=ctx.initiative_id, phases=phases, tasks=tasks,
                         quarantined=quarantined, proposals=proposals, stacks_rebased=stacks_rebased,
                         paused_until=paused_until, repo=repo,
                         land_at=ctx.land_at, lane_databases=ctx.lane_drops if ctx.test_database else None,
                     )
                 except Exception as exc:
-                    _log.warning("partial result for %s not built: %s: %s", run_id, type(exc).__name__, exc)
+                    epic_log.warning("partial result for %s not built: %s: %s", run_id, type(exc).__name__, exc)
             # A return leaves no exception in flight here; a raise, a signal or an exit leaves one.
             exit_status = "ok" if sys.exc_info()[0] is None and close_error is None else "error"
-            _record_run_exit(store, run_id, exit_status, retry, result)
-            _publish_run_exit(run_id, ctx.initiative_id if ctx is not None else "", exit_status)
+            record_run_exit(store, run_id, exit_status, retry, result)
+            publish_run_exit(run_id, ctx.initiative_id if ctx is not None else "", exit_status)
         # Nothing before `ctx` exists can have made a worktree, so there is nothing to do yet.
         if ctx is not None:
             run_dir = ctx.worktree_root / ctx.run_id
-            _settle_pool(ctx, keep_worktrees=keep_worktrees)
+            settle_pool(ctx, keep_worktrees=keep_worktrees)
             # The phase-level and end-of-run scratch directories, outside the run directory, so a kept run never carries them.
-            shutil.rmtree(_run_scratch(ctx), ignore_errors=True)
+            shutil.rmtree(run_scratch(ctx), ignore_errors=True)
             if keep_worktrees:
                 # `keep_worktree` moves ONE named worktree to
                 # `_kept/<run_id>/<name>`; run_dir's own name is the run id,
@@ -324,7 +324,7 @@ def run_epic(
                 remove_worktree(ctx.repo, run_dir)
                 # After the removal, into the list the result already holds, so a pending or failed entry is the cleanup list.
                 for phase, task in sorted(ctx.lane_names):
-                    _drop_lane(ctx, phase, task)
+                    drop_lane(ctx, phase, task)
         # Raised last, so a failing close still leaves the exit record written and the worktrees cleaned up.
         if close_error is not None:
             raise close_error
@@ -384,7 +384,7 @@ def _need_met(need: Mapping[str, Any]) -> bool:
 
 
 def _run_lanes(
-    ctx: _Ctx,
+    ctx: Ctx,
     *,
     initiative: Mapping[str, Any],
     items: list[dict[str, Any]],
@@ -430,7 +430,7 @@ def _run_lanes(
         if record["status"] in ("complete", "awaiting_land") and is_initiative(ctx.land_at):
             # A built phase merges into the initiative branch here, locally: that is "phase complete", and only then
             # may the phases that need it start. Its tasks stay approved; they are done when the initiative lands.
-            merge = _merge_into_initiative(ctx, phase, items)
+            merge = merge_into_initiative(ctx, phase, items)
             if merge is not None:
                 record["initiative_merge"] = merge
                 if merge["status"] == "merged":
@@ -449,10 +449,10 @@ def _run_lanes(
 
     def adopt_done(parent: str) -> bool:
         """True after adopting the rows of `parent`, when every one of its tasks is done in the store."""
-        rows = _read_store_rows(ctx)
+        rows = read_store_rows(ctx)
         with ctx.items_lock:
             mine = [i for i in items if i.get("phase") == parent]
-            fresh = _store_fresh(mine, rows)
+            fresh = store_fresh(mine, rows)
             if not fresh or any(i["state"] not in ("done", "dropped") for i in fresh):
                 return False
             for item, new in zip(mine, fresh, strict=True):
@@ -492,7 +492,7 @@ def _run_lanes(
             return
         phase_tasks = record.pop("task_records")
         tasks.extend(phase_tasks)
-        for t, command in _unlanded(phase_tasks, ctx.run_id, ctx.repo):
+        for t, command in unlanded_tasks(phase_tasks, ctx.run_id, ctx.repo):
             send_to_courier(f"coxswain://task/{t['id']}", "chair", command)
         quarantined.extend(record.pop("quarantined"))
         proposals.extend(record.pop("batch"))
@@ -509,7 +509,7 @@ def _run_lanes(
             lane_of.setdefault(phase, next(n for n in range(1, len(used) + 2) if n not in used))
             launched.update(ids)
             future = pool.submit(
-                _run_phase, ctx, initiative=initiative, phase=phase,
+                run_phase_tasks, ctx, initiative=initiative, phase=phase,
                 parents=tuple(sorted(parents[phase])), items=items, only=only,
             )
             ctx.launched[phase] = future

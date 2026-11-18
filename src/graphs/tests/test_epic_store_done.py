@@ -29,7 +29,7 @@ MISSING = "0" * 40
 def _ctx(store_conn, root: Path, **more):
     fields = {
         "store": Store(store_conn), "initiative_id": INITIATIVE, "run_id": "run-1", "work_state": "store",
-        "epoch": None, "cartridge": {}, "runner": None, "retry": epic._StoreRetry(), "repo": root,
+        "epoch": None, "cartridge": {}, "runner": None, "retry": epic.StoreRetry(), "repo": root,
         "items_lock": threading.Lock(), "launched": {}, "initiative_branch": None,
         "phase_branch": staticmethod(lambda phase: "main"), "scratch_branch": staticmethod(lambda task: f"scratch/{task}"),
         **more,
@@ -78,7 +78,7 @@ def test_a_task_done_in_the_store_is_adopted_not_quarantined(store_conn, tmp_pat
     _put(ctx.store, INITIATIVE, items[0], "done", MISSING)
     before = _row(ctx.store, INITIATIVE, "t1")
     quarantined: list = []
-    epic._quarantine_missing_merges(ctx, "p1", items, quarantined)
+    epic.quarantine_missing_merges(ctx, "p1", items, quarantined)
     assert quarantined == []
     assert (items[0]["state"], items[0]["merged"]) == ("done", True)
     assert _row(ctx.store, INITIATIVE, "t1") == before
@@ -90,7 +90,7 @@ def test_a_row_still_approved_with_a_missing_commit_is_quarantined_as_before(sto
     items = [_stale("t1")]
     _put(ctx.store, INITIATIVE, items[0], "approved", MISSING)
     quarantined: list = []
-    epic._quarantine_missing_merges(ctx, "p1", items, quarantined)
+    epic.quarantine_missing_merges(ctx, "p1", items, quarantined)
     assert [q["id"] for q in quarantined] == ["t1"]
     assert quarantined[0]["reason"] == (
         f"merged commit {MISSING} is not on main; t1 was approved and merged by an earlier run and is not rebuilt"
@@ -108,7 +108,7 @@ def test_a_store_read_error_leaves_the_quarantine_in_place(store_conn, tmp_path,
 
     monkeypatch.setattr(read, "work_items", boom)
     quarantined: list = []
-    epic._quarantine_missing_merges(ctx, "p1", items, quarantined)
+    epic.quarantine_missing_merges(ctx, "p1", items, quarantined)
     assert [q["id"] for q in quarantined] == ["t1"]
 
 
@@ -118,10 +118,10 @@ def test_store_fresh_takes_only_done_rows_and_copies_its_input():
         {"task_id": "t1", "state": "done", "merged": True, "merged_commit": "abc"},
         {"task_id": "t2", "state": "approved", "merged": True, "merged_commit": MISSING},
     ]
-    fresh = epic._store_fresh(items, rows)
+    fresh = epic.store_fresh(items, rows)
     assert [(i["state"], i["merged_commit"]) for i in fresh] == [("done", "abc"), ("approved", MISSING)]
     assert items == [_stale("t1"), _stale("t2")]
-    assert epic._store_fresh(items, None) == items
+    assert epic.store_fresh(items, None) == items
 
 
 def test_phase_one_done_from_another_machine_is_complete_and_phase_two_builds(repo, cart, tmp_path, monkeypatch):  # noqa: F811
@@ -131,7 +131,7 @@ def test_phase_one_done_from_another_machine_is_complete_and_phase_two_builds(re
     for item in p1:
         item["state"] = "approved"
         _put(store, work["id"], item, "approved", MISSING)
-    real = epic._mirror_read
+    real = epic.mirror_read
 
     def mirror_then_land(ctx, items):
         """The run reads its items, then another machine lands phase one."""
@@ -139,7 +139,7 @@ def test_phase_one_done_from_another_machine_is_complete_and_phase_two_builds(re
         for item in p1:
             _put(store, work["id"], item, "done")
 
-    monkeypatch.setattr(epic, "_mirror_read", mirror_then_land)
+    monkeypatch.setattr(epic, "mirror_read", mirror_then_land)
     # The branch an earlier run made for phase one; its merged commits are on no branch this run can see.
     subprocess.run(["git", "-C", str(repo), "branch", "epic/demo-initiative/p1-foundations", "main"], check=True)
     runner = Runner({t: new_file_patch(f"{t}.txt") for t in TASK_IDS})
@@ -168,12 +168,12 @@ def _lanes(ctx, items, p1_status, monkeypatch):
             "batch": [],
         }
 
-    monkeypatch.setattr(epic, "_run_phase", fake_phase)
+    monkeypatch.setattr(epic, "run_phase_tasks", fake_phase)
     phases: list = []
 
     def add_phase(record):
         phases.append(record)
-        epic._record_phase(ctx, record)
+        epic.record_phase(ctx, record)
 
     epic._run_lanes(
         ctx, initiative={"id": INITIATIVE}, items=items, parents={"p1": set(), "p2": {"p1"}}, waves=[["p1"], ["p2"]],

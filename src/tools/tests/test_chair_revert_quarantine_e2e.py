@@ -88,7 +88,7 @@ def _ended_run(ws, run: str) -> None:
     try:
         store = Store(conn)
         store.record_run({"run_id": run})
-        epic._record_run_exit(store, run, "ok", epic._StoreRetry())
+        epic.record_run_exit(store, run, "ok", epic.StoreRetry())
     finally:
         conn.close()
 

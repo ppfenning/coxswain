@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from harness.epic import _build_batch, item_apply, state_move_apply
+from harness.epic import build_batch, item_apply, state_move_apply
 
 CARTRIDGE = {"write_kinds": {"state_move": {"risk": "low", "ramp": "deferred"}, "merge_stack": {"risk": "low", "ramp": "deferred"}, "consolidate": {"risk": "low", "ramp": "deferred"}}}
 ITEM = {"id": "t1", "title": "Probe", "state": "ready", "needs": [], "surfaces": ["a.py"], "body": "text"}
@@ -14,7 +14,7 @@ def _state_move(by_id):
         ledger_path=None,
     )
     built = {"t1": {"proposals": [], "result": {"review": {"verdict": "approve"}}, "evidence": [{"check": "pytest", "output": "1 passed"}]}}
-    batch, _ = _build_batch(
+    batch, _ = build_batch(
         ctx, phase="p1", surviving=["t1"], built=built, escalated=set(), chunk_by_task={}, rebase=None, by_id=by_id
     )
     return next(p for p in batch if p["kind"] == "state_move")

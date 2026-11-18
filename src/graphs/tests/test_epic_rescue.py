@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from core import workstore
-from harness.epic import _Ctx, rescue_task, with_stored_causes, with_stored_rescues
+from harness.epic import Ctx, rescue_task, with_stored_causes, with_stored_rescues
 from harness.resume import load_result, save_result
 from harness.store_migrate import open_store
 from harness.store_write import Store
@@ -44,7 +44,7 @@ def _setup(repo: Path, cart: dict, tmp_path: Path, patch: str, attempts: list[di
     )
     save_result({"ticket": TASK, "build": {"patch": patch}}, runs_dir=tmp_path / "runs", run_id="epic-prior", phase=PHASE, task=TASK)
     store = Store(open_store("sqlite:///:memory:", datetime.now(UTC).isoformat()))
-    ctx = _Ctx(
+    ctx = Ctx(
         repo=repo, cartridge=cart, runner=None, specs={}, run_id="rescue-1", date="2026-09-26",
         max_parallel=1, ledger_path=tmp_path / "ledger.jsonl", provider_profile=PROFILE, runs_dir=tmp_path / "runs",
         worktree_root=tmp_path / "worktrees", assume=assume, fix_attempts=None, initiative_id="demo-initiative",
@@ -54,14 +54,14 @@ def _setup(repo: Path, cart: dict, tmp_path: Path, patch: str, attempts: list[di
     return ctx, item, path
 
 
-def _rescue(ctx: _Ctx, item: dict, runner: Runner) -> dict:
+def _rescue(ctx: Ctx, item: dict, runner: Runner) -> dict:
     """One rescue through `runner`, which must never be asked to plan or build."""
     result = rescue_task(replace(ctx, runner=runner), item, phase=PHASE)
     assert not {call["role"] for call in runner.calls} & {"plan", "build"}
     return result
 
 
-def _one(ctx: _Ctx, sql: str) -> tuple | None:
+def _one(ctx: Ctx, sql: str) -> tuple | None:
     return ctx.store.conn.query_one(sql, ())
 
 

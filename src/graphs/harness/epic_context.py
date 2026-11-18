@@ -1,4 +1,4 @@
-"""The epic driver's run context: `_Ctx`, the store connection it retries, the pool setting and the phase order."""
+"""The epic driver's run context: `Ctx`, the store connection it retries, the pool setting and the phase order."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from harness.store_retry import retry_store_write
 from harness.store_write import Store
 
 
-def _git(*args: str, cwd: Path | None = None) -> tuple[bool, str]:
+def git_in(*args: str, cwd: Path | None = None) -> tuple[bool, str]:
     """Run one git command and report what happened, never what was intended."""
     try:
         proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=120)
@@ -60,7 +60,7 @@ def reopen_connection(conn: Connection) -> None:
 
 
 @dataclass(frozen=True)
-class _StoreRetry:
+class StoreRetry:
     """How a store write is retried across a lost connection. The default reconnects nothing: see `for_store`."""
 
     reconnect: Callable[[], None] = lambda: None
@@ -70,7 +70,7 @@ class _StoreRetry:
     @classmethod
     def for_store(
         cls, store: Store, clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep
-    ) -> _StoreRetry:
+    ) -> StoreRetry:
         """Retries that reconnect `store`'s own connection."""
         return cls(reconnect=lambda: reopen_connection(store.conn), clock=clock, sleep=sleep)
 
@@ -97,7 +97,7 @@ class PoolSetting:
 
 
 @dataclass(frozen=True)
-class _Ctx:
+class Ctx:
     """Everything the per-phase work needs, fixed for the whole run.
 
     A frozen record rather than a dozen parameters threaded through six
@@ -136,7 +136,7 @@ class _Ctx:
     epoch: int | None = None
     lease_name: str | None = None
     work_state: str = "files"
-    retry: _StoreRetry = field(default_factory=_StoreRetry)
+    retry: StoreRetry = field(default_factory=StoreRetry)
     # `landing_areas.test_database`, read once: each task lane runs its checks against its own database.
     test_database: Mapping[str, str] | None = None
     # Workers each lane's checks may use; None when no lane capacity was stated.
@@ -149,7 +149,7 @@ class _Ctx:
     pool_leases: dict[tuple[str, str], tuple[pool_edge.Lease, str]] = field(
         default_factory=dict, compare=False, repr=False
     )
-    # The one mutable member of a frozen record: file listings by commit (see `_default_branch_paths`).
+    # The one mutable member of a frozen record: file listings by commit (see `default_branch_paths`).
     surface_paths: dict[str, frozenset[str]] = field(default_factory=dict, compare=False, repr=False)
     # Guards writes to the shared `items` list and the lazy fill of `surface_paths`; `replace` shares it across per-phase copies.
     items_lock: threading.Lock = field(default_factory=threading.Lock, compare=False, repr=False)
@@ -175,7 +175,7 @@ class _Ctx:
         """The pr branch as a ref git can cut from: the local branch, else its copy on origin, else None."""
         name = self.pr_branch()
         for ref in (f"refs/heads/{name}", f"refs/remotes/origin/{name}"):
-            if _git("-C", str(self.repo), "rev-parse", "--verify", "--quiet", ref)[0]:
+            if git_in("-C", str(self.repo), "rev-parse", "--verify", "--quiet", ref)[0]:
                 return ref.removeprefix("refs/heads/").removeprefix("refs/remotes/")
         return None
 
@@ -265,7 +265,7 @@ def unreached_warning(unreached: Mapping[str, Mapping[str, Sequence[str]]]) -> s
 _EVIDENCE_LINE_CAP = 400
 
 
-def _read_evidence_file(worktree: str, rel: str) -> str | None:
+def read_evidence_file(worktree: str, rel: str) -> str | None:
     """The reader `phase-validate` calls for a chunk verdict's `needs_evidence`.
 
     The one place this driver opens a file on the graph's behalf, injected in
@@ -282,7 +282,7 @@ def _read_evidence_file(worktree: str, rel: str) -> str | None:
     return "\n".join(text.splitlines()[:_EVIDENCE_LINE_CAP])
 
 
-def _phase_goal(initiative: Mapping[str, Any], phase: str) -> str:
+def phase_goal(initiative: Mapping[str, Any], phase: str) -> str:
     """The phase's ORIGINAL goal — the thing `validate_phase` judges against.
 
     A work store's phases are bare names (`workstore.phases` returns the set of

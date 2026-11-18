@@ -2,7 +2,7 @@
 
 The epic saves every task's lifecycle result as `runs/<run>/tasks/<phase>/<task>.json` (`harness.resume.result_path`)
 and mirrors it into the store's `task_records`. Under a store, a quarantine also puts its cause on that record, as
-`cause` and `cause_why` (`harness.epic._record_task_cause`). When the board lives in the store, nothing writes the
+`cause` and `cause_why` (`harness.epic.record_task_cause`). When the board lives in the store, nothing writes the
 attempt into a work file, so the record is where an attempt's cause, reason and kind are read back from: by the chair
 for its quarantine facts, and by the epic for the attempts it hands triage.
 

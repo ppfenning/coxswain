@@ -35,13 +35,7 @@ from harness import epic as epic_module
 from harness.epic import (
     EXIT_AWAITING_LAND,
     EXIT_PAUSED,
-    _attempt_cap_for,
-    _invoke_failure_kind,
-    _is_append_only,
-    _lifecycle_invocation,
-    _ticket_amend_ramp,
-    _trace_evidence,
-    _unapproved,
+    attempt_cap_for,
     awaiting_land_lines,
     blocked_line,
     blocking_commits,
@@ -50,10 +44,16 @@ from harness.epic import (
     classify_unlanded,
     declared_phases,
     default_branch,
+    invoke_failure_kind,
+    is_append_only,
+    lifecycle_invocation,
     phase_order,
     phase_parents,
     run_epic,
     task_outcome,
+    ticket_amend_ramp,
+    trace_evidence,
+    unapproved,
     unreached_warning,
     waiting_tasks,
 )
@@ -284,7 +284,7 @@ class Runner:
 class CommandsRunner(Runner):
     """Like `Runner`, but appends a `ClaudeCodeRunner`-shaped ledger row per build call.
 
-    `harness/epic._trace_evidence` reads `runner.calls` for a `role: "build"` row whose
+    `harness/epic.trace_evidence` reads `runner.calls` for a `role: "build"` row whose
     `task_id` matches the task — never `files_touched`, which two tasks can share. This
     double stamps `task_id` from the `task=` kwarg the graph now passes, same as
     `ClaudeCodeRunner.run` does, so the harness's own selection is what is under test.
@@ -538,26 +538,26 @@ def test_a_run_that_raises_still_cleans_up_because_finally_fires(repo, cart, tmp
 
 def _runner_raising_in_phase_two(monkeypatch) -> Runner:
     """Phase 1 runs for real and phase 2 raises. The runner closes once, after the loop, so close cannot be the failure."""
-    real = epic_module._run_phase
+    real = epic_module.run_phase_tasks
 
     def run_phase(ctx, *, phase, **kwargs):
         if phase == "p2-rollout":
             raise RuntimeError("phase two blew up")
         return real(ctx, phase=phase, **kwargs)
 
-    monkeypatch.setattr(epic_module, "_run_phase", run_phase)
+    monkeypatch.setattr(epic_module, "run_phase_tasks", run_phase)
     return Runner({t: new_file_patch(f"{t}.txt") for t in TASK_IDS})
 
 
 def _spy_on_run_exit(monkeypatch) -> list[tuple[str, dict | None]]:
     exits: list[tuple[str, dict | None]] = []
-    real = epic_module._record_run_exit
+    real = epic_module.record_run_exit
 
     def spy(store, run_id, status, retry, result=None):
         exits.append((status, result))
         return real(store, run_id, status, retry, result)
 
-    monkeypatch.setattr(epic_module, "_record_run_exit", spy)
+    monkeypatch.setattr(epic_module, "record_run_exit", spy)
     return exits
 
 
@@ -589,7 +589,7 @@ def test_a_failure_building_the_partial_result_is_logged_and_the_original_raise_
     def broken(**_kwargs):
         raise ValueError("cannot build")
 
-    monkeypatch.setattr(epic_module, "_build_result", broken)
+    monkeypatch.setattr(epic_module, "build_result", broken)
     runner = _runner_raising_in_phase_two(monkeypatch)
 
     with (
@@ -876,7 +876,7 @@ def _build_call(command: str, files: list[str], task: str = "t1-probe") -> dict:
     ],
 )
 def test_trace_evidence_reads_the_last_build_call_for_the_task(calls, patch, expected) -> None:
-    assert _trace_evidence(calls, "t1-probe", patch) == expected
+    assert trace_evidence(calls, "t1-probe", patch) == expected
 
 
 def test_change_facts_carries_the_full_checks_result_for_a_quarantined_task(repo, cart, tmp_path) -> None:
@@ -1004,7 +1004,7 @@ def test_an_approved_build_whose_lint_fails_re_enters_the_fix_loop_with_the_lint
 
 
 def test_a_lint_only_failure_goes_through_the_style_pass_seat_not_a_second_build(repo, cart, tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr("harness.epic._collected_ids", lambda _worktree: {"test_x.py::test_a"})
+    monkeypatch.setattr("harness.epic.collected_test_ids", lambda _worktree: {"test_x.py::test_a"})
     cart["skills"]["style_pass"] = "acme-skills:style"
     cart["landing_areas"]["checks"] = [{"name": "lint", "cmd": f"{sys.executable} check.py"}]
     runner = Repairing(_broken_probe(), repaired={})
@@ -1070,7 +1070,7 @@ def test_a_style_edit_that_drops_a_collected_test_is_refused_and_falls_back_to_a
 
 def test_a_style_edit_commits_only_the_paths_it_names_never_a_check_byproduct(repo, cart, tmp_path, monkeypatch) -> None:
     """Checks drop files into the worktree; an `add -A` after them would carry those to the merge."""
-    monkeypatch.setattr("harness.epic._collected_ids", lambda _worktree: {"test_x.py::test_a"})
+    monkeypatch.setattr("harness.epic.collected_test_ids", lambda _worktree: {"test_x.py::test_a"})
     (repo / "check_bp.py").write_text(
         "import pathlib, sys\n"
         "pathlib.Path('byproduct.dat').write_text('x')\n"
@@ -1098,7 +1098,7 @@ _LINT_EDIT_STILL_BROKEN = _LINT_EDIT.replace("+ok", "+still broken")
 
 
 def test_a_task_gets_one_style_edit_then_a_reviewed_revise(repo, cart, tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr("harness.epic._collected_ids", lambda _worktree: {"test_x.py::test_a"})
+    monkeypatch.setattr("harness.epic.collected_test_ids", lambda _worktree: {"test_x.py::test_a"})
     cart["skills"]["style_pass"] = "acme-skills:style"
     cart["landing_areas"]["checks"] = [{"name": "lint", "cmd": f"{sys.executable} check.py"}]
     runner = Repairing(
@@ -1118,7 +1118,7 @@ def test_no_measurable_coverage_floor_means_no_style_call_and_a_reviewed_revise(
 ) -> None:
     """The fixture repo has no tests, so pytest collects nothing and `set() <= anything` must not pass the floor."""
     if cannot_launch:
-        monkeypatch.setattr("harness.epic._collected_ids", lambda _worktree: None)
+        monkeypatch.setattr("harness.epic.collected_test_ids", lambda _worktree: None)
     cart["skills"]["style_pass"] = "acme-skills:style"
     cart["landing_areas"]["checks"] = [{"name": "lint", "cmd": f"{sys.executable} check.py"}]
     runner = Repairing(_broken_probe(), repaired={"t1-probe": new_file_patch("t1-probe.txt")})
@@ -1164,7 +1164,7 @@ def test_task_outcome_names_all_four_cases() -> None:
     ids=["arbitration-verdict", "review-verdict"],
 )
 def test_unapproved_names_the_deciding_verdict(result, expected) -> None:
-    assert _unapproved(result) == expected
+    assert unapproved(result) == expected
 
 
 def test_an_approved_and_quarantined_task_names_itself_in_the_exit_summary(repo, cart, tmp_path) -> None:
@@ -1380,8 +1380,8 @@ def test_a_runnererror_from_the_invoke_is_quarantined_by_kind_and_the_next_run_b
 
 
 def test_invoke_failure_kind_matches_the_collision_text_case_insensitively() -> None:
-    assert _invoke_failure_kind("t1: node 'build' failed: FAILED TO REFRESH OAUTH TOKEN") == "infra"
-    assert _invoke_failure_kind("t1: provider-side safeguard error") == "no_work"
+    assert invoke_failure_kind("t1: node 'build' failed: FAILED TO REFRESH OAUTH TOKEN") == "infra"
+    assert invoke_failure_kind("t1: provider-side safeguard error") == "no_work"
 
 
 def test_two_infra_attempts_do_not_trip_the_attempt_cap(repo, cart, tmp_path) -> None:
@@ -1418,7 +1418,7 @@ def test_two_infra_attempts_do_not_trip_the_attempt_cap(repo, cart, tmp_path) ->
     ids=["additive", "removed-line", "frontmatter-change"],
 )
 def test_the_ticket_amend_ramp_is_eligible_only_for_an_additive_body_diff(old, new, expected) -> None:
-    assert _ticket_amend_ramp(old, new) == expected
+    assert ticket_amend_ramp(old, new) == expected
 
 
 class TriageAttemptRunner(Runner):
@@ -1486,7 +1486,7 @@ def test_the_attempt_cap_launches_triage_instead_of_a_plain_quarantine(repo, car
     ],
 )
 def test_the_cap_follows_the_cause_of_the_newest_attempt(attempts, cap) -> None:
-    assert _attempt_cap_for(attempts) == cap
+    assert attempt_cap_for(attempts) == cap
 
 
 OLDER_BODY = "sha-of-the-body-before-the-amend"
@@ -1574,7 +1574,7 @@ AMEND_ACTION = "add a note describing the missing fixture"  # what `TriageAttemp
     ],
 )
 def test_the_append_only_check_on_literal_strings(old, new, expected) -> None:
-    assert _is_append_only(old, new) is expected
+    assert is_append_only(old, new) is expected
 
 
 class AmendArmRunner(TriageAttemptRunner):
@@ -1692,8 +1692,8 @@ def test_an_item_with_no_ticket_file_leaves_the_amendment_to_the_gate(repo, cart
 def test_an_append_only_amendment_the_ramp_forces_gated_still_goes_to_the_gate(monkeypatch, repo, cart, tmp_path) -> None:
     old = "---\nread the vendor schema"
     new = f"{old}\n---\nnote"
-    assert _is_append_only(old, new) and _ticket_amend_ramp(old, new) == "gated"
-    monkeypatch.setattr(epic_module, "_amended_body", lambda old_body, action: f"{old_body}\n---\nnote")
+    assert is_append_only(old, new) and ticket_amend_ramp(old, new) == "gated"
+    monkeypatch.setattr(epic_module, "amended_body", lambda old_body, action: f"{old_body}\n---\nnote")
     result, runner, _ = _drive_on_disk(repo, cart, tmp_path, "write", body=old)
 
     assert [p["ramp"] for p in result["proposals"] if p["kind"] == "ticket_amend"] == ["gated"]
@@ -1712,7 +1712,7 @@ def test_an_append_only_amendment_the_ramp_forces_gated_still_goes_to_the_gate(m
 def test_an_amendment_that_removes_rewrites_or_prepends_goes_to_the_gate_and_the_task_is_not_rebuilt(
     monkeypatch, repo, cart, tmp_path, rewrite
 ) -> None:
-    monkeypatch.setattr(epic_module, "_amended_body", rewrite)
+    monkeypatch.setattr(epic_module, "amended_body", rewrite)
     result, runner, _ = _drive_on_disk(repo, cart, tmp_path, "silent")
 
     assert [p["target"] for p in result["proposals"] if p["kind"] == "ticket_amend"] == ["t1-probe"]
@@ -1818,9 +1818,9 @@ def test_a_build_budget_over_the_cap_is_quarantined_and_the_sibling_still_lands(
 
 
 def test_the_refusal_reason_names_every_malformed_entry() -> None:
-    from harness.epic import _surface_refusal_reason
+    from harness.epic import surface_refusal_reason
 
-    reason = _surface_refusal_reason(["/etc/x", "src/*.py"])
+    reason = surface_refusal_reason(["/etc/x", "src/*.py"])
     assert "/etc/x, src/*.py" in reason
 
 
@@ -1840,7 +1840,7 @@ def _repo_with_stale_checkout(repo: Path, tmp_path: Path) -> None:
 
 
 def test_a_file_on_origins_default_branch_but_absent_from_a_stale_checkout_is_not_healed(repo, cart, tmp_path) -> None:
-    from harness.epic import _default_branch_paths, resolve_default_ref
+    from harness.epic import default_branch_paths, resolve_default_ref
     from harness.surface_heal import heal_new_markers
 
     _repo_with_stale_checkout(repo, tmp_path)
@@ -1848,7 +1848,7 @@ def test_a_file_on_origins_default_branch_but_absent_from_a_stale_checkout_is_no
     ctx = replace(ctx, default_ref=resolve_default_ref(repo, None), surface_paths={})
     assert ctx.default_ref == "origin/main"
     assert not (repo / "src" / "fresh.py").exists()
-    paths = _default_branch_paths(ctx)
+    paths = default_branch_paths(ctx)
     assert paths is not None
     assert heal_new_markers({"surfaces": ["src/fresh.py"]}, paths)["surfaces"] == ["src/fresh.py"]
     assert heal_new_markers({"surfaces": ["src/missing.py"]}, paths)["surfaces"] == ["src/missing.py (new)"]
@@ -1859,33 +1859,33 @@ def test_the_listing_is_read_once_for_several_tasks_across_phases(repo, cart, tm
     for item in work["items"]:
         item["surfaces"] = ["README.md"]
     calls: list[tuple] = []
-    real = epic_module._git_stdout
-    monkeypatch.setattr(epic_module, "_git_stdout", lambda *a: calls.append(a) or real(*a))
+    real = epic_module.git_stdout
+    monkeypatch.setattr(epic_module, "git_stdout", lambda *a: calls.append(a) or real(*a))
     result, runner = drive(repo, cart, tmp_path, work=work)
     assert sum(1 for c in runner.calls if c["role"] == "build") == 3
     assert len([c for c in calls if "ls-tree" in c]) == 1
 
 
 def test_the_listing_is_read_again_when_the_ref_moves(repo, cart) -> None:
-    from harness.epic import _default_branch_paths
+    from harness.epic import default_branch_paths
 
     ctx = replace(_budget_ctx(repo, cart), default_ref="main")
-    assert "later.py" not in _default_branch_paths(ctx)
+    assert "later.py" not in default_branch_paths(ctx)
     (repo / "later.py").write_text("x = 1\n", encoding="utf-8")
     git("add", "-A", cwd=repo)
     git("commit", "-qm", "later", cwd=repo)
-    assert "later.py" in _default_branch_paths(ctx)
+    assert "later.py" in default_branch_paths(ctx)
 
 
 def test_a_warning_on_stderr_does_not_replace_the_listing(repo, cart, monkeypatch) -> None:
-    from harness.epic import _default_branch_paths
+    from harness.epic import default_branch_paths
 
     def fake_run(argv, **kwargs):
         out = "abc123\n" if "rev-parse" in argv else " lead.py\0src/b.py\0"
         return subprocess.CompletedProcess(argv, 0, stdout=out, stderr="warning: something")
 
     monkeypatch.setattr(epic_module.subprocess, "run", fake_run)
-    assert _default_branch_paths(replace(_budget_ctx(repo, cart), default_ref="main")) == {" lead.py", "src/b.py"}
+    assert default_branch_paths(replace(_budget_ctx(repo, cart), default_ref="main")) == {" lead.py", "src/b.py"}
 
 
 def test_a_file_only_in_the_working_tree_is_healed_against_the_branch_listing(repo, cart, tmp_path) -> None:
@@ -1901,7 +1901,7 @@ def test_an_unreadable_listing_falls_back_to_the_working_tree(repo, cart, tmp_pa
     (repo / "only_local.txt").write_text("x\n", encoding="utf-8")
     work = initiative(two_phases=False)
     next(i for i in work["items"] if i["id"] == "t1-probe")["surfaces"] = ["only_local.txt"]
-    monkeypatch.setattr(epic_module, "_default_branch_paths", lambda ctx: None)
+    monkeypatch.setattr(epic_module, "default_branch_paths", lambda ctx: None)
     result, runner = drive(repo, cart, tmp_path, work=work)
     assert not any(q["id"] == "t1-probe" for q in result["quarantined"])
     assert any(c["role"] == "build" and "t1-probe" in c["prompt"] for c in runner.calls)
@@ -1934,13 +1934,13 @@ def _heal_work(surfaces: list[str]) -> dict:
 
 def _record_invocation_surfaces(monkeypatch) -> dict[str, list[str]]:
     seen: dict[str, list[str]] = {}
-    real = epic_module._lifecycle_invocation
+    real = epic_module.lifecycle_invocation
 
     def recording(ctx, task, **kwargs):
         seen[str(task["id"])] = list(task.get("surfaces") or [])
         return real(ctx, task, **kwargs)
 
-    monkeypatch.setattr(epic_module, "_lifecycle_invocation", recording)
+    monkeypatch.setattr(epic_module, "lifecycle_invocation", recording)
     return seen
 
 
@@ -2011,7 +2011,7 @@ def _heal_ctx(store: Store, **fields):
     return SimpleNamespace(
         **{
             "store": store, "initiative_id": "demo-initiative", "work_state": "files", "epoch": None,
-            "lease_name": None, "retry": epic_module._StoreRetry(), **fields,
+            "lease_name": None, "retry": epic_module.StoreRetry(), **fields,
         }
     )  # fmt: skip
 
@@ -2044,7 +2044,7 @@ def test_a_heal_keeps_a_lint_note_only_the_row_holds_and_one_only_the_file_holds
     path = _healed_task_file(tmp_path, 'lint: ["file only"]\n')
     _seed_heal_row(store, ["docs/a.md"], ["row only"])
     ctx = _heal_ctx(store, work_state=work_state)
-    epic_module._write_healed_surfaces(ctx, "t1-probe", ["docs/a.md (new)"], ["new note"], str(path))
+    epic_module.write_healed_surfaces(ctx, "t1-probe", ["docs/a.md (new)"], ["new note"], str(path))
     surfaces, lint = _file_surfaces_and_lint(path)
     assert surfaces == ["docs/a.md (new)"]
     assert lint == ["file only", "row only", "new note"]
@@ -2054,7 +2054,7 @@ def test_a_heal_keeps_a_lint_note_only_the_row_holds_and_one_only_the_file_holds
 def test_a_heal_under_work_state_store_with_no_task_path_merges_into_the_rows_own_lint(tmp_path, store) -> None:
     _seed_heal_row(store, ["docs/a.md"], ["row only"])
     ctx = _heal_ctx(store, work_state="store")
-    epic_module._write_healed_surfaces(ctx, "t1-probe", ["docs/a.md (new)"], ["new note", "row only"], None)
+    epic_module.write_healed_surfaces(ctx, "t1-probe", ["docs/a.md (new)"], ["new note", "row only"], None)
     assert _row_surfaces_and_lint(store) == (["docs/a.md (new)"], ["row only", "new note"])
 
 
@@ -2065,7 +2065,7 @@ def test_a_heal_under_a_stale_leader_writes_neither_the_file_nor_the_row(tmp_pat
     lease = acquire(store.conn, LEASE, "a", _now(), 3600)
     assert _hand_to_b(store, lease.epoch) > lease.epoch
     ctx = _heal_ctx(store, epoch=lease.epoch, lease_name=LEASE)
-    epic_module._write_healed_surfaces(ctx, "t1-probe", ["docs/a.md (new)"], ["new note"], str(path))
+    epic_module.write_healed_surfaces(ctx, "t1-probe", ["docs/a.md (new)"], ["new note"], str(path))
     assert path.read_text(encoding="utf-8") == before
     assert _row_surfaces_and_lint(store) == (["docs/a.md"], ["old note"])
 
@@ -2078,8 +2078,8 @@ def test_a_failed_file_rewrite_leaves_the_store_row_unchanged_and_logs_the_failu
     broken.write_text("no frontmatter here\n", encoding="utf-8")
     _seed_heal_row(store, ["docs/a.md"], ["old note"])
     ctx = _heal_ctx(store, work_state=work_state)
-    with caplog.at_level(logging.WARNING, logger=epic_module._log.name):
-        epic_module._write_healed_surfaces(ctx, "t1-probe", ["docs/a.md (new)"], ["new note"], str(broken))
+    with caplog.at_level(logging.WARNING, logger=epic_module.epic_log.name):
+        epic_module.write_healed_surfaces(ctx, "t1-probe", ["docs/a.md (new)"], ["new note"], str(broken))
     assert _row_surfaces_and_lint(store) == (["docs/a.md"], ["old note"])
     assert "healed surfaces not written to the task file: task=t1-probe" in caplog.text
     assert "no frontmatter block" in caplog.text
@@ -2087,8 +2087,8 @@ def test_a_failed_file_rewrite_leaves_the_store_row_unchanged_and_logs_the_failu
 
 def test_a_heal_with_no_task_path_leaves_the_row_unchanged_under_work_state_files(tmp_path, store, caplog) -> None:
     _seed_heal_row(store, ["docs/a.md"], ["old note"])
-    with caplog.at_level(logging.WARNING, logger=epic_module._log.name):
-        epic_module._write_healed_surfaces(_heal_ctx(store), "t1-probe", ["docs/a.md (new)"], ["new note"], None)
+    with caplog.at_level(logging.WARNING, logger=epic_module.epic_log.name):
+        epic_module.write_healed_surfaces(_heal_ctx(store), "t1-probe", ["docs/a.md (new)"], ["new note"], None)
     assert _row_surfaces_and_lint(store) == (["docs/a.md"], ["old note"])
     assert "healed surfaces not written to the task file: task=t1-probe: no path" in caplog.text
 
@@ -2291,8 +2291,8 @@ def test_a_relaunch_in_store_mode_reads_the_healed_task_and_does_not_heal_again(
     monkeypatch.setattr(store_queue, "upsert", lambda *a, **k: writes.append(a))
     monkeypatch.setattr(epic_module, "_rewrite_frontmatter_surfaces", lambda *a: writes.append(a))
     checks: list[object] = []
-    real_listing = epic_module._default_branch_paths
-    monkeypatch.setattr(epic_module, "_default_branch_paths", lambda ctx: checks.append(1) or real_listing(ctx))
+    real_listing = epic_module.default_branch_paths
+    monkeypatch.setattr(epic_module, "default_branch_paths", lambda ctx: checks.append(1) or real_listing(ctx))
     drive(repo, cart, tmp_path / "again", work=workstore.read_initiative(wi), store=store, work_state="store", run_id="epic-2")
     assert checks, "the second run never reached the surface check, so this test proves nothing"
     assert "healed" not in capsys.readouterr().out
@@ -2329,9 +2329,9 @@ def test_a_new_file_under_an_existing_directory_proceeds_to_the_model(repo, cart
 
 
 def _budget_ctx(repo, cart, store=None, *, date="2026-09-28"):
-    from harness.epic import _Ctx
+    from harness.epic import Ctx
 
-    return _Ctx(
+    return Ctx(
         repo=repo, cartridge=cart, runner=None, specs={}, run_id="r", date=date,
         max_parallel=1, ledger_path=Path("/tmp/ledger.jsonl"), provider_profile="p",
         runs_dir=Path("/tmp/runs"), worktree_root=Path("/tmp/worktrees"), assume=None,
@@ -2346,7 +2346,7 @@ def test_a_tickets_own_budget_reaches_the_lifecycle_and_never_consults_history(r
     monkeypatch.setattr(store_read, "build_task_history", lambda *a: read_calls.append(a) or [])
     store = Store(open_store("sqlite:///:memory:", datetime.now(UTC).isoformat()))
     ctx = _budget_ctx(repo, cart, store)
-    inv = _lifecycle_invocation(
+    inv = lifecycle_invocation(
         ctx, {"id": "t1-probe", "surfaces": ["a.py"], "budget_usd": 2.0}, body="", fix_attempts=None
     )
     assert read_calls == []
@@ -2376,16 +2376,16 @@ def test_an_unbudgeted_item_gets_a_history_backed_estimate(repo, cart) -> None:
             (f"c{i}", "past-run", i, "p1", f"t{i}", "build", "sonnet", "mid", cost, 1, 1, "2026-09-01T00:00:00Z"),
         )
     ctx = _budget_ctx(repo, cart, store, date="2026-09-28")
-    inv = _lifecycle_invocation(ctx, {"id": "t1-probe", "surfaces": ["a.py"]}, body="", fix_attempts=None)
+    inv = lifecycle_invocation(ctx, {"id": "t1-probe", "surfaces": ["a.py"]}, body="", fix_attempts=None)
     expected, _ = estimate_budget(history, str(repo), 1)
     assert inv.args["build_budget_usd"] == expected
     assert inv.args["build_budget_source"] == "estimate"
 
 
 def test_a_repo_without_the_file_gets_only_the_cartridges_checks(repo, cart) -> None:
-    from harness.epic import _Ctx
+    from harness.epic import Ctx
 
-    ctx = _Ctx(
+    ctx = Ctx(
         repo=repo, cartridge=cart, runner=None, specs={}, run_id="r", date="d",
         max_parallel=1, ledger_path=Path("/tmp/ledger.jsonl"), provider_profile="p",
         runs_dir=Path("/tmp/runs"), worktree_root=Path("/tmp/worktrees"), assume=None,
@@ -2448,7 +2448,7 @@ def test_an_unverified_quarantine_keeps_the_patch_and_records_it_kept(repo, cart
 def test_a_worktree_that_cannot_be_opened_fails_the_phase_not_a_task(repo, cart, tmp_path, monkeypatch) -> None:
     """`infra` is the caller's own branch: no task-grain entry, the phase itself is marked."""
     monkeypatch.setattr(
-        "harness.epic._open_phase_worktree", lambda ctx, phase, base_ref, parents=(), refs=None: (False, "boom", False)
+        "harness.epic.open_phase_worktree", lambda ctx, phase, base_ref, parents=(), refs=None: (False, "boom", False)
     )
     result, _ = drive(repo, cart, tmp_path, work=initiative(two_phases=False))
 
@@ -2467,19 +2467,19 @@ def test_open_phase_worktree_prunes_a_stale_registration_before_opening(repo, ca
     """
     import shutil
 
-    from harness.epic import _Ctx, _open_phase_worktree
+    from harness.epic import Ctx, open_phase_worktree
 
-    ctx = _Ctx(
+    ctx = Ctx(
         repo=repo, cartridge=cart, runner=None, specs={}, run_id="r", date="d",
         max_parallel=1, ledger_path=tmp_path / "ledger.jsonl", provider_profile="p",
         runs_dir=tmp_path / "runs", worktree_root=tmp_path / "worktrees", assume=None,
         fix_attempts=None, initiative_id="demo-initiative", default_ref="main",
     )
-    ok, detail, _ = _open_phase_worktree(ctx, "p1-foundations", "main")
+    ok, detail, _ = open_phase_worktree(ctx, "p1-foundations", "main")
     assert ok, detail
     shutil.rmtree(ctx.phase_worktree("p1-foundations"))
 
-    ok, detail, reused = _open_phase_worktree(ctx, "p1-foundations", "main")
+    ok, detail, reused = open_phase_worktree(ctx, "p1-foundations", "main")
     assert ok, detail
     assert reused is True
 
@@ -2771,7 +2771,7 @@ def test_a_ready_task_builds_beside_an_approved_unlanded_sibling(repo, cart, tmp
 def test_a_phase_whose_unlanded_commits_are_all_done_is_recreated_not_rebased(repo, cart, tmp_path, monkeypatch) -> None:
     _stale_branch_with_two_task_commits(repo, cart, tmp_path)
     rebases: list[str] = []
-    monkeypatch.setattr(epic_module, "_rebase", lambda *a: rebases.append("called") or (True, ""))
+    monkeypatch.setattr(epic_module, "rebase_phase_branch", lambda *a: rebases.append("called") or (True, ""))
     result, _ = drive(repo, cart, tmp_path, work=_with_states(t1="done", t2="done"), run_id="epic-2")
     assert "recreated" in result["phases"][0]
     assert rebases == [] and "exit_code" not in result
@@ -2922,8 +2922,8 @@ def test_blocking_commits_names_each_task_once_with_the_state_read() -> None:
 def test_a_phase_of_done_and_approved_commits_is_rebased_and_proceeds(repo, cart, tmp_path, monkeypatch) -> None:
     _stale_branch_with_two_task_commits(repo, cart, tmp_path)
     rebases: list[str] = []
-    real = epic_module._rebase
-    monkeypatch.setattr(epic_module, "_rebase", lambda *a: rebases.append("called") or real(*a))
+    real = epic_module.rebase_phase_branch
+    monkeypatch.setattr(epic_module, "rebase_phase_branch", lambda *a: rebases.append("called") or real(*a))
     result, _ = drive(repo, cart, tmp_path, work=_with_states(t1="done", t2="approved"), run_id="epic-2")
     assert rebases == ["called"]
     assert result["phases"][0]["rebased"] is True
@@ -2946,9 +2946,9 @@ def test_a_rebase_conflict_aborts_and_quarantines_the_phase(repo, cart, tmp_path
 
 
 def test_a_merge_conflict_quarantines_as_infra_with_a_harness_cause(repo, cart, tmp_path, store, monkeypatch) -> None:
-    real = epic_module._git
+    real = epic_module.git_in
     monkeypatch.setattr(
-        epic_module, "_git",
+        epic_module, "git_in",
         lambda *a, **k: (False, "CONFLICT (content)") if "merge" in a and "--no-ff" in a else real(*a, **k),
     )
     result, _ = drive(repo, cart, tmp_path, work=initiative(two_phases=False), store=store)
@@ -3752,8 +3752,8 @@ def test_a_trim_that_fails_a_configured_check_is_refused_and_the_branch_is_untou
 
 def test_a_tasks_tier_map_rides_the_lifecycle_invocation_and_no_map_is_empty() -> None:
     ctx = type("Ctx", (), {"date": "2026-09-24", "cartridge": {}})()
-    tiered = _lifecycle_invocation(ctx, {"id": "t1", "tier": {"build": "deep"}}, body="", fix_attempts=None)
-    plain = _lifecycle_invocation(ctx, {"id": "t2"}, body="", fix_attempts=None)
+    tiered = lifecycle_invocation(ctx, {"id": "t1", "tier": {"build": "deep"}}, body="", fix_attempts=None)
+    plain = lifecycle_invocation(ctx, {"id": "t2"}, body="", fix_attempts=None)
     assert tiered.args["tier"] == {"build": "deep"}
     assert plain.args["tier"] == {}
 
@@ -3875,7 +3875,7 @@ def test_a_pause_set_just_before_the_apply_arm_holds_its_own_runner_call(repo, c
     # The pause is set the first time `_execute` runs, i.e. at the batch's own node
     # boundary — well after the lifecycle build/review graphs have already finished —
     # so only `_execute`'s own wait, not the earlier pre-batch one, can be what holds it.
-    original_execute = epic_module._execute
+    original_execute = epic_module.execute_cleared
     armed: list[bool] = []
 
     def armed_execute(*args, **kwargs):
@@ -3884,7 +3884,7 @@ def test_a_pause_set_just_before_the_apply_arm_holds_its_own_runner_call(repo, c
             set_paused(store.conn, run_id, _now())
         return original_execute(*args, **kwargs)
 
-    monkeypatch.setattr(epic_module, "_execute", armed_execute)
+    monkeypatch.setattr(epic_module, "execute_cleared", armed_execute)
 
     runner = Runner({t: new_file_patch(f"{t}.txt") for t in TASK_IDS})
     original_run = runner.run
@@ -3989,7 +3989,7 @@ def test_the_fence_is_re_checked_after_the_pause_wait_and_a_lost_lease_blocks_th
         assert release(store.conn, LEASE, run_id, lease.epoch)
 
     monkeypatch.setattr(epic_module, "time", _FakeTime(on_sleep))
-    original_execute = epic_module._execute
+    original_execute = epic_module.execute_cleared
     armed: list[bool] = []
 
     def armed_execute(*args, **kwargs):
@@ -3998,7 +3998,7 @@ def test_the_fence_is_re_checked_after_the_pause_wait_and_a_lost_lease_blocks_th
             set_paused(store.conn, run_id, _now())
         return original_execute(*args, **kwargs)
 
-    monkeypatch.setattr(epic_module, "_execute", armed_execute)
+    monkeypatch.setattr(epic_module, "execute_cleared", armed_execute)
     runner = Runner({t: new_file_patch(f"{t}.txt") for t in TASK_IDS})
     original_run = runner.run
 
@@ -4032,7 +4032,7 @@ def _drive_to_a_signal_exit(repo, cart, tmp_path, store, monkeypatch, run_id: st
             assert acquire(store.conn, LEASE, "other", _now(), 3600, steal=True).ok
         raise SystemExit(143)
 
-    monkeypatch.setattr(epic_module, "_wait_if_paused", signalled)
+    monkeypatch.setattr(epic_module, "wait_if_paused_here", signalled)
     with pytest.raises(SystemExit):
         drive(
             repo, cart, tmp_path, work=initiative(two_phases=False), store=store,
@@ -4175,7 +4175,7 @@ def test_a_stale_epoch_phase_records_no_manifest_record(repo, cart, tmp_path, st
 
 def test_a_quarantine_after_the_lease_is_taken_over_records_no_attempt(repo, cart, tmp_path, store, monkeypatch) -> None:
     held = acquire(store.conn, LEASE, "a", _now(), 3600).epoch
-    _taken_over_during(monkeypatch, store, "_build_task", held)
+    _taken_over_during(monkeypatch, store, "build_task", held)
     patches = {"t1-probe": new_file_patch("t1-probe.txt", "broken"), "t2-bench": new_file_patch("t2-bench.txt")}
     result, _ = drive(
         repo, cart, tmp_path, work=initiative(two_phases=False), patches=patches, store=store, epoch=held,
@@ -4193,7 +4193,7 @@ def test_a_lease_lost_at_the_ledger_tail_blocks_the_phase_and_its_dependents(
     repo, cart, tmp_path, store, monkeypatch
 ) -> None:
     held = acquire(store.conn, LEASE, "a", _now(), 3600).epoch
-    _taken_over_during(monkeypatch, store, "_phase_status", held)
+    _taken_over_during(monkeypatch, store, "phase_status", held)
     result, _ = drive(repo, cart, tmp_path, store=store, epoch=held, lease_name=LEASE)
 
     p1, p2 = result["phases"]
@@ -4311,7 +4311,7 @@ def test_a_connection_dropped_at_exit_that_recovers_inside_the_window_records_en
     store.record_run({"run_id": "epic-exit"}, {})
     events = _flaky_store_writes(monkeypatch, exit_fails=2)
     clock, reconnects = _FakeClock(), []
-    retry = epic_module._StoreRetry(reconnect=lambda: reconnects.append(1), clock=clock, sleep=clock.sleep)
+    retry = epic_module.StoreRetry(reconnect=lambda: reconnects.append(1), clock=clock, sleep=clock.sleep)
 
     result, _ = drive(
         repo, cart, tmp_path, work=initiative(two_phases=False), store=store, run_id="epic-exit", retry=retry
@@ -4329,7 +4329,7 @@ def test_a_connection_that_never_recovers_gives_up_after_the_window_with_the_exi
 ) -> None:
     events = _flaky_store_writes(monkeypatch, exit_fails=-1)
     clock = _FakeClock()
-    retry = epic_module._StoreRetry(clock=clock, sleep=clock.sleep)
+    retry = epic_module.StoreRetry(clock=clock, sleep=clock.sleep)
 
     with caplog.at_level(logging.WARNING, logger=epic_module.__name__):
         result, _ = drive(
@@ -4350,7 +4350,7 @@ def test_a_task_mirror_that_exhausts_its_window_still_leads_to_an_exit_record_at
     store.record_run({"run_id": "epic-mirror"}, {})
     events = _flaky_store_writes(monkeypatch, mirror_fails=-1)
     clock = _FakeClock()
-    retry = epic_module._StoreRetry(clock=clock, sleep=clock.sleep)
+    retry = epic_module.StoreRetry(clock=clock, sleep=clock.sleep)
 
     with caplog.at_level(logging.WARNING, logger=epic_module.__name__):
         result, _ = drive(
@@ -4372,7 +4372,7 @@ def test_a_pause_clear_that_exhausts_its_window_does_not_skip_the_exit_record(
     store.record_run({"run_id": "epic-pause"}, {})
     events = _flaky_store_writes(monkeypatch, pause_fails=-1)
     clock = _FakeClock()
-    retry = epic_module._StoreRetry(clock=clock, sleep=clock.sleep)
+    retry = epic_module.StoreRetry(clock=clock, sleep=clock.sleep)
 
     drive(repo, cart, tmp_path, work=initiative(two_phases=False), store=store, run_id="epic-pause", retry=retry)
 
@@ -4418,7 +4418,7 @@ def test_a_quarantine_and_a_phase_survive_one_lost_connection_per_store_write(
 ) -> None:
     events = _fail_each_write_once(monkeypatch)
     clock = _FakeClock()
-    retry = epic_module._StoreRetry(clock=clock, sleep=clock.sleep)
+    retry = epic_module.StoreRetry(clock=clock, sleep=clock.sleep)
     patches = {"t1-probe": new_file_patch("t1-probe.txt", "broken"), "t2-bench": new_file_patch("t2-bench.txt")}
 
     drive(repo, cart, tmp_path, work=initiative(two_phases=False), patches=patches, store=store, retry=retry)
@@ -4448,7 +4448,7 @@ def test_a_full_epic_survives_one_lost_connection_per_write_and_the_host_ledger_
 
     monkeypatch.setattr(epic_module, "assert_epoch", flaky_fence)
     clock = _FakeClock()
-    retry = epic_module._StoreRetry(clock=clock, sleep=clock.sleep)
+    retry = epic_module.StoreRetry(clock=clock, sleep=clock.sleep)
     lease = acquire(store.conn, LEASE, "a", _now(), 3600)
 
     patches = {"t1-probe": new_file_patch("t1-probe.txt", "broken"), "t2-bench": new_file_patch("t2-bench.txt")}
@@ -4522,6 +4522,6 @@ def test_a_store_retry_for_a_store_reconnects_that_stores_own_connection(monkeyp
     reopened: list[object] = []
     monkeypatch.setattr(epic_module, "reopen_connection", reopened.append)
 
-    epic_module._StoreRetry.for_store(store).reconnect()
+    epic_module.StoreRetry.for_store(store).reconnect()
 
     assert reopened == [store.conn]

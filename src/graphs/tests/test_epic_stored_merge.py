@@ -22,7 +22,7 @@ PATCH = "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-a\n+b\n
 def _ctx(store_conn, repo: Path):
     fields = {
         "store": Store(store_conn), "initiative_id": INITIATIVE, "run_id": "run-1", "work_state": "store",
-        "epoch": None, "cartridge": {}, "runner": None, "retry": epic._StoreRetry(), "repo": repo,
+        "epoch": None, "cartridge": {}, "runner": None, "retry": epic.StoreRetry(), "repo": repo,
         "items_lock": threading.Lock(),
         "phase_branch": staticmethod(lambda phase: "main"), "scratch_branch": staticmethod(lambda task: f"scratch/{task}"),
     }  # fmt: skip
@@ -61,13 +61,13 @@ def _repo(tmp_path: Path) -> tuple[Path, list[str]]:
 
 def _merge_in_run_n(ctx, item, commit, monkeypatch):
     """The state_move slot of a task whose merge already made `commit`, as run N's batch executes it."""
-    monkeypatch.setattr(epic, "_unkept_work", lambda *_: None)
-    state = epic._Execution(
+    monkeypatch.setattr(epic, "unkept_work", lambda *_: None)
+    state = epic.Execution(
         landed={item["id"]: True}, merged={item["id"]: True}, moved={}, quarantined=[],
         commits={item["id"]: commit}, builds={item["id"]: {"patch": PATCH, "decisions": ["use b"]}},
     )  # fmt: skip
     move = {"kind": "state_move", "target": item["id"]}
-    epic._execute(ctx, move, slot="state_move", subject=item["id"], phase="p1", state=state, by_id={item["id"]: item})
+    epic.execute_cleared(ctx, move, slot="state_move", subject=item["id"], phase="p1", state=state, by_id={item["id"]: item})
     return state
 
 
@@ -86,7 +86,7 @@ def test_a_parent_merged_in_run_n_lets_its_dependent_start_in_run_n_plus_1(store
     row = {r["task_id"]: r for r in read.work_items(store_conn, INITIATIVE)}["t1"]
     assert (row["state"], row["merged_commit"], row["handoff"]["commit"]) == ("approved", first, first)
     run_n_plus_1 = _files(tmp_path, ("t1", []), ("t2", ["t1"]))
-    epic._mirror_read(ctx, run_n_plus_1)
+    epic.mirror_read(ctx, run_n_plus_1)
     assert _ready(run_n_plus_1) == ["t2"]
     assert run_n_plus_1[0]["handoff"]["files_changed"] == ["x.py"]
 
@@ -99,9 +99,9 @@ def test_a_restart_skips_merged_tasks_and_expects_their_commit_on_the_branch(sto
         _put(ctx, item, "ready")
         _merge_in_run_n(ctx, item, second if item["id"] == "t2" else first, monkeypatch)
     restart = _files(tmp_path, ("t1", []), ("t2", []))
-    epic._mirror_read(ctx, restart)
+    epic.mirror_read(ctx, restart)
     quarantined: list = []
-    epic._quarantine_missing_merges(ctx, "p1", restart, quarantined)
+    epic.quarantine_missing_merges(ctx, "p1", restart, quarantined)
     assert (_ready(restart), quarantined) == ([], [])
     assert [i["state"] for i in restart] == ["approved", "approved"]
 
@@ -115,9 +115,9 @@ def test_one_missing_commit_quarantines_that_task_and_leaves_the_others_merged(s
         _merge_in_run_n(ctx, item, commit, monkeypatch)
     before = {r["task_id"]: r for r in read.work_items(store_conn, INITIATIVE)}
     restart = _files(tmp_path, ("t1", []), ("t2", []), ("t3", []))
-    epic._mirror_read(ctx, restart)
+    epic.mirror_read(ctx, restart)
     quarantined: list = []
-    epic._quarantine_missing_merges(ctx, "p1", restart, quarantined)
+    epic.quarantine_missing_merges(ctx, "p1", restart, quarantined)
     after = {r["task_id"]: r for r in read.work_items(store_conn, INITIATIVE)}
     assert [q["id"] for q in quarantined] == ["t2"]
     assert f"merged commit {'0' * 40} is not on main" in quarantined[0]["reason"]
@@ -162,9 +162,9 @@ def test_a_rebased_twin_of_the_merged_commit_is_not_quarantined(store_conn, tmp_
     _merge_in_run_n(ctx, item, merged, monkeypatch)
     before = {r["task_id"]: r for r in read.work_items(store_conn, INITIATIVE)}
     restart = _files(tmp_path, ("t1", []))
-    epic._mirror_read(ctx, restart)
+    epic.mirror_read(ctx, restart)
     quarantined: list = []
-    epic._quarantine_missing_merges(ctx, "p1", restart, quarantined)
+    epic.quarantine_missing_merges(ctx, "p1", restart, quarantined)
     after = {r["task_id"]: r for r in read.work_items(store_conn, INITIATIVE)}
     assert quarantined == []
     assert (restart[0]["state"], restart[0]["merged"]) == ("approved", True)
@@ -211,7 +211,7 @@ def _merged(ctx, tmp_path, monkeypatch, *pairs: tuple[str, str]) -> list[dict]:
         _put(ctx, item, "ready")
         _merge_in_run_n(ctx, item, commit, monkeypatch)
     restart = _files(tmp_path, *((task, []) for task, _ in pairs))
-    epic._mirror_read(ctx, restart)
+    epic.mirror_read(ctx, restart)
     return restart
 
 
@@ -224,7 +224,7 @@ def test_a_merged_commit_only_on_origin_is_fetched_and_not_quarantined(store_con
     ctx = _fault_ctx(store_conn, repo)
     restart = _merged(ctx, tmp_path, monkeypatch, ("t1", newest))
     quarantined: list = []
-    epic._quarantine_missing_merges(ctx, "p1", restart, quarantined)
+    epic.quarantine_missing_merges(ctx, "p1", restart, quarantined)
     assert quarantined == []
     assert (restart[0]["state"], restart[0]["merged"]) == ("approved", True)
     assert _states(store_conn) == {"t1": "approved"}
@@ -237,7 +237,7 @@ def test_a_fetch_that_fails_quarantines_nothing_and_raises_one_fault(store_conn,
     restart = _merged(ctx, tmp_path, monkeypatch, ("t1", "1" * 40), ("t2", "2" * 40))
     quarantined: list = []
     with caplog.at_level(logging.WARNING, logger=epic.__name__):
-        paused = epic._quarantine_missing_merges(ctx, "p1", restart, quarantined)
+        paused = epic.quarantine_missing_merges(ctx, "p1", restart, quarantined)
     assert quarantined == []
     assert paused is not None and paused.startswith("merged commits of t1, t2 could not be checked")
     assert [(i["state"], i["merged"]) for i in restart] == [("approved", True), ("approved", True)]
@@ -253,7 +253,7 @@ def test_a_commit_absent_locally_and_on_origin_still_quarantines(store_conn, tmp
     ctx = _fault_ctx(store_conn, repo)
     restart = _merged(ctx, tmp_path, monkeypatch, ("t1", "0" * 40))
     quarantined: list = []
-    epic._quarantine_missing_merges(ctx, "p1", restart, quarantined)
+    epic.quarantine_missing_merges(ctx, "p1", restart, quarantined)
     assert [q["id"] for q in quarantined] == ["t1"]
     assert quarantined[0]["reason"].startswith(f"merged commit {'0' * 40} is not on main; t1 was approved and merged")
     assert ctx.merge_fetch_faults == set()
@@ -264,7 +264,7 @@ def test_a_fetch_that_fails_pauses_the_phase_instead_of_reading_the_commit_as_pr
     shutil.rmtree(origin)
     ctx = _fault_ctx(store_conn, repo)
     restart = _merged(ctx, tmp_path, monkeypatch, ("t1", "1" * 40))
-    paused = epic._quarantine_missing_merges(ctx, "p1", restart, [])
+    paused = epic.quarantine_missing_merges(ctx, "p1", restart, [])
     assert paused is not None
     assert str(repo) in paused and "not built this run" in paused
 
@@ -277,6 +277,6 @@ def test_a_repository_whose_fetch_already_failed_is_not_fetched_again(store_conn
     fetches: list[str] = []
     real = epic.fetch_branch
     monkeypatch.setattr(epic, "fetch_branch", lambda r, b: fetches.append(b) or real(r, b))
-    assert epic._quarantine_missing_merges(ctx, "p1", restart, []) is not None
-    assert epic._quarantine_missing_merges(ctx, "p1", restart, []) is not None
+    assert epic.quarantine_missing_merges(ctx, "p1", restart, []) is not None
+    assert epic.quarantine_missing_merges(ctx, "p1", restart, []) is not None
     assert len(fetches) == 1  # each fetch can wait 120 s; a faulted repository is not asked again this run

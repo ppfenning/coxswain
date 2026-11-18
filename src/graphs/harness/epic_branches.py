@@ -18,9 +18,9 @@ from harness import bounded_proc, landing_git, landing_ops, landing_store
 from harness.check_gate import gate_commands, repo_gate_lock
 from harness.checks import outside_surface_files, run_checks
 from harness.digest import build_digest
-from harness.epic_context import _Ctx, _git
-from harness.epic_phase_branch import _branch_exists, _publish_branch
-from harness.epic_records import _END_WRITE_WINDOW_S, _ctx_store, _now
+from harness.epic_context import Ctx, git_in
+from harness.epic_phase_branch import branch_exists, publish_branch
+from harness.epic_records import END_WRITE_WINDOW_S, ctx_store, utc_now
 from harness.invoke import Invocation, invoke_graphs
 from harness.lane_pytest_tmp import lane_scratch_dir, lane_tmp_env, run_scratch_root
 from harness.lane_workers import workers_env
@@ -38,7 +38,7 @@ TRIAGE = "triage-quarantine"
 # Commits the driver makes are mechanical — it saves an applied patch and joins
 # branches, it never authors. The identity is passed with -c so a test, or a
 # machine with no global git config, needs no setup to run this.
-_IDENTITY = ("-c", "user.email=epic-swarm@invalid", "-c", "user.name=epic-swarm")
+IDENTITY = ("-c", "user.email=epic-swarm@invalid", "-c", "user.name=epic-swarm")
 
 # Seconds a `gh pr` call may run: the one value bounded_proc and the tools bounded_run share.
 _GH_TIMEOUT_SECONDS = bounded_proc.GH_TIMEOUT_SECONDS
@@ -49,7 +49,7 @@ def opens_pr(land_at: str, grain: str) -> bool:
     return grain == "task" and land_at == "task"
 
 
-_DRAFT_KINDS = frozenset({"draft_pr_create", "self_modification"})
+DRAFT_KINDS = frozenset({"draft_pr_create", "self_modification"})
 
 # How much of a task's patch the validators see. All of it for any real task;
 # the bound only stops a pathological diff from swamping the phase prompt.
@@ -57,26 +57,26 @@ PATCH_FOR_VALIDATION_CHARS = 120_000
 
 # Two recorded attempts and a third run is refused rather than tried again.
 # A refusal past this point is not itself an attempt, so it must not grow the
-# count it is enforcing — see `_run_phase`, which quarantines these tasks with
-# a plain `quarantined.append` and `_quarantine_row` rather than `_quarantine_task`.
+# count it is enforcing — see `run_phase_tasks`, which quarantines these tasks with
+# a plain `quarantined.append` and `quarantine_row` rather than `quarantine_task`.
 ATTEMPT_CAP = 2
 
 
 # docs/design/landing-model.md §5: the existing style_pass brief, plus the one
 # sentence that scopes it to a whole phase rather than one task's diff.
-_STYLE_PASS_PROMPT = (
+STYLE_PASS_PROMPT = (
     "Make the narrow style edit an approved diff still needs, or return nothing. "
     "Remove duplication the tickets introduced separately; remove shims whose exit "
     "condition the phase has met."
 )
 
-_CHECK_FIX_PROMPT = (
+CHECK_FIX_PROMPT = (
     "The diff below was approved, then a configured check failed on it. Make the smallest "
     "edit that fixes the failure shown, as a unified diff against the tree with the "
     "approved diff already applied, or return nothing."
 )
 
-_STYLE_PASS_SCHEMA = {
+STYLE_PASS_SCHEMA = {
     "type": "object",
     "properties": {"patch": {"type": "string"}},
     "required": ["patch"],
@@ -84,7 +84,7 @@ _STYLE_PASS_SCHEMA = {
 }
 
 
-def _carry_forward(body: str, attempts: list[dict[str, Any]], patch: str | None, *, limit: int) -> str:
+def carry_forward(body: str, attempts: list[dict[str, Any]], patch: str | None, *, limit: int) -> str:
     """Append a task's own quarantine history to its ticket body, as a reference.
 
     Pure: no file, no clock. With no attempts the body is untouched — most
@@ -122,12 +122,12 @@ RESUME_NOTE = (
 )
 
 
-def _resume_body(body: str, attempts: list[dict[str, Any]], sha: str) -> str:
+def resume_body(body: str, attempts: list[dict[str, Any]], sha: str) -> str:
     """Pure. The ticket body for a rebuild that starts from its last attempt: the reasons, and where that work is."""
-    return "\n".join((_carry_forward(body, attempts, None, limit=0), "", RESUME_NOTE.format(sha=sha[:12])))
+    return "\n".join((carry_forward(body, attempts, None, limit=0), "", RESUME_NOTE.format(sha=sha[:12])))
 
 
-def _attempt_tree(ctx: _Ctx, phase: str, task: str, patch: str) -> tuple[Path, str] | None:
+def attempt_tree(ctx: Ctx, phase: str, task: str, patch: str) -> tuple[Path, str] | None:
     """Edge. A detached worktree at the phase tip holding the task's last attempt, applied in full and committed.
 
     (the tree, the commit). None when the attempt no longer applies to the phase as it stands now: the rebuild then
@@ -135,38 +135,38 @@ def _attempt_tree(ctx: _Ctx, phase: str, task: str, patch: str) -> tuple[Path, s
     tree = ctx.worktree_root / ctx.run_id / f"{phase}--attempt--{task}"
     tree.parent.mkdir(parents=True, exist_ok=True)
     with registry_lock(ctx.repo):
-        ok, _ = _git("-C", str(ctx.repo), "worktree", "add", "--detach", str(tree), ctx.phase_branch(phase))
+        ok, _ = git_in("-C", str(ctx.repo), "worktree", "add", "--detach", str(tree), ctx.phase_branch(phase))
     if not ok:
         return None
     applied, _ = apply_patch(patch, tree)
-    staged = applied and _git("-C", str(tree), "add", "-A")[0]
-    committed = staged and _git(
-        *_IDENTITY, "-C", str(tree), "commit", "-q", "--no-verify", "-m", f"epic {ctx.run_id}: previous attempt of {task} (not approved)"
+    staged = applied and git_in("-C", str(tree), "add", "-A")[0]
+    committed = staged and git_in(
+        *IDENTITY, "-C", str(tree), "commit", "-q", "--no-verify", "-m", f"epic {ctx.run_id}: previous attempt of {task} (not approved)"
     )[0]
-    ok, sha = _git("-C", str(tree), "rev-parse", "HEAD") if committed else (False, "")
+    ok, sha = git_in("-C", str(tree), "rev-parse", "HEAD") if committed else (False, "")
     if not ok:
         remove_worktree(ctx.repo, tree)
         return None
     return tree, sha
 
 
-def _compose_with_attempt(ctx: _Ctx, phase: str, tree: Path, patch: str) -> str | None:
+def _compose_with_attempt(ctx: Ctx, phase: str, tree: Path, patch: str) -> str | None:
     """Edge. The last attempt and the rebuild's change as one patch against the phase tip, which is what gets applied,
     checked and merged. None when the change does not apply to the attempt tree it was written against."""
-    if not apply_patch(patch, tree)[0] or not _git("-C", str(tree), "add", "-A")[0]:
+    if not apply_patch(patch, tree)[0] or not git_in("-C", str(tree), "add", "-A")[0]:
         return None
-    ok, combined = _git("-C", str(tree), "diff", "--cached", "--binary", ctx.phase_branch(phase))
+    ok, combined = git_in("-C", str(tree), "diff", "--cached", "--binary", ctx.phase_branch(phase))
     return combined + "\n" if ok and combined.strip() else None
 
 
-def _invoke_from_attempt(
-    ctx: _Ctx, phase: str, inv: Invocation, tree: Path, attempt_sha: str, *, run_id: str
+def invoke_from_attempt(
+    ctx: Ctx, phase: str, inv: Invocation, tree: Path, attempt_sha: str, *, run_id: str
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Edge. Run one rebuild with the runner reading the attempt's tree, then make its result's patch the whole change.
 
     The record keeps both: `patch` is what is applied to the phase tip, `change` is what the rebuild did to the last
     attempt. A change that does not apply to the tree it was written against is left as the builder returned it."""
-    view = _PhaseRunner(
+    view = PhaseRunner(
         ctx.shared_runner if ctx.shared_runner is not None else ctx.runner, tree, build_digest(tree) or None,
         [str(c.get("cmd")) for c in ctx.checks if c.get("cmd")], gate_commands(ctx.cartridge.get("landing_areas") or {}),
     )
@@ -206,7 +206,7 @@ def previous_objection_block(result: Mapping[str, Any] | None, cap: int = PREVIO
     return f"{PREVIOUS_OBJECTION_HEADING}\n{text if len(text) <= cap else text[:cap] + '... truncated'}"
 
 
-def _permit_outside_surfaces(body: str, surfaces: Sequence[str], reason: str) -> tuple[str, list[str]]:
+def permit_outside_surfaces(body: str, surfaces: Sequence[str], reason: str) -> tuple[str, list[str]]:
     """Body and surfaces with the files named by an outside-surfaces `reason` added, once each.
 
     Original surfaces keep their order and come first. Any other reason returns both unchanged.
@@ -224,21 +224,21 @@ def _permit_outside_surfaces(body: str, surfaces: Sequence[str], reason: str) ->
     return "\n".join((body, *section)), merged
 
 
-def _push_review_branch(ctx: _Ctx, task: str) -> tuple[bool, str]:
+def push_review_branch(ctx: Ctx, task: str) -> tuple[bool, str]:
     """Push the task's scratch branch to origin as `review/<initiative>/<task>`."""
     return _push_review_ref(ctx, ctx.scratch_branch(task), task)
 
 
-def _push_review_ref(ctx: _Ctx, local: str, name: str) -> tuple[bool, str]:
+def _push_review_ref(ctx: Ctx, local: str, name: str) -> tuple[bool, str]:
     """Push the local branch `local` to origin as `review/<initiative>/<name>`."""
-    return _git("-C", str(ctx.repo), "push", "origin", f"{local}:refs/heads/review/{ctx.initiative_id}/{name}")
+    return git_in("-C", str(ctx.repo), "push", "origin", f"{local}:refs/heads/review/{ctx.initiative_id}/{name}")
 
 
 def _landing_stamp() -> str:
     return landing_ops.stamp(datetime.now(UTC))
 
 
-def _initiative_branch_for(ctx: _Ctx, initiative: Mapping[str, Any]) -> str:
+def _initiative_branch_for(ctx: Ctx, initiative: Mapping[str, Any]) -> str:
     """The initiative branch's name: the landing record's, else a `pr/<initiative>` an earlier release left, else the
     cartridge's template (default `init/<id>`). A template field the initiative lacks refuses the run by name."""
     conn = ctx.store.conn if ctx.store is not None else None
@@ -254,12 +254,12 @@ def _initiative_branch_for(ctx: _Ctx, initiative: Mapping[str, Any]) -> str:
         raise ValueError(f"{ctx.initiative_id}: {exc}") from exc
 
 
-def _start_initiative(ctx: _Ctx, initiative: Mapping[str, Any]) -> str:
+def start_initiative(ctx: Ctx, initiative: Mapping[str, Any]) -> str:
     """Edge. Start the initiative's landing record on first use (cutting its branch from the parent) and return the
     branch name. A record that exists is kept as it is: the parent it names no longer floats."""
     name = _initiative_branch_for(ctx, initiative)
     # Another host may have cut it and merged phases into it: its copy on origin comes first, forward only.
-    _fetch_phase_branches(ctx, [name])
+    fetch_phase_branches(ctx, [name])
     if ctx.store is None:
         tip, _, why = landing_git.ensure_branch(ctx.repo, name, ctx.default_ref)
         if tip is None:
@@ -267,20 +267,20 @@ def _start_initiative(ctx: _Ctx, initiative: Mapping[str, Any]) -> str:
         return name
     record, why = ctx.retry.write(
         lambda: landing_ops.start_record(
-            _ctx_store(ctx).conn, ctx.repo, initiative=ctx.initiative_id, branch=name,
+            ctx_store(ctx).conn, ctx.repo, initiative=ctx.initiative_id, branch=name,
             parent=ctx.default_ref.removeprefix("origin/"), parent_ref=ctx.default_ref, now=_landing_stamp(),
             land_at=ctx.land_at, epic=initiative.get("epic"),
         ),
-        _END_WRITE_WINDOW_S,
+        END_WRITE_WINDOW_S,
     )
     if record is None:
         raise RuntimeError(f"{ctx.initiative_id}: {why}")
     if resolve_push_initiative(ctx.cartridge) == "early":
-        _publish_branch(ctx, str(record["branch"]))
+        publish_branch(ctx, str(record["branch"]))
     return str(record["branch"])
 
 
-def _take_parent_forward(ctx: _Ctx) -> tuple[str, str, landing_git.Merge] | None:
+def _take_parent_forward(ctx: Ctx) -> tuple[str, str, landing_git.Merge] | None:
     """Edge. Bring the initiative branch up to its parent, under the branch lease: (parent, parent ref, what happened).
 
     The branch was cut from the parent and the parent has moved since: other initiatives landed on it. Before any phase
@@ -292,7 +292,7 @@ def _take_parent_forward(ctx: _Ctx) -> tuple[str, str, landing_git.Merge] | None
     record = landing_store.get_record(ctx.store.conn, ctx.initiative_id) or {}
     # A stacked initiative's recorded parent is the branch of the initiative below; once that one landed, its branch is
     # gone and its own parent is the one to take forward.
-    stacked = landing_record.stack_resolved_parent(record, landing_store.list_records(_ctx_store(ctx).conn)) if record else ""
+    stacked = landing_record.stack_resolved_parent(record, landing_store.list_records(ctx_store(ctx).conn)) if record else ""
     parent = stacked or ctx.default_ref.removeprefix("origin/")
     parent_ref = f"origin/{parent}" if landing_git.rev(ctx.repo, f"refs/remotes/origin/{parent}") else parent
     if landing_git.is_ancestor(ctx.repo, parent_ref, branch):
@@ -301,11 +301,11 @@ def _take_parent_forward(ctx: _Ctx) -> tuple[str, str, landing_git.Merge] | None
     try:
         merged = ctx.retry.write(
             lambda: landing_ops.take_parent_forward(
-                _ctx_store(ctx).conn, ctx.repo, initiative=ctx.initiative_id, parent_ref=parent_ref,
+                ctx_store(ctx).conn, ctx.repo, initiative=ctx.initiative_id, parent_ref=parent_ref,
                 worker=f"run:{ctx.run_id}", now=_landing_stamp(), fetch=lambda b: _fetch_initiative(ctx, b),
-                publish=(lambda b: _publish_branch(ctx, b)) if early else None,
+                publish=(lambda b: publish_branch(ctx, b)) if early else None,
             ),
-            _END_WRITE_WINDOW_S,
+            END_WRITE_WINDOW_S,
         )
     except Exception as exc:
         merged = landing_git.Merge("error", detail=f"{type(exc).__name__}: {exc}")
@@ -339,7 +339,7 @@ def _integrate_path(items: Sequence[Mapping[str, Any]], task: str) -> Path | Non
 
 
 def _file_integrate(
-    ctx: _Ctx, items: list[dict[str, Any]], parent: str, parent_ref: str, paths: Sequence[str]
+    ctx: Ctx, items: list[dict[str, Any]], parent: str, parent_ref: str, paths: Sequence[str]
 ) -> tuple[str | None, str]:
     """Edge. A ready rectify task in the `integrate` phase, as the lander files one: (its id, "") or (None, why not).
 
@@ -374,14 +374,14 @@ def _file_integrate(
     }
     path = _integrate_path(items, ident)
     try:
-        from harness import store_queue  # not module level: see `_mirror_read`
+        from harness import store_queue  # not module level: see `mirror_read`
 
         if path is not None:
             workstore.write_item(item, path)
-        store_queue.upsert(_ctx_store(ctx).conn, {
+        store_queue.upsert(ctx_store(ctx).conn, {
             "kind": "task", "initiative": ctx.initiative_id, "task_id": ident, "phase": INTEGRATE_PHASE, "state": "ready",
             "needs": [], "surfaces": [], "title": item["title"], "body": item["body"], "extra": {"id": ident, "phase": INTEGRATE_PHASE},
-            "updated_at": _now(), "updated_by": f"run:{ctx.run_id}",
+            "updated_at": utc_now(), "updated_by": f"run:{ctx.run_id}",
         })
     except Exception as exc:
         return None, f"{type(exc).__name__}: {exc}"
@@ -390,7 +390,7 @@ def _file_integrate(
     return ident, ""
 
 
-def _bring_forward(ctx: _Ctx, items: list[dict[str, Any]]) -> str | None:
+def bring_forward(ctx: Ctx, items: list[dict[str, Any]]) -> str | None:
     """Edge. Take the parent forward before any phase; why every phase but `integrate` waits this run, else None."""
     forward = _take_parent_forward(ctx)
     if forward is None:
@@ -407,7 +407,7 @@ def _bring_forward(ctx: _Ctx, items: list[dict[str, Any]]) -> str | None:
     return reason
 
 
-def _merge_checks(ctx: _Ctx, phase: str) -> landing_git.Checks | None:
+def _merge_checks(ctx: Ctx, phase: str) -> landing_git.Checks | None:
     """The level checks, to run on the merged tree when the merge joins the phase with work it has not seen."""
     checks = ctx.level_checks
     if not checks or landing_git.is_ancestor(ctx.repo, ctx.pr_branch(), ctx.phase_branch(phase)):
@@ -415,8 +415,8 @@ def _merge_checks(ctx: _Ctx, phase: str) -> landing_git.Checks | None:
 
     def run(tree: Path) -> tuple[bool, str]:
         with repo_gate_lock(ctx.repo):
-            results = run_checks(tree, checks, env=_checks_env(ctx, {}, phase, "@merge"))
-        return (not (reason := _level_failure_reason(phase, results))), reason
+            results = run_checks(tree, checks, env=checks_env(ctx, {}, phase, "@merge"))
+        return (not (reason := level_failure_reason(phase, results))), reason
 
     return run
 
@@ -428,7 +428,7 @@ def unmerged_approved(rows: Sequence[Mapping[str, Any]]) -> list[str]:
     return [str(r["id"]) for r in rows if r.get("state") == "approved" and not r.get("merged")]
 
 
-def _merge_into_initiative(ctx: _Ctx, phase: str, items: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+def merge_into_initiative(ctx: Ctx, phase: str, items: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
     """Edge. Merge one built phase into the initiative branch, through the land queue's own operation.
 
     None when the phase is not built (a task is still open) or this run has no store. A conflict or a red check comes
@@ -458,12 +458,12 @@ def _merge_into_initiative(ctx: _Ctx, phase: str, items: Sequence[Mapping[str, A
     try:
         done = ctx.retry.write(
             lambda: landing_ops.merge_phase(
-                _ctx_store(ctx).conn, ctx.repo, initiative=ctx.initiative_id, phase=phase, tasks=rows,
+                ctx_store(ctx).conn, ctx.repo, initiative=ctx.initiative_id, phase=phase, tasks=rows,
                 worker=f"run:{ctx.run_id}", now=_landing_stamp(), checks=_merge_checks(ctx, phase),
                 fetch=lambda branch: _fetch_initiative(ctx, branch),
-                publish=(lambda branch: _publish_branch(ctx, branch)) if early else None,
+                publish=(lambda branch: publish_branch(ctx, branch)) if early else None,
             ),
-            _END_WRITE_WINDOW_S,
+            END_WRITE_WINDOW_S,
         )
     except Exception as exc:
         return {"status": "error", "branch": ctx.initiative_branch, "detail": f"{type(exc).__name__}: {exc}"}
@@ -477,16 +477,16 @@ def _merge_into_initiative(ctx: _Ctx, phase: str, items: Sequence[Mapping[str, A
     }
 
 
-def _fetch_initiative(ctx: _Ctx, branch: str) -> str | None:
+def _fetch_initiative(ctx: Ctx, branch: str) -> str | None:
     """Edge. Bring the initiative branch up to origin's copy, forward only. A reason when it must not be moved here:
     origin holds commits this clone lacks and they do not fast-forward, so a merge here would fork the branch."""
-    outcome = _fetch_phase_branches(ctx, [branch]).get(branch)
+    outcome = fetch_phase_branches(ctx, [branch]).get(branch)
     if outcome is not None and outcome.kind == Kind.DIVERGED:
         return f"{branch} has diverged from origin and is not merged into here: {outcome.detail}"
     return None
 
 
-def _parent_gap(ctx: _Ctx, parent: str, items: Sequence[Mapping[str, Any]]) -> tuple[str, str] | None:
+def parent_gap(ctx: Ctx, parent: str, items: Sequence[Mapping[str, Any]]) -> tuple[str, str] | None:
     """Edge. Why the initiative branch in this clone does not hold parent phase `parent` yet; None when it does.
 
     (reason, the branch that is missing here or ""). The landing record says whether the phase merged, and git says
@@ -506,7 +506,7 @@ def _parent_gap(ctx: _Ctx, parent: str, items: Sequence[Mapping[str, Any]]) -> t
         return f"parent phase '{parent}' is not merged into {branch} yet; dependents start once it is", ""
     sha = str(entry.get("merge_sha") or "")
     if sha and not landing_git.is_ancestor(ctx.repo, sha, branch):
-        outcome = _fetch_phase_branches(ctx, [branch]).get(branch)
+        outcome = fetch_phase_branches(ctx, [branch]).get(branch)
         if not landing_git.is_ancestor(ctx.repo, sha, branch):
             origin = f" ({outcome.kind.value}{': ' + outcome.detail if outcome.detail else ''})" if outcome else ""
             return (
@@ -516,7 +516,7 @@ def _parent_gap(ctx: _Ctx, parent: str, items: Sequence[Mapping[str, Any]]) -> t
     return None
 
 
-def _fetch_phase_branches(ctx: _Ctx, branches: Sequence[str]) -> dict[str, FetchOutcome]:
+def fetch_phase_branches(ctx: Ctx, branches: Sequence[str]) -> dict[str, FetchOutcome]:
     """Make each of `branches` a plain local branch where origin holds it; a branch already local only moves forward."""
     outcomes: dict[str, FetchOutcome] = {}
     for branch in branches:
@@ -528,19 +528,19 @@ def _fetch_phase_branches(ctx: _Ctx, branches: Sequence[str]) -> dict[str, Fetch
     return outcomes
 
 
-def _await_launched_branch(ctx: _Ctx, branch: str, outcome: FetchOutcome, *, patience: float = 60.0) -> FetchOutcome:
+def _await_launched_branch(ctx: Ctx, branch: str, outcome: FetchOutcome, *, patience: float = 60.0) -> FetchOutcome:
     """A branch missing everywhere while its phase is launched and unfinished is still being cut: wait for the cut, not the phase."""
     owner = ctx.launched.get(branch.removeprefix(f"epic/{ctx.initiative_id}/"))
     if outcome.kind != Kind.MISSING_EVERYWHERE or owner is None:
         return outcome
     deadline = time.monotonic() + patience
-    while not owner.done() and not _branch_exists(ctx, branch) and time.monotonic() < deadline:
+    while not owner.done() and not branch_exists(ctx, branch) and time.monotonic() < deadline:
         time.sleep(0.05)
     return fetch_branch(ctx.repo, branch)
 
 
-def _fetch_or_stop(
-    ctx: _Ctx,
+def fetch_or_stop(
+    ctx: Ctx,
     record: dict[str, Any],
     fetch: Sequence[str],
     required: Sequence[str],
@@ -552,21 +552,21 @@ def _fetch_or_stop(
     The needed branches are `required`, plus the parents' when a `loose` ref (a commit id) is not in this repo,
     since that commit can only come from a parent's branch. A parent nothing is needed from is fetched, never demanded.
     """
-    outcomes = _fetch_phase_branches(ctx, fetch)
+    outcomes = fetch_phase_branches(ctx, fetch)
     # A diverged branch kept its local tip; the record names origin's side ref so the divergence is never silent.
     diverged = [o.detail for o in outcomes.values() if o.kind == Kind.DIVERGED]
     if diverged:
         record["phase_branch_diverged"] = diverged
-    unresolved = any(not _git("-C", str(ctx.repo), "rev-parse", "--verify", "--quiet", f"{r}^{{commit}}")[0] for r in loose)
+    unresolved = any(not git_in("-C", str(ctx.repo), "rev-parse", "--verify", "--quiet", f"{r}^{{commit}}")[0] for r in loose)
     demanded: list[str] = list(dict.fromkeys([*required, *(parent_branches if unresolved else [])]))
     outcomes = {b: _await_launched_branch(ctx, b, o) if b in demanded else o for b, o in outcomes.items()}
     for branch in demanded:
         if outcomes[branch].kind in (Kind.MISSING_EVERYWHERE, Kind.FETCH_FAILED):
-            return _missing_branch_phase(record, branch, missing_branch_cause(branch, outcomes[branch]))
+            return missing_branch_phase(record, branch, missing_branch_cause(branch, outcomes[branch]))
     return None
 
 
-def _phase_branches_to_fetch(
+def phase_branches_to_fetch(
     initiative_id: str, branch: str, parent_branches: Sequence[str], needed: Sequence[str], cut_from: Sequence[str]
 ) -> tuple[list[str], list[str], list[str]]:
     """`(fetch, required, loose)`: what to fetch, which of it the phase needs, and the needed refs that are not epic names.
@@ -580,7 +580,7 @@ def _phase_branches_to_fetch(
     return list(dict.fromkeys([branch, *parent_branches, *required])), required, loose
 
 
-def _open_review_pr(ctx: _Ctx, *, title: str, body: str, head: str, base: str) -> tuple[bool, str]:
+def open_review_pr(ctx: Ctx, *, title: str, body: str, head: str, base: str) -> tuple[bool, str]:
     """Open a PR for `head` against `base`; the detail is its URL on success."""
     # A hung gh is exit 124 with `gh pr timed out after 120 seconds` as stderr, reported as any failed create.
     proc = bounded_proc.completed(
@@ -590,7 +590,7 @@ def _open_review_pr(ctx: _Ctx, *, title: str, body: str, head: str, base: str) -
     return proc.returncode == 0, (proc.stdout if proc.returncode == 0 else proc.stderr or proc.stdout).strip()
 
 
-def _existing_pr(ctx: _Ctx, head: str) -> tuple[bool, str]:
+def _existing_pr(ctx: Ctx, head: str) -> tuple[bool, str]:
     """(known, url): known is False when the forge could not be asked, so "no PR" is never guessed from an error."""
     try:
         proc = bounded_proc.completed(
@@ -606,8 +606,8 @@ def _existing_pr(ctx: _Ctx, head: str) -> tuple[bool, str]:
     return False, (proc.stderr or proc.stdout).strip()
 
 
-def _open_grain_pr(
-    ctx: _Ctx, *, grain: str, name: str, local: str, title: str, base: str
+def open_grain_pr(
+    ctx: Ctx, *, grain: str, name: str, local: str, title: str, base: str
 ) -> tuple[bool, str]:
     """Push `local` and open the PR for a `task` or `level` that is the configured granularity; the detail is the URL."""
     ok, detail = _push_review_ref(ctx, local, name)
@@ -619,7 +619,7 @@ def _open_grain_pr(
         return False, f"could not check for an existing PR, so none was opened: {existing}"
     if existing:
         return True, existing
-    ok, detail = _open_review_pr(
+    ok, detail = open_review_pr(
         ctx, title=title, body=f"Landing granularity: {grain}", head=f"review/{ctx.initiative_id}/{name}", base=base
     )
     return ok, detail if ok else f"review PR failed: {detail}"
@@ -647,16 +647,16 @@ def resolve_default_ref(repo: Path, base: str | None) -> str:
 
     The one bare local name is for a repo with no `origin` remote at all."""
     git = ("-C", str(repo))
-    head_ok, head_out = _git(*git, "rev-parse", "--abbrev-ref", "HEAD")
-    origin_ok, origin_out = _git(*git, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
-    local_ok, local_out = _git(*git, "for-each-ref", "--format=%(refname:short)", "refs/heads")
-    remotes_ok, remotes = _git(*git, "remote")
+    head_ok, head_out = git_in(*git, "rev-parse", "--abbrev-ref", "HEAD")
+    origin_ok, origin_out = git_in(*git, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+    local_ok, local_out = git_in(*git, "for-each-ref", "--format=%(refname:short)", "refs/heads")
+    remotes_ok, remotes = git_in(*git, "remote")
     has_origin = remotes_ok and "origin" in remotes.split()
     if has_origin:
-        fetched, detail = _git(*git, "fetch", "origin")
+        fetched, detail = git_in(*git, "fetch", "origin")
         if not fetched:
             raise RuntimeError(f"git fetch origin failed in {repo}: {detail[:200]}")
-    tracked_ok, tracked_out = _git(*git, "for-each-ref", "--format=%(refname:short)", "refs/remotes/origin")
+    tracked_ok, tracked_out = git_in(*git, "for-each-ref", "--format=%(refname:short)", "refs/remotes/origin")
     known = (set(local_out.split()) if local_ok else set()) | (
         {name.removeprefix("origin/") for name in tracked_out.split()} if tracked_ok else set()
     )
@@ -669,32 +669,32 @@ def resolve_default_ref(repo: Path, base: str | None) -> str:
     return ref if has_origin else ref.removeprefix("origin/")
 
 
-def _level_failure_reason(phase: str, results: Sequence[Mapping[str, Any]]) -> str:
+def level_failure_reason(phase: str, results: Sequence[Mapping[str, Any]]) -> str:
     """A line naming the level and its first failing level check; '' when every row passed."""
     failing = next((r for r in results if not r.get("passed")), None)
     return "" if failing is None else f"level {phase} failed level check {failing.get('name')}"
 
 
-def _run_scratch(ctx: _Ctx) -> Path:
+def run_scratch(ctx: Ctx) -> Path:
     """The run's temp directory, under the system temp directory a hand run's pytest also uses, never under the home
     directory the worktrees sit in: a suite can read a path under a home directory as a home path."""
     return run_scratch_root(Path(gettempdir()), ctx.worktree_root / ctx.run_id)
 
 
-def _scratch_dir(ctx: _Ctx, phase: str, task: str) -> Path:
+def scratch_dir(ctx: Ctx, phase: str, task: str) -> Path:
     """`@` opens every name that is not a task id, so a task called `level` cannot share the level's directory."""
-    return lane_scratch_dir(_run_scratch(ctx), phase, task)
+    return lane_scratch_dir(run_scratch(ctx), phase, task)
 
 
-def _checks_env(ctx: _Ctx, lane: Mapping[str, str], phase: str, task: str) -> dict[str, str]:
+def checks_env(ctx: Ctx, lane: Mapping[str, str], phase: str, task: str) -> dict[str, str]:
     """The process environment with the worker count, the lane variable and a made temp directory (TMPDIR) over it."""
-    scratch = _scratch_dir(ctx, phase, task)
+    scratch = scratch_dir(ctx, phase, task)
     scratch.mkdir(parents=True, exist_ok=True)
     workers = {} if ctx.lane_workers is None else workers_env(os.environ, ctx.lane_workers)
     return {**os.environ, **workers, **lane, **lane_tmp_env(scratch)}
 
 
-class _PhaseRunner:
+class PhaseRunner:
     """One phase's view of the shared runner: its own repo_dir, repo_digest and check_commands, nothing assigned to the shared one.
 
     Every other attribute and call forwards to the shared runner, and its methods run with this view as `self`,
@@ -718,7 +718,7 @@ class _PhaseRunner:
             "gate_check_commands": gate_check_commands or {},
         }
         inner = vars(shared).get("_inner") if hasattr(shared, "__dict__") else None
-        view = None if inner is None else _PhaseRunner(inner, repo_dir, repo_digest, check_commands, gate_check_commands)
+        view = None if inner is None else PhaseRunner(inner, repo_dir, repo_digest, check_commands, gate_check_commands)
         own = {} if inner is not None else {n: v for n, v in values.items() if hasattr(shared, n)}
         object.__setattr__(self, "_shared", shared)
         object.__setattr__(self, "_own", own)
@@ -751,7 +751,7 @@ class _PhaseRunner:
             setattr(self._shared, name, value)
 
 
-def _missing_branch_phase(record: dict[str, Any], branch: str, cause: str) -> dict[str, Any]:
+def missing_branch_phase(record: dict[str, Any], branch: str, cause: str) -> dict[str, Any]:
     """Block the phase on a branch it needs and cannot find. Nothing is quarantined: the run stops, the work is untouched."""
     record["status"] = "blocked"
     record["reason"] = cause

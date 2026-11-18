@@ -8,7 +8,7 @@ from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 from harness import check_reuse, epic
-from harness.epic import _level_failure_reason, _PhaseRunner
+from harness.epic import PhaseRunner, level_failure_reason
 from tests.test_epic_driver import cart, drive, git, repo  # noqa: F401
 from tests.test_epic_waves import Gated, by_phase, work
 
@@ -160,8 +160,8 @@ def test_a_cartridge_without_level_checks_gives_the_record_it_gave_before(repo, 
 
 def test_the_failure_reason_names_the_level_and_the_first_failing_check() -> None:
     rows = [{"name": "a", "passed": True}, {"name": "b", "passed": False}, {"name": "c", "passed": False}]
-    assert _level_failure_reason("pa", rows) == "level pa failed level check b"
-    assert _level_failure_reason("pa", rows[:1]) == ""
+    assert level_failure_reason("pa", rows) == "level pa failed level check b"
+    assert level_failure_reason("pa", rows[:1]) == ""
 
 
 def test_the_phase_view_carries_gate_check_commands_only_when_the_shared_runner_has_them() -> None:
@@ -173,5 +173,5 @@ def test_the_phase_view_carries_gate_check_commands_only_when_the_shared_runner_
             self.gate_check_commands: dict = {}
 
     gates = {"level": ["make level"]}
-    assert not hasattr(_PhaseRunner(Plain(), Path("/wt/a"), None, [], gates), "gate_check_commands")
-    assert _PhaseRunner(Aware(), Path("/wt/a"), None, [], gates).gate_check_commands == gates
+    assert not hasattr(PhaseRunner(Plain(), Path("/wt/a"), None, [], gates), "gate_check_commands")
+    assert PhaseRunner(Aware(), Path("/wt/a"), None, [], gates).gate_check_commands == gates

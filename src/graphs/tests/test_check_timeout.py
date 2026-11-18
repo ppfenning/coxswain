@@ -15,7 +15,7 @@ import time
 import pytest
 
 from harness.checks import fixable_checks, run_checks
-from harness.epic import _Ctx
+from harness.epic import Ctx
 
 
 class _ExplodingRunner:
@@ -28,8 +28,8 @@ class _ExplodingRunner:
         pytest.fail("model call made")
 
 
-def _ctx(tmp_path, cartridge_checks=(), repo_checks=()) -> _Ctx:
-    return _Ctx(
+def _ctx(tmp_path, cartridge_checks=(), repo_checks=()) -> Ctx:
+    return Ctx(
         repo=tmp_path,
         cartridge={"landing_areas": {"checks": list(cartridge_checks)}},
         runner=_ExplodingRunner(),

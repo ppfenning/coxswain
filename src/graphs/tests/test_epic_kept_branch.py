@@ -92,9 +92,9 @@ def test_a_task_with_a_kept_branch_is_approved_and_stays_approved(repo, cart, tm
 
 
 def test_a_failed_draft_with_a_kept_branch_stays_approved_with_a_note(repo, cart, tmp_path, store_conn, monkeypatch):  # noqa: F811
-    real_git = epic._git
+    real_git = epic.git_in
     monkeypatch.setattr(
-        epic, "_git", lambda *a, **k: (False, "no draft") if "branch" in a and DRAFT in a else real_git(*a, **k)
+        epic, "git_in", lambda *a, **k: (False, "no draft") if "branch" in a and DRAFT in a else real_git(*a, **k)
     )
     result, states, moves = _drive_store(repo, cart, tmp_path, store_conn, monkeypatch)
 
@@ -125,11 +125,11 @@ def test_a_draft_the_gate_never_approved_leaves_the_task_approved_with_a_note(re
 
 
 def test_a_failed_draft_with_no_kept_branch_ends_quarantined_with_no_move(repo, cart, tmp_path, store_conn, monkeypatch):  # noqa: F811
-    real_git = epic._git
+    real_git = epic.git_in
     monkeypatch.setattr(
-        epic, "_git", lambda *a, **k: (False, "no draft") if "branch" in a and DRAFT in a else real_git(*a, **k)
+        epic, "git_in", lambda *a, **k: (False, "no draft") if "branch" in a and DRAFT in a else real_git(*a, **k)
     )
-    monkeypatch.setattr(epic, "_branch_exists", lambda _ctx, branch: False)
+    monkeypatch.setattr(epic, "branch_exists", lambda _ctx, branch: False)
     result, states, moves = _drive_store(repo, cart, tmp_path, store_conn, monkeypatch)
 
     task = next(t for t in result["tasks"] if t["id"] == TASK)
@@ -146,19 +146,19 @@ def test_a_failed_draft_with_no_kept_branch_ends_quarantined_with_no_move(repo, 
 
 def test_a_branch_that_does_not_exist_is_not_ahead(repo):  # noqa: F811
     ctx = type("Ctx", (), {"repo": repo, "default_ref": "main"})()
-    assert epic._branch_ahead(ctx, "epic/i/p1") is False
-    assert epic._branch_exists(ctx, "epic/i/p1") is False
+    assert epic.branch_ahead(ctx, "epic/i/p1") is False
+    assert epic.branch_exists(ctx, "epic/i/p1") is False
 
 
 def test_an_unkept_task_already_quarantined_by_its_merge_is_not_quarantined_twice(monkeypatch):
     ctx = type("Ctx", (), {"cartridge": {}, "epoch": None})()
-    monkeypatch.setattr(epic, "_fenced", lambda _ctx: None)
-    monkeypatch.setattr(epic, "_wait_if_paused", lambda _ctx: None)
-    monkeypatch.setattr(epic, "_unkept_work", lambda *_: "the merge into the phase branch was refused or conflicted")
-    monkeypatch.setattr(epic, "_draft_note", lambda *_: None)
+    monkeypatch.setattr(epic, "fence_reason", lambda _ctx: None)
+    monkeypatch.setattr(epic, "wait_if_paused_here", lambda _ctx: None)
+    monkeypatch.setattr(epic, "unkept_work", lambda *_: "the merge into the phase branch was refused or conflicted")
+    monkeypatch.setattr(epic, "draft_note", lambda *_: None)
     prior = {"id": "t1", "phase": "p1", "grain": "task", "reason": "merge conflict: x", "kind": "infra"}
-    state = epic._Execution(landed={"t1": True}, merged={"t1": False}, moved={}, quarantined=[prior])
-    ok, _ = epic._execute(
+    state = epic.Execution(landed={"t1": True}, merged={"t1": False}, moved={}, quarantined=[prior])
+    ok, _ = epic.execute_cleared(
         ctx, {"kind": "state_move"}, slot="state_move", subject="t1", phase="p1", state=state, by_id={}
     )
     assert (ok, state.moved, state.quarantined) == (False, {"t1": False}, [prior])
