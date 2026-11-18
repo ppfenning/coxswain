@@ -14,6 +14,7 @@ import threading
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 from harness import bounded_proc
 
@@ -28,7 +29,7 @@ _GATE_KEYS: Mapping[str, str] = {
 _LOCK_NAME = "coxswain-check-gate.lock"
 
 
-def gate_checks(landing_areas: Mapping[str, object], gate: str) -> list[dict]:
+def gate_checks(landing_areas: Mapping[str, object], gate: str) -> list[dict[str, Any]]:
     """The `{name, cmd}` entries for `gate`; a missing, None or non-list value is empty."""
     if gate not in _GATE_KEYS:
         raise ValueError(f"unknown gate {gate!r}; expected one of {GATES}")

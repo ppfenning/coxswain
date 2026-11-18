@@ -168,7 +168,7 @@ def invoke_from_attempt(
     attempt. A change that does not apply to the tree it was written against is left as the builder returned it."""
     view = PhaseRunner(
         ctx.shared_runner if ctx.shared_runner is not None else ctx.runner, tree, build_digest(tree) or None,
-        [str(c.get("cmd")) for c in ctx.checks if c.get("cmd")], gate_commands(ctx.cartridge.get("landing_areas") or {}),
+        [str(c.get("cmd")) for c in ctx.checks if c.get("cmd")], gate_commands(ctx.landing_areas),
     )
     results, _, failures = invoke_graphs([inv], specs=ctx.specs, runner=view, run_id=run_id, max_parallel=1)
     for result in results:

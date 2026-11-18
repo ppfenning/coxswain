@@ -48,6 +48,7 @@ from harness.epic_branches import (
 from harness.epic_context import Ctx, git_in
 from harness.epic_phase_branch import trace_evidence
 from harness.epic_records import epic_log, save_task_result, wait_if_paused_here
+from harness.epic_types import as_list
 from harness.escalate import touched_paths
 from harness.integration_scope import scope_integration
 from harness.invoke import Invocation, invoke_graphs
@@ -498,7 +499,7 @@ def _style_fix(ctx: Ctx, *, phase: str, task: str, result: Mapping[str, Any], bu
         schema=STYLE_PASS_SCHEMA,
         task=task,
         wait_if_paused=lambda: wait_if_paused_here(ctx),
-        context=list(ctx.cartridge.get("context") or []),
+        context=as_list(ctx.cartridge.get("context")),
         prompt=(
             f"{CHECK_FIX_PROMPT}\n\nTicket: {task}\n\nFailing checks:\n{check_feedback(build['checks'])}"
             f"\n\nApproved diff:\n{patch[:PATCH_FOR_VALIDATION_CHARS]}"

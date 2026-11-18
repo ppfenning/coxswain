@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -47,6 +47,8 @@ from harness.epic_records import (
     utc_now,
     wait_if_paused_here,
 )
+from harness.epic_types import Attempt, AttemptRow, MalformedRecord, TaskRecord, as_mapping, attempt_row, task_record
+from harness.epic_types import attempt as as_attempt
 from harness.gate import apply_arm_for, auto_apply, gate
 from harness.handoff import build_handoff
 from harness.phase_remote import Kind, missing_branch_cause
@@ -335,24 +337,35 @@ def with_stored_rescues(item: Mapping[str, Any], rows: Sequence[Mapping[str, Any
     return {**item, "attempts": sorted([*item["attempts"], *stored], key=lambda a: str(a.get("ts") or ""))}
 
 
-def _stored_rescues(ctx: Ctx, task: str) -> list[dict[str, Any]]:
+def _stored_rescues(ctx: Ctx, task: str) -> list[AttemptRow]:
     """The store's `rescue_failed` attempts for `task`, any run. Empty without a store."""
     if ctx.store is None:
         return []
     cols = ("run_id", "phase_id", "kind", "reason", "ts", "cause")
     mark = ctx.store.conn.dialect.placeholder
     sql = f"SELECT {', '.join(cols)} FROM attempts WHERE task_id = {mark} AND kind = {mark}"
-    return [dict(zip(cols, row, strict=True)) for row in ctx.store.conn.query_all(sql, (task, rescue_select.RESCUE_KIND))]
+    return _attempt_rows(cols, ctx.store.conn.query_all(sql, (task, rescue_select.RESCUE_KIND)))
 
 
-def stored_causes(ctx: Ctx, task: str) -> list[dict[str, Any]]:
+def stored_causes(ctx: Ctx, task: str) -> list[AttemptRow]:
     """The store's attempt causes for `task`, any run and kind. Empty without a store."""
     if ctx.store is None:
         return []
     cols = ("run_id", "phase_id", "seq", "cause")
     mark = ctx.store.conn.dialect.placeholder
     sql = f"SELECT {', '.join(cols)} FROM attempts WHERE task_id = {mark}"
-    return [dict(zip(cols, row, strict=True)) for row in ctx.store.conn.query_all(sql, (task,))]
+    return _attempt_rows(cols, ctx.store.conn.query_all(sql, (task,)))
+
+
+def _attempt_rows(cols: Sequence[str], rows: Iterable[Sequence[object]]) -> list[AttemptRow]:
+    """Each selected `attempts` row by column name; a row the store holds malformed is logged and left out."""
+    read: list[AttemptRow] = []
+    for row in rows:
+        try:
+            read.append(attempt_row(dict(zip(cols, row, strict=True))))
+        except MalformedRecord as exc:
+            epic_log.warning("attempts row skipped: %s", exc)
+    return read
 
 
 def _run_number(run: str) -> int:
@@ -366,7 +379,7 @@ def _record_initiative(run: str, record: Mapping[str, Any]) -> str:
     return str(record.get("initiative") or "") or (run.rsplit("-", 1)[0] if _run_number(run) >= 0 else run)
 
 
-def _record_attempt(run: str, phase: str, record: Mapping[str, Any], ts: str) -> dict[str, Any] | None:
+def _record_attempt(run: str, phase: str, record: TaskRecord, ts: str) -> Attempt | None:
     """One attempt from one run task record that names a cause, None for a record that names none.
 
     The cause, reason, kind and the body it was built on are `core.run_record`'s; the record's own verdicts ride beside
@@ -383,14 +396,14 @@ def _record_attempt(run: str, phase: str, record: Mapping[str, Any], ts: str) ->
     evidence = record.get("evidence") or build.get("evidence")
     verdicts = {key: record[key] for key in ("review", "adversary", "arbitration", "fix_loop") if isinstance(record.get(key), Mapping)}
     sha = run_record.record_body_sha(record)
-    return {
+    return as_attempt({
         "run": run, "phase": phase, **attempt, "ts": str(record.get("date") or "") or ts, **verdicts,
         **({"evidence": list(evidence)} if isinstance(evidence, list) else {}),
         **({"body_sha": sha} if sha else {}),
-    }
+    })
 
 
-def caused_records(ctx: Ctx, phase: str, task: str) -> list[tuple[dict[str, Any], Mapping[str, Any]]]:
+def caused_records(ctx: Ctx, phase: str, task: str) -> list[tuple[Attempt, TaskRecord]]:
     """(attempt, record) for each of the task's run task records that names a cause, oldest first.
 
     Under work_state store nothing writes an attempt into the work file: these records are the attempts. This machine's
@@ -399,22 +412,26 @@ def caused_records(ctx: Ctx, phase: str, task: str) -> list[tuple[dict[str, Any]
 
     A run's number orders them, its `ts` only within one run: one initiative's runs never overlap (its
     `runs:<initiative>` lease), and the minimal record an invoke failure leaves has no date, only its file's time."""
-    found: dict[str, tuple[Mapping[str, Any], str]] = {}
+    found: dict[str, tuple[TaskRecord, str]] = {}
     for path in sorted(Path(ctx.runs_dir).glob(f"*/tasks/{phase}/{task}.json")):
         try:
-            record = json.loads(path.read_text(encoding="utf-8"))
+            record = task_record(json.loads(path.read_text(encoding="utf-8")))
             stamp = datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat()
-        except (OSError, ValueError):
+        except (OSError, ValueError):  # MalformedRecord is a ValueError: a record no reader can trust is no record
             continue
-        if isinstance(record, Mapping):
-            found[path.parts[-4]] = (record, stamp)
+        found[path.parts[-4]] = (record, stamp)
     if ctx.store is not None:
         try:
             from harness import store_read  # not module level: see `mirror_read`
 
             for row in store_read.task_records_of(ctx.store.conn, phase, task):
                 if isinstance(row["record_json"], Mapping):
-                    found.setdefault(str(row["run_id"]), (row["record_json"], str(row.get("updated_at") or "")))
+                    try:
+                        stored = task_record(row["record_json"])
+                    except MalformedRecord as exc:
+                        epic_log.warning("task record of %s/%s in %s skipped: %s", phase, task, row["run_id"], exc)
+                        continue
+                    found.setdefault(str(row["run_id"]), (stored, str(row.get("updated_at") or "")))
         except Exception as exc:
             epic_log.warning("task records of %s/%s not read from the store: %s: %s", phase, task, type(exc).__name__, exc)
     caused = [
@@ -425,7 +442,7 @@ def caused_records(ctx: Ctx, phase: str, task: str) -> list[tuple[dict[str, Any]
     return [(attempt, record) for *_, attempt, record in sorted(caused, key=lambda t: t[:3])]
 
 
-def record_attempts(ctx: Ctx, phase: str, task: str) -> list[dict[str, Any]]:
+def record_attempts(ctx: Ctx, phase: str, task: str) -> list[Attempt]:
     """The task's attempts as its runs' task records hold them (`caused_records`), oldest first: for triage of an item
     with no attempt, which would otherwise reach triage with nothing to cite."""
     return [attempt for attempt, _ in caused_records(ctx, phase, task)]
@@ -495,10 +512,10 @@ def _rescue_move(ctx: Ctx, item: Mapping[str, Any], *, phase: str, evidence: lis
     auto, gated = policy_split(ctx, [move])
     decisions, minutes = gate(gated, assume=ctx.assume)
     decision, edited = ("approved", False) if auto else (decisions[0][1], decisions[0][2])
-    kinds = ctx.cartridge.get("write_kinds") or {}
+    kinds = as_mapping(ctx.cartridge.get("write_kinds"))
     code_arm = replace(
         ctx,
-        cartridge={**ctx.cartridge, "write_kinds": {**kinds, "state_move": {**(kinds.get("state_move") or {}), "apply_arm": "workstore"}}},
+        cartridge={**ctx.cartridge, "write_kinds": {**kinds, "state_move": {**as_mapping(kinds.get("state_move")), "apply_arm": "workstore"}}},
     )
     # A rescue lands no draft and merges nothing: its kept work is the `agents/<run>/<task>` branch `_land_branch` made.
     state = Execution(landed={}, merged={}, moved={}, quarantined=[], escalated=frozenset({task}))

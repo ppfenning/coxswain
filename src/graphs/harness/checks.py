@@ -160,7 +160,7 @@ def check_outcome(returncode: int | None, error: str | None) -> str:
     return "passed" if returncode == 0 else "failed"
 
 
-def repo_checks(text: str) -> list[dict]:
+def repo_checks(text: str) -> list[dict[str, Any]]:
     """Parse a `.agent-checks` file: one shell command per line, pure.
 
     A line may end `# fix: <command>`: the check then carries that `fix`, which the build runs mechanically
