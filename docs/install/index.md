@@ -262,18 +262,25 @@ file the launchd agent sources. If no upgrade unit names one, they try the chair
 unit, then the lander unit, then the default `~/.config/agent-tools/garage.env`.
 
 A variable that your shell already sets keeps its value, even when it is empty.
-The rest come from the file, read the way the units read it. Surrounding quotes
-and backslash escapes are removed (`"q v"` gives `q v`, `a\b` gives `ab`). `%`
-and an empty value (`E=`) load as written. On Linux, `$` loads as written too,
-as systemd keeps it. The command prints names and paths, never values:
+The rest come from the file, read the way the units read it. On Linux that
+is systemd's `EnvironmentFile=` reading, so every value it would set loads:
+surrounding quotes and backslash escapes are removed (`"q v"` gives `q v`,
+`a\b` gives `ab`), a space inside an unquoted value is kept (a password with
+a space works), a backslash at the end of a line joins the next line, and `$`,
+`%` and an empty value (`E=`) load as written. On macOS it is the launchd
+agent's `sh .`. A value that `sh` would expand (`$` or a backtick), read as
+syntax (an unquoted `; & | < > ( )` or `~`), split at a space, carry onto the
+next line or leave in an open quote is not loaded. Neither is one that starts
+with whitespace. Put such a value in single quotes.
+
+The command prints paths and variable names, never values. It prints a name
+only when it is in upper case, digits and `_`, and counts any other names,
+since a secret pasted on a line of its own can parse as a name. It prints:
 
 - the variables it loaded;
 - the shell variables that override a different value in the file (if you
   rotated a key in the file, unset the old one in your shell);
-- any value it did not load. One is an unbalanced quote, unquoted space or
-  other escape that systemd and `sh` would read differently. On macOS, the
-  other is a `$` or backtick outside single quotes, which the launchd agent's
-  `sh` would expand. Put such a value in single quotes;
+- on macOS, any value it did not load, and why;
 - a file a unit names that does not exist, and a file skipped because it is
   not UTF-8 text.
 
