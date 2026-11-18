@@ -30,7 +30,7 @@ from harness.epic_records import (
     store_first,
     store_fresh,
 )
-from harness.epic_types import Quarantine
+from harness.epic_types import EpicItem, Quarantine
 from harness.gate import apply_arm_for
 from harness.phase_remote import Kind, fetch_branch
 from harness.stale_base import missing_paths, ticket_paths
@@ -94,14 +94,14 @@ def _kept_append_only(before: Mapping[str, Any], after: Mapping[str, Any]) -> bo
 def apply_amend_directly(
     ctx: Ctx,
     proposal: dict[str, Any],
-    item: Mapping[str, Any],
+    item: EpicItem,
     *,
     old_body: str,
     new_body: str,
     phase: str,
     quarantined: list[Quarantine],
-    by_id: Mapping[str, dict[str, Any]],
-) -> tuple[dict[str, Any] | None, str | None]:
+    by_id: Mapping[str, EpicItem],
+) -> tuple[EpicItem | None, str | None]:
     """Apply an append-only `ticket_amend` outside the gate, then judge the file the arm wrote, not the body predicted.
 
     `(rebuilt item, None)` when the file holds the old body with text appended. `(None, reason)` when the apply failed
@@ -212,7 +212,7 @@ def drop_stale_triage_flag(ctx: Ctx, task: str) -> None:
         epic_log.warning("stale triage request on %s not removed from its row: %s", task, why)
 
 
-def _move_task(ctx: Ctx, item: dict[str, Any], state: str) -> str | None:
+def _move_task(ctx: Ctx, item: EpicItem, state: str) -> str | None:
     """Move one task outside the gate; None when moved, else why not. Never called holding `items_lock`.
 
     Under work_state store the row moves first, compare-and-set on the state the item holds, then the file's state line;
@@ -235,7 +235,7 @@ def _move_task(ctx: Ctx, item: dict[str, Any], state: str) -> str | None:
     return None
 
 
-def hold_task(ctx: Ctx, item: dict[str, Any], reason: str) -> tuple[str, str | None]:
+def hold_task(ctx: Ctx, item: EpicItem, reason: str) -> tuple[str, str | None]:
     """Hold a task for a person: `(the mark's text, None)` when held, else `(text, why not)`.
 
     Under work_state store the row's hold reason is written FIRST, so a blocked row never lacks its mark; then state
@@ -325,7 +325,7 @@ def dropped_needs(items: Sequence[Mapping[str, Any]], source: str) -> dict[str, 
     }
 
 
-def _write_needs(ctx: Ctx, item: dict[str, Any], needs: Sequence[str]) -> str | None:
+def _write_needs(ctx: Ctx, item: EpicItem, needs: Sequence[str]) -> str | None:
     """One task's needs: the store row first under work_state store, then the file, then the driver's copy.
 
     None when written. A store refusal writes nothing; under files a file that cannot be written is a refusal too,
@@ -345,7 +345,7 @@ def _write_needs(ctx: Ctx, item: dict[str, Any], needs: Sequence[str]) -> str | 
     return None
 
 
-def _move_needs(ctx: Ctx, by_id: Mapping[str, dict[str, Any]], moves: Mapping[str, Sequence[str]]) -> tuple[dict[str, list[str]], str | None]:
+def _move_needs(ctx: Ctx, by_id: Mapping[str, EpicItem], moves: Mapping[str, Sequence[str]]) -> tuple[dict[str, list[str]], str | None]:
     """Write every move in `moves`, all or nothing: `(the needs each moved task had, None)`, or, when one write is
     refused, the ones already written are put back and `({}, why)` comes back."""
     before: dict[str, list[str]] = {}
@@ -359,14 +359,14 @@ def _move_needs(ctx: Ctx, by_id: Mapping[str, dict[str, Any]], moves: Mapping[st
     return before, None
 
 
-def _restore_needs(ctx: Ctx, by_id: Mapping[str, dict[str, Any]], before: Mapping[str, Sequence[str]]) -> None:
+def _restore_needs(ctx: Ctx, by_id: Mapping[str, EpicItem], before: Mapping[str, Sequence[str]]) -> None:
     """Put back needs `_move_needs` wrote; a write that fails here is logged, as nothing more can be undone."""
     for task, needs in before.items():
         if (why := _write_needs(ctx, by_id[task], needs)) is not None:
             epic_log.warning("needs of %s not put back to %s: %s", task, list(needs), why)
 
 
-def drop_task(ctx: Ctx, items: list[dict[str, Any]], item: dict[str, Any]) -> str | None:
+def drop_task(ctx: Ctx, items: list[EpicItem], item: EpicItem) -> str | None:
     """Drop a task triage found the initiative does not need; None when done, else why not, with nothing changed.
 
     Every task that needed it stops needing it first, so the board stays a valid DAG; a drop that is then refused
@@ -390,7 +390,7 @@ def _folded_section(item: Mapping[str, Any]) -> str:
     return f"## Folded in from {task}: {item.get('title') or task}\n\n{str(item.get('body') or '').strip()}".strip()
 
 
-def _fold_body(ctx: Ctx, target: dict[str, Any], section: str) -> str | None:
+def _fold_body(ctx: Ctx, target: EpicItem, section: str) -> str | None:
     """Append `section` to the sibling's body: the store row, then the file, then the driver's copy; None when written."""
     into = str(target["id"])
     new_body = f"{str(target.get('body') or '').rstrip()}\n\n{section}".strip()
@@ -410,7 +410,7 @@ def _fold_body(ctx: Ctx, target: dict[str, Any], section: str) -> str | None:
     return None
 
 
-def combine_task(ctx: Ctx, items: list[dict[str, Any]], item: dict[str, Any], into: str) -> str | None:
+def combine_task(ctx: Ctx, items: list[EpicItem], item: EpicItem, into: str) -> str | None:
     """Fold `item` into its sibling `into`; None when done, else why not, with nothing changed.
 
     The sibling must be open and in the same phase: phases build apart, so a sibling elsewhere could already be
@@ -447,8 +447,8 @@ def combine_task(ctx: Ctx, items: list[dict[str, Any]], item: dict[str, Any], in
 
 
 def amend_in_store(
-    ctx: Ctx, item: Mapping[str, Any], *, old_body: str, new_body: str
-) -> tuple[dict[str, Any] | None, str | None]:
+    ctx: Ctx, item: EpicItem, *, old_body: str, new_body: str
+) -> tuple[EpicItem | None, str | None]:
     """Under work_state store, with no model arm for `ticket_amend`, the harness appends the amendment to the row itself.
 
     `(rebuilt item, None)` when the row held the body triage read and took the new one; `(None, reason)` otherwise.
@@ -527,13 +527,13 @@ def triage_failure_hold(failure: str, asked: str) -> tuple[str, str]:
     return task_id, f"triage could not run: {what.strip() or 'no detail was recorded'}. It was asked because: {asked}"
 
 
-def attempt_cap_for(attempts: Sequence[Mapping[str, Any]]) -> int:
+def attempt_cap_for(attempts: Sequence[Mapping[str, object]]) -> int:
     """1 when the newest attempt by `ts` (ties keep list order) was caused by the ticket or the code, else `ATTEMPT_CAP`."""
     newest = sorted(attempts, key=lambda a: str(a.get("ts") or ""))[-1:]
     return 1 if any(a.get("cause") in ("ticket", "code") for a in newest) else ATTEMPT_CAP
 
 
-def _ready_view(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _ready_view(items: Sequence[EpicItem]) -> list[EpicItem]:
     """`items`, with a merged-but-unlanded parent presented as `done` for `needs`.
 
     `ready_tasks` satisfies a `needs` entry only against a literal `done`, and
@@ -588,7 +588,7 @@ class _MergeUnchecked(NamedTuple):
     branch: str
 
 
-def _merge_missing(ctx: Ctx, phase: str, item: dict[str, Any]) -> str | _MergeUnchecked | None:
+def _merge_missing(ctx: Ctx, phase: str, item: EpicItem) -> str | _MergeUnchecked | None:
     """Why an approved, merged task of this phase cannot be resumed from the store, or None when its commit is on the phase branch.
 
     Only the store carries `merged_commit`, so a task merged under files is never checked. A task whose row is now done,
@@ -608,13 +608,13 @@ def _merge_missing(ctx: Ctx, phase: str, item: dict[str, Any]) -> str | _MergeUn
     (fresh,) = store_fresh([item], read_store_rows(ctx))
     if fresh["state"] == "done":
         with ctx.items_lock:
-            item.update({k: fresh[k] for k in ("state", "merged", "merged_commit")})
+            item.update(state=fresh["state"], merged=fresh["merged"], merged_commit=fresh["merged_commit"])
         return None
     return f"merged commit {commit} is not on {branch}; {item['id']} was approved and merged by an earlier run and is not rebuilt"
 
 
 def quarantine_missing_merges(
-    ctx: Ctx, phase: str, items: Sequence[dict[str, Any]], quarantined: list[Quarantine]
+    ctx: Ctx, phase: str, items: Sequence[EpicItem], quarantined: list[Quarantine]
 ) -> str | None:
     """Quarantine each merged task whose commit is gone, one by one. No other item, row or file is touched.
 
@@ -663,21 +663,19 @@ def invoke_failure_kind(failure: str) -> Literal["infra", "no_work"]:
 
 
 def buildable(
-    items: list[dict[str, Any]],
+    items: list[EpicItem],
     phase: str,
     foreign: Mapping[str, Any],
     only: frozenset[str] | None = None,
     land_at: str = DEFAULT_LAND_AT,
-) -> list[dict[str, Any]]:
+) -> list[EpicItem]:
     """The phase's ready tasks with met needs, a dropped one excluded. A need on another initiative reads `foreign`.
 
     With `only`, the ready set is narrowed to those ids.
     """
-    return [
-        item
-        for item in workstore.ready_tasks(_ready_view(items), phase=phase, foreign=foreign, land_at=land_at)
-        if item.get("state") != "dropped" and (only is None or str(item["id"]) in only)
-    ]
+    # `ready_tasks` returns the items it was given, typed as the loose mappings it reads.
+    ready = cast(list[EpicItem], workstore.ready_tasks(_ready_view(items), phase=phase, foreign=foreign, land_at=land_at))
+    return [item for item in ready if item.get("state") != "dropped" and (only is None or str(item["id"]) in only)]
 
 
 def earlier_merged(items: Sequence[Mapping[str, Any]], phase: str, in_run: Collection[str]) -> list[Mapping[str, Any]]:
@@ -702,7 +700,7 @@ def close_runner(runner: Any) -> Exception | None:
 
 
 def base_expected(
-    ctx: Ctx, phase: str, parents: Sequence[str], items: Sequence[dict[str, Any]], runnable: Sequence[Mapping[str, Any]]
+    ctx: Ctx, phase: str, parents: Sequence[str], items: Sequence[EpicItem], runnable: Sequence[Mapping[str, Any]]
 ) -> tuple[Expected, ...]:
     """Approved, merged tasks the phase base must hold. A task done in the store is landed and is never checked."""
     rows = read_store_rows(ctx)

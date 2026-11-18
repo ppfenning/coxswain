@@ -9,7 +9,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import gettempdir
-from typing import Any
+from typing import Any, cast
 
 from core import landing_record, workstore
 from core.landing import TemplateError, initiative_branch_name, pr_branch_name, resolve_push_initiative
@@ -21,7 +21,7 @@ from harness.digest import build_digest
 from harness.epic_context import Ctx, git_in
 from harness.epic_phase_branch import branch_exists, publish_branch
 from harness.epic_records import END_WRITE_WINDOW_S, ctx_store, utc_now
-from harness.epic_types import PhaseRecord
+from harness.epic_types import EpicItem, PhaseRecord
 from harness.invoke import Invocation, invoke_graphs
 from harness.lane_pytest_tmp import lane_scratch_dir, lane_tmp_env, run_scratch_root
 from harness.lane_workers import workers_env
@@ -77,7 +77,7 @@ CHECK_FIX_PROMPT = (
     "approved diff already applied, or return nothing."
 )
 
-STYLE_PASS_SCHEMA = {
+STYLE_PASS_SCHEMA: dict[str, object] = {
     "type": "object",
     "properties": {"patch": {"type": "string"}},
     "required": ["patch"],
@@ -85,7 +85,7 @@ STYLE_PASS_SCHEMA = {
 }
 
 
-def carry_forward(body: str, attempts: list[dict[str, Any]], patch: str | None, *, limit: int) -> str:
+def carry_forward(body: str, attempts: Sequence[Mapping[str, object]], patch: str | None, *, limit: int) -> str:
     """Append a task's own quarantine history to its ticket body, as a reference.
 
     Pure: no file, no clock. With no attempts the body is untouched — most
@@ -123,7 +123,7 @@ RESUME_NOTE = (
 )
 
 
-def resume_body(body: str, attempts: list[dict[str, Any]], sha: str) -> str:
+def resume_body(body: str, attempts: Sequence[Mapping[str, object]], sha: str) -> str:
     """Pure. The ticket body for a rebuild that starts from its last attempt: the reasons, and where that work is."""
     return "\n".join((carry_forward(body, attempts, None, limit=0), "", RESUME_NOTE.format(sha=sha[:12])))
 
@@ -348,7 +348,7 @@ def _integrate_path(items: Sequence[Mapping[str, Any]], task: str) -> Path | Non
 
 
 def _file_integrate(
-    ctx: Ctx, items: list[dict[str, Any]], parent: str, parent_ref: str, paths: Sequence[str]
+    ctx: Ctx, items: list[EpicItem], parent: str, parent_ref: str, paths: Sequence[str]
 ) -> tuple[str | None, str]:
     """Edge. A ready rectify task in the `integrate` phase, as the lander files one: (its id, "") or (None, why not).
 
@@ -395,11 +395,11 @@ def _file_integrate(
     except Exception as exc:
         return None, f"{type(exc).__name__}: {exc}"
     with ctx.items_lock:
-        items.append({**item, **({"path": str(path)} if path is not None else {})})
+        items.append(cast(EpicItem, {**item, **({"path": str(path)} if path is not None else {})}))
     return ident, ""
 
 
-def bring_forward(ctx: Ctx, items: list[dict[str, Any]]) -> str | None:
+def bring_forward(ctx: Ctx, items: list[EpicItem]) -> str | None:
     """Edge. Take the parent forward before any phase; why every phase but `integrate` waits this run, else None."""
     forward = _take_parent_forward(ctx)
     if forward is None:

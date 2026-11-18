@@ -8,16 +8,17 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 from core import ledger, workstore
+from core.jsontypes import is_list
 from core.manifest import append_ledger, build_manifest, gate_diff
 from graphs._contract import proposal
 from graphs.delivery import rescue_review
 from harness import rescue_checks, rescue_select
 from harness.autonomy import split_by_policy
 from harness.checks import HARNESS_FAULT_PREFIX
-from harness.epic_batch import draft_note, quarantine_task, state_move_apply, unkept_work
+from harness.epic_batch import draft_note, item_path, quarantine_task, state_move_apply, unkept_work
 from harness.epic_branches import (
     IDENTITY,
     checks_env,
@@ -47,7 +48,17 @@ from harness.epic_records import (
     utc_now,
     wait_if_paused_here,
 )
-from harness.epic_types import Attempt, AttemptRow, MalformedRecord, TaskRecord, as_mapping, attempt_row, task_record
+from harness.epic_types import (
+    Attempt,
+    AttemptRow,
+    EpicItem,
+    MalformedRecord,
+    TaskRecord,
+    as_list,
+    as_mapping,
+    attempt_row,
+    task_record,
+)
 from harness.epic_types import attempt as as_attempt
 from harness.gate import apply_arm_for, auto_apply, gate
 from harness.handoff import build_handoff
@@ -58,7 +69,7 @@ from harness.worktree import apply_patch, create_worktree, link_venv, remove_wor
 from runner.protocol import LimitStop, RunnerError
 
 
-def without_cause(saved: Mapping[str, Any]) -> dict[str, Any]:
+def without_cause(saved: Mapping[str, object]) -> dict[str, object]:
     """A saved result as a later run reuses it. Its cause, and the body it was quarantined on, name the run that
     quarantined it, not this one."""
     return {k: v for k, v in saved.items() if k not in ("cause", "cause_why", "body_sha")}
@@ -66,13 +77,13 @@ def without_cause(saved: Mapping[str, Any]) -> dict[str, Any]:
 
 def execute_cleared(
     ctx: Ctx,
-    item: Mapping[str, Any],
+    item: Mapping[str, object],
     *,
     slot: str,
     subject: str,
     phase: str,
     state: Execution,
-    by_id: Mapping[str, dict[str, Any]],
+    by_id: Mapping[str, EpicItem],
 ) -> tuple[bool, str]:
     """Do what the gate — or the policy — cleared. Dispatch on the KIND, not the slot.
 
@@ -162,7 +173,11 @@ def execute_cleared(
         if not ok:
             return False, f"review branch push failed: {detail}"
         paths = next(
-            (str(row.get("output") or "") for row in item.get("evidence") or [] if row.get("check") == "governance_paths"),
+            (
+                str(row.get("output") or "")
+                for row in map(as_mapping, as_list(item.get("evidence")))
+                if row.get("check") == "governance_paths"
+            ),
             "",
         )
         body = "\n".join(
@@ -228,12 +243,12 @@ def execute_cleared(
         return True, "store moved to approved; file state line written"
     try:
         applied, detail = auto_apply(
-            dict(item), cartridge=cast(dict[str, Any], ctx.cartridge), runner=ctx.runner, wait_if_paused=lambda: wait_if_paused_here(ctx)
+            dict(item), cartridge=dict(ctx.cartridge), runner=ctx.runner, wait_if_paused=lambda: wait_if_paused_here(ctx)
         )
     except LimitStop:
         raise  # the account's own limit, not this task's; never through `quarantine_task`
     except RunnerError as exc:
-        arm = apply_arm_for(cast(str, item.get("kind")), cast(dict[str, Any], ctx.cartridge))
+        arm = apply_arm_for(cast(str, item.get("kind")), dict(ctx.cartridge))
         reason = f"apply arm '{arm}' raised {type(exc).__name__}: {exc}"
         state.quarantined.append(quarantine_task(ctx, by_id, phase=phase, task=subject, reason=reason, kind="infra"))
         return False, reason
@@ -262,7 +277,7 @@ def _record_merge(ctx: Ctx, state: Execution, task: str) -> None:
     state.handoffs[task] = handoff
 
 
-def _rebase_base(item: Mapping[str, Any]) -> str:
+def _rebase_base(item: Mapping[str, object]) -> str:
     """The ref a `stack_rebase` proposal names as the ground that moved.
 
     Read back off the proposal rather than recomputed, so what executes is the
@@ -278,7 +293,7 @@ def _rebase_base(item: Mapping[str, Any]) -> str:
 RESCUE_PRINCIPAL = "epic-swarm(rescue-review)"
 
 
-def _rescue_failed(ctx: Ctx, item: Mapping[str, Any], *, phase: str, reason: str, failed_checks: bool) -> dict[str, Any]:
+def _rescue_failed(ctx: Ctx, item: Mapping[str, object], *, phase: str, reason: str, failed_checks: bool) -> dict[str, object]:
     """The task stays quarantined: a `rescue_failed` attempt carrying the rule's cause, and a quarantined task row."""
     task = str(item["id"])
     cause, cause_why = rescue_select.rescue_cause(failed_checks, reason)
@@ -289,38 +304,49 @@ def _rescue_failed(ctx: Ctx, item: Mapping[str, Any], *, phase: str, reason: str
     return {"status": "rescue_failed", "reason": reason, "cause": cause}
 
 
-def records_after(found: Sequence[tuple[Mapping[str, Any], Any]], cutoff: Any) -> list[tuple[Mapping[str, Any], Any]]:
+def records_after[A: Mapping[str, object], R](
+    found: Sequence[tuple[A, R]], cutoff: Mapping[str, int]
+) -> list[tuple[A, R]]:
     """Pure. The (attempt, record) pairs whose run counts after the fresh-start `cutoff` (`workstore.counts_after`)."""
     return [(attempt, record) for attempt, record in found if workstore.counts_after(attempt.get("run"), cutoff)]
 
 
-def with_record_attempts(item: Mapping[str, Any], recorded: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+def with_record_attempts(item: EpicItem, recorded: Sequence[Attempt]) -> EpicItem:
     """Pure. `item` with `recorded` (its runs' task records as attempts, oldest first) as its attempts, when it holds
     none of its own; an item whose work file holds attempts, or with nothing recorded, is returned as it is."""
-    return {**item, "attempts": [dict(a) for a in recorded]} if recorded and not item.get("attempts") else item
+    return {**item, "attempts": [a.copy() for a in recorded]} if recorded and not item.get("attempts") else item
 
 
-def with_stored_causes(item: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def _seq(row: Mapping[str, object]) -> int:
+    """The `seq` of an attempts row that selected it."""
+    seq = row["seq"]
+    if not isinstance(seq, int):
+        raise MalformedRecord(f"attempt row: seq is a {type(seq).__name__}, not a number")
+    return seq
+
+
+def with_stored_causes(item: Mapping[str, object], rows: Sequence[Mapping[str, object]]) -> dict[str, object]:
     """`item` with each causeless file attempt given the cause of the store row for its run and phase, newest seq."""
-    newest = {(r["run_id"], r["phase_id"]): r["cause"] for r in sorted(rows, key=lambda r: r["seq"])}
+    newest = {(r["run_id"], r["phase_id"]): r["cause"] for r in sorted(rows, key=_seq)}
     return {
         **item,
         "attempts": [
             {**a, "cause": newest[key]} if not a.get("cause") and newest.get(key) else a
-            for a in item["attempts"]
+            for a in map(as_mapping, as_list(item["attempts"]))
             for key in [(a.get("run"), a.get("phase"))]
         ],
     }
 
 
-def with_stored_rescues(item: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def with_stored_rescues(item: Mapping[str, object], rows: Sequence[Mapping[str, object]]) -> dict[str, object]:
     """`item` with the store's `rescue_failed` attempts folded into its own, in ts order.
 
     core's ATTEMPT_KINDS has no `rescue_failed`, so the work file never holds one and the store row is the
     record. A row no older than the first attempt on the current body is stamped with that body's sha.
     """
-    current = workstore.body_sha(item["body"])
-    since = min((str(a.get("ts") or "") for a in item["attempts"] if a.get("body_sha", current) == current), default=None)
+    current = workstore.body_sha(str(item["body"]))
+    attempts = [as_mapping(a) for a in as_list(item["attempts"])]
+    since = min((str(a.get("ts") or "") for a in attempts if a.get("body_sha", current) == current), default=None)
     stored = [
         {
             "run": row["run_id"],
@@ -334,7 +360,7 @@ def with_stored_rescues(item: Mapping[str, Any], rows: Sequence[Mapping[str, Any
         for row in rows
         if row["kind"] == rescue_select.RESCUE_KIND
     ]
-    return {**item, "attempts": sorted([*item["attempts"], *stored], key=lambda a: str(a.get("ts") or ""))}
+    return {**item, "attempts": sorted([*attempts, *stored], key=lambda a: str(a.get("ts") or ""))}
 
 
 def _stored_rescues(ctx: Ctx, task: str) -> list[AttemptRow]:
@@ -396,7 +422,7 @@ def _run_number(run: str) -> int:
     return int(tail) if "-" in run and tail.isdigit() else -1
 
 
-def _record_initiative(run: str, record: Mapping[str, Any]) -> str:
+def _record_initiative(run: str, record: Mapping[str, object]) -> str:
     """The initiative a record belongs to: its own `initiative`, else its run id less the run number."""
     return str(record.get("initiative") or "") or (run.rsplit("-", 1)[0] if _run_number(run) >= 0 else run)
 
@@ -414,13 +440,14 @@ def _record_attempt(run: str, phase: str, record: TaskRecord, ts: str) -> Attemp
     attempt = run_record.record_attempt(record)
     if attempt is None:
         return None
-    build = cast(Mapping[str, Any], record.get("build") if isinstance(record.get("build"), Mapping) else {})
-    evidence = record.get("evidence") or build.get("evidence")
-    verdicts = {key: record[key] for key in ("review", "adversary", "arbitration", "fix_loop") if isinstance(record.get(key), Mapping)}
+    fields = as_mapping(record)
+    build = as_mapping(fields.get("build"))
+    evidence = fields.get("evidence") or build.get("evidence")
+    verdicts = {key: fields[key] for key in ("review", "adversary", "arbitration", "fix_loop") if isinstance(fields.get(key), Mapping)}
     sha = run_record.record_body_sha(record)
     return as_attempt({
         "run": run, "phase": phase, **attempt, "ts": str(record.get("date") or "") or ts, **verdicts,
-        **({"evidence": list(evidence)} if isinstance(evidence, list) else {}),
+        **({"evidence": list(evidence)} if is_list(evidence) else {}),
         **({"body_sha": sha} if sha else {}),
     })
 
@@ -535,7 +562,7 @@ def record_attempts(ctx: Ctx, phase: str, task: str) -> list[Attempt]:
     return [attempt for attempt, _ in caused_records(ctx, phase, task)]
 
 
-def _record_rescue_gate(ctx: Ctx, phase: str, move: Mapping[str, Any], diff: Mapping[str, Any], minutes: float) -> None:
+def _record_rescue_gate(ctx: Ctx, phase: str, move: Mapping[str, object], diff: Mapping[str, object], minutes: float) -> None:
     """Ledger the gate's decision on a rescue's move, as `run_phase_tasks` ledgers a phase batch's.
 
     Keyed per task, since the store ignores a second gate row under the same run, phase and seq.
@@ -566,19 +593,21 @@ def _record_rescue_gate(ctx: Ctx, phase: str, move: Mapping[str, Any], diff: Map
         )
 
 
-def policy_split(ctx: Ctx, proposals: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def policy_split(
+    ctx: Ctx, proposals: list[dict[str, object]]
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     """The policy split for one gate batch. With a store the streaks come from its ledger table, so a lane host
     judges a kind by the streak every host shares; the host file is then only an export."""
     return split_by_policy(
         proposals,
-        cartridge=cast(dict[str, Any], ctx.cartridge),
+        cartridge=dict(ctx.cartridge),
         ledger_path=ctx.ledger_path,
         provider_profile=ctx.provider_profile,
         store=ctx.store,
     )
 
 
-def _rescue_move(ctx: Ctx, item: Mapping[str, Any], *, phase: str, evidence: list[dict[str, Any]]) -> tuple[bool, str]:
+def _rescue_move(ctx: Ctx, item: Mapping[str, object], *, phase: str, evidence: list[dict[str, object]]) -> tuple[bool, str]:
     """The approved task's `state_move`, through `split_by_policy` and `gate` as a build's is.
 
     Executed on the built-in workstore arm whatever arm the cartridge names, so the write is code and never
@@ -594,7 +623,7 @@ def _rescue_move(ctx: Ctx, item: Mapping[str, Any], *, phase: str, evidence: lis
             rationale=f"{task} was rescued: its kept patch passed the harness's checks and review",
             suggested_action=f"mark {task} approved",
         ),
-        **state_move_apply(item.get("path"), "approved"),
+        **state_move_apply(item_path(item), "approved"),
     }
     auto, gated = policy_split(ctx, [move])
     decisions, minutes = gate(gated, assume=ctx.assume)
@@ -607,7 +636,7 @@ def _rescue_move(ctx: Ctx, item: Mapping[str, Any], *, phase: str, evidence: lis
     # A rescue lands no draft and merges nothing: its kept work is the `agents/<run>/<task>` branch `_land_branch` made.
     state = Execution(landed={}, merged={}, moved={}, quarantined=[], escalated=frozenset({task}))
     applied, detail = (
-        execute_cleared(code_arm, move, slot="state_move", subject=task, phase=phase, state=state, by_id={task: dict(item)})
+        execute_cleared(code_arm, move, slot="state_move", subject=task, phase=phase, state=state, by_id={task: cast(EpicItem, dict(item))})
         if decision == "approved"
         else (False, "the gate refused the move")
     )
@@ -650,19 +679,19 @@ def _land_branch(ctx: Ctx, *, task: str, patch: str) -> str | None:
     return None
 
 
-def rescue_task(ctx: Ctx, item: Mapping[str, Any], *, phase: str) -> dict[str, Any]:
+def rescue_task(ctx: Ctx, item: Mapping[str, object], *, phase: str) -> dict[str, object]:
     """Harness checks on a quarantined task's kept patch, one review round, then a gated move to `approved` or `rescue_failed`."""
     task = str(item["id"])
-    attempts = item.get("attempts") or []
+    attempts = as_list(item.get("attempts"))
     # Under work_state store no work file holds an attempt: the runs' task records are the attempts, and the newest one
     # holds the kept patch (the store's copy, when another lane wrote it). Reading only the file, the rescue the chair
     # launched from those records would find nothing, and the chair would launch it again.
     records = caused_records(ctx, phase, task) if not attempts and store_authoritative(ctx) else []
     if records:
         item = {**item, "attempts": [attempt for attempt, _ in records]}
-        saved: Mapping[str, Any] | None = records[-1][1]
+        saved: Mapping[str, object] | None = records[-1][1]
     else:
-        saved = load_result(ctx.runs_dir, attempts[-1]["run"], phase, task) if attempts else None
+        saved = load_result(ctx.runs_dir, str(as_mapping(attempts[-1])["run"]), phase, task) if attempts else None
     patch = rescue_select.patch_of(saved)
     caused = with_stored_causes(item, stored_causes(ctx, task))
     ok, why = rescue_select.eligible(with_stored_rescues(caused, _stored_rescues(ctx, task)), patch)
@@ -693,15 +722,15 @@ def rescue_task(ctx: Ctx, item: Mapping[str, Any], *, phase: str) -> dict[str, A
     if not verified["passed"]:
         return _rescue_failed(ctx, item, phase=phase, reason=str(verified["reason"]), failed_checks=True)
 
-    rows = verified["rows"]
-    evidence = [*((saved or {}).get("evidence") or []), *rows]
+    rows: list[dict[str, object]] = verified["rows"]
+    evidence = [*as_list((saved or {}).get("evidence")), *rows]
     save_task_result(
         ctx,
         {**without_cause(saved or {}), "initiative": ctx.initiative_id, "phase": phase, "evidence": evidence, **body_stamp(item)},
         phase=phase,
         task=task,
     )
-    graph = rescue_review.run(
+    graph: Mapping[str, object] = rescue_review.run(
         {
             "run_id": f"{ctx.run_id}:{phase}:{task}",
             "date": ctx.date,
@@ -709,17 +738,17 @@ def rescue_task(ctx: Ctx, item: Mapping[str, Any], *, phase: str) -> dict[str, A
             "ticket_title": item.get("title") or "",
             "ticket_body": item.get("body") or "",
             "cartridge": ctx.cartridge,
-            "surfaces": list(item.get("surfaces") or []),
-            "patterns": list(item.get("patterns") or []),
+            "surfaces": as_list(item.get("surfaces")),
+            "patterns": as_list(item.get("patterns")),
             "patch": patch,
             "evidence": rows,
         },
         ctx.runner,
     )
-    if graph.get("failed_node") or (graph.get("fix_loop") or {}).get("review_placeholder"):
+    if graph.get("failed_node") or as_mapping(graph.get("fix_loop")).get("review_placeholder"):
         return {"status": "review_failed", "why": str(graph.get("failed_node_reason") or "review placeholders")}
     if graph.get("verdict") != "approve":
-        rationale = str((graph.get("review") or {}).get("rationale") or "no rationale given")
+        rationale = str(as_mapping(graph.get("review")).get("rationale") or "no rationale given")
         return _rescue_failed(ctx, item, phase=phase, reason=f"rescue review revised: {rationale}", failed_checks=False)
 
     # The branch precedes the gated move, so a refused move leaves it in place for the chair to land.
@@ -734,7 +763,7 @@ def rescue_task(ctx: Ctx, item: Mapping[str, Any], *, phase: str) -> dict[str, A
         item,
         phase=phase,
         evidence=[
-            {"check": "review_charter verdict", "output": str((graph.get("review") or {}).get("verdict"))},
+            {"check": "review_charter verdict", "output": str(as_mapping(graph.get("review")).get("verdict"))},
             *({"check": row["command"], "output": row["output"]} for row in rows),
         ],
     )
