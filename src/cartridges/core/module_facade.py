@@ -43,10 +43,20 @@ def _seen(module: types.ModuleType) -> dict[str, Snapshot]:
     return seen
 
 
+def _dunder(name: str) -> bool:
+    return name.startswith("__") and name.endswith("__")
+
+
 class FacadeModule(types.ModuleType):
-    """A module whose writes and deletes also reach the parts that hold the same name."""
+    """A module whose writes and deletes also reach the parts that hold the same name.
+
+    A dunder stays the facade's own, as `attribute` never reads one from the parts: `importlib.reload` writes the
+    facade's `__spec__`, `__file__` and `__loader__`, and each part keeps its own."""
 
     def __setattr__(self, name: str, value: object) -> None:
+        if _dunder(name):
+            super().__setattr__(name, value)
+            return
         held = parts(self)  # first: a part's own import may register into a facade global this write replaces
         seen = _seen(self)
         if name not in seen:
@@ -68,6 +78,8 @@ class FacadeModule(types.ModuleType):
 
     def __delattr__(self, name: str) -> None:
         super().__delattr__(name)
+        if _dunder(name):
+            return
         snapshot = _seen(self).pop(name, None)
         if snapshot is not None:
             for part, part_value in snapshot[1]:
@@ -98,7 +110,7 @@ def attribute(module_name: str, name: str) -> object:
 
     A dunder is never looked up in the parts: import machinery and introspection probe those, and must not load them."""
     module = sys.modules[module_name]
-    if not (name.startswith("__") and name.endswith("__")):
+    if not _dunder(name):
         for part in parts(module):
             if name in part.__dict__:
                 value = part.__dict__[name]
