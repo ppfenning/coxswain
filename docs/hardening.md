@@ -108,6 +108,19 @@ the check went in; `test_repo_gates` freezes that list, so it only shrinks. The 
 about 300 casts, which H2's validating constructors replace. Still open: those constructors, Action as a union per
 kind, and the strict set's remaining modules.
 
+**Follow-up: a record the constructor refuses.** A validating constructor turns a malformed row into an error, and
+the first cut raised it for the whole table: one bad landing record stopped every lander pass in its store, and
+nobody was told. `landing_store.list_records` now returns a `Listing`: the records that read, and apart from them
+each row that does not, as `Unreadable(initiative, why)`, keyed by the row's own `initiative` column
+(`core.landing_record.listing`, pure). `get_record` raises `UnreadableRecord` only for that initiative. The lander's
+`plan_pass` leaves that initiative's items queued and out of the pass, and tells the chair one `needs_chair` per
+stall, remembered in `lander_notices` (migration 0019) and forgotten once the row reads again. Adopt counts the row
+as present and never writes over it. A land stacked on a layer that may be that row waits (`lr.layer_below`), and
+a new stacked initiative that needs it is held with the reason (`core.landing.stack_unknown`), never cut from the
+epic branch. Nothing writes into the bad row: it is the evidence. A pass of `cox lander run` that fails for any
+other reason tells the chair once per distinct failure (`lander.pass_failure_notice`). Proven by
+`smoke/test_lander_unreadable_record.py`.
+
 ## H3. The lander does not block
 
 **Evidence.** A repo with no CI held every land for 30 minutes, again and again (#1167). A repo with CI still holds

@@ -25,12 +25,10 @@ from agent_tools.forgejo_api import (
     read_settings,
     request,
 )
+from agent_tools.forgejo_env import BASE_URL_ENV, DEFAULT_TOKEN_ENV
 
 __all__ = ["find_open_prs", "green_commits", "merge", "merge_state", "open_pr", "poll_checks", "push", "update_branch", "wait_checks"]
 
-DEFAULT_TOKEN_ENV = "FORGEJO_TOKEN"
-# Where an ssh origin finds its API address: the origin names a host, not an http(s) server.
-BASE_URL_ENV = "FORGEJO_BASE_URL"
 # The scp-like ssh form, `git@host:owner/name.git`; a `scheme://` URL never matches because `:` ends the host.
 _SCP_REMOTE = re.compile(r"^(?P<user>[^@/:\s]+)@(?P<host>[^:/\s]+):(?P<path>.+)$")
 # What forge_github's merge_state says for a PR that can and cannot merge; Forgejo has no finer status.

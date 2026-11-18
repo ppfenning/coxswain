@@ -641,3 +641,125 @@ def scripted_provider_profile_text(storage_url: str, scripted: str) -> str:
     this profile, so this is how a real launch runs offline end to end."""
     return (provider_profile_text(storage_url) + f"runner: scripted\nscripted: {scripted}\ntiers: {{}}\n"
             "capabilities:\n  tool_use: true\n")
+
+
+# --- GitHub, replayed for the real gh ------------------------------------------------------------------------------
+
+# gh's local-development host: for it gh speaks plain http to `api.github.localhost`, which reaches the replay through
+# HTTP_PROXY. A remote on this host is a GitHub remote to gh, and to no forge coxswain picks by `origin`.
+GH_HOST = "github.localhost"
+GH_SLUG = "ppfenning/coxswain"  # the repository the gh contract tests read: this one, which is public
+GH_RECORD_ENV = "COX_SMOKE_GH_RECORD"  # 1: run the gh contract tests against api.github.com and rewrite the recordings
+GH_TOKEN_ENV = "COX_SMOKE_GH_TOKEN"  # the token the recorder sends to api.github.com; read only when recording
+GH_REPLAY_TOKEN = "smoke-replay"  # what gh itself sends; the replay ignores it and the recorder replaces it
+# The request headers the recorder passes on: what selects the API's version and answer format, never a credential.
+GH_FORWARDED_HEADERS = frozenset({"accept", "content-type", "x-github-api-version", "graphql-features"})
+# The answer headers gh reads: the body's type, and the next page of a paginated list.
+_GH_KEPT_HEADERS = ("Content-Type", "Link")
+_GH_OPERATION = re.compile(r"^\s*(query|mutation)\b\s*(\w*)")
+_GH_UPSTREAM = "https://api.github.com/"
+
+
+def gh_path(target: str) -> str:
+    """The path and query of a request line's target: a proxied request names the whole URL, a direct one the path."""
+    parts = urlsplit(target)
+    path = parts.path or "/"
+    return f"{path}?{parts.query}" if parts.query else path
+
+
+def _graphql_operation(body: bytes) -> tuple[str, str, str] | None:
+    """(`query` or `mutation`, operation name, canonical variables) of a GraphQL request body; None when unreadable."""
+    try:
+        data = json.loads(body or b"{}")
+    except ValueError:
+        return None
+    match = _GH_OPERATION.match(str(data.get("query") or "")) if isinstance(data, dict) else None
+    if match is None:
+        return None
+    return match.group(1), match.group(2), json.dumps(data.get("variables") or {}, sort_keys=True, separators=(",", ":"))
+
+
+def gh_request_key(method: str, target: str, body: bytes) -> str:
+    """What a recorded answer is filed under: the method and the path with its query parameters sorted, or for
+    GraphQL the operation's kind, name and variables. Not the query text: a gh release that reorders a selection keeps
+    its key, and one that asks for a field the recording lacks reads it as missing, which the test then fails on."""
+    parts = urlsplit(gh_path(target))
+    if method == "POST" and parts.path == "/graphql":
+        operation = _graphql_operation(body)
+        if operation is not None:
+            return "POST /graphql " + " ".join(operation)
+    query = "&".join(f"{k}={v}" for k, v in sorted(parse_qsl(parts.query, keep_blank_values=True)))
+    return f"{method} {parts.path}" + (f"?{query}" if query else "")
+
+
+def gh_is_write(method: str, target: str, body: bytes) -> bool:
+    """True for anything but a read: a GET or HEAD, or a GraphQL query (a mutation is a write)."""
+    if method in ("GET", "HEAD"):
+        return False
+    if method == "POST" and urlsplit(gh_path(target)).path == "/graphql":
+        operation = _graphql_operation(body)
+        return operation is None or operation[0] != "query"
+    return True
+
+
+_GH_BRANCH_DELETE = re.compile(r"^/repos/([^/]+)/([^/]+)/git/refs/heads/(.+)$")
+
+
+def gh_absent_branch_probe(method: str, target: str) -> str | None:
+    """For a branch deletion, the GET that shows whether the branch exists; None for any other request. The recorder
+    forwards the deletion only when that GET answers 404: deleting a branch that is gone changes nothing on GitHub."""
+    match = _GH_BRANCH_DELETE.match(urlsplit(gh_path(target)).path) if method == "DELETE" else None
+    return None if match is None else f"/repos/{match.group(1)}/{match.group(2)}/git/ref/heads/{match.group(3)}"
+
+
+def gh_recording_name(test_name: str) -> str:
+    """The recording file of one test: its name, parameters included, made safe for a file name."""
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", test_name).strip("-") + ".json"
+
+
+def gh_scrub(value: object) -> object:
+    """`value` with every git identity (an object holding both `name` and `email`) replaced by the sandbox's own."""
+    if isinstance(value, list):
+        return [gh_scrub(v) for v in value]
+    if not isinstance(value, dict):
+        return value
+    scrubbed = {k: gh_scrub(v) for k, v in value.items()}
+    if "name" in scrubbed and "email" in scrubbed:
+        scrubbed.update(name="Smoke Test", email="smoke@example.invalid")
+    return scrubbed
+
+
+def gh_exchange(key: str, status: int, headers: Mapping[str, str], text: str) -> dict:
+    """One recorded answer: the headers gh reads (a Link's pages pointed at the replay host) and the body, scrubbed
+    when it is JSON."""
+    kept = {name: value for name in _GH_KEPT_HEADERS for k, value in headers.items() if k.lower() == name.lower()}
+    if "Link" in kept:
+        kept["Link"] = kept["Link"].replace(_GH_UPSTREAM, f"http://api.{GH_HOST}/")
+    try:
+        body = json.dumps(gh_scrub(json.loads(text)), separators=(",", ":"))
+    except ValueError:
+        body = text
+    return {"key": key, "status": status, "headers": kept, "body": body}
+
+
+def gh_exchange_queues(exchanges: Sequence[Mapping]) -> dict[str, list[Mapping]]:
+    """The recorded answers by key, in the order they were recorded."""
+    queues: dict[str, list[Mapping]] = {}
+    for exchange in exchanges:
+        queues.setdefault(str(exchange["key"]), []).append(exchange)
+    return queues
+
+
+def gh_env(proxy: str, config_dir: str) -> dict[str, str]:
+    """What sends a sandboxed gh to the replay or the recorder at `proxy`: the local host, the proxy for http and
+    https alike (so a request gh made to any other host also reaches the replay, which has no answer for it, and never
+    the network), a config folder of its own, a placeholder token, and no prompt or update check."""
+    return {"GH_HOST": GH_HOST, "HTTP_PROXY": proxy, "http_proxy": proxy, "HTTPS_PROXY": proxy, "https_proxy": proxy,
+            "NO_PROXY": "", "no_proxy": "",
+            "GH_TOKEN": GH_REPLAY_TOKEN, "GH_CONFIG_DIR": config_dir, "GH_PROMPT_DISABLED": "1",
+            "GH_NO_UPDATE_NOTIFIER": "1", "GH_SPINNER_DISABLED": "1"}
+
+
+def gh_remote_url(slug: str) -> str:
+    """The origin URL of a clone of `slug` on the replay's host."""
+    return f"https://{GH_HOST}/{slug}.git"

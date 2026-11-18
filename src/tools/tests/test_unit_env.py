@@ -147,6 +147,17 @@ VALUE_ROWS = [
     ("K=good\nK=a;b\n", "a;b", unit_env.SH_SYNTAX),
     ("K=abc\r\n", "abc", unit_env.SH_CR),  # sh keeps a CRLF line's \r; systemd drops it as trailing whitespace
     ("K=1 W=2\n", "1 W=2", "1"),
+    # sh expands a ~ only at the value's start or after a `:`; elsewhere it is literal and loads
+    ("K=x~y\n", "x~y", "x~y"),
+    ("K=ab~\n", "ab~", "ab~"),
+    ("K=a=~/b\n", "a=~/b", "a=~/b"),
+    ("K=~/a\n", "~/a", unit_env.SH_SYNTAX),
+    ("K=a:~/b\n", "a:~/b", unit_env.SH_SYNTAX),
+    # sh reads past `;` into another assignment and sets both; a command after it is still skipped
+    ("K=1;W=2\n", "1;W=2", "1"),
+    ("W=0;K=1\n", None, "1"),  # systemd sets W to `0;K=1` and never K
+    ("K=1;\n", "1;", "1"),
+    ("K=good\nK=1;true\n", "1;true", unit_env.SH_SYNTAX),
     ("K='ab\ncd'\n", "ab\ncd", "ab\ncd"),
 ]
 
@@ -165,7 +176,7 @@ def test_a_value_loads_as_the_units_on_each_platform_read_it(text: str, linux: s
     assert linux not in SKIP_REASONS  # systemd reads every value; only darwin's sh skips
 
 
-@pytest.mark.parametrize("meta", list(";&|<>()~"))
+@pytest.mark.parametrize("meta", list(";&|<>()"))
 def test_an_unquoted_sh_metacharacter_is_skipped_on_darwin_and_loads_on_linux(meta: str) -> None:
     assert _read_k(f"K=a{meta}b\n", "linux") == f"a{meta}b"
     assert _read_k(f"K=a{meta}b\n", "darwin") == unit_env.SH_SYNTAX
@@ -197,12 +208,38 @@ def test_a_name_that_is_not_a_plain_identifier_is_never_read() -> None:
         assert (values, skipped) == ({"OK": "1"}, ())
 
 
+def test_a_semicolon_then_assignments_sets_every_one_on_darwin() -> None:
+    values, skipped = unit_env.read_env_files(["V=1;W=2;X=3\nY=4\n"], "darwin")
+    assert (values, skipped) == ({"V": "1", "W": "2", "X": "3", "Y": "4"}, ())
+    values, skipped = unit_env.read_env_files(["V=1; W=2\n"], "darwin")
+    assert (values, skipped) == ({"V": "1", "W": "2"}, ())
+
+
+def test_the_base_declared_names_include_the_forge_settings_the_upgrade_reads() -> None:
+    from agent_tools import forge_forgejo
+
+    assert frozenset(
+        {*unit_env.ENV_KEYS, forge_forgejo.BASE_URL_ENV, forge_forgejo.DEFAULT_TOKEN_ENV}) == unit_env.DECLARED_BASE
+    assert unit_env.declared_names() == unit_env.DECLARED_BASE
+
+
+def test_a_kept_earlier_value_gets_one_note_that_says_both() -> None:
+    values, skipped = unit_env.read_env_files(["V=good\nV=a b\nW=x y\n"], "darwin")
+    load = unit_env.plan_load({}, values, skipped)
+    assert load.loaded == {"V": "good"}
+    notes = unit_env.load_notes(load, ["/u.env"], [], [], frozenset({"V", "W"}))
+    assert notes == [
+        f"env: loaded V from /u.env as an earlier line sets it; a later line: {unit_env.SH_COMMAND}",
+        f"env: a line in /u.env did not set W: {unit_env.SH_COMMAND}",
+    ]
+
+
 def test_declared_names_are_env_keys_and_every_env_name_a_profile_declares() -> None:
     routing = {"forgejo_token_env": "MY_FORGE_TOKEN", "nested": [{"auth_env": "AUTH"}], "store": {"mode": "shared"}}
     provider = {"object_store": {"access_key_env": "GARAGE_ACCESS_KEY_ID", "secret_key_env": "GARAGE_SECRET_ACCESS_KEY",
                                  "endpoint": "http://x"}, "bad_env": "not a name"}
     assert unit_env.declared_names(routing, provider) == frozenset(
-        {*unit_env.ENV_KEYS, "MY_FORGE_TOKEN", "AUTH", "GARAGE_ACCESS_KEY_ID", "GARAGE_SECRET_ACCESS_KEY"})
+        {*unit_env.DECLARED_BASE, "MY_FORGE_TOKEN", "AUTH", "GARAGE_ACCESS_KEY_ID", "GARAGE_SECRET_ACCESS_KEY"})
 
 
 def test_printable_names_prints_only_declared_names_and_counts_the_rest() -> None:

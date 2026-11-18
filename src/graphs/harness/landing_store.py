@@ -10,8 +10,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from core.landing_record import LandingRecord, record_from_store
-from harness.store_dialect import Connection, json_load, json_text, upsert
+from core.landing_record import LandingRecord, Listing, Unreadable, listing, read_row
+from harness.store_dialect import Connection, json_text, upsert
 
 PHASE_MERGE = "phase_merge"
 INITIATIVE_LAND = "initiative_land"
@@ -34,10 +34,33 @@ def item_id(kind: str, initiative: str, phase: str = "") -> str:
 
 # -- landing records ----------------------------------------------------------------------------------------------
 
-def get_record(conn: Connection, initiative: str) -> LandingRecord | None:
+class UnreadableRecord(ValueError):
+    """`get_record` of a row that does not read as a landing record. Only that initiative's reader stops."""
+
+    def __init__(self, found: Unreadable) -> None:
+        super().__init__(f"the landing record of {found.initiative} cannot be read: {found.why}")
+        self.unreadable = found
+
+
+def read_record(conn: Connection, initiative: str) -> LandingRecord | Unreadable | None:
+    """The initiative's record, `Unreadable` when its row does not read as one, None when it has no row."""
     p = conn.dialect.placeholder
     row = conn.query_one(f"SELECT record_json FROM landing_records WHERE initiative = {p}", (initiative,))
-    return None if row is None else record_from_store(json_load(row[0]) or {})
+    return None if row is None else read_row(initiative, row[0])
+
+
+def get_record(conn: Connection, initiative: str) -> LandingRecord | None:
+    """The initiative's record, None when it has none. `UnreadableRecord` when its row does not read as one."""
+    found = read_record(conn, initiative)
+    if isinstance(found, Unreadable):
+        raise UnreadableRecord(found)
+    return found
+
+
+def has_record(conn: Connection, initiative: str) -> bool:
+    """Whether the initiative has a row, readable or not. A writer that must never write over a record asks this."""
+    p = conn.dialect.placeholder
+    return conn.query_one(f"SELECT 1 FROM landing_records WHERE initiative = {p}", (initiative,)) is not None
 
 
 def put_record(conn: Connection, record: Mapping[str, Any]) -> None:
@@ -50,15 +73,35 @@ def put_record(conn: Connection, record: Mapping[str, Any]) -> None:
     conn.execute(upsert(conn.dialect, "landing_records", _RECORD_COLUMNS, ("initiative",)), row)
 
 
-def list_records(conn: Connection, states: Sequence[str] | None = None) -> list[LandingRecord]:
-    """Every record, or those in `states`, by initiative."""
-    rows = conn.query_all("SELECT state, record_json FROM landing_records ORDER BY initiative")
-    return [record_from_store(json_load(raw) or {}) for state, raw in rows if states is None or state in states]
+def list_records(conn: Connection, states: Sequence[str] | None = None) -> Listing:
+    """Every row, or those whose `state` column is in `states`, by initiative: the records, and apart from them the
+    rows that do not read as one (`core.landing_record.listing`). One malformed row never stops the read of the rest."""
+    rows = conn.query_all("SELECT initiative, state, record_json FROM landing_records ORDER BY initiative")
+    return listing((str(initiative), raw) for initiative, state, raw in rows if states is None or state in states)
 
 
 def delete_record(conn: Connection, initiative: str) -> None:
     p = conn.dialect.placeholder
     conn.execute(f"DELETE FROM landing_records WHERE initiative = {p}", (initiative,))
+
+
+# -- notices: stalls told to the chair that no landing record can hold (migration 0019) ---------------------------
+
+def told(conn: Connection, prefix: str) -> dict[str, str]:
+    """Every notice whose key starts with `prefix`: key -> the reason it was told with."""
+    rows = conn.query_all("SELECT key, reason FROM lander_notices ORDER BY key")
+    return {str(key): str(reason) for key, reason in rows if str(key).startswith(prefix)}
+
+
+def remember(conn: Connection, key: str, reason: str, now: str) -> None:
+    """Record that the stall `key` was told with `reason`."""
+    conn.execute(upsert(conn.dialect, "lander_notices", ("key", "reason", "since"), ("key",)), (key, reason, now))
+
+
+def forget(conn: Connection, key: str) -> None:
+    """The stall `key` has cleared: the next one is told again."""
+    p = conn.dialect.placeholder
+    conn.execute(f"DELETE FROM lander_notices WHERE key = {p}", (key,))
 
 
 # -- land queue ---------------------------------------------------------------------------------------------------

@@ -1,0 +1,14 @@
+{
+ "exchanges": [
+  {
+   "body": "{\"data\":{\"repository\":{\"pullRequest\":{\"number\":1061,\"state\":\"MERGED\",\"url\":\"https://github.com/ppfenning/coxswain/pull/1061\",\"headRefName\":\"pr/chair-breaks-a-steer-deadlock-between-facts-approval-holds\",\"headRefOid\":\"20029843c19b460ce224eacd337fc97d7e6b255a\",\"baseRefName\":\"main\",\"body\":\"Run: chair-breaks-a-steer-deadlock-between-2\\nTask: chair-breaks-a-steer-deadlock-between-facts-approval-holds\\nReview verdict: approve\\nArbitration verdict: approve\\n\\nChair facts now carry a live flag on running entries, per-task approval hold ages and the resolved hold limit, and release_approvals is a declared action kind. No planner, exec or cli code changed. Two existing tests pinned exact running-entry dicts and the facts-deps wiring list, so I updated them: test_chair_facts_steer.py, test_chair_facts_phases.py and test_chair_run_wiring.py. This goes beyond the four planned files. The first full chair run had one failure, in the wiring test, which I fixed. I did not rerun the whole chair suite afterwards. I reran only test_chair_run_wiring.py, test_chair_facts_approval_holds.py and test_chair_types.py (93 passed). Ruff check passes on src/tools. I did not run the other two suites in .agent-checks (src/graphs and src/cartridges), the clean check, or the type checker. Counting rule I chose: the action rows carry no tick id, so one tick is one distinct `ts` among the matching rows. A row matches a task when its task_id equals the task's id, or when it has no task_id and names the task's initiative. Counted kinds are land, land_phase and steer_clear. A land or land_phase row with status landed or done resets the count. Merged tasks are skipped, and tasks with a zero count get no entry. If one tick stamps its rows with different ts values, the count will run high.\\n\\n\\ud83d\\udea3 Built with [coxswain](https://github.com/ppfenning/coxswain) \\u00b7 run chair-breaks-a-steer-deadlock-between-2\",\"id\":\"PR_kwDOUPZx2c8AAAABN3qVFg\"}}}}",
+   "headers": {
+    "Content-Type": "application/json; charset=utf-8"
+   },
+   "key": "POST /graphql query PullRequestByNumber {\"owner\":\"ppfenning\",\"pr_number\":1061,\"repo\":\"coxswain\"}",
+   "status": 200
+  }
+ ],
+ "gh": "gh version 2.103.3 (2026-10-26)",
+ "slug": "ppfenning/coxswain"
+}

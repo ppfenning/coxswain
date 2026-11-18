@@ -280,3 +280,58 @@ def test_landed_and_per_task_records_are_not_live():
     assert not lander.live({"state": "landed"})
     assert not lander.live({"state": "building", "land_at": "task"})
     assert not lander.live({"state": "pr_open", "land_at": "epic"})
+
+
+# -- a landing-record row that does not read ------------------------------------------------------------------------
+
+def _unread(initiative: str, why: str = "phases is malformed"):
+    from core import landing_record as lr
+
+    return lr.Unreadable(initiative, why)
+
+
+def test_an_unreadable_row_is_told_once_per_stall_and_forgotten_once_it_reads_again():
+    bad = _unread("bad")
+    tell, forget = lander.unreadable_notices({}, [bad])
+    assert (tell, forget) == ([bad], [])
+    told = {"unreadable:bad": lander.reason_key(lander.unreadable_reason(bad))}
+    assert lander.unreadable_notices(told, [bad]) == ([], []), "the same stall is not told twice"
+    changed = _unread("bad", "record_json is not JSON")
+    assert lander.unreadable_notices(told, [changed]) == ([changed], []), "a new reason is news"
+    assert lander.unreadable_notices(told, []) == ([], ["unreadable:bad"]), "it reads again: the next stall is new"
+    assert lander.unreadable_notices({"other:x": "y"}, []) == ([], []), "another kind of notice is not this one's to forget"
+
+
+def test_the_items_of_an_unreadable_initiative_are_left_out_of_the_pass_and_every_other_is_kept():
+    items = [{"id": "phase_merge:bad:p1", "initiative": "bad"}, {"id": "initiative_land:good", "initiative": "good"}]
+    assert lander.without_unreadable(items, [_unread("bad")]) == [items[1]]
+    assert lander.without_unreadable(items, []) == items
+
+
+def test_a_failed_pass_is_told_once_while_it_repeats_and_again_after_a_pass_that_succeeds():
+    told, reason = lander.pass_failure_notice(None, "pass failed: OperationalError: the store went away at 10:00:01")
+    assert reason is not None and told is not None
+    assert lander.pass_failure_notice(told, "pass failed: OperationalError: the store went away at 10:00:31") == (told, None), (
+        "the same failure at another time is not news")
+    assert lander.pass_failure_notice(told, "pass failed: KeyError: 'branch'")[1] == "pass failed: KeyError: 'branch'"
+    assert lander.pass_failure_notice(told, None) == (None, None)
+
+
+def test_adopt_counts_an_unreadable_row_as_present_and_never_as_a_candidate():
+    from agent_tools import lander_adopt
+    from core import landing_record as lr
+
+    assert lander_adopt.present_skip(None) is None
+    assert lander_adopt.present_skip({"initiative": "a"}) == "it has a landing record already"
+    skip = lander_adopt.present_skip(_unread("bad"))
+    assert skip is not None and "cannot be read" in skip and "phases is malformed" in skip
+    table = lr.Listing(({"initiative": "a"},), (_unread("bad"),))
+    assert lander_adopt.unrecorded(["bad", "new", "a"], table) == ["new"]
+    assert lander_adopt.left_alone(["bad", "new", "a"], table) == [f"bad: skipped: {skip}"], (
+        "a person who named it is told it was left alone; a readable record is skipped quietly, as before")
+
+
+def test_status_names_an_unreadable_row_with_why():
+    status = lander_cli.status_rows([], [], {}, "2026-11-17T10:00:00Z", [_unread("bad")])
+    assert status["unreadable"] == [{"initiative": "bad", "why": "phases is malformed"}]
+    assert "bad: landing record cannot be read, left as it is: phases is malformed" in lander_cli.status_lines(status)

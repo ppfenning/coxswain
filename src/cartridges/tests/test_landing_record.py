@@ -192,12 +192,17 @@ def test_a_stacked_record_takes_forward_the_parent_of_each_landed_layer_below_it
     a = _layer("a", "init/a", "main")
     b = _layer("b", "init/b", "init/a")
     c = _layer("c", "init/c", "init/b")
-    assert lr.stack_resolved_parent(c, [a, b, c]) == "init/b", "the layer below has not landed: its branch is the parent"
-    assert lr.stack_resolved_parent(c, [a, {**b, "state": "landed"}, c]) == "init/a"
-    assert lr.stack_resolved_parent(c, [{**a, "state": "landed"}, {**b, "state": "landed"}, c]) == "main"
-    assert lr.stack_resolved_parent(a, [a, b, c]) == "main"
+    def resolved(record, records):
+        parent, unknown = lr.stack_resolved_parent(record, lr.Listing(tuple(records)), stacked=True, epic_branch="main")
+        assert unknown is None
+        return parent
+
+    assert resolved(c, [a, b, c]) == "init/b", "the layer below has not landed: its branch is the parent"
+    assert resolved(c, [a, {**b, "state": "landed"}, c]) == "init/a"
+    assert resolved(c, [{**a, "state": "landed"}, {**b, "state": "landed"}, c]) == "main"
+    assert resolved(a, [a, b, c]) == "main"
     loop = [_layer("x", "init/x", "init/y", "landed"), _layer("y", "init/y", "init/x", "landed")]
-    assert lr.stack_resolved_parent(_layer("z", "init/z", "init/x"), loop) in ("init/x", "init/y"), "a cycle ends"
+    assert resolved(_layer("z", "init/z", "init/x"), loop) in ("init/x", "init/y"), "a cycle ends"
 
 
 def test_follow_up_ids_take_the_first_free_number() -> None:

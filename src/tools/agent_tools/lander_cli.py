@@ -94,14 +94,21 @@ class _QueueStatus(TypedDict):
     reason: object
 
 
+class _UnreadableStatus(TypedDict):
+    initiative: str
+    why: str
+
+
 class _Status(TypedDict):
     initiatives: list[_InitiativeStatus]
+    unreadable: list[_UnreadableStatus]
     queue: list[_QueueStatus]
 
 
 def status_rows(records: Sequence[lr.LandingRecord], items: Sequence[lander.Row], tasks: Mapping[str, Sequence[lander.Row]],
-                now: str) -> _Status:
-    """Pure. What `cox lander status` shows: each live initiative's derived state and phases, and each open queue item."""
+                now: str, unreadable: Sequence[lr.Unreadable] = ()) -> _Status:
+    """Pure. What `cox lander status` shows: each live initiative's derived state and phases, each landing-record row
+    that does not read (`core.landing_record.Unreadable`) with why, and each open queue item."""
     initiatives: list[_InitiativeStatus] = []
     for record in records:
         initiative = lander.record_text(record, "initiative")
@@ -122,7 +129,8 @@ def status_rows(records: Sequence[lr.LandingRecord], items: Sequence[lander.Row]
          "reason": i.get("reason") or None}
         for i in items if i["state"] in ("queued", "claimed", "failed")
     ]
-    return {"initiatives": initiatives, "queue": queue}
+    return {"initiatives": initiatives, "unreadable": [{"initiative": u.initiative, "why": u.why} for u in unreadable],
+            "queue": queue}
 
 
 def status_lines(status: _Status) -> list[str]:
@@ -137,6 +145,8 @@ def status_lines(status: _Status) -> list[str]:
             lines.append(f"  held: {row['held']}")
     if not status["initiatives"]:
         lines.append("no initiative is in flight")
+    for row in status["unreadable"]:
+        lines.append(f"{row['initiative']}: landing record cannot be read, left as it is: {row['why']}")
     lines.append("")
     for item in status["queue"]:
         holder = f", held by {item['claimed_by']}" if item["state"] == "claimed" and item.get("claimed_by") else ""
@@ -230,20 +240,36 @@ def cmd_run(a: argparse.Namespace) -> int:
     ports = lander_ports.build(ws, profile)
     print(f"lander: {ports.worker} on {ws}, every {a.interval:g}s")
     lanes = Lanes(lambda: lander_ports.build(ws, profile, worker=ports.worker), lambda: _caps(profile), wait=False)
+    told: str | None = None
     try:
         while True:
+            failure: str | None = None
             try:
                 lander.run_once(ports, run_lanes=lanes)
             except KeyboardInterrupt:
                 raise
             except Exception as exc:  # one bad pass must not end the loop: the next pass reads everything again
-                print(f"lander: pass failed: {type(exc).__name__}: {exc}")
+                failure = f"pass failed: {type(exc).__name__}: {exc}"
+                print(f"lander: {failure}")
+            told = tell_pass_failure(ports, told, failure)
             time.sleep(a.interval)
     except KeyboardInterrupt:
         return 0
     finally:
         lanes.close()
         ports.conn.close()
+
+
+def tell_pass_failure(ports: lander.Ports, told: str | None, failure: str | None) -> str | None:
+    """Tell the chair of a failed pass once per distinct failure (`lander.pass_failure_notice`): what is told now."""
+    told, reason = lander.pass_failure_notice(told, failure)
+    if reason is not None:
+        try:
+            ports.notify("needs_chair", {"initiative": "", "reason": f"the lander's {reason}; it tries again every pass"})
+        except Exception as exc:  # a bus that cannot be written is said here, and told again next pass
+            print(f"lander: the chair was not told: {type(exc).__name__}: {exc}")
+            return None
+    return told
 
 
 def cmd_status(a: argparse.Namespace) -> int:
@@ -255,9 +281,10 @@ def cmd_status(a: argparse.Namespace) -> int:
     ws, profile = found
     ports = lander_ports.build(ws, profile)
     try:
-        records = landing_store.list_records(ports.conn)
-        status = status_rows(records, landing_store.list_items(ports.conn),
-                             {lander.record_text(r, "initiative"): ports.tasks(lander.record_text(r, "initiative")) for r in records}, ports.now())
+        table = landing_store.list_records(ports.conn)
+        status = status_rows(table.records, landing_store.list_items(ports.conn),
+                             {lander.record_text(r, "initiative"): ports.tasks(lander.record_text(r, "initiative")) for r in table.records},
+                             ports.now(), table.unreadable)
     finally:
         ports.conn.close()
     print(json.dumps(status, indent=2) if a.json else "\n".join(status_lines(status)))
@@ -268,6 +295,7 @@ def cmd_adopt(a: argparse.Namespace) -> int:
     """Dry run unless `--apply`: prints, per initiative with no landing record, what adopting it would do."""
     from agent_tools import lander_adopt, work_state
     from agent_tools.store_url import read_provider_profile
+    from harness import landing_store
 
     found = _workspace(a)
     if found is None:
@@ -279,6 +307,8 @@ def cmd_adopt(a: argparse.Namespace) -> int:
         provider: Mapping[str, object] = read_provider_profile(str(profile["provider_profile"])) if profile.get("provider_profile") else {}
         send_back = lander_ports.send_back(ws, ports.conn, ports.worker, work_state.work_state_mode(provider))
         stopped = False
+        for line in lander_adopt.left_alone(named, landing_store.list_records(ports.conn)):
+            print(line)
         for initiative in lander_adopt.candidates(ports, named):
             plan = lander_adopt.plan(ports, initiative)
             lines = lander_adopt.apply(ports, plan, send_back) if a.apply else plan.lines()

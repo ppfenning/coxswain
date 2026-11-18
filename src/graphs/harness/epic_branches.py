@@ -293,9 +293,17 @@ def _take_parent_forward(ctx: Ctx) -> tuple[str, str, landing_git.Merge] | None:
     record = landing_store.get_record(ctx.store.conn, ctx.initiative_id) or {}
     # A stacked initiative's recorded parent is the branch of the initiative below; once that one landed, its branch is
     # gone and its own parent is the one to take forward.
-    stacked = landing_record.stack_resolved_parent(record, landing_store.list_records(ctx_store(ctx).conn)) if record else ""
-    parent = stacked or ctx.default_ref.removeprefix("origin/")
+    base = ctx.default_ref.removeprefix("origin/")
+    stacked, unknown = landing_record.stack_resolved_parent(
+        record, landing_store.list_records(ctx_store(ctx).conn), stacked=bool(record.get("epic")), epic_branch=base,
+    ) if record else ("", None)
+    parent = stacked or base
     parent_ref = f"origin/{parent}" if landing_git.rev(ctx.repo, f"refs/remotes/origin/{parent}") else parent
+    if unknown is not None:
+        # The layer below may be a row that does not read: whether it landed (and its branch is gone) is unknown, so
+        # nothing is taken forward and no phase builds on a base nobody can name. `behind_parent` says so.
+        return parent, parent_ref, landing_git.Merge("error", detail=(
+            f"the landing record of {unknown.initiative}, which may be the layer below, cannot be read ({unknown.why})"))
     if landing_git.is_ancestor(ctx.repo, parent_ref, branch):
         return parent, parent_ref, landing_git.Merge("up_to_date")
     early = resolve_push_initiative(ctx.cartridge) == "early"
