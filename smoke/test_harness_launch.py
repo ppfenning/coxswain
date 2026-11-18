@@ -1,12 +1,13 @@
-"""The harness's entry point, run the way `cox route launch` starts it: `<harness_dir>/shell.py` -> `harness.cli.main`
--> `_run_graph`, under the install's interpreter, against real git and the test's Postgres.
+"""The harness, started the way a person starts it: `cox route launch epic` -> `<harness_dir>/shell.py` ->
+`harness.cli.main` -> `_run_graph` -> `run_epic`, detached, under the install's interpreter and the environment
+cox builds for it (`route.child_env`), against real git and the test's Postgres.
 
-Every node of a graph is a model call. These runs replay canned node answers through the harness's own offline runner
-(`--scripted`, `runner.scripted.ScriptedRunner`), the one offline provider the harness has. Nothing else is stood in
-for: cox builds the argv (its `--dry-run` prints it), the harness resolves the team cartridge and its skills, applies
-the patch in a real worktree, runs the cartridge's check there, gates, merges onto the phase branch, pushes, and
-records the run in the store. `cox route launch` itself cannot pass `--scripted`, so its detached start is covered
-separately, up to the runner (`test_a_launch_starts_the_harness_detached_and_a_dead_run_frees_its_lease`).
+Every node of a graph is a model call. The provider profile names the harness's own offline runner
+(`runner: scripted`, `harness.runners._scripted`), which replays canned answers by role; nothing else is stood in for.
+cox resolves the profile, places the lane, builds the argv and the child environment and starts the harness; the
+harness resolves the team cartridge and its skills, applies the patch in a real worktree, runs the cartridge's check
+there, gates, merges onto the phase branch, pushes and records the run in the store. The lifecycle test runs the
+harness's entry point directly, with the `--scripted` flag, for the generic single-graph branch of `_run_graph`.
 """
 
 from __future__ import annotations
@@ -22,7 +23,8 @@ from smoke import plan
 psycopg = pytest.importorskip("psycopg")
 
 INITIATIVE, TASK, NOTE = "ship", "t1", plan.SMOKE_NOTE
-EXIT_WAIT_S = 60
+EXIT_WAIT_S = 120
+SUMMARY = "epic {run}: 1 phase(s) complete, 0 partial, 0 blocked, 0 awaiting land, 0 task(s) quarantined"
 
 
 def _filed(sandbox) -> None:
@@ -50,23 +52,39 @@ def _registered_worktrees(sandbox, repo) -> list[str]:
     return [line.removeprefix("worktree ") for line in listing.splitlines() if line.startswith("worktree ")]
 
 
-def test_an_epic_runs_offline_from_the_argv_cox_builds_and_its_phase_lands_on_main(launchable, repo):
+def _wait_exit(pid: int) -> bool:
+    deadline = time.monotonic() + EXIT_WAIT_S
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def _launched(sandbox, run_id: str) -> str:
+    """`cox route launch epic` from the workspace; waits for the detached harness to exit and returns its log."""
+    launch = sandbox.cox("route", "launch", "epic", "--initiative", f"work/{INITIATIVE}", "--repo", "~/src/app",
+                         cwd=sandbox.workspace)
+    assert launch.returncode == 0, launch.stdout + launch.stderr
+    assert f"run {run_id}" in launch.stdout.splitlines(), launch.stdout
+    runs = sandbox.workspace / "runs"
+    pid = int((runs / f"{run_id}.pid").read_text(encoding="utf-8"))
+    assert json.loads((runs / f"{run_id}.launched.json").read_text(encoding="utf-8"))["initiative"] == INITIATIVE
+    assert _wait_exit(pid), f"the harness (pid {pid}) was still running after {EXIT_WAIT_S}s"
+    log = (runs / f"{run_id}.log").read_text(encoding="utf-8")
+    assert log.startswith(f"graph started: {run_id}\n"), log[:2000]
+    return log
+
+
+def test_cox_route_launch_runs_an_epic_offline_and_its_phase_lands_on_main(launchable, repo):
     sandbox = launchable.sandbox
     _filed(sandbox)
-    dry = sandbox.cox("route", "launch", "epic", "--initiative", f"work/{INITIATIVE}", "--repo", "~/src/app", "--dry-run",
-                      cwd=sandbox.workspace)
-    assert dry.returncode == 0, dry.stdout + dry.stderr
-    argv = plan.dry_run_argv(dry.stdout)
-    assert argv is not None, dry.stdout
-    # cox starts the install's own interpreter on the harness_dir's launcher, with the run id it chose
-    assert argv[:3] == [str(sandbox.install.python), str(sandbox.install.root / "shell.py"), "epic"]
-    assert argv[argv.index("--run-id") + 1] == "ship-1"
-    assert argv[argv.index("--base") + 1] == "origin/main"
-
-    done = launchable.run([*argv, "--scripted", str(_responses(launchable))], cwd=sandbox.workspace)
-    assert done.returncode == 0, done.stdout[-3000:] + done.stderr[-3000:]
-    assert ("epic ship-1: 1 phase(s) complete, 0 partial, 0 blocked, 0 awaiting land, 0 task(s) quarantined"
-            in done.stdout), done.stdout[-3000:]
+    _responses(launchable)
+    log = _launched(sandbox, "ship-1")
+    # the check ran in the build worktree under the environment cox built for the harness: git, grep and a PATH
+    assert SUMMARY.format(run="ship-1") in log, log[-3000:]
 
     # the phase branch carries the built file, on this clone and on origin; the build worktree is gone
     assert sandbox.git(repo.path, "show", f"epic/{INITIATIVE}/p1:{NOTE}") == "ok"
@@ -85,6 +103,29 @@ def test_an_epic_runs_offline_from_the_argv_cox_builds_and_its_phase_lands_on_ma
     assert sandbox.store_row(INITIATIVE, TASK)["state"] == "done"
 
 
+def test_a_run_whose_runner_cannot_be_built_ends_in_error_and_frees_its_lease(launchable, repo):
+    sandbox = launchable.sandbox
+    _filed(sandbox)
+    # No answers file yet: the harness takes its lease ("graph started"), then the scripted runner cannot load. cox
+    # reports the start when it sees that line first, or the failure when the process has already exited.
+    assert not launchable.answers.exists()
+    launch = sandbox.cox("route", "launch", "epic", "--initiative", f"work/{INITIATIVE}", "--repo", "~/src/app",
+                         cwd=sandbox.workspace)
+    assert launch.returncode in (0, 1), launch.stdout + launch.stderr
+    runs = sandbox.workspace / "runs"
+    if launch.returncode == 0:
+        assert _wait_exit(int((runs / "ship-1.pid").read_text(encoding="utf-8")))
+    else:
+        assert "routing: launch failed: FileNotFoundError" in launch.stdout, launch.stdout
+    log = (runs / "ship-1.log").read_text(encoding="utf-8")
+    assert log.startswith("graph started: ship-1\n") and str(launchable.answers) in log, log[-2000:]
+    ended = _run_row(sandbox, "ship-1")
+    assert ended is not None and ended["status"] == "error" and ended["ended_at"], ended
+    # the dead run released `runs:ship`: the next launch is not refused, and runs to completion
+    _responses(launchable)
+    assert SUMMARY.format(run="ship-2") in _launched(sandbox, "ship-2")
+
+
 def test_a_single_graph_checks_its_patch_in_a_worktree_of_the_repo_and_records_the_run(launchable, repo):
     sandbox = launchable.sandbox
     result = sandbox.home / "life-1.result.json"
@@ -99,45 +140,9 @@ def test_a_single_graph_checks_its_patch_in_a_worktree_of_the_repo_and_records_t
     record = json.loads(result.read_text(encoding="utf-8"))
     assert record["change_facts"]["patch_ok"] is True
     # the cartridge's check ran in the worktree, against the applied file
-    assert [(c["name"], c["passed"]) for c in record["checks"]] == [("note", True)], record.get("checks")
+    assert [(c["name"], c["passed"]) for c in record["checks"]] == [("note", True), ("lane-path", True)], record.get("checks")
     assert [p["kind"] for p in record["proposals"]] == ["draft_pr_create"]
     assert not (launchable.worktrees / "life-1").exists()
     assert _registered_worktrees(sandbox, repo) == [str(repo.path)]
     run = _run_row(sandbox, "life-1")
     assert run is not None and run["status"] == "ok" and run["ended_at"], run
-
-
-def _wait_exit(pid: int) -> bool:
-    deadline = time.monotonic() + EXIT_WAIT_S
-    while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return True
-        time.sleep(0.2)
-    return False
-
-
-def test_a_launch_starts_the_harness_detached_and_a_dead_run_frees_its_lease(launchable, repo):
-    sandbox = launchable.sandbox
-    _filed(sandbox)
-    first = sandbox.cox("route", "launch", "epic", "--initiative", f"work/{INITIATIVE}", "--repo", "~/src/app",
-                        cwd=sandbox.workspace)
-    assert first.returncode == 0, first.stdout + first.stderr
-    assert "run ship-1" in first.stdout.splitlines()
-    runs = sandbox.workspace / "runs"
-    pid = int((runs / "ship-1.pid").read_text(encoding="utf-8"))
-    assert json.loads((runs / "ship-1.launched.json").read_text(encoding="utf-8"))["initiative"] == INITIATIVE
-    # The harness held its lease ("graph started"), then stopped at the runner: this provider profile names no model.
-    assert _wait_exit(pid), f"the harness (pid {pid}) was still running after {EXIT_WAIT_S}s"
-    log = (runs / "ship-1.log").read_text(encoding="utf-8")
-    assert log.startswith("graph started: ship-1\n"), log[:2000]
-    assert "provider profile must be a mapping with a 'tiers' block" in log, log[-2000:]
-    ended = _run_row(sandbox, "ship-1")
-    assert ended is not None and ended["status"] == "error" and ended["ended_at"], ended
-    # the dead run released `runs:ship`, so the next launch is not refused
-    second = sandbox.cox("route", "launch", "epic", "--initiative", f"work/{INITIATIVE}", "--repo", "~/src/app",
-                         cwd=sandbox.workspace)
-    assert second.returncode == 0, second.stdout + second.stderr
-    assert "run ship-2" in second.stdout.splitlines()
-    assert _wait_exit(int((runs / "ship-2.pid").read_text(encoding="utf-8")))

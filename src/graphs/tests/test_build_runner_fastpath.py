@@ -299,7 +299,7 @@ def test_an_unregistered_name_raises_naming_the_group_and_never_falls_back(tmp_p
     _entry_points(monkeypatch)
     monkeypatch.setattr(anthropic_runner, "AnthropicRunner", lambda *a, **k: pytest.fail("fell back to anthropic"))
     message = (
-        f"runner {name!r} is not registered: built in are claude-code, anthropic, openai-compatible; "
+        f"runner {name!r} is not registered: built in are claude-code, anthropic, openai-compatible, scripted; "
         "others register by entry point under coxswain.runners (ppfenning/coxswain-plugins)"
     )
     with pytest.raises(ValueError) as raised:

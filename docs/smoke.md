@@ -74,24 +74,29 @@ without mocks in `tests/test_smoke_plan.py`.
   cartridge `smoke` over the tree's `base` (`plan.team_cartridge_text`), with the smoke skills bound to a plugin
   whose skill bodies are stubs (`plan.skill_plugin_files`) and a check that passes only once the scripted patch is
   applied. A copy of the tree's `src/graphs/shell.py` sits beside the install's venv, where a checkout's
-  `src/graphs` holds it. The provider profile declares tool use, which the gate requires of a runner that edits files.
-  `launchable.scripted(answers)` writes a `--scripted` file and `launchable.run(argv, cwd)` runs a harness argv.
+  `src/graphs` holds it. The provider profile names the scripted runner and declares tool use, which the gate requires of a runner that edits files.
+  `launchable.scripted(answers)` writes the answers the scripted runner replays, for a launch and for `--scripted` alike, and `launchable.run(argv, cwd)` runs a harness argv.
 
 ## Harness tests
 
-Every node of a graph is a model call. The harness has one offline provider, `--scripted`, which replays canned answers
-by role through `runner.scripted.ScriptedRunner`. The release rehearsal and the forge tests avoid models by never
-running a graph. These tests run graphs, and `--scripted` stands in for the model and nothing else. The team cartridge
-and skills resolve for real. The patch is applied in a real worktree and the check runs there. The gate,
-the merge onto the phase branch, the push and the store records are all real. `cox route launch` cannot pass
-`--scripted`, so the epic runs from the argv that `cox route launch epic --dry-run` prints, with `--scripted` added.
-The detached start is covered separately, up to the runner.
+Every node of a graph is a model call. The release rehearsal and the forge tests avoid models by never running a
+graph. These tests run graphs, offline. The provider profile names the harness's own scripted runner
+(`runner: scripted`, with the answers file under `scripted:`), which replays canned answers by role through
+`runner.scripted.ScriptedRunner`. It stands in for the model and nothing else, so `cox route launch epic` itself runs
+end to end: cox resolves the profile, places the lane, checks the lane's interpreter and toolchain, builds the argv and
+the child environment (`route.child_env`), and starts the harness detached. The team cartridge and skills resolve for
+real, the patch is applied in a real worktree, and the cartridge's checks run there under the environment cox built.
+The gate, the merge onto the phase branch, the push and the store records are all real.
+
+The `lane-path` check (`command -v cox`) passes only when that environment carries the harness bin on PATH. A system's
+default path holds git and grep, so without it a launch environment with no PATH at all still passed; with it, a
+`route.child_env` that drops PATH fails both launch tests (checked by making that change in the tree and running them).
 
 | Test | Entry point | What it proves |
 | --- | --- | --- |
-| `test_harness_launch.py` (epic) | `cox route launch epic --dry-run`, then that argv: `shell.py epic` -> `harness.cli.main` -> `_run_graph` -> `run_epic` | cox hands the harness the install's interpreter, the launcher, the run id and `--base origin/main`. The one-task epic completes with nothing quarantined. `epic/ship/p1` carries the built file, here and on origin. No worktree stays registered, and the task is `approved` by `epic-driver:ship-1` in the store, with the run `ok`. The `cox runs land ... --gate full --apply` that the run names then puts the file on origin's main and marks the task done. |
-| `test_harness_launch.py` (lifecycle) | `shell.py lifecycle --repo ... --result-out ...`, the generic `_run_graph` branch | The patch is applied in a worktree of the repository. The cartridge's check passes there. The gate records one gated proposal. The result file says so, the worktree is removed, and the store has the run `ok`. |
-| `test_harness_launch.py` (detached) | `cox route launch epic` | The launch returns once the run holds its lease, with its pid file and launch record written. The harness, with no model in its provider profile, stops at the runner. The store records the run `error` with its end time, and the dead run's lease is free, so the next launch starts `ship-2`. |
+| `test_harness_launch.py` (epic) | `cox route launch epic` -> `shell.py epic` -> `harness.cli.main` -> `_run_graph` -> `run_epic` | The launch returns with its pid file and launch record, and the detached harness completes the one-task epic with nothing quarantined. `epic/ship/p1` carries the built file, here and on origin. No worktree stays registered, the task is `approved` by `epic-driver:ship-1` and the run is `ok`. The `cox runs land ... --gate full --apply` that the run names then puts the file on origin's main and marks the task done. |
+| `test_harness_launch.py` (dead run) | `cox route launch epic` | With no answers file, the harness takes its lease and then cannot build its runner. The store records the run `error` with its end time, and the lease is free, so the next launch, with the answers written, runs `ship-2` to completion. |
+| `test_harness_launch.py` (lifecycle) | `shell.py lifecycle --scripted ... --repo ... --result-out ...`, the generic `_run_graph` branch | The patch is applied in a worktree of the repository and both checks pass there. The gate records one gated proposal, the result file says so, the worktree is removed, and the store has the run `ok`. |
 
 ## Contract tests
 

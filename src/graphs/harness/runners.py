@@ -188,10 +188,26 @@ def _openai_compatible(
     return _with_workdir(OpenAICompatibleRunner(profile, role_skills=role_skills or {}), workdir, repo)
 
 
+def _scripted(
+    profile: Mapping[str, Any],
+    *,
+    role_skills: Mapping[str, str] | None,
+    workdir: str | Path | None,
+    repo: str | Path | None,
+) -> Any:
+    """The offline runner, chosen by the profile: `runner: scripted` replays the canned answers in the JSON file
+    `scripted:` names, as `--scripted` does. A launch that cannot pass a flag (`cox route launch`) runs offline so."""
+    path = profile.get("scripted")
+    if not isinstance(path, str) or not path:
+        raise ValueError("runner 'scripted' needs `scripted:`, the path of a JSON file of canned answers by role")
+    return ScriptedRunner(json.loads(Path(path).expanduser().read_text(encoding="utf-8")))
+
+
 _RUNNERS: dict[str, _RunnerFactory] = {
     "claude-code": _claude_code,
     "anthropic": _anthropic,
     "openai-compatible": _openai_compatible,
+    "scripted": _scripted,
 }
 
 
@@ -229,8 +245,8 @@ def build_runner(
     is the moment a cartridge binding stops being a validated name and starts
     being what the node actually knows.
 
-    Which live runner is the PROFILE's call (`runner:` names a built-in, claude-code,
-    anthropic or openai-compatible, or a plugin registered under coxswain.runners; no key means
+    Which runner is the PROFILE's call (`runner:` names a built-in, claude-code,
+    anthropic, openai-compatible or the offline scripted, or a plugin registered under coxswain.runners; no key means
     anthropic, and an unregistered name refuses), because the
     vendor axis is the profile's whole job and a CLI flag would be a second copy
     of it. `workdir` and `repo` matter only to a runner whose nodes can read

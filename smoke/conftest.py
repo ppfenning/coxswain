@@ -305,9 +305,9 @@ TEAM = "smoke"
 
 @dataclass(frozen=True)
 class Launchable:
-    """The sandbox set up so `cox route launch` can start the harness: a team cartridge over the tree's `base`, a
-    profile naming it, `shell.py` beside the install's venv as a checkout's `src/graphs` holds it, and a provider
-    profile that declares tool use, which the gate requires of a runner that edits files."""
+    """The sandbox set up so `cox route launch` can start the harness and run it offline: a team cartridge over the
+    tree's `base`, a profile naming it, `shell.py` beside the install's venv as a checkout's `src/graphs` holds it,
+    and a provider profile whose runner is the harness's scripted one (`plan.scripted_provider_profile_text`)."""
 
     sandbox: Sandbox
     cartridges: Path
@@ -321,9 +321,14 @@ class Launchable:
                 "--provider-profile", str(config / "provider.yaml"), "--runs-dir", str(self.sandbox.workspace / "runs"),
                 "--assume", "a", "--workdir", str(self.sandbox.workspace)]
 
+    @property
+    def answers(self) -> Path:
+        """The canned answers the provider profile's scripted runner replays (`plan.scripted_provider_profile_text`)."""
+        return self.sandbox.home / "scripted.json"
+
     def scripted(self, responses: object) -> Path:
-        """Write `responses` as the `--scripted` file the harness replays, and return its path."""
-        path = self.sandbox.home / "scripted.json"
+        """Write `responses` as the answers the scripted runner replays, for a launch and for `--scripted` alike."""
+        path = self.answers
         path.write_text(json.dumps(responses), encoding="utf-8")
         return path
 
@@ -347,7 +352,8 @@ def launchable(sandbox: Sandbox, tmp_path: Path) -> Launchable:
         (skills / relative).write_text(text, encoding="utf-8")
     config = sandbox.home / ".config" / "agent-tools"
     provider = config / "provider.yaml"
-    provider.write_text(plan.provider_profile_text(sandbox.store_url) + "capabilities:\n  tool_use: true\n", encoding="utf-8")
+    provider.write_text(plan.scripted_provider_profile_text(sandbox.store_url, str(sandbox.home / "scripted.json")),
+                        encoding="utf-8")
     (config / "profile.yaml").write_text(
         plan.routing_profile_text(team=TEAM, workspace=str(sandbox.workspace), harness_dir=str(sandbox.install.root),
                                   provider_profile=str(provider), extra={"cartridges_dir": str(cartridges), "skills_roots": f"[{skills}]", "assume": "a"}),

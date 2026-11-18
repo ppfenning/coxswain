@@ -563,10 +563,13 @@ SMOKE_SKILLS = {
 }
 
 
-# The file the scripted build adds, and the check the team cartridge runs on every built task: it passes only once the
-# patch is applied in the worktree the check runs in.
+# The file the scripted build adds, and the checks the team cartridge runs on every built task. `note` passes only once
+# the patch is applied in the worktree the check runs in. `lane-path` passes only when the harness bin is on the
+# check's PATH: `cox route launch` puts it there (`route.child_env`), and a lane's real checks (`uv run pytest`,
+# `ruff`) are found the same way. A system's default path holds git and grep, so only this check notices a launch
+# environment with no PATH at all.
 SMOKE_NOTE = "notes/t1.txt"
-SMOKE_CHECKS = ({"name": "note", "cmd": f"grep -qx ok {SMOKE_NOTE}"},)
+SMOKE_CHECKS = ({"name": "note", "cmd": f"grep -qx ok {SMOKE_NOTE}"}, {"name": "lane-path", "cmd": "command -v cox"})
 
 
 def team_cartridge_text(team: str, worktree_root: str, checks: Sequence[Mapping[str, str]] = ()) -> str:
@@ -608,7 +611,10 @@ def scripted_epic_responses(patch: str, files: Sequence[str]) -> dict[str, objec
     }
 
 
-def dry_run_argv(stdout: str) -> list[str] | None:
-    """The harness argv `cox route launch --dry-run` prints on its `dry-run: ` line, or None when it printed none."""
-    line = next((x for x in stdout.splitlines() if x.startswith("dry-run: ")), None)
-    return None if line is None else line.removeprefix("dry-run: ").split(" ")
+def scripted_provider_profile_text(storage_url: str, scripted: str) -> str:
+    """The provider profile of a sandbox that runs graphs offline: the store, the harness's scripted runner replaying
+    the answers at `scripted`, an empty tier map (the profile loader requires the block; no model is named), and tool
+    use declared, which the gate requires of a runner that edits files. `cox route launch` passes the harness only
+    this profile, so this is how a real launch runs offline end to end."""
+    return (provider_profile_text(storage_url) + f"runner: scripted\nscripted: {scripted}\ntiers: {{}}\n"
+            "capabilities:\n  tool_use: true\n")

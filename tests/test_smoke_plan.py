@@ -322,7 +322,8 @@ def test_the_team_cartridge_extends_base_binds_every_smoke_skill_and_carries_its
     cart = yaml.safe_load(plan.team_cartridge_text("smoke", "/w", plan.SMOKE_CHECKS))
     assert (cart["team"], cart["extends"]) == ("smoke", "base")
     assert cart["skills"] == plan.SMOKE_SKILLS
-    assert cart["landing_areas"] == {"worktree_root": "/w", "checks": [{"name": "note", "cmd": "grep -qx ok notes/t1.txt"}]}
+    assert cart["landing_areas"] == {"worktree_root": "/w", "checks": [
+        {"name": "note", "cmd": "grep -qx ok notes/t1.txt"}, {"name": "lane-path", "cmd": "command -v cox"}]}
 
 
 def test_the_skill_plugin_holds_a_manifest_and_one_body_per_bound_skill():
@@ -346,7 +347,7 @@ def test_the_scripted_epic_answers_every_role_the_cartridge_binds_but_the_item_a
     assert answers["review_charter"]["verdict"] == "approve"
 
 
-def test_the_dry_run_argv_is_read_from_its_own_line():
-    out = "taking the loop: x\ndry-run: /py /h/shell.py epic --run-id a-1\npid /r/a-1.pid\n"
-    assert plan.dry_run_argv(out) == ["/py", "/h/shell.py", "epic", "--run-id", "a-1"]
-    assert plan.dry_run_argv("routing: refused\n") is None
+def test_the_offline_provider_profile_names_the_scripted_runner_and_its_answers():
+    profile = yaml.safe_load(plan.scripted_provider_profile_text("postgresql://127.0.0.1/x", "/h/scripted.json"))
+    assert profile == {"storage_url": "postgresql://127.0.0.1/x", "runner": "scripted", "scripted": "/h/scripted.json",
+                       "tiers": {}, "capabilities": {"tool_use": True}}
