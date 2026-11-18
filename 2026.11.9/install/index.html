@@ -6913,18 +6913,23 @@ surrounding quotes and backslash escapes are removed (<code>"q v"</code> gives <
 <code>a\b</code> gives <code>ab</code>), a space inside an unquoted value is kept (a password with
 a space works), a backslash at the end of a line joins the next line, and <code>$</code>,
 <code>%</code> and an empty value (<code>E=</code>) load as written. On macOS it is the launchd
-agent's <code>sh .</code>. A value that <code>sh</code> would expand (<code>$</code> or a backtick), read as
-syntax (an unquoted <code>; &amp; | &lt; &gt; ( )</code> or <code>~</code>), split at a space, carry onto the
-next line or leave in an open quote is not loaded. Neither is one that starts
-with whitespace. Put such a value in single quotes.</p>
-<p>The command prints paths and variable names, never values. It prints a name
-only when it is in upper case, digits and <code>_</code>, and counts any other names,
-since a secret pasted on a line of its own can parse as a name. It prints:</p>
+agent's <code>sh .</code>, as macOS's <code>sh</code> (bash in POSIX mode) reads it. A line of
+assignments sets each one, and a backslash at the end of a line joins the next
+line there too. A line such as <code>V=a b</code> or <code>V=  x</code> runs a command with <code>V</code> set
+for that command only, so <code>V</code> keeps its earlier value, and the note says so.
+These are not loaded, each with a note: a value that <code>sh</code> would expand (<code>$</code> or
+a backtick), one with an unquoted <code>; &amp; | &lt; &gt; ( )</code> or <code>~</code>, and one that ends in
+a carriage return from a CRLF line. An open quote is a syntax error: nothing
+from its line on is set. Put such a value in single quotes.</p>
+<p>The command prints paths and variable names, never values. It prints only the
+names that <code>ENV_KEYS</code> or your profiles declare (the value of any <code>*_env</code> key,
+such as <code>access_key_env: GARAGE_ACCESS_KEY_ID</code>) and counts any others, since a
+secret pasted on a line of its own can parse as a name. It prints:</p>
 <ul>
 <li>the variables it loaded;</li>
 <li>the shell variables that override a different value in the file (if you
   rotated a key in the file, unset the old one in your shell);</li>
-<li>on macOS, any value it did not load, and why;</li>
+<li>on macOS, any line that did not set its variable, and why;</li>
 <li>a file a unit names that does not exist, and a file skipped because it is
   not UTF-8 text.</li>
 </ul>
