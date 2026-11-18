@@ -124,7 +124,7 @@ def test_the_tools_and_the_harness_share_one_set_of_bounds() -> None:
     numbers = {name: int(value) for name, value in re.findall(r"^(\w+_SECONDS) = (\d+)$", twin, re.MULTILINE)}
     assert numbers == {name: getattr(bounded_run, name) for name in numbers}
     assert set(numbers) == {"GH_TIMEOUT_SECONDS", "GIT_TIMEOUT_SECONDS", "GIT_SLOW_TIMEOUT_SECONDS", "STEP_TIMEOUT_SECONDS"}
-    epic = (SRC / "graphs" / "harness" / "epic.py").read_text(encoding="utf-8")
+    epic = (SRC / "graphs" / "harness" / "epic_branches.py").read_text(encoding="utf-8")
     assert "_GH_TIMEOUT_SECONDS = bounded_proc.GH_TIMEOUT_SECONDS" in epic
 
 
