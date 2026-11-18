@@ -25,7 +25,7 @@ from agent_tools import (
     store_cli,
 )
 from agent_tools.chair_carry_exec import ForgePort, GitPort, StorePort
-from agent_tools.chair_exec_act import _PR_URL_RE, _SMOKE_REPOS, _current_user, phase_task_states
+from agent_tools.chair_exec_act import PR_URL_RE, SMOKE_REPOS, current_user, phase_task_states
 from agent_tools.chair_exec_land import (
     LAND_TIMEOUT_S,
     LOCAL_ARGV_TIMEOUT_S,
@@ -36,13 +36,13 @@ from agent_tools.chair_exec_land import (
     Result,
     Run,
     TargetUnreadable,
-    _local_repo,
-    _ticket_paths,
     delete_branches_with,
     initiative_row,
+    local_repo_path,
     run_argv,
     run_argv_split,
     target_for,
+    ticket_paths_of,
 )
 from agent_tools.chair_types import Action, LandTrigger
 from agent_tools.land import approve_to_done
@@ -53,7 +53,7 @@ def _pr_from_reason(reason: str) -> int:
     """The PR number a land's captured output names: its `pr_create: <url>` line (`cli.py`'s `_land_walk`)
     always runs before `merge:`/`mark_done:` on a true `landed()` result, so it is already in `reason`; 0
     when no such line is there."""
-    match = _PR_URL_RE.search(reason)
+    match = PR_URL_RE.search(reason)
     return int(match[1]) if match else 0
 
 
@@ -64,7 +64,7 @@ def smoke_targets(results: list[Result]) -> list[LandTrigger]:
     return [
         {"repo": r["action"].get("repo", ""), "pr": _pr_from_reason(r["reason"]), "commit": r.get("commit", "")}
         for r in results
-        if r["status"] == "landed" and Path(r["action"].get("repo", "")).name in _SMOKE_REPOS
+        if r["status"] == "landed" and Path(r["action"].get("repo", "")).name in SMOKE_REPOS
     ]
 
 
@@ -143,7 +143,7 @@ def _check_login_edge(runs_dir: Path, ssh_run: Callable[[list[str]], ArgvResult]
     come from `provider_profile()`, resolved fresh on each call through `_login_runner_and_env`."""
     row = _host_row(runs_dir, host)
     ssh = str(row.get("ssh", ""))
-    current_versions = chair_login_watch._versions(row)
+    current_versions = chair_login_watch.versions_of(row)
     now = datetime.now(UTC).isoformat()
     runner, env_names = _login_runner_and_env(provider_profile())
     return chair_login_check.check_login_on_host(
@@ -192,7 +192,7 @@ class _GitEdge:
                  capacity: int | None = None) -> None:
         self.runs_dir, self.workspace, self.repo, self.tmp, self.home, self.target = runs_dir, workspace, repo, "", home, target
         self.capacity = capacity  # the lane cap `.agent-checks` divides this host's cores by; None leaves them uncapped
-        self.local_repo = _local_repo(repo, home or "")  # every `-C` here runs on this machine; `self.repo` stays as recorded
+        self.local_repo = local_repo_path(repo, home or "")  # every `-C` here runs on this machine; `self.repo` stays as recorded
 
     def _git(self, *args: str) -> tuple[int, str]:
         return run_argv(["git", "-C", self.tmp or self.local_repo, *args])
@@ -308,16 +308,16 @@ class _StoreEdge:
         if not self.forge.pr_url:
             return
         result = store_cli.mark_landed(self.runs_dir, run, self.action["phase"], task, self.forge.pr_url, self.now())
-        error = chair_apply_review._stamped(result)
+        error = chair_apply_review.stamped_reason(result)
         if error:
             raise RuntimeError(error)
 
     def set_done(self, task: str) -> None:
         initiative = self.action["initiative"]
-        error = chair_apply_review._set_done(store_cli.set_state(self.runs_dir, initiative, task, "done", "chair"))
+        error = chair_apply_review.set_done_reason(store_cli.set_state(self.runs_dir, initiative, task, "done", "chair"))
         if error:
             raise RuntimeError(error)
-        path = _ticket_paths(self.work_dir, initiative).get(task)
+        path = ticket_paths_of(self.work_dir, initiative).get(task)
         if path is not None:
             new_text, _ = approve_to_done(path.read_text(encoding="utf-8"), merged=True)
             if new_text is not None:
@@ -328,7 +328,7 @@ class _RebaseEdge:
     """Edge. RebasePort over the remote: tips are read with ls-remote and pushes never check anything out."""
 
     def __init__(self, repo: str) -> None:
-        self.repo = _local_repo(repo)  # the remote's tips are read from this machine's checkout
+        self.repo = local_repo_path(repo)  # the remote's tips are read from this machine's checkout
 
     def _git(self, *args: str) -> tuple[int, str]:
         return run_argv(["git", "-C", self.repo, *args])
@@ -467,7 +467,7 @@ def edge_deps(
 
     return Deps(
         run=run,
-        delete_branches=lambda repo, pattern: delete_branches_with(run, _local_repo(repo, home), pattern),
+        delete_branches=lambda repo, pattern: delete_branches_with(run, local_repo_path(repo, home), pattern),
         acquire_lease=acquire,
         record=record,
         run_id=run_id,
@@ -488,5 +488,5 @@ def edge_deps(
         rebase_port=lambda action: _RebaseEdge(action.get("repo") or repo_for(action)),
         phase_states=lambda initiative, phase: phase_task_states(run_store.work_items(runs_dir, initiative), phase),
         temp_root=Path(tempfile.gettempdir()),
-        user=_current_user(),
+        user=current_user(),
     )

@@ -384,11 +384,11 @@ def _chair_decisions(a: argparse.Namespace) -> int:
 
 
 def _chair_lease_row(runs_dir: Path) -> dict | None:
-    """Edge, read only (`run_store._open` is `mode=ro`). The whole chair lease row, `status` included; None with no store or no row.
+    """Edge, read only (`run_store.open_store` is `mode=ro`). The whole chair lease row, `status` included; None with no store or no row.
 
     A store error is raised, not read as no lease: `read_lease` and `read_chair_rows` fold it into None, and a false "no lease"
     sends the operator to take a held lease. `_chair_attach` turns the raise into its one-line reason."""
-    opened = run_store._open(runs_dir)
+    opened = run_store.open_store(runs_dir)
     if opened is None:
         return None
     conn, mark = opened
@@ -419,7 +419,7 @@ def _attach_inputs(row: Mapping) -> tuple[object, datetime.datetime | None] | No
     expires_at = _attach_time(row.get("expires_at"))
     if not (label and host and pid.isdigit() and expires_at):
         return None
-    doc = run_store._json_cell(row.get("status")) if row.get("status") else None
+    doc = run_store.json_cell(row.get("status")) if row.get("status") else None
     last_tick = _attach_time(doc.get("tick_at")) if isinstance(doc, dict) else None
     return chair_holder.HolderLease(label, int(pid), host, expires_at, "status" not in row or last_tick is not None), last_tick
 

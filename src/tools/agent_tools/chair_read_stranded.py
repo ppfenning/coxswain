@@ -57,7 +57,7 @@ def _read_log_texts(runs_dir: Path | str | None) -> dict[str, str]:
 
 def _log_row_is_stale(run: str, item: dict) -> bool:
     """True for an item the record path also skips: rebuilt from this run, or sent back by a land conflict."""
-    return runs_stranded._rebuilt({"run": run}, item) or runs_stranded._awaiting_rebuild(item)
+    return runs_stranded.was_rebuilt({"run": run}, item) or runs_stranded.awaiting_rebuild(item)
 
 
 def _log_rows(run: str, text: str, items: list[dict], recorded: Collection[tuple[object, object]],

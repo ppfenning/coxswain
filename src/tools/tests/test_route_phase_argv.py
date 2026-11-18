@@ -55,5 +55,5 @@ def test_phase_run_prefix_joins_with_a_dot():
 def test_phase_run_id_leases_apart_from_the_whole_run():
     run_id = next_run_id(["init.p1-1.log"], phase_run_prefix("init", "p1"))
     assert run_id == "init.p1-2"
-    assert run_store._lease_name(run_id) == "runs:init.p1"
-    assert run_store._lease_name(run_id) != run_store._lease_name("init-2")
+    assert run_store.lease_name_for(run_id) == "runs:init.p1"
+    assert run_store.lease_name_for(run_id) != run_store.lease_name_for("init-2")

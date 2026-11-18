@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_tools import queue_export, store_cli
-from agent_tools.land import _approved
+from agent_tools.land import approved_reason
 
 __all__ = ["apply_fetched_approvals", "apply_ready_to_approved", "approved_task_ids"]
 
@@ -26,8 +26,8 @@ def _task_id(record: Mapping[str, Any]) -> str:
 
 
 def approved_task_ids(records: Iterable[Mapping[str, Any]]) -> list[str]:
-    """The task id of every record whose review and arbitration verdicts approve it (`land._approved` is None)."""
-    return [_task_id(record) for record in records if _task_id(record) and _approved(dict(record)) is None]
+    """The task id of every record whose review and arbitration verdicts approve it (`land.approved_reason` is None)."""
+    return [_task_id(record) for record in records if _task_id(record) and approved_reason(dict(record)) is None]
 
 
 def apply_ready_to_approved(text: str) -> tuple[str | None, str | None]:

@@ -231,7 +231,7 @@ def test_task_run_phases_lists_the_newest_run_first_and_only_of_the_initiative(t
         conn.row_factory = sqlite3.Row
         return conn, "?"
 
-    monkeypatch.setattr(run_store, "_open", opened)
+    monkeypatch.setattr(run_store, "open_store", opened)
     assert run_store.task_run_phases(tmp_path, "ship", "t1") == [("ship-2", "p2"), ("ship-1", "p1")]
 
 

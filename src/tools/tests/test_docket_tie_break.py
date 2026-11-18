@@ -2,7 +2,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from agent_tools import route
-from agent_tools.chair_read_docket import _ready_age, _work_items, docket_from_builder, docket_from_rows, read_docket
+from agent_tools.chair_read_docket import (
+    _ready_age,
+    docket_from_builder,
+    docket_from_rows,
+    docket_work_items,
+    read_docket,
+)
 
 ROOT = Path("/ws")
 
@@ -94,7 +100,7 @@ _ROWS = [_store_row("a", "2026-09-01T00:00:00Z"), _store_row("z", "2026-01-01T00
 
 
 def test_work_items_carry_updated_at_from_the_store_rows():
-    items = _work_items(ROOT, "store", _files("a", "z"), _ROWS)
+    items = docket_work_items(ROOT, "store", _files("a", "z"), _ROWS)
     assert {i["initiative"]: i["updated_at"] for i in items} == {"a": "2026-09-01T00:00:00Z", "z": "2026-01-01T00:00:00Z"}
 
 

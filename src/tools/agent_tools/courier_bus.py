@@ -25,7 +25,7 @@ def store_url(path: Path) -> str:
     """Edge. The store URL of the workspace whose bus is at `path`."""
     from agent_tools import run_store
 
-    return run_store._store_url(Path(path).parent / "runs")
+    return run_store.store_url_for(Path(path).parent / "runs")
 
 
 def uses_store(path: Path) -> bool:

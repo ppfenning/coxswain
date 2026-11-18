@@ -59,13 +59,13 @@ def store_run_hosts(runs_dir: Path, runs: Sequence[str]) -> dict[str, str]:
 
     Empty with no store or an unreadable one, so every row then lacks a host and the executor sends it to the chair.
     """
-    opened = run_store._open(runs_dir)
+    opened = run_store.open_store(runs_dir)
     if opened is None:
         return {}
     conn, token = opened
     try:
-        host_expr = "host" if "host" in run_store._runs_columns(conn, token) else "NULL AS host"
-        sql = run_store._sql(f"SELECT {host_expr} FROM runs WHERE run_id = {{p}}", token)
+        host_expr = "host" if "host" in run_store.runs_columns(conn, token) else "NULL AS host"
+        sql = run_store.sql_for(f"SELECT {host_expr} FROM runs WHERE run_id = {{p}}", token)
         rows = {run: conn.execute(sql, (run,)).fetchone() for run in runs}
     except run_store._DB_ERRORS:
         return {}

@@ -66,17 +66,17 @@ def expiry_after(now: datetime, minutes: int) -> datetime | UsageError:
 def _open_writable(runs_dir: Path) -> tuple[Any, str] | None:
     """Edge. A writable connection and its bind token; None when a SQLite store file is absent, so it never creates one.
 
-    `run_store._open` is read-only, so a DELETE or INSERT through it always fails."""
-    url = run_store._store_url(runs_dir)
+    `run_store.open_store` is read-only, so a DELETE or INSERT through it always fails."""
+    url = run_store.store_url_for(runs_dir)
     if is_postgres(url):
         return store_connect.connect(url), placeholder(url)
-    path = run_store._sqlite_path(url)
+    path = run_store.sqlite_path(url)
     return (sqlite3.connect(path), placeholder(url)) if path.exists() else None
 
 
 def read_freeze(runs_dir: Path, now: datetime) -> LandFreeze | None:
     """Edge. None with no store, no row, an expired row, or an unreadable store."""
-    opened = run_store._open(runs_dir)
+    opened = run_store.open_store(runs_dir)
     if opened is None:
         return None
     conn, mark = opened
@@ -100,7 +100,7 @@ def _write(runs_dir: Path, statements: list[tuple[str, tuple[Any, ...]]]) -> boo
     conn, token = opened
     try:
         for sql, params in statements:
-            conn.execute(run_store._sql(sql, token), params)
+            conn.execute(run_store.sql_for(sql, token), params)
         conn.commit()
     except (*run_store._DB_ERRORS, RuntimeError):
         return False

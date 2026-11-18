@@ -133,7 +133,7 @@ def _log_facts(runs_dir: Path, run_id: str, cache: StampCache | None = None) -> 
 
 def _task_items(runs_dir: Path, initiative: str) -> int | None:
     """The initiative's work item count; None when the store cannot say, which `run_store.work_items` would read as empty."""
-    found = run_store._api().work_item_rows(run_store._store_url(runs_dir), initiative)
+    found = run_store.harness_store_api().work_item_rows(run_store.store_url_for(runs_dir), initiative)
     return len(found) if isinstance(found, list) else None
 
 
@@ -143,10 +143,10 @@ def _log_key(runs_dir: Path, run_id: str) -> tuple[str, str, str]:
 
 def _store_files(runs_dir: Path) -> list[Path]:
     """Edge. The SQLite store file and its `-wal` sidecar; empty for Postgres, which has no file to stamp."""
-    url = run_store._store_url(runs_dir)
+    url = run_store.store_url_for(runs_dir)
     if is_postgres(url):
         return []
-    db = run_store._sqlite_path(url)
+    db = run_store.sqlite_path(url)
     return [db, db.with_name(db.name + "-wal")]
 
 
@@ -202,10 +202,10 @@ def decompose_refusals(runs_dir: Path, run_ids: Iterable[str]) -> dict[str, str]
 
 def live_decompose_initiatives(runs_dir: Path) -> frozenset[str]:
     """Edge. Initiatives with a live `<run_id>.pid` process; epic-build pid files count too, holding conservatively."""
-    from agent_tools.chair_read_lost import _pid_alive  # lazy: chair_read_lost imports chair_facts
+    from agent_tools.chair_read_lost import pid_alive  # lazy: chair_read_lost imports chair_facts
 
     try:
         pidfiles = sorted(runs_dir.glob("*.pid"))
     except OSError:
         return frozenset()
-    return frozenset(run_initiative(path.stem) for path in pidfiles if _pid_alive(path))
+    return frozenset(run_initiative(path.stem) for path in pidfiles if pid_alive(path))

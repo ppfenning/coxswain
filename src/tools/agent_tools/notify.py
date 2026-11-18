@@ -182,7 +182,7 @@ def run_loop(runs_dir, *, once: bool = False, interval: float = 10, send=None, s
             cold_start = not replay and not loaded
             batches = _batches(root, states)
             current_chair_state = _chair_state(root, pid_alive, heartbeat_minutes)
-        except run_store._db_errors() as exc:
+        except run_store.db_error_types() as exc:
             failures += 1
             reason = str(exc).splitlines()[0] if str(exc) else ""
             print(f"runs notify: store read failed ({type(exc).__name__}: {reason}); "

@@ -107,13 +107,13 @@ def plan(ports: lander.Ports, initiative: str) -> Plan:
     if not is_initiative(land_at):
         return Plan(initiative, skip="it lands at task, which keeps no landing record")
     try:
-        repo = lander._repo(ports, {"initiative": initiative, "repo": own.get("repo") or ""})
+        repo = lander.ports_repo(ports, {"initiative": initiative, "repo": own.get("repo") or ""})
     except LookupError as exc:
         return Plan(initiative, skip=str(exc))
     if lg.rev(repo, "HEAD") is None:
         return Plan(initiative, skip=f"its repository is not at {repo}")
     parent = str(meta.get("target_branch") or own.get("target_branch") or _default_branch(repo))
-    parent_ref = lander._parent_ref(repo, parent)
+    parent_ref = lander.parent_ref_of(repo, parent)
     legacy = pr_branch_name(initiative)
     if lg.branch_ref(repo, legacy) is not None:
         branch = legacy
@@ -166,7 +166,7 @@ def apply(ports: lander.Ports, found: Plan, send_back: Callable[[str, str, str],
         return found.lines()
     if ls.get_record(ports.conn, initiative) is not None:
         return [f"{initiative}: skipped: it has a landing record already"]
-    repo = lander._repo(ports, {"initiative": initiative, "repo": (ports.meta(initiative).get("initiative") or {}).get("repo") or ""})
+    repo = lander.ports_repo(ports, {"initiative": initiative, "repo": (ports.meta(initiative).get("initiative") or {}).get("repo") or ""})
     events: list[str] = []
     for finding in found.tasks:
         if finding.action == "done":
@@ -187,7 +187,7 @@ def apply(ports: lander.Ports, found: Plan, send_back: Callable[[str, str, str],
                 return [*events, f"{initiative}: stopped: {finding.task} could not be carried onto {branch}: {detail}"]
             events.append(f"{initiative}: {finding.task} carried onto {branch}")
     record, why = ops.start_record(ports.conn, repo, initiative=initiative, branch=found.branch, parent=found.parent,
-                                   parent_ref=lander._parent_ref(repo, found.parent), now=ports.now(), adopted=True)
+                                   parent_ref=lander.parent_ref_of(repo, found.parent), now=ports.now(), adopted=True)
     if record is None:
         return [*events, f"{initiative}: stopped: no record was made: {why}"]
     events.append(f"{initiative}: record made on {record['branch']}")

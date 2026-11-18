@@ -22,7 +22,7 @@ def test_a_freeze_set_between_two_lands_skips_the_second(tmp_path, monkeypatch):
     def fake_execute(action, deps, blocked):
         ran.append(action["task_id"])
         write_freeze(tmp_path, "release cut", NOW, NOW + timedelta(minutes=30))
-        return chair_exec._result(action, "landed")
+        return chair_exec.make_result(action, "landed")
 
     monkeypatch.setattr(chair_exec, "_execute", fake_execute)
     deps = replace(_deps([]), runs_dir=tmp_path, now=NOW.isoformat)

@@ -74,7 +74,7 @@ def review_steps(action: Action) -> list[Step]:
     ]
 
 
-def _set_done(result: object) -> str:
+def set_done_reason(result: object) -> str:
     """"" when the store holds the task as done, else why it does not. A refusal that names done is a repeat."""
     if isinstance(result, StateSet):
         return ""
@@ -83,7 +83,7 @@ def _set_done(result: object) -> str:
     return f"set-state done: {result}"
 
 
-def _stamped(result: object) -> str:
+def stamped_reason(result: object) -> str:
     """"" when the record is landed. The store saying it was already landed is the same as Landed."""
     if isinstance(result, Landed):
         return ""
@@ -112,9 +112,9 @@ def apply_review(
     notes: list[str] = []
     for step in review_steps(action):
         if isinstance(step, SetDone):
-            error = _set_done(set_state(step.initiative, step.task_id, "done", "chair"))
+            error = set_done_reason(set_state(step.initiative, step.task_id, "done", "chair"))
         elif isinstance(step, MarkLanded):
-            error = _stamped(mark_landed(step.run, step.phase, step.task_id, step.pr, step.at or now()))
+            error = stamped_reason(mark_landed(step.run, step.phase, step.task_id, step.pr, step.at or now()))
         else:
             deleted, error = delete_branches(ssh if step.host else "", step.repo, step.pattern)
             notes += [f"deleted {name}{f' on {step.host}' if step.host else ''}" for name in deleted]

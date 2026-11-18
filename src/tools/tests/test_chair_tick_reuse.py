@@ -80,7 +80,7 @@ def made(monkeypatch) -> list[chair_read_cache.StampCache]:
 @pytest.fixture
 def deps(monkeypatch, ws: Path, counts: Counts, made):
     runs = ws / "runs"
-    monkeypatch.setattr(run_store, "_store_url", lambda runs_dir: f"sqlite:///{runs / 'cox.db'}")
+    monkeypatch.setattr(run_store, "store_url_for", lambda runs_dir: f"sqlite:///{runs / 'cox.db'}")
     monkeypatch.setattr(cli, "_sync_filed_items", lambda *_a, **_k: None)
 
     real_read_text = Path.read_text

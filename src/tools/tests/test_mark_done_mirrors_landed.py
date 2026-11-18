@@ -32,7 +32,7 @@ def harness(tmp_path):
     from harness.store_write import Store
 
     (tmp_path / "runs").mkdir()
-    conn = open_store(store_cli._store_url(tmp_path / "runs"), _NOW)
+    conn = open_store(store_cli.store_url_for(tmp_path / "runs"), _NOW)
     try:
         Store(conn).record_task_record("run-1", "seams", "seams-task", dict(_RECORD), _NOW)
     finally:

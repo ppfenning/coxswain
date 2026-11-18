@@ -480,7 +480,7 @@ def _migrate_acquire(runs_dir: Path, paths, holder: str) -> list:
     that is not there. Its migration goes ahead unleased, and says so. This is the upgrade from a release whose
     default store was a local sqlite file."""
     try:
-        shared = store_dialect.is_postgres(run_store._store_url(runs_dir))
+        shared = store_dialect.is_postgres(run_store.store_url_for(runs_dir))
     except Exception:
         shared = False
     if not shared and os.environ.get(STORE_DOUBLE_ENV) != "sqlite":

@@ -118,4 +118,4 @@ def test_runs_pause_resolves_a_short_id_and_writes_to_the_same_store_url_it_reso
     assert out == "paused canonical-1\n"
     assert code == 0
     assert resolved_in == [(str(runs_dir), "I412-7")] or resolved_in == [(runs_dir, "I412-7")]
-    assert calls == [(run_store._store_url(runs_dir), "canonical-1")]
+    assert calls == [(run_store.store_url_for(runs_dir), "canonical-1")]

@@ -51,8 +51,8 @@ def lease_record(row: Mapping[str, Any] | None, now: datetime) -> Row:
 def read_lease(runs_dir: Path, now: datetime, *, pid_alive: Callable[[int], bool] = chair.pid_alive, host: str | None = None) -> Row:
     """Edge. `ABSENT` with no store, no row, or an unreadable store. `host` defaults to this machine's name."""
     # `run_store.lease` asks for a `runs:<prefix>` name, so the read reuses its private `_open`. Only holder and expires_at are
-    # known columns (`run_store._lease_table` selects them); `SELECT *` keeps a missing epoch column from reading as no lease.
-    opened = run_store._open(runs_dir)
+    # known columns (`run_store.lease_table_for` selects them); `SELECT *` keeps a missing epoch column from reading as no lease.
+    opened = run_store.open_store(runs_dir)
     if opened is None:
         return dict(ABSENT)
     conn, mark = opened

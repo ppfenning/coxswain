@@ -210,7 +210,7 @@ def _ready_and_met(t: ReadyTask, landed: set[str]) -> bool:
     return _first_unmet_need(t, landed) is None
 
 
-def _initiative_first_unmet_need(i: InitiativeFacts) -> str | None:
+def initiative_first_unmet_need(i: InitiativeFacts) -> str | None:
     """None when a ready task has every need landed; else the first unmet need, ready tasks before waiting ones."""
     if any(_ready_and_met(t, i["landed"]) for t in i["ready_tasks"]):
         return None
@@ -224,7 +224,7 @@ def _can_relaunch(i: InitiativeFacts, blocked: set[str]) -> bool:
         and not i.get("dag_problem")
         and i["id"] not in blocked
         and bool(i["ready_tasks"])
-        and _initiative_first_unmet_need(i) is None
+        and initiative_first_unmet_need(i) is None
     )
 
 
@@ -337,7 +337,7 @@ def _waiting_actions(initiatives: list[InitiativeFacts], blocked: set[str]) -> l
         if i["started"]
         and not i.get("dag_problem")
         and i["id"] not in blocked
-        and (need := _initiative_first_unmet_need(i)) is not None
+        and (need := initiative_first_unmet_need(i)) is not None
     ]
 
 

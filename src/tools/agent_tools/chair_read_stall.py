@@ -31,14 +31,14 @@ def _last_call(runs_dir: Path, run: str) -> LastCall | None:
     if ts is None:
         return None
     try:
-        opened = run_store._open(runs_dir)
+        opened = run_store.open_store(runs_dir)
     except (*run_store._DB_ERRORS, RuntimeError):  # an unreachable Postgres, or psycopg not installed
         return None
     if opened is None:
         return None
     conn, token = opened
     try:
-        sql = run_store._sql(
+        sql = run_store.sql_for(
             "SELECT role, task_id FROM node_calls WHERE run_id = {p} AND ts = {p} ORDER BY seq DESC LIMIT 1", token
         )
         row = conn.execute(sql, (run, ts)).fetchone()
@@ -55,14 +55,14 @@ def _usr1_sent(runs_dir: Path, run: str) -> bool:
     Mirrors `chair_read_housekeeping.read_last_housekeeping`'s exact seam: False, never raising, with
     no store, no `chair_actions` table, an unreachable Postgres, or the driver absent."""
     try:
-        opened = run_store._open(runs_dir)
+        opened = run_store.open_store(runs_dir)
     except (*run_store._DB_ERRORS, RuntimeError):  # an unreachable Postgres, or psycopg not installed
         return False
     if opened is None:
         return False
     conn, token = opened
     try:
-        sql = run_store._sql("SELECT 1 FROM chair_actions WHERE kind = {p} AND target = {p}", token)
+        sql = run_store.sql_for("SELECT 1 FROM chair_actions WHERE kind = {p} AND target = {p}", token)
         rows = conn.execute(sql, ("stalled_usr1", run)).fetchall()
     except run_store._DB_ERRORS:
         return False
@@ -74,7 +74,7 @@ def _usr1_sent(runs_dir: Path, run: str) -> bool:
 def _candidate(runs_dir: Path, lane: run_store.Lane) -> StallCandidate:
     return {
         "run": lane.run,
-        "initiative": run_store._lease_name(lane.run).removeprefix("runs:"),
+        "initiative": run_store.lease_name_for(lane.run).removeprefix("runs:"),
         "local": _local(runs_dir, lane.run),
         "started_at": lane.launched_at,
         "last_call": _last_call(runs_dir, lane.run),

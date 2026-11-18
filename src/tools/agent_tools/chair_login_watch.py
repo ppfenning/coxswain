@@ -5,7 +5,7 @@ returns and `chair_read_lost.stale_hosts` already reads: `name`, `ssh`, `capacit
 draining, offline), `beat_at`, `versions_json` (cox, graphs, cartridges, claude versions, `login_ok`,
 and now `login_checked_at`), `updated_at`, `updated_by`. The edge that calls these against the real
 store, performs the ssh check, and writes the result back is a separate module. `versions_json` is a
-JSON string on SQLite and a mapping on Postgres; `_versions` below decodes both, independently of
+JSON string on SQLite and a mapping on Postgres; `versions_of` below decodes both, independently of
 `host_cmd`'s own private helper of the same purpose, so this module carries no dependency on it.
 """
 import json
@@ -54,7 +54,7 @@ def login_url_from_output(output: str) -> str | None:
     return found.group().rstrip(".,;:)]") if found else None
 
 
-def _versions(row: Row) -> dict:
+def versions_of(row: Row) -> dict:
     """`versions_json` as a dict: a JSON string from SQLite, already a mapping from a Postgres JSONB
     column."""
     raw = row.get("versions_json")
@@ -82,7 +82,7 @@ def due_for_login_check(hosts: Sequence[Row], now: str, threshold_s: int = DEFAU
     return [
         str(row.get("name") or "")
         for row in hosts
-        if row.get("state") == "active" and _checked_long_ago(_versions(row).get("login_checked_at"), now_parsed, threshold_s)
+        if row.get("state") == "active" and _checked_long_ago(versions_of(row).get("login_checked_at"), now_parsed, threshold_s)
     ]
 
 
@@ -98,7 +98,7 @@ def login_blocked(hosts: Sequence[Row]) -> set[str]:
     return {
         str(row.get("name") or "")
         for row in hosts
-        if row.get("state") == "active" and _versions(row).get("login_ok") is False
+        if row.get("state") == "active" and versions_of(row).get("login_ok") is False
     }
 
 
@@ -108,7 +108,7 @@ def login_needs_chair(hosts: Sequence[Row]) -> list[Action]:
     `versions_json` holds a `login_url`, and has no such key otherwise."""
     blocked = login_blocked(hosts)
     urls = {
-        str(row.get("name") or ""): _versions(row).get("login_url")
+        str(row.get("name") or ""): versions_of(row).get("login_url")
         for row in hosts
         if str(row.get("name") or "") in blocked
     }
@@ -132,7 +132,7 @@ def due_for_probe(hosts: Sequence[Row], now: str, interval_s: int = PROBE_INTERV
         str(row.get("name") or "")
         for row in hosts
         if row.get("state") == UNREACHABLE_STATE
-        and _checked_long_ago(_versions(row).get(PROBE_CHECKED_AT_KEY), now_parsed, interval_s)
+        and _checked_long_ago(versions_of(row).get(PROBE_CHECKED_AT_KEY), now_parsed, interval_s)
     ]
 
 
@@ -145,7 +145,7 @@ def host_unreachable_needs_chair(hosts: Sequence[Row]) -> list[Action]:
             "kind": ActionKind.NEEDS_CHAIR,
             "host": str(row.get("name") or ""),
             "cause": "host_unreachable",
-            **cast(Action, {"since": since} if (since := _versions(row).get(UNREACHABLE_SINCE_KEY)) else {}),
+            **cast(Action, {"since": since} if (since := versions_of(row).get(UNREACHABLE_SINCE_KEY)) else {}),
         }
         for row in rows
     ]
@@ -159,7 +159,7 @@ def host_back_needs_chair(hosts: Sequence[Row], now: str) -> list[Action]:
         (str(row.get("name") or ""), back_at)
         for row in hosts
         if row.get("state") == "active"
-        for back_at in [_versions(row).get(HOST_BACK_AT_KEY)]
+        for back_at in [versions_of(row).get(HOST_BACK_AT_KEY)]
         if back_at and (parsed := _parsed(back_at)) is not None and 0 <= (now_parsed - parsed).total_seconds() <= BACK_WINDOW_S
     ]
     return [{"kind": ActionKind.NEEDS_CHAIR, "host": name, "cause": "host_back", "back_at": back_at} for name, back_at in sorted(returned)]

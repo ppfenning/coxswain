@@ -59,7 +59,6 @@ from agent_tools.dash_feed_sections import (
     _building_tasks,
     _call_points,
     _chair_v1,
-    _courier_blob,
     _current_release_edge,
     _epics_v1,
     _finished_records,
@@ -97,6 +96,7 @@ from agent_tools.dash_feed_sections import (
     _window_starts,
     _workspace,
     _zero_live,
+    courier_blob,
     snapshot,
 )
 from agent_tools.dash_finished_runs import finished_runs
@@ -155,7 +155,7 @@ def _board_edge(
     the attempts cannot be read then, and the board and the lanes are both empty. A code fault raises."""
     try:
         attempts = _board_attempts(runs_dir, rows, calls_by_run)
-    except (OSError, *run_store._db_errors()):  # a store failure must not take the feed down; a code fault must
+    except (OSError, *run_store.db_error_types()):  # a store failure must not take the feed down; a code fault must
         return {"epics": []}, {}
     epic_of = {
         str(row["initiative"]): queue_rows.epic_of_row(row)
@@ -283,7 +283,7 @@ def _live_edge(
             session, session_state = read_session_turns_with_cursor(
                 projects_dir, local_name, chair_session, since, cursors.session, prices=prices,
             )
-    except (OSError, *run_store._db_errors()):  # a store failure must not take the feed down; a code fault must
+    except (OSError, *run_store.db_error_types()):  # a store failure must not take the feed down; a code fault must
         return _zero_live(moment)
     if cursors is not None and on_cursors is not None:
         on_cursors(LiveCursors(session_state, MappingProxyType(lane_states)))
@@ -462,7 +462,7 @@ def _chair_from_store_v1(
     }
 
 
-def _iso_ts(row: dict) -> dict:
+def iso_ts_row(row: dict) -> dict:
     """`row` with a Postgres `datetime` ts as ISO text, the form `chair_today` reads."""
     ts = row.get("ts")
     return {**row, "ts": ts.isoformat()} if isinstance(ts, datetime) else row
@@ -489,7 +489,7 @@ def _chair_parts(
         )
         return block, ("record", record.get("heartbeat_at"), edge["status"][0], edge["last_housekeeping_at"], "", None)
     lease, raw_rows = fetched
-    rows = [_iso_ts(r) for r in raw_rows]
+    rows = [iso_ts_row(r) for r in raw_rows]
     # The fetch reaches back about a day, so a housekeeping row older than that is read whole from the store.
     last_housekeeping_at = latest_housekeeping(rows) or read_last_housekeeping(runs_dir)
     block = _chair_from_store_v1(lease, rows, record, at, needs_chair_open, last_housekeeping_at, people, drafts)
@@ -717,7 +717,7 @@ def _build(
     )
     chair_row = sections["chair"][0] if sections["chair"] else {}
     live_phases = _live_lanes(sections["lanes"])
-    blob = _courier_blob(work_dir)
+    blob = courier_blob(work_dir)
     entries = courier.inbox(blob)
     # A state callable that answers nothing: the feed lists each awaiting PR with its url and never asks the forge.
     review_prs = hold("review_prs", lambda: read_review_prs(runs_dir, lambda url: {}))
@@ -953,7 +953,7 @@ def _refresh_ages(name: str, value, anchor, at: datetime):
 
 def _store_is_local_sqlite(runs_dir: Path) -> bool:
     """Edge: whether the run store is a local sqlite file the probe can stat."""
-    return not run_store.is_postgres(run_store._store_url(Path(runs_dir)))
+    return not run_store.is_postgres(run_store.store_url_for(Path(runs_dir)))
 
 
 def gather_feed_cached(

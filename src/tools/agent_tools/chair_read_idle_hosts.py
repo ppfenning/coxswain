@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_tools import lane_hosts, run_store
-from agent_tools.chair_login_watch import _versions
+from agent_tools.chair_login_watch import versions_of
 from agent_tools.chair_types import HostCheck
 
 NO_REASON = "login check failed"
@@ -19,7 +19,7 @@ NO_REASON = "login check failed"
 
 def _check(name: str, row: Mapping[str, Any] | None) -> HostCheck:
     """A host with no row, or no `login_ok` in its row, is ok: absence is not a failed check."""
-    versions = {} if row is None else _versions(row)
+    versions = {} if row is None else versions_of(row)
     if versions.get("login_ok") is not False:
         return {"host": name, "ok": True, "detail": ""}
     reason = versions.get("reason")

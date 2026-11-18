@@ -135,13 +135,13 @@ def _exec_deps(fake: _FakeLease):
 
 def test_a_takeback_reason_acquires_with_steal_and_a_plain_take_does_not() -> None:
     takeback, plain = _FakeLease(), _FakeLease()
-    result = chair_exec._lease(_take("takeback from other@host-a:7"), _exec_deps(takeback))
-    chair_exec._lease(_take(), _exec_deps(plain))
+    result = chair_exec.perform_lease(_take("takeback from other@host-a:7"), _exec_deps(takeback))
+    chair_exec.perform_lease(_take(), _exec_deps(plain))
     assert takeback.calls[0]["steal"] is True
     assert "steal" not in plain.calls[0]
     assert result["status"] == "done" and result["action"]["reason"] == "takeback from other@host-a:7"
 
 
 def test_a_refused_takeback_stays_refused_with_the_refusal_line() -> None:
-    result = chair_exec._lease(_take("takeback from other@host-a:7"), _exec_deps(_FakeLease(REFUSAL)))
+    result = chair_exec.perform_lease(_take("takeback from other@host-a:7"), _exec_deps(_FakeLease(REFUSAL)))
     assert (result["status"], result["reason"]) == ("refused", REFUSAL)

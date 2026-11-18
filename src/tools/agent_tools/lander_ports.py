@@ -45,7 +45,7 @@ def connect(runs_dir: Path) -> Any:
     from harness.store_dialect import connect as open_url
     from harness.store_migrate import default_modules, migrate
 
-    conn = open_url(run_store._store_url(runs_dir))
+    conn = open_url(run_store.store_url_for(runs_dir))
     migrate(conn, now_stamp(), default_modules())
     return conn
 
@@ -69,9 +69,9 @@ def read_records(runs_dir: Path, log: Callable[[str], None] | None = None) -> li
         from harness import landing_store
         from harness.store_dialect import connect as open_url
 
-        url = run_store._store_url(Path(runs_dir))
+        url = run_store.store_url_for(Path(runs_dir))
         if url.startswith("sqlite:"):
-            return _sqlite_records(run_store._sqlite_path(url))
+            return _sqlite_records(run_store.sqlite_path(url))
         conn = open_url(url)
         try:
             return cast(list[dict[str, Any]], landing_store.list_records(conn))
@@ -382,7 +382,7 @@ def build(ws: Path, profile: Mapping[str, Any], *, worker: str | None = None, lo
         named = board(str(record["initiative"]))[0].get("repo")
         if isinstance(named, str) and named:
             return Path(repo_path.expand(named, home))
-        return Path(str(record.get("repo") or "")).expanduser()  # `lander._repo` refuses an empty or relative one
+        return Path(str(record.get("repo") or "")).expanduser()  # `lander.ports_repo` refuses an empty or relative one
 
     def files_of(initiative: str) -> dict[str, dict[str, Any]]:
         found = {}
@@ -452,7 +452,7 @@ def build(ws: Path, profile: Mapping[str, Any], *, worker: str | None = None, lo
 
     def split_blocked(initiative: str, phases: Sequence[str]) -> str | None:
         try:
-            repo = lander._repo(ports_ref[0], {"initiative": initiative})
+            repo = lander.ports_repo(ports_ref[0], {"initiative": initiative})
             with WORKSPACE_WRITES:
                 return split_initiative(ws, conn, repo, initiative, list(phases), worker=name, push=getattr(module, "push", None))
         except Exception as exc:

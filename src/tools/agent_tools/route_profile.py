@@ -379,7 +379,7 @@ class _Raw(str):
     fragment (`needs: []`, `surfaces: []`) that must be emitted verbatim.
 
     Never wrap a caller-supplied string in this: a value's *shape* is not
-    evidence of its meaning. An earlier version of `_yaml_scalar` treated
+    evidence of its meaning. An earlier version of `yaml_scalar` treated
     any bracketed value as a raw list, which meant a title like
     `[draft] ship it` was emitted bare as `title: [draft] ship it` — a real
     YAML reader parses that as a flow sequence, not the string it looks
@@ -388,7 +388,7 @@ class _Raw(str):
     """
 
 
-def _yaml_scalar(value: str) -> str:
+def yaml_scalar(value: str) -> str:
     """Quote a frontmatter value that would otherwise read as something
     other than the plain string it is.
 
@@ -428,12 +428,12 @@ def _frontmatter(fields, body: str) -> str:
     """Render `---`-delimited frontmatter followed by a body, spec §3.
 
     `fields` is an ordered iterable of (key, value) pairs; each value is
-    quoted by `_yaml_scalar` when left bare it would change meaning (a
+    quoted by `yaml_scalar` when left bare it would change meaning (a
     colon, a `#`, surrounding whitespace, or emptiness), never otherwise.
     """
     # A list value (`reach_allow`) is a literal this module writes itself, so it goes out as `_Raw`, not as a quoted string.
     header = "\n".join(
-        f"{key}: {_yaml_scalar(_Raw(_header_value(value)) if isinstance(value, list) else value)}" for key, value in fields
+        f"{key}: {yaml_scalar(_Raw(_header_value(value)) if isinstance(value, list) else value)}" for key, value in fields
     )
     return f"---\n{header}\n---\n\n{body}\n"
 
@@ -487,7 +487,7 @@ def initiative_files(
     initiative_text = _frontmatter(
         [("id", slug), ("title", title), ("repo", repo)], text
     )
-    surfaces_raw = _Raw("[" + ", ".join(_yaml_scalar(s) for s in surfaces) + "]") if surfaces else _Raw("[]")
+    surfaces_raw = _Raw("[" + ", ".join(yaml_scalar(s) for s in surfaces) + "]") if surfaces else _Raw("[]")
     task_id = f"{slug}{ONE_TASK_SUFFIX}"
     task_fields = [
         ("id", task_id),
@@ -609,7 +609,7 @@ def intake_file(
     # A pulled file keeps its old form. Sync reads a frontmatter `issue` as the item's own mirror issue, so a pull
     # must not write the source issue number there; `route_sync._issue_steps` would skip `issue_create` for it.
     origin = [("source", source), ("link", link)] if source and link else link_fields(link)
-    waits = [("after", _Raw("[" + ", ".join(_yaml_scalar(a) for a in after) + "]"))] if after else []
+    waits = [("after", _Raw("[" + ", ".join(yaml_scalar(a) for a in after) + "]"))] if after else []
     if ids == "sequence":
         id_ = (allocate or _no_allocator)()
         return {f"intake/{id_}.md": _frontmatter([("id", id_), ("title", title), *staged, *origin, *waits], text)}
@@ -848,5 +848,5 @@ def build_sweep_argv(idea: str, initiative_id: str, label: str | None = None) ->
 def _header_value(value) -> str:
     """A frontmatter value as `_frontmatter` writes it: a list as a flat list literal, anything else as a scalar."""
     if isinstance(value, list):
-        return "[" + ", ".join(_yaml_scalar(str(v)) for v in value) + "]"
-    return _yaml_scalar(str(value))
+        return "[" + ", ".join(yaml_scalar(str(v)) for v in value) + "]"
+    return yaml_scalar(str(value))

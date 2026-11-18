@@ -1027,7 +1027,7 @@ def _store_with_recorder(tmp_path, monkeypatch, at: datetime):
         conn.row_factory = sqlite3.Row
         return conn, "?"
 
-    monkeypatch.setattr(run_store, "_open", open_store)
+    monkeypatch.setattr(run_store, "open_store", open_store)
     return recorder(tmp_path, lambda: 4, lambda: _stamp(at), store=store, holder="h")
 
 
@@ -1055,7 +1055,7 @@ def test_two_not_landed_rows_count_two_attempts_so_the_back_off_doubles():
 
 @pytest.mark.xfail(
     strict=True,
-    reason="root cause outside this task's surfaces: chair_read_stale.read_chair_actions returns [] when run_store._open "
+    reason="root cause outside this task's surfaces: chair_read_stale.read_chair_actions returns [] when run_store.open_store "
     "raises the missing-psycopg RuntimeError, while the recorder writes through the harness python, which has psycopg",
 )
 def test_a_reader_without_psycopg_still_holds_off_a_land_the_recorder_wrote(tmp_path, monkeypatch):
@@ -1065,7 +1065,7 @@ def test_a_reader_without_psycopg_still_holds_off_a_land_the_recorder_wrote(tmp_
     def no_driver(runs_dir):
         raise RuntimeError("a postgres store needs psycopg: pip install 'coxswain[postgres]'")
 
-    monkeypatch.setattr(run_store, "_open", no_driver)
+    monkeypatch.setattr(run_store, "open_store", no_driver)
     assert _planned_kinds(tmp_path, NOW + timedelta(minutes=5)) == []
 
 

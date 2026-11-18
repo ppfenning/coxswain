@@ -88,7 +88,7 @@ def _body(steps):
 
 def test_land_plan_under_epics_has_no_presync_and_carries_the_reference(monkeypatch):
     monkeypatch.setattr(land, "_proposal", lambda record, kind: {"title": "x"})
-    monkeypatch.setattr(land, "_approved", lambda record: None)
+    monkeypatch.setattr(land, "approved_reason", lambda record: None)
     branches = {"agents/r1/t1": ["subject"]}
     plain = land.land_plan(_RECORD, branches, "main", tracker="github-projects", scope="epics", reference="Part of #900")
     assert [s for s in plain if s.get("before")] == []

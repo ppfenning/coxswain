@@ -47,7 +47,7 @@ def outcomes_from_rows(
     reasons: dict[str, dict[str, str]] = {}
     tasks: dict[str, dict[str, str]] = {}
     for row in phase_rows:
-        record = run_store._json_cell(row.get("record_json"))
+        record = run_store.json_cell(row.get("record_json"))
         record = record if isinstance(record, dict) else {}
         phases.setdefault(str(row["run_id"]), {})[str(row["phase_id"])] = str(record.get("status") or "")
         reasons.setdefault(str(row["run_id"]), {})[str(row["phase_id"])] = str(record.get("reason") or "")
@@ -67,7 +67,7 @@ def read_run_outcomes(runs_dir: Path, initiatives: Collection[str], last: int) -
     if not initiatives or last <= 0:
         return {}
     try:
-        opened = run_store._open(runs_dir)
+        opened = run_store.open_store(runs_dir)
         if opened is None:
             return {}
         conn, token = opened
@@ -79,10 +79,10 @@ def read_run_outcomes(runs_dir: Path, initiatives: Collection[str], last: int) -
                 return {}
             marks = ", ".join(["{p}"] * len(ids))
             phase_rows = conn.execute(
-                run_store._sql(f"SELECT run_id, phase_id, record_json FROM phases WHERE run_id IN ({marks})", token), ids
+                run_store.sql_for(f"SELECT run_id, phase_id, record_json FROM phases WHERE run_id IN ({marks})", token), ids
             ).fetchall()
             task_rows = conn.execute(
-                run_store._sql(f"SELECT run_id, task_id, state FROM tasks WHERE run_id IN ({marks})", token), ids
+                run_store.sql_for(f"SELECT run_id, task_id, state FROM tasks WHERE run_id IN ({marks})", token), ids
             ).fetchall()
         finally:
             conn.close()

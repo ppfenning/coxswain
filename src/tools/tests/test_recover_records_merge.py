@@ -66,7 +66,7 @@ def _git(repo, *args):
 def ws(tmp_path):
     """A workspace with a real store, in process, under its own runs directory."""
     (tmp_path / "runs").mkdir()
-    open_store(run_store._store_url(tmp_path / "runs"), "2026-01-01T00:00:00Z").close()
+    open_store(run_store.store_url_for(tmp_path / "runs"), "2026-01-01T00:00:00Z").close()
     return tmp_path
 
 
@@ -115,7 +115,7 @@ def _recover(ws, repo, capsys, *flags):
 def _epic_view(ws, repo):
     """What the epic reads: the harness's own store rows, the tasks `_merge_into_initiative` holds the phase back for,
     and the approved tasks whose merge commit the phase tip lacks."""
-    conn = open_store(run_store._store_url(ws / "runs"), "2026-01-01T00:00:00Z")
+    conn = open_store(run_store.store_url_for(ws / "runs"), "2026-01-01T00:00:00Z")
     try:
         rows = [{**r, "id": r["task_id"]} for r in work_items(conn, "x")]
     finally:
@@ -316,8 +316,8 @@ def test_end_to_end_a_reopen_that_conflicts_with_main_names_the_next_step_and_th
         routing = ws / "routing-named.yaml"
         routing.write_text(f"workspace_dir: {ws}\nharness_dir: {ws / 'harness'}\nprovider_profile: {provider}\n", encoding="utf-8")
         monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(routing))
-        open_store(run_store._store_url(ws / "runs"), "2026-01-01T00:00:00Z").close()
-        assert run_store._store_url(ws / "runs") == f"sqlite:///{elsewhere / 'cox.db'}"
+        open_store(run_store.store_url_for(ws / "runs"), "2026-01-01T00:00:00Z").close()
+        assert run_store.store_url_for(ws / "runs") == f"sqlite:///{elsewhere / 'cox.db'}"
     _main_moves_onto_the_task_s_file(repo)
     _task(ws, state="done", item_state="done")
     rc, out = _recover(ws, repo, capsys, "--reopen")

@@ -503,7 +503,7 @@ def _holder_from_row(row: Mapping[str, object] | None) -> tuple[object, datetime
     host, _, pid_text = rest.rpartition(":")
     if row is None or not label or not host or not pid_text.isdigit():
         return None
-    doc = run_store._json_cell(row.get("status")) if row.get("status") else None
+    doc = run_store.json_cell(row.get("status")) if row.get("status") else None
     tick = _aware_or_none(doc.get("tick_at")) if isinstance(doc, dict) and doc.get("tick_at") else None
     expires = _aware_or_none(row.get("expires_at")) or datetime.datetime.fromtimestamp(0, datetime.UTC)
     return chair_holder.HolderLease(label, int(pid_text), host, expires, "status" not in row or tick is not None), tick
@@ -514,12 +514,12 @@ def _read_holder_inputs(runs_dir: Path):
 
     `pid_alive` is None for a holder on another host: this host cannot probe that pid."""
     try:
-        opened = run_store._open(runs_dir)
+        opened = run_store.open_store(runs_dir)
         if opened is None:
             return None
         conn, token = opened
         try:
-            row = conn.execute(run_store._sql("SELECT * FROM leases WHERE name = {p}", token), (chair.LEASE_NAME,)).fetchone()
+            row = conn.execute(run_store.sql_for("SELECT * FROM leases WHERE name = {p}", token), (chair.LEASE_NAME,)).fetchone()
         finally:
             conn.close()
     except (*run_store._DB_ERRORS, RuntimeError, OSError, ValueError):

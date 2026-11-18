@@ -112,7 +112,7 @@ def parse_ts(raw: object) -> datetime | None:
 def status_rows(raw: Iterable[tuple[object, object]], now: datetime, idle_minutes: int) -> list[tuple[datetime, str]]:
     """(ts, action_json cell) pairs as (ts, line) pairs from the last `idle_minutes`. A row with no parseable ts or no string `line` drops."""
     cutoff = now - timedelta(minutes=idle_minutes)
-    decoded = ((parse_ts(ts), run_store._json_cell(cell)) for ts, cell in raw)
+    decoded = ((parse_ts(ts), run_store.json_cell(cell)) for ts, cell in raw)
     return [
         (ts, doc["line"])
         for ts, doc in decoded
@@ -126,7 +126,7 @@ def to_event(alert: Alert) -> Event:
 
 
 def _open_store(runs_dir: Path) -> tuple[Any, str]:
-    opened = run_store._open(runs_dir)
+    opened = run_store.open_store(runs_dir)
     if opened is None:
         raise StoreUnreadable(f"no store under {runs_dir}")
     return opened
@@ -137,7 +137,7 @@ def read_lease_row(runs_dir: Path) -> tuple[str | None, datetime | None]:
     Raises on an unreadable store, unlike the other chair readers, which fold that into an empty answer."""
     conn, token = _open_store(runs_dir)
     try:
-        sql = run_store._sql("SELECT holder, heartbeat_at FROM leases WHERE name = {p}", token)
+        sql = run_store.sql_for("SELECT holder, heartbeat_at FROM leases WHERE name = {p}", token)
         row = conn.execute(sql, (LEASE_NAME,)).fetchone()
     finally:
         conn.close()
@@ -150,7 +150,7 @@ def read_status_rows(runs_dir: Path, now: datetime, idle_minutes: int) -> list[t
     """Edge, read-only. The `status` rows of `chair_actions` from the last `idle_minutes`, as (ts, line). Raises on an unreadable store."""
     conn, token = _open_store(runs_dir)
     try:
-        sql = run_store._sql(
+        sql = run_store.sql_for(
             f"SELECT ts, action_json FROM chair_actions WHERE kind = {{p}} ORDER BY ts DESC LIMIT {_STATUS_ROW_CAP}", token
         )
         raw = [(r["ts"], r["action_json"]) for r in conn.execute(sql, ("status",)).fetchall()]
@@ -182,7 +182,7 @@ def run_watchdog(
     try:
         holder, last_beat = read_lease(runs_dir)
         rows = read_rows(runs_dir, now, idle_minutes)
-    except (*run_store._db_errors(), RuntimeError, OSError) as exc:
+    except (*run_store.db_error_types(), RuntimeError, OSError) as exc:
         print(f"watchdog: cannot read store: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
     alerts = evaluate(holder, last_beat, rows, now, stale_minutes, idle_minutes)

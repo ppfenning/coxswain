@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from agent_tools import courier
-from agent_tools.dash_feed import _courier_blob, _open_decisions
+from agent_tools.dash_feed import _open_decisions, courier_blob
 from agent_tools.jsonl_log import parse_log
 from agent_tools.notify_core import Event, render
 
@@ -34,7 +34,7 @@ def _blob(rows: tuple[dict, ...]) -> str:
 def pending_cards(workspace) -> list[dict]:
     """Open decisions in `<workspace>/courier.jsonl`; [] when there are none or the read fails."""
     try:
-        blob = _blob(parse_log(_courier_blob(Path(workspace))).rows)
+        blob = _blob(parse_log(courier_blob(Path(workspace))).rows)
         return _open_decisions(courier.inbox(blob), blob)
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return []

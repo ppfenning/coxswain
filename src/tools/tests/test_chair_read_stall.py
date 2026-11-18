@@ -20,7 +20,7 @@ def _live_store(tmp_path, run_id="abc-1", launched_at=LAUNCHED_AT):
     conn.execute("INSERT INTO runs VALUES (?, ?, NULL)", (run_id, launched_at))
     conn.execute("CREATE TABLE leases (name TEXT, holder TEXT, epoch INTEGER, heartbeat_at TEXT, expires_at TEXT)")
     conn.execute(
-        "INSERT INTO leases VALUES (?, ?, 1, ?, ?)", (run_store._lease_name(run_id), run_id, launched_at, LIVE_EXPIRES)
+        "INSERT INTO leases VALUES (?, ?, 1, ?, ?)", (run_store.lease_name_for(run_id), run_id, launched_at, LIVE_EXPIRES)
     )
     conn.commit()
     conn.close()

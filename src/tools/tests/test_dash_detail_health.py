@@ -113,7 +113,7 @@ def test_a_lease_that_expired_before_the_snapshot_is_not_ok():
 
 
 def test_the_timed_store_read_reports_elapsed_milliseconds_from_the_clock_it_is_given(monkeypatch, tmp_path: Path):
-    monkeypatch.setattr(dash_detail_health.run_store, "_open", lambda runs_dir: None)
+    monkeypatch.setattr(dash_detail_health.run_store, "open_store", lambda runs_dir: None)
     ticks = iter([10.0, 10.25])
     result, elapsed_ms = REAL_TIMED_STORE_READ(tmp_path, lambda: next(ticks))
     assert (result["ok"], elapsed_ms) == (False, 250)
@@ -135,9 +135,9 @@ def test_cox_dash_detail_health_prints_json_whose_kind_is_health(monkeypatch, tm
         return {"machines": MACHINES}
 
     monkeypatch.setattr(dash_detail_health.dash_feed, "gather_feed", _gather_feed)
-    monkeypatch.setattr(dash_detail_health.run_store, "_open", lambda runs_dir: None)
+    monkeypatch.setattr(dash_detail_health.run_store, "open_store", lambda runs_dir: None)
     lease = {dash_detail_health.chair.LEASE_NAME: (LEASE_ROW["holder"], LEASE_ROW["expires_at"], "")}
-    monkeypatch.setattr(dash_detail_health.run_store, "_lease_table", lambda runs_dir, window: lease)
+    monkeypatch.setattr(dash_detail_health.run_store, "lease_table_for", lambda runs_dir, window: lease)
     assert cli.main(["dash", "--detail", "health", "--runs-dir", str(tmp_path), "--work-dir", str(tmp_path)]) == 0
     printed = json.loads(capsys.readouterr().out)
     assert (printed["kind"], printed["schema"], printed["errors"]) == ("health", 1, [])
@@ -156,7 +156,7 @@ def test_a_raising_feed_and_lease_read_are_named_in_errors_not_shown_as_an_empty
     monkeypatch.setattr(dash_detail_health, "_machines", REAL_MACHINES)
     monkeypatch.setattr(dash_detail_health, "_lease_row", REAL_LEASE_ROW)
     monkeypatch.setattr(dash_detail_health.dash_feed, "gather_feed", _boom)
-    monkeypatch.setattr(dash_detail_health.run_store, "_lease_table", _boom)
+    monkeypatch.setattr(dash_detail_health.run_store, "lease_table_for", _boom)
     result = dash_detail_health.build(tmp_path / "runs", tmp_path, NOW, provider={})
     assert result["errors"] == ["machines: RuntimeError: down", "chair_lease: RuntimeError: down"]
     assert (result["hosts"], result["chair_lease"]["ok"]) == ([], False)

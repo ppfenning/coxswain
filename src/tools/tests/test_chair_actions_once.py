@@ -46,7 +46,7 @@ class FakeConn:
 
 def _store(monkeypatch, rows: list[dict]) -> FakeConn:
     conn = FakeConn(rows)
-    monkeypatch.setattr(run_store, "_open", lambda runs_dir: (conn, "?"))
+    monkeypatch.setattr(run_store, "open_store", lambda runs_dir: (conn, "?"))
     return conn
 
 

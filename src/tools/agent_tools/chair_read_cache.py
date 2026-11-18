@@ -37,7 +37,7 @@ class StampCache:
         self.max_entries = max_entries
         self.hits = 0
         self.misses = 0
-        self._entries: OrderedDict[Any, tuple[Stamp, Any]] = OrderedDict()
+        self.entries: OrderedDict[Any, tuple[Stamp, Any]] = OrderedDict()
 
     @property
     def reads(self) -> tuple[int, int]:
@@ -45,31 +45,31 @@ class StampCache:
         return (self.hits, self.misses)
 
     def __len__(self) -> int:
-        return len(self._entries)
+        return len(self.entries)
 
     def get(self, key: Any, stamp: Stamp | None, read: Callable[[], Any]) -> Any:
         """The stored value when its stamp equals stamp, else read(). A None stamp is never stored."""
-        stored = self._entries.get(key)
+        stored = self.entries.get(key)
         if stamp is not None and stored is not None and stored[0] == stamp:
             self.hits += 1
-            self._entries.move_to_end(key)
+            self.entries.move_to_end(key)
             return stored[1]
         self.misses += 1
         value = read()
         if stamp is None:
-            self._entries.pop(key, None)
+            self.entries.pop(key, None)
             return value
-        self._entries[key] = (stamp, value)
-        self._entries.move_to_end(key)
-        while len(self._entries) > self.max_entries:
-            self._entries.popitem(last=False)
+        self.entries[key] = (stamp, value)
+        self.entries.move_to_end(key)
+        while len(self.entries) > self.max_entries:
+            self.entries.popitem(last=False)
         return value
 
     def keep(self, keys: Iterable[Any]) -> None:
         """Drop every entry whose key is not in keys."""
         wanted = set(keys)
-        for key in [k for k in self._entries if k not in wanted]:
-            del self._entries[key]
+        for key in [k for k in self.entries if k not in wanted]:
+            del self.entries[key]
 
 
 def _encode_key(key: Any) -> dict[str, Any] | None:
@@ -122,7 +122,7 @@ def _decode_entry(entry: Any) -> tuple[Any, tuple[Stamp, Any]] | None:
 
 def dump_entries(cache: StampCache) -> dict[str, Any]:
     """Oldest-first document of the entries whose key and value survive a JSON round trip."""
-    encoded = [(_encode_key(key), stamp, value) for key, (stamp, value) in cache._entries.items()]
+    encoded = [(_encode_key(key), stamp, value) for key, (stamp, value) in cache.entries.items()]
     return {
         "version": DOC_VERSION,
         "entries": [
@@ -144,10 +144,10 @@ def load_entries(cache: StampCache, doc: Any) -> int:
     # Same-module access to the cache's own store; the public API has no insert without a read.
     wanted = list(dict(decoded).items())[-cache.max_entries :]
     for key, stored in wanted:
-        cache._entries[key] = stored
-        cache._entries.move_to_end(key)
-    while len(cache._entries) > cache.max_entries:
-        cache._entries.popitem(last=False)
+        cache.entries[key] = stored
+        cache.entries.move_to_end(key)
+    while len(cache.entries) > cache.max_entries:
+        cache.entries.popitem(last=False)
     return len(wanted)
 
 

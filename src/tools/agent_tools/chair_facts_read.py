@@ -17,7 +17,7 @@ from agent_tools.chair_land_freeze import LandFreeze, read_freeze
 from agent_tools.chair_no_progress import RunOutcome
 from agent_tools.chair_phase_quarantine import marked_cause
 from agent_tools.chair_phases import launchable_phases
-from agent_tools.chair_read_land_conflicts import _rev_parse
+from agent_tools.chair_read_land_conflicts import rev_parse_commit
 from agent_tools.chair_schedule_durations import END_KEY, MIX_KEY, SIZE_KEY, START_KEY
 from agent_tools.chair_types import (
     EASTERN,
@@ -283,7 +283,7 @@ class FactsDeps:
     queue_files: Callable[[], list[QueueFile]] = lambda: []  # `read_queue_files` bound to the workspace and store; absent means []
     held_files: Callable[[], Sequence[HeldFile]] = lambda: []  # `queue_export.read_held_record` bound to the workspace; absent means []
     current_version: Callable[[], str] = _package_version  # the umbrella's current version, read once per tick; gates target_release
-    rev_parse: Callable[[str, str], str | None] = _rev_parse  # (repo, ref) to the commit sha or None; read by `read_land_heads` for refused phases only
+    rev_parse: Callable[[str, str], str | None] = rev_parse_commit  # (repo, ref) to the commit sha or None; read by `read_land_heads` for refused phases only
     cartridge: Callable[[], Mapping[str, Any]] = lambda: {}  # the resolved team cartridge; {} when unreadable, so land_at reads the default
     land_at_values: Callable[[], Mapping[str, str | None]] = lambda: {}  # initiative to its initiative.md `land_at:`; absent means {}
     approved_branch_merged: Callable[[Row], bool] = lambda row: False  # approved row to whether its commit is on a phase or pr branch
@@ -434,7 +434,7 @@ def run_initiative(run: str) -> str:
     return re.sub(r"-\d+$", "", run)
 
 
-def _key(row: Row) -> Key:
+def task_key(row: Row) -> Key:
     """(initiative, phase, task). A task id repeats across phases, so phase is part of the key.
 
     A row with no initiative, such as every `runs_stranded` row, takes it from its run id."""
@@ -448,23 +448,23 @@ def harness_failures(attempts: Sequence[Row], key: Key) -> int:
     return sum(
         1
         for a in attempts
-        if _key(a) == key and a.get("cause") == HARNESS_CAUSE and a.get("on_current_body", True)
+        if task_key(a) == key and a.get("cause") == HARNESS_CAUSE and a.get("on_current_body", True)
     )
 
 
 def rescue_failed(attempts: Sequence[Row], key: Key) -> bool:
     """Whether the task has a rescue_failed attempt, over the same attempts and key `harness_failures` counts."""
-    return any(_key(a) == key and a.get("cause") == RESCUE_FAILED_CAUSE for a in attempts)
+    return any(task_key(a) == key and a.get("cause") == RESCUE_FAILED_CAUSE for a in attempts)
 
 
 def newest_cause(attempts: Sequence[Row], key: Key) -> str:
     """The cause on the task's newest attempt, from the list `harness_failures` counts. Empty with no attempt."""
-    return next((str(a.get("cause") or "") for a in reversed(attempts) if _key(a) == key), "")
+    return next((str(a.get("cause") or "") for a in reversed(attempts) if task_key(a) == key), "")
 
 
 def _on_body(attempts: Sequence[Row], key: Key) -> list[Row]:
     """The task's attempts on its current body, oldest first. A row with no `on_current_body` counts."""
-    return [a for a in attempts if _key(a) == key and a.get("on_current_body", True)]
+    return [a for a in attempts if task_key(a) == key and a.get("on_current_body", True)]
 
 
 # A stoppage is the harness's, not the task's: a limit, a login, the infrastructure, a stale base, an interrupted run.
@@ -480,7 +480,7 @@ def task_failures(attempts: Sequence[Row], key: Key) -> int:
     return sum(
         1
         for a in attempts
-        if _key(a) == key and str(a.get("cause") or "") not in _NOT_A_FAILURE and str(a.get("kind") or "") not in _NOT_A_BUILD
+        if task_key(a) == key and str(a.get("cause") or "") not in _NOT_A_FAILURE and str(a.get("kind") or "") not in _NOT_A_BUILD
     )
 
 
@@ -530,7 +530,7 @@ def with_attempt_runs(quarantined: Sequence[Row], attempts: Sequence[Row]) -> li
     reader (`chair_read_run_records`) finds it in the run task records. A row that names a run keeps it, and a task with
     no attempt on its current body keeps its empty run, so it still reaches the chair."""
     def newest(q: Row) -> Row | None:
-        return next(reversed(_on_body(attempts, _key(q))), None)
+        return next(reversed(_on_body(attempts, task_key(q))), None)
 
     return [
         {**q, "run": str(a.get("run") or ""), "reason": str(a.get("reason") or "")}
@@ -552,7 +552,7 @@ def awaiting_fetch(quarantined: Sequence[Row], unfetched: Mapping[str, str]) -> 
         {"initiative": str(q["initiative"]), "task_id": str(q["task"]), "run": unfetched[q["initiative"]]}
         for q in quarantined
         if q["initiative"] in unfetched and q["initiative"] not in decompose
-        and _run_number(unfetched[q["initiative"]]) > _run_number(str(q.get("run") or ""))
+        and run_ordinal(unfetched[q["initiative"]]) > run_ordinal(str(q.get("run") or ""))
     ]
 
 
@@ -585,15 +585,15 @@ def quarantine_facts(
     names one) reports `QUARANTINED_CAUSE`, so the status line never shows it with an empty cause.
 
     An initiative with a live run contributes nothing: a retry in flight is never planned again."""
-    opened = list(dict.fromkeys(_key(q) for q in quarantined))
-    by_key = {_key(q): q for q in quarantined}
+    opened = list(dict.fromkeys(task_key(q) for q in quarantined))
+    by_key = {task_key(q): q for q in quarantined}
     landed_now = {(t["initiative"], t["phase"], t["id"]) for t in landing if t["run"]}
     # A stranded task that is also an open quarantine keeps the quarantine's newest cause, so it is not sent to the chair as stranded.
     # Matched on initiative and task id, as `chair_plan_recover._recovery` does: a stranded record's phase can be missing or old.
     in_store = None if approved is None else {(t["initiative"], t["id"]) for t in approved}
     # An `expected` row is a deliberate manual landing: it is reported by the reader but raises no note.
     kept = [s for s in stranded if not s.get("expected")]
-    rows = {k: next(s for s in kept if _key(s) == k) for k in dict.fromkeys(_key(s) for s in kept)}
+    rows = {k: next(s for s in kept if task_key(s) == k) for k in dict.fromkeys(task_key(s) for s in kept)}
     stuck = [
         k for k in rows
         if k not in opened and k not in landed_now and (in_store is None or (k[0], k[2]) in in_store)
@@ -607,7 +607,7 @@ def quarantine_facts(
 def _opened_quarantine(key: Key, attempts: Sequence[Row], has_patch: Callable[[str, str], bool], row: Row) -> QuarantineFacts:
     """One open quarantine. Its cause is the chair's own mark on the row while no attempt from a later run outdates it
     (`chair_phase_quarantine.marked_cause`), with the mark's reason; else the newest attempt's, else `QUARANTINED_CAUSE`."""
-    mark = marked_cause(row.get("mark"), [a for a in attempts if _key(a) == key])
+    mark = marked_cause(row.get("mark"), [a for a in attempts if task_key(a) == key])
     if mark is None:
         return _quarantine(key, newest_cause(attempts, key) or QUARANTINED_CAUSE, attempts, has_patch, row)
     return _quarantine(key, mark["cause"], attempts, has_patch, {**row, "reason": mark["reason"] or row.get("reason") or ""})
@@ -853,7 +853,7 @@ def duration_records(
     `relaunch` row of the initiative at or before the end. The end is when the land finished, so it runs a little
     past the build. A phase landed per ticket writes no `land_phase` row and gives no record, and neither does a
     phase with no start or no entry in `shapes`, which maps (initiative, phase) to (size, mix)."""
-    docs = sorted(map(_action_doc, actions), key=lambda d: str(d.get("ts") or ""))
+    docs = sorted(map(action_doc, actions), key=lambda d: str(d.get("ts") or ""))
     launches = [
         (str(d.get("initiative") or d.get("target")), str(d["ts"]))
         for d in docs
@@ -985,12 +985,12 @@ def schedule_inputs_from_rows(
     }
 
 
-def _action_doc(row: Row) -> Row:
+def action_doc(row: Row) -> Row:
     raw = row.get("action_json")
     doc = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
     return {**row, **(doc if isinstance(doc, dict) else {})}
 
 
-def _run_number(run: str) -> int:
+def run_ordinal(run: str) -> int:
     match = re.search(r"-(\d+)$", run)
     return int(match.group(1)) if match else -1

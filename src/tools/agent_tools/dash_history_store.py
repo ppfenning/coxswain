@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Any
 
-from agent_tools.run_store import _DB_ERRORS, _open, _sql
+from agent_tools.run_store import _DB_ERRORS, open_store, sql_for
 
 RECENT_ENDED = 30
 
@@ -24,14 +24,14 @@ def _task_records(store: Path, sql: str, since: str) -> list[dict[str, Any]]:
     """Edge. The task records `sql` selects for `since`; empty with no store, no such table or column, or an
     unreadable store."""
     try:
-        opened = _open(store)
+        opened = open_store(store)
     except (*_DB_ERRORS, RuntimeError):  # an unreachable Postgres, or psycopg not installed
         return []
     if opened is None:
         return []
     conn, token = opened
     try:
-        return [dict(r) for r in conn.execute(_sql(sql, token), (since,)).fetchall()]
+        return [dict(r) for r in conn.execute(sql_for(sql, token), (since,)).fetchall()]
     except _DB_ERRORS:
         return []
     finally:
@@ -58,20 +58,20 @@ def _empty() -> dict[str, list[dict[str, Any]]]:
 def read_history_rows(store: Path, since: str) -> dict[str, list[dict[str, Any]]]:
     """Edge. {runs, task_records, node_calls} as the store holds them, column names unchanged. `runs` are ended runs with `ended_at >= since` (ISO text) or among the newest 30 ended; the other two cover those run ids only. Empty with no store or an unreadable one."""
     try:
-        opened = _open(store)
+        opened = open_store(store)
     except (*_DB_ERRORS, RuntimeError):  # an unreachable Postgres, or psycopg not installed
         return _empty()
     if opened is None:
         return _empty()
     conn, token = opened
     try:
-        runs = [dict(r) for r in conn.execute(_sql(_RUNS, token), (since,)).fetchall()]
+        runs = [dict(r) for r in conn.execute(sql_for(_RUNS, token), (since,)).fetchall()]
         ids = tuple(run["run_id"] for run in runs)
         if not ids:
             return _empty()
         marks = ", ".join("{p}" for _ in ids)
         by_ids = {
-            table: [dict(r) for r in conn.execute(_sql(f"SELECT * FROM {table} WHERE run_id IN ({marks})", token), ids).fetchall()]
+            table: [dict(r) for r in conn.execute(sql_for(f"SELECT * FROM {table} WHERE run_id IN ({marks})", token), ids).fetchall()]
             for table in ("task_records", "node_calls")
         }
     except _DB_ERRORS:

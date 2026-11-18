@@ -78,10 +78,10 @@ def test_an_initiative_file_with_no_row_refuses_but_no_file_means_no_target(tmp_
 
 
 def test_a_stub_with_no_target_branch_has_none() -> None:
-    assert chair_exec._target_of(SimpleNamespace(), "i1") is None
-    assert chair_exec._target_of(SimpleNamespace(target_branch=None), "i1") is None
-    assert chair_exec._target_of(SimpleNamespace(target_branch=lambda i: "release/1"), "") is None
-    assert chair_exec._target_of(SimpleNamespace(target_branch=lambda i: "release/1"), "i1") == "release/1"
+    assert chair_exec.target_branch_of(SimpleNamespace(), "i1") is None
+    assert chair_exec.target_branch_of(SimpleNamespace(target_branch=None), "i1") is None
+    assert chair_exec.target_branch_of(SimpleNamespace(target_branch=lambda i: "release/1"), "") is None
+    assert chair_exec.target_branch_of(SimpleNamespace(target_branch=lambda i: "release/1"), "i1") == "release/1"
 
 
 def opened_base(tmp_path: Path, monkeypatch, target: str | None) -> str | None:

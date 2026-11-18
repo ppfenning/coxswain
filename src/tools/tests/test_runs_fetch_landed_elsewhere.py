@@ -130,7 +130,7 @@ def test_the_real_store_readers_find_the_run_tasks_and_their_done_states(tmp_pat
         item = ws / "work" / "init" / "p1" / f"{task}.md"
         item.parent.mkdir(parents=True, exist_ok=True)
         item.write_text("---\nstate: done\n---\n")
-    monkeypatch.setattr(run_store, "_store_url", lambda runs_dir: url)
+    monkeypatch.setattr(run_store, "store_url_for", lambda runs_dir: url)
     assert main(["runs", "fetch", RUN, "--profile", str(profile)]) == 0
     assert seen["fetch_run"] == []
     assert capsys.readouterr().out.splitlines() == [LINE]

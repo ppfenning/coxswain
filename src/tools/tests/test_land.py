@@ -2087,7 +2087,7 @@ def test_a_profile_naming_github_routes_the_land_to_it_handing_the_planned_head_
     out = capsys.readouterr().out
     assert rc == 3, out
     assert "forge: github" in out.splitlines()
-    assert "pr_create: https://x/pull/7" in out.splitlines()  # chair_exec._PR_URL_RE parses this exact line
+    assert "pr_create: https://x/pull/7" in out.splitlines()  # chair_exec.PR_URL_RE parses this exact line
     assert calls == [("push", "pr/seams-task"), ("open_pr", "pr/seams-task", "main"), ("wait_checks", "pr/seams-task")]
 
 

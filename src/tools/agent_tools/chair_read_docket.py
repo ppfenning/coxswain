@@ -152,7 +152,7 @@ def work_store_ready(docket: Row) -> bool:
     return any(i["ready_tasks"] for i in docket["initiatives"])
 
 
-def _claimed(row: Row, now: str) -> bool:
+def is_claimed(row: Row, now: str) -> bool:
     return bool(row["holder"]) and row["expires_at"] > now
 
 
@@ -187,13 +187,13 @@ def docket_from_rows(
 ) -> list[dict[str, Any]]:
     """The builder's `initiatives` over the task rows, less each task a live lease holds (`holder` set, `expires_at` after ISO `now`).
 
-    Queue rows carry no `updated_at` (`run_store._QUEUE_COLUMNS`), so ages come from `aged`, the `_work_items` rows,
+    Queue rows carry no `updated_at` (`run_store._QUEUE_COLUMNS`), so ages come from `aged`, the `docket_work_items` rows,
     unless a queue row supplies one. Ordering runs after the lease filter, so a leased task never sets an age.
 
     `land_at` maps initiative id to its land_at. None, or an id missing from it, keeps `route.DEFAULT_LAND_AT`."""
     tasks = [r for r in rows if r["kind"] == "task"]
     items = _with_item_ages([_item_of(r) for r in tasks], aged)
-    claimed = {(r["initiative"], r["task_id"]) for r in tasks if _claimed(r, now)}
+    claimed = {(r["initiative"], r["task_id"]) for r in tasks if is_claimed(r, now)}
     judged = (
         None if land_at is None
         else {i["initiative"]: land_at.get(i["initiative"], route.DEFAULT_LAND_AT) for i in items}
@@ -210,7 +210,7 @@ def docket_from_rows(
     return _by_priority(unclaimed, items)
 
 
-def _text(p: Path) -> str | None:
+def docket_text(p: Path) -> str | None:
     try:
         return p.read_text()
     except OSError:
@@ -223,7 +223,7 @@ def _with_store_ages(items: Sequence[Row], rows: Sequence[Row]) -> list[dict[str
     return [{**i, "updated_at": ages.get((i["initiative"], i["id"])) or i.get("updated_at")} for i in items]
 
 
-def _work_items(
+def docket_work_items(
     ws: Path, mode: str, files: WorkFiles | None = None, store_rows: Sequence[Mapping] | None = None,
 ) -> list[dict]:
     """Every work item under `work/<initiative>/<phase>/<task>.md`, its state from the store under mode "store".
@@ -231,7 +231,7 @@ def _work_items(
     `files` and `store_rows` stand in for the work-file and store reads when a tick already holds them."""
     texts = (
         task_files(ws, files) if files is not None
-        else {p: t for p in sorted((ws / "work").glob("*/*/*.md")) if (t := _text(p)) is not None}
+        else {p: t for p in sorted((ws / "work").glob("*/*/*.md")) if (t := docket_text(p)) is not None}
     )
     items = [
         route.work_item(route.parse_frontmatter(text)[0], initiative=p.parent.parent.name, phase_dir=p.parent.name, stem=p.stem)
@@ -244,12 +244,12 @@ def _work_items(
 
 def local_runs(runs_dir: Path, now: str) -> tuple[int, set[str]]:
     """Edge. How many local pidfile runs are live, and every run a local pidfile names."""
-    local = {p.stem: route.parse_pid(t) for p in sorted(runs_dir.glob("*.pid")) if (t := _text(p)) is not None}
+    local = {p.stem: route.parse_pid(t) for p in sorted(runs_dir.glob("*.pid")) if (t := docket_text(p)) is not None}
     live = [rid for rid, pid in local.items() if epic.run_live(pid, runs_dir / f"{rid}.pid", now=now)]
     return len(live), set(local)
 
 
-def _busy_lanes(runs_dir: Path, now: str) -> int:
+def busy_lane_count(runs_dir: Path, now: str) -> int:
     """Runs with a live local pidfile, plus live store leases no local pidfile names."""
     live, named = local_runs(runs_dir, now)
     return live + len(run_store.remote_lanes(run_store.live_lanes(runs_dir, now), named))
@@ -260,8 +260,8 @@ def read_docket(
     files: WorkFiles | None = None, store_rows: Sequence[Mapping] | None = None,
 ) -> dict[str, Any]:
     """Edge: the builder over the workspace `ws` and its store. `mode` is `work_state.work_state_mode`'s answer."""
-    items = _work_items(ws, mode, files, store_rows)
-    busy = _busy_lanes(ws / "runs", now().strftime("%Y-%m-%dT%H:%M:%SZ"))
+    items = docket_work_items(ws, mode, files, store_rows)
+    busy = busy_lane_count(ws / "runs", now().strftime("%Y-%m-%dT%H:%M:%SZ"))
     return docket_from_builder(route.initiative_summaries(items), items, busy, max_in_flight)
 
 

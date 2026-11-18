@@ -426,14 +426,14 @@ def _runs_pause_resume_outcome(verbed: str, run_id: str, result, as_json: bool) 
 def _runs_pause(a: argparse.Namespace) -> int:
     runs_dir = Path(a.runs_dir)
     run_id = _resolved_run_id(runs_dir, a.run_id)
-    store_url = run_store._store_url(runs_dir)
+    store_url = run_store.store_url_for(runs_dir)
     return _runs_pause_resume_outcome("paused", run_id, store_cli.pause(store_url, run_id, reason=a.reason), a.json)
 
 
 def _runs_resume(a: argparse.Namespace) -> int:
     runs_dir = Path(a.runs_dir)
     run_id = _resolved_run_id(runs_dir, a.run_id)
-    store_url = run_store._store_url(runs_dir)
+    store_url = run_store.store_url_for(runs_dir)
     return _runs_pause_resume_outcome("resumed", run_id, store_cli.resume(store_url, run_id), a.json)
 
 
@@ -522,7 +522,7 @@ def _wrongly_released_merged(
             if chair_facts.run_initiative(run := p.parent.parent.parent.name) == initiative
         }
         return bool(runs) and not runs & set(live()) and approved_merged(
-            {**item, "run": max(runs, key=chair_facts._run_number), "land_at": land_at.get(initiative, "initiative")}
+            {**item, "run": max(runs, key=chair_facts.run_ordinal), "land_at": land_at.get(initiative, "initiative")}
         )
     return merged
 
@@ -546,7 +546,7 @@ def _runs_move_step(step: dict, a: argparse.Namespace, exec_deps: chair_exec.Dep
     """One `runs_move.move_plan` step through the edge its kind reaches; epoch 0 stamped and matched."""
     kind = step["kind"]
     if kind == "pause":
-        return _runs_move_pause(run_store._store_url(Path(a.runs_dir)), step["run"], step.get("reason"))
+        return _runs_move_pause(run_store.store_url_for(Path(a.runs_dir)), step["run"], step.get("reason"))
     if kind == "stop":
         return _runs_move_stop(a, step["run"])
     if kind in ("clear_branches", "relaunch"):

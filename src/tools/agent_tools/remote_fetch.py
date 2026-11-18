@@ -50,7 +50,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_tools import bounded_run, repo_path, run_store
-from agent_tools.land import _approved as land_approved
+from agent_tools.land import approved_reason as land_approved
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_argv import (
     INCOMING_PREFIX,

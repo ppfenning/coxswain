@@ -31,7 +31,7 @@ _NO_ENV = HostEnv({}, frozenset())
 PULL_MIN_AGE_S = 600
 
 
-def _required_capabilities(initiative: InitiativeFacts) -> frozenset[str]:
+def required_capabilities(initiative: InitiativeFacts) -> frozenset[str]:
     return frozenset(cap for task in initiative["ready_tasks"] for cap in task.get("requires", []))
 
 
@@ -43,7 +43,7 @@ def _launchable(initiative: InitiativeFacts, held_phases: frozenset[tuple[str, s
     return {**initiative, "ready_tasks": kept}
 
 
-def _eligible(host: HostSlot, required: frozenset[str]) -> bool:
+def eligible_host(host: HostSlot, required: frozenset[str]) -> bool:
     _, _, capabilities, free, _ = host
     return free > 0 and required <= capabilities
 
@@ -58,15 +58,12 @@ def best_host(
     required: frozenset[str], hosts: Sequence[HostSlot], barred: Collection[str] = ()
 ) -> tuple[str, list[HostSlot]] | None:
     """The best-ranked unbarred host whose capabilities cover required, and the hosts after one placement on it."""
-    candidates = [(idx, host) for idx, host in enumerate(hosts) if _eligible(host, required) and host[0] not in barred]
+    candidates = [(idx, host) for idx, host in enumerate(hosts) if eligible_host(host, required) and host[0] not in barred]
     if not candidates:
         return None
     idx, (name, weight, capabilities, free, assigned) = min(candidates, key=_rank)
     updated: HostSlot = (name, weight, capabilities, free - 1, assigned + 1)
     return name, [updated if i == idx else host for i, host in enumerate(hosts)]
-
-
-_best_host = best_host  # chair_plan.py still imports this name; it is outside the launch-placement change
 
 
 def _epic_action(initiative_id: str, host: str) -> Action:
@@ -77,7 +74,7 @@ def _decompose_action(intake_id: str, host: str) -> Action:
     return {"kind": ActionKind.LAUNCH_DECOMPOSE, "intake_ids": [intake_id], "host": host}
 
 
-def _place_on_hosts(
+def place_on_hosts(
     rest: list[tuple[str, frozenset[str]]],
     hosts: Sequence[HostSlot],
     make: Callable[[str, str], Action] = _epic_action,
@@ -88,9 +85,9 @@ def _place_on_hosts(
     item_id, required = rest[0]
     placed = best_host(required, hosts)
     if placed is None:
-        return _place_on_hosts(rest[1:], hosts, make)
+        return place_on_hosts(rest[1:], hosts, make)
     name, new_hosts = placed
-    return [make(item_id, name), *_place_on_hosts(rest[1:], new_hosts, make)]
+    return [make(item_id, name), *place_on_hosts(rest[1:], new_hosts, make)]
 
 
 def _after_placing(hosts: Sequence[HostSlot], actions: Sequence[Action]) -> list[HostSlot]:
@@ -156,7 +153,7 @@ def _walk_candidates(
     if launch_budget is not None and launch_budget <= 0:
         return [], []
     head, *tail = candidates
-    required = _required_capabilities(head)
+    required = required_capabilities(head)
     barred = {} if local_left > 0 else _barred_hosts(head, hosts, env)
     notes = _stale_needs_chair(head, barred, hosts, required, env)
     placed = None if local_left > 0 else best_host(required, hosts, barred)
@@ -260,11 +257,11 @@ def _scheduled_walk(
         return [], []
     (initiative_id, host), *tail = picks
     head = by_id[initiative_id]
-    required = _required_capabilities(head)
+    required = required_capabilities(head)
     slot = next((h for h in hosts if h[0] == host), None)
     barred = {} if host is None or slot is None else _barred_hosts(head, [slot], env)
     notes = [] if slot is None else _stale_needs_chair(head, barred, [slot], required, env)
-    fits = local_left > 0 if host is None else slot is not None and _eligible(slot, required) and host not in barred
+    fits = local_left > 0 if host is None else slot is not None and eligible_host(slot, required) and host not in barred
     if not fits:
         launches, steers = _scheduled_walk(tail, by_id, running, streaks, local_left, hosts, env, policy, launch_budget)
         return launches, [*notes, *steers]
@@ -335,7 +332,7 @@ def _decompose_launches(
     open_intake = [i for i in facts["intake"] if i not in stalled]
     local: list[Action] = [{"kind": ActionKind.LAUNCH_DECOMPOSE, "intake_ids": [i]} for i in open_intake[:fit]]
     overflow = [(intake_id, frozenset[str]()) for intake_id in open_intake[fit:]]
-    launches = [*local, *_place_on_hosts(overflow, host_free, _decompose_action)]
+    launches = [*local, *place_on_hosts(overflow, host_free, _decompose_action)]
     return launches if launch_budget is None else launches[: max(0, launch_budget)]
 
 
@@ -375,7 +372,7 @@ def host_free_slots(facts: Facts) -> list[HostSlot]:
     ]
 
 
-def _less_consumed(host_free: Sequence[HostSlot], consumed_host_lanes: dict[str, int]) -> list[HostSlot]:
+def less_consumed(host_free: Sequence[HostSlot], consumed_host_lanes: dict[str, int]) -> list[HostSlot]:
     """host_free with each host's free count reduced by the lanes a prior planning step already took."""
     return [
         (name, weight, capabilities, max(0, free - consumed_host_lanes.get(name, 0)), assigned)
@@ -422,7 +419,7 @@ def plan_fill(
     but no launch_decompose is built for them."""
     host_free = host_free_slots(facts)
     if consumed_host_lanes:
-        host_free = _less_consumed(host_free, consumed_host_lanes)
+        host_free = less_consumed(host_free, consumed_host_lanes)
     if free_lanes <= 0 and not any(free for *_, free, _ in host_free):
         return []
     local_lanes = max(0, free_lanes)

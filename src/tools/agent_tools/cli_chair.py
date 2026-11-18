@@ -775,7 +775,7 @@ def _chair_run_deps(
         )
 
     def ticket_items() -> list[dict]:
-        return once("tickets", lambda: chair_read_docket._work_items(ws, mode, work_files(), store_rows()))  # type: ignore[return-value]
+        return once("tickets", lambda: chair_read_docket.docket_work_items(ws, mode, work_files(), store_rows()))  # type: ignore[return-value]
 
     def decompose_runs_of(path: str, initiative: str = "") -> list:
         iid = chair_exec.decompose_id(path, chair_exec.read_intake_id(ws, path))
@@ -818,7 +818,7 @@ def _chair_run_deps(
 
     def docket() -> dict:
         if not snapshot:
-            busy = chair_read_docket._busy_lanes(ws / "runs", now_text())
+            busy = chair_read_docket.busy_lane_count(ws / "runs", now_text())
             snapshot.append(
                 chair_facts.docket_by_land_at(ticket_items(), busy, _local_max_in_flight(runs_dir, profile, host), land_at_map())
             )
