@@ -9,7 +9,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from core import workstore
 from core.cartridge import test_database_setting
@@ -43,7 +43,7 @@ from harness.epic_records import (
     unlanded_tasks,
 )
 from harness.epic_triage import close_runner
-from harness.epic_types import EpicItem, PhaseRecord, Quarantine, TaskEntry
+from harness.epic_types import EpicItem, PhaseRecord, Quarantine, TaskEntry, as_list, as_mapping
 from harness.lane_workers import lane_workers_from
 from harness.lanes import lane_bound
 from harness.scheduler import plan_launches
@@ -52,14 +52,17 @@ from harness.waves import compute_waves, parent_lines, phase_parents, unreached_
 from harness.worktree import keep_worktree, remove_worktree
 from runner.protocol import LimitStop
 
+if TYPE_CHECKING:
+    from graphs._spec import GraphSpec
+
 
 def run_epic(
     *,
-    initiative: Mapping[str, Any],
+    initiative: workstore.Initiative,
     repo: Path | str,
-    cartridge: Mapping[str, Any],
+    cartridge: Mapping[str, object],
     runner: Any,
-    specs: Mapping[str, Any],
+    specs: Mapping[str, GraphSpec],
     run_id: str,
     date: str,
     max_parallel: int,
@@ -81,7 +84,7 @@ def run_epic(
     est_task_usd: float = 0.0,
     only_phases: Collection[str] | None = None,
     pool: PoolSetting | None = None,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     """Drive a whole initiative: every phase, in dependency order, landing nothing.
 
     With a `pool`, each task build leases its worktree from the host's warm pool instead of creating one,
@@ -130,12 +133,12 @@ def run_epic(
     retry = retry or StoreRetry.for_store(store)
     repo = Path(repo).expanduser()
     ctx: Ctx | None = None
-    result: dict[str, Any] | None = None
+    result: dict[str, object] | None = None
     # Bound before the `try` so the `finally` can build a partial result from whatever phases finished.
     phases: list[PhaseRecord] = []
     tasks: list[TaskEntry] = []
     quarantined: list[Quarantine] = []
-    proposals: list[dict[str, Any]] = []
+    proposals: list[dict[str, object]] = []
     stacks_rebased = 0
     paused_until: str | None = None
     try:
@@ -335,17 +338,17 @@ def run_epic(
 class _Tally:
     stacks_rebased: int = 0
     paused_until: str | None = None
-    lane: dict[str, Any] = field(default_factory=dict)
+    lane: dict[str, object] = field(default_factory=dict[str, object])
 
 
 def _open_view(
-    items: Sequence[Mapping[str, Any]],
+    items: Sequence[Mapping[str, object]],
     parents: Mapping[str, set[str]],
     complete: set[str],
     launched: set[str],
     failed: Collection[str] = (),
     whole_parents: bool = False,
-) -> list[dict[str, Any]]:
+) -> list[dict[str, object]]:
     """`items` as the planner sees them: a ready task is held while its phase has an incomplete parent or it already launched.
 
     A task whose needs are all merged is not held for an incomplete parent, unless a parent has finished without
@@ -356,7 +359,7 @@ def _open_view(
     shut = {p for p, ps in parents.items() if ps & set(failed)}
     by_id = {str(i["id"]): i for i in items}
 
-    def state(item: Mapping[str, Any]) -> Any:
+    def state(item: Mapping[str, object]) -> object:
         if item.get("state") != "ready":
             return item.get("state")
         if str(item["id"]) in launched:
@@ -366,19 +369,19 @@ def _open_view(
     return [{**item, "state": state(item)} for item in items]
 
 
-def _needs_merged(item: Mapping[str, Any], by_id: Mapping[str, Mapping[str, Any]]) -> bool:
+def _needs_merged(item: Mapping[str, object], by_id: Mapping[str, Mapping[str, object]]) -> bool:
     """Does the task have needs, each one done, dropped, or approved and merged with a stored commit?
 
     Such a task starts before its phase's parents are complete. A need outside this initiative reads as met here;
     the planner checks it. A task with no needs waits for the whole parent phase.
     """
-    needs = [str(n) for n in item.get("needs") or []]
+    needs = [str(n) for n in as_list(item.get("needs"))]
     return bool(needs) and all(
         n not in by_id or _need_met(by_id[n]) for n in needs
     )
 
 
-def _need_met(need: Mapping[str, Any]) -> bool:
+def _need_met(need: Mapping[str, object]) -> bool:
     if need.get("state") in ("done", "dropped"):
         return True
     return need.get("state") == "approved" and bool(need.get("merged")) and bool(need.get("merged_commit"))
@@ -387,7 +390,7 @@ def _need_met(need: Mapping[str, Any]) -> bool:
 def _run_lanes(
     ctx: Ctx,
     *,
-    initiative: Mapping[str, Any],
+    initiative: workstore.Initiative,
     items: list[EpicItem],
     parents: Mapping[str, set[str]],
     waves: Sequence[Sequence[str]],
@@ -395,7 +398,7 @@ def _run_lanes(
     phases: list[PhaseRecord],
     tasks: list[TaskEntry],
     quarantined: list[Quarantine],
-    proposals: list[dict[str, Any]],
+    proposals: list[dict[str, object]],
     tally: _Tally,
     headroom_usd: Callable[[], float | None] | None,
     est_task_usd: float,
@@ -466,19 +469,20 @@ def _run_lanes(
         bad = next((p for p in sorted(parents[phase]) if p in recorded and p not in complete), None)
         if bad is None:
             return None
-        parent_record = next((r for r in phases if r.get("phase") == bad), {})
-        waiting = len(parent_record.get("awaiting_tasks") or [])
+        parent_record = as_mapping(next((r for r in phases if r.get("phase") == bad), None))
+        merge = as_mapping(parent_record.get("initiative_merge"))
+        waiting = len(as_list(parent_record.get("awaiting_tasks")))
         return {
             "phase": phase,
             "status": "blocked",
             "parents": sorted(parents[phase]),
             "reason": (
-                f"parent phase '{bad}' is built but not merged into {parent_record['initiative_merge'].get('branch')}: "
-                f"{parent_record['initiative_merge'].get('detail') or parent_record['initiative_merge'].get('status')}"
-                if parent_record.get("status") == "awaiting_land" and parent_record.get("initiative_merge")
-                else f"parent phase '{bad}' is not merged into {parent_record['initiative_merge'].get('branch')}: "
-                f"{parent_record['initiative_merge'].get('detail')}; dependents do not run"
-                if parent_record.get("initiative_merge")
+                f"parent phase '{bad}' is built but not merged into {merge.get('branch')}: "
+                f"{merge.get('detail') or merge.get('status')}"
+                if parent_record.get("status") == "awaiting_land" and merge
+                else f"parent phase '{bad}' is not merged into {merge.get('branch')}: "
+                f"{merge.get('detail')}; dependents do not run"
+                if merge
                 else f"parent phase '{bad}' is awaiting the land of {waiting} approved task(s)"
                 if parent_record.get("status") == "awaiting_land"
                 else f"parent phase '{bad}' did not meet its goal; dependents do not run"
@@ -500,10 +504,11 @@ def _run_lanes(
         quarantined.extend(record.pop("quarantined"))
         proposals.extend(record.pop("batch"))
         tally.stacks_rebased += 1 if record.get("rebased") else 0
-        acc[phase] = {**record, "rebased": bool(record.get("rebased") or acc.get(phase, {}).get("rebased"))}
-        if record.get("stopped"):
-            print(f"  run stopped: {record['stopped']}; later phases not run")
-            why_stopped.append(f"run stopped: {record['stopped']}")
+        prior = acc.get(phase)
+        acc[phase] = {**record, "rebased": bool(record.get("rebased") or (prior is not None and prior.get("rebased")))}
+        if stopped := record.get("stopped"):
+            print(f"  run stopped: {stopped}; later phases not run")
+            why_stopped.append(f"run stopped: {stopped}")
 
     with ThreadPoolExecutor(max_workers=max(1, len(parents))) as pool:
 

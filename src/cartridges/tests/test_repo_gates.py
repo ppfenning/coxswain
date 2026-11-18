@@ -68,13 +68,21 @@ def test_ci_runs_the_type_check_in_the_required_job():
 
 
 def test_the_typed_core_is_strict():
-    """H2's strict set: the core, the store modules and every chair and lander module, none of them excluded."""
+    """H2's strict set: the core, the epic driver, the store modules and every chair and lander module, none excluded."""
     config = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["pyright"]
     assert config["typeCheckingMode"] == "basic"
-    strict = {"src/cartridges/core", "src/graphs/harness/store*.py", "src/tools/agent_tools/chair*.py", "src/tools/agent_tools/lander*.py"}
+    strict = {
+        "src/cartridges/core",
+        "src/graphs/harness/epic*.py",
+        "src/graphs/harness/store*.py",
+        "src/tools/agent_tools/chair*.py",
+        "src/tools/agent_tools/lander*.py",
+    }
     assert strict <= set(config["strict"])
     excluded = set(config.get("exclude", []))
-    assert not any(path.startswith(("src/cartridges/core", "src/graphs/harness/store", "src/tools/agent_tools/chair", "src/tools/agent_tools/lander")) for path in excluded)
+    typed = ("src/cartridges/core", "src/graphs/harness/epic", "src/graphs/harness/store", "src/tools/agent_tools/chair",
+             "src/tools/agent_tools/lander")  # fmt: skip
+    assert not any(path.startswith(typed) for path in excluded)
     # the executor's dispatch is checked exhaustive over ActionKind only while its module is checked
     assert not excluded & {"src/tools/agent_tools/chair_types.py", "src/tools/agent_tools/chair_exec.py"}
 
