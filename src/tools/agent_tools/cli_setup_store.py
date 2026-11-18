@@ -12,6 +12,7 @@ from pathlib import Path
 from agent_tools.cli_common import _profile_path, _read_text_or_none
 from agent_tools.cli_lazy import (
     bounded_run,
+    chair_service,
     claude_token,
     route,
     setup_store,
@@ -21,6 +22,7 @@ from agent_tools.cli_lazy import (
     store_switch,
     store_url,
     unit_env,
+    upgrade_edge,
 )
 
 
@@ -75,6 +77,30 @@ def _env_overlay(overlay: Mapping[str, str]):
                 os.environ.pop(name, None)
             else:
                 os.environ[name] = old
+
+
+def _units_env_file(home: Path) -> Path:
+    """Edge. The env file this machine's units read: the one the upgrade, chair or lander unit names, in that order,
+    else the default `cox setup unit-env` writes. `unit_env.units_environment_file` decides; this only reads."""
+    from agent_tools import lander_cli
+
+    units = [upgrade_edge.schedule_paths(sys.platform, home)[0], chair_service.unit_path(home),
+             chair_service.chair_plist_path(home), lander_cli.unit_path(home)]
+    texts = (_read_text_or_none(path) for path in units)
+    return Path(unit_env.units_environment_file(texts, unit_env.env_file_path(str(home)))).expanduser()
+
+
+@contextlib.contextmanager
+def _unit_env_loaded(note: Callable[[str], None] | None = None):
+    """Edge. A hand run (an ssh or interactive shell) sees the environment the units see: every variable the units'
+    env file defines that the process lacks is set for the duration, then removed. The process environment wins.
+    `note` gets the names loaded and the file, never a value."""
+    path = _units_env_file(Path.home())
+    loaded = unit_env.missing_values(os.environ, unit_env.parse_env(_read_text_or_none(path) or ""))
+    if loaded and note is not None:
+        note(f"env: loaded {', '.join(loaded)} from {path}, the file the units read")
+    with _env_overlay(loaded):
+        yield
 
 
 def _probe_store(profile: Mapping, overlay: Mapping[str, str]) -> list:

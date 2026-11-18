@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 import shutil
 import socket
 import subprocess
@@ -125,7 +126,7 @@ def install(tmp_path_factory: pytest.TempPathFactory) -> Install:
     python = venv / "bin" / "python"
     # --reinstall-package: uv caches a local build by its pyproject's mtime, so without it an edited .py file would
     # install the previous build. The drift check below proves the install is this tree either way.
-    _must([uv, "pip", "install", "--quiet", "--python", str(python), "--reinstall-package", "coxswain", f"{ROOT}[postgres]"])
+    _must([uv, "pip", "install", "--quiet", "--python", str(python), "--reinstall-package", "coxswain", f"{ROOT}[postgres,traces]"])
     env = _clean_env(root / "home", [str(venv / "bin")])
     site = Path(_must([str(python), "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"], env=env).stdout.strip())
     drift = _install_drift(site)
@@ -585,3 +586,53 @@ def edge_machine(forge_sandbox: Sandbox, forge: Forge, edge_origin: EdgeOrigin, 
         encoding="utf-8",
     )
     return EdgeMachine(sandbox=sandbox, checkout=checkout, origin=edge_origin)
+
+
+# --- the sandbox object store --------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ObjectStore:
+    """The session's Garage: its S3 endpoint, its one bucket, and the key the suite imported into it."""
+
+    endpoint: str
+    bucket: str
+    access_key: str
+    secret_key: str
+
+
+def _until_ok(argv: list[str], what: str) -> subprocess.CompletedProcess[str]:
+    """Run `argv` until it exits 0, for at most `READY_TIMEOUT_S`; a server still starting refuses the first tries."""
+    deadline = time.monotonic() + READY_TIMEOUT_S
+    while (done := _run(argv)).returncode != 0:
+        if time.monotonic() > deadline:
+            raise RuntimeError(f"{what} did not succeed after {READY_TIMEOUT_S}s: {done.stderr.strip()[-300:]}")
+        time.sleep(0.25)
+    return done
+
+
+@pytest.fixture(scope="session")
+def object_store(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ObjectStore]:
+    """A single-node Garage container on a loopback port, with one bucket and one key, removed at the end of the
+    session. The key is chosen here and imported, so no command output the fixture reads carries the secret."""
+    docker = shutil.which("docker")
+    broken_ok = plan.is_required(os.environ.get(plan.BROKEN_DOCKER_OK_ENV))
+    decision = plan.container_source("the sandbox object store", docker, _docker_ok(docker), required=_required(),
+                                     broken_docker_ok=broken_ok)
+    if isinstance(decision, plan.Skip | plan.Fail):
+        _unavailable(decision)
+    _reap_stale()
+    _pull(plan.GARAGE_IMAGE)
+    config = tmp_path_factory.mktemp("garage") / "garage.toml"
+    config.write_text(plan.garage_config_text(secrets.token_hex(32)), encoding="utf-8")
+    config.chmod(0o644)  # the container's user reads it through the read-only mount
+    container = _must(plan.garage_run_argv(SESSION, int(time.time()), str(config))).stdout.strip()
+    try:  # from the moment the container exists, every way out of this fixture removes it
+        node = plan.parse_node_id(_until_ok(plan.garage_argv(container, "node", "id"), "garage node id").stdout)
+        key_id, secret = f"GK{secrets.token_hex(12)}", secrets.token_hex(32)
+        for argv in plan.garage_setup_argvs(container, node, key_id, secret):
+            _until_ok(argv, f"garage {' '.join(argv[4:6])}")
+        port = plan.parse_published_port(_must(plan.docker_port_argv_for(container, plan.GARAGE_S3_PORT)).stdout)
+        yield ObjectStore(endpoint=plan.garage_endpoint(port), bucket=plan.GARAGE_BUCKET, access_key=key_id, secret_key=secret)
+    finally:
+        _run(plan.docker_remove_argv(container))

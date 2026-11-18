@@ -254,6 +254,16 @@ launchd agents get its values as `EnvironmentVariables`. It keeps the
 from the token that `cox setup token` stored. Run it again after you change the
 token.
 
+A shell you open yourself, by ssh or at the terminal, does not read that file.
+So `cox upgrade` and `cox setup doctor` read it themselves when you run them by
+hand. They read the file the installed upgrade unit names (its
+`EnvironmentFile=` line, or the file the launchd agent sources). If no upgrade
+unit names one, they try the chair unit, then the lander unit, then the default
+`~/.config/agent-tools/garage.env`. A variable that your shell already sets
+keeps its value. The rest come from the file. The command prints the names it
+loaded, never the values. `cox setup doctor --json` loads the file without
+printing anything.
+
 On an edge machine, `cox upgrade` with no `--to` does these steps:
 
 1. It finds the newest commit on `origin/main` whose `ci` workflow passed on

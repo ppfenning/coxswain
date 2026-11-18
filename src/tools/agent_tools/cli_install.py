@@ -42,6 +42,7 @@ from agent_tools.cli_lazy import (
     upgrade_exec,
     upgrade_plan,
 )
+from agent_tools.cli_setup_store import _unit_env_loaded
 
 
 def _migrate_kind(path: Path) -> str:
@@ -377,13 +378,19 @@ def _upgrade_after_move(root: Path) -> list[dict]:
 
 
 def _upgrade(a: argparse.Namespace) -> int:
-    """`--install-timer` and `--uninstall-timer` only write or remove the timer files. Otherwise the machine's channel
-    decides: edge without `--to` resolves the newest green commit on main (`_upgrade_edge`); anything else is the
+    """`--install-timer` and `--uninstall-timer` only write or remove the timer files. Otherwise, with the units' env
+    file loaded under any variable the process lacks (`_unit_env_loaded`), the machine's channel decides: edge without `--to` resolves the newest green commit on main (`_upgrade_edge`); anything else is the
     release path, `_upgrade_move`. `--scheduled`, what the timer runs, moves only an edge machine."""
     if a.install_timer:
         return _upgrade_timer_install(a)
     if a.uninstall_timer:
         return _upgrade_timer_uninstall()
+    # A hand run (`ssh host cox upgrade`) has no unit env; the doctor it triggers must see what the timer's unit sees.
+    with _unit_env_loaded(print):
+        return _upgrade_on_channel(a)
+
+
+def _upgrade_on_channel(a: argparse.Namespace) -> int:
     channel = _upgrade_channel(a)
     if channel is None:
         return 2

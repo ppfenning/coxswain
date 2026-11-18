@@ -263,3 +263,55 @@ def test_a_closed_port_store_keeps_its_credentials_and_database():
     url = "postgresql://postgres:smoke@127.0.0.1:5432/smoke_x?sslmode=disable"
     assert plan.closed_port_url(url, 1) == "postgresql://postgres:smoke@127.0.0.1:1/smoke_x?sslmode=disable"
     assert plan.closed_port_url("postgresql://localhost/db", 9) == "postgresql://127.0.0.1:9/db"
+
+
+# --- the sandbox object store ---------------------------------------------------------------------------------------
+
+
+def test_the_object_store_starts_only_where_docker_answers_and_says_what_it_is_for():
+    assert plan.container_source("the sandbox object store", "/usr/bin/docker", True, required=False) == plan.StartContainer()
+    missing = plan.container_source("the sandbox object store", None, False, required=False)
+    assert isinstance(missing, plan.Skip) and "the sandbox object store" in missing.reason
+    assert isinstance(plan.container_source("x", None, False, required=True), plan.Fail)
+
+
+def test_the_garage_container_is_pinned_loopback_only_labelled_and_reads_its_config_read_only():
+    argv = plan.garage_run_argv("s1", 1700000000, "/tmp/g/garage.toml")
+    assert argv[:4] == ["docker", "run", "--detach", "--rm"]
+    assert argv[-1] == plan.GARAGE_IMAGE and "@sha256:" in plan.GARAGE_IMAGE
+    assert argv[argv.index("--publish") + 1] == "127.0.0.1::3900"
+    labels = [argv[i + 1] for i, arg in enumerate(argv) if arg == "--label"]
+    assert labels == [plan.CONTAINER_LABEL, f"{plan.SESSION_LABEL}=s1", f"{plan.STARTED_LABEL}=1700000000"]
+    assert argv[argv.index("--volume") + 1] == f"/tmp/g/garage.toml:{plan.GARAGE_CONFIG}:ro"
+
+
+def test_the_garage_config_is_one_node_with_the_rpc_secret_and_the_s3_port():
+    text = plan.garage_config_text("ab" * 32)
+    assert f'rpc_secret = "{"ab" * 32}"' in text.splitlines()
+    assert "replication_factor = 1" in text.splitlines()
+    assert 'api_bind_addr = "[::]:3900"' in text.splitlines()
+
+
+def test_the_garage_setup_assigns_the_node_then_imports_the_key_and_grants_the_bucket():
+    node = "1a1b5ee5d9552abe" + "0" * 48
+    argvs = plan.garage_setup_argvs("c1", node, "GK" + "0" * 24, "f" * 64)
+    assert [argv[4:6] for argv in argvs] == [
+        ["layout", "assign"], ["layout", "apply"], ["key", "import"], ["bucket", "create"], ["bucket", "allow"]]
+    assert argvs[0][-1] == "1a1b5ee5d9552abe"
+    assert argvs[2][-2:] == ["GK" + "0" * 24, "f" * 64]
+    assert all(argv[:4] == ["docker", "exec", "c1", "/garage"] for argv in argvs)
+
+
+def test_a_node_id_is_read_from_the_line_that_carries_it():
+    node = "1a" * 32
+    assert plan.parse_node_id(f"INFO connecting\n{node}@127.0.0.1:3901\n") == node
+    with pytest.raises(ValueError):
+        plan.parse_node_id("INFO nothing here\n")
+
+
+def test_the_object_store_provider_names_the_credential_variables_never_their_values():
+    text = plan.object_store_provider_text("postgresql://127.0.0.1:5432/x", plan.garage_endpoint(41000))
+    assert "traces_url: s3://smoke-traces/traces" in text.splitlines()
+    assert "  endpoint: http://127.0.0.1:41000" in text.splitlines()
+    assert f"  access_key_env: {plan.GARAGE_ACCESS_KEY_ENV}" in text.splitlines()
+    assert f"  secret_key_env: {plan.GARAGE_SECRET_KEY_ENV}" in text.splitlines()

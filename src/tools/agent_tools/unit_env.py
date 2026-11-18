@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
+from xml.sax.saxutils import unescape
 
 from agent_tools.claude_token import TOKEN_ENV
 
@@ -70,11 +71,36 @@ def env_file_path(user_home: str) -> str:
 # as systemd's `EnvironmentFile=-` skips it. So the plist holds no value from the file, and a rotated token reaches the
 # agent at its next launch with no reinstall.
 SOURCE_SCRIPT = 'set -a; [ -r "$1" ] && . "$1"; set +a; shift; exec "$@"'
+SCRIPT_NAME = "coxswain-env"  # the script's $0; the env file is the argument after it
 
 
 def launchd_arguments(environment_file: str, argv: list[str]) -> list[str]:
     """The ProgramArguments of an agent that reads `environment_file` at launch, then runs `argv`."""
-    return ["/bin/sh", "-c", SOURCE_SCRIPT, "coxswain-env", environment_file, *argv]
+    return ["/bin/sh", "-c", SOURCE_SCRIPT, SCRIPT_NAME, environment_file, *argv]
+
+
+_UNIT_ENV_FILE = re.compile(r"^EnvironmentFile=-?(\S+)\s*$", re.MULTILINE)
+_PLIST_ENV_FILE = re.compile(rf"<string>{SCRIPT_NAME}</string>\s*<string>([^<]*)</string>")
+
+
+def unit_environment_file(unit_text: str) -> str | None:
+    """The env file a unit reads: a systemd unit's `EnvironmentFile=` path, or the file a launchd agent's
+    ProgramArguments hand `launchd_arguments`' script. None when the unit names none."""
+    found = _UNIT_ENV_FILE.search(unit_text) or _PLIST_ENV_FILE.search(unit_text)
+    return unescape(found.group(1)) if found else None
+
+
+def units_environment_file(unit_texts: Iterable[str | None], default: str) -> str:
+    """The env file a run outside any unit reads: the first unit text (None for a unit not installed) that names one,
+    so a hand run sees what that unit sees; else `default`, the file `cox setup unit-env` writes."""
+    named = (unit_environment_file(text) for text in unit_texts if text is not None)
+    return next((path for path in named if path is not None), default)
+
+
+def missing_values(process_env: Mapping[str, str], file_values: Mapping[str, str]) -> dict[str, str]:
+    """The file's variables the process does not already have. The process environment wins: a name it sets, even to
+    the empty string, is never taken from the file."""
+    return {name: value for name, value in file_values.items() if name not in process_env}
 
 
 def file_text(existing: str | None, token: str | None) -> str:
