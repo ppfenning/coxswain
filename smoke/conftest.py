@@ -29,7 +29,7 @@ from urllib.parse import quote
 
 import pytest
 
-from smoke import plan
+from smoke import gh_replay, plan
 
 ROOT = Path(__file__).resolve().parents[1]
 # One reader of a Forgejo branch answer, shared with the code under test: the forge's own parser, imported from this
@@ -234,9 +234,10 @@ class Sandbox:
         """Run `python -m <module>` under the install's interpreter, the one `cox` itself starts for the harness."""
         return _run([str(self.install.python), "-m", module, *args], env=self.env, cwd=self.home, timeout=timeout)
 
-    def python_json(self, code: str) -> object:
-        """Run `code` under the install's interpreter and parse the JSON it prints: what the installed packages say."""
-        done = _run([str(self.install.python), "-c", code], env=self.env, cwd=self.home, timeout=60)
+    def python_json(self, code: str, cwd: Path | None = None) -> object:
+        """Run `code` under the install's interpreter, from `cwd` (default the sandbox home), and parse the JSON it
+        prints: what the installed packages say, or do."""
+        done = _run([str(self.install.python), "-c", code], env=self.env, cwd=cwd or self.home, timeout=120)
         assert done.returncode == 0, done.stderr
         return json.loads(done.stdout)
 
@@ -569,6 +570,55 @@ def forge_repo(forge_sandbox: Sandbox, forge: Forge, request: pytest.FixtureRequ
     path.parent.mkdir(parents=True, exist_ok=True)
     _forge_clone(forge_sandbox, forge, name, path)
     return ForgeRepo(forge=forge, owner=forge.user, name=name, path=path)
+
+
+# --- GitHub, replayed for the real gh ------------------------------------------------------------------------------
+
+GH_RECORDINGS = ROOT / "smoke" / "gh_recordings"
+
+
+@dataclass(frozen=True)
+class GitHub:
+    """The sandbox with the real `gh` on PATH and pointed at the replay (or, recording, at api.github.com), and a
+    clone whose origin is `plan.GH_SLUG` on `plan.GH_HOST`, where `gh` finds the repository as it would in a checkout."""
+
+    sandbox: Sandbox
+    clone: Path
+
+
+def _gh_version(gh: str) -> str:
+    done = _run([gh, "--version"], timeout=30)
+    return done.stdout.splitlines()[0] if done.returncode == 0 and done.stdout else "unknown"
+
+
+@pytest.fixture
+def github(sandbox: Sandbox, tmp_path: Path, request: pytest.FixtureRequest) -> Iterator[GitHub]:
+    gh = shutil.which("gh")
+    if gh is None:
+        _unavailable(plan.unavailable("no gh on PATH", required=_required()))
+    recording = GH_RECORDINGS / plan.gh_recording_name(request.node.name)
+    recording_mode = plan.is_required(os.environ.get(plan.GH_RECORD_ENV))
+    if recording_mode:
+        token = os.environ.get(plan.GH_TOKEN_ENV)
+        if not token:
+            pytest.fail(f"{plan.GH_RECORD_ENV}=1 records from api.github.com and needs a token in {plan.GH_TOKEN_ENV}",
+                        pytrace=False)
+        server: gh_replay.Replay | gh_replay.Recorder = gh_replay.Recorder(token)
+    elif not recording.is_file():
+        pytest.fail(f"no recording at {recording}; run this test with {plan.GH_RECORD_ENV}=1 to make one", pytrace=False)
+    else:
+        server = gh_replay.Replay(gh_replay.load(recording)["exchanges"])
+    clone = tmp_path / "gh-clone"
+    _must(["git", "init", "--quiet", "-b", "main", str(clone)], env=sandbox.env)
+    _must(["git", "-C", str(clone), "remote", "add", "origin", plan.gh_remote_url(plan.GH_SLUG)], env=sandbox.env)
+    env = {**sandbox.env, **plan.gh_env(server.proxy, str(tmp_path / "gh-config")),
+           "PATH": os.pathsep.join([sandbox.env["PATH"], str(Path(gh).parent)])}
+    with gh_replay.serving(server):
+        yield GitHub(sandbox=replace(sandbox, env=env), clone=clone)
+    if isinstance(server, gh_replay.Recorder):
+        gh_replay.save(recording, {"gh": _gh_version(gh), "slug": plan.GH_SLUG, "exchanges": server.exchanges})
+    if server.misses:
+        pytest.fail(f"gh asked what {recording.name} has no answer for: {server.misses}", pytrace=False)
 
 
 # --- an edge machine -----------------------------------------------------------------------------------------------
