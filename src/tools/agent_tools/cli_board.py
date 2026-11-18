@@ -13,7 +13,6 @@ from agent_tools.cli import (
     _export_board,
     _profile_path,
     _read_text_or_none,
-    _runs_dir_for_land,
     bounded_run,
     checkout,
     queue_export,
@@ -23,6 +22,7 @@ from agent_tools.cli import (
     run_store,
     workspace_sync,
 )
+from agent_tools.cli_runs_fetch import _runs_dir_for_land
 
 
 def _launch_rows_then_export(
