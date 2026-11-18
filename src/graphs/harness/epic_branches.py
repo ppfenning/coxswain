@@ -749,8 +749,10 @@ class PhaseRunner:
         return type(self._shared)
 
     @__class__.setter
-    def __class__(self, value: type[object]) -> None:  # unreached: `__setattr__` takes every assignment first
-        object.__setattr__(self._shared, "__class__", value)
+    def __class__(self, value: type[object]) -> None:
+        """A view's class is the shared runner's, read-only: `object.__setattr__(view, "__class__", X)` reaches here,
+        past `__setattr__`, and must not retype the shared runner under every other phase."""
+        raise TypeError(f"a PhaseRunner view's __class__ is read-only (asked to become {value.__name__})")
 
     def __getattr__(self, name: str) -> object:
         if name in ("_shared", "_own", "_view"):
