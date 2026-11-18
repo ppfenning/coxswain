@@ -176,7 +176,6 @@ def build_parser() -> argparse.ArgumentParser:
     delete = host_actions.add_parser("delete", help="delete a draining host's row and print it as it was")
     add_common_args(delete, top=False)
     delete.add_argument("name")
-    delete.add_argument("--by", required=True, type=_non_empty, help="who made the change")
 
     listing = host_actions.add_parser("list", help="print every host, by name")
     add_common_args(listing, top=False)

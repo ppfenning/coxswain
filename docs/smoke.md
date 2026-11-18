@@ -22,7 +22,7 @@ The fixtures live in `smoke/conftest.py`. Every decision they make (which Postgr
 sandbox environment, the profile text, whether the install is this tree) is a pure function in `smoke/plan.py`, tested
 without mocks in `tests/test_smoke_plan.py`.
 
-- **`install`** (once per session): `cox` installed from this checkout into a venv of its own with `uv pip install`.
+- **`install`** (once per session): `cox` installed from this checkout, with `[postgres,traces,lake]`, into a venv of its own with `uv pip install`.
   The install is not editable. Before any test runs, the fixture compares every installed module, and every file
   `[tool.setuptools.package-data]` lists, with the tree. A stale build or another checkout therefore cannot stand in
   for this one (#1184, #1185). The venv sits at `<install>/.venv`. A profile whose `harness_dir` is `<install>`
@@ -78,9 +78,6 @@ without mocks in `tests/test_smoke_plan.py`.
   `launchable.scripted(answers)` writes the answers the scripted runner replays, for a launch and for `--scripted` alike, and `launchable.run(argv, cwd)` runs a harness argv.
 
   `launchable.lifecycle(repo, run_id)` makes one scripted lifecycle run, for the tests that read what a run left.
-- **`lake_install`** (once per session, only when a lake test runs) and **`lake_sandbox`** (per test): a second
-  install of this tree with `[postgres,lake]`, and the same sandbox with that install's `cox` first on PATH. Every
-  other test keeps running without the lake's packages.
 
 ## Harness tests
 
@@ -114,7 +111,7 @@ records `runner: scripted`, so a run whose approvals were canned answers never r
 | `test_operator_commands.py` (stats) | `cox stats ingest`, `cox stats series` | A scripted harness run's records load into `stats.db`, and `series` reports the run. A second ingest adds no row. |
 | `test_operator_commands.py` (usage) | `cox usage assess` | With a `spend:` weekly ceiling of $10, the verdict is `go` with no spend. After one $12.50 node call is written through the store's own writer, it is `stop`, exit 4, at 125% of the ceiling. |
 | `test_operator_commands.py` (courier) | `cox courier send`, `inbox`, `ack` | A reference that does not resolve is refused. A sent `coxswain://task/t1` is listed for its label only, lives in the store's bus and not in `courier.jsonl`, and is gone from the inbox once acked. An unknown id is refused. |
-| `test_lake.py` | `cox lake sync`, `query`, `doctor` | On `lake_install`, the run in the store syncs into the Iceberg lake, `cox lake query` reads it back, and `cox lake doctor` reports the runs table's snapshot. Without the extra, `cox lake doctor` names the install command. |
+| `test_lake.py` | `cox lake sync`, `query`, `doctor` | The run in the store syncs into the Iceberg lake, `cox lake query` reads it back, and `cox lake doctor` reports the runs table's snapshot. |
 | `test_dash_feed.py` | `cox dash --once`, `cox dash --feed` | The snapshot towpath reads is schema 1, with the run, the history, the queued initiative and its ready task, and the board. A second `--feed` prints what the first one publishes, computes nothing of its own while the first holds the lock, and takes over once the first exits. `--feed --once` is refused. |
 | `test_contract_host_cli.py` | `cox host add`, `capacity`, `drain`, `activate`, `remove`, `login` | Each write reaches `harness.store_cli host`, and the row read back through the store's own `host list` matches. A login is merged into the host's versions and leaves its beat alone. A refusal prints the store's reason. |
 
@@ -122,7 +119,8 @@ records `runner: scripted`, so a run whose approvals were canned answers never r
 the store CLI with doubles or install every extra at once.
 
 - `cox host remove` sent `host delete`, which the store CLI did not have, so every remove failed with "invalid
-  choice". The store CLI now has `host delete`, which deletes only a draining host.
+  choice". The store CLI now has `host delete`, which deletes only a draining host and takes no `--by`, since the
+  hosts table keeps no record of a removed row.
 - `cox host login` sent `--login-ok`, `--reason`, `--failures` and `--by`. The store CLI's `host login` takes one
   `--login-json`, so every login exited 2. Its unit test's `FakeStore` accepted the wrong argv.
 - A store refusal reached the operator as `store_cli exit 3: {}`. `agent_tools.store_cli.runner` returned the
