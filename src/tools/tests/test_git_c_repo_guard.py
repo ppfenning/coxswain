@@ -37,7 +37,7 @@ SSH_CHAIR_PATH = (
 )
 SWEEP_OVER_SSH = (
     "DEFECT: _over_ssh binds delete_branches_with to the ssh door and chair_apply_review passes step.repo unconverted,"
-    " so the host gets the chair's path, not repo_path.host_form; the local door expands at chair_exec_land.py:753"
+    " so the host gets the chair's path, not repo_path.host_form; the local door expands at chair_exec_edge.py:470"
 )
 BASE_CALLERS = (
     "reached only through base_ref, whose callers pass an expanded path: chair_exec home_repo, cli expanduser and"
