@@ -220,4 +220,5 @@ strict = [
     "src/graphs/harness/epic_types.py",
     "src/graphs/harness/store*.py",
     "src/tools/agent_tools/chair*.py",
+    "src/tools/agent_tools/lander*.py",
 ]

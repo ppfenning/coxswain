@@ -17,10 +17,13 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
 
 from agent_tools import courier, forge, lander, repo_path, route, run_store, work_state
+from agent_tools.forge import ForgeModule
 from agent_tools.store_url import read_provider_profile
+from core.jsontypes import is_list, is_mapping
+from core.landing_record import LandingRecord, record_from_store
+from harness.store_dialect import Connection
 
 WAIT_CHECKS_S = 1800.0  # the bound on a wait for a forge that cannot poll its checks once
 # The lander's lanes run on threads of one process. A move of a work file and its record in the workspace's
@@ -40,7 +43,7 @@ def now_stamp() -> str:
     return landing_ops.stamp(datetime.now(UTC))
 
 
-def connect(runs_dir: Path) -> Any:
+def connect(runs_dir: Path) -> Connection:
     """Edge. The workspace's store, with the landing tables in place. A store another opener already migrated is left alone."""
     from harness.store_dialect import connect as open_url
     from harness.store_migrate import default_modules, migrate
@@ -50,7 +53,7 @@ def connect(runs_dir: Path) -> Any:
     return conn
 
 
-def _sqlite_records(path: Path) -> list[dict[str, Any]]:
+def _sqlite_records(path: Path) -> list[LandingRecord]:
     """Edge. The records of a sqlite store, read-only: no file is created, no journal mode is set, nothing is touched."""
     if not path.is_file():
         return []
@@ -59,10 +62,10 @@ def _sqlite_records(path: Path) -> list[dict[str, Any]]:
         rows = conn.execute("SELECT record_json FROM landing_records ORDER BY initiative").fetchall()
     finally:
         conn.close()
-    return [dict(json.loads(row[0]) or {}) for row in rows]
+    return [record_from_store(json.loads(row[0]) or {}) for row in rows]
 
 
-def read_records(runs_dir: Path, log: Callable[[str], None] | None = None) -> list[dict[str, Any]]:
+def read_records(runs_dir: Path, log: Callable[[str], None] | None = None) -> list[LandingRecord]:
     """Edge. Every landing record, for a reader that only looks (the chair's tick). Never migrates and never raises:
     a store with no landing tables yet, or one that cannot be reached, reads as no records, so nothing reads as merged."""
     try:
@@ -74,7 +77,7 @@ def read_records(runs_dir: Path, log: Callable[[str], None] | None = None) -> li
             return _sqlite_records(run_store.sqlite_path(url))
         conn = open_url(url)
         try:
-            return cast(list[dict[str, Any]], landing_store.list_records(conn))
+            return landing_store.list_records(conn)
         finally:
             conn.close()
     except Exception as exc:
@@ -83,17 +86,26 @@ def read_records(runs_dir: Path, log: Callable[[str], None] | None = None) -> li
         return []
 
 
-def _frontmatter(path: Path) -> dict[str, Any]:
+def _frontmatter(path: Path) -> dict[str, object]:
     try:
-        return dict(route.parse_frontmatter(path.read_text(encoding="utf-8"))[0])
+        fields: dict[str, object] = dict(route.parse_frontmatter(path.read_text(encoding="utf-8"))[0])
+        return fields
     except (OSError, ValueError):
         return {}
 
 
-def task_rows(store_rows: Sequence[Mapping[str, Any]], files: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
+def _ids(value: object) -> list[str]:
+    return [str(n) for n in value] if is_list(value) else []
+
+
+def _mapping_or_empty(value: object) -> Mapping[str, object]:
+    return value if is_mapping(value) else {}
+
+
+def task_rows(store_rows: Sequence[Mapping[str, object]], files: Mapping[str, Mapping[str, object]]) -> list[dict[str, object]]:
     """Pure. The lander's task rows. The store's row wins for state, phase, needs and the merged commit; the work
     file adds the title, and the needs when the row holds none. A task only the files know (a workspace that keeps state in files) is read from its file."""
-    rows = []
+    rows: list[dict[str, object]] = []
     stored = {str(r["task_id"]): r for r in store_rows}
     for ident in sorted({*stored, *files}):
         row, item = stored.get(ident) or {}, files.get(ident) or {}
@@ -101,14 +113,14 @@ def task_rows(store_rows: Sequence[Mapping[str, Any]], files: Mapping[str, Mappi
             "id": ident,
             "phase": str(row.get("phase") or item.get("phase") or ""),
             "state": str(row.get("state") or item.get("state") or ""),
-            "needs": [str(n) for n in row.get("needs") or item.get("needs") or []],
+            "needs": _ids(row.get("needs") or item.get("needs") or []),
             "merged_commit": row.get("merged_commit") or item.get("merged_commit"),
             "title": str(item.get("title") or ident),
         })
     return rows
 
 
-def pr_merged_verdict(listed: Sequence[Mapping[str, Any]] | str) -> tuple[bool, str]:
+def pr_merged_verdict(listed: Sequence[Mapping[str, object]] | str) -> tuple[bool, str]:
     """Pure. Whether the branch's pull request merged, from the forge's listing of every PR whose head it is."""
     if isinstance(listed, str):
         return False, listed
@@ -127,11 +139,29 @@ def waited_state(green: bool, detail: str) -> str:
 class Forge:
     """The forge module the profile names, plus the one question the lander adds: whether a branch's PR merged."""
 
-    def __init__(self, module: Any) -> None:
+    def __init__(self, module: ForgeModule | None) -> None:
         self._module = module
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._module, name)
+    def _forge(self) -> ForgeModule:
+        if self._module is None:
+            raise AttributeError("no forge module is installed under the profile's forge name")
+        return self._module
+
+    def push(self, repo: Path, branch: str) -> tuple[bool, str]:
+        return self._forge().push(repo, branch)
+
+    def find_open_prs(self, repo: Path, branch: str) -> Sequence[object] | str:
+        return self._forge().find_open_prs(repo, branch)
+
+    def open_pr(self, repo: Path, title: str, body: str, *, head: str | None = None,
+                base: str | None = None) -> tuple[bool, str]:
+        return self._forge().open_pr(repo, title, body, head=head, base=base)
+
+    def merge(self, repo: Path, step: Mapping[str, object]) -> tuple[bool, str]:
+        return self._forge().merge(repo, step)
+
+    def pr_state(self, url: str) -> Mapping[str, object]:
+        return self._forge().pr_state(url)
 
     def pr_merged(self, repo: Path, branch: str) -> tuple[bool, str]:
         # Through the registry's dispatcher: the local forge has no pull requests to list, and says so.
@@ -140,13 +170,13 @@ class Forge:
     def delete_branch(self, repo: Path, branch: str) -> tuple[bool, str]:
         return forge.delete_branch(self._module, repo, branch)
 
-    def poll_checks(self, repo: Path, *, ref: str, memo: Mapping[str, Any] | None = None) -> tuple[str, str, dict]:
+    def poll_checks(self, repo: Path, *, ref: str, memo: Mapping[str, object] | None = None) -> tuple[str, str, dict[str, object]]:
         """One read of `ref`'s checks: (state, detail, memo), as `forge.py` describes. A forge with no single read is
         waited on as before, bounded by `WAIT_CHECKS_S`; that wait holds only its own repository's lane."""
         poll = getattr(self._module, "poll_checks", None)
         if poll is not None:
             return poll(repo, ref=ref, memo=memo)
-        green, detail = self._module.wait_checks(repo, WAIT_CHECKS_S, ref=ref)
+        green, detail = self._forge().wait_checks(repo, WAIT_CHECKS_S, ref=ref)
         return waited_state(green, detail), detail, dict(memo or {})
 
     def has_ci(self, repo: Path, ref: str) -> bool:
@@ -179,7 +209,7 @@ def fetch_branch(repo: Path, branch: str) -> str | None:
     return None
 
 
-def run_gate(repo: Path, tree: Path, gate: str, landing: Mapping[str, Any], error: str | None) -> tuple[bool, str]:
+def run_gate(repo: Path, tree: Path, gate: str, landing: Mapping[str, object], error: str | None) -> tuple[bool, str]:
     """Edge. Run one gate's checks in `tree`. A cartridge that does not resolve fails the gate: it would run fewer checks."""
     from harness.check_gate import gate_checks
     from harness.checks import run_checks
@@ -208,7 +238,7 @@ def follow_up_for(work: Path, initiative: str) -> str:
     return made[-1] if made else lr.follow_up_id(initiative, taken)
 
 
-def split_initiative(ws: Path, conn: Any, repo: Path, initiative: str, phases: Sequence[str], *, worker: str,
+def split_initiative(ws: Path, conn: Connection, repo: Path, initiative: str, phases: Sequence[str], *, worker: str,
                      push: Callable[[Path, str], tuple[bool, str]] | None = None) -> str:
     """Edge. Move `phases` of `initiative` to a follow-up initiative. Returns the follow-up's id.
 
@@ -270,7 +300,7 @@ def split_initiative(ws: Path, conn: Any, repo: Path, initiative: str, phases: S
         store_queue.upsert(conn, {
             **{k: v for k, v in head.items() if k not in ("holder", "epoch", "expires_at", "issue_number", "project_item_id")},
             "initiative": follow, "task_id": follow, "title": f"{head.get('title') or initiative} (follow-up)",
-            "extra": {**cast(Mapping[str, Any], head.get("extra") or {}), "id": follow, "split_from": initiative},
+            "extra": {**_mapping_or_empty(head.get("extra")), "id": follow, "split_from": initiative},
             "updated_at": stamp, "updated_by": worker,
         })
     record = landing_store.get_record(conn, initiative)
@@ -307,7 +337,7 @@ def needed_initiatives(work: Path, initiative: str) -> list[str]:
     return found
 
 
-def stack_base(ws: Path, initiative: str, epic: str, epic_branch: str | None, records: Sequence[Mapping[str, Any]]) -> str | None:
+def stack_base(ws: Path, initiative: str, epic: str, epic_branch: str | None, records: Sequence[Mapping[str, object]]) -> str | None:
     """Edge (reads). With `epic_stack` on, the branch `initiative` forks from: see `core.landing.stack_parent`."""
     from core.landing import stack_parent
 
@@ -318,7 +348,7 @@ def stack_base(ws: Path, initiative: str, epic: str, epic_branch: str | None, re
     return stack_parent(needed_initiatives(Path(ws) / "work", initiative), members, epic_branch)
 
 
-def send_back(ws: Path, conn: Any, worker: str, mode: str) -> Callable[[str, str, str], str | None]:
+def send_back(ws: Path, conn: Connection, worker: str, mode: str) -> Callable[[str, str, str], str | None]:
     """Edge. Adopt's way to return an approved task whose work cannot be found to `ready`: the store row first (only
     from `approved`), then the work file. The reason is logged by the caller; why it was refused, else None."""
     from core import workstore
@@ -345,8 +375,8 @@ def initiatives_in(ws: Path) -> list[str]:
     return sorted(p.parent.name for p in (Path(ws) / "work").glob("*/initiative.md"))
 
 
-def build(ws: Path, profile: Mapping[str, Any], *, worker: str | None = None, log: Callable[[str], None] = print,
-          conn: Any = None, forge_module: Any = None) -> lander.Ports:
+def build(ws: Path, profile: Mapping[str, object], *, worker: str | None = None, log: Callable[[str], None] = print,
+          conn: Connection | None = None, forge_module: ForgeModule | None = None) -> lander.Ports:
     """Edge. The ports for the workspace `ws` under routing profile `profile`."""
     from agent_tools import cli
     from core import workstore
@@ -358,35 +388,37 @@ def build(ws: Path, profile: Mapping[str, Any], *, worker: str | None = None, lo
     runs_dir, work = ws / "runs", ws / "work"
     home = str(Path.home())
     name = worker or worker_name()
-    conn = conn if conn is not None else connect(runs_dir)
+    store = conn if conn is not None else connect(runs_dir)
     module = forge_module or forge.forge_for(forge.forge_name(dict(profile)))
-    provider = read_provider_profile(profile.get("provider_profile") or "") if profile.get("provider_profile") else {}
+    provider_profile = profile.get("provider_profile")
+    provider: Mapping[str, object] = read_provider_profile(str(provider_profile)) if provider_profile else {}
     mode = work_state.work_state_mode(provider)
 
-    def board(initiative: str) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    def board(initiative: str) -> tuple[dict[str, object], dict[str, dict[str, object]]]:
         """(the initiative's own fields, its tasks' fields by id), from the store's rows. A workspace whose board is
         its files (no rows for the initiative) is read from the files instead."""
-        rows = store_queue.read(conn, initiative)
+        rows = store_queue.read(store, initiative)
         head = next((r for r in rows if r.get("kind") == "initiative"), None)
         if head is None:
             return _frontmatter(work / initiative / "initiative.md"), files_of(initiative)
-        extra = cast(Mapping[str, Any], head.get("extra") or {})
-        own = {**extra, "title": head.get("title") or extra.get("title") or initiative}
+        extra = _mapping_or_empty(head.get("extra"))
+        own: dict[str, object] = {**extra, "title": head.get("title") or extra.get("title") or initiative}
         return own, {
             str(r["task_id"]): {"title": r.get("title") or r["task_id"], "phase": r.get("phase"), "state": r.get("state"),
-                                "needs": list(cast(list[str], r.get("needs") or []))}
+                                "needs": _ids(r.get("needs"))}
             for r in rows if r.get("kind") == "task"
         }
 
-    def repo_of(record: Mapping[str, Any]) -> Path:
-        named = board(str(record["initiative"]))[0].get("repo")
+    def repo_of(record: LandingRecord) -> Path:
+        named = board(lander.record_text(record, "initiative"))[0].get("repo")
         if isinstance(named, str) and named:
             return Path(repo_path.expand(named, home))
         return Path(str(record.get("repo") or "")).expanduser()  # `lander.ports_repo` refuses an empty or relative one
 
-    def files_of(initiative: str) -> dict[str, dict[str, Any]]:
-        found = {}
+    def files_of(initiative: str) -> dict[str, dict[str, object]]:
+        found: dict[str, dict[str, object]] = {}
         for path in sorted((work / initiative).glob("*/*.md")):
+            fields: dict[str, object]
             try:
                 fields = dict(workstore.read_item(path))
             except Exception:  # a task file that does not parse still names its task; the store row carries the rest
@@ -394,30 +426,36 @@ def build(ws: Path, profile: Mapping[str, Any], *, worker: str | None = None, lo
             found[str(fields.get("id") or path.stem)] = {**fields, "phase": path.parent.name}
         return found
 
-    def tasks(initiative: str) -> list[dict[str, Any]]:
+    def tasks(initiative: str) -> list[dict[str, object]]:
         # The initiative's own row and its intake's row live in the same table; neither is a task to merge or land.
-        other = {str(r["task_id"]) for r in store_queue.read(conn, initiative) if r.get("kind") not in (None, "task")}
-        stored = [r for r in store_read.work_items(conn, initiative) if str(r["task_id"]) not in other]
+        other = {str(r["task_id"]) for r in store_queue.read(store, initiative) if r.get("kind") not in (None, "task")}
+        stored = [r for r in store_read.work_items(store, initiative) if str(r["task_id"]) not in other]
         return task_rows(stored, board(initiative)[1])
 
-    def meta(initiative: str) -> dict[str, Any]:
-        own = {**board(initiative)[0], "id": initiative}
+    def meta(initiative: str) -> lander.LandMeta:
+        own: dict[str, object] = {**board(initiative)[0], "id": initiative}
         repo = Path(repo_path.expand(str(own["repo"]), home)) if own.get("repo") else None
+        cartridge: dict[str, object]
+        error: str | None
         cartridge, error = cli._team_cartridge(dict(profile), repo, OVERLAY_ALLOWED_KEYS)
-        epic = cli._read_epics(ws)[0].get(str(own.get("epic"))) if own.get("epic") else None
+        epics: dict[str, dict[str, object]] = cli._read_epics(ws)[0]
+        epic = epics.get(str(own.get("epic"))) if own.get("epic") else None
         stack = bool(epic) and resolve_epic_stack(cartridge, (epic or {}).get("epic_stack"))
+        landing_areas = cartridge.get("landing_areas")
         return {"initiative": own, "cartridge": cartridge, "cartridge_error": error,
                 "epic_issue": (epic or {}).get("issue"), "gate": cli._resolved_gate_level(runs_dir),
                 "epic_stack": stack, "epic_branch": (epic or {}).get("target_branch"), "epic_title": (epic or {}).get("title"),
                 # Where the epic branch itself lands: the cartridge's target branch, else the repo's default branch.
-                "epic_parent": (cartridge.get("landing_areas") or {}).get("target_branch") if stack else None}
+                "epic_parent": (landing_areas or {}).get("target_branch") if stack and is_mapping(landing_areas) else None}
 
     def checks(repo: Path, tree: Path, gate: str) -> tuple[bool, str]:
+        landing: Mapping[str, object]
+        error: str | None
         landing, error = cli._cartridge_landing(repo, dict(profile))
         return run_gate(repo, tree, gate, landing, error)
 
     def mark_done(initiative: str, task: str, pr: str) -> str | None:
-        phase = next((t["phase"] for t in tasks(initiative) if t["id"] == task), "")
+        phase = str(next((t["phase"] for t in tasks(initiative) if t["id"] == task), ""))
         item = work / initiative / phase / f"{task}.md"
         with WORKSPACE_WRITES:
             return cli._close_approved_item(str(item), runs_dir=runs_dir, by=name, merged=True, mode=mode)
@@ -439,7 +477,7 @@ def build(ws: Path, profile: Mapping[str, Any], *, worker: str | None = None, lo
             workstore.write_item({"id": ident, "phase": phase, "state": "ready", "needs": [], "surfaces": [],
                                   "title": title, "body": body}, path)
             # The whole ticket goes to the store, text and all: the store is the board and the file is its copy.
-            store_queue.upsert(conn, {
+            store_queue.upsert(store, {
                 "kind": "task", "initiative": initiative, "task_id": ident, "phase": phase, "state": "ready",
                 "needs": [], "surfaces": [], "title": title, "body": body, "extra": {"id": ident, "phase": phase},
                 "updated_at": now_stamp(), "updated_by": name,
@@ -454,12 +492,12 @@ def build(ws: Path, profile: Mapping[str, Any], *, worker: str | None = None, lo
         try:
             repo = lander.ports_repo(ports_ref[0], {"initiative": initiative})
             with WORKSPACE_WRITES:
-                return split_initiative(ws, conn, repo, initiative, list(phases), worker=name, push=getattr(module, "push", None))
+                return split_initiative(ws, store, repo, initiative, list(phases), worker=name, push=getattr(module, "push", None))
         except Exception as exc:
             log(f"lander: {initiative} was not split: {type(exc).__name__}: {exc}")
             return None
 
-    def notify(kind: str, fields: Mapping[str, Any]) -> None:
+    def notify(kind: str, fields: Mapping[str, object]) -> None:
         initiative = str(fields.get("initiative") or "")
         note = f"lander: {kind}: {initiative}" + (f" phase {fields['phase']}" if fields.get("phase") else "") + f": {fields.get('reason') or ''}"
         entry = courier.send(
@@ -471,7 +509,7 @@ def build(ws: Path, profile: Mapping[str, Any], *, worker: str | None = None, lo
 
     ports_ref: list[lander.Ports] = []
     ports_ref.append(lander.Ports(
-        conn=conn, worker=name, now=now_stamp, tasks=tasks, meta=meta, forge=Forge(module), checks=checks,
+        conn=store, worker=name, now=now_stamp, tasks=tasks, meta=meta, forge=Forge(module), checks=checks,
         mark_merged=lambda initiative, task, tip: None,  # the landing record is the one place that says a phase merged
         mark_done=mark_done, file_rectify=file_rectify, split_blocked=split_blocked, notify=notify, repo=repo_of,
         fetch=fetch_branch, log=log,
