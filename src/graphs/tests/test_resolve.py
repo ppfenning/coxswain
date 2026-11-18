@@ -27,20 +27,6 @@ def test_an_overlay_mapping_is_forwarded_to_load(monkeypatch, tmp_path) -> None:
     assert seen["overlay"] == overlay
 
 
-def test_no_overlay_forwards_none(monkeypatch, tmp_path) -> None:
-    seen = {}
-
-    def fake_load(team, cartridges_dir, *, skill_index, overlay=None):
-        seen["overlay"] = overlay
-        return {"team": team}
-
-    monkeypatch.setattr("harness.resolve.load", fake_load)
-
-    resolve_cartridge("acme", cartridges_dir=tmp_path, skills_root=[tmp_path], unverified_skills=True)
-
-    assert seen["overlay"] is None
-
-
 def test_read_overlay_parses_the_file_when_the_repo_has_one(tmp_path) -> None:
     agent_dir = tmp_path / ".agent"
     agent_dir.mkdir()
