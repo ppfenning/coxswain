@@ -298,6 +298,64 @@ def repo(sandbox: Sandbox, tmp_path: Path) -> Repo:
     return Repo(path=path, origin=origin)
 
 
+# --- the harness, launched -----------------------------------------------------------------------------------------
+
+TEAM = "smoke"
+
+
+@dataclass(frozen=True)
+class Launchable:
+    """The sandbox set up so `cox route launch` can start the harness: a team cartridge over the tree's `base`, a
+    profile naming it, `shell.py` beside the install's venv as a checkout's `src/graphs` holds it, and a provider
+    profile that declares tool use, which the gate requires of a runner that edits files."""
+
+    sandbox: Sandbox
+    cartridges: Path
+    skills: Path
+    worktrees: Path
+
+    def harness_flags(self) -> list[str]:
+        """The team, cartridge, skills, profile and workspace flags `cox route launch` passes the harness."""
+        config = self.sandbox.home / ".config" / "agent-tools"
+        return ["--team", TEAM, "--cartridges-dir", str(self.cartridges), "--skills-root", str(self.skills),
+                "--provider-profile", str(config / "provider.yaml"), "--runs-dir", str(self.sandbox.workspace / "runs"),
+                "--assume", "a", "--workdir", str(self.sandbox.workspace)]
+
+    def scripted(self, responses: object) -> Path:
+        """Write `responses` as the `--scripted` file the harness replays, and return its path."""
+        path = self.sandbox.home / "scripted.json"
+        path.write_text(json.dumps(responses), encoding="utf-8")
+        return path
+
+    def run(self, argv: list[str], cwd: Path, timeout: float = 300) -> subprocess.CompletedProcess[str]:
+        """Run a harness argv in the sandbox's environment from `cwd`, the directory `cox route launch` ran in: the
+        harness inherits it, and resolves a relative `--initiative` there."""
+        return _run(argv, env=self.sandbox.env, cwd=cwd, timeout=timeout)
+
+
+@pytest.fixture
+def launchable(sandbox: Sandbox, tmp_path: Path) -> Launchable:
+    # The launcher a checkout carries at src/graphs/shell.py; the package does not ship it, so the install has none.
+    shutil.copy2(ROOT / "src" / "graphs" / "shell.py", sandbox.install.root / "shell.py")
+    cartridges, worktrees = tmp_path / "cartridges", tmp_path / "worktrees"
+    shutil.copytree(ROOT / "src" / "cartridges" / "cartridges" / "base", cartridges / "base")
+    (cartridges / TEAM).mkdir()
+    (cartridges / TEAM / "cartridge.yaml").write_text(plan.team_cartridge_text(TEAM, str(worktrees), plan.SMOKE_CHECKS), encoding="utf-8")
+    skills = tmp_path / "skills"
+    for relative, text in plan.skill_plugin_files().items():
+        (skills / relative).parent.mkdir(parents=True, exist_ok=True)
+        (skills / relative).write_text(text, encoding="utf-8")
+    config = sandbox.home / ".config" / "agent-tools"
+    provider = config / "provider.yaml"
+    provider.write_text(plan.provider_profile_text(sandbox.store_url) + "capabilities:\n  tool_use: true\n", encoding="utf-8")
+    (config / "profile.yaml").write_text(
+        plan.routing_profile_text(team=TEAM, workspace=str(sandbox.workspace), harness_dir=str(sandbox.install.root),
+                                  provider_profile=str(provider), extra={"cartridges_dir": str(cartridges), "skills_roots": f"[{skills}]", "assume": "a"}),
+        encoding="utf-8",
+    )
+    return Launchable(sandbox=sandbox, cartridges=cartridges, skills=skills, worktrees=worktrees)
+
+
 # --- the sandbox forge ---------------------------------------------------------------------------------------------
 
 API_TIMEOUT_S = 15

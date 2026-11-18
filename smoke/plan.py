@@ -8,6 +8,7 @@ by the smoke tests themselves.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -546,3 +547,68 @@ def object_store_provider_text(storage_url: str, endpoint: str, bucket: str = GA
         f"  secret_key_env: {GARAGE_SECRET_KEY_ENV}\n",
         "  path_style: true\n",
     ])
+
+
+# --- the harness, offline ------------------------------------------------------------------------------------------
+
+# The roles a team binds for the epic: the base contract's required five, and the two validators the phase graph runs.
+SMOKE_SKILLS = {
+    "plan": "smoke-skills:plan",
+    "build": "smoke-skills:build",
+    "review_charter": "smoke-skills:review",
+    "work_state_arm": "smoke-skills:work-state",
+    "work_item_arm": "smoke-skills:work-item",
+    "validate_chunk": "smoke-skills:validate-chunk",
+    "validate_phase": "smoke-skills:validate-phase",
+}
+
+
+# The file the scripted build adds, and the check the team cartridge runs on every built task: it passes only once the
+# patch is applied in the worktree the check runs in.
+SMOKE_NOTE = "notes/t1.txt"
+SMOKE_CHECKS = ({"name": "note", "cmd": f"grep -qx ok {SMOKE_NOTE}"},)
+
+
+def team_cartridge_text(team: str, worktree_root: str, checks: Sequence[Mapping[str, str]] = ()) -> str:
+    """A team cartridge over `base`: the smoke skills bound, worktrees under `worktree_root`, and `checks` run on each
+    built task. JSON is YAML, so the cartridge loader reads it as written."""
+    landing: dict[str, object] = {"worktree_root": worktree_root, "checks": [dict(c) for c in checks]}
+    return json.dumps({"team": team, "extends": "base", "version": 1, "skills": SMOKE_SKILLS, "landing_areas": landing},
+                      indent=2) + "\n"
+
+
+def skill_plugin_files(skills: Mapping[str, str] = SMOKE_SKILLS) -> dict[str, str]:
+    """`{relative path: text}` of the one plugin that holds every skill `skills` binds: its manifest and a SKILL.md
+    per skill. The scripted runner never reads a body; the cartridge loader refuses a binding with none."""
+    plugins = {name.split(":", 1)[0] for name in skills.values()}
+    if len(plugins) != 1:
+        raise ValueError(f"the smoke skills name one plugin, not {sorted(plugins)}")
+    files = {".claude-plugin/plugin.json": json.dumps({"name": plugins.pop()}) + "\n"}
+    for name in skills.values():
+        skill = name.split(":", 1)[1]
+        files[f"skills/{skill}/SKILL.md"] = f"---\nname: {skill}\ndescription: smoke\n---\n\nThe {skill} skill.\n"
+    return files
+
+
+def new_file_patch(path: str, text: str) -> str:
+    """A unified diff that adds `path` holding the one line `text`."""
+    return f"diff --git a/{path} b/{path}\nnew file mode 100644\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1 @@\n+{text}\n"
+
+
+def scripted_epic_responses(patch: str, files: Sequence[str]) -> dict[str, object]:
+    """`--scripted` answers for a one-task epic whose build returns `patch`: every role the run calls, approving."""
+    return {
+        "plan": {"steps": ["write the file"], "files_expected": list(files), "out_of_scope": []},
+        "build": {"patch": patch, "summary": "built", "files_touched": list(files), "commands_run": []},
+        "review_charter": {"verdict": "approve", "findings": [], "rationale": "matches the charter"},
+        "validate_chunk": {"satisfied": True, "gaps": [], "reasoning": "the description is satisfied"},
+        "validate_phase": {"goal_met": True, "partial": False, "missing": [], "quarantine_blocks_dependents": False,
+                           "reasoning": "the pieces add up"},
+        "work_state_arm": {"applied": True, "detail": "state moved"},
+    }
+
+
+def dry_run_argv(stdout: str) -> list[str] | None:
+    """The harness argv `cox route launch --dry-run` prints on its `dry-run: ` line, or None when it printed none."""
+    line = next((x for x in stdout.splitlines() if x.startswith("dry-run: ")), None)
+    return None if line is None else line.removeprefix("dry-run: ").split(" ")
