@@ -268,19 +268,24 @@ surrounding quotes and backslash escapes are removed (`"q v"` gives `q v`,
 `a\b` gives `ab`), a space inside an unquoted value is kept (a password with
 a space works), a backslash at the end of a line joins the next line, and `$`,
 `%` and an empty value (`E=`) load as written. On macOS it is the launchd
-agent's `sh .`. A value that `sh` would expand (`$` or a backtick), read as
-syntax (an unquoted `; & | < > ( )` or `~`), split at a space, carry onto the
-next line or leave in an open quote is not loaded. Neither is one that starts
-with whitespace. Put such a value in single quotes.
+agent's `sh .`, as macOS's `sh` (bash in POSIX mode) reads it. A line of
+assignments sets each one, and a backslash at the end of a line joins the next
+line there too. A line such as `V=a b` or `V=  x` runs a command with `V` set
+for that command only, so `V` keeps its earlier value, and the note says so.
+These are not loaded, each with a note: a value that `sh` would expand (`$` or
+a backtick), one with an unquoted `; & | < > ( )` or `~`, and one that ends in
+a carriage return from a CRLF line. An open quote is a syntax error: nothing
+from its line on is set. Put such a value in single quotes.
 
-The command prints paths and variable names, never values. It prints a name
-only when it is in upper case, digits and `_`, and counts any other names,
-since a secret pasted on a line of its own can parse as a name. It prints:
+The command prints paths and variable names, never values. It prints only the
+names that `ENV_KEYS` or your profiles declare (the value of any `*_env` key,
+such as `access_key_env: GARAGE_ACCESS_KEY_ID`) and counts any others, since a
+secret pasted on a line of its own can parse as a name. It prints:
 
 - the variables it loaded;
 - the shell variables that override a different value in the file (if you
   rotated a key in the file, unset the old one in your shell);
-- on macOS, any value it did not load, and why;
+- on macOS, any line that did not set its variable, and why;
 - a file a unit names that does not exist, and a file skipped because it is
   not UTF-8 text.
 

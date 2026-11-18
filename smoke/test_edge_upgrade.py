@@ -94,7 +94,8 @@ def test_a_hand_run_upgrade_reads_the_forge_settings_from_the_units_env_file(edg
 
     output = done.stdout + done.stderr
     assert done.returncode == 0, output
-    assert f"env: loaded {', '.join(names)} from {garage}, as the units read it" in output
+    # no profile declares these names, so the note counts them rather than print them
+    assert f"env: loaded 2 names from {garage}, as the units read it" in output
     assert f"edge: upgraded {base[:12]} -> {newer[:12]}" in output
     assert env[plan.FORGEJO_TOKEN_ENV] not in output
     assert edge_machine.head() == newer

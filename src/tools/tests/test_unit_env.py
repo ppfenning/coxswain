@@ -111,20 +111,23 @@ def test_plan_load_takes_only_what_the_shell_lacks_and_names_what_it_overrides()
     assert load.skipped == ()
 
 
-SKIP_REASONS = {unit_env.SH_SPLITS, unit_env.SH_EXPANDS, unit_env.SH_SYNTAX, unit_env.SH_LEADING}
+SKIP_REASONS = {unit_env.SH_EXPANDS, unit_env.SH_SYNTAX, unit_env.SH_COMMAND, unit_env.SH_LEADING, unit_env.SH_CR,
+                unit_env.SH_OPEN_QUOTE}
 
 # Each row: an env file, then what the units read for K on linux (systemd's EnvironmentFile=) and on darwin (launchd's
-# `sh .`): a value, None for not set at all, or the reason it is skipped and noted. Every linux value here was
-# measured against a transient `systemd-run --user` unit reading the same file.
+# `sh .`): a value, None for not set at all, or the reason a line did not set it (noted). A darwin value is what sh
+# leaves K at, an earlier line's value included. Every linux value was measured against a transient
+# `systemd-run --user` unit reading the same file; every darwin value against bash --posix and zsh's sh emulation.
 VALUE_ROWS = [
     ("K=a$HOME%hb\n", "a$HOME%hb", unit_env.SH_EXPANDS),
     ("K=x%%y\n", "x%%y", "x%%y"),
     ('K="q v"\n', "q v", "q v"),
     ("K=a\\b\n", "ab", "ab"),
     ("K=\n", "", ""),
-    ("K=pg pass word\n", "pg pass word", unit_env.SH_SPLITS),  # a Postgres password with spaces loads on linux
+    ("K=   \n", "", ""),
+    ("K=pg pass word\n", "pg pass word", unit_env.SH_COMMAND),  # a Postgres password with spaces loads on linux
     ("K=trail   \n", "trail", "trail"),
-    ("K=end\\\nJ=after\n", "endJ=after", unit_env.SH_SPLITS),  # a trailing backslash joins the next line
+    ("K=end\\\nJ=after\n", "endJ=after", "endJ=after"),  # a trailing backslash joins the next line on both
     ('K="a\\nb"\n', "a\\nb", "a\\nb"),
     ("K=\"x\"y'z'\n", "xy'z'", "xyz"),
     ("K='a''b'\n", "ab", "ab"),
@@ -134,19 +137,25 @@ VALUE_ROWS = [
     ('K="p`w"\n', "p`w", unit_env.SH_EXPANDS),
     ("K=a\\$b\n", "a$b", "a$b"),
     ("K='$x'\n", "$x", "$x"),
-    ('K="open\nJ=x\n', "open\nJ=x\n", unit_env.SH_SPLITS),  # an open quote runs to the end of the file in systemd
+    ('K="open\nJ=x\n', "open\nJ=x\n", unit_env.SH_OPEN_QUOTE),  # systemd runs an open quote to the end of the file
     ("export K=v\n", None, "v"),
-    ("K=a # b\n", "a # b", unit_env.SH_SPLITS),
+    ("K=a # b\n", "a # b", "a"),
+    # sh: an assignment followed by a command applies to that command only, so K keeps its earlier value
+    ("K=good\nK=a b\n", "a b", "good"),
+    ("K=good\nK=  x\n", "x", "good"),
+    # sh assigns the part before `;`, which this does not load, so the earlier value goes too
+    ("K=good\nK=a;b\n", "a;b", unit_env.SH_SYNTAX),
+    ("K=abc\r\n", "abc", unit_env.SH_CR),  # sh keeps a CRLF line's \r; systemd drops it as trailing whitespace
+    ("K=1 W=2\n", "1 W=2", "1"),
+    ("K='ab\ncd'\n", "ab\ncd", "ab\ncd"),
 ]
 
 
 def _read_k(text: str, platform: str) -> str | None:
     values, skipped = unit_env.read_env_files([text], platform)
-    reasons = dict(skipped)
-    if "K" in reasons:
-        assert "K" not in values
-        return reasons["K"]
-    return values.get("K")
+    if "K" in values:
+        return values["K"]
+    return dict(skipped).get("K")
 
 
 @pytest.mark.parametrize(("text", "linux", "darwin"), VALUE_ROWS)
@@ -163,40 +172,69 @@ def test_an_unquoted_sh_metacharacter_is_skipped_on_darwin_and_loads_on_linux(me
     assert _read_k(f"K='a{meta}b'\n", "darwin") == f"a{meta}b"
 
 
+def test_a_line_followed_by_a_command_keeps_the_earlier_value_and_says_so() -> None:
+    values, skipped = unit_env.read_env_files(["V=good\nV=a b\n"], "darwin")
+    assert values == {"V": "good"} and skipped == (("V", unit_env.SH_COMMAND),)
+    values, skipped = unit_env.read_env_files(["V=good\n", "V=a b\n"], "darwin")  # across files too
+    assert values == {"V": "good"} and skipped == (("V", unit_env.SH_COMMAND),)
+
+
+def test_a_joined_line_sets_the_first_name_only() -> None:
+    for platform in ("linux", "darwin"):
+        values, _ = unit_env.read_env_files(["V=abc\\\nW=1\n"], platform)
+        assert values == {"V": "abcW=1"}, platform
+
+
+def test_an_open_quote_on_darwin_sets_nothing_from_its_line_on() -> None:
+    values, skipped = unit_env.read_env_files(['A=1\nC=3 K="open\nB=2\n'], "darwin")
+    assert values == {"A": "1"}
+    assert skipped == (("C", unit_env.SH_OPEN_QUOTE), ("K", unit_env.SH_OPEN_QUOTE))
+
+
 def test_a_name_that_is_not_a_plain_identifier_is_never_read() -> None:
     for platform in ("linux", "darwin"):
         values, skipped = unit_env.read_env_files(["QUJD+/ZXo=\nOK=1\n"], platform)
         assert (values, skipped) == ({"OK": "1"}, ())
 
 
-def test_printable_names_prints_only_upper_case_names_and_counts_the_rest() -> None:
-    assert unit_env.printable_names(["GARAGE_ACCESS_KEY_ID", "_X"]) == "GARAGE_ACCESS_KEY_ID, _X"
-    assert unit_env.printable_names(["A", "dGVzdHNlY3JldA", "lower"]) == "A and 2 other names"
-    assert unit_env.printable_names(["dGVzdHNlY3JldA"]) == "1 name"
-    assert unit_env.printable_names(["A", "b"]) == "A and 1 other name"
+def test_declared_names_are_env_keys_and_every_env_name_a_profile_declares() -> None:
+    routing = {"forgejo_token_env": "MY_FORGE_TOKEN", "nested": [{"auth_env": "AUTH"}], "store": {"mode": "shared"}}
+    provider = {"object_store": {"access_key_env": "GARAGE_ACCESS_KEY_ID", "secret_key_env": "GARAGE_SECRET_ACCESS_KEY",
+                                 "endpoint": "http://x"}, "bad_env": "not a name"}
+    assert unit_env.declared_names(routing, provider) == frozenset(
+        {*unit_env.ENV_KEYS, "MY_FORGE_TOKEN", "AUTH", "GARAGE_ACCESS_KEY_ID", "GARAGE_SECRET_ACCESS_KEY"})
 
 
-def test_a_secret_pasted_on_its_own_line_loads_as_systemd_reads_it_but_its_name_is_not_printed() -> None:
-    secret = "dGVzdHNlY3JldEtleQ"  # base64 padded with `=` parses as NAME=value
-    values, skipped = unit_env.read_env_files([f"GARAGE_ACCESS_KEY_ID=k\n{secret}==\n"], "linux")
-    load = unit_env.plan_load({}, values, skipped)
-    assert load.loaded == {"GARAGE_ACCESS_KEY_ID": "k", secret: "="}
-    notes = unit_env.load_notes(load, ["/u.env"], [], [])
-    assert notes == ["env: loaded GARAGE_ACCESS_KEY_ID and 1 other name from /u.env, as the units read it"]
+def test_printable_names_prints_only_declared_names_and_counts_the_rest() -> None:
+    declared = frozenset({"GARAGE_ACCESS_KEY_ID", "_X"})
+    assert unit_env.printable_names(["GARAGE_ACCESS_KEY_ID", "_X"], declared) == "GARAGE_ACCESS_KEY_ID, _X"
+    assert unit_env.printable_names(["GARAGE_ACCESS_KEY_ID", "MZXW6YTBOI", "lower"], declared) == (
+        "GARAGE_ACCESS_KEY_ID and 2 other names")
+    assert unit_env.printable_names(["MZXW6YTBOI"], declared) == "1 name"
+
+
+@pytest.mark.parametrize("secret", ["MZXW6YTBOI", "dGVzdHNlY3JldEtleQ"])  # base32 upper case, base64 mixed case
+def test_a_secret_pasted_on_its_own_line_is_counted_never_printed(secret: str) -> None:
+    for platform in ("linux", "darwin"):
+        values, skipped = unit_env.read_env_files([f"GARAGE_ACCESS_KEY_ID=k\n{secret}======\n"], platform)
+        load = unit_env.plan_load({}, values, skipped)
+        assert load.loaded == {"GARAGE_ACCESS_KEY_ID": "k", secret: "====="}
+        notes = unit_env.load_notes(load, ["/u.env"], [], [], frozenset({"GARAGE_ACCESS_KEY_ID"}))
+        assert notes == ["env: loaded GARAGE_ACCESS_KEY_ID and 1 other name from /u.env, as the units read it"]
 
 
 def test_load_notes_name_files_and_variables_and_never_a_value() -> None:
-    text = 'K=file-secret\nN=n-secret\nQ="q-secret\n'
-    values, skipped = unit_env.read_env_files([text.replace('Q="q-secret\n', "Q=$q-secret\nM=a;secret\n")], "darwin")
+    text = "K=file-secret\nN=n-secret\nQ=$q-secret\nM=a;secret\n"
+    values, skipped = unit_env.read_env_files([text], "darwin")
     load = unit_env.plan_load({"K": "shell-secret"}, values, skipped)
-    notes = unit_env.load_notes(load, ["/u.env"], ["/gone.env"], ["/bad.env"])
+    notes = unit_env.load_notes(load, ["/u.env"], ["/gone.env"], ["/bad.env"], frozenset({"K", "N", "Q", "M"}))
     assert notes == [
         "env: skipped /bad.env: not UTF-8 text",
         "env: /gone.env, which a unit names, does not exist",
         "env: loaded N from /u.env, as the units read it",
         "env: the shell's K override /u.env; unset them to use the file's",
-        f"env: not loaded Q from /u.env: {unit_env.SH_EXPANDS}",
-        f"env: not loaded M from /u.env: {unit_env.SH_SYNTAX}",
+        f"env: a line in /u.env did not set Q: {unit_env.SH_EXPANDS}",
+        f"env: a line in /u.env did not set M: {unit_env.SH_SYNTAX}",
     ]
     assert not any("secret" in line for line in notes)
     assert unit_env.load_notes(unit_env.plan_load({}, {}), ["/d.env"], [], []) == []

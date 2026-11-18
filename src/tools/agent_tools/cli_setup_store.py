@@ -86,6 +86,14 @@ def _read_bytes_or_none(path: Path) -> bytes | None:
         return None
 
 
+def _declared_env_names() -> frozenset[str]:
+    """Edge. The variable names this machine's routing and provider profiles declare (`unit_env.declared_names`),
+    read from the profile `cox` would use; an unreadable profile declares none."""
+    profile = _doctor_profile(_read_text_or_none(_profile_path(argparse.Namespace()))) or {}
+    provider = profile.get("provider_profile")
+    return unit_env.declared_names(profile, store_url.read_provider_profile(provider) if isinstance(provider, str) else {})
+
+
 @contextlib.contextmanager
 def _unit_env_loaded(note: Callable[[str], None] | None = None):
     """Edge. A hand run (an ssh or interactive shell) sees the environment the units see. The env files are those
@@ -104,7 +112,8 @@ def _unit_env_loaded(note: Callable[[str], None] | None = None):
     values, skipped = unit_env.read_env_files((unit_env.decode_text(data) for _, data in file_reads), sys.platform)
     load = unit_env.plan_load(os.environ, values, skipped)
     absent = [path for path, data in file_reads if data is None and path != default]
-    for line in unit_env.load_notes(load, files, absent, unit_env.undecodable([*unit_reads, *file_reads])):
+    unreadable = unit_env.undecodable([*unit_reads, *file_reads])
+    for line in unit_env.load_notes(load, files, absent, unreadable, _declared_env_names()):
         if note is not None:
             note(line)
     with _env_overlay(load.loaded):
