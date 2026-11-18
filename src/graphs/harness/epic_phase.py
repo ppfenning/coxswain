@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 
 from core import ledger, workstore
 from core.landing import is_initiative, land_gate_level
@@ -141,7 +141,7 @@ from harness.epic_triage import (
     triage_failure_hold,
     triage_initiative_context,
 )
-from harness.epic_types import as_mapping
+from harness.epic_types import PhaseRecord, Quarantine, as_list, as_mapping
 from harness.escalate import escalate_self_modification
 from harness.gate import apply_arm_for, gate
 from harness.handoff import plan_context
@@ -153,6 +153,13 @@ from harness.ticket_check import check_ticket, ticket_lookups
 from harness.worktree import registry_lock
 
 
+class _TaskExtras(TypedDict, total=False):
+    """The keys a task entry carries only when the build produced them."""
+
+    test_database: str
+    refix: object
+
+
 def run_phase_tasks(
     ctx: Ctx,
     *,
@@ -161,7 +168,7 @@ def run_phase_tasks(
     parents: tuple[str, ...],
     items: list[dict[str, Any]],
     only: frozenset[str] | None = None,
-) -> dict[str, Any]:
+) -> PhaseRecord:
     """One phase: branch, fan out, check, validate, gate, execute, record.
 
     One parent stacks the branch on that parent's branch. Several parents are merged by
@@ -179,11 +186,12 @@ def run_phase_tasks(
     # (`stacked` still names the phases that need another phase's work, for a run with no initiative branch.)
     pr_ref = ctx.pr_branch_ref() if is_initiative(ctx.land_at) and (stacked or ctx.initiative_branch) else None
     base_ref = pr_ref or (ctx.phase_branch(parent) if parent else ctx.default_ref)
-    quarantined: list[dict[str, Any]] = []
-    record: dict[str, Any] = {
+    quarantined: list[Quarantine] = []
+    assembled: PhaseRecord = {"assembled_from": list(parents)} if len(parents) > 1 and not pr_ref else {}
+    record: PhaseRecord = {
         "phase": phase,
         "parent": parent,
-        **({"assembled_from": list(parents)} if len(parents) > 1 and not pr_ref else {}),
+        **assembled,
         "branch": branch,
         "base": base_ref,
         "land_at": ctx.land_at,
@@ -208,7 +216,7 @@ def run_phase_tasks(
     # A lone parent that is settled is the stack itself: cut from it, with no merge commit.
     cut_ref = base_ref if not parents or cut_from == [base_ref] else ctx.default_ref
 
-    def open_failed(detail: str, verb: str) -> dict[str, Any]:
+    def open_failed(detail: str, verb: str) -> PhaseRecord:
         record["status"] = "blocked"
         record["reason"] = start_failure(detail, verb)
         if not detail.startswith(ASSEMBLY_FAILED):
@@ -342,7 +350,7 @@ def run_phase_tasks(
         git_in("-C", str(ctx.phase_worktree(phase)), "checkout", "--detach", "-q")
         return record
 
-    def recreate() -> dict[str, Any] | None:
+    def recreate() -> PhaseRecord | None:
         """Cut the phase branch again from its base; the record to return when the leader is stale or the reopen fails."""
         stale_recreate = fence_reason(ctx)
         if stale_recreate:
@@ -995,6 +1003,8 @@ def run_phase_tasks(
                     arbitration.get("verdict") if isinstance(arbitration, Mapping) else arbitration or ""
                 )
 
+        test_database: _TaskExtras = {"test_database": build["test_database"]} if "test_database" in build else {}
+        refix: _TaskExtras = {"refix": build["refix"]} if build.get("refix") else {}
         record["task_records"].append(
             {
                 "id": task,
@@ -1014,11 +1024,11 @@ def run_phase_tasks(
                 "draft": None,
                 "merged": False,
                 "status": "quarantined" if build.get("quarantine") else "built",
-                **({"test_database": build["test_database"]} if "test_database" in build else {}),
+                **test_database,
                 "lint_fixed": build.get("lint_fixed", False),
                 "lint_fix_checks": build.get("lint_fix_checks", []),
                 "build_budget_source": budget_sources.get(task),
-                **({"refix": build["refix"]} if build.get("refix") else {}),
+                **refix,
             }
         )
         if build.get("quarantine"):
@@ -1047,7 +1057,7 @@ def run_phase_tasks(
         surviving.append(task)
 
     # ── validation, between the fan-out and the merges ───────────────────────
-    chunk_by_task: dict[str, dict[str, Any]] = {}
+    chunk_by_task: dict[str, dict[str, object]] = {}
     verdict: dict[str, Any] | None = None
     validated = "validate_phase" in ctx.bound
 
@@ -1162,7 +1172,7 @@ def run_phase_tasks(
         chunk = chunk_by_task.get(task)
         if chunk is not None and not chunk.get("satisfied"):
             surviving.remove(task)
-            gaps = ", ".join(chunk.get("gaps") or []) or str(chunk.get("reasoning", ""))
+            gaps = ", ".join(str(g) for g in as_list(chunk.get("gaps"))) or str(chunk.get("reasoning", ""))
             quarantined.append(
                 quarantine_task(
                     ctx, by_id, phase=phase, task=task,
