@@ -19,7 +19,7 @@ import re
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import TypedDict, Unpack, cast
 
-from core.jsontypes import is_mapping
+from core.jsontypes import conform, is_mapping
 
 PHASE_STATES = ("waiting", "open", "built", "queued", "merged", "conflicted", "blocked")
 INITIATIVE_STATES = ("draft", "building", "assembled", "pr_open", "landed", "conflicted", "blocked")
@@ -119,6 +119,12 @@ class StateFields(TypedDict, total=False):
     pr: PullRequest | None
     error: str
     landed_pr: str
+
+
+def record_from_store(raw: object) -> LandingRecord:
+    """Pure. A decoded `record_json` as a `LandingRecord`; `ShapeError` when it is not an object or a key it names is
+    malformed. Keys the record does not name pass, as a record may carry more than its readers name."""
+    return conform(LandingRecord, raw, "landing record")
 
 
 def natural_key(name: str) -> list[int | str]:

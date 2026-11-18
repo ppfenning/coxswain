@@ -8,9 +8,9 @@ its failed attempt is to be retried; a `claimed` item whose `lease_until` has pa
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, cast
+from typing import Any
 
-from core.landing_record import LandingRecord
+from core.landing_record import LandingRecord, record_from_store
 from harness.store_dialect import Connection, json_load, json_text, upsert
 
 PHASE_MERGE = "phase_merge"
@@ -37,7 +37,7 @@ def item_id(kind: str, initiative: str, phase: str = "") -> str:
 def get_record(conn: Connection, initiative: str) -> LandingRecord | None:
     p = conn.dialect.placeholder
     row = conn.query_one(f"SELECT record_json FROM landing_records WHERE initiative = {p}", (initiative,))
-    return None if row is None else cast(LandingRecord, dict(json_load(row[0]) or {}))
+    return None if row is None else record_from_store(json_load(row[0]) or {})
 
 
 def put_record(conn: Connection, record: Mapping[str, Any]) -> None:
@@ -53,7 +53,7 @@ def put_record(conn: Connection, record: Mapping[str, Any]) -> None:
 def list_records(conn: Connection, states: Sequence[str] | None = None) -> list[LandingRecord]:
     """Every record, or those in `states`, by initiative."""
     rows = conn.query_all("SELECT state, record_json FROM landing_records ORDER BY initiative")
-    return [cast(LandingRecord, dict(json_load(raw) or {})) for state, raw in rows if states is None or state in states]
+    return [record_from_store(json_load(raw) or {}) for state, raw in rows if states is None or state in states]
 
 
 def delete_record(conn: Connection, initiative: str) -> None:

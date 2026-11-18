@@ -26,7 +26,7 @@ from agent_tools.chair_facts import RESCUE_FAILED_CAUSE, _key, _run_number, run_
 from agent_tools.chair_read_attempts import read_attempts
 from agent_tools.chair_read_cache import StampCache, file_stamp
 from agent_tools.chair_read_quarantined import WorkFiles, body_sha
-from core.run_record import RESCUE_KIND, record_attempt, record_body_sha
+from core.run_record import RESCUE_KIND, record_attempt, record_body_sha, task_record_from_store
 from core.workstore import counts_after, fresh_cutoff
 
 OPEN_STATES = ("quarantined", "ready", "blocked")
@@ -157,18 +157,19 @@ def _summarized(path: Path) -> dict[str, Any] | None:
     """Edge. `{"attempt": record_summary(...), "mtime": ...}` for the record at `path`; None when it is unreadable or not a
     JSON object. The attempt is None for a record that names no cause, which is still worth remembering."""
     try:
-        record = json.loads(path.read_text(encoding="utf-8"))
+        record = task_record_from_store(json.loads(path.read_text(encoding="utf-8")))
         mtime = datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat()
-    except (OSError, ValueError):
+    except (OSError, ValueError):  # ShapeError is a ValueError: a malformed record is left out like an unreadable one
         return None
-    return {"attempt": record_summary(record), "mtime": mtime} if isinstance(record, dict) else None
+    return {"attempt": record_summary(record), "mtime": mtime}
 
 
 def read_run_records(runs_dir: Path, wanted: Collection[tuple[str, str]], cache: StampCache | None = None) -> list[RecordFile]:
     """Edge. The summary of every `runs_dir/<run>/tasks/<phase>/<task>.json` whose (phase, task) is in `wanted` and whose
     record names a cause, in path order.
 
-    Only those files are opened. An unreadable file, or one that is not a JSON object, is left out. With a cache, a file
+    Only those files are opened. An unreadable file, or one that is not a well-formed task record
+    (`core.run_record.task_record_from_store`), is left out. With a cache, a file
     whose (mtime_ns, size) stamp is unchanged is not parsed again; the cache holds the summary, never the record."""
     paths = [p for p in sorted(runs_dir.glob("*/tasks/*/*.json")) if (p.parent.name, p.stem) in wanted]
     found = []

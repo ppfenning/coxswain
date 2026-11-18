@@ -12,9 +12,9 @@ A record that names no cause is no attempt: an approved build, or a run that nev
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import cast
+from typing import TypedDict, cast
 
-from core.jsontypes import is_mapping
+from core.jsontypes import conform, is_mapping
 from core.workstore import body_sha
 
 RULE_MARK = "rule: "  # the driver's mark on a cause a rule made (`harness.epic._cause_of`, `harness.rescue_select`)
@@ -22,6 +22,28 @@ _KIND_RULE = "rule: kind "
 _RESCUE_RULE = "rule: rescue "
 RESCUE_KIND = "rescue_failed"
 _APPROVED_KIND = "draft_pr_create"  # the proposal `lifecycle-propose` emits when, and only when, its reviewers approved
+
+
+class TaskRecord(TypedDict, total=False):
+    """A saved run task record, as far as its readers name it; a record carries more (`change_facts`, `proposals` ...),
+    read here as plain JSON. `harness.store_read.TaskRecord` names the keys the store reads; that module imports no
+    `core`, so the two are kept apart."""
+
+    run_id: str
+    initiative: str
+    date: str
+    cause: str | None
+    cause_why: str | None
+    body_sha: str | None
+    ticket_body: str | None
+    failed_node: str | None
+    failed_node_reason: str | None
+
+
+def task_record_from_store(raw: object) -> TaskRecord:
+    """Pure. A decoded run task record as a `TaskRecord`; `ShapeError` when it is not an object or a key it names is
+    malformed."""
+    return conform(TaskRecord, raw, "task record")
 
 
 def _mapping(value: object) -> Mapping[str, object]:

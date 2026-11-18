@@ -21,7 +21,7 @@ from agent_tools.chair_land_proc import (
 def _spec(argv: list[str] | None = None, repo: str = "r", key: str = "k", timeout_s: float = 30.0) -> LandSpec:
     return LandSpec(
         key,
-        {"kind": "land_task", "task_id": "t1"},
+        {"kind": "land", "task_id": "t1"},
         ["true"] if argv is None else argv,
         repo,
         timeout_s,
@@ -43,6 +43,9 @@ def test_parse_garbage_returns_none() -> None:
     whole = encode_spec(_spec())
     for text in ["", "not json", whole[:20], "[]", "null", '{"key": "k"}', whole.replace('"argv": [', '"argv": [1,')]:
         assert parse_spec(text) is None
+    for bad in ('"kind": "land_task"', '"kind": 7'):  # a kind no planner makes, and no kind at all
+        assert parse_spec(whole.replace('"kind": "land"', bad)) is None
+    assert parse_spec(whole.replace('"task_id": "t1"', '"task_id": ["t1"]')) is None
     for text in ["", "{", "[]", '{"code": "x", "output": ""}', '{"code": 1}']:
         assert parse_outcome(text) is None
 
