@@ -7,15 +7,18 @@ import sqlite3
 import subprocess
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import Future
 from dataclasses import dataclass, field
+from operator import attrgetter
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import urlencode
 
 from core.cartridge import integration_checks_setting
+from core.jsontypes import is_list, is_mapping
 from core.landing import pr_branch_name
+from graphs._spec import GraphSpec
 from harness import pool_edge
 from harness.check_gate import gate_checks
 from harness.checks import check_timeout
@@ -33,14 +36,22 @@ def git_in(*args: str, cwd: Path | None = None) -> tuple[bool, str]:
     return proc.returncode == 0, (proc.stderr or proc.stdout).strip()
 
 
+class _ConninfoOption(Protocol):
+    """One entry of libpq's `pgconn.info`: the part `_reopen_url` reads."""
+
+    keyword: bytes
+    val: bytes | None
+
+
 def _reopen_url(conn: Connection) -> str | None:
     """A URL `connect` accepts for the database `conn` is on, or None when it cannot be reopened (an in-memory sqlite)."""
-    raw: Any = conn.raw
+    raw = conn.raw
     if isinstance(raw, sqlite3.Connection):
-        file = next((row[2] for row in raw.execute("PRAGMA database_list") if row[1] == "main"), "")
+        file = next((str(row[2]) for row in raw.execute("PRAGMA database_list") if row[1] == "main"), "")
         return f"sqlite:///{file}" if file else None
     # psycopg's `info.get_parameters()` never returns the password; the libpq `pgconn.info` does.
-    params = {item.keyword.decode(): item.val.decode() for item in raw.pgconn.info if item.val}
+    info: Iterable[_ConninfoOption] = attrgetter("pgconn.info")(raw)  # a psycopg connection: RawConnection does not name it
+    params = {item.keyword.decode(): item.val.decode() for item in info if item.val}
     return "postgresql:///?" + urlencode(params)
 
 
@@ -74,7 +85,7 @@ class StoreRetry:
         """Retries that reconnect `store`'s own connection."""
         return cls(reconnect=lambda: reopen_connection(store.conn), clock=clock, sleep=sleep)
 
-    def write(self, call: Callable[[], Any], window_s: float) -> Any:
+    def write[T](self, call: Callable[[], T], window_s: float) -> T:
         """Run `call`, reconnecting and retrying a lost connection for `window_s`; any other error, or the window's end, raises."""
         return retry_store_write(
             call, reconnect=self.reconnect, clock=self.clock, sleep=self.sleep, window_s=window_s
@@ -106,9 +117,9 @@ class Ctx:
     """
 
     repo: Path
-    cartridge: Mapping[str, Any]
-    runner: Any
-    specs: Mapping[str, Any]
+    cartridge: Mapping[str, object]
+    runner: Any  # a NodeRunner, or a view on one; read for the attributes a test runner adds (`calls`, `verify_by_task`)
+    specs: Mapping[str, GraphSpec]
     run_id: str
     date: str
     max_parallel: int
@@ -131,7 +142,7 @@ class Ctx:
     # attempt's tree, and a view is never stacked on another phase's view.
     shared_runner: Any = None
     resume_from: str | None = None
-    repo_checks: list = field(default_factory=list)
+    repo_checks: Sequence[Mapping[str, object]] = field(default_factory=list[Mapping[str, object]])
     store: Store | None = None
     epoch: int | None = None
     lease_name: str | None = None
@@ -142,22 +153,22 @@ class Ctx:
     # Workers each lane's checks may use; None when no lane capacity was stated.
     lane_workers: int | None = None
     # Run-level and mutable, shared by `replace`: lanes holding a database, and the drop records (the cleanup list).
-    lane_names: dict[tuple[str, str], str] = field(default_factory=dict, compare=False, repr=False)
-    lane_drops: list[dict[str, Any]] = field(default_factory=list, compare=False, repr=False)
+    lane_names: dict[tuple[str, str], str] = field(default_factory=dict[tuple[str, str], str], compare=False, repr=False)
+    lane_drops: list[dict[str, object]] = field(default_factory=list[dict[str, object]], compare=False, repr=False)
     pool: PoolSetting | None = None
     # Run-level and mutable: the lease each pooled task build holds, with the lock digest read when it was acquired.
     pool_leases: dict[tuple[str, str], tuple[pool_edge.Lease, str]] = field(
-        default_factory=dict, compare=False, repr=False
+        default_factory=dict[tuple[str, str], tuple[pool_edge.Lease, str]], compare=False, repr=False
     )
     # The one mutable member of a frozen record: file listings by commit (see `default_branch_paths`).
-    surface_paths: dict[str, frozenset[str]] = field(default_factory=dict, compare=False, repr=False)
+    surface_paths: dict[str, frozenset[str]] = field(default_factory=dict[str, frozenset[str]], compare=False, repr=False)
     # Guards writes to the shared `items` list and the lazy fill of `surface_paths`; `replace` shares it across per-phase copies.
     items_lock: threading.Lock = field(default_factory=threading.Lock, compare=False, repr=False)
     # Run-level and mutable: the future of each phase this run launched, so a dependent that starts early can wait for the cut.
     # The scheduler thread sets one key per launch and workers only `get`, each atomic, and a parent is set before any dependent starts.
-    launched: dict[str, Future[Any]] = field(default_factory=dict, compare=False, repr=False)
+    launched: dict[str, Future[Any]] = field(default_factory=dict[str, Future[Any]], compare=False, repr=False)
     # Run-level and mutable: the repositories whose phase branch fetch failed while checking merged commits, faulted once.
-    merge_fetch_faults: set[str] = field(default_factory=set, compare=False, repr=False)
+    merge_fetch_faults: set[str] = field(default_factory=set[str], compare=False, repr=False)
 
     def __post_init__(self) -> None:
         """Refuse a bad per-check timeout at build, before any model call; the ValueError names the check."""
@@ -201,25 +212,33 @@ class Ctx:
         return held[0].path if held else self.phase_worktree(phase) / task
 
     @property
-    def checks(self) -> list[Mapping[str, Any]]:
-        cartridge_checks = list((self.cartridge.get("landing_areas") or {}).get("checks") or [])
+    def landing_areas(self) -> Mapping[str, object]:
+        """The cartridge's `landing_areas`; empty when it has none."""
+        areas = self.cartridge.get("landing_areas")
+        return areas if is_mapping(areas) else {}
+
+    @property
+    def checks(self) -> list[Mapping[str, object]]:
+        listed = self.landing_areas.get("checks")
+        cartridge_checks = [c for c in listed if is_mapping(c)] if is_list(listed) else []
         known = {c.get("cmd") for c in cartridge_checks}
         extra = [c for c in self.repo_checks if c.get("cmd") not in known]
         return cartridge_checks + extra
 
     @property
-    def level_checks(self) -> list[Mapping[str, Any]]:
+    def level_checks(self) -> list[Mapping[str, object]]:
         """The cartridge's level gate; never joined with `.agent-checks`, and never read by a task build."""
-        return list(gate_checks(self.cartridge.get("landing_areas") or {}, "level"))
+        return list(gate_checks(self.landing_areas, "level"))
 
     @property
-    def integration_checks(self) -> list[Any]:
+    def integration_checks(self) -> list[Mapping[str, object]]:
         """The cartridge's touched-package integration checks; empty when none are configured."""
-        return integration_checks_setting(self.cartridge)
+        return [c for c in integration_checks_setting(self.cartridge) if is_mapping(c)]
 
     @property
-    def bound(self) -> Mapping[str, Any]:
-        return self.cartridge.get("skills") or {}
+    def bound(self) -> Mapping[str, object]:
+        skills = self.cartridge.get("skills")
+        return skills if is_mapping(skills) else {}
 
 
 # ── the phase graph ─────────────────────────────────────────────────────────
@@ -246,9 +265,15 @@ def phase_order(parents: Mapping[str, set[str]]) -> tuple[list[str], list[str]]:
     return ordered, sorted(remaining)
 
 
-def declared_phases(initiative: Mapping[str, Any], items: Sequence[Mapping[str, Any]]) -> list[str]:
+def _phase_entries(initiative: Mapping[str, object]) -> list[Mapping[str, object]]:
+    """The initiative's `phases` entries that are objects (`{id, goal}`); a bare phase name is none."""
+    phases = initiative.get("phases")
+    return [p for p in phases if is_mapping(p)] if is_list(phases) else []
+
+
+def declared_phases(initiative: Mapping[str, object], items: Sequence[Mapping[str, object]]) -> list[str]:
     """Phase ids in declared order; the sorted phase names on the items when no entry carries an id."""
-    declared = [str(p["id"]) for p in initiative.get("phases") or [] if isinstance(p, Mapping) and p.get("id")]
+    declared = [str(p["id"]) for p in _phase_entries(initiative) if p.get("id")]
     return declared or sorted({str(i["phase"]) for i in items if i.get("phase")})
 
 
@@ -282,7 +307,7 @@ def read_evidence_file(worktree: str, rel: str) -> str | None:
     return "\n".join(text.splitlines()[:_EVIDENCE_LINE_CAP])
 
 
-def phase_goal(initiative: Mapping[str, Any], phase: str) -> str:
+def phase_goal(initiative: Mapping[str, object], phase: str) -> str:
     """The phase's ORIGINAL goal — the thing `validate_phase` judges against.
 
     A work store's phases are bare names (`workstore.phases` returns the set of
@@ -292,8 +317,8 @@ def phase_goal(initiative: Mapping[str, Any], phase: str) -> str:
     to reduce to. Where a decompose-produced initiative carries `{id, goal}`
     phase entries, they win.
     """
-    for entry in initiative.get("phases") or []:
-        if isinstance(entry, Mapping) and str(entry.get("id")) == phase and entry.get("goal"):
+    for entry in _phase_entries(initiative):
+        if str(entry.get("id")) == phase and entry.get("goal"):
             return str(entry["goal"])
     body = str(initiative.get("body") or "").strip()
     return f"phase '{phase}' of initiative '{initiative.get('id')}'" + (f"\n\n{body}" if body else "")

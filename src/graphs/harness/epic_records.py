@@ -19,6 +19,7 @@ import yaml
 from harness import work_mirror
 from harness.courier_adapter import publish_run_exited
 from harness.epic_context import Ctx, StoreRetry
+from harness.epic_types import phase_record
 from harness.resume import save_result
 from harness.store_lease import assert_epoch, renew
 from harness.store_pause import clear_paused, is_paused
@@ -718,9 +719,11 @@ def save_task_result(ctx: Ctx, result: Mapping[str, Any], *, phase: str, task: s
         epic_log.warning("task record for %s/%s/%s not mirrored into the store: %r", ctx.run_id, phase, task, exc)
 
 
-def record_phase(ctx: Ctx, record: Mapping[str, Any]) -> None:
+def record_phase(ctx: Ctx, record: Mapping[str, object]) -> None:
+    """Store the phase's record, checked as the store will hold it: a record that is not JSON is refused here."""
     if ctx.store is not None and fence_reason(ctx) is None:
-        row = {**record, "run_id": f"{ctx.run_id}:{record['phase']}", "ts": utc_now(), "principal": PRINCIPAL}
+        checked = phase_record(record)
+        row = {**checked, "run_id": f"{ctx.run_id}:{checked['phase']}", "ts": utc_now(), "principal": PRINCIPAL}
         store = ctx.store
         ctx.retry.write(lambda: store.record_phase(row, epoch=ctx.epoch), END_WRITE_WINDOW_S)
 

@@ -68,7 +68,7 @@ Measured over every run: fix-loop refusals 131, budget/plan deaths 64, `validate
 (26 with a patch and an approving review+arbitration chain), attempt cap 23, handoff incomplete 18,
 phase-infra failures 14. All reach the ledger and the stats store as `quarantined`.
 
-Change: `_quarantine_task` (`harness/epic.py:608`) takes `kind: str` and writes it into the phase record entry,
+Change: `quarantine_task` (`harness/epic.py:608`) takes `kind: str` and writes it into the phase record entry,
 the printed line (`quarantined task [<kind>]: <id> — <reason>`), and `record_attempt` onto the work item
 (`attempts[].kind`). Kinds, closed set:
 
@@ -77,12 +77,12 @@ the printed line (`quarantined task [<kind>]: <id> — <reason>`), and `record_a
 | `refused`    | reviewers/arbiter rejected the patch                 | `epic.py:890`                        |
 | `no_work`    | nothing produced: budget death, attempt cap, handoff incomplete | `:763`, `:856`, plan/budget paths |
 | `unverified` | approved chain, validator unsatisfied — PATCH KEPT    | `:1011`                              |
-| `infra`      | nothing ran: worktree/branch failure                  | `_open_phase_worktree` `:276` callers |
+| `infra`      | nothing ran: worktree/branch failure                  | `open_phase_worktree` `:276` callers |
 
 `unverified` never discards: the task record keeps `build.patch` (it already does) and the phase record entry
 carries `"patch_kept": true` so `cox runs land` can offer it. `infra` is NOT a task outcome: it is recorded on
 the phase as `phase_failed_to_start` with the reason, and the tasks stay `ready` untouched. The two
-`quarantined.append` sites that bypass `_quarantine_task` (`:754`, `:936`) go through it.
+`quarantined.append` sites that bypass `quarantine_task` (`:754`, `:936`) go through it.
 
 ## 4. Consumers read the record, not the prose  (tools)
 
