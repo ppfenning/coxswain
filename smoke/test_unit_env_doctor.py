@@ -38,7 +38,7 @@ def shared_machine(sandbox, object_store):
 
 
 def _env_file(machine, values: dict[str, str]) -> Path:
-    """The keys in a NAME=value file the default does not name, as jarvis keeps `garage.systemd.env`."""
+    """The keys in a NAME=value file the default does not name, as a Linux machine may keep `garage.systemd.env`."""
     path = machine.home / ".config" / "agent-tools" / "garage.systemd.env"
     path.write_text("".join(f"{name}={value}\n" for name, value in values.items()), encoding="utf-8")
     path.chmod(0o600)
@@ -64,7 +64,7 @@ def _install_upgrade_unit(machine, env_file: Path) -> None:
 
 
 def test_a_hand_run_doctor_loads_the_keys_from_the_file_the_upgrade_unit_names(shared_machine, object_store):
-    # Before: no file holds the keys, and the object_store row fails as it did on bp-macbook.
+    # Before: no file holds the keys, and the object_store row fails, as it did on a machine before this fix.
     by_check, _rows, _out = _doctor(shared_machine)
     assert by_check[OBJECT_STORE_ROW]["ok"] is False
     assert "incomplete" in by_check[OBJECT_STORE_ROW]["detail"]

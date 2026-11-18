@@ -54,13 +54,13 @@ def test_chair_service_still_exposes_the_moved_rules() -> None:
 
 
 def test_unit_environment_file_reads_a_systemd_units_environment_file_line() -> None:
-    text = upgrade_edge.service_text("/bin/cox", "/p.yaml", "/usr/bin", "/home/u/.config/agent-tools/garage.systemd.env")
-    assert unit_env.unit_environment_file(text) == "/home/u/.config/agent-tools/garage.systemd.env"
+    text = upgrade_edge.service_text("/bin/cox", "/p.yaml", "/usr/bin", "/srv/unit/garage.systemd.env")
+    assert unit_env.unit_environment_file(text) == "/srv/unit/garage.systemd.env"
 
 
 def test_unit_environment_file_reads_the_file_a_launchd_agent_sources() -> None:
-    text = upgrade_edge.plist_text("/bin/cox", "/p.yaml", "/usr/bin", 20, "/Users/u/a&b/garage.env")
-    assert unit_env.unit_environment_file(text) == "/Users/u/a&b/garage.env"
+    text = upgrade_edge.plist_text("/bin/cox", "/p.yaml", "/usr/bin", 20, "/srv/a&b/garage.env")
+    assert unit_env.unit_environment_file(text) == "/srv/a&b/garage.env"
 
 
 def test_unit_environment_file_is_none_for_a_unit_that_names_no_file() -> None:
