@@ -50,7 +50,9 @@ jobs:
           }
           jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs" --paginate -q '.jobs[] | "\(.id)\t\(.name)"')
           for platform in macos linux; do
-            id=$(printf '%s\n' "$jobs" | awk -F'\t' -v job="proof-$platform" '$2 ~ (job "$") { print $1; exit }')
+            # A here-string, not printf | awk: printf writes a line per write(), and awk's early exit after the match
+            # can close the pipe before the last line, so the writer takes SIGPIPE and pipefail fails the step with 141.
+            id=$(awk -F'\t' -v job="proof-$platform" '$2 ~ (job "$") { print $1; exit }' <<< "$jobs")
             step=missing
             # curl, not gh api: gh refuses to print a log that holds terminal escape sequences, and brew's output does
             if [ -n "$id" ] && curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/jobs/$id/logs" > "$RUNNER_TEMP/proof-$platform.log"; then
