@@ -140,6 +140,7 @@ from harness.epic_triage import (
     triage_failure_hold,
     triage_initiative_context,
 )
+from harness.epic_types import as_mapping
 from harness.escalate import escalate_self_modification
 from harness.gate import apply_arm_for, gate
 from harness.handoff import plan_context
@@ -386,7 +387,7 @@ def run_phase_tasks(
             worktree,
             build_digest(worktree) or None,
             [str(c.get("cmd")) for c in ctx.checks if c.get("cmd")],
-            gate_commands(ctx.cartridge.get("landing_areas") or {}),
+            gate_commands(ctx.landing_areas),
         ),
     )
 
@@ -667,7 +668,7 @@ def run_phase_tasks(
     # never reaches the model at all — refused outright, plainly, the same
     # way the attempt cap above is: never through `quarantine_task`, because
     # this is not an attempt either and must not grow the count that gates it.
-    cap = (ctx.cartridge.get("policy") or {}).get("build_budget_usd_max")
+    cap = as_mapping(ctx.cartridge.get("policy")).get("build_budget_usd_max")
     # Item order, not set iteration order: a set's order comes from the
     # string hash seed, which is process environment, not a declared input,
     # so two runs over the same items could otherwise record and print the

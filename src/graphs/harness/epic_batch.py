@@ -30,6 +30,7 @@ from harness.epic_records import (
     utc_now,
     wait_if_paused_here,
 )
+from harness.epic_types import as_list
 from harness.escalate import escalate_self_modification
 from harness.resume import load_result
 from harness.store_write import Store
@@ -253,7 +254,7 @@ def trim_phase(ctx: Ctx, phase: str) -> str | None:
         schema=STYLE_PASS_SCHEMA,
         wait_if_paused=lambda: wait_if_paused_here(ctx),
         prompt=f"{STYLE_PASS_PROMPT}\n\nPhase: {phase}\n\nPhase diff:\n{diff}",
-        context=list(ctx.cartridge.get("context") or []),
+        context=as_list(ctx.cartridge.get("context")),
     )
     patch = str(result.get("patch") or "")
     if not patch.strip():
