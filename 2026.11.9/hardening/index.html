@@ -7081,9 +7081,14 @@ New code follows this, and code a change touches is moved toward it.</p>
    return value.</li>
 <li><strong>Unwired code is a finding.</strong> A check lists the public symbols a diff adds and fails when one has no caller
    outside tests (<code>.github/check_unwired.py</code>; an epic lane diffs against its phase branch, <code>COX_LANE_BASE</code>). It
-   catches a name nothing calls, not a caller that passes the wrong arguments (the lane-sync guard that was never
-   passed its paths): that is the smoke suite's to prove. A def the same diff removes from another file counts as
-   moved, not added, so H9's splits of cli.py and epic.py pass with their callers unchanged.</li>
+   matches by name, so it catches a name nothing uses anywhere. A dead symbol passes when another module uses the
+   same name for something else (a <code>step</code>, a <code>State</code>, a local called <code>fragments</code>), so a pass is no proof of a
+   caller. It does not catch a caller that passes the wrong arguments (the lane-sync guard that was never passed
+   its paths): that is the smoke suite's to prove. A def the same diff removes from another file counts as moved,
+   not added, so H9's splits of cli.py and epic.py pass with their callers unchanged. CI also runs its main scan
+   (<code>--all</code>) over the whole tree: every public symbol has a caller, an entry point on the allowlist, or a line on the
+   debt list (<code>.github/unwired-debt.txt</code>), which names the work that owes its wiring. The list only shrinks: the diff
+   check refuses a line the base lacks, and the list never excuses a symbol the diff adds.</li>
 <li><strong>Review asks two questions.</strong> Task review, arbitration and <code>validate_phase</code> ask: is the logic pure and tested
    without mocks, and which smoke test runs the entry point that reaches this change? A mock the patch adds to a
    unit test, or no such smoke test, means revise. The smoke half applies as the smoke suite grows: where an entry
