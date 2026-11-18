@@ -6,10 +6,12 @@ import sys
 import threading
 from collections.abc import Iterator, Sequence
 from pathlib import Path
+from statistics import median
 
 import pytest
 
-from tests.startup_timing import HELP_TARGET_S, STARTUP_MULTIPLE, check_ceiling, time_baseline, time_command
+from tests.startup_load_verdict import check_regression
+from tests.startup_timing import HELP_TARGET_S, STARTUP_MULTIPLE, check_rounds, time_rounds
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -62,24 +64,21 @@ def busy_load() -> Iterator[None]:
 
 
 def test_relative_check_holds_under_load(busy_load: None) -> None:
-    baseline = time_baseline(_env(), RUNS, REPO_ROOT)
-    cox = time_command(_help_argv(), _env(), RUNS, REPO_ROOT)
-    result = check_ceiling(cox, baseline, STARTUP_MULTIPLE, HELP_TARGET_S)
+    result = check_rounds(time_rounds(_help_argv(), _env(), RUNS, REPO_ROOT), STARTUP_MULTIPLE, HELP_TARGET_S)
     assert result.ok, result.message
 
 
 def test_injected_3x_regression_fails_relative_check(busy_load: None, tmp_path: Path) -> None:
-    baseline = time_baseline(_env(), RUNS, REPO_ROOT)
-    clean = time_command(_help_argv(), _env(), RUNS, REPO_ROOT)
+    clean = time_rounds(_help_argv(), _env(), RUNS, REPO_ROOT)
 
     site = tmp_path / "site"
     site.mkdir()
-    delay = REGRESSION_EXTRA_FACTOR * clean
+    delay = REGRESSION_EXTRA_FACTOR * median(cox for cox, _ in clean)
     (site / "sitecustomize.py").write_text(f"import time\ntime.sleep({delay!r})\n", encoding="utf-8")
 
-    regressed = time_command(_help_argv(), _env([site]), RUNS, REPO_ROOT)
-    result = check_ceiling(regressed, baseline, STARTUP_MULTIPLE, HELP_TARGET_S)
-    assert not result.ok, (
-        f"3x regression passed: clean {clean:.3f}s, regressed {regressed:.3f}s, baseline {baseline:.3f}s"
-    )
-    assert "exceeds" in result.message
+    # The baseline keeps the clean environment, so only cox carries the injected delay. The regression is judged
+    # against the clean ratio measured under the same load, not the absolute multiple: with every core busy the
+    # baseline slows more than cox does (2026-11-18, 20 cores: clean 2.3x, regressed 7.4x, under the 8x multiple).
+    regressed = time_rounds(_help_argv(), _env([site]), RUNS, REPO_ROOT, baseline_env=_env())
+    verdict = check_regression(clean, regressed, REGRESSION_EXTRA_FACTOR)
+    assert verdict.ok, f"3x regression passed: {verdict}"
