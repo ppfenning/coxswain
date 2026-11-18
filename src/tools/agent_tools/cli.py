@@ -705,7 +705,7 @@ def _dev_moved(a: argparse.Namespace) -> int:
     return 2
 
 
-_RELEASE_HELP = "deploy a release to every host (the other old release commands moved to the checkout)"
+_RELEASE_HELP = "deploy a release to every host: not available yet (the other old release commands moved to the checkout)"
 
 
 def version_line(version: str) -> str:
@@ -741,8 +741,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  cox home opens the towpath dashboard\n"
             "  cox session opens the coxswain Claude session, with the same argv\n"
             "  cox setup doctor checks this machine\n"
-            "  cox route launch epic runs a filed initiative\n"
-            "  cox release deploy 2026.11.6 upgrades every host and verifies each"
+            "  cox route launch epic runs a filed initiative"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -827,7 +826,8 @@ def build_parser() -> argparse.ArgumentParser:
     dev.set_defaults(fn=_dev_moved)
 
     release_p = sub.add_parser("release", help=_RELEASE_HELP,
-                               description=f"cox release deploy VERSION upgrades every host and verifies each.\nOther release commands: {_DEV_MOVED}",
+                               description=f"cox release deploy VERSION is not available yet: its host-by-host edge was never built.\n"
+                                           f"Other release commands: {_DEV_MOVED}",
                                formatter_class=argparse.RawDescriptionHelpFormatter)
     # `deploy` is read from `rest` by `_release`; the old maintainer subcommands and flags land there too and print the pointer
     release_p.add_argument("rest", nargs=argparse.REMAINDER)
