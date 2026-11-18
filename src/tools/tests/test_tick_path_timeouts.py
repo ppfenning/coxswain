@@ -6,10 +6,12 @@ from pathlib import Path
 import pytest
 
 # One line per tick-path module, naming the helpers that bound its subprocess work. Each must exist and be bounded.
+# A module split into parts (H9) is named by a glob that matches it and every part: each file is scanned, and a
+# helper defined in one part and imported by another is checked in both (a `timeout=None` call in any part fails).
 TICK_PATH_MODULES: dict[str, frozenset[str]] = {
     "agent_tools/forge_github.py": frozenset({"_run", "_gh_run", "_gh_text"}),
     "agent_tools/chair_revert_ports.py": frozenset({"bounded"}),
-    "agent_tools/chair_exec.py": frozenset({"run_argv"}),
+    "agent_tools/chair_exec*.py": frozenset({"run_argv"}),
 }
 
 SUBPROCESS_CALLS = frozenset({"run", "check_output", "check_call", "call", "Popen"})
@@ -116,10 +118,27 @@ def find_unbounded_helpers(source: str, filename: str, helpers: frozenset[str]) 
     return missing + no_bound + none_default + none_call
 
 
+def find_unbounded_helpers_in(sources: list[tuple[str, str]], helpers: frozenset[str]) -> list[Offender]:
+    """Pure. find_unbounded_helpers over a module's files together: a helper is missing only when no file defines it,
+    and every file's calls of it are checked, whichever file defines it."""
+    defined = {
+        n.name
+        for _, source in sources
+        for n in ast.walk(ast.parse(source))
+        if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)
+    }
+    missing = [("+".join(path for path, _ in sources), 0, f"{h} is not defined") for h in sorted(helpers - defined)]
+    found = [o for path, source in sources for o in find_unbounded_helpers(source, path, helpers)]
+    return missing + [o for o in found if not (o[1] == 0 and o[2].endswith(" is not defined"))]
+
+
 @pytest.mark.parametrize("module", TICK_PATH_MODULES)
 def test_tick_path_calls_have_timeouts(module: str) -> None:
-    source, helpers = (REPO_ROOT / module).read_text(), TICK_PATH_MODULES[module]
-    offenders = find_unbounded_calls(source, module, helpers) + find_unbounded_helpers(source, module, helpers)
+    helpers = TICK_PATH_MODULES[module]
+    sources = [(f.relative_to(REPO_ROOT).as_posix(), f.read_text()) for f in sorted(REPO_ROOT.glob(module))]
+    assert sources, f"{module} matches no file"
+    offenders = [o for path, source in sources for o in find_unbounded_calls(source, path, helpers)]
+    offenders += find_unbounded_helpers_in(sources, helpers)
     report = "\n".join(f"{path}:{line}: {why}" for path, line, why in offenders)
     assert helpers, f"{module} names no bounded helper, so its scan proves nothing"
     assert not offenders, f"unbounded subprocess work on the tick path:\n{report}"
@@ -175,3 +194,16 @@ def test_the_store_path_is_bounded_by_the_connection_itself():
     assert f"lock_timeout={store_dialect.LOCK_TIMEOUT_MS}" in kwargs["options"]
     assert kwargs["tcp_user_timeout"] == store_dialect.TCP_USER_TIMEOUT_MS
     assert kwargs["connect_timeout"] > 0 and store_dialect.SQLITE_BUSY_TIMEOUT_MS > 0
+
+
+def test_a_part_that_imports_the_helper_is_checked_and_a_missing_helper_still_fails() -> None:
+    """Regression (H9): chair_exec split into parts; the part that defines run_argv was the only one scanned, so an
+    unbounded run_argv call in the edge part would have passed."""
+    land = "import subprocess\n\ndef run_argv(argv, cwd, timeout=30):\n    return subprocess.run(argv, cwd=cwd, timeout=timeout)\n"
+    edge = "from land import run_argv\n\ndef probe(cwd):\n    return run_argv(['git', 'status'], cwd, timeout=None)\n"
+    helpers = frozenset({"run_argv"})
+    assert find_unbounded_helpers_in([("land.py", land), ("edge.py", edge)], helpers) == [
+        ("edge.py", 4, "run_argv called with timeout=None")
+    ]
+    assert find_unbounded_helpers_in([("land.py", land), ("edge.py", edge.replace("timeout=None", "timeout=5"))], helpers) == []
+    assert find_unbounded_helpers_in([("edge.py", edge)], helpers)[0] == ("edge.py", 0, "run_argv is not defined")

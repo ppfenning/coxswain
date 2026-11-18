@@ -196,6 +196,14 @@ SPLIT_FROM: dict[str, frozenset[str]] = {
         "src/tools/agent_tools/cli_usage.py",
         "src/tools/agent_tools/cli_views.py",
     }),
+    "src/tools/agent_tools/dash_feed.py": frozenset({
+        "src/tools/agent_tools/dash_feed_build.py",
+        "src/tools/agent_tools/dash_feed_sections.py",
+    }),
+    "src/tools/agent_tools/route.py": frozenset({
+        "src/tools/agent_tools/route_lint.py",
+        "src/tools/agent_tools/route_plan.py",
+    }),
 }
 
 
