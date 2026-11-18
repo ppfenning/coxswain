@@ -6963,6 +6963,18 @@ the basic level, and listed under <code>exclude</code>: the CLIs, <code>land*</c
 the check went in; <code>test_repo_gates</code> freezes that list, so it only shrinks. The types reach the store's rows through
 about 300 casts, which H2's validating constructors replace. Still open: those constructors, Action as a union per
 kind, and the strict set's remaining modules.</p>
+<p><strong>Follow-up: a record the constructor refuses.</strong> A validating constructor turns a malformed row into an error, and
+the first cut raised it for the whole table: one bad landing record stopped every lander pass in its store, and
+nobody was told. <code>landing_store.list_records</code> now returns a <code>Listing</code>: the records that read, and apart from them
+each row that does not, as <code>Unreadable(initiative, why)</code>, keyed by the row's own <code>initiative</code> column
+(<code>core.landing_record.listing</code>, pure). <code>get_record</code> raises <code>UnreadableRecord</code> only for that initiative. The lander's
+<code>plan_pass</code> leaves that initiative's items queued and out of the pass, and tells the chair one <code>needs_chair</code> per
+stall, remembered in <code>lander_notices</code> (migration 0019) and forgotten once the row reads again. Adopt counts the row
+as present and never writes over it. A land stacked on a layer that may be that row waits (<code>lr.layer_below</code>), and
+a new stacked initiative that needs it is held with the reason (<code>core.landing.stack_unknown</code>), never cut from the
+epic branch. Nothing writes into the bad row: it is the evidence. A pass of <code>cox lander run</code> that fails for any
+other reason tells the chair once per distinct failure (<code>lander.pass_failure_notice</code>). Proven by
+<code>smoke/test_lander_unreadable_record.py</code>.</p>
 <h2 id="h3-the-lander-does-not-block">H3. The lander does not block</h2>
 <p><strong>Evidence.</strong> A repo with no CI held every land for 30 minutes, again and again (#1167). A repo with CI still holds
 the lander for the length of its run.</p>

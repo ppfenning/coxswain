@@ -6964,6 +6964,11 @@ into a scratch copy of the tree and confirming that they fail.</p>
 <td>A store call with no time bound: a held row lock must end the write as <code>Failed</code> within the lock bound. Also a storage URL with its own <code>options</code>, which once replaced the lock and statement bounds instead of adding to them.</td>
 </tr>
 <tr>
+<td><code>test_lander_unreadable_record.py</code></td>
+<td><code>cox lander once</code>, <code>status</code> and <code>adopt</code> to a Postgres store holding one malformed landing record</td>
+<td>One bad row stopping every lander pass in the store, a stall nobody is told of (or told of twice), or any reader writing into the bad row.</td>
+</tr>
+<tr>
 <td><code>test_chair_tick_cache.py</code></td>
 <td>the chair's store readers to Postgres's change counters</td>
 <td>A quiet tick that reads the store again, or a write that re-reads readers of other tables (H6).</td>
