@@ -184,6 +184,7 @@ def postgres() -> Iterator[str]:
         yield decision.url
         return
     _reap_stale()
+    _pull(plan.POSTGRES_IMAGE)  # before the run, which would otherwise pull a missing image itself, with no retry
     container = _must(plan.docker_run_argv(SESSION, int(time.time()))).stdout.strip()
     try:  # from the moment the container exists, every way out of this fixture removes it
         yield plan.postgres_url(_ready_port(container))
@@ -461,7 +462,12 @@ def _forge_ready(base_url: str) -> None:
 
 
 def _pull(image: str) -> None:
-    """`docker pull`, tried `plan.PULL_ATTEMPTS` times with a short pause, so one registry error does not fail the run."""
+    """Make `image` present locally. A digest-pinned image already in the local store is used as is (`plan.pull_needed`):
+    `docker pull` consults the credential helper even then, which fails in a non-interactive macOS session. Otherwise
+    `docker pull`, tried `plan.PULL_ATTEMPTS` times with a short pause, so one registry error does not fail the run."""
+    present = plan.is_digest_pinned(image) and _run(plan.docker_inspect_argv(image)).returncode == 0
+    if not plan.pull_needed(image, present):
+        return
     for attempt in range(1, plan.PULL_ATTEMPTS + 1):
         done = _run(plan.docker_pull_argv(image))
         if done.returncode == 0:
