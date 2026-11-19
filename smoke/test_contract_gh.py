@@ -15,7 +15,6 @@ commit, and the push runs of ci.yml on main.
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 
 import pytest
@@ -119,7 +118,7 @@ def test_gh_under_the_replay_env_sends_no_telemetry_even_when_its_config_turns_i
     # The env must win over gh's own config: `telemetry: enabled` there, the endpoint pointed at the replay over plain
     # http (GH_TELEMETRY_ENDPOINT_URL), and the replay must see nothing but the API call. gh 2.103.3 sent no event
     # here even with the switches unset, so this fails only on a gh that sends (CI's did: run 44433933282).
-    gh = shutil.which("gh")
+    gh = gh_replay.real_gh()
     if gh is None:
         pytest.skip("no gh on PATH")
     config = tmp_path / "gh-config"
@@ -128,18 +127,49 @@ def test_gh_under_the_replay_env_sends_no_telemetry_even_when_its_config_turns_i
     with gh_replay.serving(gh_replay.Replay([])) as server:
         env = {**sandbox.env, **plan.gh_env(server.proxy, str(config)),
                "GH_TELEMETRY_ENDPOINT_URL": f"{server.proxy}/telemetry"}
-        subprocess.run([gh, "api", "repos/o/r"], env=env, capture_output=True, text=True, timeout=60)
+        done = subprocess.run([gh, "api", "repos/o/r"], env=env, cwd=tmp_path, capture_output=True, text=True,
+                              timeout=60)
+    # gh ran and asked the replay, which has no answer: a gh that never started (a launcher that refused) fails here
+    # with its own stderr rather than as an empty list of misses.
+    assert server.misses, f"gh never reached the replay (exit {done.returncode}): {done.stderr.strip()}"
     assert server.misses == ["GET /repos/o/r"], server.misses
 
 
 def test_a_stray_https_request_never_leaves_the_machine_and_is_named(sandbox, tmp_path):
     # Not through `github`, whose teardown fails on any miss: this test wants the miss.
-    gh = shutil.which("gh")
+    gh = gh_replay.real_gh()
     if gh is None:
         pytest.skip("no gh on PATH")
     with gh_replay.serving(gh_replay.Replay([])) as server:
         env = {**sandbox.env, **plan.gh_env(server.proxy, str(tmp_path / "gh-config"))}
-        done = subprocess.run([gh, "api", "https://api.github.com/zen"], env=env, capture_output=True, text=True,
-                              timeout=60)
+        done = subprocess.run([gh, "api", "https://api.github.com/zen"], env=env, cwd=tmp_path, capture_output=True,
+                              text=True, timeout=60)
     assert done.returncode != 0, done.stdout
     assert server.misses == ["CONNECT api.github.com:443 (an https request; only the replay host is answered)"], server.misses
+
+
+def _executable(path, text):
+    path.write_text(text, encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def test_a_mise_shim_for_gh_resolves_to_the_binary_mise_names(tmp_path):
+    # A real shim layout: bin/gh links to an executable named `mise`, which answers `which gh` as mise does.
+    real = _executable(tmp_path / "real-gh", "#!/bin/sh\nexit 0\n")
+    mise = _executable(tmp_path / "mise", f'#!/bin/sh\n[ "$1 $2" = "which gh" ] && echo {real} && exit 0\nexit 2\n')
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "gh").symlink_to(mise)
+    assert gh_replay.real_gh(str(tmp_path / "bin" / "gh")) == str(real)
+
+
+def test_a_shim_mise_cannot_resolve_fails_with_mises_stderr(tmp_path):
+    mise = _executable(tmp_path / "mise", "#!/bin/sh\necho 'gh is not installed' >&2\nexit 1\n")
+    (tmp_path / "gh").symlink_to(mise)
+    with pytest.raises(RuntimeError, match="gh is not installed"):
+        gh_replay.real_gh(str(tmp_path / "gh"))
+
+
+def test_a_plain_gh_binary_is_its_own_answer(tmp_path):
+    gh = _executable(tmp_path / "gh", "#!/bin/sh\nexit 0\n")
+    assert gh_replay.real_gh(str(gh)) == str(gh)
