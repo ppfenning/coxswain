@@ -377,7 +377,7 @@ def test_the_team_cartridge_extends_base_binds_every_smoke_skill_and_carries_its
 
 
 def test_the_docker_endpoint_is_docker_host_when_set_else_the_active_context():
-    desktop = "unix:///Users/me/.docker/run/docker.sock"
+    desktop = "unix:///tmp/desktop-context/docker.sock"
     assert plan.docker_endpoint(None, desktop + "\n") == desktop
     assert plan.docker_endpoint("tcp://127.0.0.1:2375", desktop) == "tcp://127.0.0.1:2375"
     assert plan.docker_endpoint("", desktop) == desktop
