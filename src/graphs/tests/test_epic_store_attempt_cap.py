@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import stat
 from datetime import UTC, datetime
 
 from core.workstore import HOLD_REASON
@@ -272,4 +273,22 @@ def test_a_staged_write_that_is_never_committed_leaves_the_record_file_as_it_was
     assert sorted(path.parent.glob("t1-probe.json")) == [path]  # the reader's glob never sees the staged file
     resume.commit_staged(staged, path)
     assert path.read_text(encoding="utf-8") == '{"cause": "co'
+
+
+def test_an_atomic_write_gets_the_mode_a_plain_write_gets_and_leaves_the_umask_alone(tmp_path) -> None:
+    """Review of #1252: `mkstemp` makes its file 0600, so record and work files that were 0644 came out 0600."""
+    mask = resume.current_umask()
+    plain = tmp_path / "plain.json"
+    plain.write_text("{}", encoding="utf-8")
+    atomic = resume.write_atomic(tmp_path / "atomic.json", "{}")
+    assert stat.S_IMODE(atomic.stat().st_mode) == stat.S_IMODE(plain.stat().st_mode) == 0o666 & ~mask
+    assert resume.current_umask() == mask  # read once at import: a write never sets the process umask
+
+
+def test_the_umask_is_read_from_proc_status_text() -> None:
+    """Review of #1253: toggling the process-wide umask per write let another thread create a world-writable file."""
+    status = "Name:\tpython\nUmask:\t0027\nState:\tR (running)\n"
+    assert resume.umask_of(status) == 0o027
+    assert resume.umask_of("Name:\tpython\n") is None  # a kernel too old to report it
+    assert resume.umask_of("Umask:\tnot-octal\n") is None
 

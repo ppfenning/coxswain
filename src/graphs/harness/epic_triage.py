@@ -34,6 +34,7 @@ from harness.epic_records import (
 from harness.epic_types import EpicItem, Quarantine, as_list, as_mapping
 from harness.gate import apply_arm_for
 from harness.phase_remote import Kind, fetch_branch
+from harness.resume import write_atomic
 from harness.stale_base import missing_paths, ticket_paths
 
 
@@ -256,7 +257,7 @@ def _rewrite_file_body(path: Path, body: str) -> None:
     end = next((i for i, line in enumerate(lines[1:], 1) if line.strip() == "---"), None) if lines[0].strip() == "---" else None
     if end is None:
         raise ValueError(f"{path}: no frontmatter block")
-    path.write_text("\n".join(lines[: end + 1]) + f"\n\n{body.strip()}\n", encoding="utf-8")
+    write_atomic(path, "\n".join(lines[: end + 1]) + f"\n\n{body.strip()}\n")
 
 
 def _rewrite_file_needs(path: Path, needs: Sequence[str]) -> None:
@@ -272,7 +273,7 @@ def _rewrite_file_needs(path: Path, needs: Sequence[str]) -> None:
     else:
         stop = next((i for i in range(at + 1, len(front)) if not front[i].startswith((" ", "-"))), len(front))
         front = [*front[:at], *frontmatter_key_lines("needs", needs), *front[stop:]]
-    path.write_text("\n".join(["---", *front, *lines[end:]]), encoding="utf-8")
+    write_atomic(path, "\n".join(["---", *front, *lines[end:]]))
 
 
 def _closes_cycle(items: Sequence[Mapping[str, object]]) -> bool:
