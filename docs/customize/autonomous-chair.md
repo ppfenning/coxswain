@@ -365,8 +365,10 @@ a directory that is empty, or still exactly what the last fetch left, is
 replaced without `--replace`.
 
 With a shared store the courier bus is the store's `courier_log` table, one
-bus for every machine, with git on or off. The first use loads what
-`courier.jsonl` already held. `cox courier send`, `inbox` and `ack` work as
+bus for every machine, with git on or off. The first write loads what
+`courier.jsonl` already held. A read never writes: until that first write, it
+shows the file's lines, and it never migrates the store, so `cox chair run
+--dry-run` changes nothing. `cox courier send`, `inbox` and `ack` work as
 before.
 
 The rest of this section describes the default, with git on.
