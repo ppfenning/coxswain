@@ -7,11 +7,13 @@ from agent_tools.chair_report import (
     Deps,
     _five_hour,
     echo_line,
+    failed_items,
     format_status,
     housekeeping_fragment,
     lands_this_tick,
     needs_chair_items,
     partial_land_text,
+    reason_tail,
     write_status,
 )
 from agent_tools.chair_watchdog import StatusLine, idle, parse_status
@@ -221,10 +223,45 @@ def test_a_failed_land_phase_with_an_empty_reason_keeps_the_bare_label():
     assert "land_phase:epic-a/p2:" not in line
 
 
-def test_a_long_reason_is_cut_to_its_end_on_one_line():
-    line = format_status(_facts(), [], [_failed_phase("x" * 500 + "the end")], NOW)
+def test_a_long_reason_is_cut_to_its_start_on_one_line():
+    line = format_status(_facts(), [], [_failed_phase("the start " + "x" * 500 + "the end")], NOW)
     assert "\n" not in line
-    assert line.count("x") <= 80 and "land_phase:epic-a/p2: " in line and line.split("failed: ")[1].split(" | ")[0].endswith("the end")
+    assert line.count("x") <= 80 and "land_phase:epic-a/p2: the start x" in line and "the end" not in line
+
+
+_LONG_PATH_REASON = "refused: the task is not stale because its intake is still open in /srv/work/tasks/some-long-task-name.md"
+
+
+def test_reason_tail_keeps_the_leading_words_and_shows_a_path_as_its_basename():
+    tail = reason_tail(_LONG_PATH_REASON)
+    assert tail == "refused: the task is not stale because its intake is still open in some-long-task-name.md"[:80]
+    assert tail.startswith("refused: the task is not stale")
+    assert "/srv" not in tail
+    assert reason_tail("cannot read /srv/work/tasks/some-long-task-name.md") == "cannot read some-long-task-name.md"
+
+
+def test_reason_tail_leaves_a_short_reason_unchanged():
+    assert reason_tail("merge conflict in x.py") == "merge conflict in x.py"
+
+
+def test_reason_tail_uses_the_last_non_blank_line():
+    assert reason_tail("first\n\nlast line\n   \n") == "last line"
+
+
+def test_reason_tail_of_an_empty_reason_is_empty():
+    assert reason_tail("") == ""
+    assert reason_tail("  \n ") == ""
+
+
+def test_failed_items_for_a_stale_to_draft_starts_with_the_reasons_first_words():
+    reason = (
+        "route-drift-re-filed-intakes-show-decomposed-on: "
+        "/srv/work/route-drift/p1/t-re-filed-intakes-show-decomposed-on-route-drift-compare-intake-states-alike.md"
+    )
+    result = {**_result("stale_to_draft", "failed", task_id="t1"), "reason": reason}
+    items = failed_items([result])
+    assert len(items) == 1
+    assert items[0].startswith("stale_to_draft:") and ": route-drift-re-filed-intakes-show-decomposed-on:" in items[0]
 
 
 def test_fetched_names_the_run_and_host():
