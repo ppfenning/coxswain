@@ -403,6 +403,7 @@ def _level_checks(ports: Ports, repo: Path, record: lr.LandingRecord, phase: str
 # -- the lander's copy of the initiative branch -------------------------------------------------------------------
 
 BranchSource = Literal["local", "origin", "cut"]
+ADOPT_HOLD = "its branch cannot be rebuilt on the lander's host: "  # the prefix of a hold `adopt_branch` sets, and lifts
 
 
 def branch_source(local: bool, on_origin: bool) -> BranchSource:
@@ -410,18 +411,32 @@ def branch_source(local: bool, on_origin: bool) -> BranchSource:
 
     `local`: this clone has the branch, and it is used as it is (the fetch before it already brought it forward to
     origin's copy). `origin`: only origin has it, so origin's copy is brought here at its tip, never recreated.
-    `cut`: no copy is anywhere this clone can see (the host that built it kept it local), so it is cut from the
-    parent. The initiative branch is defined as its parent plus the merged phases, and the record names every merged
-    phase and its tip, so a cut branch is rebuilt from the record (`adopt_branch`), not taken on trust from a host."""
+    `cut`: no copy is anywhere this clone can see (the host that built it kept it local), so it is made here from the
+    record (`reuse_point`, else the record's `base_sha`), never from wherever the parent is now."""
     if local:
         return "local"
     return "origin" if on_origin else "cut"
 
 
+def reuse_point(record: lr.LandingRecord, holds: Mapping[str, frozenset[str]]) -> str | None:
+    """Pure. The recorded merge commit a missing or stale copy of the branch is put at, so the commits the building
+    host made are used as they are rather than merged again.
+
+    `holds[sha]` is the set of recorded shas the merge commit `sha` contains; a merge commit this clone does not have
+    is absent. A phase branch cut after earlier merges carries them, so after its fetch the building host's last merge
+    is usually here. Of those here, the one that holds the most recorded shas (the latest phase on a tie). None when
+    no recorded merge commit is here."""
+    best: tuple[int, int, str] | None = None
+    for order, (_, _, merge) in enumerate(merged_entries(record)):
+        if merge and merge in holds and (best is None or (len(holds[merge]), order) > best[:2]):
+            best = (len(holds[merge]), order, merge)
+    return best[2] if best else None
+
+
 @dataclass(frozen=True)
 class Adopted:
     """What `adopt_branch` did. `wait` holds why the item must wait (None: the branch here holds the record);
-    `held` is True when only a person can settle it (a recorded phase whose tip is nowhere to be found)."""
+    `held` is True when only a person can settle it: the record then carries the hold, told to the chair once."""
 
     events: tuple[str, ...] = ()
     wait: str | None = None
@@ -432,70 +447,125 @@ def adopt_branch(ports: Ports, repo: Path, initiative: str) -> Adopted:
     """Edge. Make this clone's initiative branch the one the record describes, and publish it when it had to change.
 
     Under the branch lease. A remote lane host cuts `init/<initiative>` and merges phases into it locally; with
-    `push_initiative: at_pr` it never pushes it, so the lander's host has no copy, or a stale one. Here: origin's copy
-    first (`branch_source`), else a cut from the parent; then every phase the record says is merged but the branch does
-    not hold is merged again from its phase branch (on origin), and its merge commit is rewritten on the record. A
-    branch that changed is pushed at once, whatever `push_initiative` says, and the record is rewritten only once the
-    push is taken: origin's copy is then the one every host shares, and a lane whose own copy has diverged from it
-    refuses to move it (`fetch_branch` says diverged) and leaves the merge to the lander, so two hosts never fight.
+    `push_initiative: at_pr` it never pushes it, so the lander's host has no copy, or a stale one. Here, in order:
+    origin's copy (`branch_source`); else the building host's own merge commit, as a phase branch carried it here
+    (`reuse_point`: the same commits, nothing merged again, nothing rewritten); else the record's `base_sha`. Every
+    phase the record says is merged that the branch still lacks is then merged again from its phase branch, and its
+    merge commit is rewritten on the record. A branch that changed is pushed at once, whatever `push_initiative` says,
+    and the record is rewritten only once the push is taken: origin's copy is then the one every host shares, and a
+    lane whose own copy diverged refuses to move it (`fetch_branch` says diverged) and leaves the merge to the lander.
 
-    A branch that already holds the record is left exactly as it is, and nothing is pushed."""
+    What only a person can settle (a recorded tip that is nowhere, a merge refused) puts everything back and holds the
+    initiative: the chair is told once per reason (`held_after`), and the pass that succeeds lifts the hold. A hold set
+    by reconciliation is left to reconciliation. A branch that already holds the record is left exactly as it is, and
+    nothing is pushed."""
     record = ls.get_record(ports.conn, initiative)
     if record is None:
         return Adopted(wait=f"{initiative} has no landing record")
-    branch, parent = record_text(record, "branch"), record_text(record, "parent")
+    hold = _held(record)
+    if hold and not str(hold.get("reason") or "").startswith(ADOPT_HOLD):
+        return Adopted(wait=held_note(record))
+    branch = record_text(record, "branch")
     lease = store_lease.acquire(ports.conn, ops.branch_lease(initiative), ports.worker, ports.now(), ops.CLAIM_SECONDS)
     if not lease.ok:
         return Adopted(wait=f"{lease.holder or 'another worker'} is moving {branch}")
     try:
-        if diverged := ports.fetch(repo, branch):
-            return Adopted(wait=diverged)
-        local, remote = lg.rev(repo, f"refs/heads/{branch}"), lg.rev(repo, f"refs/remotes/origin/{branch}")
-        source = branch_source(local is not None, remote is not None)
-        events: list[str] = []
-        start = local if source == "local" else remote if source == "origin" else lg.rev(repo, parent_ref_of(repo, parent))
-        if start is None:
-            return Adopted(wait=f"cannot cut {branch}: its parent {parent} is not a commit here")
-        if source != "local":
-            made, why = lg.git(repo, "branch", "--no-track", branch, start)
-            if not made:
-                return Adopted(wait=f"cannot bring {branch} here: {why}")
-            events.append(f"{initiative}: {branch} " + ("brought here from origin" if source == "origin"
-                                                         else f"cut from {parent} at {start[:12]}: no host had pushed it"))
-        drifts = _local_drift(repo, record, branch)
-        for drift in drifts:  # a tip this clone lacks may be on origin's copy of its phase branch
-            if drift.action == "hold":
-                ports.fetch(repo, ops.phase_branch(initiative, drift.phase))
-        drifts = _local_drift(repo, record, branch) if drifts else drifts
-        holds = [d.reason for d in drifts if d.action == "hold"]
-        if holds:
-            _undo(repo, branch, start, cut=source != "local")
-            return Adopted(wait="; ".join(holds), held=True)
-        if not drifts and source != "cut":
-            return Adopted(tuple(events))
-        kept = kept_shas(record, [d.phase for d in drifts])
-        tips: dict[str, str] = {}
-        for drift in drifts:
-            merged = lg.merge_into(repo, branch=branch, source=drift.tip, recorded=kept,
-                                   message=f"{initiative}: merge phase {drift.phase} (recorded merged on a host that kept {branch} local)")
-            if not merged.ok:
-                _undo(repo, branch, start, cut=source != "local")
-                return Adopted(wait=f"{drift.reason}, but that merge failed here: {merged.detail}", held=merged.status != "error")
-            tips[drift.phase] = merged.tip
-        pushed, why = ports.forge.push(repo, branch)
-        if not pushed:
-            _undo(repo, branch, start, cut=source != "local")
-            return Adopted(wait=f"{branch} was rebuilt here but origin refused it: {why.splitlines()[0] if why else 'push failed'}")
+        built = _rebuild(ports, repo, record, branch)
+        if built.held:
+            return _hold(ports, initiative, built)
+        if built.wait is None and hold:
+            current = ls.get_record(ports.conn, initiative) or record
+            ls.put_record(ports.conn, {**current, "held": None, "updated_at": ports.now()})
+            return replace(built, events=(*built.events, f"{initiative}: {branch} holds its record here again; the hold is lifted"))
+        return built
+    finally:
+        store_lease.release(ports.conn, ops.branch_lease(initiative), ports.worker, int(lease.epoch or 0))
+
+
+def _rebuild(ports: Ports, repo: Path, record: lr.LandingRecord, branch: str) -> Adopted:
+    """`adopt_branch`'s git, under the lease it holds."""
+    initiative = record_text(record, "initiative")
+    if diverged := ports.fetch(repo, branch):
+        return Adopted(wait=diverged)
+    local, remote = lg.rev(repo, f"refs/heads/{branch}"), lg.rev(repo, f"refs/remotes/origin/{branch}")
+    source = branch_source(local is not None, remote is not None)
+    events: list[str] = []
+    if source == "origin" and remote is not None:
+        made, why = lg.git(repo, "branch", "--no-track", branch, remote)
+        if not made:
+            return Adopted(wait=f"cannot bring {branch} here from origin: {why}")
+        events.append(f"{initiative}: {branch} brought here from origin at {remote[:12]}")
+    start = local or remote
+    if start is not None and not _local_drift(repo, record, branch):
+        return Adopted(tuple(events))
+    for phase, _, _ in merged_entries(record):  # each phase branch may carry the building host's own merge commits
+        ports.fetch(repo, ops.phase_branch(initiative, phase))
+    point = reuse_point(record, _holds(repo, record))
+    if start is None:
+        base = str(record.get("base_sha") or "")
+        begin = point or (base if base and lg.rev(repo, base) else None)
+        if begin is None:
+            return Adopted(wait=f"{ADOPT_HOLD}no host pushed {branch}, and its base {base[:12]} is not in this clone", held=True)
+        made, why = lg.git(repo, "branch", "--no-track", branch, begin)
+        if not made:
+            return Adopted(wait=f"cannot cut {branch}: {why}")
+        kind = "the building host's own merge commit" if begin == point else "its recorded base"
+        events.append(f"{initiative}: {branch} made here at {begin[:12]}, {kind}: no host had pushed it")
+    elif point and point != start and lg.is_ancestor(repo, start, point):
+        lg.git(repo, "update-ref", f"refs/heads/{branch}", point, start)
+        events.append(f"{initiative}: {branch} brought forward to the building host's merge commit {point[:12]}")
+    undo_to = local
+    drifts = _local_drift(repo, record, branch)
+    holds = [d.reason for d in drifts if d.action == "hold"]
+    if holds:
+        _undo(repo, branch, undo_to)
+        return Adopted(wait=ADOPT_HOLD + "; ".join(holds), held=True)
+    kept = kept_shas(record, [d.phase for d in drifts])
+    tips: dict[str, str] = {}
+    for drift in drifts:
+        merged = lg.merge_into(repo, branch=branch, source=drift.tip, recorded=kept,
+                               message=f"{initiative}: merge phase {drift.phase} (recorded merged on a host that kept {branch} local)")
+        if not merged.ok:
+            _undo(repo, branch, undo_to)
+            if merged.status == "error":
+                return Adopted(wait=f"{drift.reason}, but that merge could not be made here: {merged.detail}")
+            return Adopted(wait=f"{ADOPT_HOLD}{drift.reason}, but that merge is refused here ({merged.status}): {merged.detail}",
+                           held=True)
+        tips[drift.phase] = merged.tip
+    pushed, why = ports.forge.push(repo, branch)
+    if not pushed:
+        _undo(repo, branch, undo_to)
+        return Adopted(wait=f"{branch} was rebuilt here but origin refused it: {why.splitlines()[0] if why else 'push failed'}")
+    if tips:
         current = ls.get_record(ports.conn, initiative) or record
         for phase, tip in tips.items():
             current = lr.with_phase(current, phase, ports.now(), merge_sha=tip, repaired_at=ports.now())
-        if tips:
-            ls.put_record(ports.conn, current)
-        events += [f"{initiative}: {d.reason}" for d in drifts]
-        events.append(f"{initiative}: {branch} pushed to origin at {(lg.rev(repo, f'refs/heads/{branch}') or start)[:12]}; origin's copy is the one every host uses")
-        return Adopted(tuple(events))
-    finally:
-        store_lease.release(ports.conn, ops.branch_lease(initiative), ports.worker, int(lease.epoch or 0))
+        ls.put_record(ports.conn, current)
+    events += [f"{initiative}: {d.reason}" for d in drifts]
+    tip = lg.rev(repo, f"refs/heads/{branch}") or ""
+    events.append(f"{initiative}: {branch} pushed to origin at {tip[:12]}; origin's copy is the one every host uses")
+    return Adopted(tuple(events))
+
+
+def _hold(ports: Ports, initiative: str, built: Adopted) -> Adopted:
+    """Hold the initiative with `built`'s reason, and tell the chair only when the hold is news (`held_after`)."""
+    current = ls.get_record(ports.conn, initiative)
+    reason = str(built.wait)
+    if current is not None:
+        held, news = held_after(_held(current), reason, ports.now())
+        if news:
+            ls.put_record(ports.conn, {**current, "held": held, "updated_at": ports.now()})
+            ports.notify("needs_chair", {"initiative": initiative, "reason": f"held: {reason}"})
+    return built
+
+
+def _holds(repo: Path, record: lr.LandingRecord) -> dict[str, frozenset[str]]:
+    """For each recorded merge commit this clone has, the recorded shas it contains."""
+    recorded = lr.recorded_shas(record)
+    return {
+        merge: frozenset(sha for sha in recorded if lg.is_ancestor(repo, sha, merge))
+        for _, _, merge in merged_entries(record) if merge and lg.rev(repo, merge)
+    }
 
 
 def _local_drift(repo: Path, record: lr.LandingRecord, branch: str) -> list[Drift]:
@@ -507,23 +577,20 @@ def _local_drift(repo: Path, record: lr.LandingRecord, branch: str) -> list[Drif
     return phase_drift(record, on_branch, known)
 
 
-def _undo(repo: Path, branch: str, start: str, *, cut: bool) -> None:
-    """Put this clone's branch back as `adopt_branch` found it: gone when it was made here, else at `start`."""
-    if cut:
+def _undo(repo: Path, branch: str, start: str | None) -> None:
+    """Put this clone's branch back as `adopt_branch` found it: at `start`, or gone when it was not here."""
+    if start is None:
         lg.git(repo, "branch", "-D", branch)
     else:
         lg.git(repo, "update-ref", f"refs/heads/{branch}", start)
 
 
 def _adopt_or_wait(ports: Ports, repo: Path, initiative: str, ident: str) -> Outcome | list[str]:
-    """The events of `adopt_branch`, or the outcome the item closes with. A phase only a person can find is told to
-    the chair at once, with its reason, rather than retried in silence."""
+    """The events of `adopt_branch`, or the outcome the item waits with. A hold is a wait: the chair has been told
+    once, and the item stays queued for the pass that can settle it, so nothing is failed and retried in silence."""
     adopted = adopt_branch(ports, repo, initiative)
     if adopted.wait is None:
         return list(adopted.events)
-    if adopted.held:
-        ports.notify("needs_chair", {"initiative": initiative, "reason": adopted.wait})
-        return Outcome("failed", ident, adopted.wait, adopted.events)
     return Outcome("waiting", ident, adopted.wait, adopted.events)
 
 
@@ -543,7 +610,7 @@ def merge_phase(ports: Ports, initiative: str, phase: str) -> Outcome:
     # The initiative branch may exist only on the lane host that built the phases before this one.
     adopted = _adopt_or_wait(ports, repo, initiative, ident)
     if isinstance(adopted, Outcome):
-        return _closed(ports, adopted)
+        return adopted
     early = resolve_push_initiative((ports.meta(initiative).get("cartridge")) or {}) == "early"
 
     def publish(branch: str) -> str | None:
@@ -568,15 +635,6 @@ def merge_phase(ports: Ports, initiative: str, phase: str) -> Outcome:
                                      parent=str(record.get("parent") or ""), now=ports.now(), reason="last phase merged"):
         events.append(f"{initiative} is assembled: queued to land on {record.get('parent')}")
     return Outcome("done", ident, events[len(adopted)], tuple(events))
-
-
-def _closed(ports: Ports, outcome: Outcome) -> Outcome:
-    """A phase merge that stops before `ops.merge_phase` claims its item: a failure is recorded on the item, so the
-    queue shows why and its age keeps counting towards the queue alarm; a wait leaves it queued as it is."""
-    if outcome.status == "failed" and ls.claim(ports.conn, outcome.item, ports.worker, now=ports.now(),
-                                               lease_until=ops.later(ports.now(), ops.CLAIM_SECONDS)):
-        ls.fail(ports.conn, outcome.item, ports.worker, now=ports.now(), error=outcome.detail)
-    return outcome
 
 
 def _send_back(ports: Ports, record: lr.LandingRecord, phase: str, done: ops.PhaseMerge) -> list[str]:
@@ -667,6 +725,14 @@ def land_initiative(ports: Ports, initiative: str, *, merge: bool = True, refres
     record = ls.get_record(ports.conn, initiative)
     if record is None:
         return close("failed", f"{initiative} has no landing record")
+    events: list[str] = []
+    if record.get("state") != "landed" and not (record.get("pr") or {}).get("url"):
+        # Assembled on a lane host that kept the branch local: the lander's copy is made from the record first.
+        adopted = _adopt_or_wait(ports, ports_repo(ports, record), initiative, ident)
+        if isinstance(adopted, Outcome):
+            return close(adopted.status, adopted.detail, adopted.events)
+        events += adopted
+        record = ls.get_record(ports.conn, initiative) or record
     if _held(record):
         return close("waiting", held_note(record))
     record, stack_events, below, unknown = _restack(ports, record)
@@ -683,14 +749,7 @@ def land_initiative(ports: Ports, initiative: str, *, merge: bool = True, refres
         return close("waiting", f"{initiative} is {state}, not assembled")
     repo, branch, parent = ports_repo(ports, record), record_text(record, "branch"), record_text(record, "parent")
     meta = ports.meta(initiative)
-    events: list[str] = list(stack_events)
-    if not (record.get("pr") or {}).get("url"):
-        # Assembled on a lane host that kept the branch local: the lander's copy is made from the record first.
-        adopted = _adopt_or_wait(ports, repo, initiative, ident)
-        if isinstance(adopted, Outcome):
-            return close(adopted.status, adopted.detail, [*events, *adopted.events])
-        events += adopted
-        record = ls.get_record(ports.conn, initiative) or record
+    events += stack_events
     auto = str(meta.get("gate") or "full") == "full"
     stacked = bool(meta.get("epic_stack"))
     merged, _ = ports.forge.pr_merged(repo, branch) if (record.get("pr") or {}).get("url") else (False, "")
@@ -1092,10 +1151,11 @@ def stale_items[R: Row](items: Sequence[R], now: str, limit: int = QUEUE_ALARM_S
 
 
 def alarm_kind(item: Row) -> str:
-    """Pure. How a stale item is told. One that has failed (it ran, and the same error came back, attempt after
-    attempt) needs a person: `needs_chair`, with its last error as the reason. One still queued or claimed is
-    `stalled`: nothing has run it, so the lander itself may be down."""
-    return "needs_chair" if item["state"] == "failed" or (item.get("last_error") and int(str(item.get("attempts") or 0)) > 0) else "stalled"
+    """Pure. How a stale item is told. One that has failed (it ran, and its error came back) needs a person:
+    `needs_chair`, with its last error as the reason. One queued or claimed is `stalled`: it is waiting (on a person's
+    review, on checks, on a lander that is down), and an error it once had is not news. The alarm reads the queue
+    before the sweep queues failed items again, so a failure is still `failed` when it is read."""
+    return "needs_chair" if item["state"] == "failed" else "stalled"
 
 
 def queue_alarm(ports: Ports, limit: int = QUEUE_ALARM_SECONDS, initiatives: Collection[str] | None = None) -> list[str]:
@@ -1109,8 +1169,8 @@ def queue_alarm(ports: Ports, limit: int = QUEUE_ALARM_SECONDS, initiatives: Col
         record = ls.get_record(ports.conn, initiative)
         alarms = (record or {}).get("queue_alarms")
         told: dict[str, object] = dict(alarms) if is_mapping(alarms) else {}
-        if record is None or told.get(ident) == item["queued_at"]:
-            continue
+        if record is None or told.get(ident) == item["queued_at"] or _held(record):
+            continue  # a held initiative's chair has been told already, with the reason
         reason = f"{ident} has waited since {item['queued_at']} ({item['state']}, {item.get('attempts') or 0} attempt(s))"
         if item.get("last_error"):
             reason += f": {item['last_error']}"
@@ -1419,7 +1479,8 @@ def run_lane(ports: Ports, lane: Lane, *, phase_cap: int = 2, land_cap: int = 1,
     An item that is waiting stays queued for the next pass. With `land_batch_size` above 1, lands on one parent that
     change no file in common are landed together (`land_batch`); the land cap then counts batches."""
     mine = set(lane.initiatives) | {str(i["initiative"]) for i in lane.items}
-    for line in [*sweep(ports, mine), *queue_alarm(ports, initiatives=mine)]:
+    # The alarm first: the sweep queues a failed item again, and the alarm tells a failure apart from a wait by its state.
+    for line in [*queue_alarm(ports, initiatives=mine), *sweep(ports, mine)]:
         ports.log(line)
     for initiative in lane.initiatives:
         for line in reconcile(ports, initiative):
