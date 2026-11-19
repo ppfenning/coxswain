@@ -753,11 +753,17 @@ def gh_exchange_queues(exchanges: Sequence[Mapping]) -> dict[str, list[Mapping]]
 def gh_env(proxy: str, config_dir: str) -> dict[str, str]:
     """What sends a sandboxed gh to the replay or the recorder at `proxy`: the local host, the proxy for http and
     https alike (so a request gh made to any other host also reaches the replay, which has no answer for it, and never
-    the network), a config folder of its own, a placeholder token, and no prompt or update check."""
+    the network), a config folder of its own, a placeholder token, and no prompt, update check or telemetry.
+
+    Telemetry is off by gh's own documented switches (`gh help environment`): `GH_TELEMETRY=0`, which takes precedence,
+    and `DO_NOT_TRACK=1`. gh posts a `command_invocation` event to https://cafe.github.com; through HTTPS_PROXY that
+    arrived at the replay as `CONNECT cafe.github.com:443`, a miss, and failed a test on CI (run 44433933282). The
+    feature is switched off rather than its host allowed, so any other stray request still fails the test."""
     return {"GH_HOST": GH_HOST, "HTTP_PROXY": proxy, "http_proxy": proxy, "HTTPS_PROXY": proxy, "https_proxy": proxy,
             "NO_PROXY": "", "no_proxy": "",
             "GH_TOKEN": GH_REPLAY_TOKEN, "GH_CONFIG_DIR": config_dir, "GH_PROMPT_DISABLED": "1",
-            "GH_NO_UPDATE_NOTIFIER": "1", "GH_SPINNER_DISABLED": "1"}
+            "GH_NO_UPDATE_NOTIFIER": "1", "GH_NO_EXTENSION_UPDATE_NOTIFIER": "1", "GH_SPINNER_DISABLED": "1",
+            "GH_TELEMETRY": "0", "DO_NOT_TRACK": "1"}
 
 
 def gh_remote_url(slug: str) -> str:

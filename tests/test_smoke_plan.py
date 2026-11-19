@@ -434,4 +434,11 @@ def test_gh_is_sent_to_the_proxy_with_a_placeholder_token_and_a_config_of_its_ow
     assert env["HTTPS_PROXY"] == env["https_proxy"] == env["http_proxy"] == "http://127.0.0.1:9"
     assert env["NO_PROXY"] == env["no_proxy"] == ""
     assert plan.gh_remote_url("o/r") == "https://github.localhost/o/r.git"
+
+
+def test_gh_sends_no_telemetry_and_checks_for_no_update():
+    # gh's own switches (`gh help environment`); its telemetry reached the replay as CONNECT cafe.github.com:443 on CI
+    env = plan.gh_env("http://127.0.0.1:9", "/s/gh")
+    assert (env["GH_TELEMETRY"], env["DO_NOT_TRACK"]) == ("0", "1")
+    assert env["GH_NO_UPDATE_NOTIFIER"] == env["GH_NO_EXTENSION_UPDATE_NOTIFIER"] == "1"
     assert plan.gh_recording_name("test_x[a/b]") == "test_x-a-b.json"
