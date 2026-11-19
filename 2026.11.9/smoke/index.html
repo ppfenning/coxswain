@@ -6979,6 +6979,11 @@ into a scratch copy of the tree and confirming that they fail.</p>
 <td>A quiet tick that reads the store again, or a write that re-reads readers of other tables (H6).</td>
 </tr>
 <tr>
+<td><code>test_chair_actions_window.py</code></td>
+<td><code>cox chair run --dry-run</code> and the chair's wiring to a Postgres store holding 34,000 <code>chair_actions</code> rows</td>
+<td>A quiet tick that reads the whole <code>chair_actions</code> window again, a row written behind the tail that the kept window misses, or an intake's decompose runs that differ when read from the tick's shared reads (H6).</td>
+</tr>
+<tr>
 <td><code>test_unit_env_doctor.py</code></td>
 <td>a hand-run <code>cox setup doctor</code> to the units' env file</td>
 <td>The object_store keys held only in the file the upgrade unit names (written by <code>cox upgrade --install-timer --environment-file</code>) and missing from the shell: the required rows fail and a good <code>cox upgrade</code> rolls back. Also a file value overriding one the shell already sets (the shell must win). Each test failed with the doctor's loading taken out.</td>

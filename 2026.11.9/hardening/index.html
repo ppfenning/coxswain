@@ -7049,7 +7049,14 @@ lookups, and re-parsing every ticket's YAML. The store readers (<code>work_items
 initiative) now keep their rows while the store's change counters for their tables stand (<code>chair_tick_cache</code>). A quiet
 tick sends one counters query instead of about 470 queries, and the timing line ends <code>store: read=… reused=…</code>.
 <code>smoke/test_chair_tick_cache.py</code> proves it against real Postgres: a quiet gather re-reads nothing and scans no
-<code>work_items</code>, and one write re-reads exactly the <code>work_items</code> readers. The chair machine itself is not yet measured.
+<code>work_items</code>, and one write re-reads exactly the <code>work_items</code> readers.</p>
+<p>On the chair machine, a dry run against a read-only copy of the old store (5,275 items, 4,744 runs, 280,091 chair
+actions) took 12.8 s warm, and 2.6 s after H6.1. The <code>chair_actions</code> window was most of it: about 180,000 rows were read
+each tick, then turned into docs again by some twenty readers, 3.2 million merges a tick. The window is now kept and
+topped up from its newest rows (<code>chair_actions_cache</code>), each row's doc is worked out once (<code>chair_action_rows</code>), and
+each reader gets only the kinds it acts on (<code>action_index</code>). With the old workspace's 13,000 run entries as well, the
+tick went from 30.8 s to 6.0 s; 2.2 s of that is two <code>gh</code> reads of main's CI for a broken land watch.
+<code>smoke/test_chair_actions_window.py</code> proves the kept window against real Postgres.
 Part 2 is the <a href="../design/event-driven-chair/">event-driven chair</a>, proposed and not approved.</p>
 <h2 id="h7-the-operator-is-told">H7. The operator is told</h2>
 <p><strong>Evidence.</strong> The chair sat idle for hours more than once, and only a person looking noticed.</p>
