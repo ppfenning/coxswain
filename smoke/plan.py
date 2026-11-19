@@ -202,6 +202,16 @@ def database_name(test_id: str) -> str:
     return f"smoke_{stem}_{digest}"
 
 
+def system_path_with(system_path: str, tool_dir: str | None) -> str:
+    """`system_path`, then `tool_dir` (the folder a host tool such as `pg_dump` was found in) when it is not already
+    one of its entries. Only that one folder is added, after the system's, so nothing else from the caller's PATH
+    reaches a sandboxed command. `None` (the tool was not found) leaves `system_path` as it is."""
+    entries = [entry for entry in system_path.split(":") if entry]
+    if tool_dir is None or tool_dir in entries:
+        return system_path
+    return ":".join([*entries, tool_dir])
+
+
 def sandbox_env(
     inherited: Mapping[str, str], *, home: str, bin_dirs: Sequence[str], system_path: str, extra: Mapping[str, str] | None = None,
 ) -> dict[str, str]:

@@ -40,7 +40,11 @@ sys.path[:0] = [str(ROOT / "src" / name) for name in ("tools", "graphs", "cartri
 # tree (not from whatever checkout the runner's venv installed), since the fixtures poll the same endpoint it does.
 from agent_tools.forge_forgejo import parse_branch_tip  # noqa: E402
 
-SYSTEM_PATH = "/usr/local/bin:/usr/bin:/bin"
+# The harness backs a store up with `pg_dump` before it migrates one (`harness.store_migrate`), and a fresh smoke database
+# always migrates. Linux has it in /usr/bin; Homebrew puts it under /opt/homebrew, off the minimal PATH, so the folder
+# the caller's PATH finds it in is added after the system's, and nothing else from that PATH comes with it.
+PG_DUMP = shutil.which("pg_dump")
+SYSTEM_PATH = plan.system_path_with("/usr/local/bin:/usr/bin:/bin", str(Path(PG_DUMP).parent) if PG_DUMP else None)
 READY_TIMEOUT_S = 120
 # Every command the fixtures run is bounded: a hung git, docker or uv fails the test that waited on it.
 COMMAND_TIMEOUT_S = 600
@@ -205,6 +209,10 @@ with psycopg.connect(url, autocommit=True) as conn:
 def store_url(postgres: str, install: Install, request: pytest.FixtureRequest) -> Iterator[str]:
     """A fresh database for one test, at the newest schema. The harness's own store CLI opens it first, which is
     what applies the migrations (`harness.store_migrate.open_store`)."""
+    if PG_DUMP is None:
+        pytest.fail("pg_dump is not on PATH: the harness backs up every store it migrates with pg_dump, and each smoke "
+                    "database is migrated when it opens. Install the PostgreSQL client tools and put pg_dump on PATH.",
+                    pytrace=False)
     name = plan.database_name(request.node.nodeid)
     # install.env, not the caller's: no PYTHONPATH, no PG* variables and no real HOME reach these calls
     admin = [str(install.python), "-c", _ADMIN, postgres]
