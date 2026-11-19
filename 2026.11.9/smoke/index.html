@@ -7064,7 +7064,7 @@ weighed.</p>
   merge and check semantics differ from GitHub's in detail.</li>
 <li><strong>B, recorded GitHub answers replayed to the real <code>gh</code> (built: <code>test_contract_gh.py</code>).</strong> This was first rejected
   for three reasons. Two of them do not hold. <code>gh</code> needs no certificate for the replay: for its local-development host
-  <code>github.localhost</code> it speaks plain http to <code>api.github.localhost</code>, and Go's client sends that through <code>HTTP_PROXY</code>. <code>HTTPS_PROXY</code> names the replay too, so nothing gh asks of any host reaches the network.
+  <code>github.localhost</code> it speaks plain http to <code>api.github.localhost</code>, and Go's client sends that through <code>HTTP_PROXY</code>. <code>HTTPS_PROXY</code> names the replay too, so nothing gh asks of any host reaches the network. gh's own background calls are switched off by its documented variables: <code>GH_TELEMETRY=0</code> and <code>DO_NOT_TRACK=1</code> (its telemetry to cafe.github.com once failed a test on CI as a CONNECT miss), and the update and extension-update checks. A stray request is still a miss; no host is allowed.
   The recordings carry no token either: the recorder adds its own on the way out and never writes one down, and it
   replaces every git identity (an object with a <code>name</code> and an <code>email</code>) with the sandbox's own. The third reason holds:
   a replay returns what GitHub said on the day it was recorded, so it cannot notice GitHub's API changing. What it
