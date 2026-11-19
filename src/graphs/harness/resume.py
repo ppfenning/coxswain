@@ -30,7 +30,10 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-__all__ = ["commit_staged", "current_umask", "load_result", "result_path", "reusable", "save_result", "stage_text", "write_atomic"]
+__all__ = [
+    "commit_staged", "current_umask", "load_result", "result_path", "reusable", "save_result", "stage_text", "umask_of",
+    "write_atomic",
+]
 
 
 def result_path(runs_dir: Path | str, run_id: str, phase: str, task: str) -> Path:
@@ -49,11 +52,40 @@ def reusable(result: Mapping[str, Any] | None) -> bool:
     return approved and bool(patch.strip()) and not (result.get("fix_loop") or {}).get("stopped")
 
 
-def current_umask() -> int:
-    """The process umask. It can only be read by setting it, so it is set to 0 and put straight back."""
+def umask_of(status: str) -> int | None:
+    """Pure. The `Umask:` field of a `/proc/<pid>/status` text, as an int; None when the text has no readable one."""
+    for line in status.splitlines():
+        key, _, value = line.partition(":")
+        if key == "Umask":
+            try:
+                return int(value.strip(), 8)
+            except ValueError:
+                return None
+    return None
+
+
+def _read_umask() -> int:
+    """The process umask, read once at import. Linux reports it in /proc/self/status with no change to it. Elsewhere it
+    can only be read by setting it, and the umask is process-wide: a thread creating a file while it is 0 would make that
+    file world-writable. So the toggle happens here, at import, while the process is still single-threaded, and never
+    per write."""
+    try:
+        parsed = umask_of(Path("/proc/self/status").read_text(encoding="utf-8"))
+    except OSError:
+        parsed = None
+    if parsed is not None:
+        return parsed
     mask = os.umask(0)
     os.umask(mask)
     return mask
+
+
+_UMASK = _read_umask()
+
+
+def current_umask() -> int:
+    """The process umask as read at import (`_read_umask`); reading it never changes it."""
+    return _UMASK
 
 
 def stage_text(path: Path, text: str) -> Path:
