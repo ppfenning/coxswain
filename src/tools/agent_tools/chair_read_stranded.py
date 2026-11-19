@@ -7,7 +7,7 @@ from collections import Counter
 from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 
-from agent_tools import bounded_run, epic, land_manual, remote_lane, repo_path, runs_stranded
+from agent_tools import base_branch, bounded_run, epic, land_manual, remote_lane, repo_path, runs_stranded
 from core.jsontypes import is_mapping
 
 KEYS = ("run", "task", "phase", "branch", "remedy", "expected")
@@ -37,6 +37,22 @@ def _branch_exists(repo: str, branch: str) -> bool:
     """A real, git-backed check: whether `branch` is present as a local branch of `repo`, expanded to this machine's home."""
     r = bounded_run.completed(["git", "-C", _local_path(repo), "branch", "--list", branch], capture_output=True, text=True)
     return bool(r.stdout.strip())
+
+
+def phase_branch_has_commits(item: Mapping[str, object]) -> bool:
+    """Edge. Whether `epic/<initiative>/<phase>` carries a commit beyond the repo's base. An item with no repo is read as
+    present, so nothing is reported that cannot be named; so is a repo that is not a directory on this machine. An absent
+    branch or a failed git call in a real repo reads as absent."""
+    repo = item.get("repo")
+    if not isinstance(repo, str) or not repo:
+        return True
+    path = _local_path(repo)
+    if not os.path.isdir(path):
+        return True
+    branch = f"epic/{item.get('initiative')}/{item.get('phase')}"
+    r = bounded_run.completed(["git", "-C", path, "rev-list", "--count", f"{base_branch.base_name(path)}..{branch}"],
+                              capture_output=True, text=True)
+    return r.returncode == 0 and r.stdout.strip().isdigit() and int(r.stdout.strip()) > 0
 
 
 def _read_log_texts(runs_dir: Path | str | None) -> dict[str, str]:
@@ -80,7 +96,8 @@ def read_stranded(records: list[dict[str, object]], items: list[dict[str, object
                    repo_exists: Callable[[str], bool] = _repo_exists,
                    branch_exists: Callable[[str, str], bool] = _branch_exists,
                    log_texts: Mapping[str, str] | None = None,
-                   runs_dir: Path | str | None = None) -> list[dict[str, object]]:
+                   runs_dir: Path | str | None = None,
+                   on_phase_branch: Callable[[Mapping[str, object]], bool] | None = phase_branch_has_commits) -> list[dict[str, object]]:
     """Edge. `records` and `items` come from the caller: their loaders live in
     cli.py, which this module does not import. `repo_exists` defaults to a
     real directory check, on the recorded path expanded to this machine's
@@ -94,7 +111,8 @@ def read_stranded(records: list[dict[str, object]], items: list[dict[str, object
     in cli.py is a separate task, so until then this reader changes nothing in
     the chair tick. A task with any record is decided by the record path alone."""
     manual_of = _is_manual
-    from_records = runs_stranded.stranded(records, items, repo_exists, branch_exists, manual_of=manual_of)
+    from_records = runs_stranded.stranded(records, items, repo_exists, branch_exists, manual_of=manual_of,
+                                          on_phase_branch=on_phase_branch)
     texts = _read_log_texts(runs_dir) if log_texts is None else log_texts
     recorded = {(r.get("run"), r.get("task")) for r in records}
     from_logs = [row for run, text in texts.items()
@@ -115,17 +133,21 @@ def _extra_of(row: Mapping[str, object]) -> Mapping[str, object]:
 
 
 def stranded_from_rows(rows: Sequence[Mapping[str, object]], records: Sequence[Mapping[str, object]],
-                       manual_of: Callable[[str], bool] = _is_manual) -> list[dict[str, object]]:
+                       manual_of: Callable[[str], bool] = _is_manual,
+                       on_phase_branch: Callable[[Mapping[str, object]], bool] | None = phase_branch_has_commits) -> list[dict[str, object]]:
     """The same rule as `read_stranded`, with each task's state taken from `rows` (kind "task") instead of files.
 
-    `manual_of` reads the record's own repo, as in `read_stranded`; the items built here carry none."""
+    `manual_of` reads the record's own repo, as in `read_stranded`; the items built here carry none.
+    An item's `repo` for `on_phase_branch` is the repo of the last record naming its task and phase."""
+    repo_of = {(r.get("task"), r.get("phase")): r["repo"] for r in records if r.get("repo")}
     items: list[dict[str, object]] = [
         {
             "id": row.get("task_id"), "initiative": row.get("initiative"), "phase": row.get("phase"), "state": row.get("state"),
+            "repo": repo_of.get((row.get("task_id"), row.get("phase"))),
             "land_conflict": _extra_of(row).get("land_conflict"),
             "rebuilt_from": _extra_of(row).get("rebuilt_from"),
         }
         for row in rows
         if row.get("kind") == "task"
     ]
-    return keep_stranded_keys(runs_stranded.stranded(records, items, manual_of=manual_of))
+    return keep_stranded_keys(runs_stranded.stranded(records, items, manual_of=manual_of, on_phase_branch=on_phase_branch))
