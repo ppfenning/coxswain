@@ -1817,6 +1817,15 @@ def test_a_build_budget_over_the_cap_is_quarantined_and_the_sibling_still_lands(
     assert is_ancestor(repo, "epic/demo-initiative/p1-foundations--t2-bench", "epic/demo-initiative/p1-foundations")
 
 
+def test_a_build_budget_cap_that_is_not_a_number_raises_rather_than_let_every_budget_through(repo, cart, tmp_path) -> None:
+    """Review of #1238: typing the cap read a string cap as no cap, where the comparison had always raised."""
+    cart["policy"]["build_budget_usd_max"] = "3"
+    work = initiative(two_phases=False)
+    next(i for i in work["items"] if i["id"] == "t1-probe")["budget_usd"] = 5.0
+    with pytest.raises(TypeError, match="build_budget_usd_max must be a number"):
+        drive(repo, cart, tmp_path, work=work)
+
+
 def test_the_refusal_reason_names_every_malformed_entry() -> None:
     from harness.epic import surface_refusal_reason
 

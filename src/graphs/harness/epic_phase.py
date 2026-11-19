@@ -6,10 +6,10 @@ from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, TypedDict, cast
+from typing import TypedDict
 
 from core import ledger, workstore
-from core.jsontypes import is_dict, is_mapping
+from core.jsontypes import is_dict, is_list, is_mapping
 from core.landing import is_initiative, land_gate_level
 from core.landing_record import INTEGRATE_PHASE
 from core.manifest import append_ledger, build_manifest, gate_diff
@@ -167,10 +167,23 @@ class _TaskExtras(TypedDict, total=False):
     refix: object
 
 
+def _attempts(task: Mapping[str, object]) -> list[Mapping[str, object]]:
+    """The task's attempts, each as a mapping."""
+    return [as_mapping(a) for a in as_list(task.get("attempts"))]
+
+
+def over_build_cap(budget: float, cap: object) -> bool:
+    """Pure. A task's `budget_usd` above `policy.build_budget_usd_max`. A cap that is not a number raises TypeError, as
+    comparing against it always did: a cap never fails open."""
+    if isinstance(cap, bool) or not isinstance(cap, int | float):
+        raise TypeError(f"policy.build_budget_usd_max must be a number, not {type(cap).__name__} {cap!r}")
+    return budget > cap
+
+
 def run_phase_tasks(
     ctx: Ctx,
     *,
-    initiative: Mapping[str, Any],
+    initiative: workstore.Initiative,
     phase: str,
     parents: tuple[str, ...],
     items: list[EpicItem],
@@ -413,12 +426,12 @@ def run_phase_tasks(
         record.update(status="blocked", reason=paused)
         return record
     with ctx.items_lock:
-        handoffs = {str(i["id"]): as_mapping(i["handoff"]) for i in items if i.get("handoff")}
+        handoffs = {str(i["id"]): as_mapping(h) for i in items if (h := i.get("handoff"))}
 
     # A dropped task is terminal like a done one: it never gets rebuilt or
     # re-reviewed, and never blocks the phase behind it.
     with ctx.items_lock:
-        all_ready = buildable(items, phase, foreign, only, ctx.land_at)
+        all_ready: list[EpicItem] = buildable(items, phase, foreign, only, ctx.land_at)
     # Under work_state store no work file holds an attempt: a task's attempts are its runs' task records, as the chair
     # reads them. So the cap below counts them, and a rebuild resumes from the newest one's kept patch, which another
     # lane's record carries in the store when this machine has no file of it.
@@ -486,11 +499,11 @@ def run_phase_tasks(
     # emits by class; a triage that could not run holds the task for a person, never through `quarantine_task`.
     # A task the chair flagged for triage (its row's `TRIAGE_FLAG`) is triaged too, whatever its attempt count: a
     # failure that needs a tweak gets its instruction before any rebuild.
-    triage_batch: list[dict[str, Any]] = []
+    triage_batch: list[dict[str, object]] = []
     amended: dict[str, EpicItem] = {}  # task id -> the item rebuilt on its append-only amended body
     # Unread rows hide the chair's flag: a task with any attempt might be one it asked triage for, so it is not built
     # in this run, before or without triage. It stays ready, and the next run reads its row.
-    unread = {str(item["id"]) for item in all_ready if item.get("attempts")} if read_rows is None else set()
+    unread: set[str] = {str(item["id"]) for item in all_ready if item.get("attempts")} if read_rows is None else set()
     for task_id in sorted(unread):
         print(f"  triage: {task_id} not built; its store row could not be read, so a request for triage cannot be ruled out")
     capped = {task_id for task_id, attempts in counted_by_id.items() if len(attempts) >= cap_by_id[task_id]} - unread
@@ -532,7 +545,7 @@ def run_phase_tasks(
                         "attempts": attempts_by_id[task_id],
                         "initiative_context": triage_initiative_context(initiative, context_items, task_id),
                         "triaged": [
-                            dict(r) for r in as_list(row_extra(queue_rows.get(task_id)).get(workstore.TRIAGE_RECORDS)) if isinstance(r, Mapping)
+                            dict(r) for r in as_list(row_extra(queue_rows.get(task_id)).get(workstore.TRIAGE_RECORDS)) if is_mapping(r)
                         ],
                     },
                 )
@@ -563,7 +576,7 @@ def run_phase_tasks(
             if result.get("escalated"):
                 # The same (class, diagnosis) twice is the same reasoning restated: a person decides, by the mark.
                 print(f"  attempt cap: {task_id} launched triage, which escalated a repeated diagnosis; {newest_attempt_text(attempts)}")
-                prior = cast(Mapping[str, Any], result.get("prior") if isinstance(result.get("prior"), Mapping) else {})
+                prior = as_mapping(result.get("prior"))
                 hold(task_id, f"triage repeats its earlier {class_} diagnosis (run {prior.get('run') or 'unrecorded'}): {diagnosis}")
                 continue
 
@@ -609,7 +622,7 @@ def run_phase_tasks(
                     rebuilt is None
                     and failure is None
                     and store_authoritative(ctx)
-                    and apply_arm_for("ticket_amend", cast(dict[str, Any], ctx.cartridge)) in (None, "workstore")
+                    and apply_arm_for("ticket_amend", ctx.cartridge) in (None, "workstore")
                     and emitted["ramp"] == "eligible"
                     and is_append_only(old_body, new_body)
                 ):
@@ -654,7 +667,7 @@ def run_phase_tasks(
             )
     if folded:
         with ctx.items_lock:
-            bodies = {str(item["id"]): item.get("body") for item in items if str(item["id"]) in folded}
+            bodies = {str(item["id"]): str(item.get("body") or "") for item in items if str(item["id"]) in folded}
         all_ready = [{**item, "body": bodies[str(item["id"])]} if str(item["id"]) in bodies else item for item in all_ready]
     all_ready = [amended.get(str(item["id"]), item) for item in all_ready]
     counted_by_id = {**counted_by_id, **{task_id: [] for task_id in amended}}
@@ -671,20 +684,20 @@ def run_phase_tasks(
     by_id = {str(item["id"]): amended.get(str(item["id"]), item) for item in items}
     if hasattr(ctx.runner, "verify_by_task"):
         ctx.runner.verify_by_task = {**ctx.runner.verify_by_task, **{t: verify_of(by_id, t) for t in by_id}}
-    results: list[dict[str, Any]] = []
+    results: list[dict[str, object]] = []
 
     # Resume: a task whose earlier run already produced an approved patch is
     # reused at no cost. Applying and checking it below is unchanged, so a
     # patch that no longer fits the phase branch quarantines on its own merits.
-    reused: list[dict[str, Any]] = []
-    to_run = list(ready)
-    prior_results: dict[str, dict[str, Any]] = {}  # task id -> the earlier run's result for a task that is rebuilt
+    reused: list[dict[str, object]] = []
+    to_run: list[EpicItem] = list(ready)
+    prior_results: dict[str, Mapping[str, object]] = {}  # task id -> the earlier run's result for a task that is rebuilt
     if ctx.resume_from:
         to_run = []
         for task in ready:
-            saved = load_result(ctx.runs_dir, ctx.resume_from, phase, str(task["id"]))
-            if reusable(saved):
-                reused.append(without_cause(cast(dict[str, Any], saved)))
+            saved: Mapping[str, object] | None = load_result(ctx.runs_dir, ctx.resume_from, phase, str(task["id"]))
+            if saved is not None and reusable(saved):
+                reused.append(without_cause(saved))
                 print(f"  reused {task['id']} from {ctx.resume_from} (approved patch, no model call)")
             else:
                 to_run.append(task)
@@ -703,19 +716,19 @@ def run_phase_tasks(
     # refusals in a different order each time.
     over_budget = [
         task for task in to_run
-        if task.get("budget_usd") is not None and isinstance(cap, int | float) and task["budget_usd"] > cap
+        if (budget := task.get("budget_usd")) is not None and cap is not None and over_build_cap(budget, cap)
     ]
     for task in over_budget:
         task_id = str(task["id"])
         quarantined.append({
             "id": task_id, "phase": phase, "grain": "task", "kind": "no_work",
             "reason": (
-                f"budget_usd {task['budget_usd']} exceeds the cartridge cap "
+                f"budget_usd {task.get('budget_usd')} exceeds the cartridge cap "
                 f"build_budget_usd_max {cap} (a per build call ceiling)"
             ),
         })
         quarantine_row(ctx, phase, task_id)
-        print(f"  build budget: {task_id} refused (budget_usd {task['budget_usd']} > cap {cap})")
+        print(f"  build budget: {task_id} refused (budget_usd {task.get('budget_usd')} > cap {cap})")
     over_budget_ids = {str(task["id"]) for task in over_budget}
     within_budget = [task for task in to_run if str(task["id"]) not in over_budget_ids]
 
@@ -731,7 +744,7 @@ def run_phase_tasks(
         listed = default_branch_paths(ctx)
         surface_paths = listed if listed is not None else working_tree_paths(ctx.repo)
     refused_ids: set[str] = set()
-    healed_by_id: dict[str, dict[str, Any]] = {}
+    healed_by_id: dict[str, Mapping[str, object]] = {}
     heal_notes: dict[str, list[str]] = {}
     ticket_corrections: dict[str, list[str]] = {}
     # The ticket check reads file contents at the commit the listing was taken from. It never refuses or
@@ -740,7 +753,7 @@ def run_phase_tasks(
     defined, search = ticket_lookups(str(ctx.repo), commit, git_stdout)
     for task in (t for t in within_budget if t.get("surfaces")):
         task_id = str(task["id"])
-        bad = malformed_surfaces([str(s) for s in task["surfaces"]])
+        bad = malformed_surfaces([str(s) for s in as_list(task["surfaces"])])
         if bad:
             refused_ids.add(task_id)
             quarantined.append({
@@ -766,13 +779,13 @@ def run_phase_tasks(
                 print(f"  ticket check: {task_id} {len(corrections)} correction(s) for the builder")
             continue
         healed_by_id[task_id] = healed
-        known = {str(n) for n in task.get("lint") or []}
+        known = {str(n) for n in as_list(task.get("lint"))}
         heal_notes[task_id] = [str(n) for n in as_list(healed.get("lint")) if str(n) not in known]
         healed_surfaces = [str(s) for s in as_list(healed.get("surfaces"))]
         write_healed_surfaces(
             ctx, task_id, healed_surfaces, heal_notes[task_id], str(task["path"]) if task.get("path") else None
         )
-        changed = [s for s in healed_surfaces if s not in task["surfaces"]]
+        changed = [s for s in healed_surfaces if s not in as_list(task["surfaces"])]
         label = "ticket check" if checked != prepared else "surfaces"
         extra = f", {len(corrections)} correction(s)" if corrections else ""
         print(f"  {label}: {task_id} healed ({', '.join(changed) or 'surfaces unchanged'}){extra}")
@@ -783,8 +796,11 @@ def run_phase_tasks(
     # builder both see what already failed and why, next to the critique.
     # Offered as a reference; nothing here approves it.
     patches_for_attempt: dict[str, str | None] = {
-        str(task["id"]): ((load_result(ctx.runs_dir, task["attempts"][-1]["run"], phase, str(task["id"])) or {})
-                           .get("build") or {}).get("patch") or record_patches.get(str(task["id"]))
+        str(task["id"]): (
+            patch
+            if isinstance(patch := as_mapping(as_mapping(load_result(ctx.runs_dir, str(_attempts(task)[-1]["run"]), phase, str(task["id"]))).get("build")).get("patch"), str) and patch
+            else record_patches.get(str(task["id"]))
+        )
         for task in runnable
         if task.get("attempts")
     }
@@ -823,7 +839,7 @@ def run_phase_tasks(
         if last and last.strip() and (tree := attempt_tree(ctx, phase, str(task["id"]), last)) is not None:
             resumed[str(task["id"])] = tree
 
-    budget_sources: dict[str, Any] = {}
+    budget_sources: dict[str, object] = {}
     if runnable:
         wait_if_paused_here(ctx)
         invocations = [
@@ -834,11 +850,11 @@ def run_phase_tasks(
                     {
                         **task,
                         "body": (
-                            resume_body(task.get("body") or "", list(task.get("attempts") or []), resumed[str(task["id"])][1])
+                            resume_body(str(task.get("body") or ""), _attempts(task), resumed[str(task["id"])][1])
                             if str(task["id"]) in resumed
                             else carry_forward(
-                                task.get("body") or "",
-                                list(task.get("attempts") or []),
+                                str(task.get("body") or ""),
+                                _attempts(task),
                                 patches_for_attempt.get(str(task["id"])),
                                 limit=PATCH_FOR_VALIDATION_CHARS,
                             )
@@ -910,6 +926,11 @@ def run_phase_tasks(
         save_task_result(ctx, result, phase=phase, task=str(result.get("ticket")))
 
     built: dict[str, BuildRecord] = {}
+
+    def final_of(task: str) -> Mapping[str, object]:
+        """The result the task was built from, set on its build record once `refix_task` returns."""
+        return as_mapping(built[task].get("result"))
+
     surviving: list[str] = []
     escalated: set[str] = set()
 
@@ -922,7 +943,7 @@ def run_phase_tasks(
         # node was handed is kept rather than lost to the traceback.
         failed_node = result.get("failed_node")
         if failed_node is not None:
-            patch = str((result.get("build") or {}).get("patch") or "")
+            patch = str(as_mapping(result.get("build")).get("patch") or "")
             detail = str(result.get("failed_node_reason") or f"node '{failed_node}' failed")
             # Prefixed so `is_harness_fault` recognises it: this task's
             # quarantine never went through `built[task]`, so the shared
@@ -942,7 +963,7 @@ def run_phase_tasks(
                     "merged": False,
                     "status": "quarantined",
                     "build": {"patch": patch},
-                    "failed_node": failed_node,
+                    "failed_node": str(failed_node),
                 }
             )
             quarantined.append(quarantine_task(ctx, by_id, phase=phase, task=task, reason=reason, kind="infra"))
@@ -989,19 +1010,20 @@ def run_phase_tasks(
         for item in as_list(final.get("proposals")):
             if is_dict(item) and item.get("kind") in DRAFT_KINDS:
                 evidence = item.setdefault("evidence", [])
-                if isinstance(evidence, list):
+                if is_list(evidence):
                     evidence.extend(build["evidence"])
 
         # A change to the rules is not whatever kind the graph called it. This
         # runs after emission and before the policy split, which is the only
         # window where no streak on a mundane kind can carry a governance edit
         # past the gate.
-        build["proposals"], hits = escalate_self_modification(
+        proposals_out, hits = escalate_self_modification(
             [p for p in as_list(final.get("proposals")) if is_mapping(p)],
             patch=str(as_mapping(final.get("build")).get("patch") or ""),
             cartridge=ctx.cartridge,
             ledger_path=ctx.ledger_path,
         )
+        build["proposals"] = proposals_out
         if hits:
             escalated.add(task)
             build["governance_hits"] = hits
@@ -1012,11 +1034,11 @@ def run_phase_tasks(
             if item.get("escalated_from") == "draft_pr_create":
                 item["review_verdict"] = str(as_mapping(final.get("review")).get("verdict") or "")
                 item["arbitration_verdict"] = str(
-                    arbitration.get("verdict") if isinstance(arbitration, Mapping) else arbitration or ""
+                    arbitration.get("verdict") if is_mapping(arbitration) else arbitration or ""
                 )
 
         test_database: _TaskExtras = {"test_database": build["test_database"]} if "test_database" in build else {}
-        refix: _TaskExtras = {"refix": build["refix"]} if build.get("refix") else {}
+        refix: _TaskExtras = {"refix": fixed} if (fixed := build.get("refix")) else {}
         record["task_records"].append(
             {
                 "id": task,
@@ -1043,8 +1065,8 @@ def run_phase_tasks(
                 **refix,
             }
         )
-        if build.get("quarantine"):
-            reason = str(build["quarantine"])
+        if quarantine := build.get("quarantine"):
+            reason = str(quarantine)
             # A harness fault is not an attempt: the build was never actually
             # tried, so recording one here would burn the same two-strike cap
             # a real failure does. Mirrors the attempt-cap refusal above,
@@ -1070,7 +1092,7 @@ def run_phase_tasks(
 
     # ── validation, between the fan-out and the merges ───────────────────────
     chunk_by_task: dict[str, dict[str, object]] = {}
-    verdict: dict[str, Any] | None = None
+    verdict: dict[str, object] | None = None
     validated = "validate_phase" in ctx.bound
 
     # A phase is judged once, when it is finished: a run carrying only part of it
@@ -1111,14 +1133,14 @@ def run_phase_tasks(
                     "description": str((by_id.get(task) or {}).get("body") or ""),
                     "evidence": built[task]["evidence"],
                     "change_facts": {
-                        **as_mapping(built[task]["result"].get("change_facts")),
-                        **({"checks": built[task]["checks"]} if "checks" in built[task] else {}),
+                        **as_mapping(final_of(task).get("change_facts")),
+                        **({"checks": b["checks"]} if "checks" in (b := built[task]) else {}),
                     },
-                    "review_verdict": str(as_mapping(built[task]["result"].get("review")).get("verdict") or ""),
+                    "review_verdict": str(as_mapping(final_of(task).get("review")).get("verdict") or ""),
                     # The patch is machine evidence — the diff git applied — not
                     # the builder's account of it. A validator without it said,
                     # in its own words, that it could not verify anything.
-                    "patch": str(as_mapping(built[task]["result"].get("build")).get("patch") or "")[:PATCH_FOR_VALIDATION_CHARS],
+                    "patch": str(as_mapping(final_of(task).get("build")).get("patch") or "")[:PATCH_FOR_VALIDATION_CHARS],
                     # Where `validate_chunk`'s needs_evidence, if any, gets
                     # read from — still on disk here, since validation runs
                     # before the merges that would retire it.
@@ -1222,9 +1244,9 @@ def run_phase_tasks(
 
     state = Execution(
         landed={}, merged={}, moved={}, quarantined=quarantined, escalated=frozenset(escalated),
-        builds={task: as_mapping(built[task]["result"].get("build")) for task in surviving},
+        builds={task: as_mapping(final_of(task).get("build")) for task in surviving},
     )  # fmt: skip
-    diffs: list[dict[str, Any]] = []
+    diffs: list[dict[str, object]] = []
 
     for item in batch:
         slot, subject = slots.get(id(item), ("other", ""))
@@ -1244,7 +1266,7 @@ def run_phase_tasks(
         # Built here rather than by `gate.apply_decisions`, which cannot know
         # about a branch this driver created: `applied` is what actually
         # happened, so an approved merge that conflicted records `skipped`.
-        diffs.append(gate_diff(item, decision, applied=applied, edited=cast(bool, edited)))
+        diffs.append(gate_diff(item, decision, applied=applied, edited=edited))
 
     for warning in state.push_warnings:
         note_push_failure(record, warning)
@@ -1295,7 +1317,7 @@ def run_phase_tasks(
         task_record["outcome"] = task_outcome(
             str(as_mapping(verdicts.get("review")).get("verdict") or "") or None,
             # A skipped arbiter is recorded as a string, not a mapping.
-            str(cast(Mapping[str, Any], verdicts.get("arbitration") if isinstance(verdicts.get("arbitration"), Mapping) else {}).get("verdict") or "") or None,
+            str(as_mapping(verdicts.get("arbitration")).get("verdict") or "") or None,
             task_record.get("quarantine"),
             # Merged AND quarantined only happens when `execute_cleared`'s own
             # bookkeeping step failed after the code already landed — that is

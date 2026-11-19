@@ -121,6 +121,16 @@ epic branch. Nothing writes into the bad row: it is the evidence. A pass of `cox
 other reason tells the chair once per distinct failure (`lander.pass_failure_notice`). Proven by
 `smoke/test_lander_unreadable_record.py`.
 
+**Status (the epic).** `harness/epic*.py`, the facade and every part H9 split it into, is strict, with no ignores and
+no `dict[str, Any]` or `Mapping[str, Any]`; `test_repo_gates` pins the glob. The parts' shared helpers lost their
+underscore, since strict refuses a private name read across modules. `harness/epic_types.py` holds the records the
+driver reads: `TaskRecord` (a run's task record, file or `task_records`), `AttemptRow`, `Attempt` and `PhaseRecord`,
+each a TypedDict with one pure constructor that refuses input that is not JSON or whose named keys have the wrong
+type. A refused task record, or attempts row, is never dropped: it counts as an attempt with no verdicts, and the
+task is held for a person when it leaves the attempt count or the resume unsure. The in-process shapes are typed
+too: `EpicItem` (a work item), `TaskEntry`, `Quarantine` and `BuildRecord`. The runner stays `Any` on `Ctx` and
+`run_epic`: it is duck-typed, and tests add attributes to it.
+
 ## H3. The lander does not block
 
 **Evidence.** A repo with no CI held every land for 30 minutes, again and again (#1167). A repo with CI still holds
