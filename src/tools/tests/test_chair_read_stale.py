@@ -1,10 +1,11 @@
 import os
 import sqlite3
 import subprocess
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from agent_tools.chair_plan_stale import plan_stale
 from agent_tools.chair_read_quarantined import body_sha
 from agent_tools.chair_read_stale import (
     changed_at,
@@ -16,6 +17,7 @@ from agent_tools.chair_read_stale import (
     read_file_changes,
     read_stale_candidates,
 )
+from agent_tools.chair_types import ActionKind
 
 BODY = "the ticket body\n"
 SHA = body_sha(BODY)
@@ -174,3 +176,40 @@ def test_changed_at_with_no_history_falls_back_to_the_file_and_then_none(tmp_pat
     assert changed_at(None, tmp_path, "a", "p1", "t1") == datetime.fromtimestamp(1790000000, UTC).isoformat()
     assert changed_at({"work/a/p1/t1.md": "2026-01-01T00:00:00Z"}, tmp_path, "a", "p1", "t1") == "2026-01-01T00:00:00Z"
     assert changed_at(None, tmp_path, "a", "p1", "gone") is None
+
+
+def _plan(rows, now):
+    return plan_stale({"initiatives": [], "stale_candidates": rows, "stale_days": 7}, now)
+
+
+def test_a_freshly_written_ticket_with_no_history_is_not_planned_stale(tmp_path):
+    repo = tmp_path / "workspace"
+    _write_task(repo, "p1", "t1", "ready")
+    ticket = repo / "work" / "a" / "p1" / "t1.md"
+    now = datetime.fromtimestamp(ticket.stat().st_mtime, UTC)
+    rows = read_stale_candidates(repo, now, attempts=[], actions=[])
+    assert [r["task_id"] for r in rows] == ["t1"]
+    assert [a for a in _plan(rows, now) if a["kind"] == ActionKind.STALE_TO_DRAFT] == []
+
+
+def test_a_ticket_older_than_stale_days_is_still_planned_stale(tmp_path):
+    repo = tmp_path / "workspace"
+    _write_task(repo, "p1", "t1", "ready")
+    ticket = repo / "work" / "a" / "p1" / "t1.md"
+    now = datetime.fromtimestamp(ticket.stat().st_mtime, UTC) + timedelta(days=30)
+    rows = read_stale_candidates(repo, now, attempts=[], actions=[])
+    planned = [a for a in _plan(rows, now) if a["kind"] == ActionKind.STALE_TO_DRAFT]
+    assert [a["stale_tasks"] for a in planned] == [["t1"]]
+
+
+def test_a_candidate_row_with_no_signal_is_not_planned_stale():
+    row = {
+        "initiative": "a",
+        "task_id": "t1",
+        "state": "ready",
+        "last_file_change": None,
+        "last_run": None,
+        "last_chair_action": None,
+        "quarantine_non_harness_count": 0,
+    }
+    assert _plan([row], datetime(2026, 11, 19, tzinfo=UTC)) == []
