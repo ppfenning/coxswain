@@ -213,6 +213,36 @@ def test_the_image_is_pulled_from_forgejos_registry_by_digest():
     assert plan.PULL_ATTEMPTS > 1
 
 
+def test_every_smoke_image_is_pinned_by_digest():
+    for image in (plan.POSTGRES_IMAGE, plan.FORGEJO_IMAGE, plan.GARAGE_IMAGE):
+        assert plan.is_digest_pinned(image), image
+
+
+@pytest.mark.parametrize("image", [
+    "postgres:16",
+    "postgres",
+    "postgres:16@sha256:",
+    "postgres:16@sha256:" + "a" * 63,
+    "postgres:16@sha256:" + "A" * 64,
+    "postgres:16@sha512:" + "a" * 64,
+    "postgres@sha256:" + "a" * 64 + ":tag",
+])
+def test_a_ref_without_a_full_sha256_digest_is_not_pinned(image):
+    assert not plan.is_digest_pinned(image)
+
+
+def test_inspect_resolves_the_ref_locally():
+    assert plan.docker_inspect_argv(plan.GARAGE_IMAGE) == ["docker", "image", "inspect", "--format", "{{.Id}}", plan.GARAGE_IMAGE]
+
+
+def test_a_present_digest_pinned_image_skips_the_pull_and_nothing_else_does():
+    pinned = plan.FORGEJO_IMAGE
+    assert not plan.pull_needed(pinned, present_locally=True)
+    assert plan.pull_needed(pinned, present_locally=False)
+    assert plan.pull_needed("postgres:16", present_locally=True)  # a tag can move on the registry
+    assert plan.pull_needed("postgres:16", present_locally=False)
+
+
 def test_the_admin_commands_run_as_the_forge_user():
     assert plan.forgejo_user_argv("c1", "pw")[:7] == ["docker", "exec", "--user", plan.FORGEJO_UID, "c1", "forgejo", "admin"]
     token = plan.forgejo_token_argv("c1", "smoke-s1")

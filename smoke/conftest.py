@@ -32,9 +32,12 @@ import pytest
 from smoke import gh_replay, plan
 
 ROOT = Path(__file__).resolve().parents[1]
+# This tree's source roots, ahead of the venv, in src/tools/pytest.ini's order: an editable install in the runner's venv
+# may point at an older checkout, and `agent_tools` imports `core` and `harness`, so all three must come from here.
+# Subprocesses need no PYTHONPATH: every child runs the `install` venv's python, built from this tree, with install.env.
+sys.path[:0] = [str(ROOT / "src" / name) for name in ("tools", "graphs", "cartridges")]
 # One reader of a Forgejo branch answer, shared with the code under test: the forge's own parser, imported from this
 # tree (not from whatever checkout the runner's venv installed), since the fixtures poll the same endpoint it does.
-sys.path.insert(0, str(ROOT / "src" / "tools"))
 from agent_tools.forge_forgejo import parse_branch_tip  # noqa: E402
 
 SYSTEM_PATH = "/usr/local/bin:/usr/bin:/bin"
@@ -181,6 +184,7 @@ def postgres() -> Iterator[str]:
         yield decision.url
         return
     _reap_stale()
+    _pull(plan.POSTGRES_IMAGE)  # before the run, which would otherwise pull a missing image itself, with no retry
     container = _must(plan.docker_run_argv(SESSION, int(time.time()))).stdout.strip()
     try:  # from the moment the container exists, every way out of this fixture removes it
         yield plan.postgres_url(_ready_port(container))
@@ -458,7 +462,12 @@ def _forge_ready(base_url: str) -> None:
 
 
 def _pull(image: str) -> None:
-    """`docker pull`, tried `plan.PULL_ATTEMPTS` times with a short pause, so one registry error does not fail the run."""
+    """Make `image` present locally. A digest-pinned image already in the local store is used as is (`plan.pull_needed`):
+    `docker pull` consults the credential helper even then, which fails in a non-interactive macOS session. Otherwise
+    `docker pull`, tried `plan.PULL_ATTEMPTS` times with a short pause, so one registry error does not fail the run."""
+    present = plan.is_digest_pinned(image) and _run(plan.docker_inspect_argv(image)).returncode == 0
+    if not plan.pull_needed(image, present):
+        return
     for attempt in range(1, plan.PULL_ATTEMPTS + 1):
         done = _run(plan.docker_pull_argv(image))
         if done.returncode == 0:
@@ -593,7 +602,7 @@ def _gh_version(gh: str) -> str:
 
 @pytest.fixture
 def github(sandbox: Sandbox, tmp_path: Path, request: pytest.FixtureRequest) -> Iterator[GitHub]:
-    gh = shutil.which("gh")
+    gh = gh_replay.real_gh()
     if gh is None:
         _unavailable(plan.unavailable("no gh on PATH", required=_required()))
     recording = GH_RECORDINGS / plan.gh_recording_name(request.node.name)
