@@ -373,7 +373,17 @@ def test_the_team_cartridge_extends_base_binds_every_smoke_skill_and_carries_its
     assert cart["landing_areas"] == {"worktree_root": "/w", "checks": [
         {"name": "note", "cmd": "grep -qx ok notes/t1.txt"},
         {"name": "lane-probe", "cmd": "command -v smoke-lane-probe"},
-        {"name": "lane-env", "cmd": "printenv AGENT_GRAPHS_TRACE_DIR PATH > /h/lane-env.txt"}]}
+        {"name": "lane-env", "cmd": """printf '%s\\n%s\\n' "${AGENT_GRAPHS_TRACE_DIR:?}" "$PATH" > /h/lane-env.txt"""}]}
+
+
+def test_the_docker_endpoint_is_docker_host_when_set_else_the_active_context():
+    desktop = "unix:///tmp/desktop-context/docker.sock"
+    assert plan.docker_endpoint(None, desktop + "\n") == desktop
+    assert plan.docker_endpoint("tcp://127.0.0.1:2375", desktop) == "tcp://127.0.0.1:2375"
+    assert plan.docker_endpoint("", desktop) == desktop
+    assert plan.docker_endpoint(None, "") is None
+    assert plan.docker_endpoint(None, None) is None
+    assert plan.DOCKER_CONTEXT_HOST_ARGV == ["docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"]
 
 
 def test_a_hand_started_harness_gets_the_repo_venv_first_and_the_trace_dir():
