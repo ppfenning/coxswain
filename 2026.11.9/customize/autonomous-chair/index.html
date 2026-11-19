@@ -7537,8 +7537,10 @@ cox<span class="w"> </span>route<span class="w"> </span>cartridges<span class="w
 a directory that is empty, or still exactly what the last fetch left, is
 replaced without <code>--replace</code>.</p>
 <p>With a shared store the courier bus is the store's <code>courier_log</code> table, one
-bus for every machine, with git on or off. The first use loads what
-<code>courier.jsonl</code> already held. <code>cox courier send</code>, <code>inbox</code> and <code>ack</code> work as
+bus for every machine, with git on or off. The first write loads what
+<code>courier.jsonl</code> already held. A read never writes: until that first write, it
+shows the file's lines, and it never migrates the store, so <code>cox chair run
+--dry-run</code> changes nothing. <code>cox courier send</code>, <code>inbox</code> and <code>ack</code> work as
 before.</p>
 <p>The rest of this section describes the default, with git on.</p>
 <p><strong>Pull.</strong> Right after the beat, the loop runs

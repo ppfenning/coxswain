@@ -6969,6 +6969,11 @@ into a scratch copy of the tree and confirming that they fail.</p>
 <td>One bad row stopping every lander pass in the store, a stall nobody is told of (or told of twice), or any reader writing into the bad row.</td>
 </tr>
 <tr>
+<td><code>test_chair_dry_run_read_only.py</code></td>
+<td><code>cox chair run --once --dry-run</code> to a Postgres store, read-only for every session and then writable</td>
+<td>A dry run that writes: its courier read once migrated the store (a <code>CREATE TABLE</code>, refused on a read-only store) and loaded <code>courier.jsonl</code> into the empty log. <code>schema_version</code> and every table's row count must not change. Both cases failed before the fix.</td>
+</tr>
+<tr>
 <td><code>test_chair_tick_cache.py</code></td>
 <td>the chair's store readers to Postgres's change counters</td>
 <td>A quiet tick that reads the store again, or a write that re-reads readers of other tables (H6).</td>
