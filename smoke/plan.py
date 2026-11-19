@@ -377,6 +377,27 @@ def docker_pull_argv(image: str) -> list[str]:
 
 PULL_ATTEMPTS = 3
 
+_DIGEST_PINNED = re.compile(r"@sha256:[0-9a-f]{64}$")
+
+
+def is_digest_pinned(image: str) -> bool:
+    """Whether `image` names one exact image by content digest (`name@sha256:<64 hex>`). Only such a ref may be taken
+    from the local store instead of pulled: a local image with that digest is that image and cannot be stale, while a
+    tag can move on the registry."""
+    return _DIGEST_PINNED.search(image) is not None
+
+
+def docker_inspect_argv(image: str) -> list[str]:
+    """`docker image inspect`, which resolves a ref against the local image store only: no registry and no credential
+    helper, so it answers in a session that cannot reach the macOS keychain. Exits 0 iff the image is present."""
+    return ["docker", "image", "inspect", "--format", "{{.Id}}", image]
+
+
+def pull_needed(image: str, present_locally: bool) -> bool:
+    """Whether the fixture must `docker pull` `image`: always for a ref that is not digest-pinned, else only when no
+    local copy exists. A skipped pull is what keeps a non-interactive macOS session clear of the credential helper."""
+    return not (is_digest_pinned(image) and present_locally)
+
 
 def forgejo_admin_argv(container: str, *args: str) -> list[str]:
     """`forgejo admin ...` inside the container, as the user that owns its data."""
