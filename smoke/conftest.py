@@ -596,7 +596,7 @@ def _gh_version(gh: str) -> str:
 
 @pytest.fixture
 def github(sandbox: Sandbox, tmp_path: Path, request: pytest.FixtureRequest) -> Iterator[GitHub]:
-    gh = shutil.which("gh")
+    gh = gh_replay.real_gh()
     if gh is None:
         _unavailable(plan.unavailable("no gh on PATH", required=_required()))
     recording = GH_RECORDINGS / plan.gh_recording_name(request.node.name)
