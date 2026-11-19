@@ -1,7 +1,7 @@
 """An intake's decompose runs as DecomposeRun values, oldest first."""
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -130,6 +130,42 @@ def _log_facts(runs_dir: Path, run_id: str, cache: StampCache | None = None) -> 
         return (None, None)
 
 
+@dataclass(frozen=True)
+class TickRuns:
+    """The reads every intake's `read_decompose_runs` shares in one tick: the started `runs` rows of each intake id, as
+    `select_runs` returns them, and each initiative's work item count (None when the store cannot say)."""
+
+    runs: Mapping[str, Sequence[Mapping[str, object]]]
+    items: Mapping[str, int] | None
+
+
+def runs_by_intake(rows: Sequence[Mapping[str, object]]) -> dict[str, list[Mapping[str, object]]]:
+    """Pure. `select_runs(rows, intake_id)` for every intake id the rows name, from one pass over them."""
+    groups: dict[str, list[Mapping[str, object]]] = {}
+    for r in rows:
+        if r.get("status") not in NOT_STARTED:
+            groups.setdefault(run_initiative(str(r.get("run_id") or "")), []).append(r)
+    return {intake: sorted(own, key=lambda r: str(r.get("launched_at") or "")) for intake, own in groups.items()}
+
+
+def item_counts(rows: object) -> dict[str, int] | None:
+    """Pure. Each initiative's work item count from every work item row; None when the read failed (not a list)."""
+    if not is_list(rows):
+        return None
+    counts: dict[str, int] = {}
+    for row in rows:
+        initiative = str(row.get("initiative")) if is_mapping(row) else ""
+        counts[initiative] = counts.get(initiative, 0) + 1
+    return counts
+
+
+def read_tick_runs(runs_dir: Path) -> TickRuns:
+    """Edge. One `runs` read and one work item read for the whole tick, where each intake read its own: 230 intakes
+    sent 460 queries a tick to a Postgres store, and each `runs` read was scanned whole for one intake."""
+    found = run_store.harness_store_api().work_item_rows(run_store.store_url_for(runs_dir), None)
+    return TickRuns(runs_by_intake(exit_rows(runs_dir)), item_counts(found))
+
+
 def _task_items(runs_dir: Path, initiative: str) -> int | None:
     """The initiative's work item count; None when the store cannot say, which `run_store.work_items` would read as empty."""
     found = run_store.harness_store_api().work_item_rows(run_store.store_url_for(runs_dir), initiative)
@@ -160,21 +196,27 @@ def _store_stamp(runs_dir: Path) -> Stamp | None:
     return (max(s[0] for s in present), sum(s[1] for s in present))
 
 
-def read_decompose_runs(runs_dir: Path, intake_id: str, cache: StampCache | None = None) -> list[DecomposeRun]:
+def read_decompose_runs(
+    runs_dir: Path, intake_id: str, cache: StampCache | None = None, tick: TickRuns | None = None
+) -> list[DecomposeRun]:
     """Edge. A run that has not exited gets `task_items` None; the intake id is the `chair_exec.decompose_id` value.
 
     With a cache, the exit rows, the task count and each run's log facts are keyed by file stamp, so an unchanged
-    file is not read again. Entries not seen in this call are dropped, so give each intake its own cache."""
+    file is not read again. Entries not seen in this call are dropped, so give each intake its own cache.
+    With `tick` (`read_tick_runs`), the runs and the count come from the tick's shared reads instead."""
     exits_key, items_key = ("decompose-exits", str(runs_dir)), ("decompose-items", str(runs_dir), intake_id)
-    if cache is None:
+    if tick is not None:
+        items = None if tick.items is None else tick.items.get(intake_id, 0)
+        selected = list(tick.runs.get(intake_id, ()))
+    elif cache is None:
         items = _task_items(runs_dir, intake_id)
-        rows = exit_rows(runs_dir)
+        selected = select_runs(exit_rows(runs_dir), intake_id)
     else:
         stamp = _store_stamp(runs_dir)
         items = cache.get(items_key, stamp, lambda: _task_items(runs_dir, intake_id))
-        rows = cache.get(exits_key, stamp, lambda: exit_rows(runs_dir))
+        selected = select_runs(cache.get(exits_key, stamp, lambda: exit_rows(runs_dir)), intake_id)
     out: list[DecomposeRun] = []
-    for row in select_runs(rows, intake_id):
+    for row in selected:
         exited = row_exited(row)
         run = parse_run({"run_id": str(row["run_id"]), "log": None, "task_items": items if exited else None})
         refusal, verdict = _log_facts(runs_dir, run.run_id, cache)

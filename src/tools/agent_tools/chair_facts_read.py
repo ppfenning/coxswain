@@ -12,6 +12,7 @@ from typing import Literal, SupportsFloat, SupportsIndex, SupportsInt
 from agent_tools import chair_smoke, forge, pacing, queue_rows
 from agent_tools.budget import MonthBudget
 from agent_tools.chair import lease_holder
+from agent_tools.chair_action_rows import row_view
 from agent_tools.chair_decompose_streak import DecomposeRun
 from agent_tools.chair_land_freeze import LandFreeze, read_freeze
 from agent_tools.chair_no_progress import RunOutcome
@@ -1029,10 +1030,15 @@ def schedule_inputs_from_rows(
     }
 
 
-def action_doc(row: Row) -> Row:
+def _action_doc(row: Row) -> Row:
     raw = row.get("action_json")
     doc = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
     return {**row, **(doc if isinstance(doc, dict) else {})}
+
+
+def action_doc(row: Row) -> Row:
+    """The row with its `action_json` keys laid over its columns; worked out once per kept row (`chair_action_rows`)."""
+    return row_view(row, _action_doc)
 
 
 def run_ordinal(run: str) -> int:

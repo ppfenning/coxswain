@@ -6,10 +6,12 @@
 import json
 import os
 from collections.abc import Callable, Collection, Mapping, Sequence
+from functools import partial
 from pathlib import Path
 
 from agent_tools import epic, land_manual, repo_path, route, run_store
 from agent_tools.chair_facts import run_initiative
+from agent_tools.chair_read_cache import StampCache, file_stamp
 from agent_tools.chair_read_docket import str_items
 from agent_tools.chair_read_quarantined import WorkFiles, task_files
 from agent_tools.chair_read_remote_unfetched import is_remote_unfetched
@@ -240,16 +242,17 @@ def _load_items(ws: Path, files: WorkFiles | None = None) -> list[dict[str, obje
 
 def read_approved(
     ws: Path, mode: str = "files", files: WorkFiles | None = None, store_rows: Sequence[Mapping[str, object]] | None = None,
+    landed: frozenset[str] | None = None,
 ) -> list[ApprovedTask]:
     """Edge. Approved rows for the work store under `ws`; under mode "store" each state comes from the run store.
 
-    `files` and `store_rows` stand in for the work-file and store reads when a tick already holds them. The tick
+    `files`, `store_rows` and `landed` (`read_landed_task_ids`) stand in for the reads when a tick already holds them. The tick
     caches `store_rows` once per beat, so a task landed after that read still says approved there; a task whose
     record says landed reads `done`, as in `read_phase_tasks`."""
     items = _load_items(ws, files)
     rows = store_rows if store_rows is not None else (run_store.work_items(ws / "runs") if mode == "store" else [])
     merged = with_store_closed(route.with_store_states(items, rows, mode), rows)
-    return with_land_mode(approved_rows(mark_landed(merged, read_landed_task_ids(ws / "runs"))))
+    return with_land_mode(approved_rows(mark_landed(merged, read_landed_task_ids(ws / "runs") if landed is None else landed)))
 
 
 def with_land_mode(rows: Sequence[ApprovedTask], manual_of: Callable[[str], bool] = land_manual.is_manual) -> list[ApprovedTask]:
@@ -268,13 +271,22 @@ def _is_landed(path: Path) -> bool:
     return is_dict(record) and record.get("landed") is True
 
 
-def read_landed_task_ids(runs_dir: Path) -> frozenset[str]:
-    """Edge. Ids of tasks whose record under `runs_dir/<run>/tasks/*/<task>.json` says landed, the fact `runs clean` reads."""
-    return frozenset(p.stem for p in runs_dir.glob("*/tasks/*/*.json") if _is_landed(p))
+def read_landed_task_ids(runs_dir: Path, cache: StampCache | None = None) -> frozenset[str]:
+    """Edge. Ids of tasks whose record under `runs_dir/<run>/tasks/*/<task>.json` says landed, the fact `runs clean` reads.
+
+    With a cache, each record's verdict is kept by its file stamp, so an unchanged record is not read again; a record
+    gone from the glob leaves the cache."""
+    paths = list(runs_dir.glob("*/tasks/*/*.json"))
+    if cache is None:
+        return frozenset(p.stem for p in paths if _is_landed(p))
+    landed = frozenset(p.stem for p in paths if cache.get(p, file_stamp(p), partial(_is_landed, p)))
+    cache.keep(paths)
+    return landed
 
 
 def read_phase_tasks(
     ws: Path, mode: str = "files", files: WorkFiles | None = None, store_rows: Sequence[Mapping[str, object]] | None = None,
+    landed: frozenset[str] | None = None,
 ) -> list[PhaseTasks]:
     """Edge. The task states of every phase with approved work, from the same reads as `read_approved`.
 
@@ -282,4 +294,5 @@ def read_phase_tasks(
     land refuses a task another machine landed. A merged approved task reads `merged` unless its record says landed."""
     items = _load_items(ws, files)
     rows = store_rows if store_rows is not None else (run_store.work_items(ws / "runs") if mode == "store" else [])
-    return phase_task_rows(mark_landed(route.with_store_states(items, rows, mode), read_landed_task_ids(ws / "runs")))
+    landed_ids = read_landed_task_ids(ws / "runs") if landed is None else landed
+    return phase_task_rows(mark_landed(route.with_store_states(items, rows, mode), landed_ids))

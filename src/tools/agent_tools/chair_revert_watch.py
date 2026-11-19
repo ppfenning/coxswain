@@ -10,6 +10,7 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 
+from agent_tools.chair_action_rows import row_view
 from agent_tools.chair_types import LandWatch
 from core.jsontypes import is_dict
 
@@ -25,11 +26,22 @@ STATUS = "recorded"
 _NEVER = datetime.min.replace(tzinfo=UTC)
 
 
-def _doc(row: Row) -> Row:
-    """The `action_json` keys beneath the row's own columns, so the store's `ts` column wins over the line's."""
+def _columns_over_doc(row: Row) -> Row:
     raw = row.get("action_json")
     doc = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
     return {**(doc if is_dict(doc) else {}), **{k: v for k, v in row.items() if k != "action_json"}}
+
+
+def _doc(row: Row) -> Row:
+    """The `action_json` keys beneath the row's own columns, so the store's `ts` column wins over the line's; worked out
+    once per kept row (`chair_action_rows`)."""
+    return row_view(row, _columns_over_doc)
+
+
+def watch_rows(rows: Sequence[Row]) -> list[Row]:
+    """Pure. The watch and verdict rows among `rows`, in their order: every reader here gives the same answer from
+    them as from all the rows, and a tick's window holds some 180,000 rows to their thousand."""
+    return [row for row in rows if _doc(row).get("kind") in (WATCH_KIND, RESOLVED_KIND)]
 
 
 def _docs(read: Read, kind: str) -> list[Row]:

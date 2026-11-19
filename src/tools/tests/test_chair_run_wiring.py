@@ -112,7 +112,7 @@ def _decomposed_workspace(tmp_path, monkeypatch, tasks: tuple[str, ...], intake_
         (tmp_path / "cited.md").write_text(f"---\nid: {intake_id}\n---\nbody\n", encoding="utf-8")
     seen: list[str] = []
 
-    def fake_runs(runs_dir, intake, cache=None):
+    def fake_runs(runs_dir, intake, cache=None, tick=None):
         seen.append(intake)
         return [SimpleNamespace(run_id="cited-1"), SimpleNamespace(run_id="cited-2")]
 
@@ -963,7 +963,7 @@ def _two_intake_workspace(tmp_path, monkeypatch, dry_run: bool):
     (tmp_path / "runs").mkdir()
     seen: list = []
 
-    def fake_runs(runs_dir, intake, cache=None):
+    def fake_runs(runs_dir, intake, cache=None, tick=None):
         seen.append((intake, cache))
         cache.get(("facts", intake), (1, 1), lambda: f"log of {intake}")
         return [SimpleNamespace(run_id=f"{intake}-1")]

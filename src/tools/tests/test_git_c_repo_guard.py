@@ -63,7 +63,7 @@ SITES: Sequence[tuple[str, str, int, str]] = [
     ("chair_exec_land.py", 'rcode, rout = at_home(["git", "-C", home_repo, "worktree", "remove", "--force", tmp])', 2, HOME_REPO),
     ("chair_exec_land.py", 'code, listing = run(["git", "-C", repo, "for-each-ref", "--format=%(refname:short)", f"refs/heads/{pattern}"])', 1, SWEEP_OVER_SSH),
     ("chair_exec_land.py", 'outcomes = [(name, run(["git", "-C", repo, "branch", "-D", name])) for name in listing.split() if name.startswith(prefix)]', 1, SWEEP_OVER_SSH),
-    ("chair_revert_green.py", 'sha == commit or runner(["git", "-C", repo, "merge-base", "--is-ancestor", commit, sha])[0] == 0', 1, FACTS),
+    ("chair_revert_green.py", 'code = runner(["git", "-C", repo, "merge-base", "--is-ancestor", commit, sha])[0]', 1, "repo is expanded by main_green_since, the one caller of _ancestry"),
     ("chair_revert_ports.py", '_checked(self._run, ["git", "-C", repo, "fetch", "origin", "main"])', 1, FACTS),
     ("chair_revert_ports.py", 'self._run(["git", "-C", repo, "worktree", "remove", "--force", worktree])', 1, FACTS),
     ("chair_revert_ports.py", 'self._run(["git", "-C", repo, "branch", "-D", branch])', 1, FACTS),

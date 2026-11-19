@@ -7,6 +7,7 @@ from agent_tools.cli import _LazyModule
 card_keys = _LazyModule("agent_tools.card_keys")
 bounded_run = _LazyModule("agent_tools.bounded_run")
 chair = _LazyModule("agent_tools.chair")
+chair_actions_cache = _LazyModule("agent_tools.chair_actions_cache")
 chair_capacity = _LazyModule("agent_tools.chair_capacity")
 chair_chat = _LazyModule("agent_tools.chair_chat")
 chair_dash_sync = _LazyModule("agent_tools.chair_dash_sync")

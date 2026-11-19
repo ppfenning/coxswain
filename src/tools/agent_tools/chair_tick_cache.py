@@ -21,7 +21,7 @@ from collections.abc import Callable, Collection, Hashable, Mapping
 from dataclasses import dataclass
 from typing import cast
 
-__all__ = ["MAX_AGE_S", "ReaderCache", "TableCounters", "is_fresh", "store_note", "table_stamp"]
+__all__ = ["MAX_AGE_S", "ReaderCache", "TableCounters", "is_fresh", "merged_counts", "store_note", "table_stamp"]
 
 TableCounters = Mapping[str, int]
 Stamp = tuple[tuple[str, int], ...]
@@ -86,6 +86,16 @@ class ReaderCache:
     def tick_counts(self) -> tuple[dict[str, int], dict[str, int]]:
         """(full reads, reuses) by reader name so far; the caller diffs two of them for one tick."""
         return dict(self.full_reads), dict(self.reuses)
+
+
+def merged_counts(*counts: tuple[Mapping[str, int], Mapping[str, int]]) -> tuple[dict[str, int], dict[str, int]]:
+    """Pure. Several caches' (full reads, reuses) as one, for `store_note`; a name in two adds up."""
+    reads: Counter[str] = Counter()
+    reuses: Counter[str] = Counter()
+    for read, reused in counts:
+        reads.update(read)
+        reuses.update(reused)
+    return dict(reads), dict(reuses)
 
 
 def store_note(before: tuple[Mapping[str, int], Mapping[str, int]], after: tuple[Mapping[str, int], Mapping[str, int]]) -> str:

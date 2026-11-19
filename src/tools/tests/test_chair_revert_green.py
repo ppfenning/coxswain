@@ -47,7 +47,7 @@ def test_success_on_descendant() -> None:
         }
     )
     assert main_green_since(runner, "/r", "o/r", "abc") is True
-    assert runner.calls == [GH, _ancestor("abc", "older"), _ancestor("abc", "newer")]
+    assert runner.calls == [GH, _ancestor("abc", "abc"), _ancestor("abc", "older"), _ancestor("abc", "newer")]
 
 
 def test_failure_only_list() -> None:
@@ -81,6 +81,57 @@ def test_a_tilde_repo_path_is_expanded_for_the_ancestor_check(monkeypatch) -> No
     """A land watch carries `~/repos/x`; `git -C` gets no shell, so a literal tilde made every ancestor check fail."""
     monkeypatch.setenv("HOME", "/srv/op")
     ancestor = ["git", "-C", "/srv/op/repos/r", "merge-base", "--is-ancestor", "abc", "newer"]
-    runner = Fake({tuple(GH): _listed(_run("newer")), tuple(ancestor): (0, "")})
+    itself = ["git", "-C", "/srv/op/repos/r", "merge-base", "--is-ancestor", "abc", "abc"]
+    runner = Fake({tuple(GH): _listed(_run("newer")), tuple(itself): (0, ""), tuple(ancestor): (0, "")})
     assert main_green_since(runner, "~/repos/r", "o/r", "abc") is True
-    assert runner.calls == [GH, ancestor]
+    assert runner.calls == [GH, itself, ancestor]
+
+
+def test_a_commit_git_cannot_find_costs_one_check_not_one_per_green_run() -> None:
+    """Every ancestor check of an unknown commit fails (exit 128), so the answer is False after one, as after fifty."""
+    runner = Fake({tuple(GH): _listed(*(_run(f"s{n}") for n in range(50))), tuple(_ancestor("abc", "abc")): (128, "")})
+    assert main_green_since(runner, "/r", "o/r", "abc") is False
+    assert runner.calls == [GH, _ancestor("abc", "abc")]
+
+
+def test_a_failed_check_of_a_found_commit_still_asks_each_run() -> None:
+    """Only the failure to find the commit stops the checks; a check that timed out (124) does not."""
+    runner = Fake(
+        {
+            tuple(GH): _listed(_run("older"), _run("newer")),
+            tuple(_ancestor("abc", "abc")): (124, ""),
+            tuple(_ancestor("abc", "newer")): (0, ""),
+        }
+    )
+    assert main_green_since(runner, "/r", "o/r", "abc") is True
+    assert runner.calls[-1] == _ancestor("abc", "newer")
+
+
+def test_kept_answers_are_not_asked_again_and_failures_are() -> None:
+    """A second call with the same `known` asks gh again, and asks only what failed before: an answer never changes."""
+    replies = {
+        tuple(GH): _listed(_run("older"), _run("broken"), _run("newer")),
+        tuple(_ancestor("abc", "abc")): (0, ""),
+        tuple(_ancestor("abc", "older")): (1, ""),
+        tuple(_ancestor("abc", "broken")): (124, ""),
+    }
+    known: dict[tuple[str, str, str], bool] = {}
+    first, second = Fake(replies), Fake(replies)
+
+    assert main_green_since(first, "/r", "o/r", "abc", known) is False
+    assert main_green_since(second, "/r", "o/r", "abc", known) is False
+    assert second.calls == [GH, _ancestor("abc", "broken")]
+    assert known == {("/r", "abc", "abc"): True, ("/r", "abc", "older"): False, ("/r", "abc", "newer"): False}
+
+
+def test_the_kept_answers_are_bounded_and_the_least_recently_asked_goes_first() -> None:
+    runs = [_run(f"s{n}") for n in range(5)]
+    replies = {tuple(GH): _listed(*runs), tuple(_ancestor("abc", "abc")): (0, "")}
+    known: dict[tuple[str, str, str], bool] = {}
+
+    assert main_green_since(Fake(replies), "/r", "o/r", "abc", known, known_max=3) is False
+    assert list(known) == [("/r", "abc", "s2"), ("/r", "abc", "s3"), ("/r", "abc", "s4")]
+    again = Fake(replies)
+    assert main_green_since(again, "/r", "o/r", "abc", known, known_max=3) is False
+    assert len(known) == 3
+    assert _ancestor("abc", "s0") in again.calls and _ancestor("abc", "s4") not in again.calls[:3]
