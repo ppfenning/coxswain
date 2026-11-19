@@ -13,7 +13,7 @@ import shutil
 from datetime import UTC, datetime
 
 from core.workstore import HOLD_REASON
-from harness import epic, epic_execute, rescue_select, store_queue, store_work_state
+from harness import epic, epic_execute, rescue_select, resume, store_queue, store_work_state
 from harness.resume import result_path
 from harness.store_write import Store
 from tests.test_epic_driver import (  # noqa: F401 -- cart and repo are fixtures
@@ -237,4 +237,39 @@ def test_a_record_file_that_cannot_be_read_is_an_attempt_unless_the_store_holds_
     store.record_task_record(f"{INITIATIVE}-1", PHASE, "t1-probe", RECORD, datetime.now(UTC).isoformat())
     ((attempt, record),) = epic.caused_records(ctx, PHASE, "t1-probe")
     assert "malformed" not in attempt and attempt["cause"] == "review" and record["review"] == {"verdict": "revise"}
+
+
+def test_a_truncated_record_file_beside_an_older_copy_with_no_cause_holds_the_task(tmp_path) -> None:
+    """Review of #1252: a crash while `record_task_cause` re-saved the file with its cause left it truncated, and the
+    store's earlier mirror, with no cause, stood in for it: the attempt vanished and nothing held the task."""
+    store = _store(_work(), flagged=())
+    run = f"{INITIATIVE}-1"
+    earlier = "2026-11-18T09:00:00+00:00"
+    store.record_task_record(run, PHASE, "t1-probe", {"initiative": INITIATIVE, "review": {"verdict": "revise"}}, earlier)
+    path = result_path(tmp_path / "runs", run, PHASE, "t1-probe")
+    path.parent.mkdir(parents=True)
+    path.write_text('{"initiative": "demo-initiative", "cause": "rev', encoding="utf-8")  # cut off mid-write
+    ctx = _records_ctx(tmp_path, store)
+    ((attempt, record),) = epic.caused_records(ctx, PHASE, "t1-probe")
+    assert attempt["run"] == run and "not JSON" in attempt["malformed"] and record == {}
+    assert f"newest task record (run {run}) is malformed" in str(epic.unreadable_reason([(attempt, record)]))
+
+    # A copy that names a cause but is older than the file does not stand in either: it may predate what the file held.
+    store.record_task_record(run, PHASE, "t1-probe", RECORD, earlier)
+    ((attempt, _),) = epic.caused_records(ctx, PHASE, "t1-probe")
+    assert "malformed" in attempt
+
+
+def test_a_staged_write_that_is_never_committed_leaves_the_record_file_as_it_was(tmp_path) -> None:
+    """An atomic save is a staged file put in place by one `os.replace`; a crash between the two is this test's gap."""
+    path = result_path(tmp_path / "runs", f"{INITIATIVE}-1", PHASE, "t1-probe")
+    saved = resume.save_result(RECORD, runs_dir=tmp_path / "runs", run_id=f"{INITIATIVE}-1", phase=PHASE, task="t1-probe")
+    assert saved == path and json.loads(path.read_text(encoding="utf-8")) == RECORD
+    assert sorted(p.name for p in path.parent.iterdir()) == ["t1-probe.json"]  # nothing staged is left behind
+
+    staged = resume.stage_text(path, '{"cause": "co')  # the process dies here, before the replace
+    assert json.loads(path.read_text(encoding="utf-8")) == RECORD
+    assert sorted(path.parent.glob("t1-probe.json")) == [path]  # the reader's glob never sees the staged file
+    resume.commit_staged(staged, path)
+    assert path.read_text(encoding="utf-8") == '{"cause": "co'
 

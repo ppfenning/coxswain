@@ -21,7 +21,7 @@ from harness import work_mirror
 from harness.courier_adapter import publish_run_exited
 from harness.epic_context import Ctx, StoreRetry
 from harness.epic_types import EpicItem, ItemRef, Quarantine, as_list, as_mapping, phase_record
-from harness.resume import save_result
+from harness.resume import save_result, write_atomic
 from harness.store_dialect import Connection, JsonObject
 from harness.store_lease import assert_epoch, renew
 from harness.store_pause import clear_paused, is_paused
@@ -344,7 +344,7 @@ def _rewrite_frontmatter_surfaces(path: Path, surfaces: Sequence[str], notes: Se
             continue
         stop = next((i for i in range(at + 1, len(front)) if not front[i].startswith((" ", "-"))), len(front))
         front = [*front[:at], *frontmatter_key_lines(key, value), *front[stop:]]
-    path.write_text("\n".join(["---", *front, *lines[end:]]), encoding="utf-8")
+    write_atomic(path, "\n".join(["---", *front, *lines[end:]]))
     return lint
 
 

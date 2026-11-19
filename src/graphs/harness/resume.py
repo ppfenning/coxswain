@@ -24,11 +24,13 @@ approved verdict, and a patch has to exist to be applied.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-__all__ = ["load_result", "result_path", "reusable", "save_result"]
+__all__ = ["commit_staged", "load_result", "result_path", "reusable", "save_result", "stage_text", "write_atomic"]
 
 
 def result_path(runs_dir: Path | str, run_id: str, phase: str, task: str) -> Path:
@@ -47,11 +49,38 @@ def reusable(result: Mapping[str, Any] | None) -> bool:
     return approved and bool(patch.strip()) and not (result.get("fix_loop") or {}).get("stopped")
 
 
+def stage_text(path: Path, text: str) -> Path:
+    """Write `text` to a new file beside `path`, flushed to disk, and return it; `path` itself is not touched.
+
+    The staged name starts with `.` and ends `.tmp`, so no reader's glob for `<task>.json` ever matches it."""
+    fd, staged = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            out.write(text)
+            out.flush()
+            os.fsync(out.fileno())
+    except BaseException:
+        Path(staged).unlink(missing_ok=True)
+        raise
+    return Path(staged)
+
+
+def commit_staged(staged: Path, path: Path) -> Path:
+    """Put a staged file in `path`'s place in one step (`os.replace`): a reader sees the old file or the new, never half."""
+    os.replace(staged, path)
+    return path
+
+
+def write_atomic(path: Path, text: str) -> Path:
+    """Replace `path` with `text` atomically: a crash mid-write leaves the file as it was, never truncated."""
+    return commit_staged(stage_text(path, text), path)
+
+
 def save_result(result: Mapping[str, Any], *, runs_dir: Path | str, run_id: str, phase: str, task: str) -> Path:
+    """Save a task's result, atomically: a run task record is an attempt the cap counts, so it is never left half written."""
     path = result_path(runs_dir, run_id, phase, task)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(dict(result), indent=2, default=str), encoding="utf-8")
-    return path
+    return write_atomic(path, json.dumps(dict(result), indent=2, default=str))
 
 
 def load_result(runs_dir: Path | str, run_id: str, phase: str, task: str) -> dict[str, Any] | None:

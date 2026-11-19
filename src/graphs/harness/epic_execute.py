@@ -518,11 +518,11 @@ def caused_records(ctx: Ctx, phase: str, task: str) -> list[tuple[Attempt, TaskR
                     if isinstance(stored, Mapping)
                     else _Refused(stored, f"record_json is {type(stored).__name__}, not an object")
                 )
-                run, held = str(row["run_id"]), found.get(str(row["run_id"]))
-                # The file is read first; the store's copy stands in when there is no file, or the file was refused and
-                # the store's copy reads.
-                if held is None or (isinstance(held[0], _Refused) and not isinstance(record, _Refused)):
-                    found[run] = (record, str(row.get("updated_at") or ""))
+                run, held, updated = str(row["run_id"]), found.get(str(row["run_id"])), str(row.get("updated_at") or "")
+                # The file is read first; the store's copy stands in when there is no file, or when the file was refused
+                # and the copy is provably the same record or newer (`stands_in`). Otherwise the refused file stays.
+                if held is None or (isinstance(held[0], _Refused) and stands_in(record, updated, held[1])):
+                    found[run] = (record, updated)
         except Exception as exc:
             epic_log.warning("task records of %s/%s not read from the store: %s: %s", phase, task, type(exc).__name__, exc)
     caused: list[tuple[int, str, str, Attempt, TaskRecord]] = []
@@ -559,6 +559,20 @@ def _read_record(text: str) -> TaskRecord | _Refused:
     except ValueError as exc:
         return _Refused(None, f"not JSON: {exc}")
     return _checked_record(raw)
+
+
+def stands_in(stored: TaskRecord | _Refused, stored_at: str, file_at: str) -> bool:
+    """Pure. Whether the store's copy of a run's task record may replace the record file that was refused.
+
+    Only a copy that reads, names a cause, and was written no earlier than the file: a crash while the file was being
+    re-saved with its cause leaves a truncated file beside an older copy with no cause, and that copy would read as no
+    attempt at all. Kept refused, the record holds the task (`unreadable_reason`) instead."""
+    if isinstance(stored, _Refused) or not (isinstance(stored.get("cause"), str) and str(stored.get("cause")).strip()):
+        return False
+    try:
+        return datetime.fromisoformat(stored_at) >= datetime.fromisoformat(file_at)
+    except (TypeError, ValueError):  # a time that does not parse, or one with a zone beside one without
+        return False
 
 
 def _read_record_file(path: Path) -> tuple[TaskRecord | _Refused, str]:
