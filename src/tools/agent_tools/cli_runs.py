@@ -27,6 +27,7 @@ from agent_tools.cli_lazy import (
     chair_exec,
     chair_facts,
     chair_read_branch_merged,
+    chair_read_stranded,
     cleanup,
     epic,
     install_root,
@@ -258,7 +259,7 @@ def _runs_stranded(a: argparse.Namespace) -> int:
     task_records, items = _stranded_inputs(runs_dir)
     rows = runs_stranded.stranded(task_records, items, os.path.isdir,
                                    lambda repo, branch: _branch_exists(Path(repo), branch), base_branch.base_name,
-                                   land_manual.is_manual)
+                                   land_manual.is_manual, chair_read_stranded.phase_branch_has_commits)
     missing = runs_stranded.missing_repos(task_records, items, os.path.isdir)
 
     def report_missing() -> None:
