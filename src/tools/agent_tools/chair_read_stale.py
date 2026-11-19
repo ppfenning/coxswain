@@ -66,14 +66,35 @@ def last_chair_action_at(actions: Sequence[Row], key: Key) -> str | None:
     return max(on_task or on_initiative, default=None)
 
 
+def actions_cutoff(now: datetime, window_days: int = ACTIONS_WINDOW_DAYS) -> str:
+    """The date the window opens on, `window_days` before `now`: a date prefix, so every ISO `ts` form sorts right."""
+    return (now - timedelta(days=window_days)).date().isoformat()
+
+
+def _window_sql() -> str:
+    return f"(ts >= {{p}} OR kind IN ({', '.join(['{p}'] * len(_KEPT_KINDS))}))"
+
+
 def actions_query(token: str, now: datetime | None, window_days: int = ACTIONS_WINDOW_DAYS) -> tuple[str, tuple[str, ...]]:
     """The `chair_actions` SELECT and its bind values. With `now`, rows from `window_days` back, by date prefix so
     every ISO `ts` form sorts right, plus every row of `_KEPT_KINDS`; with no `now`, every row."""
     if now is None:
         return "SELECT * FROM chair_actions", ()
     marks = ", ".join(["{p}"] * len(_KEPT_KINDS))
-    cutoff = (now - timedelta(days=window_days)).date().isoformat()
+    cutoff = actions_cutoff(now, window_days)
     return run_store.sql_for(f"SELECT * FROM chair_actions WHERE ts >= {{p}} OR kind IN ({marks})", token), (cutoff, *_KEPT_KINDS)
+
+
+def window_count_query(token: str, cutoff: str) -> tuple[str, tuple[str, ...]]:
+    """Pure. How many rows `actions_query`'s window holds for the window opening on `cutoff`."""
+    return run_store.sql_for(f"SELECT count(*) AS n FROM chair_actions WHERE {_window_sql()}", token), (cutoff, *_KEPT_KINDS)
+
+
+def window_tail_query(token: str, cutoff: str, since: str) -> tuple[str, tuple[str, ...]]:
+    """Pure. The rows of `actions_query`'s window whose `ts` is at or after `since`; the primary key leads with `ts`,
+    so the store answers from the index."""
+    sql = f"SELECT * FROM chair_actions WHERE {_window_sql()} AND ts >= {{p}}"
+    return run_store.sql_for(sql, token), (cutoff, *_KEPT_KINDS, since)
 
 
 def read_chair_actions(runs_dir: Path, now: datetime | None = None, window_days: int = ACTIONS_WINDOW_DAYS) -> list[dict[str, object]]:

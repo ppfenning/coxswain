@@ -24,6 +24,7 @@ from agent_tools.cli_common import _initiative_texts, _read_text_or_none, _store
 from agent_tools.cli_land import _check_capacity, _read_epics
 from agent_tools.cli_lazy import (
     chair,
+    chair_actions_cache,
     chair_capacity,
     chair_dash_sync,
     chair_decompose_runs,
@@ -106,6 +107,7 @@ from agent_tools.cli_runs import _approved_branch_merged, _repo_for, _wrongly_re
 from agent_tools.cli_runs_fetch import _lane_host_candidates, _profile_lane_hosts, _store_held_records
 from agent_tools.cli_stats import _json_or
 from agent_tools.cli_usage import _chair_meter, _profile_month, _reconcile_ceilings, _resolved_pacing_policy
+from agent_tools.store_dialect import is_postgres
 
 
 @dataclasses.dataclass(frozen=True)
@@ -398,14 +400,15 @@ def _main_ci_reader(runner: Callable[[list[str]], tuple[int, str]]) -> Callable[
 
 def _green_since_reader(runner: Callable[[list[str]], tuple[int, str]]) -> Callable[[str, str], bool]:
     """`read(repo, commit)` is `main_green_since` that never raises. Results cache per (repo, commit) in `read.cache`,
-    which the caller clears each tick."""
+    which the caller clears each tick; the git ancestry answers behind them are kept for the process."""
     cache: dict[tuple[str, str], bool] = {}
+    ancestry: dict[tuple[str, str, str], bool] = {}  # process-lifetime, unlike `cache`: an ancestry answer never changes
 
     def read(repo: str, commit: str) -> bool:
         key = (repo, commit)
         if key not in cache:
             try:
-                cache[key] = chair_revert_green.main_green_since(runner, repo, _gh_repo(repo), commit)
+                cache[key] = chair_revert_green.main_green_since(runner, repo, _gh_repo(repo), commit, ancestry)
             except Exception:  # any gh or git failure must not escape gather_facts
                 cache[key] = False
         return cache[key]
@@ -625,6 +628,7 @@ CHAIR_WAKE_POLL_SECONDS = 5.0  # how often the between-tick wait re-reads the bu
 CHAIR_FILES_CACHE_MAX = 4096  # one entry per work file: a few thousand
 CHAIR_STORE_CACHE_MAX = 8  # one entry per store read shape: the work rows and the queue rows
 CHAIR_RECORDS_CACHE_MAX = 4096  # one entry per run task record of an open task: a few thousand
+CHAIR_LANDED_CACHE_MAX = 200_000  # one verdict per run task record on disk: tens of thousands on a long-lived workspace
 CHAIR_DECOMPOSE_CACHE_MAX = 256  # one intake's exit rows, task count and run logs: a few hundred runs at most
 CHAIR_DECOMPOSE_INTAKES_MAX = 64  # intakes holding a decompose cache at once; the least recently used is dropped
 
@@ -700,8 +704,10 @@ def _chair_run_deps(
     actions_window = max(
         chair_read_stale.ACTIONS_WINDOW_DAYS, chair_facts.resolve_stale_days((profile.get("chair") or {}).get("stale_days"))
     )
+    # Process-lifetime, unlike `tick_reads`: the window is kept and each tick reads only its newest rows (H6).
+    actions_cache = chair_actions_cache.ActionsCache()
     actions = lambda: once(  # noqa: E731 -- the one reader `FactsDeps.actions` and the watch readers share
-        "chair_actions", lambda: chair_read_stale.read_chair_actions(runs_dir, now(), actions_window)
+        "chair_actions", lambda: actions_cache.read(runs_dir, now(), actions_window)
     )
 
     # Process-lifetime, unlike `tick_reads`; `load_cache` fills them from the previous chair's stop.
@@ -713,6 +719,9 @@ def _chair_run_deps(
     if not dry_run:
         chair_read_cache.load_cache(files_cache, files_path)
         chair_read_cache.load_cache(store_cache, store_path)
+    def postgres_store() -> bool:
+        return is_postgres(run_store.store_url_for(runs_dir))
+
     # `read_decompose_runs` drops every entry its call did not touch, so each intake gets its own cache.
     decompose_caches: collections.OrderedDict[str, object] = collections.OrderedDict()
 
@@ -784,7 +793,10 @@ def _chair_run_deps(
         # The launch decomposes under a fresh id when a dropped initiative holds the intake id. The dropped one asking
         # for itself (`initiative == iid`) keeps its own runs.
         under = iid if initiative == iid else _decompose_initiative_id(iid, work_rows())
-        return chair_decompose_runs.read_decompose_runs(Path(runs_dir), under, decompose_cache_for(under))
+        # A SQLite store's file stamp keeps each intake's runs across ticks; a Postgres store has none, so every intake
+        # shares the tick's one read instead of sending its own two queries.
+        tick = once("decompose_tick_runs", lambda: chair_decompose_runs.read_tick_runs(Path(runs_dir))) if postgres_store() else None
+        return chair_decompose_runs.read_decompose_runs(Path(runs_dir), under, decompose_cache_for(under), tick)  # type: ignore[arg-type]
 
     def initiative_intakes() -> dict[str, str]:
         return _initiative_intakes(chair_read_quarantined.initiative_files(ws, work_files()))
@@ -840,6 +852,17 @@ def _chair_run_deps(
     def live_initiatives() -> list[str]:
         return chair_read_live.read_live_initiatives(runs_dir, [row["id"] for row in docket()["initiatives"]], now_text())
 
+    def watch_rows() -> list:
+        """The land watch and verdict rows of the tick's actions, which the watch facts read instead of every row."""
+        return once("watch_rows", lambda: chair_revert_watch.watch_rows(actions()))  # type: ignore[return-value]
+
+    # Process-lifetime: each run task record's landed verdict, kept by the record's file stamp.
+    landed_cache = chair_read_cache.StampCache(CHAIR_LANDED_CACHE_MAX)
+
+    def landed_ids() -> frozenset[str]:
+        """The landed task ids `approved` and `phase_tasks` both read, once a tick."""
+        return once("landed_ids", lambda: chair_read_approved.read_landed_task_ids(ws / "runs", landed_cache))  # type: ignore[return-value]
+
     def approved() -> list:
         # The land's runs come from `land_records`: a code or ticket cause hides a record from the stranded report,
         # but an approved item still lands from the run holding its approval.
@@ -848,7 +871,7 @@ def _chair_run_deps(
         stranded = chair_read_stranded.read_stranded(chair_read_approved.land_records(records, unsettled), items)
         facts = chair_read_approved.read_fetch_facts(runs_dir, stranded)
         return chair_read_approved.with_runs(
-            chair_read_approved.read_approved(ws, mode, work_files(), store_rows()), stranded, facts,
+            chair_read_approved.read_approved(ws, mode, work_files(), store_rows(), landed_ids()), stranded, facts,
         )
 
     last_missing_repos: list[str] = []  # edge state: the current tick's `missing_repos()` result, read back by `reported_repos()`
@@ -1040,7 +1063,7 @@ def _chair_run_deps(
         month=lambda: _profile_month(runs_dir, profile, now(), _resolved_pacing_policy(runs_dir).min_elapsed_fraction),
         docket=docket,
         approved=approved,
-        phase_tasks=lambda: chair_read_approved.read_phase_tasks(ws, mode, work_files(), store_rows()),
+        phase_tasks=lambda: chair_read_approved.read_phase_tasks(ws, mode, work_files(), store_rows(), landed_ids()),
         phase_records=lambda tasks: chair_read_phase_records.read_phase_records(runs_dir, tasks),
         quarantined=lambda: chair_read_quarantined.read_quarantined(ws, mode, work_files(), store_rows()),
         held_files=lambda: queue_export.read_held_record(ws),
@@ -1076,11 +1099,11 @@ def _chair_run_deps(
         cartridge=lambda: _team_cartridge(profile)[0],  # {} when unreadable: land_at then reads the default
         land_at_values=lambda: _initiative_land_at(chair_read_quarantined.initiative_files(ws, work_files())),
         actions=actions,
-        land_watches=lambda: chair_revert_watch.pending_watches(actions),
+        land_watches=lambda: chair_revert_watch.pending_watches(watch_rows),
         read_main_ci=main_ci,
         green_since=green_since,
         land_hold=lambda: chair_smoke.read_hold(str(runs_dir)),
-        land_outcomes=lambda: chair_revert_watch.outcomes(actions),
+        land_outcomes=lambda: chair_revert_watch.outcomes(watch_rows),
         decompose_runs=decompose_runs_of,
         decompose_cutoff=lambda path: chair_decompose_runs.read_released_at(ws, path),
         intake_fingerprint=intake_fingerprint,
@@ -1245,7 +1268,7 @@ def _chair_run_deps(
         restart_note=restart_note,
         record_restart=None if dry_run else record_restart,
         save_cache=None if dry_run else save_caches,
-        store_reads=reader_cache.tick_counts,
+        store_reads=lambda: chair_tick_cache.merged_counts(reader_cache.tick_counts(), actions_cache.tick_counts()),
     )
 
 

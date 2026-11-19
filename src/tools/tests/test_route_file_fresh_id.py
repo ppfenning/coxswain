@@ -66,7 +66,7 @@ def _chair_reads(tmp_path, monkeypatch, rows, initiative="cited"):
     monkeypatch.setattr(run_store, "read_queue", lambda runs_dir: rows)
     monkeypatch.setattr(run_store, "work_items", lambda runs_dir, initiative=None, cache=None: [])
     monkeypatch.setattr(
-        cli.chair_decompose_runs, "read_decompose_runs", lambda runs_dir, iid, cache=None: seen.append(iid) or []
+        cli.chair_decompose_runs, "read_decompose_runs", lambda runs_dir, iid, cache=None, tick=None: seen.append(iid) or []
     )
     deps = cli._chair_run_deps(tmp_path / "runs", {}, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "store")
     deps.facts_deps.decomposed_intake()  # type: ignore[misc]

@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from agent_tools import courier
+from agent_tools.chair_action_rows import row_view
 from agent_tools.chair_idle_ready import IDLE_READY_CAUSE
 from agent_tools.chair_read_stale import read_chair_actions
 from agent_tools.chair_types import DEADLOCK_CAUSE
@@ -38,11 +39,16 @@ def _fields(row: Mapping[str, object]) -> Mapping[str, object]:
     return {**row, **parsed} if is_dict(parsed) else row
 
 
+def _flat(row: Mapping[str, object]) -> Mapping[str, object]:
+    """`_fields` of the row with an ISO `ts`; worked out once per kept row (`chair_action_rows`)."""
+    return _fields(iso_ts_row(dict(row)))
+
+
 def open_idle_stall(
     rows: Sequence[Mapping[str, object]], open_items: Collection[str]
 ) -> tuple[str | None, str | None]:
     """(signature, reason) of the newest open `idle_stall`, `deferred_land_deadlock` or `idle_ready` needs_chair row, else (None, None); a resolved one is not open."""
-    flat = [_fields(iso_ts_row(dict(r))) for r in rows]
+    flat = [row_view(r, _flat) for r in rows]
     mine = [
         r for r in flat
         if r.get("kind") == "needs_chair" and r.get("cause") in (CAUSE, DEADLOCK_CAUSE, IDLE_READY_CAUSE) and r.get("signature") in open_items

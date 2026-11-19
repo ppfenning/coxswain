@@ -66,7 +66,7 @@ def test_green_since_reader_reads_a_descendant_green_run_as_true() -> None:
 
     assert cli._green_since_reader(runner)("o/r", "abc") is True
     assert calls[0][calls[0].index("--repo") + 1] == "o/r"
-    assert calls[1] == ["git", "-C", "o/r", "merge-base", "--is-ancestor", "abc", "later"]
+    assert calls[1:] == [["git", "-C", "o/r", "merge-base", "--is-ancestor", "abc", c] for c in ("abc", "later")]
 
 
 def test_green_since_reader_reads_a_runner_exit_1_as_false() -> None:
@@ -87,10 +87,10 @@ def test_green_since_reader_caches_per_repo_and_commit_until_cleared() -> None:
     assert read("o/r", "abc") is True
     assert len(calls) == 1
     read("o/r", "def")
-    assert len(calls) == 3
+    assert len(calls) == 4  # gh, then git: is `def` there at all, then is it under the green run
     read.cache.clear()
     read("o/r", "abc")
-    assert len(calls) == 4
+    assert len(calls) == 5
 
 
 def test_slug_forge_open_pr_hands_gh_the_slug(tmp_path) -> None:

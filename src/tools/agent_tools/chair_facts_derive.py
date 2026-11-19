@@ -1,9 +1,11 @@
 """The chair's facts, derived: streaks and keys from the action log, initiative and dispatch facts, `gather_facts`."""
 
+import heapq
 import json
 import math
 import re
 from collections.abc import Callable, Collection, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import partial, reduce
 from itertools import takewhile
@@ -102,6 +104,44 @@ from core.jsontypes import is_dict, is_list, is_mapping
 
 if TYPE_CHECKING:
     from agent_tools.chair_read_idle_backlog import IdleBacklog  # chair_read_idle_backlog imports this module
+
+
+Selector = str | tuple[str, str]  # a kind, or a needs_chair cause: ("needs_chair", cause)
+
+
+@dataclass(frozen=True)
+class ActionIndex:
+    """The tick's `chair_actions` rows by the kind their doc (`action_doc`) names, and the needs_chair rows also by cause,
+    each with its place in the read. A row whose kind is not a string is in `odd`, and every selection holds it."""
+
+    kinds: Mapping[str, Sequence[tuple[int, Row]]]
+    causes: Mapping[tuple[str, str], Sequence[tuple[int, Row]]]
+    odd: Sequence[tuple[int, Row]]
+
+
+def action_index(rows: Sequence[Row]) -> ActionIndex:
+    """Pure. One pass over the rows, so each reader below reads only the rows its rule can act on, not all of them:
+    about 180,000 a tick at the chair machine's volume, nearly all of them needs_chair rows of causes no rule reads."""
+    kinds: dict[str, list[tuple[int, Row]]] = {}
+    causes: dict[tuple[str, str], list[tuple[int, Row]]] = {}
+    odd: list[tuple[int, Row]] = []
+    for at, row in enumerate(rows):
+        doc = action_doc(row)
+        kind, cause = doc.get("kind"), doc.get("cause")
+        if not isinstance(kind, str):
+            odd.append((at, row))
+            continue
+        kinds.setdefault(kind, []).append((at, row))
+        if kind == "needs_chair" and isinstance(cause, str):
+            causes.setdefault((kind, cause), []).append((at, row))
+    return ActionIndex(kinds, causes, odd)
+
+
+def selected(index: ActionIndex, *selectors: Selector) -> list[Row]:
+    """Pure. The rows of the kinds and causes named, in the order they were read. A reader given these returns what it
+    returns given every row, as long as its rule leaves every other kind and cause alone."""
+    parts = [index.causes.get(s, ()) if isinstance(s, tuple) else index.kinds.get(s, ()) for s in dict.fromkeys(selectors)]
+    return [row for _, row in heapq.merge(*parts, index.odd, key=lambda pair: pair[0])]
 
 
 def _streak_step(streaks: Mapping[str, int], doc: Row) -> dict[str, int]:
@@ -1160,12 +1200,13 @@ def gather_facts(
         waiting={(a["initiative"], a["id"]) for a in approved},
     )
     action_rows = list(deps.actions()) if deps.actions is not None else []
+    index = action_index(action_rows)
     login_hosts: list[Mapping[str, object]] = [*deps.hosts()]
     decomposed = dict(deps.decomposed_intake()) if deps.decomposed_intake is not None else {}
     probe = dict(deps.pid_probe())
     from agent_tools.chair_decompose_runs import decompose_refusals  # lazy: chair_decompose_runs imports this module
 
-    refusals = land_refusals_from_actions(action_rows, now)
+    refusals = land_refusals_from_actions(selected(index, "land_phase", "partial_land"), now)
     work = list(deps.work_rows()) if deps.work_rows is not None else []
     epics = epic_facts(work, epic_definitions or {}) if deps.work_rows is not None else []
     facts: Facts = {
@@ -1207,20 +1248,20 @@ def gather_facts(
         ),
         "todo_initiatives": todo_initiative_facts(list(deps.work_rows())) if deps.work_rows is not None else [],
         "decompose_streaks": decompose_streak_facts(intake, deps.decompose_runs, deps.decompose_cutoff) if deps.decompose_runs is not None else {},
-        "decompose_stalled_reported": decompose_stalled_keys(action_rows),
-        "env_stale_reported": stale_checkout_keys(action_rows),
+        "decompose_stalled_reported": decompose_stalled_keys(selected(index, ("needs_chair", "decompose_stalled"))),
+        "env_stale_reported": stale_checkout_keys(selected(index, ("needs_chair", STALE_CHECKOUT_CAUSE))),
         "held_files": [HeldFile(**h) for h in deps.held_files()],
-        "held_reported": held_file_keys(action_rows),
-        "stale_drafts_reported": stale_draft_keys(action_rows),
+        "held_reported": held_file_keys(selected(index, ("needs_chair", HELD_FILE_CAUSE))),
+        "stale_drafts_reported": stale_draft_keys(selected(index, "stale_to_draft")),
         "held_initiatives": sorted(held_initiatives(rows)) if rows else [],
         "deferred_initiatives": deferred_initiatives(rows, current) if rows and current is not None else {},
         "host_env": host_env_from_rows(login_hosts),
-        "relaunch_loop_reported": relaunch_loop_keys(action_rows),
+        "relaunch_loop_reported": relaunch_loop_keys(selected(index, ("needs_chair", "relaunch_loop"))),
         "land_refusals": refusals,
         "land_conflicts": read_land_conflicts(deps.runs_dir(), repos),
         "land_heads": read_land_heads(refusals, repos, deps.rev_parse),
-        "launch_history": launch_history_from_actions(action_rows, quarantine, now),
-        "lease_refusals": lease_refusals_from_actions(action_rows, now),
+        "launch_history": launch_history_from_actions(selected(index, "launch_epic", "relaunch"), quarantine, now),
+        "lease_refusals": lease_refusals_from_actions(selected(index, "launch_epic", "relaunch"), now),
         "max_launches_per_hour": resolve_max_launches_per_hour(
             deps.max_launches_per_hour() if deps.max_launches_per_hour is not None else None
         ),
@@ -1246,17 +1287,19 @@ def gather_facts(
             if deps.tickets is not None
             else []
         ),
-        "steer_streaks": steer_streaks_from_actions(action_rows),
-        "land_fail_streaks": land_fail_streaks_from_actions(action_rows),
-        "no_run_streaks": no_run_streaks_from_actions(approved, action_rows),
-        "approval_holds": approval_holds_from_actions(approved, action_rows),
+        "steer_streaks": steer_streaks_from_actions(selected(index, "steer_clear", *sorted(LAUNCH_KINDS))),
+        "land_fail_streaks": land_fail_streaks_from_actions(selected(index, *LAND_FAIL_KINDS)),
+        "no_run_streaks": no_run_streaks_from_actions(
+            approved, selected(index, "requeue_task", *sorted(HOLD_LAND_KINDS), ("needs_chair", "no_run"))
+        ),
+        "approval_holds": approval_holds_from_actions(approved, selected(index, *sorted(HOLD_KINDS))),
         "wrongly_released": list(deps.wrongly_released()),
         "steer_policy": {
             "limit": resolve_shared_file_limit(deps.shared_file_limit() if deps.shared_file_limit is not None else None),
             "serial": resolve_serial_files(deps.serial_files() if deps.serial_files is not None else None),
         },
-        "waiting_reported": waiting_reported_from_actions(action_rows),
-        "pull_age_s": pull_age_s(action_rows, now),
+        "waiting_reported": waiting_reported_from_actions(selected(index, "waiting", *sorted(LAUNCH_KINDS))),
+        "pull_age_s": pull_age_s(selected(index, "pull"), now),
         "stranded": stranded_facts(approved, list(deps.run_commits()), list(deps.phase_state())),
         "phase_branches": phase_branch_facts(list(deps.branch_counts())),
         "landing": list(deps.landing()) if deps.landing is not None else [],
@@ -1278,7 +1321,9 @@ def gather_facts(
         "epics": epics,
     }
     # The keys below ride along only when their source was read (or, for the freeze, set): see each key's note on `Facts`.
-    misses = decompose_miss_fact_keys(action_rows, deps.intake_fingerprint, frozenset(intake))
+    misses = decompose_miss_fact_keys(
+        selected(index, "launch_decompose", ("needs_chair", MISSING_IDEA_CAUSE)), deps.intake_fingerprint, frozenset(intake)
+    )
     facts["decompose_misses"] = misses["decompose_misses"]
     facts["decompose_miss_fingerprints"] = misses["decompose_miss_fingerprints"]
     facts["decompose_misses_reported"] = misses["decompose_misses_reported"]
@@ -1294,7 +1339,7 @@ def gather_facts(
         facts["live_phases"] = [LivePhase(initiative=i, phase=p) for i, p in live_phase_pairs]
     if deps.tickets is not None:
         facts["schedule_inputs"] = schedule_inputs_from_rows(
-            items, work, action_rows, dispatch,
+            items, work, selected(index, "launch_epic", "relaunch", "land_phase"), dispatch,
             local=deps.host, repos=repos,
             land_at=land_at_facts(deps.cartridge(), deps.land_at_values(), sorted({str(i["initiative"]) for i in items})),
             live_phases=live_phase_pairs,
