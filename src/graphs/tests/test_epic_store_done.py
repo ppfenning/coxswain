@@ -152,7 +152,7 @@ def test_phase_one_done_from_another_machine_is_complete_and_phase_two_builds(re
 
 
 def _lanes(ctx, items, p1_status, monkeypatch):
-    """Run p1 then p2 through `_run_lanes`; every record goes through add_phase and `_record_phase`, as in a run."""
+    """Run p1 then p2 through `_run_lanes`; every record goes through add_phase and `record_phase`, as in a run."""
     launched: list[str] = []
 
     def fake_phase(_ctx, *, initiative, phase, parents, items, only):

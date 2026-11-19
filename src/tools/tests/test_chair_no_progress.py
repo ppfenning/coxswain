@@ -184,7 +184,7 @@ def _row(kind, task_id, state):
 
 
 def _epic_run(ws: Path, n: int, *, tasks=(), ended=True) -> None:
-    """One run as the epic records it: the launch's runs row, then `_record_phase` and `_record_tasks` for each phase,
+    """One run as the epic records it: the launch's runs row, then `record_phase` and `record_tasks` for each phase,
     then `_record_run_exit`. Phase p1 ends partial and p2 blocked, every time."""
     conn = open_store(run_store.store_url_for(ws / "runs"), "2026-01-01T00:00:00Z")
     try:
