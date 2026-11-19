@@ -137,6 +137,24 @@ def test_the_sandbox_env_keeps_only_what_it_names():
     assert not {"PYTHONPATH", "AGENT_TOOLS_PROFILE", "VIRTUAL_ENV"} & env.keys()
 
 
+def test_a_host_tool_folder_follows_the_system_dirs():
+    assert plan.system_path_with("/usr/local/bin:/usr/bin:/bin", "/opt/homebrew/bin") == "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"
+
+
+def test_a_host_tool_folder_already_on_the_system_path_is_not_repeated():
+    assert plan.system_path_with("/usr/local/bin:/usr/bin:/bin", "/usr/bin") == "/usr/local/bin:/usr/bin:/bin"
+
+
+def test_no_host_tool_folder_leaves_the_system_path_alone():
+    assert plan.system_path_with("/usr/local/bin:/usr/bin:/bin", None) == "/usr/local/bin:/usr/bin:/bin"
+
+
+def test_the_sandbox_path_carries_the_host_tool_folder_after_the_install_bin():
+    path = plan.system_path_with("/usr/bin:/bin", "/opt/homebrew/opt/postgresql@16/bin")
+    env = plan.sandbox_env({}, home="/h", bin_dirs=["/i/bin"], system_path=path)
+    assert env["PATH"] == "/i/bin:/usr/bin:/bin:/opt/homebrew/opt/postgresql@16/bin"
+
+
 def test_profiles_name_the_sandbox():
     text = plan.routing_profile_text(team="t", workspace="/w", harness_dir="/h", provider_profile="/p.yaml")
     assert text == "team: t\nworkspace_dir: /w\nharness_dir: /h\nprovider_profile: /p.yaml\n"
