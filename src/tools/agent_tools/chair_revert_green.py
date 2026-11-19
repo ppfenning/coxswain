@@ -36,25 +36,34 @@ def _successful_shas(output: str) -> list[str]:
 
 Ancestry = dict[tuple[str, str, str], bool]  # (repo, commit, sha) to whether commit is an ancestor of sha
 GIT_FATAL = 128  # git's exit for an object it cannot find, or a path that is no repository
+ANCESTRY_MAX = 4096  # answers kept at most: a few watches times the fifty green runs each, many times over
 
 
-def _ancestry(runner: Runner, repo: str, commit: str, sha: str, known: Ancestry | None) -> int:
+def _ancestry(runner: Runner, repo: str, commit: str, sha: str, known: Ancestry | None, known_max: int = ANCESTRY_MAX) -> int:
     """The exit of `git merge-base --is-ancestor commit sha`: 0 yes, 1 no, anything else a failure. An answer is kept in
-    `known`, since a commit's ancestry never changes; a failure is not, since a commit not fetched yet may be next time."""
+    `known`, since a commit's ancestry never changes; a failure is not, since a commit not fetched yet may be next time.
+    `known` holds at most `known_max` answers: past it, the answer asked least recently is dropped."""
     key = (repo, commit, sha)
     if known is not None and key in known:
-        return 0 if known[key] else 1
+        answer = known.pop(key)
+        known[key] = answer  # to the end: the least recently asked is the first
+        return 0 if answer else 1
     code = runner(["git", "-C", repo, "merge-base", "--is-ancestor", commit, sha])[0]
     if known is not None and code in (0, 1):
         known[key] = code == 0
+        while len(known) > max(known_max, 1):
+            del known[next(iter(known))]
     return code
 
 
-def main_green_since(runner: Runner, repo: str, slug: str, commit: str, known: Ancestry | None = None) -> bool:
+def main_green_since(
+    runner: Runner, repo: str, slug: str, commit: str, known: Ancestry | None = None, known_max: int = ANCESTRY_MAX
+) -> bool:
     """True when a successful main run sits on `commit` or on a descendant of it. Any failure reads as False.
     `repo` is a land watch's checkout path, often in the tilde form: no shell expands it for `git -C`, so it is
     expanded here, or every ancestor check fails and a main that went green after a red land never reads green.
-    `known` is the caller's ancestry answers, kept across calls: a quiet tick asks git nothing it asked before."""
+    `known` is the caller's ancestry answers, kept across calls and bounded by `known_max`: a quiet tick asks git
+    nothing it asked before."""
     repo = os.path.expanduser(repo)
     try:
         code, output = runner(
@@ -70,8 +79,8 @@ def main_green_since(runner: Runner, repo: str, slug: str, commit: str, known: A
             return commit in shas
         # A commit git cannot find, or a path that is no repository, fails every check against it: one check of the
         # commit against itself stands for the fifty that would each fail the same way.
-        if _ancestry(runner, repo, commit, commit, known) == GIT_FATAL:
+        if _ancestry(runner, repo, commit, commit, known, known_max) == GIT_FATAL:
             return False
-        return any(_ancestry(runner, repo, commit, sha, known) == 0 for sha in shas)
+        return any(_ancestry(runner, repo, commit, sha, known, known_max) == 0 for sha in shas)
     except Exception:
         return False

@@ -25,7 +25,7 @@ from pathlib import Path
 
 from agent_tools import chair_read_stale, run_store
 from agent_tools.chair_action_rows import FrozenRow, freeze
-from agent_tools.chair_read_stale import actions_cutoff, window_count_query, window_tail_query
+from agent_tools.chair_read_stale import actions_cutoff, count_and_tail_on
 
 __all__ = ["ROW_KEY", "TAIL_MARGIN", "ActionsCache", "Kept", "kept_from", "tail_bound", "topped_up"]
 
@@ -91,7 +91,7 @@ def tail_bound(newest: str, margin: timedelta = TAIL_MARGIN) -> str | None:
 
 
 def _count_and_tail(runs_dir: Path, cutoff: str, since: str) -> tuple[int, list[dict[str, object]]] | None:
-    """Edge. The window's row count and its rows at or after `since`, on one connection; None on any failure."""
+    """Edge. The window's row count and its rows at or after `since`, from one statement; None on any failure."""
     try:
         opened = run_store.open_store(runs_dir)
     except (*run_store._DB_ERRORS, RuntimeError):
@@ -100,15 +100,11 @@ def _count_and_tail(runs_dir: Path, cutoff: str, since: str) -> tuple[int, list[
         return None
     conn, token = opened
     try:
-        count_sql, count_params = window_count_query(token, cutoff)
-        counted = conn.execute(count_sql, count_params).fetchone()
-        tail_sql, tail_params = window_tail_query(token, cutoff, since)
-        tail = [dict(r) for r in conn.execute(tail_sql, tail_params).fetchall()]
+        return count_and_tail_on(conn, token, cutoff, since)
     except run_store._DB_ERRORS:
         return None
     finally:
         conn.close()
-    return (int(counted["n"]), tail) if counted is not None else None
 
 
 def _read_window(runs_dir: Path, now: datetime, window_days: int) -> list[dict[str, object]]:

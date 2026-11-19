@@ -6,8 +6,11 @@ most of a 13 s tick. A `FrozenRow` keeps each view of itself the first time a re
 is merged once in the process's life, however many readers and ticks read it.
 
 That is safe because a row never changes after the read: `chair_actions` is insert-only, and a `FrozenRow` refuses every
-edit, so a reader that tried to change a shared row fails loudly instead of changing what every later reader sees. A view
-that is a mapping is frozen the same way. A copy (`dict(row)`, `{**row}`, `copy.deepcopy`) is a plain dict again.
+edit, so a reader that tried to change a shared row fails loudly instead of changing what every later reader sees. The
+freeze goes all the way down: a mapping inside a row (`action_json`) is a `FrozenRow` too, and a list (`intake_ids`,
+`stale_tasks`) a `FrozenList`, which is still a `list` to every `isinstance` check. A view is frozen the same way.
+A deep copy (`copy.deepcopy`, a pickle) is plain all the way down. A shallow one (`dict(row)`, `{**row}`) is a plain dict
+whose nested values are still the frozen ones, so an edit of a nested value through it fails as well.
 
 A row that is not a `FrozenRow` (a test's literal dict, a SQLite file read) keeps nothing: `row_view` computes the view
 each time, exactly as the reader did before.
@@ -15,10 +18,10 @@ each time, exactly as the reader did before.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any, NoReturn, cast
 
-__all__ = ["FrozenRow", "freeze", "row_view"]
+__all__ = ["FrozenList", "FrozenRow", "freeze", "row_view"]
 
 
 _MISSING: Any = object()
@@ -28,19 +31,64 @@ def _refuse(*_args: object, **_kwargs: object) -> NoReturn:
     raise TypeError("a chair_actions row is shared by every reader of the tick and is never edited; copy it first")
 
 
+def _frozen(value: object) -> object:
+    """Pure. `value` with every dict in it a `FrozenRow` and every list a `FrozenList`; frozen values come back as they are."""
+    if isinstance(value, (FrozenRow, FrozenList)):
+        return value
+    if isinstance(value, dict):
+        return FrozenRow(cast(Mapping[str, object], value))
+    if isinstance(value, list):
+        return FrozenList(cast(list[object], value))
+    return value
+
+
+class FrozenList(list[object]):
+    """A list inside a kept row: no one can edit it, and its items are frozen as well."""
+
+    __slots__ = ()
+
+    def __init__(self, items: Iterable[object] = ()) -> None:
+        super().__init__(_frozen(item) for item in items)
+
+    def __reduce__(self) -> tuple[type[list[object]], tuple[list[object]]]:
+        """A pickle is a plain list."""
+        return (list, (list(self),))
+
+    def __deepcopy__(self, memo: dict[int, object]) -> list[object]:
+        import copy  # the module never needs it otherwise
+
+        return [copy.deepcopy(v, memo) for v in self]
+
+    def __copy__(self) -> list[object]:
+        return list(self)
+
+    __setitem__ = _refuse
+    __delitem__ = _refuse
+    __iadd__ = _refuse
+    __imul__ = _refuse
+    append = _refuse
+    extend = _refuse
+    insert = _refuse
+    remove = _refuse
+    pop = _refuse
+    clear = _refuse
+    sort = _refuse
+    reverse = _refuse
+
+
 class FrozenRow(dict[str, object]):
-    """A row no one can edit, with room for its views (`row_view`)."""
+    """A row no one can edit, nested values included, with room for its views (`row_view`)."""
 
     __slots__ = ("views",)
 
     views: dict[Callable[..., object], object]
 
     def __init__(self, items: Mapping[str, object]) -> None:
-        super().__init__(items)
+        super().__init__({k: _frozen(v) for k, v in items.items()})
         self.views = {}
 
     def __reduce__(self) -> tuple[type[dict[str, object]], tuple[dict[str, object]]]:
-        """A copy or a pickle is a plain dict: the copy is the caller's own, to edit."""
+        """A pickle is a plain dict: the caller's own, to edit."""
         return (dict, (dict(self),))
 
     def __deepcopy__(self, memo: dict[int, object]) -> dict[str, object]:
@@ -62,7 +110,7 @@ class FrozenRow(dict[str, object]):
 
 
 def freeze(row: Mapping[str, object]) -> FrozenRow:
-    """Pure. `row` as a `FrozenRow` with no views yet; a `FrozenRow` comes back as it is, views and all."""
+    """Pure. `row` frozen all the way down, as a `FrozenRow` with no views yet; a `FrozenRow` comes back as it is."""
     return row if isinstance(row, FrozenRow) else FrozenRow(row)
 
 

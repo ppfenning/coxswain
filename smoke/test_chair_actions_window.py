@@ -8,8 +8,9 @@ of the kinds the window keeps at any age, and old rows it leaves out. Then:
   a `ts` from two hours before makes the count disagree, so a following tick reads the whole window again, and the tick
   after that is quiet again;
 * the chair's own wiring (`cli._chair_run_deps`), run by the installed interpreter, hands the facts exactly the rows a
-  plain read of the window returns, before and after new rows (one now, one late), and every intake's decompose runs
-  from the tick's shared reads equal the runs read for that intake alone.
+  plain read of the window returns: a fresh row comes in through the tail alone, without the window read again, and a
+  late row makes it read whole. Every intake's decompose runs from the tick's shared reads equal the runs read for
+  that intake alone.
 """
 
 import json
@@ -79,15 +80,19 @@ def tick():
     deps.beat()
     kept = deps.facts_deps.actions()
     plain = chair_read_stale.read_chair_actions(runs_dir, datetime.datetime.now(datetime.UTC), window)
-    return {{"same": key_set(kept) == key_set(plain), "rows": len(kept)}}
+    reads, reuses = deps.store_reads()
+    return {{"same": key_set(kept) == key_set(plain), "rows": len(kept),
+            "full": reads.get("chair_actions", 0), "tail": reuses.get("chair_actions", 0)}}
 
 
 first, second = tick(), tick()
-done = subprocess.run([sys.executable, "-c", {write!r}], capture_output=True, text=True)
+fresh = subprocess.run([sys.executable, "-c", {fresh!r}], capture_output=True, text=True)
 third = tick()
+done = subprocess.run([sys.executable, "-c", {late!r}], capture_output=True, text=True)
+fourth = tick()
 alone = chair_decompose_runs.read_decompose_runs(runs_dir, "idea")
 shared = chair_decompose_runs.read_decompose_runs(runs_dir, "idea", None, chair_decompose_runs.read_tick_runs(runs_dir))
-print(json.dumps({{"ticks": [first, second, third], "write": done.returncode, "counts": deps.store_reads(),
+print(json.dumps({{"ticks": [first, second, third, fourth], "write": [fresh.returncode, done.returncode],
                   "decompose_same": [repr(r) for r in alone] == [repr(r) for r in shared], "decompose_runs": len(alone)}}))
 """
 
@@ -143,13 +148,16 @@ def test_a_quiet_tick_tails_the_window_and_a_late_row_reads_it_whole(sandbox):
 def test_the_chair_hands_the_facts_the_whole_window_and_each_intake_its_own_runs(sandbox):
     now = datetime.now(UTC)
     assert sandbox.python_json(SEED.format(url=sandbox.store_url, now=_iso(now))) == 34000
-    late = [(_iso(now - timedelta(hours=3)), "late"), (_iso(datetime.now(UTC) + timedelta(seconds=1)), "fresh")]
-    write = WRITE.format(url=sandbox.store_url, rows=late)
-    done = sandbox.python_json(WIRING.format(write=write))
-    assert done["write"] == 0, done
-    first, second, third = done["ticks"]
-    assert first["same"] and second["same"] and third["same"], json.dumps(done)
-    assert third["rows"] == first["rows"] + 2, done
-    reads, reuses = done["counts"]
-    assert (reads["chair_actions"], reuses["chair_actions"]) == (2, 1), done  # tick 3 reads it whole: the late row
+    fresh = WRITE.format(url=sandbox.store_url, rows=[(_iso(datetime.now(UTC) + timedelta(seconds=1)), "fresh")])
+    late = WRITE.format(url=sandbox.store_url, rows=[(_iso(now - timedelta(hours=3)), "late")])
+    done = sandbox.python_json(WIRING.format(fresh=fresh, late=late))
+    assert done["write"] == [0, 0], done
+    ticks = done["ticks"]
+    assert all(t["same"] for t in ticks), json.dumps(done)
+    # (full reads, tail-only ticks) so far: the first tick reads it whole, the quiet one only tails it
+    assert [(t["full"], t["tail"]) for t in ticks[:2]] == [(1, 0), (1, 1)], done
+    # a fresh row only: the tail picks it up, and the window is not read again
+    assert (ticks[2]["full"], ticks[2]["tail"], ticks[2]["rows"]) == (1, 2, ticks[0]["rows"] + 1), done
+    # a row written three hours behind: the count disagrees, so the window is read whole
+    assert (ticks[3]["full"], ticks[3]["tail"], ticks[3]["rows"]) == (2, 2, ticks[0]["rows"] + 2), done
     assert done["decompose_same"] and done["decompose_runs"] > 0, done

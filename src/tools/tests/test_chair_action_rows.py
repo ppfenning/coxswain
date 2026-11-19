@@ -70,3 +70,33 @@ def test_action_doc_of_a_frozen_row_equals_the_doc_of_the_plain_row():
     assert action_doc(row) == action_doc(dict(ROW)) == {**ROW, "cause": "no_run"}
     assert action_doc(row) is action_doc(row)
     assert action_doc(action_doc(row)) == action_doc(row)  # a doc read again is the same doc
+
+
+
+NESTED = {"ts": "t", "kind": "launch_decompose", "action_json": {"intake_ids": ["a.md", "b.md"], "stale_tasks": [["t1"]], "m": {"k": 1}}}
+
+
+def test_the_freeze_goes_all_the_way_down_and_lists_stay_lists():
+    row = freeze(NESTED)
+    doc = row["action_json"]
+    ids, nested = doc["intake_ids"], doc["stale_tasks"][0]
+    assert isinstance(ids, list) and ids == ["a.md", "b.md"] and json.loads(json.dumps(row)) == NESTED
+    for edit in (lambda: ids.append("c"), lambda: ids.__setitem__(0, "x"), lambda: ids.extend([1]), ids.pop, ids.clear,
+                 ids.sort, ids.reverse, lambda: ids.insert(0, 1), lambda: ids.remove("a.md"), lambda: nested.append("t2"),
+                 lambda: doc["m"].__setitem__("k", 2), lambda: doc.__setitem__("x", 1)):
+        with pytest.raises(TypeError, match="never edited"):
+            edit()
+    with pytest.raises(TypeError):
+        ids += ["c"]
+    assert row == NESTED
+
+
+def test_a_deep_copy_is_plain_all_the_way_down_and_a_view_is_frozen_all_the_way_down():
+    row = freeze(NESTED)
+    plain = copy.deepcopy(row)
+    plain["action_json"]["intake_ids"].append("c")
+    plain["action_json"]["m"]["k"] = 2
+    assert type(pickle.loads(pickle.dumps(row))["action_json"]["intake_ids"]) is list
+    assert row == NESTED
+    with pytest.raises(TypeError):
+        action_doc(row)["intake_ids"].append("c")  # type: ignore[attr-defined]

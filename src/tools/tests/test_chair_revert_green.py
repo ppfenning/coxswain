@@ -122,3 +122,16 @@ def test_kept_answers_are_not_asked_again_and_failures_are() -> None:
     assert main_green_since(second, "/r", "o/r", "abc", known) is False
     assert second.calls == [GH, _ancestor("abc", "broken")]
     assert known == {("/r", "abc", "abc"): True, ("/r", "abc", "older"): False, ("/r", "abc", "newer"): False}
+
+
+def test_the_kept_answers_are_bounded_and_the_least_recently_asked_goes_first() -> None:
+    runs = [_run(f"s{n}") for n in range(5)]
+    replies = {tuple(GH): _listed(*runs), tuple(_ancestor("abc", "abc")): (0, "")}
+    known: dict[tuple[str, str, str], bool] = {}
+
+    assert main_green_since(Fake(replies), "/r", "o/r", "abc", known, known_max=3) is False
+    assert list(known) == [("/r", "abc", "s2"), ("/r", "abc", "s3"), ("/r", "abc", "s4")]
+    again = Fake(replies)
+    assert main_green_since(again, "/r", "o/r", "abc", known, known_max=3) is False
+    assert len(known) == 3
+    assert _ancestor("abc", "s0") in again.calls and _ancestor("abc", "s4") not in again.calls[:3]

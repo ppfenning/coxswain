@@ -8,6 +8,7 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from agent_tools import run_store
 from agent_tools.chair_facts import HARNESS_CAUSE, LAUNCH_KINDS, Key, task_key
@@ -85,16 +86,33 @@ def actions_query(token: str, now: datetime | None, window_days: int = ACTIONS_W
     return run_store.sql_for(f"SELECT * FROM chair_actions WHERE ts >= {{p}} OR kind IN ({marks})", token), (cutoff, *_KEPT_KINDS)
 
 
-def window_count_query(token: str, cutoff: str) -> tuple[str, tuple[str, ...]]:
-    """Pure. How many rows `actions_query`'s window holds for the window opening on `cutoff`."""
-    return run_store.sql_for(f"SELECT count(*) AS n FROM chair_actions WHERE {_window_sql()}", token), (cutoff, *_KEPT_KINDS)
+WINDOW_COUNT = "window_rows"  # the count column `window_tail_query` adds to each row
 
 
 def window_tail_query(token: str, cutoff: str, since: str) -> tuple[str, tuple[str, ...]]:
-    """Pure. The rows of `actions_query`'s window whose `ts` is at or after `since`; the primary key leads with `ts`,
-    so the store answers from the index."""
-    sql = f"SELECT * FROM chair_actions WHERE {_window_sql()} AND ts >= {{p}}"
-    return run_store.sql_for(sql, token), (cutoff, *_KEPT_KINDS, since)
+    """Pure. One statement: how many rows `actions_query`'s window holds for the window opening on `cutoff`, as the
+    `WINDOW_COUNT` column, beside each of its rows whose `ts` is at or after `since` (the primary key leads with `ts`,
+    so the store answers those from the index). With no such row it is one row of the count and NULLs.
+
+    One statement reads one snapshot. Two statements could each see a different store: a row committed between them
+    would be counted but not read, and so stand in for an older row written late that the tail did not reach, and the
+    count would agree with a window that lacks that older row."""
+    window = _window_sql()
+    sql = (
+        f"SELECT c.{WINDOW_COUNT}, t.* FROM (SELECT count(*) AS {WINDOW_COUNT} FROM chair_actions WHERE {window}) AS c "
+        f"LEFT JOIN (SELECT * FROM chair_actions WHERE {window} AND ts >= {{p}}) AS t ON 1 = 1"
+    )
+    return run_store.sql_for(sql, token), (cutoff, *_KEPT_KINDS, cutoff, *_KEPT_KINDS, since)
+
+
+def count_and_tail_on(conn: Any, token: str, cutoff: str, since: str) -> tuple[int, list[dict[str, object]]]:
+    """Edge. `window_tail_query` on an open connection whose rows are addressable by column name: the window's count
+    and its tail rows, both from one statement's snapshot. Raises what the driver raises."""
+    sql, params = window_tail_query(token, cutoff, since)
+    rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+    count = int(rows[0][WINDOW_COUNT]) if rows else 0
+    tail = [{k: v for k, v in r.items() if k != WINDOW_COUNT} for r in rows if r.get("ts") is not None]
+    return count, tail
 
 
 def read_chair_actions(runs_dir: Path, now: datetime | None = None, window_days: int = ACTIONS_WINDOW_DAYS) -> list[dict[str, object]]:

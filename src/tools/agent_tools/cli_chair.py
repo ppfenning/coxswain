@@ -408,7 +408,9 @@ def _green_since_reader(runner: Callable[[list[str]], tuple[int, str]]) -> Calla
         key = (repo, commit)
         if key not in cache:
             try:
-                cache[key] = chair_revert_green.main_green_since(runner, repo, _gh_repo(repo), commit, ancestry)
+                cache[key] = chair_revert_green.main_green_since(
+                    runner, repo, _gh_repo(repo), commit, ancestry, CHAIR_ANCESTRY_CACHE_MAX
+                )
             except Exception:  # any gh or git failure must not escape gather_facts
                 cache[key] = False
         return cache[key]
@@ -628,6 +630,7 @@ CHAIR_WAKE_POLL_SECONDS = 5.0  # how often the between-tick wait re-reads the bu
 CHAIR_FILES_CACHE_MAX = 4096  # one entry per work file: a few thousand
 CHAIR_STORE_CACHE_MAX = 8  # one entry per store read shape: the work rows and the queue rows
 CHAIR_RECORDS_CACHE_MAX = 4096  # one entry per run task record of an open task: a few thousand
+CHAIR_ANCESTRY_CACHE_MAX = 4096  # git ancestry answers: a few land watches times the fifty green runs each
 CHAIR_LANDED_CACHE_MAX = 200_000  # one verdict per run task record on disk: tens of thousands on a long-lived workspace
 CHAIR_DECOMPOSE_CACHE_MAX = 256  # one intake's exit rows, task count and run logs: a few hundred runs at most
 CHAIR_DECOMPOSE_INTAKES_MAX = 64  # intakes holding a decompose cache at once; the least recently used is dropped

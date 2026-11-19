@@ -1,7 +1,7 @@
 """The kept chair_actions window: when a tick tops it up from its newest rows, and when it reads the whole window again.
 
 The store is a list of rows; the two readers below answer from it exactly as the window's SQL does (`actions_query`,
-`window_count_query`, `window_tail_query`), so every expectation is the store's own answer."""
+`window_tail_query`), so every expectation is the store's own answer. `count_and_tail_on` runs that query on SQLite."""
 
 from datetime import UTC, datetime, timedelta
 
@@ -126,3 +126,52 @@ def test_topped_up_adds_by_primary_key_and_keeps_the_newest():
     grown = topped_up(kept, [dict(BASE[1]), row("2026-11-18T11:00:00Z", holder="other")])
     assert len(grown.rows) == 4 and grown.newest == "2026-11-18T11:00:00Z"
     assert kept_from("2026-11-11", []).newest == ""
+
+
+
+class Counted:
+    """A real SQLite connection that counts the statements sent through it."""
+
+    def __init__(self, conn) -> None:
+        self.conn, self.statements = conn, 0
+
+    def execute(self, sql, params=()):
+        self.statements += 1
+        return self.conn.execute(sql, params)
+
+
+def _sqlite_store(rows):
+    import json
+    import sqlite3
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE chair_actions (ts TEXT, epoch INTEGER, holder TEXT, kind TEXT, target TEXT, status TEXT, "
+                 "reason TEXT, action_json TEXT, PRIMARY KEY (ts, holder, kind, target))")
+    for r in rows:
+        conn.execute("INSERT INTO chair_actions VALUES (?, 1, ?, ?, ?, ?, '', ?)",
+                     (r["ts"], r["holder"], r["kind"], r["target"], r["status"], json.dumps(r["action_json"])))
+    return conn
+
+
+def test_the_count_and_the_tail_come_from_one_statement_so_one_snapshot():
+    """Two statements could see two stores: a row committed between them is counted but not read, and so hides a late
+    older row the tail missed. One statement reads one snapshot, so the count is always of the rows it returned beside."""
+    from agent_tools.chair_read_stale import count_and_tail_on
+
+    rows = BASE + [row("2026-09-01T00:00:00Z", "status"), row("2026-11-18T11:30:00Z", target="i3")]
+    conn = Counted(_sqlite_store(rows))
+    cutoff = actions_cutoff(NOW, 7)
+    count, tail = count_and_tail_on(conn, "?", cutoff, "2026-11-18T10:45:00")
+    assert conn.statements == 1
+    assert count == len([r for r in rows if in_window(r, cutoff)]) == 4
+    assert [r["target"] for r in tail] == ["i2", "i3"]
+    assert set(tail[0]) == {"ts", "epoch", "holder", "kind", "target", "status", "reason", "action_json"}
+
+
+def test_an_empty_tail_still_carries_the_count():
+    from agent_tools.chair_read_stale import count_and_tail_on
+
+    conn = Counted(_sqlite_store(BASE))
+    assert count_and_tail_on(conn, "?", actions_cutoff(NOW, 7), "2026-11-19T00:00:00") == (3, [])
+    assert count_and_tail_on(Counted(_sqlite_store([])), "?", actions_cutoff(NOW, 7), "") == (0, [])
