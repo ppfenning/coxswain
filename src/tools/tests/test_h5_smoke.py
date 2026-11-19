@@ -97,11 +97,25 @@ def test_all_three_units_read_the_one_env_file_that_setup_unit_env_writes(machin
         done = _cox(machine, *args, extra_env={"COXSWAIN_STORE_DOUBLE": "sqlite"})
         assert done.returncode == 0, (args, done.stdout + done.stderr)
         assert "tok-smoke-1" not in done.stdout + done.stderr
+    # The chair and lander installs write systemd user units on every platform; the upgrade install writes a launchd
+    # agent on darwin instead, which has no EnvironmentFile= and sources the env file through its ProgramArguments.
     unit_dir = home / ".config" / "systemd" / "user"
     line = f"EnvironmentFile=-{env_file}"
-    for name in ("coxswain-chair.service", "coxswain-lander.service", "coxswain-upgrade.service"):
+    units = ["coxswain-chair.service", "coxswain-lander.service"]
+    if sys.platform != "darwin":
+        units.append("coxswain-upgrade.service")
+    for name in units:
         assert (unit_dir / name).read_text().splitlines().count(line) == 1, name
         assert stat.S_IMODE((unit_dir / name).stat().st_mode) in (0o600, 0o644), name
+    if sys.platform == "darwin":
+        assert not (unit_dir / "coxswain-upgrade.service").exists()
+        plist = home / "Library" / "LaunchAgents" / "coxswain-upgrade.plist"
+        text = plist.read_text()
+        assert "tok-smoke-1" not in text
+        arguments = plistlib.loads(text.encode())["ProgramArguments"]
+        assert arguments[:2] == ["/bin/sh", "-c"] and arguments[4] == str(env_file), arguments
+        assert arguments[6:8] == ["upgrade", "--scheduled"], arguments  # then the same command the systemd unit runs
+        assert stat.S_IMODE(plist.stat().st_mode) in (0o600, 0o644)
 
 
 def test_the_launchd_agents_carry_no_secret_and_read_the_env_file_at_launch(machine: dict) -> None:

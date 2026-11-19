@@ -32,9 +32,12 @@ import pytest
 from smoke import gh_replay, plan
 
 ROOT = Path(__file__).resolve().parents[1]
+# This tree's source roots, ahead of the venv, in src/tools/pytest.ini's order: an editable install in the runner's venv
+# may point at an older checkout, and `agent_tools` imports `core` and `harness`, so all three must come from here.
+# Subprocesses need no PYTHONPATH: every child runs the `install` venv's python, built from this tree, with install.env.
+sys.path[:0] = [str(ROOT / "src" / name) for name in ("tools", "graphs", "cartridges")]
 # One reader of a Forgejo branch answer, shared with the code under test: the forge's own parser, imported from this
 # tree (not from whatever checkout the runner's venv installed), since the fixtures poll the same endpoint it does.
-sys.path.insert(0, str(ROOT / "src" / "tools"))
 from agent_tools.forge_forgejo import parse_branch_tip  # noqa: E402
 
 SYSTEM_PATH = "/usr/local/bin:/usr/bin:/bin"
@@ -593,7 +596,7 @@ def _gh_version(gh: str) -> str:
 
 @pytest.fixture
 def github(sandbox: Sandbox, tmp_path: Path, request: pytest.FixtureRequest) -> Iterator[GitHub]:
-    gh = shutil.which("gh")
+    gh = gh_replay.real_gh()
     if gh is None:
         _unavailable(plan.unavailable("no gh on PATH", required=_required()))
     recording = GH_RECORDINGS / plan.gh_recording_name(request.node.name)
