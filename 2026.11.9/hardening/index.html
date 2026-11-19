@@ -6975,6 +6975,15 @@ a new stacked initiative that needs it is held with the reason (<code>core.landi
 epic branch. Nothing writes into the bad row: it is the evidence. A pass of <code>cox lander run</code> that fails for any
 other reason tells the chair once per distinct failure (<code>lander.pass_failure_notice</code>). Proven by
 <code>smoke/test_lander_unreadable_record.py</code>.</p>
+<p><strong>Status (the epic).</strong> <code>harness/epic*.py</code>, the facade and every part H9 split it into, is strict, with no ignores and
+no <code>dict[str, Any]</code> or <code>Mapping[str, Any]</code>; <code>test_repo_gates</code> pins the glob. The parts' shared helpers lost their
+underscore, since strict refuses a private name read across modules. <code>harness/epic_types.py</code> holds the records the
+driver reads: <code>TaskRecord</code> (a run's task record, file or <code>task_records</code>), <code>AttemptRow</code>, <code>Attempt</code> and <code>PhaseRecord</code>,
+each a TypedDict with one pure constructor that refuses input that is not JSON or whose named keys have the wrong
+type. A refused task record, or attempts row, is never dropped: it counts as an attempt with no verdicts, and the
+task is held for a person when it leaves the attempt count or the resume unsure. The in-process shapes are typed
+too: <code>EpicItem</code> (a work item), <code>TaskEntry</code>, <code>Quarantine</code> and <code>BuildRecord</code>. The runner stays <code>Any</code> on <code>Ctx</code> and
+<code>run_epic</code>: it is duck-typed, and tests add attributes to it.</p>
 <h2 id="h3-the-lander-does-not-block">H3. The lander does not block</h2>
 <p><strong>Evidence.</strong> A repo with no CI held every land for 30 minutes, again and again (#1167). A repo with CI still holds
 the lander for the length of its run.</p>
