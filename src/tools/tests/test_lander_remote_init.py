@@ -79,7 +79,7 @@ class Hosts:
         run(seed, "add", "--all")
         run(seed, "commit", "-q", "-m", "base")
         run(seed, "push", "-q", "origin", "main")
-        self.lane, self.home = tmp_path / "omarchy" / "repo", tmp_path / "jarvis" / "repo"
+        self.lane, self.home = tmp_path / "lane-host" / "repo", tmp_path / "lander-host" / "repo"
         for clone in (self.lane, self.home):
             clone.parent.mkdir()
             run(tmp_path, "clone", "-q", str(self.origin), str(clone))
@@ -90,7 +90,7 @@ class Hosts:
         self.clock = 0
         self.forge = PushingForge()
         self.ports = lander.Ports(
-            conn=self.conn, worker="lander@jarvis", now=self.now, tasks=lambda i: [dict(r) for r in self.rows],
+            conn=self.conn, worker="lander@lander-host", now=self.now, tasks=lambda i: [dict(r) for r in self.rows],
             meta=lambda i: {"initiative": {"id": i, "title": f"Title of {i}"}, "cartridge": {}, "gate": "full", "epic_issue": None},
             forge=self.forge, checks=lambda repo, tree, gate: (True, "ok"), mark_merged=lambda i, t, tip: None,
             mark_done=lambda i, t, pr: None, notify=lambda kind, fields: self.notes.append((kind, dict(fields))),
@@ -121,7 +121,7 @@ class Hosts:
 
     def lane_merges(self, phase: str) -> ops.PhaseMerge:
         """The build run's own phase merge, on the lane, into the lane's local `init/i`; nothing is pushed."""
-        return ops.merge_phase(self.conn, self.lane, initiative="i", phase=phase, tasks=self.rows, worker="run:omarchy",
+        return ops.merge_phase(self.conn, self.lane, initiative="i", phase=phase, tasks=self.rows, worker="run:lane-host",
                                now=self.now(), fetch=lambda b: fetch_branch(self.lane, b))
 
     def record(self) -> lr.LandingRecord:
