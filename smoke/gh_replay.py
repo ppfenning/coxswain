@@ -13,6 +13,9 @@ Every decision (the request key, what counts as a write, the scrub, the Link rew
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
 import threading
 import urllib.error
 import urllib.request
@@ -22,6 +25,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from smoke import plan
+
+MISE_WHICH_TIMEOUT_S = 30
 
 UPSTREAM = "https://api.github.com"
 UPSTREAM_TIMEOUT_S = 30
@@ -146,3 +151,24 @@ def load(path: Path) -> dict:
 def save(path: Path, recording: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(recording, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def real_gh(found: str | None = None) -> str | None:
+    """The gh binary the contract tests run: `found` (default `shutil.which("gh")`), or, when that is a mise shim (it
+    resolves to an executable named `mise`), the binary `mise which gh` names under the caller's own environment.
+
+    A shim cannot be run under the sandbox's HOME: there mise reads the operator's global config as untrusted from any
+    cwd below it, prints "Config files in ... are not trusted" and exits 1 before gh starts, and from elsewhere it falls
+    back to the system gh rather than the operator's. A shim mise cannot resolve raises with mise's own stderr."""
+    found = shutil.which("gh") if found is None else found
+    if found is None:
+        return None
+    launcher = Path(os.path.realpath(found))
+    if launcher.name != "mise":
+        return found
+    done = subprocess.run([str(launcher), "which", "gh"], capture_output=True, text=True, env=dict(os.environ),
+                          timeout=MISE_WHICH_TIMEOUT_S)
+    resolved = done.stdout.strip()
+    if done.returncode != 0 or not resolved:
+        raise RuntimeError(f"{found} is a mise shim and `mise which gh` exited {done.returncode}: {done.stderr.strip()}")
+    return resolved
