@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 import json
 import plistlib
-import re
 import subprocess
 import time
 from pathlib import Path, PurePosixPath
@@ -13,6 +12,8 @@ from pathlib import Path, PurePosixPath
 import pytest
 
 from agent_tools import bounded_run, chair_service, doctor, lander_cli, unit_env, upgrade_edge
+from core import bounded_proc as core_bounded
+from harness import bounded_proc
 
 SRC = Path(__file__).resolve().parents[2]
 HOME = PurePosixPath("/home/user")
@@ -53,6 +54,14 @@ def test_completed_turns_a_real_hung_child_into_exit_124_with_the_failure_line()
     assert (merged.returncode, merged.stdout) == (124, b"\nsleep 30 timed out after 0.5 seconds")
     shell = bounded_run.completed("sleep 30", 0.5, shell=True, capture_output=True, text=True)
     assert (shell.returncode, shell.stderr) == (124, "sleep 30 timed out after 0.5 seconds")
+    with pytest.raises(subprocess.CalledProcessError) as raised:  # the error a `check=True` caller already handles
+        bounded_run.completed(["sleep", "30"], 0.5, capture_output=True, text=True, check=True)
+    assert raised.value.returncode == 124
+
+
+def test_completed_returns_a_child_that_finishes_as_subprocess_run_returns_it() -> None:
+    done = bounded_run.completed(["sh", "-c", "echo out; echo err >&2; exit 3"], capture_output=True, text=True)
+    assert (done.returncode, done.stdout, done.stderr) == (3, "out\n", "err\n")
 
 
 _SPAWNERS = frozenset({"run", "Popen", "check_output", "call", "check_call"})
@@ -113,17 +122,18 @@ def test_the_guard_sees_an_aliased_spawn_and_a_timed_one_passes() -> None:
 def test_no_subprocess_in_the_tools_or_the_harness_runs_without_a_timeout_outside_the_allowlist() -> None:
     """Regression: the edge timer hung on a `gh` with no timeout, and an adapter's `gh pr list` (`_run_argv`) had none
     either. Every spawn passes `timeout=` (the bounded helpers do) or is named in ALLOWED_UNTIMED with its reason."""
-    found = _untimed_calls(SRC / "tools" / "agent_tools") | _untimed_calls(SRC / "graphs" / "harness")
+    found = (_untimed_calls(SRC / "tools" / "agent_tools") | _untimed_calls(SRC / "graphs" / "harness")
+             | _untimed_calls(SRC / "cartridges" / "core"))
     assert sorted(found - ALLOWED_UNTIMED.keys()) == []
     assert sorted(ALLOWED_UNTIMED.keys() - found) == []  # an entry that no longer matches anything is removed
 
 
 def test_the_tools_and_the_harness_share_one_set_of_bounds() -> None:
-    """Regression: bounded_run said 30 seconds and epic.py 120; the harness twin and epic now carry the one value."""
-    twin = (SRC / "graphs" / "harness" / "bounded_proc.py").read_text(encoding="utf-8")
-    numbers = {name: int(value) for name, value in re.findall(r"^(\w+_SECONDS) = (\d+)$", twin, re.MULTILINE)}
-    assert numbers == {name: getattr(bounded_run, name) for name in numbers}
-    assert set(numbers) == {"GH_TIMEOUT_SECONDS", "GIT_TIMEOUT_SECONDS", "GIT_SLOW_TIMEOUT_SECONDS", "STEP_TIMEOUT_SECONDS"}
+    """Regression: bounded_run said 30 seconds and epic.py 120, and the harness once kept a twin of bounded_run. Both
+    names are now `core.bounded_proc`'s one implementation, and epic reads its gh bound from it."""
+    shared = ("GH_TIMEOUT_SECONDS", "GIT_TIMEOUT_SECONDS", "GIT_SLOW_TIMEOUT_SECONDS", "STEP_TIMEOUT_SECONDS",
+              "completed", "default_timeout", "git_subcommand")
+    assert all(getattr(bounded_proc, name) is getattr(core_bounded, name) is getattr(bounded_run, name) for name in shared)
     epic = (SRC / "graphs" / "harness" / "epic_branches.py").read_text(encoding="utf-8")
     assert "_GH_TIMEOUT_SECONDS = bounded_proc.GH_TIMEOUT_SECONDS" in epic
 
