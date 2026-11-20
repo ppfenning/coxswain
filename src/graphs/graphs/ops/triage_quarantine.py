@@ -39,11 +39,16 @@ else about the attempt changes.
 The `triage` node that follows must cite exactly the keys `facts` produced; a
 cite naming one it did not produce is a fabricated citation, and
 `check_citation` is the mechanical check that catches it — alongside zero
-cites and a diagnosis that quotes no objection text.
+cites and a diagnosis that quotes no objection text, or, when review did not
+object, no line of the failed check's output.
 
 `_objections` collects the record's own words — each attempt's reason,
 review finding, adversary claim and counter, and arbitration reasoning — the
-vocabulary `check_citation` holds a diagnosis to. `_already_fired` reads
+vocabulary `check_citation` holds a diagnosis to when review, adversary or
+arbitration objected (`_review_objected`). `_check_output` collects the lines
+of each attempt's `evidence`; a quarantine from a failed configured check that
+review approved holds no objection, so the diagnosis may quote one of those
+lines instead. `_already_fired` reads
 `attempts[].triage` for a prior run's `(class, diagnosis)`: an exact repeat
 means the cap was already cleared on this reasoning once, and clearing it
 again teaches nothing, so `run` escalates instead of emitting again. `_emit`
@@ -113,15 +118,23 @@ def check_citation(
     diagnosis: str,
     facts_: Mapping[str, Any],
     objections: Sequence[str],
+    *,
+    check_output: Sequence[str] = (),
+    objected: bool = True,
 ) -> str | None:
-    """None when the citation stands; otherwise the reason it is refused, per §1."""
+    """None when the citation stands; otherwise the reason it is refused, per §1.
+
+    With `objected` the diagnosis must quote an objection; without it, a line of the failed check's output also counts."""
     if not cites:
         return "zero cites: a triage answer must cite at least one fact"
     fabricated = [cite for cite in cites if cite not in facts_]
     if fabricated:
         return f"fabricated citation: {fabricated[0]!r} is not a key `facts` produced"
-    if not any(objection and objection in diagnosis for objection in objections):
-        return "diagnosis quotes no objection text verbatim from the record"
+    sources = objections if objected else [*objections, *check_output]
+    if not any(text and text in diagnosis for text in sources):
+        if objected:
+            return "diagnosis quotes no objection text verbatim from the record"
+        return "diagnosis quotes no objection or failed-check text verbatim from the record"
     return None
 
 
@@ -225,6 +238,23 @@ def _objections(attempts: Sequence[Mapping[str, Any]]) -> list[str]:
     return texts
 
 
+def _review_objected(attempts: Sequence[Mapping[str, Any]]) -> bool:
+    """True when review, adversary or arbitration said something beyond each attempt's bare `reason`."""
+    reasons = [attempt for attempt in attempts if attempt.get("reason")]
+    return len(_objections(attempts)) > len(reasons)
+
+
+def _check_output(attempts: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Each non-blank line of every attempt's `evidence`, a string or a mapping's `output`: a failed check's words."""
+    lines: list[str] = []
+    for attempt in attempts:
+        for entry in attempt.get("evidence") or []:
+            text = entry.get("output") if isinstance(entry, Mapping) else entry
+            if isinstance(text, str):
+                lines.extend(line.strip() for line in text.splitlines() if line.strip())
+    return lines
+
+
 def _already_fired(
     attempts: Sequence[Mapping[str, Any]], class_: str, diagnosis: str, triaged: Sequence[Mapping[str, Any]] = ()
 ) -> dict[str, Any] | None:
@@ -292,6 +322,8 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
 
     facts_ = facts(work_item, attempts)
     objections = _objections(attempts)
+    check_output = _check_output(attempts)
+    objected = _review_objected(attempts)
     context = list(cartridge.get("context") or [])
 
     triaged = dict(
@@ -307,9 +339,11 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
                 f"Item: {work_item}\nFacts: {facts_}\n"
                 f"Earlier triage of this item: {prior_records or 'none'}\n\n"
                 f"{_CLASS_GUIDE}\n\n"
+                f"Failed-check output lines: {check_output or 'none'}\n\n"
                 "Cite the fact key(s) that support your diagnosis, quote the "
-                "objection text verbatim in the diagnosis, and return the class, "
-                "diagnosis, cites and the action to take."
+                "objection text verbatim in the diagnosis (or, when review did not "
+                "object, one of the failed check's output lines verbatim), and return "
+                "the class, diagnosis, cites and the action to take."
             ),
         )
     )
@@ -321,7 +355,7 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
     into = str(triaged.get("into") or "")
     target = str(work_item.get("id"))
 
-    refusal = check_citation(cites, diagnosis, facts_, objections)
+    refusal = check_citation(cites, diagnosis, facts_, objections, check_output=check_output, objected=objected)
     if refusal is not None:
         raise ContractViolation(f"triage answer refused: {refusal}")
     if class_ not in EFFECTS:
