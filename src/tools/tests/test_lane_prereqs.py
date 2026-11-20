@@ -416,9 +416,12 @@ def _host(tmp_path: Path, *, docker: str | None = _DOCKER_UP, tools=("pg_dump",)
                          'echo "tmpfs 16000000 1000 ${FREE_KB:-8000000} 1% $2"')
     _tool(bin_dir, "free", 'echo "               total        used        free      shared  buff/cache   available"; '
                            'echo "Mem:        32000000    12000000     2000000      500000    18000000    ${FREE_MEM_KB:-8000000}"')
-    # The probe's own clock and watchdog: the real sleep and date, and nothing else from this machine.
-    for name in ("sleep", "date"):
-        (bin_dir / name).symlink_to(shutil.which(name) or f"/bin/{name}")
+    # The probe's own clock and watchdog: the real sleep, date and (where the machine has it) setsid, as a lane host
+    # has them, and nothing else from this machine.
+    for name in ("sleep", "date", "setsid"):
+        found = shutil.which(name)
+        if found is not None:
+            (bin_dir / name).symlink_to(found)
     # The lane's login shell, minus startup files: a real one would read /etc/profile, which puts this machine's own
     # tools back on the PATH. It runs `-c <command>` under exactly the PATH given.
     _tool(bin_dir, "login-sh", 'while [ "$#" -gt 0 ] && [ "$1" != -c ]; do shift; done; exec /bin/sh -c "$2"')

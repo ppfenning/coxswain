@@ -18,7 +18,7 @@ Naming, stable because the set task resolves against `REGISTRY` through
 Keys by section, in section order:
 
 - lanes and machines: cartridge `policy.dispatch.max_in_flight`,
-  `policy.dispatch.local_lanes`, `policy.dispatch.lane_model`.
+  `policy.dispatch.local_lanes`, `policy.dispatch.lane_model`, `policy.dispatch.lane_prereqs`.
 - spend and pacing: profile `window_ceiling_usd`, `weekly_ceiling_usd`,
   `node_cap_usd`, `weekly_reset`, `monthly_budget_usd`, `budget_timezone`; cartridge `policy.pacing.hard_stop_fraction`,
   `policy.pacing.weekly_hard_stop_fraction`, `policy.pacing.min_elapsed_fraction`.
@@ -110,7 +110,7 @@ def _in(section: str, scope: str, source_file: str, keys: tuple[str, ...], opera
 
 REGISTRY: tuple[Setting, ...] = (
     *_in("lanes and machines", "cartridge", CARTRIDGE_FILE,
-         ("policy.dispatch.max_in_flight", "policy.dispatch.local_lanes")),
+         ("policy.dispatch.max_in_flight", "policy.dispatch.local_lanes", "policy.dispatch.lane_prereqs")),
     Setting("cartridge", "policy.dispatch.lane_model", "lanes and machines", CARTRIDGE_FILE, "policy.dispatch.lane_model",
             description=LANE_MODEL_DESCRIPTION),
     *_in("spend and pacing", "profile", PROFILE_FILE,

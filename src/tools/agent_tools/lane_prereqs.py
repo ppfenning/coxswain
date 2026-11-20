@@ -80,19 +80,22 @@ if [ -z "$sleep_path" ]; then
   exit 0
 fi
 # limited SECONDS CMD...: CMD under a watchdog; exit 124 when the watchdog had to kill it. CMD runs in a process group
-# of its own (job control in this subshell, else setsid), and the watchdog kills the whole group, so a grandchild (a
-# wrapper's child, a docker plugin, a credential sub-helper) cannot hold the caller's pipe open. A background job
-# reads /dev/null unless stdin is redirected, so stdin goes over on fd 3; the shell's own job notices go to /dev/null.
+# of its own, and the watchdog kills the whole group, so a grandchild (a wrapper's child, a docker plugin, a
+# credential sub-helper) cannot hold the caller's pipe open. The group comes from setsid where it exists (Linux): with
+# job control off the job is no group leader, so setsid runs it in place and its pid is the group. Without setsid
+# (macOS) it comes from job control in this subshell, which bash, the macOS sh, grants with no terminal. The wrong
+# belief was "set -m gives every sh a process group": under dash with no terminal (CI's /bin/sh) the job stayed in the
+# shell's group and a wrapper's hung child kept the pipe open, so setsid is chosen first. A background job reads
+# /dev/null unless stdin is redirected, so stdin goes over on fd 3; the shell's own job notices go to /dev/null.
 limited() (
   secs=$1
   shift
   exec 3<&0 4>&2 2>/dev/null
-  set -m
-  case $- in *m*) group=1 ;; *) group= ;; esac
-  if [ -n "$group" ] || [ -z "$setsid_path" ]; then
-    "$@" <&3 2>&4 3<&- 4>&- &
-  else
+  if [ -n "$setsid_path" ]; then
     "$setsid_path" "$@" <&3 2>&4 3<&- 4>&- &
+  else
+    set -m
+    "$@" <&3 2>&4 3<&- 4>&- &
   fi
   pid=$!
   ( "$sleep_path" "$secs"; kill -9 -"$pid" || kill -9 "$pid" ) >/dev/null 3<&- 4>&- &

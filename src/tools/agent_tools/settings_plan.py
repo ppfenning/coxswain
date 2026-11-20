@@ -45,6 +45,7 @@ from agent_tools.settings_model import STORE_MODES, Setting, setting_for
 _CHAIR_READS = {
     "policy.dispatch.max_in_flight": (chair_cap.cap_from_cartridge, "a positive integer"),
     "policy.dispatch.local_lanes": (chair_cap.local_lanes_from_cartridge, f"one of {', '.join(chair_cap.LOCAL_LANES)}"),
+    "policy.dispatch.lane_prereqs": (chair_cap.lane_prereqs_from_cartridge, "on or off"),
 }
 
 
