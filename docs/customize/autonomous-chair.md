@@ -920,7 +920,7 @@ timer files for this platform and prints the lines that activate them;
 
 ### The stall alarm
 
-Each tick, the chair checks three things that mean the loop has stopped moving:
+Each tick, the chair checks these things, each a sign that the loop has stopped moving:
 
 - **No land.** Initiatives are open, and nothing has landed for
   `land_hours`. An initiative is open when its landing record is neither
@@ -940,6 +940,22 @@ Each tick, the chair checks three things that mean the loop has stopped moving:
   less than an hour ago. Numbers in the reason are ignored, so a changing
   PR number or count does not hide a repeat. The alarm shows the newest
   attempt's own reason.
+
+- **Idle with work held.** No lane is live and no land is in progress, and
+  the chair has made no progress for `idle_minutes`, 60 by default.
+  Progress is a launch or land that went out, or a model call. The clock
+  starts at the last progress, or at the chair's first recorded action if
+  that is later. After a restart, if the last progress is older than the
+  setting, the alarm is raised on the first tick. If work is held for you,
+  the alarm lists each held task and initiative, its hold reason, and the
+  command that releases it. If nothing is held and no host can take epics,
+  the chair writes one `no worker capacity` notice instead. That happens
+  when every host is draining or none is configured. Being idle on purpose
+  is not a stall. Ready work with free lanes is left to the no-launch
+  check. You hear about each idle spell once, however long it lasts and
+  however its holds change. A live lane pauses the spell but does not end
+  it, so a run that dies before its first model call does not start a new
+  one. Only progress ends a spell. Its alarm then closes without a message.
 
 Under a hard stop, nothing launches or lands on purpose, so only the
 same-failure check runs. A no-land or no-launch alarm that is already
@@ -962,7 +978,12 @@ chair:
     land_hours: 6       # 0 turns the check off
     launch_minutes: 60  # 0 turns the check off
     repeat_ticks: 3     # at least 2; 0 turns the check off
+    stranded_minutes: 30  # 0 turns the check off
+    idle_minutes: 60    # 0 turns the check off
 ```
+
+`chair: idle_alarm_minutes: 60` sets the idle check on its own, as a flat
+key. If both are set, the flat key wins.
 
 ## What it records
 

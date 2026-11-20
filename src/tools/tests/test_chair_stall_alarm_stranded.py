@@ -5,7 +5,8 @@ from datetime import UTC, datetime, timedelta
 from agent_tools.chair_stall_alarm import observe, plan_alarms, resolve_settings
 
 _NOW = datetime(2026, 11, 20, 12, 0, tzinfo=UTC)
-_GATE = {"free_lanes": 0, "ready": 0, "subject": "", "held": frozenset(), "idle_raised": False, "paused": False}
+_GATE = {"free_lanes": 0, "ready": 0, "subject": "", "held": frozenset(), "idle_raised": False, "paused": False,
+         "busy": True, "capacity": 1, "held_items": [], "progress_at": None}  # busy: the idle check stays out of it
 
 
 def _ts(minutes_ago: float) -> str:
@@ -16,7 +17,7 @@ def _facts(stranded, minutes=30, opened=None):
     return {
         "settings": {**resolve_settings(None), "stranded_minutes": minutes},
         "last_land_at": None, "open_initiatives": {}, "last_launch_at": None, "watch_since": _ts(600),
-        "heads": {}, "streaks": [], "open": opened or {}, "stranded": stranded,
+        "heads": {}, "streaks": [], "open": opened or {}, "stranded": stranded, "holds": [],
     }
 
 
