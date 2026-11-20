@@ -134,18 +134,45 @@ def grant_statements(tables: Iterable[str], schema: str = "public") -> tuple[str
     )
 
 
+# The attributes that widen a role, as `ALTER ROLE` spells them. Postgres 16 lets an owner change each one only when
+# it holds that attribute itself (a superuser holds them all), even to turn it off; CREATEROLE alone is enough for
+# CREATEROLE, as altering a role at all needs it.
+WIDENING = ("SUPERUSER", "CREATEDB", "CREATEROLE", "BYPASSRLS", "REPLICATION")
+
+
+@dataclass(frozen=True)
+class RoleAttrs:
+    """A role's attributes as `pg_roles` has them. `widening` holds the `WIDENING` names that are on."""
+
+    widening: frozenset[str] = frozenset()
+    inherit: bool = True
+    login: bool = False
+    connection_limit: int = -1
+    expires: bool = False
+
+
 @dataclass(frozen=True)
 class RoleState:
-    """What the store already has: whether the group and the login role exist, the roles each is a member of, the
-    database and schema the connection is in, and the schema's tables."""
+    """What the store already has: the group and login roles' attributes (None when a role does not exist) and what
+    each is a member of, the `WIDENING` attributes the connecting owner holds, the connection's database and schema,
+    and the schema's tables."""
 
-    group_exists: bool
-    login_exists: bool
+    group: RoleAttrs | None
+    login: RoleAttrs | None
     tables: tuple[str, ...]
     schema: str = "public"
     database: str = "postgres"
     group_memberships: tuple[str, ...] = ()
     login_memberships: tuple[str, ...] = ()
+    owner: frozenset[str] = frozenset(WIDENING)
+
+    @property
+    def group_exists(self) -> bool:
+        return self.group is not None
+
+    @property
+    def login_exists(self) -> bool:
+        return self.login is not None
 
 
 @dataclass(frozen=True)
@@ -184,8 +211,50 @@ def _quoted(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
-# Every attribute a role can carry that widens it, turned off; INHERIT on, so a login uses its group's grants.
-_SAFE_ATTRIBUTES = "NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION INHERIT CONNECTION LIMIT -1"
+def _attribute_changes(attrs: RoleAttrs, login: bool) -> tuple[str, ...]:
+    """The `ALTER ROLE` clauses that bring `attrs` to the safe shape: every widening attribute off, INHERIT on (so a
+    login uses its group's grants), no connection limit, no expiry, and LOGIN or NOLOGIN. Only what differs: an owner
+    that is not a superuser may not even turn off an attribute it lacks, so one already off is never sent."""
+    return (
+        *(f"NO{name}" for name in WIDENING if name in attrs.widening),
+        *(() if attrs.inherit else ("INHERIT",)),
+        *(() if attrs.connection_limit == -1 else ("CONNECTION LIMIT -1",)),
+        *(() if not attrs.expires else ("VALID UNTIL 'infinity'",)),
+        *(() if attrs.login == login else ("LOGIN" if login else "NOLOGIN",)),
+    )
+
+
+def owner_refusal(state: RoleState, login: str) -> str | None:
+    """Pure. Why the connecting owner cannot reset the roles, or None: a widening attribute is on for one of them and
+    the owner does not hold it, which Postgres requires even to turn it off."""
+    stuck = [
+        (name, attr)
+        for name, attrs in ((GROUP_ROLE, state.group), (login, state.login)) if attrs is not None
+        for attr in WIDENING if attr in attrs.widening and attr not in state.owner
+    ]
+    if not stuck:
+        return None
+    what = ", ".join(f"{name} has {attr}" for name, attr in stuck)
+    fix = "; ".join(f"ALTER ROLE {name} NO{attr}" for name, attr in stuck)
+    return (f"{what}, which only a role holding that attribute may clear and this store owner does not; run "
+            f"`{fix}` as a superuser, or run this command as one")
+
+
+def residue(state: RoleState) -> tuple[str, ...]:
+    """Pure. What a reset left behind, read back after it: a widening attribute still on, or a membership other than
+    the login's in the group. Empty after a reset that worked."""
+    roles: tuple[tuple[str, RoleAttrs | None, tuple[str, ...], frozenset[str]], ...] = (
+        (GROUP_ROLE, state.group, state.group_memberships, frozenset()),
+        ("the login role", state.login, state.login_memberships, frozenset({GROUP_ROLE})),
+    )
+    return tuple(
+        item
+        for name, attrs, memberships, allowed in roles
+        for item in (
+            *(f"{name} still has {a}" for a in sorted(attrs.widening if attrs else ())),
+            *(f"{name} is still a member of {m}" for m in sorted(set(memberships) - allowed)),
+        )
+    )
 
 
 def _direct_grant_revokes(role: str, schema: str, database: str) -> tuple[str, ...]:
@@ -204,26 +273,32 @@ def role_plan(state: RoleState, login: str, kept_password: str | None, new_passw
     """Pure. What `cox setup store worker-role` applies for `login`, the same on every run.
 
     The group role is created when absent and the login role when absent. Then both are reset: every widening
-    attribute off, every direct grant on the database, the schema and its objects revoked, and every membership
-    revoked but the login's in the group. The login gets the idle-in-transaction timeout (after a RESET ALL of any
-    other setting), and the group the grant set. The password is the one the env file already holds
-    (`kept_password`) when there is one, else `new_password`. It is set, as its verifier with `salt`, only when the
-    role is new or the file had none (no one can read a role's password back), so a repeat run changes nothing.
-    `revoke_public_create` also takes CREATE on the schema from PUBLIC, which Postgres before 15 grants by default."""
+    attribute that is on turned off (`_attribute_changes`), every direct grant on the database, the schema and its
+    objects revoked, and every membership revoked but the login's in the group. The login gets the
+    idle-in-transaction timeout (after a RESET ALL of any other setting), and the group the grant set. The password is
+    the one the env file already holds (`kept_password`) when there is one, else `new_password`. It is set, as its
+    verifier with `salt`, only when the role is new or the file had none (no one can read a role's password back), so
+    a repeat run changes nothing. `revoke_public_create` also takes CREATE on the schema from PUBLIC, which Postgres
+    before 15 grants by default. Check `owner_refusal` first: these statements assume the owner can apply them."""
     role, schema = _ident(login), _ident(state.schema)
     password = kept_password or new_password
     sets_password = not (state.login_exists and kept_password)
-    secret = f" PASSWORD {_literal(scram_verifier(password, salt))}" if sets_password else ""
-    create_group = () if state.group_exists else (f"CREATE ROLE {GROUP_ROLE} NOLOGIN",)
-    create_login = () if state.login_exists else (f"CREATE ROLE {role} LOGIN",)
+    secret = (f"PASSWORD {_literal(scram_verifier(password, salt))}",) if sets_password else ()
+    group_sql = (
+        (f"CREATE ROLE {GROUP_ROLE} NOLOGIN",) if state.group is None
+        else tuple(f"ALTER ROLE {GROUP_ROLE} {' '.join(c)}" for c in (_attribute_changes(state.group, False),) if c)
+    )
+    login_changes = (("LOGIN",) if state.login is None else _attribute_changes(state.login, True)) + secret
+    login_sql = (
+        (f"CREATE ROLE {role} {' '.join(login_changes)}",) if state.login is None
+        else ((f"ALTER ROLE {role} {' '.join(login_changes)}",) if login_changes else ())
+    )
     stray_group = sorted(set(state.group_memberships))
     stray_login = sorted(set(state.login_memberships) - {GROUP_ROLE})
     return RolePlan(
         statements=(
-            *create_group,
-            *create_login,
-            f"ALTER ROLE {GROUP_ROLE} {_SAFE_ATTRIBUTES} NOLOGIN",
-            f"ALTER ROLE {role} {_SAFE_ATTRIBUTES} LOGIN VALID UNTIL 'infinity'{secret}",
+            *group_sql,
+            *login_sql,
             *(f"REVOKE {_quoted(m)} FROM {GROUP_ROLE}" for m in stray_group),
             *(f"REVOKE {_quoted(m)} FROM {role}" for m in stray_login),
             *_direct_grant_revokes(GROUP_ROLE, schema, state.database),
@@ -237,6 +312,11 @@ def role_plan(state: RoleState, login: str, kept_password: str | None, new_passw
         password=password,
         sets_password=sets_password,
     )
+
+
+# Taken with pg_advisory_xact_lock for the whole setup transaction, so two setup runs queue rather than fail with
+# "tuple concurrently updated" on the shared role rows. Postgres scopes an advisory lock to its database.
+SETUP_LOCK_KEY = 0x636F785F776B72  # "cox_wkr"
 
 
 def worker_url(owner_url: str, login: str, password: str) -> str:

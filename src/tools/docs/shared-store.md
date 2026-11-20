@@ -75,7 +75,12 @@ The password reaches Postgres only as its SCRAM-SHA-256 verifier, so the server'
 
 Running the command again is safe. It keeps the password the file holds and leaves the grants exactly as listed: a grant added by hand is taken away, and a changed list is applied.
 It also resets both roles: superuser, createrole, createdb, bypassrls and replication off, every direct grant revoked, and every membership but `cox_worker` revoked.
+The reset takes away any grant made to either role by hand, including one you meant to keep. For example, if you revoked CONNECT on the database from PUBLIC and granted it to `cox_worker` instead, the next run revokes that grant too, and the workers cannot connect. Keep such a grant on another role, or grant it again after each run.
 Run it again after a migration that adds a table a worker writes.
+
+The owner does not have to be a superuser. A role with CREATEROLE, as managed Postgres gives you, is enough when it owns the store's database and holds ADMIN on `cox_worker`. The command changes only the attributes that are on. When an attribute such as BYPASSRLS is on and the owner does not hold it, Postgres will not let the owner clear it. The command then refuses, names the attribute and the `ALTER ROLE` a superuser can run, and changes nothing. A statement the store refuses, such as revoking a membership the owner has no ADMIN on, is also reported as a refusal and changes nothing.
+
+Concurrent runs queue on an advisory lock. Postgres scopes that lock to one database, so runs against two databases on one server do not wait for each other.
 
 On Postgres before 15, everyone may create tables in the `public` schema, and no grant to the worker takes that away. The doctor row then fails and says so. Run `REVOKE CREATE ON SCHEMA public FROM PUBLIC` as the owner, or pass `--revoke-public-create` to this command.
 

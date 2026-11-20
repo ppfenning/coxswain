@@ -13,12 +13,12 @@ import os
 from collections.abc import Sequence
 
 from harness import store_roles
-from harness.store_dialect import Connection, connect
+from harness.store_dialect import Cell, Connection, connect
 from harness.store_migrate import accepts, check_version, newer_descriptions, newer_refusal, open_store
 from harness.store_read import StoreVersionError
-from harness.store_roles import Probe, RolePlan, RoleState
+from harness.store_roles import Probe, RoleAttrs, RolePlan, RoleState
 
-__all__ = ["apply_role", "open_scoped", "probe", "probe_url"]
+__all__ = ["SetupRefused", "apply_role", "open_scoped", "probe", "probe_url"]
 
 # Postgres's insufficient_privilege.
 _REFUSED_SQLSTATE = "42501"
@@ -53,37 +53,64 @@ def _memberships(conn: Connection, role: str) -> tuple[str, ...]:
         f"JOIN pg_roles u ON u.oid = m.member WHERE u.rolname = {p}", (role,)))
 
 
+_ATTR_COLUMNS = ("rolname, rolsuper, rolcreatedb, rolcreaterole, rolbypassrls, rolreplication, rolinherit, "
+                 "rolcanlogin, rolconnlimit, rolvaliduntil IS NOT NULL AND rolvaliduntil <> 'infinity'")
+
+
+def _attrs(row: tuple[Cell, ...]) -> RoleAttrs:
+    on = (bool(row[1]), bool(row[2]), bool(row[3]), bool(row[4]), bool(row[5]))
+    return RoleAttrs(widening=frozenset(n for n, flag in zip(store_roles.WIDENING, on, strict=True) if flag),
+                     inherit=bool(row[6]), login=bool(row[7]), connection_limit=int(str(row[8])),
+                     expires=bool(row[9]))
+
+
 def _observe(conn: Connection, login: str) -> RoleState:
-    """Edge. Which of the two roles exist and what each is a member of, the connection's database and schema, and
-    the schema's tables."""
+    """Edge. Both roles' attributes (absent: None) and memberships, the widening attributes the connecting owner
+    holds, the connection's database and schema, and the schema's tables."""
     p = conn.dialect.placeholder
-    roles = {str(r[0]) for r in conn.query_all(
-        f"SELECT rolname FROM pg_roles WHERE rolname IN ({p}, {p})", (store_roles.GROUP_ROLE, login))}
+    found = {str(r[0]): _attrs(r) for r in conn.query_all(
+        f"SELECT {_ATTR_COLUMNS} FROM pg_roles WHERE rolname IN ({p}, {p})", (store_roles.GROUP_ROLE, login))}
+    me = conn.query_one(f"SELECT {_ATTR_COLUMNS} FROM pg_roles WHERE rolname = current_user")
+    owner = frozenset(store_roles.WIDENING) if me is None or bool(me[1]) else _attrs(me).widening
     where = conn.query_one("SELECT current_database(), current_schema()")
     database, schema = (str(where[0]), str(where[1])) if where else ("postgres", "public")
     tables = tuple(str(r[0]) for r in conn.query_all(
         f"SELECT table_name FROM information_schema.tables WHERE table_schema = {p} AND table_type = 'BASE TABLE'",
         (schema,)))
-    return RoleState(group_exists=store_roles.GROUP_ROLE in roles, login_exists=login in roles, tables=tables,
-                     schema=schema, database=database, group_memberships=_memberships(conn, store_roles.GROUP_ROLE),
-                     login_memberships=_memberships(conn, login))
+    return RoleState(group=found.get(store_roles.GROUP_ROLE), login=found.get(login), tables=tables, schema=schema,
+                     database=database, group_memberships=_memberships(conn, store_roles.GROUP_ROLE),
+                     login_memberships=_memberships(conn, login), owner=owner)
+
+
+class SetupRefused(ValueError):
+    """The owner cannot bring the roles to the safe shape; nothing was changed."""
 
 
 def apply_role(owner_url: str, login: str, kept_password: str | None, new_password: str, now: str,
                revoke_public_create: bool = False) -> RolePlan:
-    """Edge. As the store's owner: bring the store to this code's schema (`open_store`, the owner's one path), then
-    apply `store_roles.role_plan`, with a fresh salt, in one transaction, so a failure leaves the roles and grants as
-    they were. Returns the plan; its statements carry only the password's SCRAM verifier. Raises ValueError for a
-    store that is not Postgres, which has no roles, before opening it."""
+    """Edge. As the store's owner: bring the store to this code's schema (`open_store`, the owner's one path), then,
+    in one transaction holding `store_roles.SETUP_LOCK_KEY` (so concurrent runs queue), observe the roles, refuse
+    what `owner_refusal` refuses, apply `store_roles.role_plan` with a fresh salt, and read the roles back, refusing a
+    reset that left `residue`. A refusal or a failed statement rolls everything back. Returns the plan; its
+    statements carry only the password's SCRAM verifier. Raises ValueError for a store that is not Postgres, before
+    opening it, and `SetupRefused` for a refusal."""
     if not owner_url.startswith(_POSTGRES_SCHEMES):
         raise ValueError("a scoped worker role needs the Postgres store; this store has no roles")
     conn = open_store(owner_url, now)
     try:
-        plan = store_roles.role_plan(_observe(conn, login), login, kept_password, new_password,
-                                     os.urandom(store_roles.SALT_BYTES), revoke_public_create)
         with conn.transaction():
+            conn.query_all(f"SELECT pg_advisory_xact_lock({store_roles.SETUP_LOCK_KEY})")
+            state = _observe(conn, login)
+            refusal = store_roles.owner_refusal(state, login)
+            if refusal is not None:
+                raise SetupRefused(refusal)
+            plan = store_roles.role_plan(state, login, kept_password, new_password,
+                                         os.urandom(store_roles.SALT_BYTES), revoke_public_create)
             for sql in plan.statements:
                 conn.execute(sql)
+            left = store_roles.residue(_observe(conn, login))
+            if left:
+                raise SetupRefused(f"the reset left {'; '.join(left)}; nothing was changed")
         return plan
     finally:
         conn.close()

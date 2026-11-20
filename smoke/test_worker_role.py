@@ -298,3 +298,85 @@ def test_open_scoped_refuses_an_older_store_and_migrates_nothing(sandbox, postgr
     assert current == {"outcome": "opened", "version": newest}
     assert older["version"] == newest - 1
     assert older["outcome"].startswith("refused: ") and "never migrates" in older["outcome"]
+
+
+def _hash(machine) -> str:
+    return urlsplit(machine.store_url).path.rsplit("_", 1)[-1]
+
+
+@pytest.fixture
+def managed_owner(worker_machine, postgres) -> Iterator:
+    """A store owned by a role with CREATEROLE and no superuser, as managed Postgres gives an operator: its own
+    database, and ADMIN on the shared `cox_worker` group (made here by the superuser when no test has made it yet)
+    without being a member of it. The sandbox's provider profile points at this owner, so `cox` runs as it."""
+    h = _hash(worker_machine)
+    owner, password, database = f"smoke_owner_{h}", f"owner-pass-{h}", f"smoke_owned_{h}"
+    url = plan.with_database(postgres, database)
+    url = urlunsplit(urlsplit(url)._replace(netloc=f"{owner}:{password}@{urlsplit(url).netloc.rpartition('@')[2]}"))
+    _owner(worker_machine, postgres,
+           "DO $$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cox_worker') "
+           "THEN CREATE ROLE cox_worker NOLOGIN; END IF; END$$",
+           f"CREATE ROLE {owner} LOGIN CREATEROLE PASSWORD '{password}'",
+           f"GRANT cox_worker TO {owner} WITH ADMIN TRUE, INHERIT FALSE, SET FALSE",
+           f'CREATE DATABASE "{database}" OWNER {owner}')
+    provider = worker_machine.home / ".config" / "agent-tools" / "provider.yaml"
+    provider.write_text(plan.provider_profile_text(url), encoding="utf-8")
+    try:
+        yield worker_machine, url
+    finally:
+        login = _login(worker_machine)
+        _owner(worker_machine, postgres, f'DROP DATABASE IF EXISTS "{database}" WITH (FORCE)',
+               f"DROP ROLE IF EXISTS {login}", f"DROP ROLE IF EXISTS {owner}")
+
+
+def _setup_as(machine, *extra: str) -> subprocess.CompletedProcess[str]:
+    return machine.cox("setup", "store", "worker-role", _worker(machine), *extra)
+
+
+def test_an_owner_with_createrole_and_no_superuser_sets_up_the_role(managed_owner):
+    machine, url = managed_owner
+    first = _setup_as(machine)
+    assert first.returncode == 0, first.stdout + first.stderr
+    again = _setup_as(machine)
+    assert again.returncode == 0 and "password: unchanged in" in again.stdout, again.stdout + again.stderr
+    assert _doctor_row(machine)["ok"] is True
+
+
+def test_an_attribute_the_owner_cannot_clear_is_refused_by_name_and_nothing_changes(managed_owner, postgres):
+    machine, url = managed_owner
+    assert _setup_as(machine).returncode == 0
+    login = _login(machine)
+    on_server = plan.with_database(postgres, urlsplit(url).path.lstrip("/"))
+    _owner(machine, on_server, f"ALTER ROLE {login} BYPASSRLS")
+    done = _setup_as(machine)
+    assert done.returncode == 2, done.stdout + done.stderr
+    assert done.stderr.startswith(f"refusing: {login} has BYPASSRLS, which only a role holding that attribute")
+    assert f"ALTER ROLE {login} NOBYPASSRLS" in done.stderr and "Traceback" not in done.stderr
+
+
+def test_a_statement_the_owner_may_not_run_is_a_refusal_not_a_traceback(managed_owner, postgres):
+    machine, url = managed_owner
+    assert _setup_as(machine).returncode == 0
+    login = _login(machine)
+    on_server = plan.with_database(postgres, urlsplit(url).path.lstrip("/"))
+    _owner(machine, on_server, f"GRANT pg_write_all_data TO {login}")
+    done = _setup_as(machine)
+    assert done.returncode == 2, done.stdout + done.stderr
+    assert done.stderr.startswith("refusing: the store refused the setup (42501): permission denied to revoke role")
+    assert "nothing was changed" in done.stderr and "Traceback" not in done.stderr
+    assert _owner(machine, on_server, f"SELECT pg_has_role('{login}', 'pg_write_all_data', 'MEMBER')") == [[[True]]]
+
+
+def test_concurrent_setup_runs_queue_instead_of_failing(worker_machine):
+    h = _hash(worker_machine)
+    names = [f"smoke-{h}-c{i}" for i in range(4)]
+    argv = [str(worker_machine.install.cox), "setup", "store", "worker-role"]
+    try:
+        procs = [subprocess.Popen([*argv, name, "--environment-file", str(worker_machine.home / f"{name}.env")],
+                                  env=worker_machine.env, cwd=worker_machine.home, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, text=True) for name in names]
+        results = [(p.wait(timeout=180), *p.communicate()) for p in procs]
+        assert all(code == 0 for code, _, _ in results), results
+    finally:
+        _owner(worker_machine, worker_machine.store_url,
+               *(f"DROP ROLE IF EXISTS cox_w_{name.replace('-', '_')}" for name in names))
