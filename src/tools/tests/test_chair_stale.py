@@ -40,5 +40,11 @@ def test_quarantined_twice_for_a_non_harness_cause_counts_regardless_of_age():
     )
 
 
-def test_approved_task_with_no_signal_at_all_says_no_activity_recorded():
-    assert stale_reason("approved", None, None, None, 0, 7, NOW) == "no activity recorded"
+def test_a_task_with_no_signal_at_all_is_new_not_stale():
+    assert stale_reason("ready", None, None, None, 0, 7, NOW) is None
+    assert stale_reason("approved", None, None, None, 0, 7, NOW) is None
+    assert stale_reason("blocked", None, None, None, 0, 7, NOW) is None
+
+
+def test_no_signal_does_not_hide_a_double_quarantine():
+    assert stale_reason("ready", None, None, None, 2, 7, NOW) == "quarantined twice for a non-harness cause"
