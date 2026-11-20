@@ -215,9 +215,10 @@ def test_a_branch_only_origin_has_is_brought_here_at_its_tip_and_nothing_is_push
 
     assert outcome.status == "done", outcome.detail
     # `fetch_branch` brings origin's copy here before `branch_source` is read, so it is used as the local copy.
-    assert not any("made here" in e or "pushed to origin" in e for e in outcome.events), "never recreated"
+    assert not any("made here" in e or "the one every host uses" in e for e in outcome.events), "never recreated"
     assert run(hosts.home, "rev-parse", "init/i^1") == published, "p2 merged onto origin's tip"
-    assert ("push", "init/i") not in hosts.forge.calls, "a copy that holds the record is not pushed again under at_pr"
+    assert hosts.forge.calls.count(("push", "init/i")) == 1, "adopt pushes nothing; p2's merge is pushed once, by the forge"
+    assert run(hosts.origin, "rev-parse", "refs/heads/init/i") == run(hosts.home, "rev-parse", "init/i"), "p2's merge is pushed"
     assert merge_sha(hosts, "p1") == published
 
 
@@ -334,3 +335,198 @@ def test_with_a_fetch_that_only_updates_origins_ref_origins_copy_is_branched_her
     assert adopted.wait is None and adopted.events == (f"i: init/i brought here from origin at {published[:12]}",)
     assert lg.rev(hosts.home, "refs/heads/init/i") == published
     assert hosts.forge.calls == [], "nothing pushed: origin's copy already holds the record"
+
+
+# -- 2026-11-20: push before recording, re-merge a phase that moved, one merge owner -------------------------------
+
+def merged(tip: str, merge: str) -> dict:
+    return {"state": "merged", "tip": tip, "merge_sha": merge}
+
+
+def test_a_merged_phase_whose_branch_moved_on_origin_is_merged_again_at_origins_tip() -> None:
+    record = {"branch": "init/i", "phases": {"p1": merged("t1", "m1"), "p2": merged("t2", "m2"), "p3": {"state": "open"}}}
+    [drift] = lander.moved_phases(record, {"p1": "t1-rebuilt", "p2": "t2"}, {"t1-rebuilt": False, "t2": True},
+                                  {"p1": True, "p2": True})
+    assert (drift.phase, drift.action, drift.tip) == ("p1", "remerge", "t1-rebuilt")
+    assert "its branch on origin is at t1-rebuilt (recorded at t1)" in drift.reason
+
+
+def test_a_phase_whose_branch_did_not_move_is_still_being_built_or_is_gone_is_left_alone() -> None:
+    record = {"branch": "init/i", "phases": {"p1": merged("t1", "m1")}}
+    assert lander.moved_phases(record, {"p1": "t1"}, {"t1": True}, {"p1": True}) == [], "the branch holds it"
+    assert lander.moved_phases(record, {"p1": "t9"}, {"t9": False}, {"p1": False}) == [], "a task still building"
+    assert lander.moved_phases(record, {}, {}, {"p1": True}) == [], "origin has no branch for it"
+
+
+def test_a_moved_tip_replaces_the_drift_of_its_recorded_tip() -> None:
+    old = lander.Drift("p1", "hold", "no copy of its tip t1")
+    other = lander.Drift("p2", "remerge", "p2 again", "t2")
+    moved = lander.Drift("p1", "remerge", "moved", "t1-rebuilt")
+    assert lander.with_moved([old, other], [moved]) == [other, moved]
+
+
+def lander_merges(hosts: Hosts, phase: str) -> lander.Outcome:
+    return lander.perform(hosts.ports, queue(hosts, phase))
+
+
+def origin_tip(hosts: Hosts) -> str:
+    return run(hosts.origin, "rev-parse", "refs/heads/init/i")
+
+
+def test_each_phase_the_lander_merges_is_on_origin_before_it_is_recorded_merged(hosts: Hosts) -> None:
+    """Failure 1: the merge stayed on the lander's machine, and a lane building p2 could not see its parent."""
+    hosts.lane_starts([task("a", "p1"), task("b", "p2", needs=("a",))])
+    p1 = hosts.lane_builds("p1")
+
+    done = lander_merges(hosts, "p1")
+
+    assert done.status == "done", done.detail
+    assert merge_sha(hosts, "p1") == origin_tip(hosts) and lg.is_ancestor(hosts.home, p1, origin_tip(hosts))
+    assert any(e.startswith("init/i pushed to origin at") and "before phase p1 was recorded merged" in e for e in done.events)
+    # The lane, where p2 is placed, finds the parent's merge on origin.
+    assert fetch_branch(hosts.lane, "init/i") is None
+    assert lg.is_ancestor(hosts.lane, merge_sha(hosts, "p1"), "refs/heads/init/i")
+
+
+def test_a_merge_origin_refuses_is_unwound_and_not_recorded_until_a_later_pass_pushes_it(hosts: Hosts) -> None:
+    hosts.lane_starts([task("a", "p1")])
+    hosts.lane_builds("p1")
+    run(hosts.lane, "push", "-q", "origin", "init/i")  # on origin at its base, so the lander's copy comes from there
+    base = origin_tip(hosts)
+    hook = hosts.origin / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\necho 'origin is read-only today' >&2\nexit 1\n")
+    hook.chmod(0o755)
+
+    refused = lander_merges(hosts, "p1")
+
+    assert refused.status == "failed" and "push of init/i to origin failed" in refused.detail
+    assert "is not recorded merged until origin holds its merge" in refused.detail
+    assert (hosts.record().get("phases") or {}).get("p1", {}).get("state") != "merged"
+    assert origin_tip(hosts) == base
+    assert lg.rev(hosts.home, "refs/heads/init/i") == base, "the merge origin refused is unwound here"
+
+    hook.unlink()
+    lander.sweep(hosts.ports)  # queues the failed item again
+    done = lander.perform(hosts.ports, ls.get_item(hosts.conn, "phase_merge:i:p1"))
+    assert done.status == "done", done.detail
+    assert merge_sha(hosts, "p1") == origin_tip(hosts)
+
+
+def test_a_phase_recorded_merged_while_empty_and_rebuilt_on_origin_is_merged_again(hosts: Hosts) -> None:
+    """Failure 2: p1 was recorded merged with nothing on its branch; the rebuilt branch carries the change."""
+    hosts.lane_starts([task("a", "p1"), task("b", "p2", needs=("a",))])
+    p1 = ops.phase_branch("i", "p1")
+    run(hosts.lane, "branch", p1, "init/i")
+    run(hosts.lane, "push", "-q", "origin", p1)
+    hosts.rows[0]["state"] = "approved"
+    assert lander_merges(hosts, "p1").status == "done"
+    assert run(hosts.home, "diff", "--stat", "origin/main", "refs/heads/init/i") == "", "recorded merged, and empty"
+    rebuilt = commit(hosts.lane, p1, "p1.txt", "the real change\n")
+    run(hosts.lane, "push", "-q", "origin", p1)
+
+    events = lander.reconcile(hosts.ports, "i")
+
+    assert any("its branch on origin is at" in e and "is merged again" in e for e in events), events
+    head = origin_tip(hosts)
+    assert lg.is_ancestor(hosts.origin, rebuilt, head), "origin's initiative branch now holds the change"
+    entry = hosts.record()["phases"]["p1"]
+    assert (entry["tip"], entry["merge_sha"]) == (rebuilt, head)
+    assert "p1.txt" in run(hosts.home, "diff", "--stat", "origin/main", "refs/heads/init/i"), "the PR diff carries it"
+    assert lander.reconcile(hosts.ports, "i") == [], "merged once: the next pass finds nothing to do"
+    assert hosts.notes == []
+
+
+def test_a_rebuilt_phase_whose_merge_conflicts_holds_the_initiative_and_tells_the_chair_once(hosts: Hosts) -> None:
+    hosts.lane_starts([task("a", "p1"), task("b", "p2")])
+    p1 = ops.phase_branch("i", "p1")
+    run(hosts.lane, "branch", p1, "init/i")
+    run(hosts.lane, "push", "-q", "origin", p1)
+    hosts.rows[0]["state"] = "approved"
+    assert lander_merges(hosts, "p1").status == "done"
+    hosts.lane_builds("p2")
+    assert lander_merges(hosts, "p2").status == "done"
+    commit(hosts.lane, p1, "p2.txt", "p1's own idea of p2.txt\n")  # the rebuild writes the file p2 wrote
+    run(hosts.lane, "push", "-q", "origin", p1)
+    before = origin_tip(hosts)
+
+    first, second = lander.reconcile(hosts.ports, "i"), lander.reconcile(hosts.ports, "i")
+
+    assert any("reconcile: i is held:" in e and "that merge failed" in e for e in first), first
+    assert [kind for kind, _ in hosts.notes] == ["needs_chair"], "told once, not once a pass"
+    assert not any("is held" in e for e in second)
+    assert origin_tip(hosts) == before, "nothing half-merged reaches origin"
+
+
+def _lander_merges_again_here(hosts: Hosts, *, extra: bool) -> tuple[str, str]:
+    """The lander's own copy of `init/i` holds a second "merge phase p1" commit beside origin's: the same tree, or
+    (with `extra`) a different one. (this copy's tip, origin's)."""
+    published = origin_tip(hosts)
+    run(hosts.home, "update-ref", "refs/heads/init/i", f"{published}^1")
+    wt = hosts.home.parent / "second-merge"
+    run(hosts.home, "worktree", "add", "-q", str(wt), "init/i")
+    run(wt, "merge", "--no-ff", "-m", "i: merge phase p1 (on lane-host)", f"{published}^2")
+    if extra:
+        (wt / "lane-only.txt").write_text("only here\n")
+        run(wt, "add", "--all")
+        run(wt, "commit", "-m", "lane-only")
+    run(hosts.home, "worktree", "remove", "--force", str(wt))
+    return run(hosts.home, "rev-parse", "refs/heads/init/i"), published
+
+
+def test_a_lander_copy_diverged_with_the_same_tree_is_reset_to_origins_and_the_next_phase_merges(hosts: Hosts) -> None:
+    """Failure 3: two "merge phase p1" commits with one tree, and the initiative held as "diverged"."""
+    hosts.lane_starts([task("a", "p1"), task("b", "p2", needs=("a",))])
+    hosts.lane_builds("p1")
+    assert lander_merges(hosts, "p1").status == "done"
+    local, published = _lander_merges_again_here(hosts, extra=False)
+    assert local != published
+    run(hosts.lane, "fetch", "-q", "origin", "+refs/heads/init/i:refs/heads/init/i")
+    hosts.lane_builds("p2")
+
+    done = lander_merges(hosts, "p2")
+
+    assert done.status == "done", done.detail
+    assert any("held the same tree as origin's" in e and "reset to origin's" in e for e in done.events), done.events
+    head = origin_tip(hosts)
+    assert lg.is_ancestor(hosts.home, published, head) and not lg.is_ancestor(hosts.home, local, head)
+    subjects = run(hosts.origin, "log", "--format=%s", "refs/heads/init/i").splitlines()
+    assert sum("merge phase p1" in s for s in subjects) == 1, subjects
+    assert hosts.notes == []
+
+
+def test_a_lander_copy_diverged_with_other_work_holds_and_names_both_commits(hosts: Hosts) -> None:
+    hosts.lane_starts([task("a", "p1"), task("b", "p2", needs=("a",))])
+    hosts.lane_builds("p1")
+    assert lander_merges(hosts, "p1").status == "done"
+    local, published = _lander_merges_again_here(hosts, extra=True)
+    run(hosts.lane, "fetch", "-q", "origin", "+refs/heads/init/i:refs/heads/init/i")
+    hosts.lane_builds("p2")
+
+    passes = [lander_merges(hosts, "p2") for _ in range(2)]
+
+    assert {o.status for o in passes} == {"waiting"}
+    assert [kind for kind, _ in hosts.notes] == ["needs_chair"], "told once"
+    reason = str(hosts.notes[0][1]["reason"])
+    assert "needs the chair" in reason and local[:12] in reason and published[:12] in reason
+    assert lg.rev(hosts.home, "refs/heads/init/i") == local and origin_tip(hosts) == published, "neither copy is moved"
+
+
+def test_a_push_is_done_once_origin_holds_the_local_tip() -> None:
+    assert lander.origin_holds("abc", "abc")
+    assert not lander.origin_holds("abc", None), "origin has no such branch yet"
+    assert not lander.origin_holds("abc", "old"), "a forge that kept the branch local"
+    assert lander.origin_holds(None, None), "nothing here to push"
+
+
+def test_the_merge_push_goes_through_the_forge_and_a_forge_that_keeps_the_branch_local_is_followed_by_git(hosts: Hosts) -> None:
+    """The forge's push first (Forgejo waits there for the server to show the branch); the local forge, which keeps
+    an initiative branch local until it merges, is followed by a plain push, so failure 1 does not come back."""
+    hosts.lane_starts([task("a", "p1")])
+    hosts.lane_builds("p1")
+    hosts.ports.forge = local = Forge()  # pushes nothing, as forge_local
+
+    done = lander_merges(hosts, "p1")
+
+    assert done.status == "done", done.detail
+    assert ("push", "init/i") in local.calls, "the forge port was asked first"
+    assert merge_sha(hosts, "p1") == origin_tip(hosts), "origin holds the merge all the same"

@@ -79,7 +79,7 @@ def test_a_straight_stack_with_nothing_landed_keeps_its_old_branch_and_merges_ev
     assert lg.is_ancestor(world.repo, old_tip, "pr/stack"), "the old branch only moved forward"
     assert {p: e["state"] for p, e in record["phases"].items()} == {"p1": "merged", "p2": "merged"}
     assert lr.phase_states(record, world.rows["stack"])["p3"] != "merged"
-    assert world.forge.kinds() == [] and world.sent_back == []
+    assert set(world.forge.kinds()) <= {"push"} and world.sent_back == [], "only the phase merges' pushes"
     assert any("phase p2 of stack merged into pr/stack" in e for e in events)
     assert_nothing_lost(world, "stack")
 

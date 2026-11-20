@@ -15,7 +15,7 @@ from core import landing_record, workstore
 from core.jsontypes import is_mapping
 from core.landing import TemplateError, initiative_branch_name, pr_branch_name, resolve_push_initiative
 from core.landing_record import INTEGRATE_PHASE
-from harness import bounded_proc, landing_git, landing_ops, landing_store
+from harness import bounded_proc, courier_adapter, landing_git, landing_ops, landing_store
 from harness.check_gate import gate_commands, repo_gate_lock
 from harness.checks import outside_surface_files, run_checks
 from harness.digest import build_digest
@@ -26,7 +26,14 @@ from harness.epic_types import EpicItem, PhaseRecord, as_list, as_mapping
 from harness.invoke import Invocation, invoke_graphs
 from harness.lane_pytest_tmp import lane_scratch_dir, lane_tmp_env, run_scratch_root
 from harness.lane_workers import workers_env
-from harness.phase_remote import FetchOutcome, Kind, fetch_branch, materialise_local, missing_branch_cause
+from harness.phase_remote import (
+    FetchOutcome,
+    Kind,
+    fetch_branch,
+    materialise_local,
+    missing_branch_cause,
+    settle_diverged,
+)
 from harness.worktree import apply_patch, registry_lock, remove_worktree
 
 LIFECYCLE = "lifecycle"
@@ -313,13 +320,14 @@ def _take_parent_forward(ctx: Ctx) -> tuple[str, str, landing_git.Merge] | None:
             f"the landing record of {unknown.initiative}, which may be the layer below, cannot be read ({unknown.why})"))
     if landing_git.is_ancestor(ctx.repo, parent_ref, branch):
         return parent, parent_ref, landing_git.Merge("up_to_date")
-    early = resolve_push_initiative(ctx.cartridge) == "early"
     try:
+        # Pushed whatever `push_initiative` says, as a phase merge is: a merge kept here is one no other host sees, and
+        # the next merge made elsewhere would fork the branch.
         merged = ctx.retry.write(
             lambda: landing_ops.take_parent_forward(
                 ctx_store(ctx).conn, ctx.repo, initiative=ctx.initiative_id, parent_ref=parent_ref,
                 worker=f"run:{ctx.run_id}", now=_landing_stamp(), fetch=lambda b: _fetch_initiative(ctx, b),
-                publish=(lambda b: publish_branch(ctx, b)) if early else None,
+                publish=lambda b: publish_branch(ctx, b),
             ),
             END_WRITE_WINDOW_S,
         )
@@ -470,14 +478,15 @@ def merge_into_initiative(ctx: Ctx, phase: str, items: Sequence[Mapping[str, obj
         what = (f"task(s) {', '.join(open_tasks)} are not approved" if open_tasks
                 else f"approved task(s) {', '.join(loose)} are not merged into {ctx.phase_branch(phase)}")
         return {"status": "not_built", "branch": ctx.initiative_branch, "assembled": False, "detail": what}
-    early = resolve_push_initiative(ctx.cartridge) == "early"
     try:
+        # Always pushed, and before it is recorded, whatever `push_initiative` says: a merge this clone kept local is one
+        # the lander cannot see, so it merged the phase a second time and the two copies of the branch diverged.
         done = ctx.retry.write(
             lambda: landing_ops.merge_phase(
                 ctx_store(ctx).conn, ctx.repo, initiative=ctx.initiative_id, phase=phase, tasks=rows,
                 worker=f"run:{ctx.run_id}", now=_landing_stamp(), checks=_merge_checks(ctx, phase),
                 fetch=lambda branch: _fetch_initiative(ctx, branch),
-                publish=(lambda branch: publish_branch(ctx, branch)) if early else None,
+                publish=lambda branch: publish_branch(ctx, branch),
             ),
             END_WRITE_WINDOW_S,
         )
@@ -496,10 +505,57 @@ def merge_into_initiative(ctx: Ctx, phase: str, items: Sequence[Mapping[str, obj
 def _fetch_initiative(ctx: Ctx, branch: str) -> str | None:
     """Edge. Bring the initiative branch up to origin's copy, forward only. A reason when it must not be moved here:
     origin holds commits this clone lacks and they do not fast-forward, so a merge here would fork the branch."""
-    outcome = fetch_phase_branches(ctx, [branch]).get(branch)
-    if outcome is not None and outcome.kind == Kind.DIVERGED:
+    outcome = fetch_initiative_branch(ctx, branch)
+    if outcome.kind in (Kind.DIVERGED, Kind.DIVERGED_CONTENT):
         return f"{branch} has diverged from origin and is not merged into here: {outcome.detail}"
     return None
+
+
+def fetch_initiative_branch(ctx: Ctx, branch: str) -> FetchOutcome:
+    """Edge. This clone's initiative branch, brought up to origin's copy. Every merge into it is pushed before it is
+    recorded, so origin's copy is the one: a copy here that diverged from it with the same tree (a second merge commit
+    of the same work) is reset to origin's, and one with a different tree comes back DIVERGED_CONTENT, naming both
+    commits, for the chair, who is told once (`tell_diverged`). A copy that is the same tree but whose origin copy
+    lacks a commit the landing record names counts as different: the record may name this clone's merge commit."""
+    outcome = fetch_phase_branches(ctx, [branch])[branch]
+    if outcome.kind != Kind.DIVERGED:
+        return outcome
+    try:
+        record = landing_store.get_record(ctx.store.conn, ctx.initiative_id) if ctx.store is not None else None
+    except Exception as exc:
+        return FetchOutcome(Kind.DIVERGED, f"{outcome.detail}; the landing record could not be read to settle it: {type(exc).__name__}: {exc}")
+    settled = settle_diverged(ctx.repo, branch, landing_record.recorded_shas(record) if record else ())
+    if settled.kind == Kind.RESET:
+        print(f"  {settled.detail}")
+    elif settled.kind == Kind.DIVERGED_CONTENT:
+        tell_diverged(ctx, branch, settled.detail)
+    return settled
+
+
+LANE_DIVERGED_KEY = "lane_diverged:"  # the lander_notices key prefix of a lane's diverged initiative branch
+
+
+def diverged_news(told: str | None, detail: str) -> bool:
+    """Pure. Whether a lane's divergence is news for the chair: not told before with this same reason. The reason
+    names both commits, so a copy that diverged again, or another host's copy, is told once more."""
+    return told != detail
+
+
+def tell_diverged(ctx: Ctx, branch: str, detail: str) -> None:
+    """Edge. Raise needs_chair for this clone's diverged initiative branch, once per reason, as the lander does: the
+    memory is the store's `lander_notices`, written only once the courier took the note. Best effort: a store or
+    courier that fails leaves the phase's stop reason, which says the same, and the next run tries again."""
+    if ctx.store is None:
+        return
+    key = f"{LANE_DIVERGED_KEY}{ctx.initiative_id}:{branch}"
+    try:
+        conn = ctx.store.conn
+        if not diverged_news(landing_store.told(conn, key).get(key), detail):
+            return
+        if courier_adapter.send(f"coxswain://initiative/{ctx.initiative_id}", "chair", f"needs_chair: {ctx.initiative_id}: {detail}"):
+            landing_store.remember(conn, key, detail, utc_now())
+    except Exception as exc:
+        print(f"  the chair was not told of the divergence of {branch}: {type(exc).__name__}: {exc}")
 
 
 def parent_gap(ctx: Ctx, parent: str, items: Sequence[Mapping[str, object]]) -> tuple[str, str] | None:
@@ -522,7 +578,9 @@ def parent_gap(ctx: Ctx, parent: str, items: Sequence[Mapping[str, object]]) -> 
         return f"parent phase '{parent}' is not merged into {branch} yet; dependents start once it is", ""
     sha = str(entry.get("merge_sha") or "")
     if sha and not landing_git.is_ancestor(ctx.repo, sha, branch):
-        outcome = fetch_phase_branches(ctx, [branch]).get(branch)
+        outcome = fetch_initiative_branch(ctx, branch)
+        if outcome.kind == Kind.DIVERGED_CONTENT:
+            return outcome.detail, ""
         if not landing_git.is_ancestor(ctx.repo, sha, branch):
             origin = f" ({outcome.kind.value}{': ' + outcome.detail if outcome.detail else ''})" if outcome else ""
             return (
