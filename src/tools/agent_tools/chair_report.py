@@ -5,6 +5,7 @@ notify callable is injected, sends the same line. Nothing here performs an actio
 """
 from __future__ import annotations
 
+import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -150,10 +151,17 @@ def launched_items(results: Sequence[Result]) -> list[str]:
     ]
 
 
+_PATH_TOKEN = re.compile(r"[^\s'\"(),;:]*/([^\s/'\"(),;:]+)")  # a run holding a slash; group 1 is its basename
+
+
+def _basenames(line: str) -> str:
+    return _PATH_TOKEN.sub(lambda m: m.group(1), line)
+
+
 def reason_tail(reason: str) -> str:
-    """The last non-blank line of `reason`, cut to its last REASON_LINE_CAP characters; "" when there is none."""
+    """The START of the last non-blank line of `reason`, paths cut to basenames, then cut to REASON_LINE_CAP characters; "" when there is none."""
     lines = [line.strip() for line in reason.splitlines() if line.strip()]
-    return lines[-1][-REASON_LINE_CAP:] if lines else ""
+    return _basenames(lines[-1])[:REASON_LINE_CAP] if lines else ""
 
 
 def _failed_item(result: Result) -> str:
@@ -165,7 +173,7 @@ def _failed_item(result: Result) -> str:
 def failed_items(results: Sequence[Result]) -> list[str]:
     """`<kind>:<task or initiative>` for every refused, failed or not_landed result; a land_phase is `<initiative>/<phase>`.
 
-    A result with a reason adds `: <last line of the reason>`, so the error text is readable.
+    A result with a reason adds `: <start of the last line of the reason, paths shortened to basenames>`, so the error text is readable.
     """
     return [_failed_item(r) for r in results if r["status"] in ("refused", "failed", "not_landed")]
 
@@ -236,9 +244,9 @@ def landing_fragment(landing: Sequence[LandingFact]) -> str:
 
 
 def fetched_items(results: Sequence[Result]) -> list[str]:
-    """`<run> from <host>` for every fetch_exit that landed; a host of None reads `on another machine`."""
+    """`<run> from <host>` for every fetch_exit that landed; a missing, None or empty host reads `an unknown machine`."""
     return [
-        f"{r['action'].get('run', '?')} from {'on another machine' if r['action'].get('host') is None else r['action'].get('host')}"
+        f"{r['action'].get('run', '?')} from {r['action'].get('host') or 'an unknown machine'}"
         for r in results
         if r["status"] == "done" and r["action"].get("kind") == "fetch_exit"
     ]
