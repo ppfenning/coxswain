@@ -105,13 +105,13 @@ def test_the_extras_job_runs_each_suite_as_its_own_serial_job():
 
 
 
-def _collected(markexpr: str, shard: str | None = None) -> list[str]:
-    """The smoke test ids a real `pytest --collect-only -m <markexpr> smoke` selects, under COX_SMOKE_SHARD=<shard>."""
+def _collected(markexpr: str, shard: str | None = None, target: str = "smoke") -> list[str]:
+    """The smoke test ids a real `pytest --collect-only -m <markexpr> <target>` selects, under COX_SMOKE_SHARD=<shard>."""
     env = {key: value for key, value in os.environ.items() if key != plan.SHARD_ENV}
     if shard is not None:
         env[plan.SHARD_ENV] = shard
     proc = subprocess.run(
-        [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider", "-m", markexpr, "smoke"],
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider", "-m", markexpr, target],
         cwd=CI.parents[2], env=env, capture_output=True, text=True, timeout=120,
     )
     assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-2000:]
@@ -133,6 +133,11 @@ def test_every_smoke_test_runs_in_exactly_one_of_ci_s_shards():
     assert all(split) and sorted(test for part in split for test in part) == sorted(whole)
     files = {f"smoke/{path.name}" for path in (CI.parents[2] / "smoke").glob("test_*.py")}
     assert {test.split("::")[0] for test in whole + _collected("forge")} == files
+    # A smoke test that runs pytest on its own file (test_imports_this_tree.py) inherits COX_SMOKE_SHARD: the nested
+    # run must keep that file, so each shard's files are kept when one is collected alone under that shard.
+    for shard, part in zip(shards, split, strict=True):
+        for name in sorted({test.split("::")[0] for test in part}):
+            assert _collected("not forge", shard, name), f"{name} alone is dropped under {shard}"
     # the bare install runs once, in the first shard
     (bare,) = [step for step in job["steps"] if step.get("name") == "bare install (no extras)"]
     assert bare["if"] == f"matrix.shard == '1/{count}'"

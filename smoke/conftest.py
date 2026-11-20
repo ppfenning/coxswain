@@ -412,7 +412,7 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", f"{plan.FORGE_MARK}: needs the sandbox forge, a Forgejo container (docs/smoke.md)")
 
 
-@pytest.hookimpl(trylast=True)  # after `-m` has deselected, so a shard's weight counts the tests it will run
+@pytest.hookimpl(trylast=True)  # after `-m` has deselected
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """With COX_SMOKE_SHARD=<k>/<n>, keep only the files `plan.shard_files` puts in shard k (CI's parallel smoke jobs)."""
     value = os.environ.get(plan.SHARD_ENV)
@@ -422,8 +422,10 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         k, n = plan.parse_shard(value)
     except ValueError as error:
         raise pytest.UsageError(str(error)) from None
+    folder = Path(__file__).parent
+    sources = {f"{folder.name}/{path.name}": path.read_text(encoding="utf-8") for path in folder.glob("test_*.py")}
     files = [item.nodeid.split("::")[0] for item in items]
-    keep = set(plan.shard_files({name: files.count(name) for name in files}, n)[k - 1])
+    keep = set(plan.shard_files(plan.file_weights(sources), n)[k - 1])
     dropped = [item for item, name in zip(items, files, strict=True) if name not in keep]
     if dropped:
         config.hook.pytest_deselected(items=dropped)
