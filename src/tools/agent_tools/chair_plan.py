@@ -29,7 +29,6 @@ from agent_tools.chair_plan_fill import (
     budget_skips,
     eligible_host,
     host_free_slots,
-    launchable_by_tick,
     less_consumed,
     place_on_hosts,
     plan_fill,
@@ -84,6 +83,7 @@ from agent_tools.chair_types import (
     stamp,
 )
 from agent_tools.ci_gate import CiGate
+from agent_tools.queue_rows import launchable_by_tick
 from agent_tools.route_schedule import plan_from_inputs
 from core.jsontypes import is_list, is_mapping
 from core.landing import DEFAULT_LAND_AT

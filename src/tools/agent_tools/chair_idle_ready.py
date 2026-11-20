@@ -8,8 +8,8 @@ Its signature carries no timestamp, so while `open_signature` equals it the rule
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 
-from agent_tools.chair_plan_fill import launchable_by_tick
 from agent_tools.chair_types import Action, ActionKind, Facts, action_text
+from agent_tools.queue_rows import launchable_by_tick
 
 IDLE_READY_MINUTES = 30
 IDLE_READY_CAUSE = "idle_ready"

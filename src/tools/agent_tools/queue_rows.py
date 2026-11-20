@@ -97,6 +97,12 @@ def lane_model_of(value: object) -> LaneModel:
     return "phase" if value == "phase" else DEFAULT_LANE_MODEL
 
 
+def launchable_by_tick(initiative: Mapping[str, Any]) -> bool:
+    """False for an initiative fact stamped `lane_model: phase` at decompose: a phase worker claims it, so the chair
+    tick's launch_epic never does. Absent or any other value is the task model, which the tick launches as before."""
+    return lane_model_of(initiative.get("lane_model")) != "phase"
+
+
 def lane_model_of_row(row: Mapping[str, Any]) -> LaneModel:
     """The lane model an initiative row was stamped with at decompose; any other kind, or no stamp, reads `task`."""
     return lane_model_of(_initiative_extra(row, "lane_model"))

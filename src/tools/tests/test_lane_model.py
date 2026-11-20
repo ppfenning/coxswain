@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from agent_tools import queue_rows, route, route_status, store_fill
 from agent_tools.chair_idle_ready import plan_idle_ready
 from agent_tools.chair_plan import plan_tick
-from agent_tools.chair_plan_fill import launchable_by_tick, less_phase_ready, plan_fill
+from agent_tools.chair_plan_fill import less_phase_ready, plan_fill
 from agent_tools.chair_read_docket import docket_from_rows
 from agent_tools.chair_schedule import Placement, Schedule
 from agent_tools.chair_stall_alarm import plan_stall_alarm
@@ -154,9 +154,9 @@ def test_the_docket_carries_phase_only_for_a_stamped_initiative():
 
 
 def test_launchable_by_tick_refuses_phase_alone():
-    assert launchable_by_tick(_unstarted("a"))
-    assert launchable_by_tick({**_unstarted("a"), "lane_model": "task"})
-    assert not launchable_by_tick({**_unstarted("a"), "lane_model": "phase"})
+    assert queue_rows.launchable_by_tick(_unstarted("a"))
+    assert queue_rows.launchable_by_tick({**_unstarted("a"), "lane_model": "task"})
+    assert not queue_rows.launchable_by_tick({**_unstarted("a"), "lane_model": "phase"})
 
 
 def _fill_facts(*initiatives: dict) -> dict:

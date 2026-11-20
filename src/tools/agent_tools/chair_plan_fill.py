@@ -21,6 +21,7 @@ from agent_tools.chair_types import (
     action_text,
 )
 from agent_tools.checkout_env import blocks_launch, host_env_verdict, sync_instruction
+from agent_tools.queue_rows import launchable_by_tick
 
 # name, weight (a host's share of new placements; its capacity when the hosts table sets none),
 # capabilities, free lane count, assigned-so-far (live lanes plus placements made this call)
@@ -42,12 +43,6 @@ PULL_MIN_AGE_S = 600
 
 def required_capabilities(initiative: InitiativeFacts) -> frozenset[str]:
     return frozenset(cap for task in initiative["ready_tasks"] for cap in task.get("requires", []))
-
-
-def launchable_by_tick(initiative: InitiativeFacts) -> bool:
-    """False for an initiative stamped `lane_model: phase` at decompose: a phase worker claims it, so the tick's
-    launch_epic never does. Absent or any other value is the task model, which the tick launches as before."""
-    return initiative.get("lane_model", "task") != "phase"
 
 
 def less_phase_ready(inputs: IdleStallInputs, initiatives: Sequence[InitiativeFacts]) -> IdleStallInputs:

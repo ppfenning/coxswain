@@ -901,6 +901,12 @@ def _workspace_probe(cwd: Path) -> Callable[[list[str]], tuple[int, str]]:
     return probe
 
 
+def _decompose_stub(workspace: Path, initiative: str) -> str | None:
+    """Edge. `work/<initiative>/initiative.md` relative to `workspace` when the launch wrote or kept that stub there, else None."""
+    relative = f"work/{initiative}/initiative.md"
+    return relative if (workspace / relative).is_file() else None
+
+
 def _route_launch_on_host(
     a: argparse.Namespace, host: lane_hosts.LaneHost, runs_dir: Path, run_id: str, repo: str | None = None,
     harness_dir: str | None = None, *, home: str | None = None, tools: Sequence[str] = (),
@@ -928,6 +934,7 @@ def _route_launch_on_host(
         preflight=preflight, home=home, host_checkouts=_host_checkouts(run_store.hosts(runs_dir), host.name), tools=tools,
         graph=graph, intake=intake, cartridges=_workspace_cartridges(runs_dir), probe=_workspace_probe(runs_dir.parent),
         profile=provider, phase=phase, cartridge_sha=_published_cartridges(runs_dir, _routing_profile_or_empty(a)),
+        stub=_decompose_stub(runs_dir.parent, initiative) if graph == "decompose" else None,
     )
     if isinstance(result, remote_launch.LaunchError):
         print(f"routing: launch on {host.name} failed at {result.step}: {result.message}")

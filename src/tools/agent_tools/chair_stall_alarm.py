@@ -44,6 +44,7 @@ from collections.abc import Collection, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, NotRequired, TypedDict
 
+from agent_tools.queue_rows import launchable_by_tick
 from core.jsontypes import is_list, is_mapping
 
 if TYPE_CHECKING:  # chair_types imports this module for StallFacts, so the import runs only for the checker
@@ -674,8 +675,6 @@ def plan_stall_alarm(
     own idle line goes out this tick. `launch_paused` is the hard stop. The idle check reads the lanes and lands in
     progress (`is_busy`), the worker capacity (`worker_capacity`), the store's holds and this tick's no-progress holds
     (`held_items`), and the idle-stall inputs' last progress."""
-    from agent_tools.chair_plan_fill import launchable_by_tick  # lazy: chair_types imports this module
-
     alarm = facts.get("stall_alarm")
     if not alarm:
         return []
