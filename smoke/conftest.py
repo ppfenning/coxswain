@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -411,6 +412,26 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", f"{plan.FORGE_MARK}: needs the sandbox forge, a Forgejo container (docs/smoke.md)")
 
 
+@pytest.hookimpl(trylast=True)  # after `-m` has deselected
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """With COX_SMOKE_SHARD=<k>/<n>, keep only the files `plan.shard_files` puts in shard k (CI's parallel smoke jobs)."""
+    value = os.environ.get(plan.SHARD_ENV)
+    if not value:
+        return
+    try:
+        k, n = plan.parse_shard(value)
+    except ValueError as error:
+        raise pytest.UsageError(str(error)) from None
+    folder = Path(__file__).parent
+    sources = {f"{folder.name}/{path.name}": path.read_text(encoding="utf-8") for path in folder.glob("test_*.py")}
+    files = [item.nodeid.split("::")[0] for item in items]
+    keep = set(plan.shard_files(plan.file_weights(sources), n)[k - 1])
+    dropped = [item for item, name in zip(items, files, strict=True) if name not in keep]
+    if dropped:
+        config.hook.pytest_deselected(items=dropped)
+        items[:] = [item for item, name in zip(items, files, strict=True) if name in keep]
+
+
 def _free_port() -> int:
     """A loopback port nothing listens on now. Forgejo's ROOT_URL must name its published port, so the port is chosen
     before the container starts; a process that takes it in between fails the start, loudly."""
@@ -661,11 +682,29 @@ def _copy_tree(target: Path) -> None:
         shutil.copy2(source, dest, follow_symlinks=False)
 
 
-@pytest.fixture(scope="module")
-def edge_origin(forge: Forge, tmp_path_factory: pytest.TempPathFactory) -> EdgeOrigin:
-    """A coxswain repository on the forge: this tree as one commit, and one commit more that changes one file. CI is
+def _newest_migration() -> int:
+    """The highest `store_ddl_NNNN` number this tree carries, read from its tracked files."""
+    listing = _must(["git", "-C", str(ROOT), "ls-files", "src/graphs/harness/"]).stdout
+    return max(int(m.group(1)) for line in listing.splitlines() if (m := re.search(r"store_ddl_(\d{4})\.py$", line)))
+
+
+def _additive_migration_text(version: int) -> str:
+    """One more migration, additive: it declares `ADDITIVE = True` and only adds a table."""
+    return (
+        f'"""Migration {version:04d}: a smoke-only table, one past this tree\'s newest."""\n\n'
+        f"VERSION = {version}\n"
+        'DESCRIPTION = "smoke edge table"\n'
+        "ADDITIVE = True\n\n\n"
+        "def statements(dialect):\n"
+        '    return ("CREATE TABLE IF NOT EXISTS smoke_edge (key TEXT NOT NULL, PRIMARY KEY (key))",)\n'
+    )
+
+
+def _edge_origin(forge: Forge, tmp_path_factory: pytest.TempPathFactory, label: str,
+                 newer_files: dict[str, str]) -> EdgeOrigin:
+    """This tree as one commit on the forge, and one commit more that writes `newer_files` (path: text). CI is
     reported green on both, through commit statuses, as Forgejo Actions would."""
-    work = tmp_path_factory.mktemp("edge-origin")
+    work = tmp_path_factory.mktemp(label)
     git_bin = shutil.which("git")
     if git_bin is None:
         _unavailable(plan.unavailable("no git on PATH", required=_required()))
@@ -677,15 +716,31 @@ def edge_origin(forge: Forge, tmp_path_factory: pytest.TempPathFactory) -> EdgeO
     _git(env, tree, "add", "--all")
     _git(env, tree, "commit", "--quiet", "-m", "smoke: this tree")
     base = _git(env, tree, "rev-parse", "HEAD")
-    (tree / "smoke-edge.txt").write_text("one commit newer\n", encoding="utf-8")
-    _git(env, tree, "add", "smoke-edge.txt")
+    for relative, text in newer_files.items():
+        (tree / relative).write_text(text, encoding="utf-8")
+        _git(env, tree, "add", relative)
     _git(env, tree, "commit", "--quiet", "-m", "smoke: one commit newer")
     newer = _git(env, tree, "rev-parse", "HEAD")
-    name = plan.forge_repo_name(f"edge-{SESSION}")
+    name = plan.forge_repo_name(f"{label}-{SESSION}")
     _publish(forge, env, name, tree)
     for sha in (base, newer):
         forge.must("POST", f"/repos/{forge.user}/{name}/statuses/{sha}", plan.commit_status_body("success", "ci"))
     return EdgeOrigin(name=name, base=base, newer=newer)
+
+
+@pytest.fixture(scope="module")
+def edge_origin(forge: Forge, tmp_path_factory: pytest.TempPathFactory) -> EdgeOrigin:
+    """A coxswain repository on the forge: this tree, then one commit more that changes one file."""
+    return _edge_origin(forge, tmp_path_factory, "edge", {"smoke-edge.txt": "one commit newer\n"})
+
+
+@pytest.fixture(scope="module")
+def edge_origin_additive(forge: Forge, tmp_path_factory: pytest.TempPathFactory) -> EdgeOrigin:
+    """A coxswain repository on the forge: this tree, then one commit more that adds an additive store migration, one
+    past this tree's newest."""
+    version = _newest_migration() + 1
+    path = f"src/graphs/harness/store_ddl_{version:04d}.py"
+    return _edge_origin(forge, tmp_path_factory, "edge-additive", {path: _additive_migration_text(version)})
 
 
 @pytest.fixture(scope="session")
@@ -721,6 +776,17 @@ class EdgeMachine:
 
 @pytest.fixture
 def edge_machine(forge_sandbox: Sandbox, forge: Forge, edge_origin: EdgeOrigin, uv_shared: dict[str, str]) -> EdgeMachine:
+    return _edge_machine(forge_sandbox, forge, edge_origin, uv_shared)
+
+
+@pytest.fixture
+def edge_machine_additive(forge_sandbox: Sandbox, forge: Forge, edge_origin_additive: EdgeOrigin,
+                          uv_shared: dict[str, str]) -> EdgeMachine:
+    """An edge machine whose newer green commit adds an additive store migration."""
+    return _edge_machine(forge_sandbox, forge, edge_origin_additive, uv_shared)
+
+
+def _edge_machine(forge_sandbox: Sandbox, forge: Forge, edge_origin: EdgeOrigin, uv_shared: dict[str, str]) -> EdgeMachine:
     home = forge_sandbox.home
     # The uv tool's bin first, so `cox` is the checkout's own, and uv's folder, since the upgrade runs uv as a machine would
     uv_bin = str(Path(shutil.which("uv") or "uv").parent)

@@ -5,12 +5,15 @@ access; cli.py reads git, gh and systemd, and moves the checkout by the path `co
 A machine is on `stable` unless its profile says `upgrade_channel: edge`. Stable upgrades to the newest release tag,
 as before. Edge upgrades to the newest commit of main whose CI passed, never to the tip unless the tip passed.
 
-Store migrations are forward only: `harness.store_migrate.migrate` refuses a store newer than the code that opens it.
-So once a restarted chair or lander has opened the store at a commit that adds a migration, the previous commit can no
-longer open it, and moving back to it would break the machine rather than restore it. `may_roll_back` says no then."""
+Store migrations are forward only: `harness.store_migrate.migrate` refuses a store newer than the code that opens it,
+unless every newer migration it records is additive (`harness.store_migrate.accepts`). So once a restarted chair or
+lander has opened the store at a commit that adds a migration, the previous commit can no longer open it, and moving
+back to it would break the machine rather than restore it. `may_roll_back` says no then, except when every added
+migration declares `ADDITIVE = True` and the previous commit carries that rule itself."""
 
 from __future__ import annotations
 
+import ast
 import re
 from collections.abc import Collection, Mapping, Sequence
 from pathlib import PurePath
@@ -30,6 +33,7 @@ HISTORY = 200  # first-parent commits of origin/main searched for a green one, n
 
 RECORD_FILE = "edge-upgrade.json"  # in the installs folder, beside the checkout, so `cox versions` finds it
 MIGRATIONS_DIR = "src/graphs/harness/"
+MIGRATE_MODULE = f"{MIGRATIONS_DIR}store_migrate.py"  # where the rule that tolerates an additive newer store lives
 _MIGRATION = re.compile(r"(?:^|/)store_ddl_(\d{4})\.py$")
 
 SERVICE_NAME = "coxswain-upgrade.service"
@@ -98,11 +102,79 @@ def added_migrations(before: Sequence[str], after: Sequence[str]) -> tuple[str, 
     return tuple(sorted(migrations(after) - migrations(before)))
 
 
-def may_roll_back(added: Sequence[str], restarted: bool) -> bool:
-    """False when the commit moved to adds migrations and a unit was restarted on it: the restarted chair or lander
-    applies them when it opens the store, and the previous commit then refuses that store. Without a restart nothing
-    on this machine opened the store at the new commit (the doctor reads it read-only), so moving back is safe."""
-    return not (added and restarted)
+def migration_path(number: str) -> str:
+    """The path, in a commit, of the `store_ddl_<number>` module."""
+    return f"{MIGRATIONS_DIR}store_ddl_{number}.py"
+
+
+_DECLARED = "ADDITIVE"
+
+
+def _binds(node: ast.AST, name: str) -> bool:
+    """Whether `node` itself binds or unbinds `name`: an assignment or deletion target (inside a tuple, a loop, a
+    `with`, a walrus, anywhere), an import alias, a def or class, a `global`/`nonlocal`, or a match capture."""
+    if isinstance(node, ast.Name):
+        return node.id == name and isinstance(node.ctx, ast.Store | ast.Del)
+    if isinstance(node, ast.alias):
+        return (node.asname or node.name.split(".")[0]) == name or node.name == "*"
+    if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+        return node.name == name
+    if isinstance(node, ast.Global | ast.Nonlocal):
+        return name in node.names
+    if isinstance(node, ast.MatchAs | ast.MatchStar):
+        return node.name == name
+    return False
+
+
+def _the_declaration(node: ast.stmt) -> bool:
+    """Whether a module-level statement is `ADDITIVE = True` or `ADDITIVE: <type> = True`, with the literal True."""
+    if isinstance(node, ast.Assign):
+        target, value = (node.targets[0] if len(node.targets) == 1 else None), node.value
+    elif isinstance(node, ast.AnnAssign):
+        target, value = node.target, node.value
+    else:
+        return False
+    return (isinstance(target, ast.Name) and target.id == _DECLARED
+            and isinstance(value, ast.Constant) and value.value is True)
+
+
+def declares_additive(source: str) -> bool:
+    """Whether a `store_ddl_NNNN` module's source declares `ADDITIVE = True`: exactly one binding of the name in the
+    whole module, and it is a module-level plain or annotated assignment of the literal True. Any other binding
+    anywhere (a later rebind, a tuple target, one inside an `if` or a function, an import, `from x import *`) means
+    not additive, as does a source that does not parse. Stricter than `harness.store_migrate`'s runtime read, so the
+    edge upgrade errs toward refusing a rollback."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    bindings = sum(_binds(node, _DECLARED) for node in ast.walk(tree))
+    return bindings == 1 and any(_the_declaration(n) for n in tree.body)
+
+
+def tolerates_additive(source: str) -> bool:
+    """Whether a `store_migrate.py` source carries the rule that accepts a store newer only by additive migrations:
+    a module-level `accepts` function. Code without it refuses every newer store."""
+    try:
+        body = ast.parse(source).body
+    except SyntaxError:
+        return False
+    return any(isinstance(n, ast.FunctionDef) and n.name == "accepts" for n in body)
+
+
+def blocking_migrations(added: Sequence[str], additive: Collection[str], tolerant: bool) -> tuple[str, ...]:
+    """The added migrations the previous commit cannot open a store past: every one when it does not carry the
+    additive rule (`tolerant` False), else those not declared additive. In `added` order."""
+    return tuple(added) if not tolerant else tuple(n for n in added if n not in additive)
+
+
+def may_roll_back(added: Sequence[str], restarted: bool, additive: Collection[str], tolerant: bool) -> bool:
+    """False when the commit moved to adds a migration the previous commit cannot get past (`blocking_migrations`)
+    and a unit was restarted on it: the restarted chair or lander applies it when it opens the store, and the previous
+    commit then refuses that store. Without a restart nothing on this machine opened the store at the new commit (the
+    doctor reads it read-only), so moving back is safe. Past additive migrations alone, moving back is safe too: the
+    previous commit, carrying the rule, opens the store they leave."""
+    return not (blocking_migrations(added, additive, tolerant) and restarted)
 
 
 def record(at: str, previous: str, chosen: str, outcome: str, detail: str = "") -> dict:

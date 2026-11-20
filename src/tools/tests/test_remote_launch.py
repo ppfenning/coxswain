@@ -364,6 +364,15 @@ def test_a_decompose_plan_with_cartridges_pushes_then_checks_them_after_the_inta
     assert len(plan) == 4 and "route launch decompose" in plan[-1][-1]
 
 
+def test_a_decompose_plan_copies_the_chair_s_stub_with_the_intake_and_mirrors_nothing():
+    stub = "work/i/initiative.md"
+    plan = launch_plan(CART_HOST, "i", "i-1", "l", graph="decompose", intake="work/idea.md", stub=stub)
+    assert plan[0] == rsync_file_argv("work/idea.md", "me@box2:/ws", [stub])
+    assert plan[0][-3:] == ["work/idea.md", stub, "me@box2:/ws/"]
+    assert "--delete" not in plan[0]
+    assert launch_plan(CART_HOST, "i", "i-1", "l", graph="decompose", intake="work/idea.md")[0][-2:] == ["work/idea.md", "me@box2:/ws/"]
+
+
 def test_a_cartridge_that_differs_refuses_the_launch_before_the_harness_repo_push_and_ssh_steps():
     calls, probed = [], []
 

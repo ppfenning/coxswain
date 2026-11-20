@@ -3,9 +3,14 @@ import os
 import pytest
 
 from devtools import cli
+from harness import extras_tests
 
 # sqlite is the suites' stand-in for the one real store, Postgres. Outside the suites it does not open.
 os.environ.setdefault("COXSWAIN_STORE_DOUBLE", "sqlite")
+
+
+def pytest_configure(config) -> None:
+    extras_tests.register(config)  # the extras jobs' marks and the unit jobs' skip guard
 
 
 @pytest.fixture(autouse=True)

@@ -1,5 +1,7 @@
 import json
 
+from lane_probe_replies import PASSING, PASSING_LINES, is_lane_probe
+
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_argv import auth_status_argv, ssh_argv, token_status_argv
 from agent_tools.remote_doctor import auth_verdict, doctor_on_host
@@ -22,6 +24,8 @@ def _fake_run(status_output, doctor_code=0, seen=None):
     def run(argv):
         if seen is not None:
             seen.append(argv)
+        if is_lane_probe(argv):
+            return 0, PASSING
         if _is_token_verb(argv):
             return 0, status_output
         return doctor_code, "ok rows"
@@ -72,30 +76,30 @@ def test_the_argv_given_to_the_runner_holds_no_token():
 
 def test_doctor_on_host_adds_an_ok_row_when_the_token_is_logged_in():
     host = LaneHost("box", "me@box", "/srv")
-    assert doctor_on_host(host, _fake_run(_reply(True))) == (0, ["ok rows", "claude token     ok"])
+    assert doctor_on_host(host, _fake_run(_reply(True))) == (0, ["ok rows", "claude token     ok", *PASSING_LINES])
 
 
 def test_doctor_on_host_keeps_the_claude_token_row_when_runner_is_named_explicitly():
     host = LaneHost("box", "me@box", "/srv")
     result = doctor_on_host(host, _fake_run(_reply(True)), runner="claude-code")
-    assert result == (0, ["ok rows", "claude token     ok"])
+    assert result == (0, ["ok rows", "claude token     ok", *PASSING_LINES])
 
 
 def test_doctor_on_host_names_a_removed_token_file_and_exits_1():
     host = LaneHost("box", "me@box", "/srv")
-    assert doctor_on_host(host, _fake_run(_reply(False, token_file=False, reason=_NO_FILE))) == (1, ["ok rows", _NO_FILE])
+    assert doctor_on_host(host, _fake_run(_reply(False, token_file=False, reason=_NO_FILE))) == (1, ["ok rows", _NO_FILE, *PASSING_LINES])
 
 
 def test_doctor_on_host_gives_a_rejected_tokens_reason_and_exits_1():
     host = LaneHost("box", "me@box", "/srv")
-    assert doctor_on_host(host, _fake_run(_reply(False, reason=_REJECTED))) == (1, ["ok rows", _REJECTED])
+    assert doctor_on_host(host, _fake_run(_reply(False, reason=_REJECTED))) == (1, ["ok rows", _REJECTED, *PASSING_LINES])
 
 
 def test_doctor_on_host_gives_the_unreadable_line_for_garbage():
     host = LaneHost("box", "me@box", "/srv")
     code, rows = doctor_on_host(host, _fake_run("sh: cox: command not found"))
     assert code == 1
-    assert rows == ["ok rows", "claude token: status unreadable: sh: cox: command not found"]
+    assert rows == ["ok rows", "claude token: status unreadable: sh: cox: command not found", *PASSING_LINES]
 
 
 def test_a_failing_host_doctor_keeps_its_own_exit_code():
@@ -105,6 +109,8 @@ def test_a_failing_host_doctor_keeps_its_own_exit_code():
 
 def _fake_run_env(env_output, doctor_code=0):
     def run(argv):
+        if is_lane_probe(argv):
+            return 0, PASSING
         if argv[-1] == "printenv MY_API_KEY":
             return 0, env_output
         return doctor_code, "ok rows"
@@ -116,7 +122,7 @@ def test_doctor_on_host_adds_an_ok_env_vars_row_when_a_non_claude_runner_has_the
     host = LaneHost("box", "me@box", "/srv")
     code, rows = doctor_on_host(host, _fake_run_env("secret"), runner="codex", env_names=("MY_API_KEY",))
     assert code == 0
-    assert rows == ["ok rows", "env vars      ok"]
+    assert rows == ["ok rows", "env vars      ok", *PASSING_LINES]
 
 
 def test_doctor_on_host_fails_a_passing_doctor_when_a_non_claude_runner_is_missing_a_variable():

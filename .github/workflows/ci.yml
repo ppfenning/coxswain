@@ -53,12 +53,26 @@ jobs:
         with: { python-version: "3.14", enable-cache: true }
       - run: uv sync --group dev
       # Named `pytest <suite>`: the land's rerun rule reads the failed suite from the step name (land._suite_of).
+      # The guard fails every skip that is neither marked for the extras jobs nor on ALLOWED_SKIPS
+      # (src/graphs/harness/extras_tests.py), so no test drops out of both jobs.
       - name: pytest ${{ matrix.suite }}
         run: uv run pytest -q -n auto
         working-directory: ${{ matrix.dir }}
+        env:
+          COX_EXTRAS_GUARD: unit
 
   smoke:
+    # The non-forge suite in parallel shards, by file (smoke/plan.py shard_files): each shard installs cox once, and
+    # every collected file lands in exactly one shard. The shards are 1/n .. n/n, which tests/test_workflows.py pins.
+    name: smoke (${{ matrix.shard }})
     runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { shard: 1/3 }
+          - { shard: 2/3 }
+          - { shard: 3/3 }
     # The suite gives each test a database of its own on this Postgres (docs/smoke.md).
     services:
       postgres:
@@ -80,7 +94,9 @@ jobs:
       - run: uv sync --group dev
       # The smoke install carries the postgres and lake extras, so a dependency missing outside every extra would not
       # show there: this checkout installed bare, under a home of its own, runs `cox --help` and one real command.
+      # Once, in the first shard.
       - name: bare install (no extras)
+        if: matrix.shard == '1/3'
         run: |
           bare="$RUNNER_TEMP/bare"
           uv venv --quiet --python 3.14 "$bare/venv"
@@ -96,6 +112,7 @@ jobs:
         env:
           COX_SMOKE_POSTGRES_URL: postgresql://postgres:smoke@localhost:${{ job.services.postgres.ports['5432'] }}/postgres
           COX_SMOKE_REQUIRED: "1"
+          COX_SMOKE_SHARD: ${{ matrix.shard }}
 
   smoke-forge:
     name: smoke (forge)
@@ -164,20 +181,26 @@ jobs:
         working-directory: src/cartridges
 
   extras:
-    # The lake, Parquet and Postgres tests import-skip in `test`, which installs no extras.
-    # This job installs them and a Postgres 16, so those tests run. One job per suite, each with its own
-    # Postgres, so the suites run side by side while each stays serial (see the pytest step).
+    # The lake, Parquet and Postgres tests skip in `unit`, which installs no extras and names no test database.
+    # This job installs them and a Postgres 16. On a pull request it runs only those tests, the ones
+    # src/graphs/harness/extras_tests.py marks `extras`. On a push to main it runs each whole suite, since product code
+    # also branches on whether an extra is present, so main still runs every test with every extra installed.
+    # One job per suite, each with its own Postgres, so the suites run side by side.
     name: extras (${{ matrix.suite }})
     runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
+        # `selects`: which of the two marked steps has tests here. A step with none expected may exit 5 (pytest's
+        # "no tests selected"); anywhere else an empty selection fails.
         include:
-          - { suite: root, dir: . }
-          - { suite: tools, dir: src/tools }
-          - { suite: graphs, dir: src/graphs }
-          - { suite: cartridges, dir: src/cartridges }
+          - { suite: root, dir: ., selects: extras }
+          - { suite: tools, dir: src/tools, selects: both }
+          - { suite: graphs, dir: src/graphs, selects: both }
+          - { suite: cartridges, dir: src/cartridges, selects: none }
+    env:
+      COX_EXTRAS_GUARD: extras  # a test this job runs must not skip, unless its reason is on ALLOWED_SKIPS
     services:
       postgres:
         image: postgres:16
@@ -202,10 +225,20 @@ jobs:
         with: { python-version: "3.14", enable-cache: true }
       - run: uv sync --group dev --all-extras
       # Fails here, with the import error, rather than as a pytest run that skipped them all.
+      - run: uv run python -c "import psycopg, pyarrow, pyiceberg, duckdb, harness.store_migrate"
+      - name: extras ${{ matrix.suite }}
+        if: github.event_name != 'push'
+        run: uv run pytest -q -rs -n auto -m "extras and not postgres" || { test $? -eq 5 && test "${{ matrix.selects }}" = none; }
+        working-directory: ${{ matrix.dir }}
       # Serial on purpose: the Postgres store tests back the test database up with pg_dump before migrating it,
       # which fails under xdist workers.
-      - run: uv run python -c "import psycopg, pyarrow, pyiceberg, duckdb, harness.store_migrate"
-      - run: uv run pytest -q -rs
+      - name: extras ${{ matrix.suite }} (postgres)
+        if: github.event_name != 'push'
+        run: uv run pytest -q -rs -m postgres || { test $? -eq 5 && test "${{ matrix.selects }}" != both; }
+        working-directory: ${{ matrix.dir }}
+      - name: extras ${{ matrix.suite }} (whole suite)
+        if: github.event_name == 'push'
+        run: uv run pytest -q -rs
         working-directory: ${{ matrix.dir }}
 
   seats:

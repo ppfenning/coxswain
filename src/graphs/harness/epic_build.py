@@ -48,7 +48,7 @@ from harness.epic_branches import (
 )
 from harness.epic_context import Ctx, git_in
 from harness.epic_phase_branch import trace_evidence
-from harness.epic_records import epic_log, save_task_result, wait_if_paused_here
+from harness.epic_records import epic_log, record_steps, save_task_result, wait_if_paused_here
 from harness.epic_types import BuildRecord, PhaseRecord, as_list, as_mapping
 from harness.escalate import touched_paths
 from harness.integration_scope import scope_integration
@@ -56,6 +56,7 @@ from harness.invoke import Invocation, invoke_graphs
 from harness.lane_database import database_name, lane_env
 from harness.lane_database_create import create_lane_database, creation_failure
 from harness.lane_database_drop import drop_lane_database
+from harness.store_steps import with_checks
 from harness.worktree import apply_patch, create_worktree, keep_worktree, link_venv, read_lock, remove_worktree
 
 
@@ -611,7 +612,10 @@ def refix_task(
         route = refix_route(build["checks"], ctx.checks, attempts_left=left, style_bound=style_open)
         if route == "quarantine":
             break
+        before = list(build["checks"])
         if route == "style_pass" and _style_fix(ctx, phase=phase, task=task, result=result, build=build):
+            # The checks re-run on the edit take this attempt's `checks` key; the ones that sent it to the edit are kept.
+            record_steps(ctx, with_checks(result, before, ctx.run_id, stage="prestyle"), phase=phase, task=task)
             spent += 1
             routes.append("style_pass")
             continue
@@ -620,6 +624,8 @@ def refix_task(
             "phase": phase,
             "reason": f"approved, then failed its configured checks:\n{check_feedback(build['checks'])}",
         }
+        # The checks that send this attempt back are its own step, stored under it as the re-entry's are under it.
+        record_steps(ctx, with_checks(result, build["checks"], ctx.run_id), phase=phase, task=task)
         last_patch = str(as_mapping(result.get("build")).get("patch") or "")
         history = [*(a for a in as_list(item.get("attempts")) if is_mapping(a)), failed]
         # The revise starts from the patch that just failed its checks, in a tree of its own, not from a reference.
@@ -645,6 +651,9 @@ def refix_task(
             why = unapproved(retried[0])
         if why is not None:
             build["evidence"].append({"check": "fix loop re-entry", "output": f"not approved: {why}"})
+            if retried and is_mapping(retried[0]):
+                # Not saved as the task's result, but its plan, build and reviews ran: they are this run's steps.
+                record_steps(ctx, retried[0], phase=phase, task=task)
             break
         result = retried[0]
         result.setdefault("initiative", ctx.initiative_id)

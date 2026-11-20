@@ -17,7 +17,7 @@ from agent_tools.chair_decompose_streak import DecomposeStreak
 from agent_tools.chair_land_backoff import LandRefusal
 from agent_tools.chair_land_conflict import LandConflict
 from agent_tools.chair_no_progress import NoProgress
-from agent_tools.chair_stall_alarm import StallFacts
+from agent_tools.chair_stall_alarm import HeldItem, StallFacts
 from core.jsontypes import conform
 
 EASTERN = ZoneInfo("America/New_York")  # every time the chair prints for an operator is shown in this zone
@@ -127,12 +127,14 @@ class HostLanes(TypedDict):
 
 class DispatchFacts(TypedDict):
     """live_runs counts the local machine's live lanes; hosts holds each lane host in order, a capacity replacing max_in_flight for that host.
-    local_lanes "decompose" reserves the local lanes for intake decomposes; absent means "any"."""
+    local_lanes "decompose" reserves the local lanes for intake decomposes; absent means "any".
+    lane_prereqs False turns off the lane-host prerequisite gate (`lane_prereqs`); absent means on."""
 
     max_in_flight: int
     live_runs: int
     hosts: list[HostLanes]
     local_lanes: NotRequired[str]
+    lane_prereqs: NotRequired[bool]
 
 
 class ApprovedTask(TypedDict):
@@ -256,6 +258,7 @@ class InitiativeFacts(TypedDict):
     dag_problem: NotRequired[str]  # the first work-store DAG problem, e.g. "b needs x"; absent means valid
     land_at: NotRequired[str]  # the land_at (ticket, level or task) resolved this tick; old fixtures omit it
     phases: NotRequired[list[PhaseFacts]]  # the phases that can start a lane now; absent means none can, or the initiative's rows were not read
+    lane_model: NotRequired[str]  # `phase` when its row was stamped so at decompose (the tick loop never launches it); absent means `task`
 
 
 class QuarantineFacts(TypedDict):
@@ -799,6 +802,7 @@ class Action(TypedDict, total=False):
     connect and may write the hosts row. needs_chair carries either
     initiative and cause, or host and cause when the entry names a lane host rather than an
     initiative; when host is present cause is "login_lapsed" or "stale_checkout" and there is no initiative key.
+    A "lane_prereqs" needs_chair carries host and reason: the smoke-gate checks that host failed (`lane_prereqs`).
     A stale_checkout needs_chair also carries repo, the repo directory name keyed in the host's checkout_env record.
     review_landed carries initiative, phase, task_id, repo, url and merged_at. steer_clear carries
     initiative, other and paths: the launch of initiative is deferred because it shares paths with other.
@@ -858,7 +862,9 @@ class Action(TypedDict, total=False):
     stall: str  # a stall_alarm or stall_clear: the stall's key (chair_stall_alarm.Stall)
     subject: str  # a stall_alarm or stall_clear: the initiative or task its courier entry points at
     detail: str  # a stall_alarm or stall_clear: what stalled, in words; the recorded reason is the executor's own
-    quiet: bool  # a stall_clear for a same-failure streak that went quiet: it closes the stall and tells no one
+    quiet: bool  # a stall_clear for a same-failure streak that went quiet, or for an idle spell that ended: it closes the stall and tells no one
+    held: list[HeldItem]  # an idle_held stall_alarm: each held item, its hold reason and the command that releases it
+    seq: int  # a stall_alarm or stall_clear: how many of its kind the stall was told in before (chair_stall_alarm.told_counts)
     carry: list[str]  # the phases a clear_branches keeps and merges main into
     url: str  # a review_landed names the review PR
     merged_at: str | None  # a review_landed names when that PR merged

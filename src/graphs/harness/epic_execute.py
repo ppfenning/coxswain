@@ -39,6 +39,7 @@ from harness.epic_records import (
     fence_reason,
     mirror_by,
     mirror_write,
+    record_steps,
     record_tasks,
     refuse_stale,
     repair_file_state,
@@ -778,6 +779,8 @@ def rescue_task(ctx: Ctx, item: Mapping[str, object], *, phase: str) -> dict[str
         },
         ctx.runner,
     )
+    # The rescue's review ran whatever it decided: its steps are written before any return below.
+    record_steps(ctx, graph, phase=phase, task=task)
     if graph.get("failed_node") or as_mapping(graph.get("fix_loop")).get("review_placeholder"):
         return {"status": "review_failed", "why": str(graph.get("failed_node_reason") or "review placeholders")}
     if graph.get("verdict") != "approve":

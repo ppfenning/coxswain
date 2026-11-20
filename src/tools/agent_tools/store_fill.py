@@ -98,16 +98,20 @@ def intake_links(stored: Sequence[Row], initiatives: Sequence[Row]) -> tuple[Row
     )
 
 
-def plan_fill(parsed: list[Row], existing: list[Row]) -> Plan:
+def plan_fill(parsed: list[Row], existing: list[Row], lane_model: str = queue_rows.DEFAULT_LANE_MODEL) -> Plan:
     """Insert a row the store lacks; fill only the missing content of one it has; link a stored queued intake to its
-    initiative, one write per row. First row per key wins, so `intake/x.md` and `intake/done/x.md` cannot overwrite each other."""
+    initiative, one write per row. First row per key wins, so `intake/x.md` and `intake/done/x.md` cannot overwrite each other.
+
+    `lane_model` is stamped on an inserted initiative row whose file names none (`queue_rows.stamp_lane_model`): the
+    insert is the decompose's first write. A row the store holds is never restamped, so a repeat fill writes nothing."""
     first_at = {_key(row): i for i, row in reversed(list(enumerate(parsed)))}
     deduped = [row for i, row in enumerate(parsed) if first_at[_key(row)] == i]
     stored = {_key(row): row for row in existing}
     known = [*existing, *(row for row in deduped if _key(row) not in stored)]
     ids = initiative_ids(known)
     outcomes = [
-        ("inserted", _linked(row, ids)) if _key(row) not in stored else ("filled", _filled(row, stored[_key(row)]))
+        ("inserted", queue_rows.stamp_lane_model(_linked(row, ids), lane_model))
+        if _key(row) not in stored else ("filled", _filled(row, stored[_key(row)]))
         for row in deduped
     ]
     filled_rows = {_key(write): write for tag, write in outcomes if tag == "filled" and write is not None}
@@ -253,7 +257,7 @@ def fill_workspace(ws: Path, prune_stale: bool = False) -> str:
 
 def main(a: argparse.Namespace) -> int:
     """Exits 2 without writing when the store cannot be read, and the moment a row fails to upsert."""
-    from agent_tools import cli  # lazy: cli's table names this module as a handler
+    from agent_tools import cli, cli_route_sync  # lazy: cli's table names this module as a handler
 
     ws = cli._route_import_workspace(a)
     if isinstance(ws, str):
@@ -269,7 +273,7 @@ def main(a: argparse.Namespace) -> int:
         return 2
     files = _workspace_files(ws)
     parsed, skipped = parse_workspace(files)
-    plan = plan_fill(parsed, existing)
+    plan = plan_fill(parsed, existing, cli_route_sync._lane_model_for(a))
     for written, row in enumerate(plan.writes):
         detail = run_store.upsert_row_detail(runs_dir, row)
         if detail:

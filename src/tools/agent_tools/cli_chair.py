@@ -68,6 +68,7 @@ from agent_tools.cli_lazy import (
     chair_revert_watch,
     chair_run,
     chair_smoke,
+    chair_stall_alarm,
     chair_tick_cache,
     chair_wake,
     checkout_sync,
@@ -936,6 +937,7 @@ def _chair_run_deps(
         # a host with no workspace_dir is refused by `route launch --on`, so the loop must not plan launches onto it
         host_names = [] if isinstance(candidates, lane_hosts.LaneHostError) else host_cmd.dispatchable(candidates)[0]
         configured = chair_capacity.chair_local_lanes(profile)
+        lane_gate = chair_capacity.chair_lane_prereqs(profile)
         effective = chair_orchestrate.effective_local_lanes(configured, host_names)  # no usable host: build locally this tick
         if configured == "decompose" and effective == "any" and not fallback_noticed:
             fallback_noticed.append(True)
@@ -943,7 +945,7 @@ def _chair_run_deps(
         return chair_facts.dispatch_facts(
             row, host_names, _dispatch_counts(lanes, host, host_names, pidfile_live), host_cmd.row_capacities(host_rows),
             weight=host_cmd.row_weights(host_rows), capabilities=host_cmd.row_capabilities(host_rows), local=host,
-            local_lanes=effective,
+            local_lanes=effective, lane_prereqs=lane_gate,
         )
 
     weekly_reset = usage_window.parse_weekly_reset(profile.get("weekly_reset"))
@@ -1121,7 +1123,7 @@ def _chair_run_deps(
         max_launches_per_hour=lambda: (profile.get("chair") or {}).get("max_launches_per_hour"),
         quarantine_hold_after=lambda: (profile.get("chair") or {}).get("quarantine_hold_after"),
         no_progress_after=lambda: (profile.get("chair") or {}).get("no_progress_after"),
-        stall_alarm=lambda: (profile.get("chair") or {}).get("stall_alarm"),
+        stall_alarm=lambda: chair_stall_alarm.profile_settings(profile.get("chair")),
         # The runs, phases and task records live in the store; with no store the reader finds no runs and holds nothing.
         run_outcomes=lambda ids, last: chair_read_run_outcomes.read_run_outcomes(runs_dir, ids, last),
         merge_queue=lambda: profile.get("merge_queue"),
