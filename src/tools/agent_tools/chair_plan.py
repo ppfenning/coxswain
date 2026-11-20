@@ -435,8 +435,16 @@ def _within_cap(actions: list[Action], budget: int) -> list[Action]:
 
 
 def _fetch_exit_actions(facts: Facts) -> list[Action]:
-    """One fetch_exit per remote-unfetched initiative, naming its stranded run."""
-    return [{"kind": ActionKind.FETCH_EXIT, "initiative": initiative, "run": run} for initiative, run in facts.get("remote_unfetched", {}).items()]
+    """One fetch_exit per remote-unfetched initiative, naming its stranded run and, when known, the host that ran it."""
+    run_hosts = facts.get("run_hosts", {})
+    return [_fetch_exit_action(initiative, run, run_hosts.get(run)) for initiative, run in facts.get("remote_unfetched", {}).items()]
+
+
+def _fetch_exit_action(initiative: str, run: str, host: object) -> Action:
+    """A fetch_exit carries host only when it is a non-empty name; a local run has none."""
+    if isinstance(host, str) and host:
+        return {"kind": ActionKind.FETCH_EXIT, "initiative": initiative, "run": run, "host": host}
+    return {"kind": ActionKind.FETCH_EXIT, "initiative": initiative, "run": run}
 
 
 def _withhold_remote_unfetched(actions: list[Action], remote_unfetched: frozenset[str]) -> list[Action]:
