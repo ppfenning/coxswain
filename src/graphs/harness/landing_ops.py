@@ -144,6 +144,16 @@ def off_branch(repo: Path | str, source: str, tasks: Sequence[Mapping[str, Any]]
     ]
 
 
+def after_push(merge_status: str, push_warning: str | None) -> str:
+    """Pure. What a phase merge git has made does once the push of the initiative branch is answered: `record` it (the
+    push was taken), or, refused, `unwind` the merge this call made (the local branch goes back to origin's tip, so the
+    next pass merges again on what origin holds) or `fail` it as it is (the branch already held the phase: nothing to
+    undo). Either way nothing is recorded: a phase recorded merged is always on origin."""
+    if push_warning is None:
+        return "record"
+    return "unwind" if merge_status == "merged" else "fail"
+
+
 def merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: str, tasks: Sequence[Mapping[str, Any]],
                 worker: str, now: str, checks: lg.Checks | None = None, source: str | None = None,
                 claim_seconds: int = CLAIM_SECONDS, fetch: Callable[[str], str | None] | None = None,
@@ -158,7 +168,9 @@ def merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: s
 
     The initiative branch has one mover at a time, on any host: the merge runs under `branch_lease`. `fetch` brings
     the branch up to origin's copy first (it returns why the merge must not go ahead here, or None), and `publish`
-    pushes the merged branch (it returns a warning, or None). Both are given the branch name."""
+    pushes the merged branch (it returns a warning, or None). Both are given the branch name. With `publish`, the
+    phase is recorded merged only once the push is taken (`after_push`): a refused push unwinds the merge and fails
+    the item, which the sweep queues again."""
     held = store_lease.acquire(conn, branch_lease(initiative), worker, now, claim_seconds)
     if not held.ok:
         return PhaseMerge("busy", initiative, phase, detail=f"{held.holder or 'another worker'} is moving the branch of {initiative}")
@@ -200,8 +212,19 @@ def _merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: 
         holder = (ls.get_item(conn, ident) or {}).get("claimed_by") or "another worker"
         return PhaseMerge("busy", initiative, phase, detail=f"{holder} is merging phase {phase}")
     branch = str(record["branch"])
+    before = lg.rev(repo, f"refs/heads/{branch}")
     merged = lg.merge_into(repo, branch=branch, source=source or phase_branch(initiative, phase),
                            message=f"{initiative}: merge phase {phase}", recorded=lr.recorded_shas(record), checks=checks)
+    if merged.ok and publish is not None:
+        # Pushed before it is recorded: a phase recorded merged is on origin, where every host reads it.
+        warning = publish(branch)
+        step = after_push(merged.status, warning)
+        if step != "record":
+            if step == "unwind" and before:
+                lg.git(repo, "update-ref", "-m", "lander: origin refused the merge", f"refs/heads/{branch}", before, merged.tip)
+            detail = f"{warning}; phase {phase} is not recorded merged until origin holds its merge"
+            ls.fail(conn, ident, worker, now=now, error=detail)
+            return PhaseMerge("error", initiative, phase, tip=merged.merged, detail=detail)
     # Read again: the record may have moved (a sibling phase merged) while git worked. Only this phase's entry is ours.
     record = ls.get_record(conn, initiative) or record
     if merged.ok:
@@ -215,9 +238,8 @@ def _merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: 
         ls.put_record(conn, updated)
         ls.finish(conn, ident, worker, now=now)
         done = tuple(str(t["id"]) for t in lr.phase_tasks(tasks, phase) if t.get("state") == "approved")
-        warning = (publish(branch) if publish is not None else None) or ""
         return PhaseMerge("merged", initiative, phase, tip=merged.merged, merge_sha=tip, merged_tasks=done,
-                          assembled=assembled, detail=warning)
+                          assembled=assembled)
     if merged.status == "error":
         ls.fail(conn, ident, worker, now=now, error=merged.detail)
         return PhaseMerge("error", initiative, phase, detail=merged.detail)

@@ -30,12 +30,12 @@ from core.landing import (
     initiative_pr_reference,
     initiative_pr_title,
     resolve_on_blocked,
-    resolve_push_initiative,
 )
 from harness import landing_git as lg
 from harness import landing_ops as ops
 from harness import landing_store as ls
 from harness import store_lease
+from harness.phase_remote import Kind, fetched_ref, push_branch, settle_diverged
 from harness.store_dialect import Connection
 
 LAND_CLAIM_SECONDS = 3600  # an initiative land waits on CI; its claim is renewed while it works
@@ -247,6 +247,35 @@ def phase_drift(record: lr.LandingRecord, on_branch: Mapping[str, bool], known: 
         else:
             drifts.append(Drift(phase, "hold", f"{said}, and this clone has no copy of its tip {tip[:12]} to merge again"))
     return drifts
+
+
+def moved_phases(record: lr.LandingRecord, origin_tips: Mapping[str, str], held: Mapping[str, bool],
+                 settled: Mapping[str, bool]) -> list[Drift]:
+    """Pure. Each phase the record says is merged whose branch on origin has moved to a tip the initiative branch does
+    not hold: the phase was built again after its merge (a task rebuilt, a fix pushed), so it is merged again at
+    origin's tip (`remerge`).
+
+    `origin_tips[phase]` is the tip of the phase's branch on origin (absent: origin has none), `held[sha]` whether the
+    initiative branch holds it, `settled[phase]` whether every task of the phase is settled (approved, done or
+    dropped). A phase still being built is left until it is whole: its branch is moving."""
+    branch = str(record.get("branch") or "")
+    drifts: list[Drift] = []
+    for phase, tip, merge in merged_entries(record):
+        moved = origin_tips.get(phase, "")
+        if not moved or held.get(moved, False) or not settled.get(phase, False):
+            continue
+        was = f" (recorded at {tip[:12]})" if tip and tip != moved else ""
+        drifts.append(Drift(phase, "remerge", (
+            f"phase {phase} is recorded merged at {(merge or tip)[:12]}, but its branch on origin is at {moved[:12]}{was}, "
+            f"which {branch} does not hold; it is merged again"), moved))
+    return drifts
+
+
+def with_moved(drifts: Sequence[Drift], moved: Sequence[Drift]) -> list[Drift]:
+    """Pure. `drifts` with each phase whose branch moved on origin judged by its moved tip instead: origin's newer tip
+    is the one to merge, and a hold for a recorded tip that is gone no longer stands once the new one is here."""
+    again = {d.phase for d in moved}
+    return [*(d for d in drifts if d.phase not in again), *moved]
 
 
 def kept_shas(record: lr.LandingRecord, phases: Sequence[str]) -> list[str]:
@@ -485,11 +514,16 @@ def adopt_branch(ports: Ports, repo: Path, initiative: str) -> Adopted:
 def _rebuild(ports: Ports, repo: Path, record: lr.LandingRecord, branch: str) -> Adopted:
     """`adopt_branch`'s git, under the lease it holds."""
     initiative = record_text(record, "initiative")
+    events: list[str] = []
     if diverged := ports.fetch(repo, branch):
-        return Adopted(wait=diverged)
+        settled = settle_diverged(repo, branch)
+        if settled.kind != Kind.RESET:
+            # Different work under one name: only a person can say which is right. Held, and the chair told once.
+            alarm = settled.kind == Kind.DIVERGED_CONTENT
+            return Adopted(wait=f"{ADOPT_HOLD}{settled.detail}" if alarm else diverged, held=alarm)
+        events.append(f"{initiative}: {settled.detail}")
     local, remote = lg.rev(repo, f"refs/heads/{branch}"), lg.rev(repo, f"refs/remotes/origin/{branch}")
     source = branch_source(local is not None, remote is not None)
-    events: list[str] = []
     if source == "origin" and remote is not None:
         made, why = lg.git(repo, "branch", "--no-track", branch, remote)
         if not made:
@@ -611,15 +645,21 @@ def merge_phase(ports: Ports, initiative: str, phase: str) -> Outcome:
     adopted = _adopt_or_wait(ports, repo, initiative, ident)
     if isinstance(adopted, Outcome):
         return adopted
-    early = resolve_push_initiative((ports.meta(initiative).get("cartridge")) or {}) == "early"
+
+    pushed_note: list[str] = []
 
     def publish(branch: str) -> str | None:
-        pushed, why = ports.forge.push(repo, branch)
-        return None if pushed else f"push of {branch} failed: {why}"
+        # Every merge is pushed, whatever `push_initiative` says, and before it is recorded (`ops.after_push`): the
+        # lander is the one host that merges into the branch, so origin's copy is the one every lane builds on.
+        pushed, why = push_branch(repo, branch)
+        if pushed and why != "no origin":
+            tip = lg.rev(repo, f"refs/heads/{branch}") or ""
+            pushed_note.append(f"{branch} pushed to origin at {tip[:12]} before phase {phase} was recorded merged")
+        return None if pushed else f"push of {branch} to origin failed: {why.splitlines()[0] if why else 'no detail from git'}"
 
     done = ops.merge_phase(ports.conn, repo, initiative=initiative, phase=phase, tasks=tasks, worker=ports.worker,
                            now=ports.now(), checks=_level_checks(ports, repo, record, phase),
-                           fetch=lambda branch: ports.fetch(repo, branch), publish=publish if early else None)
+                           fetch=lambda branch: ports.fetch(repo, branch), publish=publish)
     if done.status in ("busy", "not_ready"):
         return Outcome("waiting", ident, done.detail)
     if done.status == "error":
@@ -629,8 +669,7 @@ def merge_phase(ports: Ports, initiative: str, phase: str) -> Outcome:
     events = [*adopted, f"phase {phase} of {initiative} merged into {record_text(record, 'branch')}"]
     for task in done.merged_tasks:
         ports.mark_merged(initiative, task, done.merge_sha)
-    if done.status == "merged" and done.detail:
-        events.append(done.detail)
+    events += pushed_note if done.status == "merged" else []
     if done.assembled and ls.enqueue(ports.conn, ls.INITIATIVE_LAND, initiative, repo=str(record.get("repo") or ""),
                                      parent=str(record.get("parent") or ""), now=ports.now(), reason="last phase merged"):
         events.append(f"{initiative} is assembled: queued to land on {record.get('parent')}")
@@ -1338,8 +1377,14 @@ def _repair(ports: Ports, repo: Path, record: lr.LandingRecord, repairs: Sequenc
         # its merge and its push. Build on it, and the push below publishes it as a fast-forward.
         start, moved, why = local, True, ""
     elif local != start:
-        return Judgement((f"reconcile: {initiative} waits: {branch} here has diverged from origin's, so it is not repaired here",),
-                         judged=False)
+        # Diverged. The same tree is a second merge commit of what origin holds: reset to origin's and repair there.
+        lg.git(repo, "update-ref", fetched_ref(branch), start)
+        settled = settle_diverged(repo, branch)
+        if settled.kind == Kind.DIVERGED_CONTENT:
+            return Judgement(reason=settled.detail)
+        if settled.kind != Kind.RESET:
+            return Judgement((f"reconcile: {initiative} waits: {settled.detail}",), judged=False)
+        moved, why = True, ""
     else:
         moved, why = True, ""
     if not moved:
@@ -1360,15 +1405,55 @@ def _repair(ports: Ports, repo: Path, record: lr.LandingRecord, repairs: Sequenc
     lg.git(repo, "update-ref", origin_ref, tip)
     current = ls.get_record(ports.conn, initiative) or record.copy()
     for drift in repairs:
-        current = lr.with_phase(current, drift.phase, ports.now(), merge_sha=tip, repaired_at=ports.now())
+        current = lr.with_phase(current, drift.phase, ports.now(), tip=drift.tip, merge_sha=tip, repaired_at=ports.now())
     ls.put_record(ports.conn, current)
     return Judgement(tuple(f"reconcile: {initiative}: {d.reason}; {branch} is pushed at {tip[:12]}" for d in repairs))
 
 
+def _origin_phase_tips(repo: Path, initiative: str, phases: Sequence[str]) -> dict[str, str]:
+    """Edge. The tip of each phase's branch on origin, in one read; a phase whose branch origin lacks is absent. Each
+    tip this clone does not have yet is fetched into origin's remote-tracking ref, so it can be judged and merged."""
+    names = {f"refs/heads/{ops.phase_branch(initiative, p)}": p for p in phases}
+    if not names:
+        return {}
+    ok, out = lg.git(repo, "ls-remote", "origin", *names)
+    if not ok:
+        return {}
+    tips = {names[ref]: sha for sha, _, ref in (line.partition("\t") for line in out.splitlines()) if ref in names}
+    for phase, sha in tips.items():
+        if lg.rev(repo, sha) is None:
+            name = ops.phase_branch(initiative, phase)
+            lg.git(repo, "fetch", "--quiet", "origin", f"+refs/heads/{name}:refs/remotes/origin/{name}")
+    return {phase: sha for phase, sha in tips.items() if lg.rev(repo, sha)}
+
+
+def _moved(ports: Ports, repo: Path, record: lr.LandingRecord, origin_ref: str) -> list[Drift]:
+    """Edge. `moved_phases` for this record, against origin's copy of the initiative branch as last fetched."""
+    initiative = record_text(record, "initiative")
+    tips = _origin_phase_tips(repo, initiative, [phase for phase, _, _ in merged_entries(record)])
+    if not tips:
+        return []
+    tasks = ports.tasks(initiative)
+    settled = {phase: all(str(t.get("state")) in ("approved", "done", "dropped") for t in lr.phase_tasks(tasks, phase))
+               for phase in tips}
+    return moved_phases(record, tips, {sha: lg.is_ancestor(repo, sha, origin_ref) for sha in tips.values()}, settled)
+
+
+def _moved_unleased(ports: Ports, repo: Path, record: lr.LandingRecord) -> bool:
+    """Edge. Whether a phase of an unpublished record has moved on origin, read without the branch lease (it fetches
+    only into remote-tracking refs). An origin that lacks the branch, or cannot be read, has nothing moved to merge."""
+    origin_ref, _ = _fetch_origin(repo, record_text(record, "branch"))
+    return origin_ref is not None and bool(_moved(ports, repo, record, origin_ref))
+
+
 def _judge(ports: Ports, repo: Path, initiative: str) -> Judgement:
-    """Under the branch lease: the record, read again, against origin's branch, fetched now."""
+    """Under the branch lease: the record, read again, against origin's branch, fetched now.
+
+    A published initiative is judged whole: every merged phase on origin's branch. Before that, only a phase whose
+    branch moved on origin after its merge is judged, and only once origin's branch holds the record: a branch the
+    building host kept local is `adopt_branch`'s to settle."""
     record = ls.get_record(ports.conn, initiative)
-    if record is None or not published(record):
+    if record is None:
         return Judgement(judged=False)
     branch = record_text(record, "branch")
     origin_ref, unreadable = _fetch_origin(repo, branch)
@@ -1376,11 +1461,20 @@ def _judge(ports: Ports, repo: Path, initiative: str) -> Judgement:
         # Not on origin: not pushed yet, so not the lander's to judge. Unreadable: try again next pass.
         return Judgement((f"reconcile: {initiative} waits: origin could not be read: {unreadable}",) if unreadable else (), judged=False)
     drifts = _origin_drift(repo, record, origin_ref)
+    if not published(record):
+        if drifts:
+            return Judgement(judged=False)
+        moved = _moved(ports, repo, record, origin_ref)
+        if moved:
+            return _repair(ports, repo, record, moved, origin_ref)
+        hold = _held(record)  # a hold this judgement set is lifted once nothing moved is left; adopt's is adopt's
+        return Judgement(judged=bool(hold) and not str((hold or {}).get("reason") or "").startswith(ADOPT_HOLD))
     if drifts:
         for drift in drifts:  # a tip may still be on origin's copy of its phase branch
             phase = ops.phase_branch(initiative, drift.phase)
             lg.git(repo, "fetch", "--quiet", "origin", f"+refs/heads/{phase}:refs/remotes/origin/{phase}")
         drifts = _origin_drift(repo, record, origin_ref)
+    drifts = with_moved(drifts, _moved(ports, repo, record, origin_ref))
     holds = [d.reason for d in drifts if d.action == "hold"]
     repairs = [d for d in drifts if d.action == "remerge"]
     if not repairs:
@@ -1394,21 +1488,27 @@ def _judge(ports: Ports, repo: Path, initiative: str) -> Judgement:
 def reconcile(ports: Ports, initiative: str) -> list[str]:
     """Check what the landing record says merged against origin's initiative branch, and act on what disagrees.
 
-    Only a published initiative is judged: its record is assembled or has a pull request open, and its branch is on
-    origin. Before that the builder's host owns the branch, and a phase not pushed yet is not a phase lost. The whole
-    judgement runs under the initiative's branch lease, after a fetch, and is made again on what that fetch brought.
+    A published initiative (assembled, or with a pull request open, and its branch on origin) is judged whole. Before
+    that only a phase whose branch moved on origin after its merge is judged (`moved_phases`), and only once origin's
+    branch holds the record: a branch the building host kept local is not a phase lost. The whole judgement runs
+    under the initiative's branch lease, after a fetch, and is made again on what that fetch brought.
 
     A phase recorded merged whose tip this clone has, or can fetch from origin's phase branch, is merged into origin's
-    branch again and pushed; its merge commit is rewritten on the record only once the push is taken. One that cannot
+    branch again and pushed, as is a phase whose branch on origin moved to a tip the branch does not hold (a phase
+    rebuilt after its merge); its tip and merge commit are rewritten on the record only once the push is taken. A
+    copy here that diverged from origin's with the same tree is reset to origin's first; with a different tree it
+    holds, naming both commits. One that cannot
     be repaired holds the initiative, with the reason, and the chair is told once: nothing merges into it or lands
     from it until the record and origin agree again, which lifts the hold on the pass that sees it. A busy lease waits."""
     record = ls.get_record(ports.conn, initiative)
-    if record is None or not live(record) or not merged_entries(record) or not published(record):
+    if record is None or not live(record) or not merged_entries(record):
         return []
     try:
         repo = ports_repo(ports, record)
     except LookupError:
         return []
+    if not published(record) and not _held(record) and not _moved_unleased(ports, repo, record):
+        return []  # a branch still being built is not leased for a look that finds nothing: its builder may be merging
     lease = store_lease.acquire(ports.conn, ops.branch_lease(initiative), ports.worker, ports.now(), ops.CLAIM_SECONDS)
     if not lease.ok:
         return [f"reconcile: {initiative} waits: {lease.holder or 'another worker'} is moving {record_text(record, 'branch')}"]

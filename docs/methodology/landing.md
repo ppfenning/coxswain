@@ -161,11 +161,15 @@ The lander works a queue in the store with two kinds of item:
 
 | Item | What it does |
 | --- | --- |
-| `phase_merge` | Merges one built phase into the initiative branch, locally, after the level checks pass on the merged tree. A build run performs this merge itself the moment it finishes a phase; the lander performs whatever is left queued. |
+| `phase_merge` | Merges one built phase into the initiative branch, after the level checks pass on the merged tree, and pushes the branch to origin. The phase is recorded merged only once origin takes the push; a refused push undoes the merge here and the item is queued again. A build run performs this merge itself the moment it finishes a phase, under the same rule; the lander performs whatever is left queued. |
 | `initiative_land` | Merges the parent into the initiative branch, runs the gate checks, pushes, opens the one pull request, reads its checks once per pass until they finish, merges it at gate `full` (or leaves the merge to a person), then marks every task done and cleans the branches. |
 
-Every move of an initiative branch is made under one store lease per initiative, after a fetch, so two hosts never fork
-it. The two kinds have separate caps (`landing_areas.phase_cap`, default 2, and `landing_areas.land_cap`, default 1)
+Every move of an initiative branch is made under one store lease per initiative, after a fetch, and every phase merge
+is pushed before it is recorded, whatever `push_initiative` says, so two hosts never fork it: origin's copy is the one
+every host reads. A clone whose copy has diverged from origin's with the same tree (a second "merge phase" commit of
+work origin already holds) is reset to origin's, by the lander and by a build run's parent-phase check alike. A copy
+that diverged with a different tree is left as it is: the lander holds the initiative and tells the chair once, and a
+build run's phase stops with "needs the chair", both naming the two commits. The two kinds have separate caps (`landing_areas.phase_cap`, default 2, and `landing_areas.land_cap`, default 1)
 and neither counts against the launch cap. An item open for an hour is told to the chair once; a pull request waiting
 for a person never is. `cox lander status` shows every initiative in flight and every item with its age.
 
@@ -184,7 +188,11 @@ the initiative, so a busy lane's records are not written by anything else in tha
 
 Each pass also checks every published landing record against origin. Published means assembled, or with a pull
 request URL on the record, whatever the state; before that the host that builds the initiative owns its branch, and
-a phase it has not pushed yet is not a phase lost. So an initiative sent back to build (`conflicted`) after its pull
+a phase it has not pushed yet is not a phase lost. One check runs before publication too, once origin's branch holds
+the record: a phase recorded merged whose branch on origin has since moved to a tip the initiative branch does not
+hold (the phase was built again after its merge, with every task settled) is merged again at that tip and pushed, and
+its tip and merge commit are rewritten on the record once origin takes the push. If that merge conflicts, the
+initiative is held and the chair is told once. So an initiative sent back to build (`conflicted`) after its pull
 request opened is still judged: its open pull request must still hold every phase merged before, while the
 `integrate` work is built on top. Under the initiative's branch lease, the lander fetches origin's initiative branch and reads the
 record again. A phase the record calls merged must be on that branch, both its tip and its merge commit. When it is

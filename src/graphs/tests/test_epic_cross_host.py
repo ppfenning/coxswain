@@ -61,10 +61,13 @@ def test_at_initiative_phase_two_on_another_host_builds_on_the_initiative_branch
 
 
 def test_at_initiative_a_merge_this_clone_cannot_get_stops_the_phase_without_a_quarantine(hosts, cart, tmp_path, monkeypatch) -> None:  # noqa: F811
-    """Host A merged phase one and did not push the initiative branch: host B must not build phase two without it."""
+    """Host A's merge of phase one is not on origin (an older host kept it local): host B must not build phase two
+    without it. A merge made now is pushed before it is recorded, so origin is put back here to make that case."""
     store = _shared_store()
     first, _ = drive(hosts.a, cart, tmp_path, work=initiative(two_phases=False), run_id="epic-a", store=store)
     assert first["phases"][0]["initiative_merge"]["status"] == "merged"
+    assert git("rev-parse", INIT_BRANCH, cwd=hosts.origin) == git("rev-parse", INIT_BRANCH, cwd=hosts.a), "pushed before recorded"
+    git("update-ref", f"refs/heads/{INIT_BRANCH}", git("merge-base", INIT_BRANCH, "main", cwd=hosts.a), cwd=hosts.origin)
     opened: list[str] = []
     real = epic.open_phase_worktree
     monkeypatch.setattr(epic, "open_phase_worktree", lambda *a, **k: opened.append("called") or real(*a, **k))
@@ -78,6 +81,54 @@ def test_at_initiative_a_merge_this_clone_cannot_get_stops_the_phase_without_a_q
     assert opened == []
     assert not any(c["role"] == "build" for c in runner.calls)
     assert _local_branches(hosts.b) == []
+
+
+def _second_merge_on_b(hosts, first: dict, *, extra: str | None) -> str:
+    """Host B's own "merge phase" commit of phase one on the base origin's merge was made on: the same tree as
+    origin's, or (with `extra`) a different one. Its tip."""
+    merge_sha = first["phases"][0]["initiative_merge"]["merge_sha"]
+    git("fetch", "-q", "origin", f"+refs/heads/{P1_BRANCH}:refs/remotes/origin/{P1_BRANCH}", cwd=hosts.b)
+    git("fetch", "-q", "origin", f"+refs/heads/{INIT_BRANCH}:refs/remotes/origin/{INIT_BRANCH}", cwd=hosts.b)
+    git("checkout", "-q", "-b", INIT_BRANCH, f"{merge_sha}^1", cwd=hosts.b)
+    git("-c", "user.name=lane", "-c", "user.email=lane@invalid", "merge", "-q", "--no-ff", "-m",
+        f"{INITIATIVE}: merge phase {P1} (on lane-host)", f"origin/{P1_BRANCH}", cwd=hosts.b)
+    if extra:
+        (hosts.b / extra).write_text("only on lane-host\n")
+        git("add", extra, cwd=hosts.b)
+        git("-c", "user.name=lane", "-c", "user.email=lane@invalid", "commit", "-q", "-m", "lane-only", cwd=hosts.b)
+    git("checkout", "-q", "--detach", cwd=hosts.b)
+    return git("rev-parse", INIT_BRANCH, cwd=hosts.b)
+
+
+def test_at_initiative_a_parent_check_that_finds_its_branch_diverged_with_the_same_tree_resets_it_and_builds(hosts, cart, tmp_path) -> None:  # noqa: F811
+    """Two "merge phase" commits of one phase, one here and one on origin, with one tree: origin's is the one."""
+    store = _shared_store()
+    first, _ = drive(hosts.a, cart, tmp_path, work=initiative(two_phases=False), run_id="epic-a", store=store)
+    origin_tip = git("rev-parse", INIT_BRANCH, cwd=hosts.origin)
+    local = _second_merge_on_b(hosts, first, extra=None)
+    assert local != origin_tip
+
+    result, runner = drive(hosts.b, hosts.cart_b, hosts.home_b, work=staged(), only_phases=[P2], run_id="epic-b", store=store)
+
+    (record,) = result["phases"]
+    assert record["status"] != "blocked", record.get("reason")
+    assert any(c["role"] == "build" and "t3-cutover" in c["prompt"] for c in runner.calls)
+    assert is_ancestor(hosts.b, origin_tip, P2_BRANCH) and not is_ancestor(hosts.b, local, P2_BRANCH)
+
+
+def test_at_initiative_a_parent_check_that_finds_its_branch_diverged_with_other_work_stops_for_the_chair(hosts, cart, tmp_path) -> None:  # noqa: F811
+    store = _shared_store()
+    first, _ = drive(hosts.a, cart, tmp_path, work=initiative(two_phases=False), run_id="epic-a", store=store)
+    origin_tip = git("rev-parse", INIT_BRANCH, cwd=hosts.origin)
+    local = _second_merge_on_b(hosts, first, extra="lane-only.txt")
+
+    result, runner = drive(hosts.b, hosts.cart_b, hosts.home_b, work=staged(), only_phases=[P2], run_id="epic-b", store=store)
+
+    (record,) = result["phases"]
+    assert record["status"] == "blocked" and record["reason"].startswith("needs the chair:")
+    assert local[:12] in record["reason"] and origin_tip[:12] in record["reason"]
+    assert not any(c["role"] == "build" for c in runner.calls)
+    assert git("rev-parse", INIT_BRANCH, cwd=hosts.b) == local, "neither copy is moved"
 
 
 def test_at_initiative_a_parent_merged_nowhere_blocks_the_named_phase(hosts) -> None:

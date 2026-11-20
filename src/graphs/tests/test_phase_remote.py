@@ -10,12 +10,14 @@ import pytest
 from harness.phase_remote import (
     FetchOutcome,
     Kind,
+    diverged_action,
     fetch_branch,
     fetched_ref,
     materialise_local,
     missing_branch_cause,
     push_branch,
     refresh_verdict,
+    settle_diverged,
 )
 
 PHASE = "epic/demo-initiative/p1-foundations"
@@ -274,3 +276,79 @@ def test_a_diverged_phase_branch_keeps_local_and_saves_origins_tip(tmp_path: Pat
     assert git("rev-parse", fetched_ref(PHASE), cwd=host) == repaired
     assert fetched_ref(PHASE) == f"refs/coxswain/fetched/origin/{PHASE}"
     assert PHASE in outcome.detail and fetched_ref(PHASE) in outcome.detail
+
+
+# -- an initiative branch two hosts each merged a phase into -----------------------------------------------------------
+
+INIT = "init/demo-initiative"
+
+
+@pytest.mark.parametrize(("local_tree", "origin_tree", "action"), [
+    ("t1", "t1", "reset"),
+    ("t1", "t2", "alarm"),
+    ("", "", "alarm"),  # a tree that could not be read is never the same tree
+    ("t1", "", "alarm"),
+])
+def test_a_diverged_initiative_branch_resets_only_to_the_same_tree(local_tree, origin_tree, action) -> None:
+    assert diverged_action(local_tree, origin_tree) == action
+
+
+def _two_merges(tmp_path: Path, *, same_work: bool) -> tuple[Path, str, str]:
+    """`INIT` on origin with one "merge phase p1" commit (from lander-host), and lane-host's clone with its own merge of
+    the phase on the same base: the same work (one tree), or different work. (lane-host's clone, its tip, origin's)."""
+    lander = make_repo(tmp_path / "lander-host")
+    origin = tmp_path / "origin.git"
+    git("init", "-q", "--bare", "-b", "main", str(origin), cwd=tmp_path)
+    git("remote", "add", "origin", str(origin), cwd=lander)
+    git("branch", INIT, cwd=lander)
+    git("checkout", "-q", "-b", PHASE, cwd=lander)
+    commit(lander, "feature.txt")
+    git("checkout", "-q", "main", cwd=lander)
+    assert push_branch(lander, INIT)[0] and push_branch(lander, PHASE)[0]
+    git("clone", "-q", str(origin), "lane-host", cwd=tmp_path)
+    lane = tmp_path / "lane-host"
+    git("config", "user.name", "lane", cwd=lane)
+    git("config", "user.email", "lane@invalid", cwd=lane)
+    git("checkout", "-q", "-b", INIT, f"origin/{INIT}", cwd=lane)
+    git("merge", "-q", "--no-ff", "-m", "demo: merge phase p1 (on lane-host)", f"origin/{PHASE}", cwd=lane)
+    if not same_work:
+        commit(lane, "lane-only.txt")
+    git("checkout", "-q", "--detach", cwd=lane)
+    git("checkout", "-q", INIT, cwd=lander)
+    git("merge", "-q", "--no-ff", "-m", "demo: merge phase p1", PHASE, cwd=lander)
+    git("checkout", "-q", "main", cwd=lander)
+    assert push_branch(lander, INIT)[0]
+    return lane, git("rev-parse", INIT, cwd=lane), git("rev-parse", INIT, cwd=lander)
+
+
+def test_an_initiative_branch_diverged_with_the_same_tree_is_reset_to_origins(tmp_path: Path) -> None:
+    lane, local, origin_tip = _two_merges(tmp_path, same_work=True)
+    assert local != origin_tip and fetch_branch(lane, INIT).kind == Kind.DIVERGED
+
+    settled = settle_diverged(lane, INIT)
+
+    assert settled.kind == Kind.RESET and local[:12] in settled.detail and origin_tip[:12] in settled.detail
+    assert git("rev-parse", f"refs/heads/{INIT}", cwd=lane) == origin_tip
+    assert fetch_branch(lane, INIT) == FetchOutcome(Kind.PRESENT_LOCALLY), "nothing diverges any more"
+
+
+def test_an_initiative_branch_diverged_with_a_different_tree_is_kept_and_names_both_commits(tmp_path: Path) -> None:
+    lane, local, origin_tip = _two_merges(tmp_path, same_work=False)
+    assert fetch_branch(lane, INIT).kind == Kind.DIVERGED
+
+    settled = settle_diverged(lane, INIT)
+
+    assert settled.kind == Kind.DIVERGED_CONTENT and settled.detail.startswith("needs the chair:")
+    assert local[:12] in settled.detail and origin_tip[:12] in settled.detail
+    assert git("rev-parse", f"refs/heads/{INIT}", cwd=lane) == local, "neither copy is moved"
+
+
+def test_a_checked_out_initiative_branch_is_not_reset_under_its_files(tmp_path: Path) -> None:
+    lane, local, _ = _two_merges(tmp_path, same_work=True)
+    git("checkout", "-q", INIT, cwd=lane)
+    fetch_branch(lane, INIT)
+
+    settled = settle_diverged(lane, INIT)
+
+    assert settled.kind == Kind.DIVERGED and "checked out" in settled.detail
+    assert git("rev-parse", f"refs/heads/{INIT}", cwd=lane) == local
