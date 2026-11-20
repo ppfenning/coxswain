@@ -745,6 +745,7 @@ def _place_or_refuse(
             lambda barred: launch_place.place(
                 rows, live, datetime.datetime.now(datetime.UTC), local, cap, profile_hosts, barred,
                 local_excluded=local_excluded, load_ceiling=ceiling,
+                lane_gate=chair_capacity.chair_lane_prereqs(dict(profile)),
             ),
             refused,
         )

@@ -44,20 +44,32 @@ def _daemon_id() -> subprocess.CompletedProcess[str]:
 
 REAL_DAEMON_ID = _daemon_id().stdout.strip() if DOCKER is not None else ""
 
-def _present(image: str) -> bool:
-    argv = plan.docker_inspect_argv(image)
-    return subprocess.run([DOCKER, *argv[1:]], capture_output=True, text=True, timeout=30).returncode == 0
 
+@pytest.fixture
+def local_postgres() -> None:
+    """The pinned Postgres image in the local store, fetched first under the operator's own config when it is absent.
 
-needs_local_postgres = pytest.mark.skipif(
-    DOCKER is None or not conftest._docker_ok(DOCKER) or not _present(plan.POSTGRES_IMAGE),
-    reason="needs a docker daemon with the pinned Postgres image already in its local store",
-)
+    The wrong belief was "absent at collection means absent": the old skip was decided when the module was collected,
+    before the session's `postgres` fixture had pulled the image, so a host meeting it for the first time skipped all
+    three tests in a session that then had the image. Docker decides as for the suite's other containers (a missing
+    docker skips unless the run requires the suite; a daemon that does not answer fails unless the host opts out); an
+    image docker cannot fetch here, as in a session that cannot reach the macOS keychain, skips unless required."""
+    broken_ok = plan.is_required(os.environ.get(plan.BROKEN_DOCKER_OK_ENV))
+    decision = plan.container_source("the pinned Postgres image", DOCKER, DOCKER is not None and conftest._docker_ok(DOCKER),
+                                     required=conftest._required(), broken_docker_ok=broken_ok)
+    if isinstance(decision, plan.Skip | plan.Fail):
+        conftest._unavailable(decision)
+    try:
+        conftest._pull(plan.POSTGRES_IMAGE)
+    except RuntimeError as exc:
+        conftest._unavailable(plan.unavailable(f"the pinned Postgres image is not in the local store: {exc}",
+                                               required=conftest._required()))
 
 
 @pytest.fixture
-def no_credentials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A docker client config whose credential helper cannot run, as in a non-interactive macOS session."""
+def no_credentials(local_postgres: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A docker client config whose credential helper cannot run, as in a non-interactive macOS session. The pinned
+    image is made present before the swap, under the real config."""
     (tmp_path / "config.json").write_text(json.dumps({"credsStore": "smoke-absent-helper"}), encoding="utf-8")
     if ENDPOINT is not None:
         monkeypatch.setenv("DOCKER_HOST", ENDPOINT)
@@ -65,7 +77,6 @@ def no_credentials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
-@needs_local_postgres
 def test_the_swapped_config_still_reaches_the_operators_daemon(no_credentials: Path) -> None:
     # Before the fix, on macOS, this dialled /var/run/docker.sock: the swapped config had dropped Docker Desktop's context.
     swapped = _daemon_id()
@@ -73,14 +84,12 @@ def test_the_swapped_config_still_reaches_the_operators_daemon(no_credentials: P
     assert swapped.stdout.strip() == REAL_DAEMON_ID
 
 
-@needs_local_postgres
 def test_inspect_resolves_a_present_digest_pinned_image_without_credentials(no_credentials: Path) -> None:
     done = subprocess.run(plan.docker_inspect_argv(plan.POSTGRES_IMAGE), capture_output=True, text=True, timeout=30)
     assert done.returncode == 0, done.stderr
     assert done.stdout.strip().startswith("sha256:")
 
 
-@needs_local_postgres
 def test_the_fixture_pull_uses_a_present_digest_pinned_image_without_credentials(no_credentials: Path) -> None:
     # Before the fix this ran `docker pull`, which asked the absent helper for credentials and failed every attempt.
     conftest._pull(plan.POSTGRES_IMAGE)
