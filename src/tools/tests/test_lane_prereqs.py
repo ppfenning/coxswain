@@ -8,7 +8,6 @@ import json
 import shutil
 import socket
 import stat
-import time
 from functools import partial
 from pathlib import Path
 
@@ -393,7 +392,8 @@ _DOCKER_UP = """case "$1" in
   *) echo "unexpected docker $*" >&2; exit 99 ;;
 esac"""
 # Docker Desktop's CLI while the app hangs: it neither answers nor exits.
-_DOCKER_HUNG = "exec /bin/sleep 30"
+HANG_S = 600
+_DOCKER_HUNG = f"exec sleep {HANG_S}"
 
 
 def _host(tmp_path: Path, *, docker: str | None = _DOCKER_UP, tools=("pg_dump",), gh: str | None = None,
@@ -441,24 +441,31 @@ def test_the_probe_with_docker_stopped_names_the_gap_and_checks_no_image(tmp_pat
     assert lane_prereqs.capabilities(list(rows.values())) == frozenset()
 
 
-def test_a_hung_docker_is_cut_off_at_its_own_limit_well_inside_the_ssh_bound(tmp_path):
-    env = _host(tmp_path, docker=_DOCKER_HUNG)
-    started = time.monotonic()
-    rows = _by_check(_probe(env))
-    elapsed = time.monotonic() - started
+# Short limits for the hung-command tests: what they prove is which row the probe writes, not how long it waits. A hung
+# fake runs for HANG_S, far past any limit, and the probe itself is bounded by OUTER_S, far past every limit together,
+# so no load on the runner can make a hung command finish in time or a fast one look hung.
+SHORT_LIMITS = (2, 1, 1, 1)
+OUTER_S = 120
+
+
+def _bounded_probe(env: dict[str, str], **kwargs) -> list[dict]:
+    done = run_argv_split(lane_prereqs.script_argv(**kwargs), env=env, timeout=OUTER_S)
+    assert done.returncode != 124, f"the probe itself ran past {OUTER_S}s: {done.mixed[-300:]}"
+    return lane_prereqs.reply_rows(done.returncode, done.mixed, remote=False)
+
+
+def test_a_hung_docker_is_cut_off_at_its_own_limit(tmp_path):
+    rows = _by_check(_bounded_probe(_host(tmp_path, docker=_DOCKER_HUNG), limits_s=SHORT_LIMITS))
     assert rows["docker daemon"]["detail"] == "docker did not answer within 6s; restart it"
     assert rows["smoke image garage"]["detail"] == "not checked: docker did not answer"
     assert rows["gh"]["ok"] is True  # the probe went on past the hung docker
-    assert elapsed < 15
 
 
 def test_a_hung_grandchild_is_killed_with_its_wrapper(tmp_path):
-    # A wrapper whose child hangs and holds the output pipe: killing the wrapper alone left the probe waiting on it.
-    env = _host(tmp_path, docker="sleep 30 &\nwait")
-    started = time.monotonic()
-    rows = _by_check(_probe(env))
+    # A wrapper whose child hangs and holds the output pipe: killing the wrapper alone left the probe waiting on the
+    # child for HANG_S, past OUTER_S.
+    rows = _by_check(_bounded_probe(_host(tmp_path, docker=f"sleep {HANG_S} &\nwait"), limits_s=SHORT_LIMITS))
     assert rows["docker daemon"]["detail"] == "docker did not answer within 6s; restart it"
-    assert time.monotonic() - started < 12
 
 
 def test_without_sleep_nothing_is_probed_and_the_probe_row_says_why(tmp_path):
@@ -469,32 +476,34 @@ def test_without_sleep_nothing_is_probed_and_the_probe_row_says_why(tmp_path):
 
 
 def test_calls_that_would_end_past_the_budget_are_skipped(tmp_path):
-    env = _host(tmp_path, docker='[ "$1" = info ] && { sleep 5; echo 27.3.1; exit 0; }; exit 1')
-    started = time.monotonic()
-    rows = _by_check(_probe(env, budget_s=7))  # docker info (6s) fits; nothing bounded at 3s fits after 5s spent
+    # docker info takes 12s, inside its 20s limit; its 20s fit a 23s budget with 3s of slack before it starts; after
+    # it, at least 12s are spent, so no 15s call fits. Every margin is whole seconds wide.
+    env = _host(tmp_path, docker='[ "$1" = info ] && { sleep 12; echo 27.3.1; exit 0; }; exit 1')
+    rows = _by_check(_bounded_probe(env, budget_s=23, limits_s=(20, 15, 15, 15)))
     assert rows["docker daemon"]["ok"] is True
     assert rows["smoke image postgres"]["detail"] == "not checked: the probe ran past its budget"
     assert rows["gh"]["detail"] == "not checked: the probe ran past its budget"
-    assert rows["lane probe"]["detail"].startswith(f"ran past its 7s budget; skipped inspect:{lane_prereqs.POSTGRES_IMAGE}")
-    assert time.monotonic() - started < 9
+    assert rows["lane probe"]["detail"].startswith(f"ran past its 23s budget; skipped inspect:{lane_prereqs.POSTGRES_IMAGE}")
 
 
 def test_a_hung_image_inspect_stops_the_inspects_after_it(tmp_path):
-    env = _host(tmp_path, docker='[ "$1" = info ] && { echo 27.3.1; exit 0; }; exec /bin/sleep 30')
-    started = time.monotonic()
-    rows = _by_check(_probe(env))
+    env = _host(tmp_path, docker=f'[ "$1" = info ] && {{ echo 27.3.1; exit 0; }}; exec sleep {HANG_S}')
+    rows = _by_check(_bounded_probe(env, limits_s=SHORT_LIMITS))
     assert rows["smoke image postgres"]["detail"] == "docker did not answer within 3s (docker image inspect); restart it"
     assert rows["smoke image forgejo"]["detail"] == "not checked: docker did not answer"
-    assert time.monotonic() - started < 15
 
 
 def test_a_hung_credential_helper_is_cut_off_and_asked_no_more(tmp_path):
-    env = _host(tmp_path, creds_store="desktop", helper="exec /bin/sleep 30")
-    started = time.monotonic()
-    rows = _by_check(_probe(env))
-    assert "did not answer within 3s" in rows["smoke image postgres"]["detail"]
-    assert "did not answer within 3s" in rows["smoke image garage"]["detail"]
-    assert time.monotonic() - started < 15
+    env = _host(tmp_path, creds_store="desktop", helper=f"exec sleep {HANG_S}")
+    rows = _by_check(_bounded_probe(env, limits_s=SHORT_LIMITS))
+    assert "docker-credential-desktop did not answer within 3s" in rows["smoke image postgres"]["detail"]
+    assert "docker-credential-desktop did not answer within 3s" in rows["smoke image garage"]["detail"]
+
+
+def test_a_command_that_fails_at_once_is_its_own_failure_never_a_timeout(tmp_path):
+    env = _host(tmp_path, docker='echo "boom" >&2; exit 124')
+    rows = _by_check(_bounded_probe(env, limits_s=SHORT_LIMITS))
+    assert rows["docker daemon"]["detail"] == "the docker daemon did not answer (exit 1): boom; start it"
 
 
 def test_the_probe_without_pg_dump_names_it(tmp_path):

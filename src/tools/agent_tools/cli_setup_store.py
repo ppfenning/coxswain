@@ -6,7 +6,9 @@ import argparse
 import contextlib
 import os
 import sys
+import tempfile
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 
 from agent_tools.cli_common import _profile_path, _read_text_or_none
@@ -265,14 +267,103 @@ def _setup_unit_env(a: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"refusing: {path}: {exc}")
         return 2
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.touch(mode=0o600, exist_ok=True)
-    path.chmod(0o600)
-    path.write_text(text, encoding="utf-8")
+    _write_env_file(path, text)
     print(path)
     print(f"names: {', '.join(unit_env.parse_env(text)) or 'none'}")
     if not token:
         print(f"note: no token found; run `cox setup token`, then this again, so the units get {claude_token.TOKEN_ENV}")
+    return 0
+
+
+def _write_env_file(path: Path, text: str) -> None:
+    """Edge. Replace a units' env file atomically: a temporary file in the same folder, mode 600 from its creation,
+    written and fsynced, then renamed over `path`, and the folder fsynced. A crash leaves the old file or the new
+    one, never a torn one, and no byte is ever readable by anyone but the owner."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")  # mkstemp creates it 0600
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            os.fchmod(f.fileno(), 0o600)
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    folder = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(folder)
+    finally:
+        os.close(folder)
+
+
+def _worker_role_refusal(exc: Exception, refusals: tuple[type[Exception], ...]) -> str | None:
+    """Edge. What `worker-role` prints after `refusing:` for `exc`, or None for an error that is a bug. One of
+    `refusals` is its message. A database error (psycopg's, when the store refused a statement: an owner without the
+    right to revoke a membership, say) is its SQLSTATE, first line and detail, never a traceback; Postgres puts
+    neither a statement nor a password in that text."""
+    if isinstance(exc, refusals):
+        return str(exc)
+    try:
+        import psycopg
+    except ImportError:
+        return None
+    if not isinstance(exc, psycopg.Error):
+        return None
+    first = (str(exc).strip().splitlines() or [type(exc).__name__])[0]
+    detail = getattr(getattr(exc, "diag", None), "message_detail", None)
+    code = f" ({exc.sqlstate})" if exc.sqlstate else ""
+    return f"the store refused the setup{code}: {first}" + (f" {detail}" if detail else "") + "; nothing was changed"
+
+
+def _setup_worker_role(a: argparse.Namespace) -> int:
+    """Edge. `cox setup store worker-role <name>`, run with the store owner's URL (the provider profile's
+    storage_url): create the `cox_worker` group and this worker's login role when absent, and bring both to the one
+    grant set (`harness.store_roles`). The login role and its password go into the units' env file, mode 600, never
+    the provider profile, which every run's folder gets a copy of; the password is never printed. A repeat run keeps
+    the password the file holds and changes nothing; a changed grant set, or a role widened by hand, is put back by
+    running it again. `--revoke-public-create` also takes CREATE on the schema from PUBLIC (Postgres before 15)."""
+    import secrets
+
+    from harness import store_roles, store_scoped
+    from harness.store_dialect import StoreDriverMissing
+    from harness.store_read import StoreVersionError
+
+    try:
+        login = store_roles.role_name(a.name)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    profile = _doctor_profile(_read_text_or_none(_profile_path(a))) or {}
+    provider = profile.get("provider_profile")
+    data = store_url.read_provider_profile(provider) if isinstance(provider, str) else {}
+    owner_url = data.get("storage_url")
+    if not isinstance(owner_url, str) or not owner_url:
+        print("error: the provider profile names no storage_url, the owner's store to create the role in", file=sys.stderr)
+        return 2
+    home = str(Path.home())
+    path = Path(a.environment_file).expanduser() if a.environment_file else Path(unit_env.env_file_path(home))
+    existing = _read_text_or_none(path)
+    held = unit_env.parse_env(existing or "")
+    kept = held.get(store_roles.PASSWORD_ENV) if held.get(store_roles.ROLE_ENV) == login else None
+    try:
+        unit_env.with_values(existing, {})  # refuse a file this would rewrite differently before touching the store
+        plan = store_scoped.apply_role(owner_url, login, kept, secrets.token_urlsafe(32),
+                                       datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                       revoke_public_create=bool(getattr(a, "revoke_public_create", False)))
+        text = unit_env.with_values(existing, {store_roles.ROLE_ENV: login, store_roles.PASSWORD_ENV: plan.password})
+    except Exception as exc:
+        reason = _worker_role_refusal(exc, (ValueError, StoreVersionError, StoreDriverMissing))
+        if reason is None:
+            raise
+        print(f"refusing: {reason}", file=sys.stderr)
+        return 2
+    if text != existing:
+        _write_env_file(path, text)
+    print(f"role: {login} (member of {store_roles.GROUP_ROLE})")
+    print(f"grants: {sum(1 for s in plan.statements if s.startswith('GRANT') and ' ON ' in s)} statements applied")
+    print(f"password: {'set and written to' if plan.sets_password else 'unchanged in'} {path}")
     return 0
 
 

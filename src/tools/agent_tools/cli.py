@@ -1454,6 +1454,15 @@ SETUP_COMMANDS = [
                 (commands.Arg(("target",), {"choices": ("files", "shared")}), *_suppressed(_STORE_FLAGS)),
                 "agent_tools.cli:_setup_store_switch", False, (),
             ),
+            commands.Command(
+                "worker-role", "setup", "create or reshape one worker's scoped store role; run with the owner's store URL",
+                (
+                    commands.Arg(("name",), {"help": "the worker's name, as `cox host add` knows it; the role is cox_w_<name>"}),
+                    commands.Arg(("--environment-file",), {"help": "the units' env file that gets the role and its password (default: ~/.config/agent-tools/garage.env)"}),
+                    commands.Arg(("--revoke-public-create",), {"action": "store_true", "help": "also revoke CREATE on the store's schema from PUBLIC, which Postgres before 15 grants by default"}),
+                ),
+                "agent_tools.cli:_setup_worker_role", False, (),
+            ),
         ),
         sub_dest="store_cmd", sub_required=False,
     ),
