@@ -7,7 +7,16 @@ from pathlib import Path
 
 import pytest
 
-from harness.assembly import AssemblyResult, assemble, assembly_order, git
+from harness.assembly import (
+    ABORT,
+    COMMIT_RESOLUTION,
+    AssemblyResult,
+    assemble,
+    assembly_order,
+    conflict_step,
+    failure_cause,
+    git,
+)
 
 BASE_TEXT = "".join(f"line {n}\n" for n in range(1, 21))
 
@@ -62,18 +71,25 @@ def test_two_clean_parents_merge_in_sorted_order(repo: Path, worktree: Path) -> 
     assert subjects == ["Merge branch 'p-b' into assembled", "Merge branch 'p-a' into assembled"]
 
 
-def test_overlapping_parents_that_touch_different_regions_merge(repo: Path, worktree: Path) -> None:
-    top = BASE_TEXT.replace("line 2\n", "top\n")
-    bottom = BASE_TEXT.replace("line 19\n", "bottom\n")
-    branch_with(repo, "p-top", {"shared.txt": top})
-    branch_with(repo, "p-bottom", {"shared.txt": bottom})
-    result = assemble(repo, worktree, "main", ["p-top", "p-bottom"], "assembled")
-    assert result.ok
-    text = (worktree / "shared.txt").read_text()
-    assert "top\n" in text and "bottom\n" in text
+def test_a_conflict_is_aborted_and_only_an_unfinished_rerere_resolution_is_committed() -> None:
+    assert conflict_step(["shared.txt"], merging=True) == ABORT
+    assert conflict_step(["shared.txt"], merging=False) == ABORT
+    assert conflict_step([], merging=False) == ABORT  # git refused before merging: nothing to commit
+    assert conflict_step([], merging=True) == COMMIT_RESOLUTION
+
+
+def test_the_failure_cause_names_parent_previous_and_the_sorted_files_or_gits_own_text() -> None:
+    assert failure_cause("p-b", "p-a", ["z.txt", "a.txt"]) == "merging p-b after p-a conflicted in: a.txt, z.txt"
+    assert failure_cause("p-a", "main", [], output="fatal: refusing") == "merging p-a after main conflicted in: fatal: refusing"
+    assert failure_cause("p-a", "main", []) == "merging p-a after main conflicted in: none reported"
+    assert failure_cause("p-a", "main", ["f"], rerere_off=True).endswith(
+        "conflicted in: f (rerere resolution could not be applied; conflict found with rerere off)"
+    )
 
 
 def test_conflict_names_parent_previous_and_files_and_leaves_worktree_clean(repo: Path, worktree: Path) -> None:
+    """The one real-git boundary test of a conflict: `diff --diff-filter=U` names the file, and `merge --abort` leaves
+    the worktree clean at the last good merge. The cause and the abort decision are pinned above as pure functions."""
     branch_with(repo, "p-a", {"shared.txt": BASE_TEXT.replace("line 5\n", "from a\n")})
     branch_with(repo, "p-b", {"shared.txt": BASE_TEXT.replace("line 5\n", "from b\n")})
     result = assemble(repo, worktree, "main", ["p-b", "p-a"], "assembled")

@@ -15,6 +15,7 @@ commit, and the push runs of ci.yml on main.
 
 from __future__ import annotations
 
+import os
 import subprocess
 
 import pytest
@@ -114,7 +115,15 @@ print(json.dumps(list(forge_github.merge_pr(Path("."), {MERGED_PR}))))
     assert merged[0] is True, merged
 
 
-def test_gh_under_the_replay_env_sends_no_telemetry_even_when_its_config_turns_it_on(sandbox, tmp_path):
+def _bare_env(tmp_path):
+    """A sandboxed HOME and the system PATH, without an install or a store: gh runs by its absolute path, and these
+    two tests prove only what `plan.gh_env` does to it."""
+    home = tmp_path / "home"
+    home.mkdir()
+    return plan.sandbox_env(os.environ, home=str(home), bin_dirs=[], system_path="/usr/local/bin:/usr/bin:/bin")
+
+
+def test_gh_under_the_replay_env_sends_no_telemetry_even_when_its_config_turns_it_on(tmp_path):
     # The env must win over gh's own config: `telemetry: enabled` there, the endpoint pointed at the replay over plain
     # http (GH_TELEMETRY_ENDPOINT_URL), and the replay must see nothing but the API call. gh 2.103.3 sent no event
     # here even with the switches unset, so this fails only on a gh that sends (CI's did: run 44433933282).
@@ -125,7 +134,7 @@ def test_gh_under_the_replay_env_sends_no_telemetry_even_when_its_config_turns_i
     config.mkdir()
     (config / "config.yml").write_text("telemetry: enabled\n", encoding="utf-8")
     with gh_replay.serving(gh_replay.Replay([])) as server:
-        env = {**sandbox.env, **plan.gh_env(server.proxy, str(config)),
+        env = {**_bare_env(tmp_path), **plan.gh_env(server.proxy, str(config)),
                "GH_TELEMETRY_ENDPOINT_URL": f"{server.proxy}/telemetry"}
         done = subprocess.run([gh, "api", "repos/o/r"], env=env, cwd=tmp_path, capture_output=True, text=True,
                               timeout=60)
@@ -135,13 +144,13 @@ def test_gh_under_the_replay_env_sends_no_telemetry_even_when_its_config_turns_i
     assert server.misses == ["GET /repos/o/r"], server.misses
 
 
-def test_a_stray_https_request_never_leaves_the_machine_and_is_named(sandbox, tmp_path):
+def test_a_stray_https_request_never_leaves_the_machine_and_is_named(tmp_path):
     # Not through `github`, whose teardown fails on any miss: this test wants the miss.
     gh = gh_replay.real_gh()
     if gh is None:
         pytest.skip("no gh on PATH")
     with gh_replay.serving(gh_replay.Replay([])) as server:
-        env = {**sandbox.env, **plan.gh_env(server.proxy, str(tmp_path / "gh-config"))}
+        env = {**_bare_env(tmp_path), **plan.gh_env(server.proxy, str(tmp_path / "gh-config"))}
         done = subprocess.run([gh, "api", "https://api.github.com/zen"], env=env, cwd=tmp_path, capture_output=True,
                               text=True, timeout=60)
     assert done.returncode != 0, done.stdout

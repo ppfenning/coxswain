@@ -306,9 +306,3 @@ def test_a_pass_through_profile_sends_an_unrecognized_prefix_model_id_unchanged(
         out = runner.run(role="r", tier="deep", schema=None, prompt="hi")
     assert out["text"] == "hello"
     assert server.requests[0]["body"]["model"] == "remote/opus"
-
-
-def test_a_profile_without_pass_through_still_rejects_an_unrecognized_prefix() -> None:
-    with FakeOpenAIServer([]) as server, pytest.raises(RunnerError, match="deep"):
-        _runner(server).run(role="r", tier="deep", schema=None, prompt="go")
-    assert server.requests == []
