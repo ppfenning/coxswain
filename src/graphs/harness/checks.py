@@ -23,6 +23,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from graphs.delivery.clean_gate import clean_checks, clean_refusal
 from harness.lane_workers import XDIST_VAR
 
 __all__ = [
@@ -537,10 +538,20 @@ def is_harness_fault(reason: str) -> bool:
     return reason.startswith(HARNESS_FAULT_PREFIX)
 
 
+def _clean_refusal_of(result: Mapping[str, Any]) -> str | None:
+    """The clean script's refusal, with the placeholder per hit, for a failed clean line; None for any other check."""
+    return clean_refusal(str(result.get("output_tail") or "")) if clean_checks([result]) else None
+
+
 def check_feedback(results: Sequence[Mapping[str, Any]]) -> str:
-    """The failing checks' name, command, exit code and output tail, for a builder to read."""
+    """The failing checks' name, command, exit code and output tail, for a builder to read.
+
+    A failed clean line carries its refusal in place of the tail: each hit's file:line and matched text, bounded, and
+    the placeholder to use.
+    """
     return "\n\n".join(
-        f"{r.get('name')}: {r.get('cmd')}\nexit {r.get('exit_code')}\n{tail_lines(str(r.get('output_tail') or ''))}"
+        f"{r.get('name')}: {r.get('cmd')}\nexit {r.get('exit_code')}\n"
+        f"{_clean_refusal_of(r) or tail_lines(str(r.get('output_tail') or ''))}"
         for r in results
         if not r.get("passed")
     )
