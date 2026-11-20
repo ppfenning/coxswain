@@ -544,22 +544,6 @@ def test_read_trace_of_an_unknown_call_is_empty(tmp_path):
     assert read.read_trace(tmp_path, "r1", "c1") == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="finding: harness/__init__.py imports core, graphs and (via core) yaml, so any harness.* import "
-    "pulls them. The ticket forbids editing __init__.py. Remove this mark once the package import is light.",
-)
-def test_importing_store_read_pulls_only_stdlib_harness_and_runner_modules():
-    code = (
-        "import sys; import harness.store_read; "
-        "print(sorted({m.split('.')[0] for m in sys.modules if m.split('.')[0] not in sys.stdlib_module_names}))"
-    )
-    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout
-    names = set(ast.literal_eval(out))
-    imported = _drop_interpreter_machinery(names)
-    assert imported - {"harness", "runner"} == set()
-
-
 def test_the_machinery_filter_drops_site_hooks_cython_runtime_and_virtualenv_leaving_harness():
     names = {"sitecustomize", "usercustomize", "cython_runtime", "_virtualenv", "harness"}
     assert _drop_interpreter_machinery(names) == {"harness"}

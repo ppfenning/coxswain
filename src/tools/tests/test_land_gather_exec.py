@@ -4,7 +4,7 @@ import subprocess as sp
 
 import pytest
 
-from agent_tools import cli
+from agent_tools import cli, land, partial_land
 
 
 def _git(repo, *args):
@@ -67,17 +67,27 @@ def test_a_patch_apply_step_produces_the_patchs_change(tmp_path):
     cli._remove_land_worktree(repo, "pr/i--p")
 
 
-def test_a_conflicting_cherry_pick_names_the_file_and_leaves_none_in_progress(tmp_path):
+def test_a_conflicting_cherry_pick_step_is_aborted_and_leaves_none_in_progress(tmp_path):
+    """The real-git boundary for the pick's conflict: `diff --diff-filter=U` names the file and `cherry-pick --abort`
+    leaves the land worktree clean. The detail is pinned below as a pure function."""
     repo = _repo_with_task_branches(tmp_path, conflict=True)
     assert cli._execute_land_step(repo, _pick("one"))[0]
     ok, detail = cli._execute_land_step(repo, _pick("two"))
     wt = cli._land_worktree(repo, "pr/i--p")
-    assert not ok
-    sha = _git(repo, "rev-parse", "--short=8", "agents/r/two")
-    assert detail == f"cherry-pick of {sha} conflicts in: a.txt\nstopped at {sha} on agents/r/two"
+    assert not ok and detail.startswith("cherry-pick of ") and detail.splitlines()[0].endswith(" conflicts in: a.txt")
     assert sp.run(["git", "-C", str(wt), "rev-parse", "-q", "--verify", "CHERRY_PICK_HEAD"]).returncode != 0
     assert _git(wt, "status", "--porcelain") == ""
     cli._remove_land_worktree(repo, "pr/i--p")
+
+
+def test_a_conflict_detail_names_the_sorted_files_first_then_what_follows():
+    detail = land.conflict_detail("cherry-pick of 01234567", ["b.txt", "a.txt"], None, "error: could not apply 0123456")
+    assert detail == "cherry-pick of 01234567 conflicts in: a.txt, b.txt\nerror: could not apply 0123456"
+    assert land.conflict_detail("cherry-pick of 01234567", [], None, "fatal: bad revision") == "fatal: bad revision"
+    assert land.conflict_detail("cherry-pick of 01234567", ["r.md"], "regenerate failed", "") == (
+        "cherry-pick of 01234567 conflicts in: r.md\nregenerate failed")
+    assert land.conflict_detail("patch of one", []) == ""  # the gather step then falls back to git's own text
+    assert partial_land.conflicting_paths({"status": "refused", "reason": f"cherry_pick: {detail}"}) == ["a.txt", "b.txt"]
 
 
 def test_a_conflict_stops_the_land_before_any_later_step(tmp_path, capsys):

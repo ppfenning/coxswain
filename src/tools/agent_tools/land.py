@@ -1751,6 +1751,22 @@ def generated_conflict_only(conflicted: Sequence[str]) -> bool:
     return bool(conflicted) and all(name in GENERATED_FILES for name in conflicted)
 
 
+def pick_must_abort(conflicted: Sequence[str], resolved: Mapping[str, str | None], regenerate_failure: str | None) -> bool:
+    """Pure. Whether a stopped cherry-pick is aborted rather than continued: when regenerating a generated-only conflict
+    failed, or when it is not generated-only and git named no file or any add/add resolution (`resolved`, by file)
+    came back None."""
+    if regenerate_failure is not None:
+        return True
+    return not generated_conflict_only(conflicted) and (not conflicted or any(text is None for text in resolved.values()))
+
+
+def conflict_detail(what: str, conflicted: Sequence[str], *after: str | None) -> str:
+    """Pure. The detail of a land step that stopped on a conflict: `<what> conflicts in: <sorted files>` first (what
+    `partial_land.conflicting_paths` reads), then each non-empty line of `after`; "" when nothing was named or added."""
+    named = f"{what} conflicts in: {', '.join(sorted(conflicted))}" if conflicted else ""
+    return "\n".join(filter(None, [named, *after]))
+
+
 def resolve_block_conflicts(text: str, begin: str, end: str) -> str | None:
     """`text`, a worktree file left by `git -c merge.conflictStyle=diff3 cherry-pick`, with every conflict hunk
     resolved to ours. None when a hunk lies outside the `begin`..`end` span or holds a marker line, or the markers

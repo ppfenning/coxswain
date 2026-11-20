@@ -190,3 +190,13 @@ def test_a_hunk_outside_the_generated_span_is_not_resolved():
 def test_a_hunk_holding_the_span_markers_is_not_resolved():
     text = f"{rc.BEGIN}\n<<<<<<< HEAD\n{rc.END}\n||||||| base\n=======\nx\n>>>>>>> pick\n"
     assert land.resolve_block_conflicts(text, rc.BEGIN, rc.END) is None
+
+
+def test_a_stopped_cherry_pick_aborts_unless_every_conflict_resolves_or_regenerates():
+    readme = "src/tools/README.md"
+    assert land.pick_must_abort(["a.txt"], {"a.txt": None}, None)
+    assert not land.pick_must_abort(["a.txt"], {"a.txt": "ours\ntheirs\n"}, None)
+    assert land.pick_must_abort(["a.txt", "b.txt"], {"a.txt": "ok\n", "b.txt": None}, None)
+    assert land.pick_must_abort([], {}, None)  # git stopped but named no file: nothing to resolve
+    assert not land.pick_must_abort([readme], {}, None)
+    assert land.pick_must_abort([readme], {}, "regenerate failed")

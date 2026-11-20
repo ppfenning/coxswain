@@ -51,8 +51,6 @@ ALLOWED_SKIPS = (
     ("root", ("root can write to any directory", "root reads files regardless of mode",
               "running as a user that ignores file modes", "root reads a mode-000 directory"),
      "a file-mode refusal does not hold for root"),
-    ("load timing", ("load-sensitive timing; set COX_RUN_LOAD_TESTS=1 to run",),
-     "opt-in with COX_RUN_LOAD_TESTS=1: a shared runner's load makes it flaky"),
     ("win32", ("needs /bin/sh", "POSIX shells and process groups"), "POSIX-only behaviour, skipped on Windows"),
     ("ripgrep", ("ripgrep not installed",), "the digest test shells out to rg, which the CI image does not carry"),
     ("sqlite dialect", ("the trigger statement is sqlite's; the exemption rule itself is dialect-free",),

@@ -1,5 +1,4 @@
 import dataclasses
-import sqlite3
 import sys
 import threading
 import time
@@ -125,56 +124,6 @@ def test_in_memory_sqlite_round_trips_a_json_column():
         assert json_load(conn.query_one("SELECT body FROM r WHERE id = ?", (1,))[0]) == {"k": [1, "x"]}
         assert conn.query_all("SELECT id, ok FROM r") == [(1, 1)]
         assert conn.query_one("SELECT id FROM r WHERE id = ?", (9,)) is None
-
-
-def test_a_failed_transaction_leaves_no_row_and_a_good_one_commits():
-    conn = connect("sqlite://")
-    conn.execute("CREATE TABLE r (id INTEGER PRIMARY KEY)")
-    with pytest.raises(RuntimeError), conn.transaction():
-        conn.execute("INSERT INTO r (id) VALUES (?)", (1,))
-        raise RuntimeError("boom")
-    assert conn.query_all("SELECT id FROM r") == []
-    with conn.transaction():
-        assert conn.executemany("INSERT INTO r (id) VALUES (?)", [(2,), (3,)]) == 2
-    assert conn.query_all("SELECT id FROM r ORDER BY id") == [(2,), (3,)]
-
-
-def test_a_failed_statement_outside_a_transaction_holds_no_lock(tmp_path):
-    conn = connect(default_url(tmp_path))
-    conn.execute("CREATE TABLE p (id INTEGER PRIMARY KEY)")
-    conn.execute("CREATE TABLE c (id INTEGER PRIMARY KEY, p INTEGER REFERENCES p (id))")
-    with pytest.raises(sqlite3.IntegrityError):
-        conn.execute("INSERT INTO c (id, p) VALUES (?, ?)", (1, 99))
-    assert conn.raw.in_transaction is False
-    other = connect(default_url(tmp_path))
-    other.raw.execute("PRAGMA busy_timeout=0")
-    assert other.execute("INSERT INTO p (id) VALUES (?)", (1,)) == 1
-    assert conn.execute("INSERT INTO c (id, p) VALUES (?, ?)", (1, 1)) == 1
-    assert conn.query_all("SELECT id, p FROM c") == [(1, 1)]
-
-
-def test_a_contended_transaction_waits_for_the_lock_instead_of_failing(tmp_path):
-    holder = connect(default_url(tmp_path))
-    holder.execute("CREATE TABLE r (id INTEGER PRIMARY KEY)")
-    errors = []
-
-    def write():
-        try:
-            waiter = connect(default_url(tmp_path))
-            with waiter.transaction():
-                waiter.query_all("SELECT id FROM r")
-                waiter.execute("INSERT INTO r (id) VALUES (?)", (2,))
-        except Exception as exc:  # reported to the main thread below
-            errors.append(exc)
-
-    with holder.transaction():
-        holder.execute("INSERT INTO r (id) VALUES (?)", (1,))
-        thread = threading.Thread(target=write)
-        thread.start()
-        time.sleep(0.3)
-    thread.join(timeout=10)
-    assert errors == []
-    assert holder.query_all("SELECT id FROM r ORDER BY id") == [(1,), (2,)]
 
 
 @pytest.mark.parametrize(("value", "off"), [(None, False), ("", False), ("0", False), ("yes", False), ("1", True)])

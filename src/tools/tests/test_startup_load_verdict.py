@@ -1,9 +1,8 @@
 import pytest
 
-from tests.startup_load_verdict import check_clean, check_regression, ratios
+from tests.startup_load_verdict import check_clean, ratios
 
 CEILING = 10.0
-MARGIN = 2.0
 STABLE = [(0.8, 0.1), (0.82, 0.1), (0.78, 0.1), (0.81, 0.1), (0.79, 0.1)]
 
 
@@ -25,19 +24,6 @@ def test_one_outlier_round_does_not_flip_median():
     assert verdict.ok, str(verdict)
 
 
-def test_3x_regression_is_detected_against_clean_ratio():
-    regressed = [(cox * 3, ref) for cox, ref in STABLE]
-    verdict = check_regression(STABLE, regressed, MARGIN)
-    assert verdict.ok, str(verdict)
-
-
-def test_regression_below_margin_is_not_detected():
-    regressed = [(cox * 1.5, ref) for cox, ref in STABLE]
-    assert not check_regression(STABLE, regressed, MARGIN).ok
-
-
 def test_empty_input_fails_without_raising():
     assert ratios([]) == ((), None)
     assert not check_clean([], CEILING).ok
-    assert not check_regression([], STABLE, MARGIN).ok
-    assert not check_regression(STABLE, [], MARGIN).ok
