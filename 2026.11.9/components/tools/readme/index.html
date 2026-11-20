@@ -6703,6 +6703,13 @@ ops/           operator scripts that sit beside the CLI (store backup)
 <p>The Postgres cases in <code>tests/test_run_store_backends.py</code> run only when
 <code>COX_TEST_POSTGRES_URL</code> names a database where the test may create a schema.
 Without it they are skipped.</p>
+<p>CI's <code>extras</code> jobs install every extra and start a Postgres. On a pull request they run only the tests that would skip
+without them: <code>-m "extras and not postgres"</code> under xdist, then <code>-m postgres</code> serially. On a push to main they run
+every suite whole. <code>harness/extras_tests.py</code> adds the marks to a whole file when its source names <code>importorskip(</code>,
+<code>find_spec(</code> or a test database variable. It also marks a test that uses a fixture whose source does, and a test
+whose <code>skipif</code> reason names a missing extra or database. <code>@pytest.mark.extras</code> marks one by hand. With
+<code>COX_EXTRAS_GUARD=unit</code>, as the <code>unit</code> jobs set it, a skip fails the run unless the test is marked or its reason is
+on <code>ALLOWED_SKIPS</code>. With <code>COX_EXTRAS_GUARD=extras</code>, as the extras jobs set it, only <code>ALLOWED_SKIPS</code> excuses a skip.</p>
 <h2 id="commands">Commands</h2>
 <p>Bare <code>cox</code> on a terminal starts <code>cox session</code>: a Claude Code session with the
 <code>coxswain</code> plugin loaded, in the profile's workspace. <code>cox home</code> opens towpath.
