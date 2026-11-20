@@ -4,9 +4,62 @@ on:
   push:
     branches: [main]
 jobs:
-  test:
+  # The checks run as parallel jobs; `test` is the one required check and passes only when every one of them passed.
+  checks:
     runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
-    # The smoke step's Postgres. The suite gives each test a database of its own on it (docs/smoke.md).
+    steps:
+      - uses: actions/checkout@v4
+        # the unwired check diffs from the merge base with the PR's base branch, so it needs the history
+        with: { fetch-depth: 0 }
+      - uses: astral-sh/setup-uv@v5
+        with: { python-version: "3.14", enable-cache: true }
+      - run: uv sync --group dev
+      # H10 item 5: a public symbol the change adds under src/ with no reference outside tests fails the job
+      - name: unwired (no added symbol without a caller)
+        run: uv run python .github/check_unwired.py --base "origin/${{ github.base_ref || 'main' }}"
+      # The main scan: every public symbol under src/ has a caller, an allowlisted entry point, or a line on the debt
+      # list (.github/unwired-debt.txt), so a change that deletes a symbol's last caller fails too
+      - name: unwired main scan (no symbol without a caller, an entry point or a debt line)
+        run: uv run python .github/check_unwired.py --all
+      - name: ruff (rules in pyproject.toml, tools adds src/tools/ruff.toml)
+        run: uv run ruff check .
+      # H2 (docs/hardening.md): pyright, strict on the typed core and basic elsewhere ([tool.pyright] in pyproject.toml).
+      # It resolves the optional extras' imports too. REQUIRED turns a missing pyright or extra into a failure.
+      - name: types (pyright)
+        run: uv run --all-extras python .github/check_types.py
+        env:
+          COX_TYPES_REQUIRED: "1"
+      # no person, host or home path ships; the names rule's regex lives only in the secret (unset on fork PRs: skipped)
+      - name: clean (no personal reference)
+        run: python .github/check_clean.py .
+        env:
+          COXSWAIN_CLEAN_DENY: ${{ secrets.COXSWAIN_CLEAN_DENY }}
+      - run: uv run mkdocs build --strict
+
+  unit:
+    name: unit (${{ matrix.suite }})
+    runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { suite: root, dir: . }
+          - { suite: tools, dir: src/tools }
+          - { suite: graphs, dir: src/graphs }
+          - { suite: cartridges, dir: src/cartridges }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with: { python-version: "3.14", enable-cache: true }
+      - run: uv sync --group dev
+      # Named `pytest <suite>`: the land's rerun rule reads the failed suite from the step name (land._suite_of).
+      - name: pytest ${{ matrix.suite }}
+        run: uv run pytest -q -n auto
+        working-directory: ${{ matrix.dir }}
+
+  smoke:
+    runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
+    # The suite gives each test a database of its own on this Postgres (docs/smoke.md).
     services:
       postgres:
         image: postgres:16@sha256:dd2bf3ce2dc83a81674cf7f217fcfd8a5009a4b325dda5b843bfee82a06cff6f # smoke/plan.py POSTGRES_IMAGE; bump together
@@ -22,29 +75,9 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v4
-        # the unwired check diffs from the merge base with the PR's base branch, so it needs the history
-        with: { fetch-depth: 0 }
       - uses: astral-sh/setup-uv@v5
-        with: { python-version: "3.14" }
+        with: { python-version: "3.14", enable-cache: true }
       - run: uv sync --group dev
-      # H10 item 5: a public symbol the change adds under src/ with no reference outside tests fails the job
-      - name: unwired (no added symbol without a caller)
-        run: uv run python .github/check_unwired.py --base "origin/${{ github.base_ref || 'main' }}"
-      # The main scan: every public symbol under src/ has a caller, an allowlisted entry point, or a line on the debt
-      # list (.github/unwired-debt.txt), so a change that deletes a symbol's last caller fails too
-      - name: unwired main scan (no symbol without a caller, an entry point or a debt line)
-        run: uv run python .github/check_unwired.py --all
-      - name: pytest root
-        run: uv run pytest -q -n auto
-      - name: pytest tools
-        run: uv run pytest -q -n auto
-        working-directory: src/tools
-      - name: pytest graphs
-        run: uv run pytest -q -n auto
-        working-directory: src/graphs
-      - name: pytest cartridges
-        run: uv run pytest -q -n auto
-        working-directory: src/cartridges
       # The smoke install carries the postgres and lake extras, so a dependency missing outside every extra would not
       # show there: this checkout installed bare, under a home of its own, runs `cox --help` and one real command.
       - name: bare install (no extras)
@@ -57,34 +90,56 @@ jobs:
           "$bare/venv/bin/cox" --help >/dev/null
           "$bare/venv/bin/cox" runs series --runs-dir "$bare/runs"
       # Real `cox`, installed from this checkout, against real git and the service's Postgres; nothing is stubbed.
-      # Serial: one install and one server per run. REQUIRED turns a missing uv or Postgres into a failure, not a skip.
+      # REQUIRED turns a missing uv or Postgres into a failure, not a skip.
       - name: smoke
         run: uv run pytest -q -rs -m "not forge" smoke
         env:
           COX_SMOKE_POSTGRES_URL: postgresql://postgres:smoke@localhost:${{ job.services.postgres.ports['5432'] }}/postgres
           COX_SMOKE_REQUIRED: "1"
-      # The same suite's forge tests: a Forgejo container started with docker (smoke/plan.py FORGEJO_IMAGE, pinned by
+
+  smoke-forge:
+    name: smoke (forge)
+    runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
+    services:
+      postgres:
+        image: postgres:16@sha256:dd2bf3ce2dc83a81674cf7f217fcfd8a5009a4b325dda5b843bfee82a06cff6f # smoke/plan.py POSTGRES_IMAGE; bump together
+        env:
+          POSTGRES_PASSWORD: smoke
+        # a random host port, so two jobs can share a self-hosted runner's host
+        ports:
+          - 5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with: { python-version: "3.14", enable-cache: true }
+      - run: uv sync --group dev
+      # The suite's forge tests: a Forgejo container started with docker (smoke/plan.py FORGEJO_IMAGE, pinned by
       # digest), a land through it, and the edge upgrade's rollback rule on a real install (docs/smoke.md).
       - name: smoke (forge)
         run: uv run pytest -q -rs -m forge smoke
         env:
           COX_SMOKE_POSTGRES_URL: postgresql://postgres:smoke@localhost:${{ job.services.postgres.ports['5432'] }}/postgres
           COX_SMOKE_REQUIRED: "1"
-      - name: ruff (rules in pyproject.toml, tools adds src/tools/ruff.toml)
-        run: uv run ruff check .
-      # H2 (docs/hardening.md): pyright, strict on the typed core and basic elsewhere ([tool.pyright] in pyproject.toml).
-      # It resolves the optional extras' imports too, so it syncs them first: after the suites, which run without them.
-      # REQUIRED turns a missing pyright or extra into a failure, not the lane's skip.
-      - name: types (pyright)
-        run: uv run --all-extras python .github/check_types.py
-        env:
-          COX_TYPES_REQUIRED: "1"
-      # no person, host or home path ships; the names rule's regex lives only in the secret (unset on fork PRs: skipped)
-      - name: clean (no personal reference)
-        run: python .github/check_clean.py .
-        env:
-          COXSWAIN_CLEAN_DENY: ${{ secrets.COXSWAIN_CLEAN_DENY }}
-      - run: uv run mkdocs build --strict
+
+  # The required check. It runs even when a job it needs failed or was cancelled, and passes only when all of them
+  # succeeded: a skipped required check would otherwise count as passing.
+  test:
+    if: always()
+    needs: [checks, unit, smoke, smoke-forge]
+    runs-on: ubuntu-latest
+    steps:
+      - name: every check job succeeded
+        run: |
+          echo '${{ toJSON(needs) }}'
+          test "${{ needs.checks.result }}" = success
+          test "${{ needs.unit.result }}" = success
+          test "${{ needs.smoke.result }}" = success
+          test "${{ needs.smoke-forge.result }}" = success
 
   py315:
     # The pre-release interpreter builds several dependencies from source (about 20 minutes), and a land waits for
@@ -94,7 +149,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-        with: { python-version: "3.15" }
+        with: { python-version: "3.15", enable-cache: true }
       - run: uv sync --group dev --python 3.15
       - name: pytest root
         run: uv run pytest -q -n auto
@@ -144,7 +199,7 @@ jobs:
           echo "COX_TEST_POSTGRES_URL=$url" >> "$GITHUB_ENV"
           echo "COXSWAIN_TEST_PG_URL=$url" >> "$GITHUB_ENV"
       - uses: astral-sh/setup-uv@v5
-        with: { python-version: "3.14" }
+        with: { python-version: "3.14", enable-cache: true }
       - run: uv sync --group dev --all-extras
       # Fails here, with the import error, rather than as a pytest run that skipped them all.
       # Serial on purpose: the Postgres store tests back the test database up with pg_dump before migrating it,

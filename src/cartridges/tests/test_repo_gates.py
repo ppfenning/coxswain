@@ -45,26 +45,55 @@ def test_agent_checks_keeps_task_checks():
     assert lines == pytest_lines + [SMOKE_LINE, CLEAN_LINE, UNWIRED_LINE, TYPES_LINE]
 
 
+def ci_workflow() -> dict:
+    return yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text())
+
+
+def gated_jobs(ci: dict) -> dict:
+    """The jobs the required `test` check passes only on: the ones it needs."""
+    needs = ci["jobs"]["test"]["needs"]
+    return {name: ci["jobs"][name] for name in ([needs] if isinstance(needs, str) else needs)}
+
+
+def test_the_required_check_passes_only_when_every_job_it_needs_succeeded():
+    """`test` is the ruleset's one required check. It runs even after a failure (a skipped required check would count
+    as passing) and checks each needed job's result."""
+    ci = ci_workflow()
+    gate = ci["jobs"]["test"]
+    assert gate["if"] == "always()"
+    script = "\n".join(str(step.get("run", "")) for step in gate["steps"])
+    for name in gated_jobs(ci):
+        assert f'test "${{{{ needs.{name}.result }}}}" = success' in script
+
+
 def test_ci_runs_the_unwired_check_against_full_history():
-    """The required test job runs the same line as the lane, and fetches the history its merge base needs."""
-    ci = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text())
-    steps = ci["jobs"]["test"]["steps"]
-    checkout = next(step for step in steps if str(step.get("uses", "")).startswith("actions/checkout"))
+    """A gated job runs the same line as the lane, and fetches the history its merge base needs."""
+    job = next(j for j in gated_jobs(ci_workflow()).values() if any(UNWIRED_LINE in str(s.get("run", "")) for s in j["steps"]))
+    checkout = next(step for step in job["steps"] if str(step.get("uses", "")).startswith("actions/checkout"))
     assert checkout["with"]["fetch-depth"] == 0
-    assert any(UNWIRED_LINE in str(step.get("run", "")) for step in steps)
 
 
 def test_ci_runs_the_unwired_main_scan_in_the_required_job():
     """H10: the whole tree, not only the diff, so a change that deletes a symbol's last caller fails as well."""
-    ci = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text())
-    assert any(step.get("run") == f"uv run {UNWIRED_LINE} --all" for step in ci["jobs"]["test"]["steps"])
+    steps = [s for j in gated_jobs(ci_workflow()).values() for s in j["steps"]]
+    assert any(step.get("run") == f"uv run {UNWIRED_LINE} --all" for step in steps)
 
 
 def test_ci_runs_the_type_check_in_the_required_job():
-    """The required test job runs pyright over the project's own config, as the lane's line does, with the extras synced."""
-    ci = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text())
-    step = next(s for s in ci["jobs"]["test"]["steps"] if s.get("run") == f"uv run --all-extras {TYPES_LINE}")
+    """A gated job runs pyright over the project's own config, as the lane's line does, with the extras synced."""
+    steps = [s for j in gated_jobs(ci_workflow()).values() for s in j["steps"]]
+    step = next(s for s in steps if s.get("run") == f"uv run --all-extras {TYPES_LINE}")
     assert step["env"]["COX_TYPES_REQUIRED"] == "1"  # in CI a missing pyright or extra fails, never skips
+
+
+def test_ci_gates_every_suite_and_both_smoke_parts():
+    """Each component's suite and both halves of the smoke suite sit behind the required check."""
+    jobs = gated_jobs(ci_workflow())
+    suites = {row["dir"] for row in jobs["unit"]["strategy"]["matrix"]["include"]}
+    assert suites == {".", "src/tools", "src/graphs", "src/cartridges"}
+    runs = [str(s.get("run", "")) for j in jobs.values() for s in j["steps"]]
+    assert 'uv run pytest -q -rs -m "not forge" smoke' in runs
+    assert "uv run pytest -q -rs -m forge smoke" in runs
 
 
 def test_the_typed_core_is_strict():
