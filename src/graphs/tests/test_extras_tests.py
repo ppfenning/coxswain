@@ -64,6 +64,10 @@ def test_a_backend_parametrized_fixture_marks_only_its_database_param():
         ("pyarrow not installed", None),
         ("could not import 'pyarrow': No module named 'pyarrow'", None),
         ("graphs is not checked out beside tools", None),
+        # the review's probes: an allowed tool named beside a missing extra is not excused
+        ("needs gitpython; pyarrow missing", None),
+        ("rsync and pyarrow are required", None),
+        ("needs git and pyiceberg", None),
     ],
 )
 def test_the_allowed_skips_name_what_no_extra_lifts(reason, name):
@@ -71,7 +75,14 @@ def test_the_allowed_skips_name_what_no_extra_lifts(reason, name):
 
 
 def test_every_allowed_skip_says_why():
-    assert all(name and pattern and len(why) > 20 for name, pattern, why in extras_tests.ALLOWED_SKIPS)
+    assert all(name and reasons and len(why) > 20 for name, reasons, why in extras_tests.ALLOWED_SKIPS)
+
+
+def test_every_allowed_wording_is_one_a_suite_skips_with():
+    """An allowed reason names a skip that exists: each wording appears in a suite's test sources."""
+    sources = "\n".join(path.read_text(encoding="utf-8") for path in ROOT.glob("**/tests/**/*.py") if ".venv" not in path.parts)
+    missing = [reason for _, reasons, _ in extras_tests.ALLOWED_SKIPS for reason in reasons if reason not in sources]
+    assert not missing, missing
 
 
 def test_unit_excuses_a_marked_or_allowed_skip_and_extras_only_an_allowed_one():
@@ -81,6 +92,9 @@ def test_unit_excuses_a_marked_or_allowed_skip_and_extras_only_an_allowed_one():
         ("tests/test_c.py::test_three", "rsync is not installed", frozenset()),
     ]
     assert extras_tests.unexcused(skips, "unit") == ["tests/test_b.py::test_two: pyarrow not installed"]
+    probes = [("tests/test_d.py::test_four", "needs gitpython; pyarrow missing", frozenset()),
+              ("tests/test_e.py::test_five", "rsync and pyarrow are required", frozenset())]
+    assert extras_tests.unexcused(probes, "unit") == [f"{nodeid}: {reason}" for nodeid, reason, _ in probes]
     assert extras_tests.unexcused(skips, "extras") == [
         "tests/test_a.py::test_one: could not import 'pyarrow': No module named 'pyarrow'",
         "tests/test_b.py::test_two: pyarrow not installed",

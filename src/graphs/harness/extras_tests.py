@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import inspect
 import os
-import re
 from functools import cache
 from pathlib import Path
 
@@ -41,16 +40,23 @@ MARKERS = (
 GUARD_FAILED = 1
 GUARD_ENV = "COX_EXTRAS_GUARD"
 GUARD_MODES = ("unit", "extras")
-# The skips no extra and no test database lifts, so no job runs the test: (name, pattern in the reason, why allowed).
+# The skips no extra and no test database lifts, so no job runs the test: (name, the whole reasons, why allowed).
+# A reason is excused only when it is one of these exactly, so a reason that also names an extra is not.
 ALLOWED_SKIPS = (
-    ("rsync", r"\brsync\b", "the remote-fetch tests copy with rsync; a host without it cannot run them"),
-    ("git", r"needs git|no git on PATH", "the test drives a real git; a host without git cannot run it"),
-    ("setsid", r"\bsetsid\b", "the test leaves its process group with util-linux setsid, which is Linux only"),
-    ("root", r"\broot (can write|reads)|ignores file modes", "a file-mode refusal does not hold for root"),
-    ("load timing", r"load-sensitive timing", "opt-in with COX_RUN_LOAD_TESTS=1: a shared runner's load makes it flaky"),
-    ("win32", r"needs /bin/sh|POSIX shells and process groups", "POSIX-only behaviour, skipped on Windows"),
-    ("ripgrep", r"ripgrep not installed", "the digest test shells out to rg, which the CI image does not carry"),
-    ("sqlite dialect", r"statement is sqlite's", "a sqlite-only statement, skipped on a dialect test's postgres param"),
+    ("rsync", ("rsync is required", "rsync is not installed", "rsync and git are required"),
+     "the remote-fetch tests copy with rsync; a host without it cannot run them"),
+    ("git", ("needs git", "no git on PATH"), "the test drives a real git; a host without git cannot run it"),
+    ("setsid", ("needs util-linux setsid to escape the group", "setsid is Linux-only"),
+     "the test leaves its process group with util-linux setsid, which is Linux only"),
+    ("root", ("root can write to any directory", "root reads files regardless of mode",
+              "running as a user that ignores file modes", "root reads a mode-000 directory"),
+     "a file-mode refusal does not hold for root"),
+    ("load timing", ("load-sensitive timing; set COX_RUN_LOAD_TESTS=1 to run",),
+     "opt-in with COX_RUN_LOAD_TESTS=1: a shared runner's load makes it flaky"),
+    ("win32", ("needs /bin/sh", "POSIX shells and process groups"), "POSIX-only behaviour, skipped on Windows"),
+    ("ripgrep", ("ripgrep not installed",), "the digest test shells out to rg, which the CI image does not carry"),
+    ("sqlite dialect", ("the trigger statement is sqlite's; the exemption rule itself is dialect-free",),
+     "a sqlite-only statement, skipped on a dialect test's postgres param"),
 )
 
 
@@ -74,8 +80,8 @@ def is_extras_skip(reason: str) -> bool:
 
 
 def allowed_skip(reason: str) -> str | None:
-    """The `ALLOWED_SKIPS` name that excuses a skip's reason, or None."""
-    return next((name for name, pattern, _ in ALLOWED_SKIPS if re.search(pattern, reason)), None)
+    """The `ALLOWED_SKIPS` name whose wording is the skip's whole reason, or None."""
+    return next((name for name, reasons, _ in ALLOWED_SKIPS if reason.strip() in reasons), None)
 
 
 def unexcused(skips: list[tuple[str, str, frozenset[str]]], mode: str) -> list[str]:
