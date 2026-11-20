@@ -211,6 +211,44 @@ session's container by hand:
 docker rm -f $(docker ps -aq --filter label=coxswain-smoke.session=<id>)
 ```
 
+## The warm Postgres
+
+A worker machine can keep one long-lived Postgres for the suite instead of starting a container per session. The
+suite does not change for it: any loopback server named by `COX_SMOKE_POSTGRES_URL` is used as is, without starting
+docker. With the variable unset the suite starts a container per session, as above. In CI the job's Postgres service
+container plays the warm server.
+
+The container is `coxswain-smoke-warm-postgres`, on the pinned image, published on `127.0.0.1:55432` only. It is the
+throwaway container's twin (data on tmpfs, fsync off) except that it has no `--rm`, it has `--restart unless-stopped`,
+and its label is `coxswain-smoke-warm=1`, not `coxswain-smoke=1`, so the per-session reaper never removes it. Its image
+digest is written in `src/tools/agent_tools/smoke_warm.py` and in `smoke/plan.py`. Bump both together; a test in
+`tests/test_smoke_plan.py` fails when they differ.
+
+`cox setup doctor` keeps it, through the `smoke postgres` row. The row is advisory: `ok` is true in every state, so it
+never fails the doctor and never rolls an upgrade back. Its states:
+
+- **Up on the pinned image.** The detail gives the URL to set.
+- **Present but stopped.** The detail says `cox setup doctor --fix` starts it.
+- **Present on a different image.** The detail says `--fix` replaces it.
+- **Absent.** The detail says `--fix` creates it.
+- **Docker not available.** The detail says the suite will start a container per session.
+
+The doctor starts nothing without `--fix`. It also runs on machines that are not workers and in every upgrade, and
+starting a container there unasked would be a side effect. With `--fix` it starts, creates or replaces the container,
+waits for `pg_isready`, and reports the resulting row. It does not wait after a docker command failed, and it prints
+docker's first error line. A paused container is unpaused and a dead one is replaced. A container that is restarting
+or being removed is left to docker. Set `COX_DOCTOR_SKIP_SMOKE_POSTGRES` to any value and the row reports `skipped` with
+no docker command at all; the unit suites set it, so no unit test reaches docker.
+
+`smoke/test_doctor_warm_postgres.py` runs `cox setup doctor` against the host's real docker, with and without `--fix`,
+and puts the warm container back as it found it. It skips where docker does not answer.
+
+A worker points the suite at the server by setting this in its unit environment:
+
+```sh
+COX_SMOKE_POSTGRES_URL=postgresql://postgres:smoke@127.0.0.1:55432/postgres
+```
+
 ## Adding a smoke test
 
 A smoke test drives an entry point (`cox <verb>`, a unit's command line) and checks what a person would see: the exit
