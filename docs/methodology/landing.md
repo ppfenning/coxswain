@@ -177,6 +177,25 @@ fast-forward `git push` follows. The two kinds have separate caps (`landing_area
 and neither counts against the launch cap. An item open for an hour is told to the chair once; a pull request waiting
 for a person never is. `cox lander status` shows every initiative in flight and every item with its age.
 
+Neither kind of item goes ahead with a branch that carries nothing. Before it merges a phase, the lander asks git what
+merging the phase branch would do to its parent (main) and to the initiative branch; before it opens or updates the
+initiative's pull request, what merging the initiative branch would do to the parent. A branch that would leave the
+tree as it is, while it has approved tasks, is refused with "`<initiative>: no changes against <branch>; the approved
+tasks have no commits`": the item waits, and the chair is told once, through needs_chair, which approved tasks have no
+commit on the remote. The memory is the store's `lander_notices` (`empty:<initiative>`, with `:<phase>` for a phase),
+so the next pass refuses the same way and tells nobody; a branch that carries a change again merges as before, and the
+memory is forgotten, as it is once the phase reads merged (a build run may merge it) or the initiative lands, so the
+next empty branch is told again. A phase branch the initiative branch already holds is empty unless a merge carried
+it in: one off the branch's first-parent line is a merge that was pushed and not yet recorded, and is recorded; one on
+that line (a later phase cut from the branch with no commit of its own) is refused. A phase whose tasks were all
+dropped, a merge that conflicts, and a branch an open pull request already merged are never refused this way
+(`agent_tools/lander_empty.py`).
+
+The refusal fails closed. A merged phase that gains an approved task whose work is already on the initiative branch
+(its branch holds only a merge of that branch) is refused like any other, and the chair is told the way out: rebuild
+the task (`cox route edit <task> --state ready --rebuild --force`), or drop it (`cox route edit <task> --state
+dropped`), after which the phase reads merged again and the notice is forgotten.
+
 The lander never waits inside a pass. A land reads its pull request's checks once: green merges, red goes back to
 build, and pending leaves the item `waiting` for the next pass to read again. A failure the forge can rerun is rerun
 once per commit, and that pass waits too. The bounds `wait_checks` keeps hold across passes, on the record as
