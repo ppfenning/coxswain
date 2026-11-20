@@ -79,7 +79,13 @@ if [ -z "$sleep_path" ]; then
   printf '%s\tnosleep\n%s\tend\n' "$m" "$m"
   exit 0
 fi
-# limited SECONDS CMD...: CMD under a watchdog; exit 124 when the watchdog had to kill it. CMD runs in a process group
+# limited SECONDS CMD...: CMD under a watchdog. It exits 124 exactly when the watchdog fired, and otherwise with CMD's own
+# status (a CMD that itself exits 124 reads as 1, so the code stays unambiguous). Whether the watchdog fired is its own
+# exit status, never inferred from CMD's: the wrong belief was "a dog still alive after CMD ends did not fire", but a
+# dog that had just killed CMD was still alive for an instant, and a loaded host read the kill (137) as CMD failing.
+# The dog sleeps in the background and waits, with a TERM trap: told to stand down while it waits, it exits 0; once
+# its sleep is over it ignores TERM, kills CMD's group and exits 97. Only CMD's end makes this shell tell it.
+# CMD runs in a process group
 # of its own, and the watchdog kills the whole group, so a grandchild (a wrapper's child, a docker plugin, a
 # credential sub-helper) cannot hold the caller's pipe open. The group comes from setsid where it exists (Linux): with
 # job control off the job is no group leader, so setsid runs it in place and its pid is the group. Without setsid
@@ -98,15 +104,24 @@ limited() (
     "$@" <&3 2>&4 3<&- 4>&- &
   fi
   pid=$!
-  ( "$sleep_path" "$secs"; kill -9 -"$pid" || kill -9 "$pid" ) >/dev/null 3<&- 4>&- &
+  (
+    nap=
+    trap 'kill "$nap"; exit 0' TERM
+    "$sleep_path" "$secs" &
+    nap=$!
+    wait "$nap"
+    trap '' TERM
+    kill -9 -"$pid" || kill -9 "$pid"
+    exit 97
+  ) >/dev/null 3<&- 4>&- &
   dog=$!
   wait "$pid"
   rc=$?
-  if kill -0 "$dog"; then
-    kill -9 -"$dog" || kill -9 "$dog"
-    exit "$rc"
-  fi
-  exit 124
+  kill -TERM "$dog"
+  wait "$dog"
+  [ "$?" -eq 97 ] && exit 124
+  [ "$rc" -eq 124 ] && exit 1
+  exit "$rc"
 )
 docker_s=$1 image_s=$2 helper_s=$3 other_s=$4 budget_s=$5
 shift 5
@@ -266,9 +281,11 @@ class Probe:
 
 def script_argv(
     images: Sequence[str] = SMOKE_IMAGES, tools: Sequence[str] = CLIENT_TOOLS, budget_s: int = BUDGET_S,
+    limits_s: Sequence[int] = LIMITS_S,
 ) -> list[str]:
-    """The probe for this machine, under this process's PATH."""
-    limits = [str(s) for s in (*LIMITS_S, budget_s)]
+    """The probe for this machine, under this process's PATH. `limits_s` replaces `LIMITS_S` in the script only; the
+    rows still quote `LIMITS_S`."""
+    limits = [str(s) for s in (*limits_s, budget_s)]
     return ["/bin/sh", "-c", _SCRIPT, "lane-prereqs", *limits, *tools, "--", *images]
 
 
