@@ -515,3 +515,17 @@ def test_the_shards_partition_every_file_heaviest_first():
     assert shards == (("smoke/test_a.py",), ("smoke/test_b.py",), ("smoke/test_c.py", "smoke/test_d.py", "smoke/test_e.py"))
     assert plan.shard_files(dict(reversed(weights.items())), 3) == shards  # the order the files came in does not matter
 
+
+
+@pytest.mark.parametrize(
+    ("args", "applies"),
+    [
+        (["smoke"], True),
+        (["smoke", "-m", "not forge"], True),
+        (["smoke/test_imports_this_tree.py"], False),
+        (["smoke/test_imports_this_tree.py::test_the_source_packages_import_from_this_tree"], False),
+        ([], True),
+    ],
+)
+def test_the_shard_filter_applies_only_to_runs_of_whole_directories(args, applies):
+    assert plan.shard_applies(args) is applies

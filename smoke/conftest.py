@@ -416,7 +416,7 @@ def pytest_configure(config: pytest.Config) -> None:
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """With COX_SMOKE_SHARD=<k>/<n>, keep only the files `plan.shard_files` puts in shard k (CI's parallel smoke jobs)."""
     value = os.environ.get(plan.SHARD_ENV)
-    if not value:
+    if not value or not plan.shard_applies(list(config.args)):
         return
     try:
         k, n = plan.parse_shard(value)

@@ -75,6 +75,13 @@ PostgresSource = UseUrl | StartContainer | Skip | Fail
 SHARD_ENV = "COX_SMOKE_SHARD"
 
 
+def shard_applies(args: list[str]) -> bool:
+    """Whether a run's command-line targets get sharded: only a run of whole directories. A run that names a file or a
+    test node (a developer's single test, or a test that starts pytest on one node of its own file) runs what it names,
+    even under an inherited COX_SMOKE_SHARD, which would otherwise deselect it and exit 5."""
+    return not any("::" in arg or arg.endswith(".py") for arg in args)
+
+
 def parse_shard(value: str) -> tuple[int, int]:
     """`<k>/<n>` read as (k, n), with 1 <= k <= n; anything else is a ValueError."""
     k, sep, n = value.strip().partition("/")

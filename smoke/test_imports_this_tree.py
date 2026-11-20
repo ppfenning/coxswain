@@ -36,7 +36,9 @@ def test_a_stale_checkout_ahead_on_the_path_does_not_shadow_this_tree(tmp_path: 
         (stale / name / "__init__.py").write_text(f'"""A stale checkout\'s {name}."""\n')
     (stale / "core" / "jsontypes.py").write_text('"""A stale checkout\'s jsontypes: no `conform`."""\n')
     inherited = os.environ.get("PYTHONPATH", "")
-    env = {**os.environ, "PYTHONPATH": os.pathsep.join(p for p in (str(stale), inherited) if p)}
+    # The child names one node of this file, so CI's shard filter must not apply to it (smoke/plan.shard_applies).
+    env = {key: val for key, val in os.environ.items() if key != "COX_SMOKE_SHARD"}
+    env["PYTHONPATH"] = os.pathsep.join(p for p in (str(stale), inherited) if p)
     node = f"{Path(__file__).relative_to(ROOT)}::test_the_source_packages_import_from_this_tree"
     done = subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", node],
