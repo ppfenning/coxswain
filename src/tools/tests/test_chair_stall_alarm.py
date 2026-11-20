@@ -32,7 +32,7 @@ from harness import landing_store
 from harness.store_migrate import open_store
 
 _NOW = datetime(2026, 11, 17, 12, 0, tzinfo=UTC)
-_SETTINGS = {"land_hours": 6.0, "launch_minutes": 60.0, "repeat_ticks": 3}
+_SETTINGS = {"land_hours": 6.0, "launch_minutes": 60.0, "repeat_ticks": 3, "stranded_minutes": 30.0}
 
 
 def _ts(hours_ago: float = 0.0, now: datetime = _NOW) -> str:
@@ -50,12 +50,13 @@ def _row(kind, status, hours_ago, reason="", target="demo-t1", **extra):
 
 # --- settings ---
 
-_DEFAULTS = {"land_hours": DEFAULT_LAND_HOURS, "launch_minutes": DEFAULT_LAUNCH_MINUTES, "repeat_ticks": DEFAULT_REPEAT_TICKS}
+_DEFAULTS = {"land_hours": DEFAULT_LAND_HOURS, "launch_minutes": DEFAULT_LAUNCH_MINUTES, "repeat_ticks": DEFAULT_REPEAT_TICKS,
+             "stranded_minutes": 30.0}
 
 
 @pytest.mark.parametrize("value, expected", [
     (None, _DEFAULTS),
-    ({"land_hours": 2, "launch_minutes": 0, "repeat_ticks": 5}, {"land_hours": 2.0, "launch_minutes": 0.0, "repeat_ticks": 5}),
+    ({"land_hours": 2, "launch_minutes": 0, "repeat_ticks": 5}, {"land_hours": 2.0, "launch_minutes": 0.0, "repeat_ticks": 5, "stranded_minutes": 30.0}),
     ({"land_hours": -1, "launch_minutes": "x", "repeat_ticks": 1}, _DEFAULTS),
     ({"land_hours": True, "repeat_ticks": 0}, {**_DEFAULTS, "repeat_ticks": 0}),
     ({"repeat_ticks": 2.5}, _DEFAULTS),
@@ -137,7 +138,7 @@ def test_an_alarm_is_open_from_its_raise_until_its_clear_and_only_done_rows_coun
 
 def _facts(**over):
     base = {"settings": dict(_SETTINGS), "last_land_at": None, "open_initiatives": {}, "last_launch_at": None,
-            "watch_since": _ts(48), "heads": {}, "streaks": [], "open": {}}
+            "watch_since": _ts(48), "heads": {}, "streaks": [], "open": {}, "stranded": {}}
     return {**base, **over}
 
 
