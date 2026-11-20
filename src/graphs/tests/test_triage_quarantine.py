@@ -9,7 +9,8 @@
 #
 #     A cite naming a fact key not in `facts` is a fabricated citation and
 #     the answer is refused; zero cites is refused; a `diagnosis` that
-#     quotes no objection text from the record is refused.
+#     quotes no objection text from the record is refused, or, when review
+#     did not object, one that quotes no line of the failed check's output.
 #
 # Chair correction 2026-09-16: subtype arrives on an attempt record only via
 # an optional `node_subtypes: {node: subtype}` mapping the caller assembles;
@@ -19,7 +20,7 @@ import pytest
 
 from graphs._contract import ContractViolation
 from graphs.ops import triage_quarantine
-from graphs.ops.triage_quarantine import check_citation, facts
+from graphs.ops.triage_quarantine import _check_output, _objections, _review_objected, check_citation, facts
 from runner import ScriptedRunner
 
 _WORK_ITEM = {"id": "t1", "title": "example", "last_commit": "2026-09-05T00:00:00Z"}
@@ -104,6 +105,76 @@ def test_a_diagnosis_quoting_no_objection_text_is_refused():
     )
     assert reason is not None
     assert "quotes no objection text" in reason
+
+
+# A quarantine from a failed configured check that review approved holds no objection, only the check's output.
+
+_PYTEST_LINE = "pytest -q -rs smoke failed"
+_CLEAN_LINE = "check_clean.py . --require-names refused a real host name in tests"
+_CHECK_FAILURE = {
+    "reason": "configured check failed: pytest -q -rs smoke",
+    "kind": "build",
+    "review": {"verdict": "approve", "findings": [], "rationale": "checks pass"},
+    "adversary": None,
+    "arbitration": None,
+    "fix_loop": {"stopped": "attempts"},
+    "evidence": [_PYTEST_LINE, {"check": "check_clean", "output": f"\n{_CLEAN_LINE}\n"}],
+    "ts": "2026-09-06T00:00:00Z",
+}
+_REVIEW_OBJECTION = {
+    "reason": "attempt cap",
+    "kind": "build",
+    "review": {"verdict": "revise", "findings": [{"detail": "missing null guard", "file": "a.py"}]},
+    "fix_loop": {"stopped": "checkpoint"},
+    "evidence": [_PYTEST_LINE],
+    "ts": "2026-09-06T00:00:00Z",
+}
+
+
+def _citation(attempt, diagnosis):
+    attempts = [attempt]
+    return check_citation(
+        ["attempt-1|reason"],
+        diagnosis,
+        facts(_WORK_ITEM, attempts),
+        _objections(attempts),
+        check_output=_check_output(attempts),
+        objected=_review_objected(attempts),
+    )
+
+
+def test_check_output_splits_strings_and_mapping_outputs_and_drops_blank_and_malformed_entries():
+    attempt = {"evidence": ["a\n\n b ", {"output": "c\n"}, {"output": 3}, {"check": "x"}, 7, None]}
+    assert _check_output([attempt, {}]) == ["a", "b", "c"]
+
+
+def test_review_objected_is_false_for_a_reason_alone_and_true_for_a_finding():
+    assert _review_objected([_CHECK_FAILURE]) is False
+    assert _review_objected([_REVIEW_OBJECTION]) is True
+
+
+def test_a_check_failure_diagnosis_quoting_a_check_output_line_passes():
+    assert _citation(_CHECK_FAILURE, f"the build is fine but '{_CLEAN_LINE}'") is None
+    assert _citation(_CHECK_FAILURE, f"'{_PYTEST_LINE}' fails") is None
+
+
+def test_a_check_failure_diagnosis_quoting_nothing_from_the_record_is_refused():
+    reason = _citation(_CHECK_FAILURE, "the build failed for unrelated reasons")
+    assert reason == "diagnosis quotes no objection or failed-check text verbatim from the record"
+
+
+def test_a_review_objection_still_requires_the_objection_quote():
+    assert _citation(_REVIEW_OBJECTION, "the review found missing null guard") is None
+    reason = _citation(_REVIEW_OBJECTION, f"'{_PYTEST_LINE}' is the only trouble")
+    assert reason is not None
+    assert "quotes no objection text" in reason
+
+
+def test_a_record_with_no_objection_and_no_evidence_is_refused_naming_both_sources():
+    bare = {"reason": "", "review": {"verdict": "approve", "findings": []}, "evidence": []}
+    reason = _citation(bare, "anything at all")
+    assert reason is not None
+    assert "objection or failed-check text" in reason
 
 
 # docs/design/triage.md §1's `triage`/`emit` and §6 rule 3, one literal test each.
@@ -323,3 +394,37 @@ def test_a_different_class_after_a_prior_record_is_not_a_repeat(cart):
     response = _response("drop", "quotes missing null guard verbatim", ["attempt-1|review"], "drop it")
     result = triage_quarantine.run(_with_context(cart, [_ATTEMPT_1], triaged=[prior]), _runner(response))
     assert (result["escalated"], result["effect"]) == (False, "drop")
+
+
+# The two records from the report, trimmed: a configured-check failure review approved, and a review objection.
+
+
+def test_a_check_failure_record_and_a_review_objection_record_both_pass_run(cart):
+    check_failure = {
+        "reason": "configured check failed: pytest -q -rs smoke",
+        "review": {"verdict": "approve", "findings": []},
+        "evidence": [_PYTEST_LINE, _CLEAN_LINE],
+    }
+    check_response = _response(
+        "ticket_defect", f"the tests need a neutral host name: '{_CLEAN_LINE}'", ["attempt-1|evidence"], "use a neutral name"
+    )
+    result = triage_quarantine.run(_args(cart, [check_failure]), _runner(check_response))
+    assert result["emit"]["kind"] == "ticket_amend"
+    assert result["emit"]["rationale"] == check_response["diagnosis"]
+
+    objection = {
+        "reason": "attempt cap",
+        "review": {"verdict": "revise", "findings": [{"detail": "missing null guard"}]},
+        "fix_loop": {"stopped": "checkpoint"},
+        "evidence": [],
+    }
+    objection_response = _response("ticket_defect", "quotes missing null guard verbatim", ["attempt-1|review"], "add the guard")
+    result = triage_quarantine.run(_args(cart, [objection]), _runner(objection_response))
+    assert result["emit"]["rationale"] == objection_response["diagnosis"]
+
+
+def test_a_check_failure_record_with_an_unquoted_diagnosis_is_refused_by_run(cart):
+    check_failure = {"reason": "check failed", "review": {"verdict": "approve", "findings": []}, "evidence": [_PYTEST_LINE]}
+    response = _response("hold", "a person should look", ["attempt-1|reason"], "decide")
+    with pytest.raises(ContractViolation, match="objection or failed-check text"):
+        triage_quarantine.run(_args(cart, [check_failure]), _runner(response))
