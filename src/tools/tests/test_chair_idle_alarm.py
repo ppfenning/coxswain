@@ -226,6 +226,20 @@ def test_worker_capacity_counts_only_the_active_hosts_placement_uses_and_local_l
     assert worker_capacity(None, [], "me") == 0
 
 
+def test_worker_capacity_leaves_out_a_lane_host_placement_skips_for_its_prerequisites():
+    dispatch = {"max_in_flight": 2, "live_runs": 0,
+                "hosts": [{"name": "lane-a", "live_runs": 0, "capacity": 3}, {"name": "lane-b", "live_runs": 0}]}
+    failing = {"lane_ok": False, "lane_reason": "docker daemon: down"}
+    rows = [{"name": "me", "state": "active", "versions_json": failing},
+            {"name": "lane-a", "state": "active", "versions_json": failing},
+            {"name": "lane-b", "state": "active", "versions_json": {"lane_ok": True}}]
+    # lane-a is skipped by placement; this machine's lanes are placed without the gate, so they still count
+    assert worker_capacity(dispatch, rows, "me") == 2 + 2
+    assert worker_capacity({**dispatch, "lane_prereqs": False}, rows, "me") == 2 + 3 + 2
+    short_once = {"name": "lane-a", "state": "active", "versions_json": {"lane_ok": True, "room_failures": 1}}
+    assert worker_capacity(dispatch, [short_once], "me") == 2 + 3 + 2
+
+
 def test_the_setting_is_a_cartridge_profile_key_with_a_one_hour_default():
     assert DEFAULT_IDLE_MINUTES == 60.0 and resolve_settings(None)["idle_minutes"] == 60.0
     profile, _ = _parse_profile("team: smoke\nchair:\n  idle_alarm_minutes: 90\n")

@@ -181,6 +181,7 @@ def launch_plan(
     chair_courier: str | None = None,
     phase: str | None = None,
     cartridge_sha: str | None = None,
+    stub: str | None = None,
 ) -> list[list[str]]:
     """The argv that `launch_on_host` runs in order: the rsync push, then, when `cartridges` is given, a mirroring
     rsync push of that directory (a path relative to the chair's workspace) and an rsync check that it now matches,
@@ -199,7 +200,8 @@ def launch_plan(
     one `base_sync_argv` step that also checks the result. With no `harness_base` the harness follows `harness_head`
     (`sync_argvs`); with no `base` the repo follows `repo_head` only when detached (see `_sync_argvs`).
     With `graph="decompose"` the first step copies the one file `intake` (a path relative to the chair's work store)
-    to the same relative path under the host workspace, and the last starts `route launch decompose` on it.
+    to the same relative path under the host workspace, with the chair's `stub` initiative.md beside it when one is
+    given, and the last starts `route launch decompose` on it.
     A `chair_courier` destination is set as COX_CHAIR_COURIER in the environment of that last command.
     With a `cartridge_sha` (the chair published its cartridges to the store) nothing is copied for them: the two
     rsync steps give way to one ssh step, after the harness sync so the host's `cox` knows the command, in which
@@ -212,9 +214,10 @@ def launch_plan(
         if intake is None:
             raise ValueError("a decompose launch plan needs the intake file path")
         # Chosen: no work/<initiative> mirror push. The graph reads only the intake file (`--idea`) and writes the
-        # initiative itself on the host, so the stub initiative.md need not arrive. Wrong belief: "a decompose launch
-        # needs the initiative directory there"; and `rsync --delete` of a stub would erase tickets already on the host.
-        rsync_step = rsync_file_argv(intake, place(workspace))
+        # initiative itself on the host; `rsync --delete` of the directory would erase tickets already there. The one
+        # stub file goes along, never mirrored: it carries the chair's `lane_model`, which the host's run reads back
+        # before its own cartridge (`queue_rows.launch_lane_model`).
+        rsync_step = rsync_file_argv(intake, place(workspace), [stub] if stub is not None else [])
         launch_step = ssh_argv(
             host.ssh, decompose_launch_argv(f"{workspace}/{intake}", initiative, run_id, label, chair_courier=chair_courier)
         )
@@ -313,6 +316,7 @@ def launch_on_host(
     profile: Mapping | None = None,
     phase: str | None = None,
     cartridge_sha: str | None = None,
+    stub: str | None = None,
 ) -> dict | LaunchError:
     """`preflight` is a refusal line from a check made before anything is copied; None lets the launch go on.
     `tools` are the executables the repo's checks run: one `probe` of the host's lane PATH, before the copy, refuses
@@ -322,7 +326,8 @@ def launch_on_host(
     A chair path with no git checkout or no origin has no base: it keeps the old unguarded sync and records no `base_sha`.
     An origin whose `origin/<base>` does not resolve refuses. The harness now follows origin/<base>, not the commit the
     chair runs (`chair_head`), so a chair on a tagged harness can differ from its lane's harness.
-    `profile` is the chair's provider profile; a `courier_ssh` key in it is passed to the host as COX_CHAIR_COURIER."""
+    `profile` is the chair's provider profile; a `courier_ssh` key in it is passed to the host as COX_CHAIR_COURIER.
+    `stub`, for a decompose, is the chair's `work/<initiative>/initiative.md` (workspace-relative), copied with the intake."""
     if preflight is not None:
         return LaunchError("auth", preflight)
     if graph not in ("epic", "decompose"):
@@ -353,7 +358,7 @@ def launch_on_host(
         host, initiative, run_id, label, locate, repo, harness_dir, relaunch,
         home=home, host_checkouts=host_checkouts, harness_head=harness_head, repo_head=repo_head, base=base,
         harness_base=harness_base, graph=graph, intake=intake, cartridges=cartridges,
-        chair_courier=courier_ssh_of(profile), phase=phase, cartridge_sha=cartridge_sha,
+        chair_courier=courier_ssh_of(profile), phase=phase, cartridge_sha=cartridge_sha, stub=stub,
     )
     rsync_argv, ssh_cmd = plan[0], plan[-1]
     pushed = run(rsync_argv)

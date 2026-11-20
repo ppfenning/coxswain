@@ -18,7 +18,7 @@ Naming, stable because the set task resolves against `REGISTRY` through
 Keys by section, in section order:
 
 - lanes and machines: cartridge `policy.dispatch.max_in_flight`,
-  `policy.dispatch.local_lanes`.
+  `policy.dispatch.local_lanes`, `policy.dispatch.lane_model`, `policy.dispatch.lane_prereqs`.
 - spend and pacing: profile `window_ceiling_usd`, `weekly_ceiling_usd`,
   `node_cap_usd`, `weekly_reset`, `monthly_budget_usd`, `budget_timezone`; cartridge `policy.pacing.hard_stop_fraction`,
   `policy.pacing.weekly_hard_stop_fraction`, `policy.pacing.min_elapsed_fraction`.
@@ -44,6 +44,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from agent_tools.editor_model import _MISSING, _crew, _get, _seat_field_paths
+from agent_tools.queue_rows import LANE_MODELS
 
 SECTIONS = (
     "lanes and machines",
@@ -70,6 +71,11 @@ BUDGET_TIMEZONE_DESCRIPTION = (
 UPGRADE_CHANNEL_DESCRIPTION = (
     "what cox upgrade moves this machine to: stable, the newest release tag (the default), or edge, "
     "the newest commit on main whose CI passed"
+)
+
+LANE_MODEL_DESCRIPTION = (
+    f"how a newly decomposed initiative runs: {' or '.join(LANE_MODELS)}. task (the default) is one epic run per "
+    "initiative; phase leaves it for a phase worker. Stamped on the initiative at decompose and never changed after"
 )
 
 STORE_MODES = ("files", "shared")
@@ -104,7 +110,9 @@ def _in(section: str, scope: str, source_file: str, keys: tuple[str, ...], opera
 
 REGISTRY: tuple[Setting, ...] = (
     *_in("lanes and machines", "cartridge", CARTRIDGE_FILE,
-         ("policy.dispatch.max_in_flight", "policy.dispatch.local_lanes")),
+         ("policy.dispatch.max_in_flight", "policy.dispatch.local_lanes", "policy.dispatch.lane_prereqs")),
+    Setting("cartridge", "policy.dispatch.lane_model", "lanes and machines", CARTRIDGE_FILE, "policy.dispatch.lane_model",
+            description=LANE_MODEL_DESCRIPTION),
     *_in("spend and pacing", "profile", PROFILE_FILE,
          ("window_ceiling_usd", "weekly_ceiling_usd", "node_cap_usd", "weekly_reset")),
     Setting("profile", "monthly_budget_usd", "spend and pacing", PROFILE_FILE, "monthly_budget_usd",

@@ -37,6 +37,7 @@ from agent_tools.cli_lazy import (
     install_exec,
     install_root,
     lane_hosts,
+    lane_prereqs,
     log_doctor,
     provenance,
     remote_doctor,
@@ -531,6 +532,22 @@ def _doctor_steward_rows(profile: dict | None) -> list[dict]:
     return [doctor.steward_row(chair_facts.steward_asked_for(raw))]
 
 
+_LANE_PROBE_TIMEOUT_S = 60.0
+
+
+def _doctor_lane_rows(profile: dict | None) -> list[dict]:
+    """Edge. What the smoke gate needs here (`lane_prereqs`), probed under this process's PATH; skipped without a
+    profile. The probe only reads: it never pulls an image, so a second run finds what the first did."""
+    if profile is None:
+        return [doctor._skip(check) for check in (lane_prereqs.DOCKER_CHECK, *lane_prereqs.CLIENT_TOOLS, lane_prereqs.GH_CHECK)]
+    try:
+        done = bounded_run.completed(lane_prereqs.script_argv(), timeout=_LANE_PROBE_TIMEOUT_S,
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    except OSError as exc:
+        return lane_prereqs.reply_rows(127, str(exc), remote=False)
+    return lane_prereqs.reply_rows(done.returncode, done.stdout, remote=False)
+
+
 def _doctor_log_rows(profile: dict | None, *, fix: bool, out) -> list[dict]:
     """Edge. The append-only log rows, under the profile's workspace and its runs dir; none without a workspace.
     With `fix`, damaged lines move to `<log>.damaged` first, one line per log moved, and the rows show the repaired logs."""
@@ -571,15 +588,21 @@ def _setup_doctor_here(a: argparse.Namespace) -> int:
         *_doctor_running_install_rows(profile),
         *_doctor_extras_rows(),
         *_doctor_steward_rows(profile),
+        *_doctor_lane_rows(profile),
         *_doctor_log_rows(profile, fix=getattr(a, "fix", False), out=sys.stderr if a.json else sys.stdout),
     ]
     rc = doctor.exit_code(rows)
     # Informational: outside rows, so outside rc. Reuses the text the facts already read.
     parquet = _parquet_traces_line(profile)
+    # The tokens this machine could advertise as a lane host; a profile-less run probed nothing, so it names none.
+    lane_capabilities = sorted(lane_prereqs.capabilities(rows))
     if a.json:
-        print(json.dumps({"rows": rows, "ok": rc == 0, "parquet_traces": parquet}, indent=2))
+        print(json.dumps({"rows": rows, "ok": rc == 0, "parquet_traces": parquet, "lane_capabilities": lane_capabilities},
+                         indent=2))
     else:
         print(doctor.render(rows))
+        if profile is not None:
+            print(f"lane capabilities: {', '.join(lane_capabilities) or 'none'}")
         if parquet:
             print(parquet)
     return rc

@@ -14,6 +14,7 @@ __all__ = [
     "Claim",
     "HostRow",
     "QueueRow",
+    "StepRow",
     "TaskRecordWriteRow",
     "WorkItemRecord",
     "WorkItemRow",
@@ -108,3 +109,26 @@ class HostRow(TypedDict):
     versions_json: JsonObject
     updated_at: str
     updated_by: str
+
+
+class StepRow(TypedDict):
+    """One `step_results` row, written once and never changed; `result_json` and `artifacts_json` decoded."""
+
+    run_id: str
+    step: str
+    initiative: str
+    phase: str
+    task_id: str
+    kind: str
+    round: int
+    ok: int
+    verdict: str
+    subject_sha: str
+    worker: str
+    claim_epoch: int
+    started_at: str
+    finished_at: str
+    cost_usd: float
+    result_json: JsonObject
+    artifacts_json: list[JsonObject]
+

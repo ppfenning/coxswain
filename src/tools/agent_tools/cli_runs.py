@@ -59,6 +59,7 @@ from agent_tools.cli_lazy import (
     towpath_launch,
     work_state,
 )
+from agent_tools.cli_route_sync import _lane_model_for
 from agent_tools.cli_runs_fetch import (
     _branch_exists,
     _fetch_hosts,
@@ -893,7 +894,7 @@ def _wait_fetch(a: argparse.Namespace, runs_dir: Path, run_id: str) -> tuple[str
     ns = argparse.Namespace(**{"profile": None, **vars(a)})  # `runs wait` takes no --profile; `_lake_provider` reads one
     hosts = _fetch_hosts(_read_text_or_none(_profile_path(ns)) or "", run_store.hosts(runs_dir))
     mode = work_state.work_state_mode(_lake_provider(ns)[0])
-    return _fetch_one(runs_dir, hosts, run_id, mode, _holder_label(ns))
+    return _fetch_one(runs_dir, hosts, run_id, mode, _holder_label(ns), _lane_model_for(ns))
 
 
 def _poll_live(rows_fn, runs_dir: Path, busy: list[str]):

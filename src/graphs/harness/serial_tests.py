@@ -32,7 +32,12 @@ def pytest_collection_modifyitems(config, items) -> None:
 
 def _serial_command(config) -> list[str]:
     keyword = ["-k", config.option.keyword] if config.option.keyword else []
-    return [sys.executable, "-m", "pytest", "-p", "no:xdist", "-p", "no:cacheprovider", "-q", "-m", "serial", *keyword, *config.args]
+    return [sys.executable, "-m", "pytest", "-p", "no:xdist", "-p", "no:cacheprovider", "-q", "-m", serial_markexpr(config.option.markexpr), *keyword, *config.args]
+
+
+def serial_markexpr(markexpr: str) -> str:
+    """The run's own `-m` narrowed to the serial tests, so `-m extras` runs only the serial tests it selected."""
+    return f"serial and ({markexpr})" if markexpr else "serial"
 
 
 def pytest_sessionfinish(session, exitstatus) -> None:

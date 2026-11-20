@@ -790,6 +790,22 @@ def _team_cartridge(profile: dict, repo: Path | None = None, overlay_keys: froze
     return cartridge, None
 
 
+def _lane_model(profile: dict) -> str:
+    """Edge. The team cartridge's `policy.dispatch.lane_model`, read when a decompose writes its rows; a profile with no
+    cartridge, or one that cannot be resolved, reads `task`, the model that is off."""
+    return queue_rows.cartridge_lane_model(_team_cartridge(profile)[0])
+
+
+def _lane_model_for(a: argparse.Namespace) -> str:
+    """Edge. `_lane_model` of the profile `a` names; no profile, or one that will not parse, reads `task`."""
+    text = _read_text_or_none(_profile_path(a))
+    try:
+        profile = route.parse_profile(text) if text is not None else {}
+    except route.ProfileError:
+        return queue_rows.DEFAULT_LANE_MODEL
+    return _lane_model(profile)
+
+
 def _tracker_scope(profile: dict, repo: Path | None = None) -> tuple[str, dict, str | None]:
     """Edge. `(scope, epic_threshold, error)`, the cartridge's `policy.tracker_scope` over the profile's.
     An unresolvable cartridge changes nothing unless the profile itself narrows to `epics`, the one scope that

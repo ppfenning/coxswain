@@ -26,7 +26,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
-from agent_tools import chair_login_watch, host_cmd, store_cli
+from agent_tools import chair_login_watch, host_cmd, lane_prereqs, store_cli
 from agent_tools.remote_argv import env_check_argv, json_object_in, ssh_argv, token_status_argv
 
 BLOCK_AFTER_FAILURES = 2
@@ -160,12 +160,21 @@ def check_login_on_host(
     never beats, since `beat_at` is the last-seen time. It writes `unreachable_failures`,
     `login_checked_at` and `reason` through `cox host login`; at `UNREACHABLE_AFTER` in a row it also
     writes `unreachable_since` and sets the host `unreachable`. A reachable check beats as above and drops
-    `unreachable_failures`."""
+    `unreachable_failures`.
+
+    A reachable readiness check is followed by one `lane_prereqs` probe over the same local/ssh split, whose result
+    the beat carries (`lane_prereqs.merge_versions`); placement skips a host that fails it.
+
+    The wrong belief was "a probe the host did not answer means the host is unreachable": a hung Docker Desktop held
+    the probe past the ssh bound, and the passing readiness check was thrown away for an unreachable streak. The
+    readiness check alone judges reachability. A probe that times out, or that cannot be read, is one failing
+    `lane probe` row: the host is blocked with that reason, and its login state is kept."""
     check = (
         _claude_check(host_name, ssh, ssh_run)
         if runner == "claude-code"
         else _env_check(host_name, ssh, ssh_run, env_names)
     )
+    lane_rows = [] if check.unreachable else _lane_rows(host_name, ssh, ssh_run)
     if check.unreachable:
         count = _failure_count(current_versions, chair_login_watch.UNREACHABLE_FAILURES_KEY) + 1
         payload = _unreachable_login(count, now, check.reason)
@@ -190,4 +199,10 @@ def check_login_on_host(
         merged = chair_login_watch.merge_login_versions(
             streak_cleared, check.ok, now, check="env_vars", reason=check.reason
         )
-    return cli_run(host_cmd.beat_argv(host_name, merged))
+    return cli_run(host_cmd.beat_argv(host_name, lane_prereqs.merge_versions(merged, lane_rows)))
+
+
+def _lane_rows(host_name: str, ssh: str, ssh_run: SshRun) -> list[lane_prereqs.Row]:
+    """The smoke gate's prerequisites on the host, one probe in the lane's login shell (`lane_prereqs`)."""
+    reply = ssh_run(_remote_argv(host_name, ssh, lane_prereqs.probe_argv()))
+    return lane_prereqs.reply_rows(reply.returncode, reply.mixed, remote=False)

@@ -25,6 +25,7 @@ from harness.resume import save_result, write_atomic
 from harness.store_dialect import Connection, JsonObject
 from harness.store_lease import assert_epoch, renew
 from harness.store_pause import clear_paused, is_paused
+from harness.store_steps import put_step, steps_of_result
 from harness.store_write import Store, upsert_work_item
 from harness.surface_heal import heal_bare_filenames, heal_new_markers, notes_out_of_surfaces
 from harness.waves import widest_wave
@@ -708,10 +709,38 @@ def _task_record_mirror(
     return (run_id, phase, task, json.loads(json.dumps(dict(result), default=str)), ts)
 
 
-def save_task_result(ctx: Ctx, result: Mapping[str, object], *, phase: str, task: str) -> None:
-    """Save the result file, then mirror it into the store. The file stays authoritative.
+def record_steps(ctx: Ctx, result: Mapping[str, object], *, phase: str, task: str) -> None:
+    """Edge. One `step_results` row per step of `result` that this run performed (`store_steps.steps_of_result`),
+    each written once. Nothing without a store or under a stale epoch; a store failure is a warning, never a failed
+    run. `result` is read as its JSON round trip, the shape the result file holds."""
+    store = ctx.store
+    if store is None:
+        return
+    try:
+        rows = steps_of_result(
+            json.loads(json.dumps(dict(result), default=str)), run_id=ctx.run_id, initiative=ctx.initiative_id,
+            phase=phase, task=task, at=utc_now(), claim_epoch=ctx.epoch or 0,
+        )
 
-    A mirror failure is a warning, never a failed run. The file write is outside the try.
+        def write() -> None:
+            if fence_reason(ctx) is None:
+                for row in rows:
+                    put_step(store.conn, row)
+
+        if rows:
+            ctx.retry.write(write, END_WRITE_WINDOW_S)
+    except Exception as exc:
+        epic_log.warning("step results for %s/%s/%s not written to the store: %r", ctx.run_id, phase, task, exc)
+
+
+def save_task_result(ctx: Ctx, result: Mapping[str, object], *, phase: str, task: str) -> None:
+    """Save the result file, then mirror it into the store: the task record, then the steps of it this run performed
+    (`record_steps`). The file stays authoritative.
+
+    A step row is written once: a second save of the same result adds none, and a later save that carries a step the
+    first did not (the checks, saved after they ran) adds that step's row only. A result this run reused, or a rescue
+    starts from, writes no step for this run. A mirror failure is a warning, never a failed run. The file write is
+    outside the try.
     """
     save_result(result, runs_dir=ctx.runs_dir, run_id=ctx.run_id, phase=phase, task=task)
     try:
@@ -726,6 +755,8 @@ def save_task_result(ctx: Ctx, result: Mapping[str, object], *, phase: str, task
             ctx.retry.write(mirror, END_WRITE_WINDOW_S)
     except Exception as exc:
         epic_log.warning("task record for %s/%s/%s not mirrored into the store: %r", ctx.run_id, phase, task, exc)
+        return
+    record_steps(ctx, result, phase=phase, task=task)
 
 
 def record_phase(ctx: Ctx, record: Mapping[str, object]) -> None:

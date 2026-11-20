@@ -11,7 +11,7 @@ unknown: `started` is taken as any task in the initiative already in_progress, a
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import SupportsIndex, SupportsInt, TypedDict, cast
+from typing import NotRequired, SupportsIndex, SupportsInt, TypedDict, cast
 
 from agent_tools import epic, queue_rows, route, run_store
 from agent_tools.chair_read_quarantined import WorkFiles, task_files
@@ -39,6 +39,7 @@ class DocketInitiative(TypedDict):
     waiting_tasks: list[ReadyTask]
     held_tasks: list[HeldRef]
     landed: set[str]
+    lane_model: NotRequired[str]  # `phase` when the initiative row was stamped so at decompose; absent means `task`
 
 
 class Docket(TypedDict):
@@ -237,8 +238,13 @@ def docket_from_rows(
     Queue rows carry no `updated_at` (`run_store._QUEUE_COLUMNS`), so ages come from `aged`, the `docket_work_items` rows,
     unless a queue row supplies one. Ordering runs after the lease filter, so a leased task never sets an age.
 
-    `land_at` maps initiative id to its land_at. None, or an id missing from it, keeps `route.DEFAULT_LAND_AT`."""
+    `land_at` maps initiative id to its land_at. None, or an id missing from it, keeps `route.DEFAULT_LAND_AT`.
+
+    An initiative whose own row is stamped `lane_model: phase` carries `lane_model`; every other one has no key."""
     tasks = [r for r in rows if r["kind"] == "task"]
+    phase_lane = {
+        str(r["initiative"]) for r in rows if r["kind"] == "initiative" and queue_rows.lane_model_of_row(r) == "phase"
+    }
     items = _with_item_ages([_item_of(r) for r in tasks], aged)
     claimed = {(r["initiative"], r["task_id"]) for r in tasks if is_claimed(r, now)}
     judged = (
@@ -254,6 +260,9 @@ def docket_from_rows(
         }
         for i in _initiative_rows(summaries, items, judged)
     ]
+    for entry in unclaimed:
+        if entry["id"] in phase_lane:
+            entry["lane_model"] = "phase"
     return _by_priority(unclaimed, items)
 
 

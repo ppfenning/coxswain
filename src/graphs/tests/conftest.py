@@ -12,7 +12,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import pytest
 
-from harness import termination
+from harness import extras_tests, termination
 from harness.serial_tests import pytest_collection_modifyitems, pytest_sessionfinish  # noqa: F401  (hooks)
 
 # sqlite is the suites' stand-in for the one real store, Postgres. Outside the suites it does not open.
@@ -35,6 +35,7 @@ CARTRIDGE = {
 
 def pytest_configure(config) -> None:
     config.addinivalue_line("markers", "real_courier: leave harness.courier_adapter.send unstubbed for this test")
+    extras_tests.register(config)  # the extras jobs' marks and the unit jobs' skip guard
 
 
 @pytest.fixture(autouse=True)

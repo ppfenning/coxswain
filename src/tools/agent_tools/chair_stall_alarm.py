@@ -44,6 +44,7 @@ from collections.abc import Collection, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, NotRequired, TypedDict
 
+from agent_tools.queue_rows import launchable_by_tick
 from core.jsontypes import is_list, is_mapping
 
 if TYPE_CHECKING:  # chair_types imports this module for StallFacts, so the import runs only for the checker
@@ -646,10 +647,19 @@ def worker_capacity(
     machine's own hosts-table row is `active` (or it has none, as a chair with no hosts table runs on its profile's cap)
     and its lanes are not kept for decomposes (`local_lanes`). A lane host counts its own capacity, else the local cap,
     when its row is `active`, or when it has no row, as a host named only by the profile. 0 means every host is
-    drained or none is configured."""
+    drained or none is configured.
+
+    A lane host placement skips for its lane prerequisites (`lane_prereqs.lane_blocked`, while the dispatch's
+    `lane_prereqs` gate is on) is not capacity: the chair cannot fill it, and its `lane_prereqs` notice already says
+    why. This machine's own lanes are placed without that gate, so they still count."""
     if not dispatch:
         return 0
     states = {str(r.get("name") or ""): str(r.get("state") or "") for r in login_hosts}
+    # Imported here: chair_types imports this module, and lane_prereqs imports chair_types through chair_login_watch.
+    from agent_tools import lane_prereqs
+
+    gate = dispatch.get("lane_prereqs", True) is not False
+    blocked = lane_prereqs.gated(lane_prereqs.lane_blocked(list(login_hosts)), gate)
 
     def counts(name: str) -> bool:
         return states.get(name, "active") == "active"
@@ -658,7 +668,10 @@ def worker_capacity(
     local = cap if counts(local_host) and dispatch.get("local_lanes", "any") != "decompose" else 0
     hosts = dispatch.get("hosts")
     remote = [h for h in hosts if is_mapping(h)] if is_list(hosts) else []
-    return local + sum(_count(h.get("capacity", cap)) for h in remote if counts(str(h.get("name") or "")))
+    return local + sum(
+        _count(h.get("capacity", cap)) for h in remote
+        if counts(str(h.get("name") or "")) and str(h.get("name") or "") not in blocked
+    )
 
 
 def _count(value: object) -> int:
@@ -686,7 +699,7 @@ def plan_stall_alarm(
         "progress_at": str(progress) if progress else None,
         "free_lanes": _count(idle.get("free_lanes")),
         "ready": _count(idle.get("ready")) + _count(idle.get("queued")),
-        "subject": next((str(i["id"]) for i in facts.get("initiatives") or [] if i.get("ready_tasks")), ""),
+        "subject": next((str(i["id"]) for i in facts.get("initiatives") or [] if i.get("ready_tasks") and launchable_by_tick(i)), ""),
         "held": frozenset(facts.get("held_initiatives") or ()) | frozenset(facts.get("no_progress") or {}),
         "idle_raised": bool(idle.get("open_signature"))
         or any(a.get("kind") == "needs_chair" and a.get("cause") in IDLE_CAUSES for a in planned),

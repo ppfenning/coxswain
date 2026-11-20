@@ -3,6 +3,7 @@
 import json
 import re
 import shlex
+from collections.abc import Sequence
 
 from agent_tools.chair_login_watch import PROBE_CONNECT_TIMEOUT_S
 
@@ -129,9 +130,10 @@ def decompose_launch_argv(
     ]
 
 
-def rsync_file_argv(src_file: str, dest_dir_location: str) -> list[str]:
-    """One file, copied to the same relative path under the destination directory; `--relative` creates the parents."""
-    return ["rsync", *_RSYNC_BOUND_OPTIONS, "--relative", src_file, dest_dir_location.rstrip("/") + "/"]
+def rsync_file_argv(src_file: str, dest_dir_location: str, also: Sequence[str] = ()) -> list[str]:
+    """One file, and each of `also`, copied to the same relative path under the destination directory; `--relative`
+    creates the parents. No `--delete`: a file the destination holds beside them is never removed."""
+    return ["rsync", *_RSYNC_BOUND_OPTIONS, "--relative", src_file, *also, dest_dir_location.rstrip("/") + "/"]
 
 
 def cartridges_fetch_argv(sha: str, into: str) -> list[str]:

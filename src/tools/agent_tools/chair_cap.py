@@ -30,6 +30,13 @@ def cap_from_cartridge(text: str | None) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
 
+def lane_prereqs_from_cartridge(text: str | None) -> bool | None:
+    """`policy.dispatch.lane_prereqs`, the lane-host prerequisite gate: a bool (YAML reads `on` and `off` as one);
+    None when absent or any other value."""
+    value = _dispatch_key(text, "lane_prereqs")
+    return value if isinstance(value, bool) else None
+
+
 def local_lanes_from_cartridge(text: str | None) -> str | None:
     """`policy.dispatch.local_lanes` when it is one of LOCAL_LANES; None when absent or any other value."""
     value = _dispatch_key(text, "local_lanes")

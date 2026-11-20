@@ -127,12 +127,14 @@ class HostLanes(TypedDict):
 
 class DispatchFacts(TypedDict):
     """live_runs counts the local machine's live lanes; hosts holds each lane host in order, a capacity replacing max_in_flight for that host.
-    local_lanes "decompose" reserves the local lanes for intake decomposes; absent means "any"."""
+    local_lanes "decompose" reserves the local lanes for intake decomposes; absent means "any".
+    lane_prereqs False turns off the lane-host prerequisite gate (`lane_prereqs`); absent means on."""
 
     max_in_flight: int
     live_runs: int
     hosts: list[HostLanes]
     local_lanes: NotRequired[str]
+    lane_prereqs: NotRequired[bool]
 
 
 class ApprovedTask(TypedDict):
@@ -256,6 +258,7 @@ class InitiativeFacts(TypedDict):
     dag_problem: NotRequired[str]  # the first work-store DAG problem, e.g. "b needs x"; absent means valid
     land_at: NotRequired[str]  # the land_at (ticket, level or task) resolved this tick; old fixtures omit it
     phases: NotRequired[list[PhaseFacts]]  # the phases that can start a lane now; absent means none can, or the initiative's rows were not read
+    lane_model: NotRequired[str]  # `phase` when its row was stamped so at decompose (the tick loop never launches it); absent means `task`
 
 
 class QuarantineFacts(TypedDict):
@@ -799,6 +802,7 @@ class Action(TypedDict, total=False):
     connect and may write the hosts row. needs_chair carries either
     initiative and cause, or host and cause when the entry names a lane host rather than an
     initiative; when host is present cause is "login_lapsed" or "stale_checkout" and there is no initiative key.
+    A "lane_prereqs" needs_chair carries host and reason: the smoke-gate checks that host failed (`lane_prereqs`).
     A stale_checkout needs_chair also carries repo, the repo directory name keyed in the host's checkout_env record.
     review_landed carries initiative, phase, task_id, repo, url and merged_at. steer_clear carries
     initiative, other and paths: the launch of initiative is deferred because it shares paths with other.

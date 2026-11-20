@@ -70,7 +70,8 @@ def _probe_log(monkeypatch):
 
 def _assert_remote_launch(calls, out, ws):
     run_id = re.search(r"^run (\S+)$", out, re.MULTILINE).group(1)
-    assert calls[0] == rsync_file_argv(INTAKE, f"me@far:{FAR_WORKSPACE}")
+    # The stub the launch wrote goes with the intake, so the host's run reads the chair's lane_model back.
+    assert calls[0] == rsync_file_argv(INTAKE, f"me@far:{FAR_WORKSPACE}", ["work/demo2/initiative.md"])
     assert calls[-1] == ssh_argv("me@far", decompose_launch_argv(f"{FAR_WORKSPACE}/{INTAKE}", "demo2", run_id, "lbl"))
     record = json.loads((ws / "runs" / f"{run_id}.remote.json").read_text(encoding="utf-8"))
     assert record["host"] == "far" and record["graph"] == "decompose" and record["initiative"] == "demo2"
