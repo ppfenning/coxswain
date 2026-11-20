@@ -500,3 +500,18 @@ def test_gh_sends_no_telemetry_and_checks_for_no_update():
     assert (env["GH_TELEMETRY"], env["DO_NOT_TRACK"]) == ("0", "1")
     assert env["GH_NO_UPDATE_NOTIFIER"] == env["GH_NO_EXTENSION_UPDATE_NOTIFIER"] == "1"
     assert plan.gh_recording_name("test_x[a/b]") == "test_x-a-b.json"
+
+
+def test_a_shard_reads_k_of_n():
+    assert plan.parse_shard("2/3") == (2, 3)
+    for value in ("", "3", "0/3", "4/3", "a/3", "1/0", "-1/3"):
+        with pytest.raises(ValueError, match=plan.SHARD_ENV):
+            plan.parse_shard(value)
+
+
+def test_the_shards_partition_every_file_heaviest_first():
+    weights = {"smoke/test_a.py": 12, "smoke/test_b.py": 7, "smoke/test_c.py": 5, "smoke/test_d.py": 1, "smoke/test_e.py": 1}
+    shards = plan.shard_files(weights, 3)
+    assert shards == (("smoke/test_a.py",), ("smoke/test_b.py",), ("smoke/test_c.py", "smoke/test_d.py", "smoke/test_e.py"))
+    assert plan.shard_files(dict(reversed(weights.items())), 3) == shards  # the order the files came in does not matter
+
