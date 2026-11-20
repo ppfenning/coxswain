@@ -152,6 +152,8 @@ def alarm_event(action: Mapping) -> Event:
     as what it is, not as a stall."""
     stall, since = str(action.get("stall") or ""), str(action.get("since") or "")
     detail = str(action.get("detail") or "")
+    seq = action.get("seq") or 0
+    since = f"{since}:{seq}" if seq else since  # a stall raised again after it cleared pushes again
     if action.get("kind") == "stall_alarm" and stall.partition(":")[0] == NO_CAPACITY:
         return Event("stall", f"stall_alarm:{stall}:{since}", "No worker capacity", detail)
     if action.get("kind") == "stall_alarm":

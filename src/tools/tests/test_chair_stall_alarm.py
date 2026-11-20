@@ -216,11 +216,11 @@ _OPEN = {"no_land": {"since": _ts(7), "detail": "no land for 7.0h", "subject": "
 
 def test_a_standing_stall_is_raised_once_and_cleared_once():
     assert plan_alarms([_STALL], _facts(), _NOW) == [
-        {"kind": "stall_alarm", "stall": "no_land", "since": _ts(7), "subject": "alpha", "detail": "no land for 7.0h"}
+        {"kind": "stall_alarm", "stall": "no_land", "since": _ts(7), "subject": "alpha", "detail": "no land for 7.0h", "seq": 0}
     ]
     assert plan_alarms([_STALL], _facts(open=_OPEN), _NOW) == []
     assert plan_alarms([], _facts(open=_OPEN), _NOW) == [
-        {"kind": "stall_clear", "stall": "no_land", "since": _ts(7), "subject": "alpha", "detail": "cleared: no land for 7.0h"}
+        {"kind": "stall_clear", "stall": "no_land", "since": _ts(7), "subject": "alpha", "detail": "cleared: no land for 7.0h", "seq": 0}
     ]
     assert plan_alarms([], _facts(open=_OPEN), _NOW, paused=True) == []  # the hard stop judges no land at all
     assert plan_alarms([], _facts(), _NOW) == []
@@ -246,12 +246,12 @@ def test_a_broken_streak_is_cleared_aloud_and_a_quiet_one_expires_unsaid():
     opened = {_KEY: {"since": _ts(1), "detail": "land demo-t1 failed", "subject": "demo"}}
     broken = _facts(open=opened, heads={"repeat:land:demo-t1": {"failed": False, "reason": "", "ts": _ts(0.1)}})
     assert plan_alarms([], broken, _NOW) == [
-        {"kind": "stall_clear", "stall": _KEY, "since": _ts(1), "subject": "demo", "detail": "cleared: land demo-t1 failed"}
+        {"kind": "stall_clear", "stall": _KEY, "since": _ts(1), "subject": "demo", "detail": "cleared: land demo-t1 failed", "seq": 0}
     ]
     quiet = _facts(open=opened, heads={"repeat:land:demo-t1": {**_DIGEST_HEAD, "ts": _ts(3)}})
     assert plan_alarms([], quiet, _NOW) == [
         {"kind": "stall_clear", "stall": _KEY, "since": _ts(1), "subject": "demo", "detail": "expired: land demo-t1 failed",
-         "quiet": True}
+         "quiet": True, "seq": 0}
     ]
     standing = _facts(open=opened, heads={"repeat:land:demo-t1": _DIGEST_HEAD})
     assert plan_alarms([], standing, _NOW) == []  # the count dropped below the setting, but the streak is not broken

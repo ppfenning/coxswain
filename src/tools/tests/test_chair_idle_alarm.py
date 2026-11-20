@@ -13,20 +13,23 @@ import pytest
 
 from agent_tools import chair_exec, chair_facts, chair_read_record, cli, courier, run_store, store_cli
 from agent_tools.chair_plan import plan_tick
+from agent_tools.chair_read_idle_backlog import LAUNCH_KINDS, newest_progress
 from agent_tools.chair_stall_alarm import (
     DEFAULT_IDLE_MINUTES,
     held_items,
-    initiative_holds,
     notice_word,
     open_alarms,
+    plan_alarms,
     plan_stall_alarm,
     profile_settings,
     resolve_settings,
     stall_message_id,
+    told_counts,
+    work_holds,
     worker_capacity,
 )
 from agent_tools.notify_events import events_from_tick
-from agent_tools.route_profile import _parse_profile
+from agent_tools.route_profile import ProfileError, _parse_profile
 from harness.store_migrate import open_store
 
 _NOW = datetime(2026, 11, 20, 7, 30, tzinfo=UTC)
@@ -41,6 +44,12 @@ def _held(initiative: str, task: str, reason: str) -> dict:
     return {"initiative": initiative, "task_id": task, "phase": "p1", "reason": reason}
 
 
+def _task_row(held: dict, state: str = "blocked") -> dict:
+    """A store queue row of a task held for a person, as `work_holds` reads it."""
+    return {"kind": "task", "initiative": held["initiative"], "task_id": held["task_id"], "phase": held["phase"],
+            "state": state, "extra": {"hold_reason": held["reason"]}}
+
+
 _SPELL_START = _ts(11 * 60)
 _HELD = [_held("alpha", "t1", "needs you: platform defect A"), _held("alpha", "t2", "needs you: platform defect B"),
          _held("beta", "t3", "needs you: initiative hold")]
@@ -52,7 +61,8 @@ def _facts(*, rows=(), held=_HELD, live=0, hosts=(), max_in_flight=5, progress=N
     alarm = {
         "settings": {**resolve_settings(None), "idle_minutes": float(minutes)},
         "last_land_at": None, "open_initiatives": {}, "last_launch_at": None, "watch_since": watch,
-        "heads": {}, "streaks": [], "open": open_alarms(list(rows)), "stranded": {}, "holds": over.pop("holds", []),
+        "heads": {}, "streaks": [], "open": open_alarms(list(rows)), "told": told_counts(list(rows)), "stranded": {},
+        "holds": [*work_holds([_task_row(h) for h in held]), *over.pop("holds", [])], "local_host": "chair-host",
     }
     return {
         "stall_alarm": alarm,
@@ -60,7 +70,6 @@ def _facts(*, rows=(), held=_HELD, live=0, hosts=(), max_in_flight=5, progress=N
                        "last_progress_at": progress},
         "dispatch": {"max_in_flight": max_in_flight, "live_runs": live, "hosts": list(hosts)},
         "login_hosts": list(login_hosts),
-        "held_tasks": list(held),
         "initiatives": [],
         **over,
     }
@@ -142,12 +151,50 @@ def test_progress_ends_the_spell_quietly_and_the_next_spell_is_told_again():
     assert [(a["kind"], a["stall"], a.get("quiet")) for a in actions] == [
         ("stall_alarm", f"idle_held:{_ts(120, later)}", None), ("stall_clear", f"idle_held:{_ts(11 * 60)}", True)]
     assert events_from_tick({}, [actions[1]]) == []  # a quiet clear pushes nothing
-    busy = plan_stall_alarm(_facts(rows=rows, live=1), [], later)
-    assert [(a["kind"], a.get("quiet")) for a in busy] == [("stall_clear", True)]
+
+
+def test_a_busy_blip_with_no_progress_pauses_the_spell_and_neither_ends_nor_retells_it():
+    rows = _recorded(plan_stall_alarm(_facts(), [], _NOW))
+    later = _NOW + timedelta(hours=2)
+    # a lane comes up and dies before its first model call; a land is attempted and refused: neither is progress
+    for busy in ({"live": 1}, {"running": [{"initiative": "alpha"}]}, {"landing": [{"initiative": "alpha"}]}):
+        assert plan_stall_alarm(_facts(rows=rows, **busy), [], later) == []
+    assert plan_stall_alarm(_facts(rows=rows), [], later + timedelta(minutes=5)) == []  # idle again: still told
+    rows_seen = [{"kind": "retry", "status": "done", "ts": _ts(5)}, {"kind": "land", "status": "refused", "ts": _ts(1)},
+                 {"kind": "launch_epic", "status": "failed", "ts": _ts(2)}]
+    assert newest_progress(rows_seen, {*LAUNCH_KINDS, "land"}) == "2026-11-20T07:25:00+00:00"
+    assert {"relaunch", "retry", "rescue"} <= LAUNCH_KINDS
+
+
+def test_a_stall_raised_again_after_it_cleared_is_a_new_courier_message_and_a_retry_is_not():
+    since = _ts(400)
+    standing = [{"key": "no_land", "since": since, "subject": "alpha", "detail": "no land"}]
+    facts = _facts()["stall_alarm"]
+    (first,) = plan_alarms(standing, facts, _NOW)
+    retried = plan_alarms(standing, {**facts, "told": told_counts([{**first, "status": "failed", "ts": _ts(3)}])}, _NOW)
+    assert retried == [first]  # a failed write is planned again with the same seq, so the same courier id
+    rows = [{**first, "status": "done", "ts": _ts(3)}, {**first, "kind": "stall_clear", "status": "done", "ts": _ts(2)}]
+    (again,) = plan_alarms(standing, {**facts, "open": open_alarms(rows), "told": told_counts(rows)}, _NOW)
+    assert (first["seq"], again["seq"], again["since"]) == (0, 1, since)  # no land in between: `since` did not move
+    ids = {stall_message_id(a["kind"], a["stall"], a["since"], a["seq"]) for a in (first, again)}
+    assert len(ids) == 2
+    assert len({e.key for e in events_from_tick({}, [first, again])}) == 2  # and each pushes
+
+
+def test_work_holds_reads_the_hold_reasons_the_chair_and_triage_actually_write():
+    rows = [
+        _task_row(_held("alpha", "t1", "needs you: triage platform_defect: the lane image lacks a tool"), "quarantined"),
+        _task_row(_held("alpha", "t2", "needs you: no progress: runs alpha-3, alpha-4 ended the same way"), "blocked"),
+        _task_row(_held("alpha", "t3", "a reason without the mark"), "blocked"),
+        _task_row(_held("alpha", "t4", "needs you: but it is ready again"), "ready"),
+    ]
+    assert [(h["item"], h["release"]) for h in work_holds(rows)] == [
+        ("t1 in alpha", "cox route edit t1 --initiative alpha --state ready"),
+        ("t2 in alpha", "cox route edit t2 --initiative alpha --state ready")]
 
 
 def test_held_items_lists_tasks_then_initiatives_then_no_progress_holds():
-    holds = initiative_holds([
+    holds = work_holds([_task_row(_HELD[0]),
         {"kind": "initiative", "task_id": "gamma", "initiative": "gamma", "state": "ready",
          "extra": {"held": True, "hold_reason": "needs you: waiting on a design call"}},
         {"kind": "intake", "task_id": "in-1", "state": "queued", "extra": {"initiative": "delta", "stage": "draft"}},
@@ -155,22 +202,28 @@ def test_held_items_lists_tasks_then_initiatives_then_no_progress_holds():
         {"kind": "initiative", "task_id": "zeta", "initiative": "zeta", "state": "ready", "extra": {}},
     ])
     assert [(h["item"], h["release"]) for h in holds] == [
+        ("t1 in alpha", "cox route edit t1 --initiative alpha --state ready"),
         ("intake in-1 for delta", "cox route release in-1"), ("gamma", "cox route release gamma")]
-    assert holds[1]["reason"] == "needs you: waiting on a design call"
-    found = held_items(_HELD[:1], holds, {"gamma": {"reason": "dup"}, "omega": {"reason": "needs you: no progress"}})
+    assert holds[2]["reason"] == "needs you: waiting on a design call"
+    found = held_items(holds, {"gamma": {"reason": "dup"}, "omega": {"reason": "needs you: no progress"}})
     assert [h["item"] for h in found] == ["t1 in alpha", "intake in-1 for delta", "gamma", "omega"]
     assert found[-1]["release"] == "cox route release omega"
-    (alarm,) = plan_stall_alarm(_facts(held=[], holds=holds), [], _NOW)
+    (alarm,) = plan_stall_alarm(_facts(held=[], holds=holds[1:]), [], _NOW)
     assert "`cox route release gamma`" in alarm["detail"] and alarm["subject"] == "delta"
 
 
-def test_worker_capacity_counts_the_local_cap_and_every_host_that_is_not_draining():
+def test_worker_capacity_counts_only_the_active_hosts_placement_uses_and_local_lanes_that_take_epics():
     dispatch = {"max_in_flight": 2, "live_runs": 0,
                 "hosts": [{"name": "lane-a", "live_runs": 0, "capacity": 3}, {"name": "lane-b", "live_runs": 0}]}
-    assert worker_capacity(dispatch, []) == 2 + 3 + 2
-    assert worker_capacity(dispatch, [{"name": "lane-a", "state": "draining"}]) == 2 + 2
-    assert worker_capacity({**dispatch, "max_in_flight": 0, "hosts": []}, []) == 0
-    assert worker_capacity(None, []) == 0
+    active = [{"name": n, "state": "active"} for n in ("me", "lane-a", "lane-b")]
+    assert worker_capacity(dispatch, active, "me") == 2 + 3 + 2
+    assert worker_capacity(dispatch, [], "me") == 2 + 3 + 2  # no hosts table: the profile's cap and hosts
+    assert worker_capacity(dispatch, [*active[:2], {"name": "lane-b", "state": "deploy_only"}], "me") == 2 + 3
+    assert worker_capacity(dispatch, [{"name": "lane-a", "state": "draining"}], "me") == 2 + 2
+    assert worker_capacity(dispatch, [{"name": "me", "state": "draining"}, *active[1:]], "me") == 3 + 2
+    assert worker_capacity({**dispatch, "local_lanes": "decompose"}, active, "me") == 3 + 2
+    assert worker_capacity({**dispatch, "max_in_flight": 0, "hosts": []}, [], "me") == 0
+    assert worker_capacity(None, [], "me") == 0
 
 
 def test_the_setting_is_a_cartridge_profile_key_with_a_one_hour_default():
@@ -181,10 +234,23 @@ def test_the_setting_is_a_cartridge_profile_key_with_a_one_hour_default():
     assert profile_settings(None) == {}
 
 
+def test_the_documented_nested_stall_alarm_block_parses():
+    text = ("team: smoke\nchair:\n  stall_alarm:\n    land_hours: 6\n    launch_minutes: 60\n    repeat_ticks: 3\n"
+            "    stranded_minutes: 30\n    idle_minutes: 45\n  idle_stall_minutes: 15\n")
+    profile, _ = _parse_profile(text)
+    assert profile["chair"]["idle_stall_minutes"] == 15.0
+    settings = resolve_settings(profile_settings(profile["chair"]))
+    assert settings == {"land_hours": 6.0, "launch_minutes": 60.0, "repeat_ticks": 3, "stranded_minutes": 30.0,
+                        "idle_minutes": 45.0}
+    with pytest.raises(ProfileError):
+        _parse_profile("chair:\n  stall_alarm:\n    not_a_key: 1\n")
+
+
 def test_a_stall_message_id_is_the_same_for_the_same_action_and_differs_otherwise():
-    one = stall_message_id("stall_alarm", "idle_held:x", "x")
-    assert one == stall_message_id("stall_alarm", "idle_held:x", "x")
-    assert one != stall_message_id("stall_clear", "idle_held:x", "x") != stall_message_id("stall_alarm", "idle_held:y", "y")
+    one = stall_message_id("stall_alarm", "idle_held:x", "x", 0)
+    assert one == stall_message_id("stall_alarm", "idle_held:x", "x", 0)
+    assert one != stall_message_id("stall_clear", "idle_held:x", "x", 0) != stall_message_id("stall_alarm", "idle_held:y", "y", 0)
+    assert one != stall_message_id("stall_alarm", "idle_held:x", "x", 1)
 
 
 # --- end to end: the chair's real gather, plan and executor over a throwaway store ---
@@ -251,7 +317,7 @@ def test_end_to_end_held_work_on_an_idle_chair_writes_one_courier_entry_naming_e
     assert raised["stall"] == f"idle_held:{stamp}"
     (entry,) = _courier(ws)
     assert entry["event"] == "stall_raised" and str(entry["note"]).startswith("stall: the chair is idle with work held")
-    assert entry["id"] == stall_message_id("stall_alarm", raised["stall"], stamp)
+    assert entry["id"] == stall_message_id("stall_alarm", raised["stall"], stamp, 0)
     assert [h["release"] for h in entry["fields"]["held"]] == [
         "cox route edit t1 --initiative alpha --state ready", "cox route edit t2 --initiative beta --state ready"]
     assert _tick(ws) == [] and _tick(ws) == []  # told once: the recorded row marks the spell told

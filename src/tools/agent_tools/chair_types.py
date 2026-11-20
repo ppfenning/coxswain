@@ -860,6 +860,7 @@ class Action(TypedDict, total=False):
     detail: str  # a stall_alarm or stall_clear: what stalled, in words; the recorded reason is the executor's own
     quiet: bool  # a stall_clear for a same-failure streak that went quiet, or for an idle spell that ended: it closes the stall and tells no one
     held: list[HeldItem]  # an idle_held stall_alarm: each held item, its hold reason and the command that releases it
+    seq: int  # a stall_alarm or stall_clear: how many of its kind the stall was told in before (chair_stall_alarm.told_counts)
     carry: list[str]  # the phases a clear_branches keeps and merges main into
     url: str  # a review_landed names the review PR
     merged_at: str | None  # a review_landed names when that PR merged

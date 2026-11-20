@@ -273,8 +273,9 @@ def _stall_alarm(action: Action, deps: Deps) -> Result:
 
     The recorded row of this action is what marks the stall raised or cleared: the next tick's facts read it back
     (`chair_stall_alarm.open_alarms`), so a stall is raised once and cleared once. The row is recorded only after this
-    entry is written, and the entry's id is the stall's own (`stall_message_id`), so a tick re-run after a write whose
-    row was lost appends the same message again, which the inbox folds into one. A `quiet` clear writes no entry. A
+    entry is written, and the entry's id is this raise's or clear's own (`stall_message_id`, with the action's `seq`), so
+    a tick re-run after a write whose row was lost appends the same message again, which the inbox folds into one, and
+    a stall raised again after it cleared is a new message. A `quiet` clear writes no entry. A
     failed write records `failed`, and the next tick plans it again."""
     raised = action["kind"] == "stall_alarm"
     stall, subject, since = action.get("stall", ""), action.get("subject", ""), action.get("since", "")
@@ -288,7 +289,7 @@ def _stall_alarm(action: Action, deps: Deps) -> Result:
         fields["held"] = held
     entry = courier.send(
         courier.Reference("initiative", subject or stall), deps.label or "chair", deps.note_to, note,
-        stall_message_id(action["kind"], stall, since),
+        stall_message_id(action["kind"], stall, since, action.get("seq", 0)),
         event="stall_raised" if raised else "stall_cleared", fields=fields, topic=subject or None,
     )
     try:

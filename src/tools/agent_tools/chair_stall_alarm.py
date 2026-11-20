@@ -16,13 +16,15 @@ Four checks, each a fact the chair already has:
   time its row was first seen (the task's last change, else the chair's first recorded action). It clears when the row
   is gone. Nothing launches and nothing fails for such a task, so the other three stay quiet.
 - **idle**: the chair has had no live lane and no land in progress for `idle_minutes`, counted from its last progress
-  (the newest launch, land or model call, `idle_stall.last_progress_at`) or its first recorded action, whichever is
-  later. With work held for a person it raises `idle_held:<since>`, naming each held item, its hold reason and the
-  command that releases it. With nothing held and no worker capacity (every lane host drained, or none configured) it
-  raises `no_capacity:<since>` instead: idle on purpose is a notice, not a stall. Ready work with free lanes is the
-  no-launch check's. One idle alarm per spell: while one is raised and no progress has come since its start, the spell
-  stands, whatever is held, and nothing more is raised. The spell ends when a lane is live, a land is in progress, or
-  progress is newer than its start; its alarm then closes quietly, since the operator's own release ended it.
+  (the newest launch or land that went out, or model call: `idle_stall.last_progress_at`) or its first recorded
+  action, whichever is later. A chair restarted long after its last progress has no fresh start to count from, so it
+  raises on its first tick. With work held for a person it raises `idle_held:<since>`, naming each held item, its hold
+  reason and the command that releases it. With nothing held and no worker capacity (`worker_capacity` is 0) it raises
+  `no_capacity:<since>` instead: idle on purpose is a notice, not a stall. Ready work with free lanes is the no-launch
+  check's. One idle alarm per spell: a spell ends only on progress newer than its start. A live lane or a land in
+  progress pauses it (nothing is raised while busy) but does not end it, so a lane that dies before its first model
+  call does not make a second spell. Once progress ends it, its alarm closes quietly, and the next spell starts at that
+  progress, so its key is new.
 
 A stall raises one `stall_alarm` and, once its check no longer holds, one `stall_clear`, the all-clear. A same-failure
 stall is cleared only when its streak breaks: the action succeeds or fails another way. A streak that goes quiet
@@ -65,6 +67,7 @@ _NOT_ATTEMPTS = frozenset({*ALARM_KINDS, "needs_chair"})  # rows that report on 
 _OPEN_EXCLUDED = frozenset({"landed", "draft"})
 _NUMBER = re.compile(r"\d+")
 _REASON_CHARS = 200
+_HELD_TASK_STATES = frozenset({"blocked", "quarantined"})  # a task held for a person, its move to blocked done or not
 
 
 class Settings(TypedDict):
@@ -123,8 +126,10 @@ class StallFacts(TypedDict):
     heads: dict[str, Head]  # `repeat:<kind>:<target>` -> that action's newest attempt
     streaks: list[Streak]
     open: dict[str, OpenAlarm]
+    told: dict[str, int]  # `<kind>|<stall>` -> its done alarm rows (`told_counts`): a courier id's sequence
     stranded: dict[str, str]  # stranded task with no live run -> when its row was first seen ("" when unknown)
-    holds: list[HeldItem]  # initiatives held for a person on their own row or by a held intake (`initiative_holds`)
+    holds: list[HeldItem]  # the work held for a person in the store (`work_holds`)
+    local_host: str  # the chair's own host name, whose hosts-table row says whether its own lanes count
 
 
 class Stall(TypedDict):
@@ -147,7 +152,7 @@ class Gate(TypedDict):
     idle_raised: bool  # the chair's own idle-lanes line stands this tick
     paused: bool  # the hard stop
     busy: bool  # a lane is live on some machine or a land is in progress; lanes the facts do not show read as busy
-    capacity: int  # the lanes the chair could fill: the local cap plus each lane host's that is not draining
+    capacity: int  # the lanes the chair could fill for epics (`worker_capacity`)
     held_items: list[HeldItem]  # every task and initiative held for a person (`held_items`)
     progress_at: str | None  # the newest launch, land or model call (`idle_stall.last_progress_at`)
 
@@ -317,6 +322,17 @@ def open_alarms(docs: Sequence[Mapping[str, object]]) -> dict[str, OpenAlarm]:
     return opened
 
 
+def told_counts(docs: Sequence[Mapping[str, object]]) -> dict[str, int]:
+    """How many times each stall was told, by `<kind>|<stall>`: its done raise and clear rows. A failed attempt is not
+    counted, so its retry gets the same courier id; the next raise of a key that cleared counts one more, a new id."""
+    counts: dict[str, int] = {}
+    for d in docs:
+        if d.get("kind") in ALARM_KINDS and d.get("status") == "done" and d.get("stall"):
+            told = f"{d['kind']}|{d['stall']}"
+            counts[told] = counts.get(told, 0) + 1
+    return counts
+
+
 def _extra(row: Mapping[str, object]) -> Mapping[str, object]:
     extra = row.get("extra")
     return extra if is_mapping(extra) else {}
@@ -326,17 +342,32 @@ def _one_line(text: object, default: str) -> str:
     return " ".join(str(text or "").split()) or default
 
 
-def initiative_holds(rows: Sequence[Mapping[str, object]]) -> list[HeldItem]:
-    """The initiatives held for a person, from the store's queue rows, as `release_gate.held_initiatives` reads them: an
-    initiative row that is held, and a non-removed held intake that names an initiative not held on its own row. Each
-    is released with `cox route release`, of the initiative or of the intake that holds it. In initiative order."""
-    from agent_tools.intake_queue import is_held  # lazy: only the idle alarm reads holds off the queue rows
+def task_release(initiative: str, task: str) -> str:
+    """The command that sets a held task back to ready, as `chair_remedy.set_state_argv` spells it, on one line."""
+    return " ".join(["cox", "route", "edit", task, *(["--initiative", initiative] if initiative else []), "--state", "ready"])
 
+
+def work_holds(rows: Sequence[Mapping[str, object]]) -> list[HeldItem]:
+    """The work held for a person, from the store's queue rows. First each task whose hold reason carries the
+    `needs you:` mark and whose state is `blocked` or `quarantined`: a triage hold writes the reason before it moves
+    the task, so a task whose move did not land is held all the same. Then each initiative held on its own row, and
+    each non-removed held intake that names an initiative not held on its own row (`release_gate.held_initiatives`),
+    released with `cox route release`. Tasks in row order, initiatives in initiative order."""
+    from agent_tools.intake_queue import is_held  # lazy: only the idle alarm reads holds off the queue rows
+    from core.workstore import HOLD_MARK, HOLD_REASON  # lazy: core sits beside agent_tools in one venv
+
+    tasks: list[HeldItem] = []
+    for r in rows:
+        reason = _one_line(_extra(r).get(HOLD_REASON), "")
+        if r.get("kind") == "task" and r.get("state") in _HELD_TASK_STATES and reason.startswith(HOLD_MARK):
+            initiative, task = str(r.get("initiative") or ""), str(r.get("task_id") or "")
+            tasks.append({"item": f"{task} in {initiative}", "initiative": initiative, "reason": reason,
+                          "release": task_release(initiative, task)})
     own = {
         str(r.get("initiative") or r.get("task_id") or ""): _one_line(_extra(r).get("hold_reason"), "held, no reason given")
         for r in rows if r.get("kind") == "initiative" and is_held(_extra(r))
     }
-    found: list[HeldItem] = [
+    initiatives: list[HeldItem] = [
         {"item": i, "initiative": i, "reason": reason, "release": f"cox route release {i}"} for i, reason in own.items() if i
     ]
     for r in rows:
@@ -345,35 +376,22 @@ def initiative_holds(rows: Sequence[Mapping[str, object]]) -> list[HeldItem]:
         if r.get("kind") != "intake" or r.get("state") == "removed" or not named or named in own or not is_held(extra):
             continue
         intake = str(r.get("task_id") or "")
-        found.append({"item": f"intake {intake} for {named}", "initiative": named,
-                      "reason": _one_line(extra.get("hold_reason"), "held, no reason given"),
-                      "release": f"cox route release {intake}"})
-    return sorted(found, key=lambda h: (h["initiative"], h["item"]))
+        initiatives.append({"item": f"intake {intake} for {named}", "initiative": named,
+                            "reason": _one_line(extra.get("hold_reason"), "held, no reason given"),
+                            "release": f"cox route release {intake}"})
+    return [*tasks, *sorted(initiatives, key=lambda h: (h["initiative"], h["item"]))]
 
 
-def task_release(initiative: str, task: str) -> str:
-    """The command that sets a held task back to ready, as `chair_remedy.set_state_argv` spells it, on one line."""
-    return " ".join(["cox", "route", "edit", task, *(["--initiative", initiative] if initiative else []), "--state", "ready"])
-
-
-def held_items(
-    tasks: Sequence[Mapping[str, object]], initiatives: Sequence[HeldItem], no_progress: Mapping[str, object]
-) -> list[HeldItem]:
-    """Every piece of work held for a person: each held task (`Facts.held_tasks`), then each held initiative, then each
-    initiative `no_progress` holds this tick that is not held already, each with its own hold reason."""
-    held: list[HeldItem] = [
-        {"item": f"{t.get('task_id')} in {t.get('initiative')}", "initiative": str(t.get("initiative") or ""),
-         "reason": _one_line(t.get("reason"), "held, no reason given"),
-         "release": task_release(str(t.get("initiative") or ""), str(t.get("task_id")))}
-        for t in tasks if t.get("task_id")
-    ]
-    named = {h["initiative"] for h in initiatives}
+def held_items(holds: Sequence[HeldItem], no_progress: Mapping[str, object]) -> list[HeldItem]:
+    """Every piece of work held for a person: the store's holds (`work_holds`), then each initiative `no_progress`
+    holds this tick that is not held on its row already, with its own hold reason."""
+    named = {h["item"] for h in holds}
     pending: list[HeldItem] = [
         {"item": i, "initiative": i, "reason": _one_line(entry.get("reason") if is_mapping(entry) else None, "no progress"),
          "release": f"cox route release {i}"}
         for i, entry in sorted(no_progress.items()) if i not in named
     ]
-    return [*held, *initiatives, *pending]
+    return [*holds, *pending]
 
 
 def stall_facts(
@@ -382,10 +400,11 @@ def stall_facts(
     docs: Sequence[Mapping[str, object]],
     stranded: Mapping[str, str] | None = None,
     holds: Sequence[HeldItem] = (),
+    local_host: str = "",
 ) -> StallFacts:
     """Everything the checks read: the landing records' land facts, the action rows' launches, first row, attempt
-    heads, failure streaks and open alarms, `stranded`, each stranded task's first-seen time, and `holds`, the
-    initiatives held for a person (`initiative_holds`)."""
+    heads, failure streaks, open alarms and told counts, `stranded`, each stranded task's first-seen time, `holds`,
+    the work held for a person (`work_holds`), and `local_host`, the chair's own host name."""
     last_land, initiatives = land_facts(records)
     return {
         "settings": settings,
@@ -396,8 +415,10 @@ def stall_facts(
         "heads": attempt_heads(docs),
         "streaks": failure_streaks(docs, settings["repeat_ticks"]),
         "open": open_alarms(docs),
+        "told": told_counts(docs),
         "stranded": dict(stranded or {}),
         "holds": list(holds),
+        "local_host": local_host,
     }
 
 
@@ -473,19 +494,22 @@ def held_text(held: Sequence[HeldItem]) -> str:
 def idle_spell(facts: StallFacts, gate: Gate, now: datetime) -> list[Stall]:
     """The idle alarm standing now: the one already raised for this spell; else, once the chair has been idle for
     `idle_minutes`, `idle_held` when work is held for a person, or `no_capacity` when nothing is held and there are no
-    lanes to fill. None while busy, under the hard stop, with the check off, or with no time to count from."""
+    lanes to fill. A told spell stands while busy or under the hard stop, which pause it; only progress ends it. Nothing
+    new is raised while busy, under the hard stop, with the check off, or with no time to count from."""
     minutes = facts["settings"]["idle_minutes"]
-    if minutes <= 0 or gate["paused"] or gate["busy"]:
+    if minutes <= 0:
         return []
     told = told_spell(facts["open"], gate["progress_at"])
     if told is not None:
         return [told]
+    if gate["paused"] or gate["busy"]:
+        return []
     since = _newest([gate["progress_at"], facts["watch_since"]])
     start = parse_ts(since)
     if since is None or start is None or now - start < timedelta(minutes=minutes):
         return []
     held = gate["held_items"]
-    spell = f"no live lane and no land in progress for {_hours(now - start)}, since {since}"
+    spell = f"no launch, land or model call for {_hours(now - start)}, since {since}, and no lane is live"
     if held:
         lanes = ", and no worker capacity either" if gate["capacity"] <= 0 else ""
         return [{"key": f"{IDLE_HELD}:{since}", "since": since, "subject": held[0]["initiative"] or held[0]["item"],
@@ -499,10 +523,11 @@ def idle_spell(facts: StallFacts, gate: Gate, now: datetime) -> list[Stall]:
     return []
 
 
-def stall_message_id(kind: str, stall: str, since: str) -> str:
-    """The courier id of one stall's raise or clear: the same action always gets the same id, so a re-sent entry is
-    folded into the first by the inbox (last line per id wins) and read once."""
-    return "stall-" + hashlib.sha1(f"{kind}|{stall}|{since}".encode()).hexdigest()[:24]
+def stall_message_id(kind: str, stall: str, since: str, seq: int) -> str:
+    """The courier id of one stall's raise or clear. `seq` is how many times that kind of row was already told for the
+    stall (`told_counts`): a retry of a failed write gets the same id, which the inbox folds into one (last line per id
+    wins), and a stall raised again after it cleared gets a new id, with no acks carried over."""
+    return "stall-" + hashlib.sha1(f"{kind}|{stall}|{since}|{seq}".encode()).hexdigest()[:24]
 
 
 def notice_word(stall: str, raised: bool) -> str:
@@ -562,9 +587,11 @@ def plan_alarms(standing: Sequence[Stall], facts: StallFacts, now: datetime, pau
     stall_clear: the all-clear, or, for a same-failure stall that only went quiet, a `quiet` one that closes it unsaid.
     An idle spell's alarm closes quietly too: the operator's own release ended it, and telling them so is noise.
     Under the hard stop (`paused`) a raised no-land, no-launch or idle stall is not judged, so it is neither cleared nor
-    raised. An idle_held raise carries its held items."""
+    raised. An idle_held raise carries its held items. Each action carries `seq`, how many rows of its kind the stall
+    was told in already (`told_counts`), which keeps its courier id its own (`stall_message_id`)."""
     keys = {s["key"] for s in standing}
     opened = facts["open"]
+    told = facts.get("told") or {}
     from agent_tools.chair_types import ActionKind  # chair_types imports this module, so a top-level import is a cycle
 
     raised: list[Action] = []
@@ -572,7 +599,7 @@ def plan_alarms(standing: Sequence[Stall], facts: StallFacts, now: datetime, pau
         if s["key"] in opened:
             continue
         action: Action = {"kind": ActionKind.STALL_ALARM, "stall": s["key"], "since": s["since"], "subject": s["subject"],
-                          "detail": s["detail"]}
+                          "detail": s["detail"], "seq": told.get(f"{RAISE}|{s['key']}", 0)}
         if "held" in s:
             action["held"] = list(s["held"])
         raised.append(action)
@@ -589,7 +616,7 @@ def plan_alarms(standing: Sequence[Stall], facts: StallFacts, now: datetime, pau
         quiet = ending == "quiet"
         clear: Action = {
             "kind": ActionKind.STALL_CLEAR, "stall": key, "since": alarm["since"], "subject": alarm["subject"],
-            "detail": f"{'expired' if quiet else 'cleared'}: {alarm['detail']}",
+            "detail": f"{'expired' if quiet else 'cleared'}: {alarm['detail']}", "seq": told.get(f"{CLEAR}|{key}", 0),
         }
         if quiet:
             clear["quiet"] = True
@@ -612,16 +639,26 @@ def is_busy(facts: Facts) -> bool:
     )
 
 
-def worker_capacity(dispatch: Mapping[str, object] | None, login_hosts: Collection[Mapping[str, object]]) -> int:
-    """The lanes the chair could fill: the local cap, plus each lane host's own capacity (else the local cap) for a
-    host whose hosts-table row is not `draining`. 0 means every host is drained or none is configured."""
+def worker_capacity(
+    dispatch: Mapping[str, object] | None, login_hosts: Collection[Mapping[str, object]], local_host: str
+) -> int:
+    """The lanes the chair could fill with epics, from the hosts placement uses. The local cap counts when this
+    machine's own hosts-table row is `active` (or it has none, as a chair with no hosts table runs on its profile's cap)
+    and its lanes are not kept for decomposes (`local_lanes`). A lane host counts its own capacity, else the local cap,
+    when its row is `active`, or when it has no row, as a host named only by the profile. 0 means every host is
+    drained or none is configured."""
     if not dispatch:
         return 0
-    drained = {str(r.get("name") or "") for r in login_hosts if r.get("state") == "draining"}
-    local = _count(dispatch.get("max_in_flight"))
+    states = {str(r.get("name") or ""): str(r.get("state") or "") for r in login_hosts}
+
+    def counts(name: str) -> bool:
+        return states.get(name, "active") == "active"
+
+    cap = _count(dispatch.get("max_in_flight"))
+    local = cap if counts(local_host) and dispatch.get("local_lanes", "any") != "decompose" else 0
     hosts = dispatch.get("hosts")
     remote = [h for h in hosts if is_mapping(h)] if is_list(hosts) else []
-    return local + sum(_count(h.get("capacity", local)) for h in remote if str(h.get("name") or "") not in drained)
+    return local + sum(_count(h.get("capacity", cap)) for h in remote if counts(str(h.get("name") or "")))
 
 
 def _count(value: object) -> int:
@@ -635,7 +672,7 @@ def plan_stall_alarm(
     """The tick's alarm actions from `facts["stall_alarm"]` (none without it), `facts["idle_stall"]`'s free lanes,
     ready count and open idle line, the held initiatives, and the tick's planned actions, which say whether the chair's
     own idle line goes out this tick. `launch_paused` is the hard stop. The idle check reads the lanes and lands in
-    progress (`is_busy`), the worker capacity (`worker_capacity`), the held tasks, initiatives and no-progress holds
+    progress (`is_busy`), the worker capacity (`worker_capacity`), the store's holds and this tick's no-progress holds
     (`held_items`), and the idle-stall inputs' last progress."""
     alarm = facts.get("stall_alarm")
     if not alarm:
@@ -644,8 +681,8 @@ def plan_stall_alarm(
     progress = idle.get("last_progress_at")
     gate: Gate = {
         "busy": is_busy(facts),
-        "capacity": worker_capacity(facts.get("dispatch"), facts.get("login_hosts") or ()),
-        "held_items": held_items(facts.get("held_tasks") or [], alarm.get("holds") or [], facts.get("no_progress") or {}),
+        "capacity": worker_capacity(facts.get("dispatch"), facts.get("login_hosts") or (), alarm.get("local_host") or ""),
+        "held_items": held_items(alarm.get("holds") or [], facts.get("no_progress") or {}),
         "progress_at": str(progress) if progress else None,
         "free_lanes": _count(idle.get("free_lanes")),
         "ready": _count(idle.get("ready")) + _count(idle.get("queued")),
