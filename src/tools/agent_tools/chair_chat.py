@@ -3,32 +3,15 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from functools import reduce
-from typing import Literal, NotRequired, TypedDict
+from typing import Literal, NotRequired, TypedDict, TypeGuard, cast
 
+from agent_tools.chair_types import EpicView, ViewTask
 from agent_tools.courier import Reference, send
+from core.jsontypes import is_dict
 
 BodyKind = Literal["directive", "question"]
-TaskState = Literal["ready", "approved", "done", "quarantined", "dropped", "building"]
-
-
-class ViewTask(TypedDict):
-    id: str
-    state: TaskState
-
-
-class ViewLevel(TypedDict):
-    phase: str
-    tasks: list[ViewTask]
-
-
-class EpicView(TypedDict):
-    """One initiative as an answer reads it: its tasks by phase, and whether its last run has exited."""
-
-    epic_id: str
-    levels: list[ViewLevel]
-    exited: bool
 
 
 class PlannedAction(TypedDict):
@@ -73,7 +56,14 @@ class DirectiveState(TypedDict):
     cut_release: str  # the version asked for, "" when none
 
 
-Event = dict[str, object]
+class Event(TypedDict):
+    """One publish event `apply_directives` returns: the courier event name and its flat string fields."""
+
+    kind: str
+    topic: str
+    event: str
+    fields: dict[str, str]
+    key: str
 
 
 def empty_state() -> DirectiveState:
@@ -82,7 +72,7 @@ def empty_state() -> DirectiveState:
 
 # A chat message rides a courier entry: topic is the label, event is chat_directive or chat_question,
 # and the flat string payload is the entry's `fields`. courier.send validates the event name.
-def build_message(sender: str, body_kind: BodyKind, payload: dict[str, str], message_id: str, ref: Reference) -> dict:
+def build_message(sender: str, body_kind: BodyKind, payload: dict[str, str], message_id: str, ref: Reference) -> dict[str, object]:
     note = f"{body_kind}: {payload.get('kind', '')}"
     return send(ref, sender, "chair", note, message_id, event=_EVENT_FOR[body_kind], fields=payload, topic=LABEL)
 
@@ -91,23 +81,26 @@ def _text(value: object) -> bool:
     return isinstance(value, str) and value.strip() != ""
 
 
-def _strings(value: object) -> bool:
-    return isinstance(value, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in value.items())
+def _strings(value: object) -> TypeGuard[dict[str, str]]:
+    if not isinstance(value, dict):
+        return False
+    items = cast(dict[object, object], value)
+    return all(isinstance(k, str) and isinstance(v, str) for k, v in items.items())
 
 
 def parse_message(entry: object) -> ChatMessage | None:
     """The chat message in a courier entry, or None when the entry is not a well-formed one."""
-    if not isinstance(entry, dict):
+    if not is_dict(entry):
         return None
     event, sender, id_, fields = entry.get("event"), entry.get("from"), entry.get("id"), entry.get("fields")
     body_kind = _BODY_FOR.get(event) if isinstance(event, str) else None
     well_formed = entry.get("topic") == LABEL and body_kind is not None and _text(sender) and _text(id_)
-    if well_formed and _strings(fields):
+    if body_kind is not None and well_formed and _strings(fields):
         return {"id": str(id_), "sender": str(sender), "body_kind": body_kind, "payload": dict(fields)}
     return None
 
 
-def _get(payload: dict, key: str) -> str:
+def _get(payload: Mapping[str, object], key: str) -> str:
     value = payload.get(key)
     return value.strip() if isinstance(value, str) else ""
 
@@ -116,28 +109,28 @@ def _refusal(checks: Sequence[tuple[bool, str]]) -> str | None:
     return next((reason for ok, reason in checks if not ok), None)
 
 
-def _has_target(p: dict) -> list[tuple[bool, str]]:
+def _has_target(p: Mapping[str, object]) -> list[tuple[bool, str]]:
     return [
         (_get(p, "target_kind") in _TARGET_KINDS, "target_kind must be initiative or task"),
         (_get(p, "target") != "", "target is required"),
     ]
 
 
-def _rank_ok(p: dict) -> bool:
+def _rank_ok(p: Mapping[str, object]) -> bool:
     rank = _get(p, "rank")
     return rank.isascii() and rank.isdigit() and int(rank) >= 1
 
 
-def _scope_ids(p: dict) -> list[str]:
+def _scope_ids(p: Mapping[str, object]) -> list[str]:
     return [part.strip() for part in _get(p, "initiatives").split(",")]
 
 
-def _scope_ok(p: dict) -> bool:
+def _scope_ok(p: Mapping[str, object]) -> bool:
     ids = _scope_ids(p)
     return all(ids) and ("all" not in ids or ids == ["all"])
 
 
-_CHECKS: dict[str, Callable[[dict], str | None]] = {
+_CHECKS: dict[str, Callable[[Mapping[str, object]], str | None]] = {
     "priority": lambda p: _refusal([*_has_target(p), (_rank_ok(p), "rank must be a whole number of 1 or more")]),
     "hold": lambda p: _refusal(_has_target(p)),
     "release": lambda p: _refusal(_has_target(p)),
@@ -152,23 +145,23 @@ _CHECKS: dict[str, Callable[[dict], str | None]] = {
 
 def validate_directive(kind: object, payload: object) -> str | None:
     """None when the directive is well formed, else the reason it is refused. Never raises."""
-    if not isinstance(payload, dict):
+    if not is_dict(payload):
         return "payload must be a mapping"
     check = _CHECKS.get(kind) if isinstance(kind, str) else None
     return f"unknown directive kind {kind!r}" if check is None else check(payload)
 
 
-def _target(p: dict) -> str:
+def _target(p: Mapping[str, object]) -> str:
     return f"{_get(p, 'target_kind')}:{_get(p, 'target')}"
 
 
-_EFFECTS: dict[str, Callable[[DirectiveState, dict], dict]] = {
-    "priority": lambda s, p: {"priorities": {**s["priorities"], _target(p): _get(p, "rank")}},
-    "hold": lambda s, p: {"holds": sorted({*s["holds"], _target(p)})},
-    "release": lambda s, p: {"holds": [h for h in s["holds"] if h != _target(p)]},
-    "scope": lambda s, p: {"scope": _scope_ids(p)},
-    "feature": lambda s, p: {"features": {**s["features"], _get(p, "name"): _get(p, "state")}},
-    "cut_release": lambda s, p: {"cut_release": _get(p, "version")},
+_EFFECTS: dict[str, Callable[[DirectiveState, Mapping[str, object]], DirectiveState]] = {
+    "priority": lambda s, p: {**s, "priorities": {**s["priorities"], _target(p): _get(p, "rank")}},
+    "hold": lambda s, p: {**s, "holds": sorted({*s["holds"], _target(p)})},
+    "release": lambda s, p: {**s, "holds": [h for h in s["holds"] if h != _target(p)]},
+    "scope": lambda s, p: {**s, "scope": _scope_ids(p)},
+    "feature": lambda s, p: {**s, "features": {**s["features"], _get(p, "name"): _get(p, "state")}},
+    "cut_release": lambda s, p: {**s, "cut_release": _get(p, "version")},
 }
 
 
@@ -186,7 +179,7 @@ def _step(now: str, acc: tuple[DirectiveState, list[Event]], entry: object) -> t
     base = {**payload, "id": message["id"], "kind": kind, "sender": message["sender"], "at": now}
     reason = validate_directive(kind, payload)
     if reason is None:
-        new = {**state, **_EFFECTS[kind](state, payload), "applied": [*state["applied"], message["id"]]}
+        new: DirectiveState = {**_EFFECTS[kind](state, payload), "applied": [*state["applied"], message["id"]]}
         return new, [*events, _event("directive_applied", base)]
     return state, [*events, _event("directive_refused", {**base, "reason": reason})]
 
@@ -211,7 +204,7 @@ def _planned(epic_id: str, plan: Sequence[PlannedAction]) -> str:
     return " Planned: " + ", ".join(_describe(a) for a in mine) + "." if mine else " Nothing is planned."
 
 
-def _tasks(facts: EpicView) -> list[dict]:
+def _tasks(facts: EpicView) -> list[ViewTask]:
     return [t for level in facts["levels"] for t in level["tasks"]]
 
 
@@ -228,7 +221,7 @@ def _left_on_release(subject: str, facts: Sequence[EpicView], plan: Sequence[Pla
     return head + _planned(subject, plan)
 
 
-def _why_task(epic: EpicView, task: dict, plan: Sequence[PlannedAction]) -> str:
+def _why_task(epic: EpicView, task: ViewTask, plan: Sequence[PlannedAction]) -> str:
     relaunch = any(a["topic"] == epic["epic_id"] and a["kind"] == "relaunch" for a in plan)
     state = task["state"]
     name = task["id"]

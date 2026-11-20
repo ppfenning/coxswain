@@ -18,6 +18,11 @@ NAMES = ("coxswain-cartridges", "coxswain-graphs", "coxswain-tools")
 TAG = "v2026.10.0"
 
 
+def names_a_component(text: str) -> bool:
+    """A path into a component checkout. Not any `coxswain-`: the temp root the profile's paths sit under may carry one."""
+    return any(f"/{name}" in text for name in NAMES)
+
+
 def git(*argv, cwd):
     subprocess.run(["git", "-c", "user.email=t@example.com", "-c", "user.name=t", *argv], cwd=cwd, check=True,
                    capture_output=True)
@@ -148,7 +153,9 @@ def run(dry_run=False, apply=False, hosts=False, finish=False, old_root=None, to
 
 
 def tree(root: Path):
-    return sorted((str(p), os.readlink(p) if p.is_symlink() else p.is_dir()) for p in root.rglob("*") if ".git" not in p.parts)
+    """Every path under root but git's and sqlite's own sidecars: a read of the store opens `-shm`/`-wal` files, which are not a change."""
+    return sorted((str(p), os.readlink(p) if p.is_symlink() else p.is_dir()) for p in root.rglob("*")
+                  if ".git" not in p.parts and not p.name.endswith(("-shm", "-wal")))
 
 
 def retired(layout):
@@ -190,7 +197,7 @@ def test_apply_makes_the_umbrella_the_monorepo_and_retires_the_components(layout
     text = layout.profile.read_text()
     assert f"harness_dir: {layout.checkout}/src/graphs" in text
     assert f"provider_profile: {layout.checkout}/src/cartridges/providers/claude-code.yaml" in text
-    assert "coxswain-" not in text
+    assert not names_a_component(text)
     assert layout.uv_log.read_text().splitlines() == ["sync --frozen --all-extras --inexact -q"]
 
 
@@ -300,7 +307,7 @@ def test_rerun_after_a_stop_resumes_from_the_remaining_steps(layout, capsys):
     assert run(apply=True) == 0
     out = capsys.readouterr().out
     assert "fetch --tags" not in out
-    assert "profile skills_roots" in out and "coxswain-" not in layout.profile.read_text()
+    assert "profile skills_roots" in out and not names_a_component(layout.profile.read_text())
 
 
 def test_edit_key_replaces_one_line_appends_a_missing_one_and_refuses_block_lists():
@@ -576,16 +583,6 @@ def test_a_release_that_raises_is_reported_and_the_rest_still_release(layout, mo
     assert len(taken(layout, "release")) == 4
 
 
-def test_the_interpreter_cache_is_cleared_once_before_the_first_release(layout, monkeypatch):
-    order = []
-    monkeypatch.setattr(cli.run_store, "_harness_python_for", types.SimpleNamespace(cache_clear=lambda: order.append("clear")))
-    monkeypatch.setattr(
-        cli.land_repo_lease, "release", lambda runs_dir, repo, holder, epoch: order.append("release") or store_cli.LeaseReleased()
-    )
-    assert run(apply=True) == 0
-    assert order == ["clear", "release", "release", "release", "release"]
-
-
 def test_a_plan_of_only_skip_steps_takes_no_lease(layout):
     assert run(apply=True) == 0
     layout.calls.clear()
@@ -771,7 +768,7 @@ def test_apply_loads_the_lazy_modules_then_swaps_the_component_tools_for_coxswai
         ["uv", "sync", "--frozen", "--all-extras", "--inexact", "-q"],
         ["uv", "tool", "uninstall", "coxswain-tools"],
         ["uv", "tool", "uninstall", "agent-cartridges"],
-        ["uv", "tool", "install", "--force", "-q", "--editable", f"{layout.checkout}[lake]"],
+        ["uv", "tool", "install", "--force", "-q", "--editable", f"{layout.checkout}[lake,parquet,postgres]"],
     ]
 
 

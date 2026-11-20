@@ -14,7 +14,6 @@ def test_the_mode_is_store_whatever_the_profile_says(monkeypatch):
     for profile in ({}, {"work_state": "store"}, {"work_state": "files"}, {"work_state": None}, {"work_state": "sotre"},
                     {"storage_url": PG}, {"work_state": "files", "storage_url": PG}):
         assert work_state.work_state_mode(profile) == "store"
-    assert work_state.work_state_mode_at("no-such-profile.yaml") == "store"
 
 
 def test_a_store_that_answers_gives_the_plain_status_line(monkeypatch):

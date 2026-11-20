@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
 from typing import NamedTuple
@@ -17,6 +18,8 @@ class Kind(StrEnum):
     PRESENT_LOCALLY = "present_locally"  # local and not behind origin (or origin could not be asked): kept as it is
     FAST_FORWARDED = "fast_forwarded"  # local was behind origin and now holds origin's tip
     DIVERGED = "diverged"  # local and origin each hold commits the other lacks: local kept, origin's tip on a side ref
+    DIVERGED_CONTENT = "diverged_content"  # diverged, and the two tips hold different trees: only a person decides
+    RESET = "reset_to_origin"  # diverged with the same tree as origin's tip: local was put at origin's tip (`settle_diverged`)
     FETCHED = "fetched"
     MISSING_EVERYWHERE = "missing_everywhere"
     FETCH_FAILED = "fetch_failed"
@@ -151,6 +154,50 @@ def fetch_branch(repo: Path, branch: str) -> FetchOutcome:
     if probe == _LS_REMOTE_NO_MATCH:
         return FetchOutcome(Kind.MISSING_EVERYWHERE)
     return FetchOutcome(Kind.FETCH_FAILED, detail)
+
+
+def diverged_action(local_tree: str, origin_tree: str, origin_holds_record: bool = True) -> str:
+    """Pure. What a local initiative branch that diverged from origin's copy does: `reset` to origin's tip when both
+    tips hold the same tree (two merge commits of the same work: nothing of the local one is lost) and origin's tip
+    holds every commit the landing record names, else `alarm`, since only a person can say which copy is the right
+    one. A record written before every merge was pushed may name the local merge commit: a reset would drop it from
+    the branch the record describes. A tree that could not be read is never the same tree."""
+    return "reset" if local_tree and local_tree == origin_tree and origin_holds_record else "alarm"
+
+
+def settle_diverged(repo: Path, branch: str, recorded: Sequence[str] = ()) -> FetchOutcome:
+    """Edge. After a fetch said `branch` diverged from origin (origin's tip is at `fetched_ref`): put the local branch
+    at origin's tip when the trees are the same (RESET); DIVERGED_CONTENT, naming both commits, when they differ; else
+    DIVERGED (a tip that could not be read, a checked-out branch, a reset git refused).
+
+    Only the lander merges into an initiative branch, so a local copy that diverged with the same tree is a second
+    merge commit of work origin already has. `recorded` are the shas the landing record names on the branch (its
+    base, each merged phase's tip and merge commit): origin's tip must hold every one, or the copies count as
+    different. The move is a compare-and-swap on the local tip, and a branch checked out in a worktree is never moved
+    under its files."""
+    side = fetched_ref(branch)
+    local_ok, local = _git("rev-parse", "--verify", f"refs/heads/{branch}^{{commit}}", cwd=repo)
+    origin_ok, origin = _git("rev-parse", "--verify", f"{side}^{{commit}}", cwd=repo)
+    if not (local_ok and origin_ok):
+        return FetchOutcome(Kind.DIVERGED, f"{branch}: diverged from origin, and a tip could not be read to compare")
+    trees = [_git("rev-parse", "--verify", f"{sha}^{{tree}}", cwd=repo) for sha in (local, origin)]
+    local_tree, origin_tree = (out if ok else "" for ok, out in trees)
+    lacking = [sha for sha in recorded if sha and not _git("merge-base", "--is-ancestor", sha, origin, cwd=repo)[0]]
+    if diverged_action(local_tree, origin_tree, not lacking) == "alarm":
+        what = (f"this clone's {local[:12]} holds the tree of origin's {origin[:12]}, but origin's lacks recorded "
+                f"commit(s) {', '.join(sha[:12] for sha in lacking)}"
+                if lacking and local_tree and local_tree == origin_tree else
+                f"this clone's {local[:12]} and origin's {origin[:12]} hold different trees")
+        return FetchOutcome(Kind.DIVERGED_CONTENT,
+                            f"needs the chair: {branch} has diverged from origin with different content: {what}, so neither is moved")
+    if _checked_out_at(repo, branch) is not None:
+        return FetchOutcome(Kind.DIVERGED, f"{branch}: this clone's {local[:12]} holds origin's {origin[:12]} tree, "
+                                           "but it is checked out in a worktree, so it is not reset here")
+    moved, out = _git("update-ref", "-m", "initiative fetch: same tree as origin, reset to it",
+                      f"refs/heads/{branch}", origin, local, cwd=repo)
+    if not moved:
+        return FetchOutcome(Kind.DIVERGED, f"{branch}: could not be reset to origin's {origin[:12]}: {out}")
+    return FetchOutcome(Kind.RESET, f"{branch}: this clone's {local[:12]} held the same tree as origin's {origin[:12]}; reset to origin's")
 
 
 def missing_branch_cause(branch: str, outcome: FetchOutcome) -> str:

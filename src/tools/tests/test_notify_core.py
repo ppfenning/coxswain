@@ -8,7 +8,7 @@ def _event(key="k1", body="b"):
 
 
 def test_kinds_literal():
-    assert KINDS == ("needs_chair", "host_login", "stall", "release_cut", "decision_card", "needs_attention")
+    assert KINDS == ("needs_chair", "host_login", "stall", "all_clear", "release_cut", "decision_card", "needs_attention")
 
 
 def test_config_missing_is_none():
@@ -36,7 +36,25 @@ def test_due_never_resends_a_key_that_still_stands():
     e = _event()
     assert due([e], {"k1": 0.0}, 3599.0)[0] == []
     assert due([e], {"k1": 0.0}, 86400.0)[0] == []
-    assert due([e], {"k1": 0.0}, 86400.0)[1] == {"k1": 0.0}
+    assert due([e], {"k1": 0.0}, 86400.0)[1] == {"k1": 86400.0}
+
+
+def test_due_keeps_a_standing_key_quiet_for_hours_through_a_quiet_tick():
+    e = _event()
+    sent: dict = {}
+    pushed = []
+    for minute in range(0, 150, 3):
+        events = [] if minute == 63 else [e]
+        fresh, sent = due(events, sent, minute * 60.0)
+        pushed += [(minute, x.key) for x in fresh]
+    assert pushed == [(0, "k1")]
+
+
+def test_due_counts_the_window_from_the_last_tick_a_key_stood():
+    e = _event()
+    _, sent = due([e], {"k1": 0.0}, 7200.0)
+    assert due([], sent, 7200.0 + 3599.0)[1] == {"k1": 7200.0}
+    assert due([], sent, 7200.0 + 3600.0)[1] == {}
 
 
 def test_due_resends_a_key_that_cleared_more_than_a_window_ago():

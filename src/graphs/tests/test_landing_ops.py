@@ -201,7 +201,7 @@ def test_an_approved_task_whose_recorded_commit_is_not_on_the_phase_tip_keeps_th
     assert ls.get_item(conn, "phase_merge:i:p1")["state"] == "queued", "left for a worker whose clone holds the commit"
 
 
-def test_the_branch_is_fetched_before_the_merge_and_published_after_it(conn, repo):  # noqa: F811
+def test_the_branch_is_fetched_before_the_merge_and_pushed_before_it_is_recorded(conn, repo):  # noqa: F811
     start(conn, repo)
     build(repo, "p1")
     tasks = [task("a", "p1")]
@@ -211,11 +211,28 @@ def test_the_branch_is_fetched_before_the_merge_and_published_after_it(conn, rep
     assert (refused.status, refused.detail) == ("error", "init/i has diverged from origin")
     assert run(repo, "rev-parse", "init/i") == before and ls.get_item(conn, "phase_merge:i:p1")["state"] == "queued"
     seen: list[str] = []
-    done = ops.merge_phase(conn, repo, initiative="i", phase="p1", tasks=tasks, worker="w", now=T1,
-                           fetch=lambda branch: seen.append(f"fetch {branch}"),
-                           publish=lambda branch: seen.append(f"publish {branch}") or "push of init/i failed: offline")
+    unpushed = ops.merge_phase(conn, repo, initiative="i", phase="p1", tasks=tasks, worker="w", now=T1,
+                               fetch=lambda branch: seen.append(f"fetch {branch}"),
+                               publish=lambda branch: seen.append(f"publish {branch}") or "push of init/i failed: offline")
     assert seen == ["fetch init/i", "publish init/i"]
-    assert (done.status, done.detail) == ("merged", "push of init/i failed: offline"), "a failed push is a warning"
+    assert unpushed.status == "error" and unpushed.detail.startswith("push of init/i failed: offline; phase p1 is not recorded")
+    assert run(repo, "rev-parse", "init/i") == before, "the merge origin refused is unwound"
+    assert (ls.get_record(conn, "i")["phases"] or {}).get("p1", {}).get("state") != "merged"
+    assert ls.get_item(conn, "phase_merge:i:p1")["state"] == "failed"
+    ls.enqueue(conn, ls.PHASE_MERGE, "i", phase="p1", repo=str(repo), now=T1, reason="sweep")  # what the sweep does
+    done = ops.merge_phase(conn, repo, initiative="i", phase="p1", tasks=tasks, worker="w", now=T1,
+                           publish=lambda branch: seen.append(f"publish {branch}") or None)
+    assert done.status == "merged" and ls.get_record(conn, "i")["phases"]["p1"]["merge_sha"] == run(repo, "rev-parse", "init/i")
+
+
+@pytest.mark.parametrize(("status", "warning", "step"), [
+    ("merged", None, "record"),
+    ("up_to_date", None, "record"),
+    ("merged", "push of init/i failed: rejected", "unwind"),
+    ("up_to_date", "push of init/i failed: rejected", "fail"),
+])
+def test_a_phase_merge_is_recorded_only_once_origin_took_the_push(status, warning, step):
+    assert ops.after_push(status, warning) == step
 
 
 def test_the_parent_is_taken_forward_by_a_merge_and_a_conflict_leaves_the_branch_alone(conn, repo):  # noqa: F811
@@ -238,4 +255,4 @@ def test_the_parent_is_taken_forward_by_a_merge_and_a_conflict_leaves_the_branch
     assert (clash.status, clash.paths) == ("conflict", ("shared.txt",)) and run(repo, "rev-parse", "init/i") == tip
     assert store_lease.acquire(conn, ops.branch_lease("i"), "someone-else", T1, 900).ok, "the lease was released each time"
     busy = ops.take_parent_forward(conn, repo, initiative="i", parent_ref="main", worker="w", now=T1)
-    assert (busy.status, busy.detail) == ("error", "someone-else is moving the branch of i")
+    assert (busy.status, busy.detail) == ("busy", "someone-else is moving the branch of i")

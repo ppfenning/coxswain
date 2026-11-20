@@ -5,7 +5,8 @@ from agent_tools.chair_spend_split import spend_split
 
 FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "dash_activity_v1.json").read_text())["spend_split"]
 # Temporary: the producer task that emits these keys removes this exclusion.
-NEW_KEYS = {"by_node", "cost_per_landed_task"}
+# `gather_activity` adds the node and completion keys after `spend_split` returns; test_chair_activity pins them.
+NEW_KEYS = {"by_node", "cost_per_landed_task", "completions", "cost_per_completion"}
 
 ZERO = {
     "chair_session_usd": 0.0,

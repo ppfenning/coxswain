@@ -92,6 +92,9 @@ tool already has. If your shell cannot find `cox` afterwards, run
 | release | the release tag `vYYYY.M.N` | `cox install` |
 | edge | `main` | `cox install --edge` |
 
+To keep a machine on the newest commit of `main` that passed CI, use the
+[edge upgrade channel](#the-edge-upgrade-channel) instead.
+
 ## Flags
 
 Run `cox install --help` for the flags your version accepts. The ones this
@@ -201,7 +204,147 @@ cox upgrade
 `cox upgrade` moves the checkout to the newest release tag (or `--to
 VERSION`), syncs its venv, reinstalls `cox` from it with the extras it had,
 relinks the crew, moves dash if you have it, and runs the doctor. It refuses
-a checkout with uncommitted changes.
+a checkout with uncommitted changes. `--to` also takes a commit SHA.
+
+### The edge upgrade channel
+
+Each machine has an upgrade channel in its machine profile. `stable` is the
+default: `cox upgrade` moves to the newest release tag, as above. `edge`
+follows `main`, but only commits whose CI passed:
+
+```sh
+cox settings set profile upgrade_channel edge
+cox setup unit-env               # writes ~/.config/agent-tools/garage.env with the stored token
+cox upgrade --install-timer      # writes coxswain-upgrade.service and .timer
+systemctl --user daemon-reload
+systemctl --user enable --now coxswain-upgrade.timer
+```
+
+On macOS the same `cox upgrade --install-timer` writes a launchd agent,
+`~/Library/LaunchAgents/coxswain-upgrade.plist`, that runs the same command on
+the same interval, and prints the `launchctl bootstrap` line that loads it.
+The agent stores no secret. At each launch it reads the env file described
+below, so a new token takes effect on the next run without a reinstall. The
+plist is written with mode 0600.
+
+#### Check the schedule on a macOS host
+
+The test suite cannot run launchd, so check a macOS host by hand after you
+install or change the schedule:
+
+```sh
+plist=~/Library/LaunchAgents/coxswain-upgrade.plist
+plutil -lint "$plist"                                  # prints: OK
+launchctl bootstrap gui/$(id -u) "$plist"             # once; it fails if already loaded
+launchctl kickstart -k gui/$(id -u)/coxswain-upgrade  # run it now, not in 30 minutes
+cox versions                                          # the edge upgrade line: a fresh time and an outcome
+```
+
+The check passes when `plutil` prints `OK` and `cox versions` shows an edge
+upgrade from the run you just started (the record is `edge-upgrade.json` in
+the installs folder). If the machine was already at the newest green commit, no
+record is written; the agent's run is then visible in `log show --predicate
+'process == "launchd"' --last 5m`. If the record is unchanged, run the command from the
+plist's `ProgramArguments` by hand. Its output names the step that failed.
+
+`cox setup unit-env` writes the one environment file that the chair, lander
+and upgrade units all read: systemd units load it with `EnvironmentFile=`, and
+launchd agents get its values as `EnvironmentVariables`. It keeps the
+`NAME=value` lines the file already has and sets `CLAUDE_CODE_OAUTH_TOKEN`
+from the token that `cox setup token` stored. Run it again after you change the
+token.
+
+A shell you open yourself, by ssh or at the terminal, does not read that file.
+So `cox upgrade` and `cox setup doctor` read it themselves when you run them by
+hand. They read the files the installed upgrade unit names: every
+`EnvironmentFile=` line, with `%h` as your home and a later file winning, or the
+file the launchd agent sources. If no upgrade unit names one, they try the chair
+unit, then the lander unit, then the default `~/.config/agent-tools/garage.env`.
+
+A variable that your shell already sets keeps its value, even when it is empty.
+The rest come from the file, read the way the units read it. On Linux that
+is systemd's `EnvironmentFile=` reading, so every value it would set loads:
+surrounding quotes and backslash escapes are removed (`"q v"` gives `q v`,
+`a\b` gives `ab`), a space inside an unquoted value is kept (a password with
+a space works), a backslash at the end of a line joins the next line, and `$`,
+`%` and an empty value (`E=`) load as written. On macOS it is the launchd
+agent's `sh .`, as macOS's `sh` (bash in POSIX mode) reads it. A line of
+assignments sets each one, and a backslash at the end of a line joins the next
+line there too. `V=1;W=2` sets both. A line such as `V=a b` or `V=  x` runs a
+command with `V` set for that command only, so `V` keeps its earlier value,
+and one note says so. These are not loaded, each with a note:
+
+- a value that `sh` would expand: a `$` or a backtick, or a `~` at the start of
+  the value or after a `:` (a `~` anywhere else loads as written);
+- a value followed by an unquoted `& | < > ( )`, or by `;` and then a command;
+- a value that ends in a carriage return from a CRLF line.
+
+An open quote is a syntax error: nothing from its line on is set. Put such a
+value in single quotes.
+
+The command prints paths and variable names, never values. It prints only the
+names that `ENV_KEYS`, the forge's `FORGEJO_BASE_URL` and `FORGEJO_TOKEN`, or
+your profiles declare (the value of any `*_env` key, such as
+`access_key_env: GARAGE_ACCESS_KEY_ID`). It counts any others, since a secret
+pasted on a line of its own can parse as a name. It prints:
+
+- the variables it loaded;
+- the shell variables that override a different value in the file (if you
+  rotated a key in the file, unset the old one in your shell);
+- on macOS, any line that did not set its variable, and why;
+- a file a unit names that does not exist, and a file skipped because it is
+  not UTF-8 text.
+
+`cox setup doctor --json` loads the file without printing anything.
+
+On an edge machine, `cox upgrade` with no `--to` does these steps:
+
+1. It finds the newest commit on `origin/main` whose `ci` workflow passed on
+   the push to `main`. It never takes the tip of `main` unless the tip passed.
+2. It moves the checkout to that commit by the same path as `cox upgrade --to`.
+3. If the commit changed, it restarts the chair and lander user units that
+   are running.
+4. It runs `cox setup doctor` and checks that every unit that was running
+   before is running again.
+5. If the move or a restart fails, or a required doctor row fails, it moves
+   back to the previous commit and restarts the units again.
+
+The required doctor rows are the ones an upgrade can break: the profile, the
+workspace, the harness venv, the core import, the install bins, the unit
+PATH, the store, the store schema, and the restarted units. The other rows,
+such as the token file and the plugins, are advisory. An advisory failure
+prints one warning line and does not roll back.
+
+Every `git` and `gh` call has a time limit. A call that hangs is killed, and
+the upgrade stops with a line that names it, for example
+`gh run timed out after 120 seconds`.
+
+A lane host's checkout sync never moves the install checkout. The host
+resolves both paths, following symlinks. If the lane's checkout is the
+install, the sync leaves it alone and reports that the lane needs its own
+checkout. The install moves only through `cox upgrade`.
+
+The timer runs `cox upgrade --scheduled` every 30 minutes by default
+(`--interval-minutes` changes this). On a stable machine the scheduled run does
+nothing. Apart from a rollback, an edge upgrade never moves to an older
+commit. It skips a commit it has already rolled back until a newer commit
+passes CI. To try that commit again, run `cox upgrade --to SHA`.
+
+`cox versions` shows the last edge upgrade: when it ran, the previous commit,
+the chosen commit and the outcome.
+
+Store migrations go forward only. The restarted chair or lander applies a new
+commit's migrations when it opens the store. After that, an older commit
+refuses the store. So when the new commit adds a migration and the units
+restarted, a failing doctor is **not** rolled back. `cox versions` reports
+`not_rolled_back`, and the fix is a newer commit or a person. Every machine
+that shares a store must be on the same channel. Otherwise an edge machine
+can migrate the store past what a stable machine's release can open. Setting
+a machine back to `stable` moves it to the newest release on its next
+`cox upgrade`, which has the same limit.
+
+`cox install --edge` is a different thing: it installs the tip of `main`
+once, whether or not CI passed.
 
 ## Moving from 0.47 or earlier
 

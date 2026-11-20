@@ -26,7 +26,7 @@ from agent_tools.base_branch import OVERLAY, Run, run_git
 MANUAL = "manual"
 REMEDY = "the human merges the PR; the task finishes once the merge shows on origin"
 RECHECK_S = 300
-HATCH = "if the PR is merged, check `git branch -r --merged origin/<base>` then run `cox route edit <task> --state done`"
+HATCH = "if the PR is merged, check `git branch -r --merged origin/<base>` then run `cox route edit <task> --initiative <initiative> --state done`"
 
 
 def land_setting(overlay: Mapping[str, Any] | None, repo_name: str) -> str | None:

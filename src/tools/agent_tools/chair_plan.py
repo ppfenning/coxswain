@@ -18,18 +18,20 @@ from agent_tools import (
     chair_steer_cycle,
 )
 from agent_tools.chair_carry import plan_carry
+from agent_tools.chair_decompose_miss import DecomposeMiss, escalation_reason, is_skipped, needs_escalation
 from agent_tools.chair_idle_ready import plan_idle_ready
 from agent_tools.chair_idle_stall import diagnose, is_stalled
+from agent_tools.chair_no_progress import plan_no_progress
 from agent_tools.chair_plan_fill import (
     HostSlot,
-    _best_host,
-    _eligible,
-    _less_consumed,
-    _place_on_hosts,
-    _required_capabilities,
+    best_host,
     budget_skips,
+    eligible_host,
     host_free_slots,
+    less_consumed,
+    place_on_hosts,
     plan_fill,
+    required_capabilities,
 )
 from agent_tools.chair_plan_land import (
     backoff_held,
@@ -41,8 +43,8 @@ from agent_tools.chair_plan_land import (
 )
 from agent_tools.chair_plan_recover import (
     STRANDED_CAUSE,
-    _initiative_first_unmet_need,
     claimed_by,
+    initiative_first_unmet_need,
     landing_initiatives,
     plan_lost_runs,
     plan_recover,
@@ -57,24 +59,31 @@ from agent_tools.chair_rebase import plan_rebase
 from agent_tools.chair_revert import revert_check
 from agent_tools.chair_runnable import Blocking, TaskView, WaitingInitiative, runnable_verdict
 from agent_tools.chair_schedule import Schedule, schedule_feed
+from agent_tools.chair_stall_alarm import plan_stall_alarm
 from agent_tools.chair_steer import steer_heads
 from agent_tools.chair_types import (
     DEADLOCK_CAUSE,
     HELD_FILE_CAUSE,
     Action,
+    ActionKind,
     ApprovedTask,
     DispatchFacts,
     Facts,
+    HeldFile,
     IdleStallInputs,
     InitiativeFacts,
     LastCall,
     LeaseFacts,
     LimitsFacts,
+    PhaseTasks,
     StallCandidate,
+    action_from_store,
+    action_text,
     stamp,
 )
 from agent_tools.ci_gate import CiGate
 from agent_tools.route_schedule import plan_from_inputs
+from core.jsontypes import is_list, is_mapping
 from core.landing import DEFAULT_LAND_AT
 
 _UNPAUSED = CiGate(False, "")
@@ -101,13 +110,16 @@ def _lease_gate(lease: LeaseFacts) -> list[Action] | None:
     if lease["mine"]:
         return None
     if lease["released"] or lease["stale"]:
-        return [{"kind": "take_lease"}]
+        return [{"kind": ActionKind.TAKE_LEASE}]
     if lease.get("expired", False):
-        return [{"kind": "take_lease", "reason": f"takeover expired at {lease.get('until', '')}"}]
+        return [{"kind": ActionKind.TAKE_LEASE, "reason": f"takeover expired at {lease.get('until', '')}"}]
     if lease.get("session_held", False):
-        return [{"kind": "take_lease", "reason": f"takeback from {lease['holder']}"}]
+        return [{"kind": ActionKind.TAKE_LEASE, "reason": f"takeback from {lease['holder']}"}]
     until = lease.get("until", "")
-    return [{"kind": "standby", "holder": lease["holder"], "host": lease["host"], **({"until": until} if until else {})}]
+    standby: Action = {"kind": ActionKind.STANDBY, "holder": lease["holder"], "host": lease["host"]}
+    if until:
+        standby["until"] = until
+    return [standby]
 
 
 def _route_homed(
@@ -118,12 +130,12 @@ def _route_homed(
     free slot there drops the index. Returns host-by-index for the ones placed on a host, the dropped indices,
     the count of local slots this used, and the per-host lane counts consumed."""
     host_left = {name: free for name, _, _, free, _ in host_free}
-    homed_at = [n for n in launch_at if actions[n]["initiative"] in home]
+    homed_at = [n for n in launch_at if action_text(actions[n], "initiative") in home]
     host_for_index: dict[int, str] = {}
     dropped: set[int] = set()
     local_used = 0
     for n in homed_at:
-        destination = home[actions[n]["initiative"]]
+        destination = home[action_text(actions[n], "initiative")]
         if destination == "":
             if local_used < cap:
                 local_used += 1
@@ -140,13 +152,13 @@ def _route_homed(
     return host_for_index, dropped, local_used, consumed
 
 
-def _drained_hosts(login_hosts: Sequence[Mapping]) -> frozenset[str]:
+def _drained_hosts(login_hosts: Sequence[Mapping[str, object]]) -> frozenset[str]:
     """Names of rows whose state is 'draining': out of service, so a home there stays stuck past this tick,
     unlike a merely busy `active` host whose lanes will free up on their own."""
     return frozenset(str(row.get("name") or "") for row in login_hosts if row.get("state") == "draining")
 
 
-def _unreachable_hosts(login_hosts: Sequence[Mapping]) -> frozenset[str]:
+def _unreachable_hosts(login_hosts: Sequence[Mapping[str, object]]) -> frozenset[str]:
     """Names of rows whose state is 'unreachable': a dead machine, so a home there is stuck."""
     return frozenset(str(row.get("name") or "") for row in login_hosts if row.get("state") == chair_login_watch.UNREACHABLE_STATE)
 
@@ -154,18 +166,18 @@ def _unreachable_hosts(login_hosts: Sequence[Mapping]) -> frozenset[str]:
 def _stuck_homes(actions: list[Action], launch_at: list[int], home: Mapping[str, str], facts: Facts) -> set[int]:
     """Indices whose home host is drained, unreachable, login-lapsed, or whose lane is lost: these relocate instead
     of routing home. While local lanes are decompose-only, a relaunch or retry homed on "" is stuck too."""
-    login_hosts = facts.get("login_hosts", [])
+    login_hosts: Sequence[Mapping[str, object]] = facts.get("login_hosts", [])
     stuck_hosts = chair_login_watch.login_blocked(login_hosts) | _drained_hosts(login_hosts) | _unreachable_hosts(login_hosts)
     lost = frozenset(facts.get("lost_runs", {}))
     decompose_only = facts.get("dispatch", {}).get("local_lanes") == "decompose"
     return {
         n
         for n in launch_at
-        if actions[n]["initiative"] in home
+        if action_text(actions[n], "initiative") in home
         and (
-            home[actions[n]["initiative"]] in stuck_hosts
-            or actions[n]["initiative"] in lost
-            or (decompose_only and home[actions[n]["initiative"]] == "" and actions[n]["kind"] in ("relaunch", "retry"))
+            home[action_text(actions[n], "initiative")] in stuck_hosts
+            or action_text(actions[n], "initiative") in lost
+            or (decompose_only and home[action_text(actions[n], "initiative")] == "" and actions[n]["kind"] in ("relaunch", "retry"))
         )
     }
 
@@ -186,8 +198,8 @@ def _freest_machine(
     """The machine with the most free lanes, "" meaning this one, or None when none has a free lane.
 
     A host lacking `required` is not a candidate; this machine always is. A tie goes to `last`, then to this
-    machine, then to the host _best_host ranks first among the tied hosts. `pinned` leaves only `last`."""
-    capable = [host for host in hosts if _eligible(host, required)]
+    machine, then to the host best_host ranks first among the tied hosts. `pinned` leaves only `last`."""
+    capable = [host for host in hosts if eligible_host(host, required)]
     free = {"": local_free, **{host[0]: host[3] for host in capable}}
     options = {name: lanes for name, lanes in free.items() if lanes > 0 and (not pinned or name == last)}
     if not options:
@@ -197,7 +209,7 @@ def _freest_machine(
         return last
     if "" in tied:
         return ""
-    best = _best_host(required, [host for host in capable if host[0] in tied])
+    best = best_host(required, [host for host in capable if host[0] in tied])
     return best[0] if best is not None else None
 
 
@@ -227,7 +239,7 @@ def _cap_launches(
 ) -> tuple[list[Action], dict[str, int]]:
     """A relaunch or retry goes to the machine with the most free lanes, this one included unless its local lanes are
     decompose-only (_place_freest): a
-    tie goes to the initiative's home, then to this machine, then to the host _best_host ranks first. A host
+    tie goes to the initiative's home, then to this machine, then to the host best_host ranks first. A host
     lacking the initiative's capabilities is skipped. A placement here carries no host, one elsewhere carries
     host, and a paired clear_branches always runs locally. A move off a remote home plans a fetch of its newest
     run's branches first; with no run to fetch, the initiative stays pinned to its home. A rescue keeps the old
@@ -235,7 +247,7 @@ def _cap_launches(
 
     A relaunch or retry whose home host is drained, login-lapsed, or whose lane is lost, or a "" home while local
     lanes are decompose-only, is relocated instead:
-    ranked by _place_on_hosts, its own old home host excluded from the candidates, never a local lane, with a
+    ranked by place_on_hosts, its own old home host excluded from the candidates, never a local lane, with a
     fetch for its newest run's branches planned right before its own first action; with no run to fetch it is
     dropped and a needs_chair names it instead. What nothing can take is dropped. A dropped relaunch takes its
     paired clear_branches with it.
@@ -245,38 +257,38 @@ def _cap_launches(
     """
     launch_at = [n for n, a in enumerate(actions) if a["kind"] in _LAUNCHES]
     stuck = _stuck_homes(actions, launch_at, home, facts)
-    stuck_initiatives = {actions[n]["initiative"] for n in stuck}
+    stuck_initiatives = {action_text(actions[n], "initiative") for n in stuck}
     freest_at = [n for n in launch_at if actions[n]["kind"] in ("relaunch", "retry") and n not in stuck]
-    freest_initiatives = {actions[n]["initiative"] for n in freest_at}
+    freest_initiatives = {action_text(actions[n], "initiative") for n in freest_at}
     rescue_at = [n for n in launch_at if n not in freest_at]
     routed_home = {i: h for i, h in home.items() if i not in stuck_initiatives and i not in freest_initiatives}
     homed_host_for_index, homed_dropped, local_used, homed_consumed = _route_homed(actions, rescue_at, routed_home, cap, host_free)
-    unhomed_at = [n for n in rescue_at if actions[n]["initiative"] not in routed_home and n not in stuck]
+    unhomed_at = [n for n in rescue_at if action_text(actions[n], "initiative") not in routed_home and n not in stuck]
     overflow = unhomed_at[max(0, cap - local_used) :]
-    movable = {actions[n]["initiative"] for n in stuck if actions[n]["kind"] in ("relaunch", "retry")}
+    movable = {action_text(actions[n], "initiative") for n in stuck if actions[n]["kind"] in ("relaunch", "retry")}
     fetches = {i: _home_fetch(i, facts["approved"]) for i in movable}
     unfetchable = {i for i, fetch in fetches.items() if fetch is None}
-    stuck_hostable = [n for n in stuck if actions[n]["initiative"] in movable - unfetchable and actions[n]["kind"] != "rescue"]
+    stuck_hostable = [n for n in stuck if action_text(actions[n], "initiative") in movable - unfetchable and actions[n]["kind"] != "rescue"]
     by_id = {i["id"]: i for i in initiatives}
 
     def required_for(n: int) -> frozenset[str]:
-        initiative = actions[n]["initiative"]
-        return _required_capabilities(by_id[initiative]) if initiative in by_id else frozenset()
+        initiative = action_text(actions[n], "initiative")
+        return required_capabilities(by_id[initiative]) if initiative in by_id else frozenset()
 
     ordered = stuck_hostable
-    rest = [(actions[n]["initiative"], required_for(n)) for n in ordered]
-    excluded = {home[actions[n]["initiative"]] for n in stuck if home.get(actions[n]["initiative"])}
+    rest = [(action_text(actions[n], "initiative"), required_for(n)) for n in ordered]
+    excluded = {home[action_text(actions[n], "initiative")] for n in stuck if home.get(action_text(actions[n], "initiative"))}
     reduced_host_free = [
         (name, weight, capabilities, max(0, free - homed_consumed.get(name, 0)), assigned)
         for name, weight, capabilities, free, assigned in host_free
         if name not in excluded
     ]
-    placed = iter(_place_on_hosts(rest, reduced_host_free))
+    placed = iter(place_on_hosts(rest, reduced_host_free))
     next_placed = next(placed, None)
     host_for_index: dict[int, str] = dict(homed_host_for_index)
     for n in ordered:
-        if next_placed is not None and next_placed["initiative"] == actions[n]["initiative"]:
-            host_for_index[n] = next_placed["host"]
+        if next_placed is not None and action_text(next_placed, "initiative") == action_text(actions[n], "initiative"):
+            host_for_index[n] = action_text(next_placed, "host")
             next_placed = next(placed, None)
     taken_so_far: dict[str, int] = {}
     for host in host_for_index.values():
@@ -292,13 +304,13 @@ def _cap_launches(
             (
                 n,
                 required_for(n),
-                home.get(actions[n]["initiative"]),
-                bool(home.get(actions[n]["initiative"])) and free_fetches[actions[n]["initiative"]] is None,
+                home.get(action_text(actions[n], "initiative")),
+                bool(home.get(action_text(actions[n], "initiative"))) and free_fetches[action_text(actions[n], "initiative")] is None,
             )
             for n in freest_at
         ],
         local_left,
-        _less_consumed(host_free, taken_so_far),
+        less_consumed(host_free, taken_so_far),
     )
     host_for_index = {**host_for_index, **{n: machine for n, machine in freest.items() if machine}}
     consumed: dict[str, int] = {}
@@ -310,18 +322,18 @@ def _cap_launches(
         | {n for n in overflow if n not in host_for_index}
         | {n for n in freest_at if n not in freest}
     )
-    dropped_initiatives = {actions[n]["initiative"] for n in dropped if actions[n]["kind"] == "relaunch"}
+    dropped_initiatives = {action_text(actions[n], "initiative") for n in dropped if actions[n]["kind"] == "relaunch"}
     kept_at = [
         n
         for n, a in enumerate(actions)
-        if n not in dropped and not (a["kind"] == "clear_branches" and a["initiative"] in dropped_initiatives)
+        if n not in dropped and not (a["kind"] == "clear_branches" and action_text(a, "initiative") in dropped_initiatives)
     ]
     moved_off_home = {
-        actions[n]["initiative"]
+        action_text(actions[n], "initiative")
         for n, machine in freest.items()
-        if home.get(actions[n]["initiative"]) and machine != home[actions[n]["initiative"]]
+        if home.get(action_text(actions[n], "initiative")) and machine != home[action_text(actions[n], "initiative")]
     }
-    relocated = {actions[n]["initiative"] for n in stuck_hostable if n in host_for_index} | moved_off_home
+    relocated = {action_text(actions[n], "initiative") for n in stuck_hostable if n in host_for_index} | moved_off_home
     # The fetch goes ahead of the moved initiative's first kept action, a mark_lost or its clear_branches.
     fetch_before = {
         min(n for n in kept_at if actions[n].get("initiative") == i): fetch
@@ -337,7 +349,7 @@ def _cap_launches(
         )
     ]
     # A stuck home with no run to fetch from never moves blind: the chair hears why the relaunch was dropped.
-    unmoved: list[Action] = [{"kind": "needs_chair", "initiative": i, "cause": "home_unfetchable"} for i in sorted(unfetchable)]
+    unmoved: list[Action] = [{"kind": ActionKind.NEEDS_CHAIR, "initiative": i, "cause": "home_unfetchable"} for i in sorted(unfetchable)]
     return [*kept, *unmoved], consumed
 
 
@@ -347,14 +359,14 @@ def _needs_chair_only(actions: list[Action]) -> list[Action]:
 
 def _without_carried_lands(lands: list[Action], carries: list[Action]) -> list[Action]:
     """A phase planned for carry is not also landed this tick, by phase or by task."""
-    carried = {(a["initiative"], a["phase"]) for a in carries if a["kind"] == "carry_phase"}
-    return [a for a in lands if not (a["kind"] in ("land_phase", "partial_land") and (a["initiative"], a["phase"]) in carried)]
+    carried = {(action_text(a, "initiative"), action_text(a, "phase")) for a in carries if a["kind"] == "carry_phase"}
+    return [a for a in lands if not (a["kind"] in ("land_phase", "partial_land") and (action_text(a, "initiative"), action_text(a, "phase")) in carried)]
 
 
 def _landing_initiatives(facts: Facts, lands: list[Action]) -> frozenset[str]:
     """Initiatives a land in flight touches (landing_initiatives), plus those with a land_phase or partial_land planned
     this tick. Another initiative in the landing repo is not withheld: it launches beside the land."""
-    return landing_initiatives(facts) | frozenset(a["initiative"] for a in lands if a["kind"] in ("land_phase", "partial_land"))
+    return landing_initiatives(facts) | frozenset(action_text(a, "initiative") for a in lands if a["kind"] in ("land_phase", "partial_land"))
 
 
 def _is_launch(action: Action) -> bool:
@@ -368,9 +380,9 @@ def _with_rebases(actions: list[Action], rebases: list[Action]) -> list[Action]:
     first: dict[str, int] = {}
     for n in reversed(range(len(actions))):
         if _is_launch(actions[n]):
-            first[actions[n]["initiative"]] = n
-    unanchored = [r for r in rebases if r["initiative"] not in first]
-    placed = [x for n, a in enumerate(actions) for x in (*(r for r in rebases if first.get(r["initiative"]) == n), a)]
+            first[action_text(actions[n], "initiative")] = n
+    unanchored = [r for r in rebases if action_text(r, "initiative") not in first]
+    placed = [x for n, a in enumerate(actions) for x in (*(r for r in rebases if first.get(action_text(r, "initiative")) == n), a)]
     return [*unanchored, *placed]
 
 
@@ -383,11 +395,11 @@ def _hosted(action: Action, placed: str | None, routed_home: Mapping[str, str]) 
     return {**action, "host": home} if action["kind"] == "clear_branches" and home else action
 
 
-def _with_carry(action: Action, approved: list[dict]) -> Action:
+def _with_carry(action: Action, approved: Sequence[ApprovedTask]) -> Action:
     """A clear_branches gains `carry`, the sorted phases of the initiative still partial, when there are any."""
     if action["kind"] != "clear_branches":
         return action
-    carry = sorted(chair_plan_prune.phases_to_carry(approved, action["initiative"]))
+    carry = sorted(chair_plan_prune.phases_to_carry(approved, action_text(action, "initiative")))
     return {**action, "carry": carry} if carry else action
 
 
@@ -414,7 +426,7 @@ def _within_cap(actions: list[Action], budget: int) -> list[Action]:
     are dropped, and a dropped relaunch takes its paired clear_branches. Every other action is kept."""
     launch_at = [n for n, a in enumerate(actions) if a["kind"] in _CAPPED]
     over = frozenset(launch_at[max(0, budget) :])
-    dropped = frozenset(actions[n]["initiative"] for n in over if actions[n]["kind"] == "relaunch")
+    dropped = frozenset(action_text(actions[n], "initiative") for n in over if actions[n]["kind"] == "relaunch")
     return [
         a
         for n, a in enumerate(actions)
@@ -423,17 +435,25 @@ def _within_cap(actions: list[Action], budget: int) -> list[Action]:
 
 
 def _fetch_exit_actions(facts: Facts) -> list[Action]:
-    """One fetch_exit per remote-unfetched initiative, naming its stranded run."""
-    return [{"kind": "fetch_exit", "initiative": initiative, "run": run} for initiative, run in facts.get("remote_unfetched", {}).items()]
+    """One fetch_exit per remote-unfetched initiative, naming its stranded run and, when known, the host that ran it."""
+    run_hosts = facts.get("run_hosts", {})
+    return [_fetch_exit_action(initiative, run, run_hosts.get(run)) for initiative, run in facts.get("remote_unfetched", {}).items()]
+
+
+def _fetch_exit_action(initiative: str, run: str, host: object) -> Action:
+    """A fetch_exit carries host only when it is a non-empty name; a local run has none."""
+    if isinstance(host, str) and host:
+        return {"kind": ActionKind.FETCH_EXIT, "initiative": initiative, "run": run, "host": host}
+    return {"kind": ActionKind.FETCH_EXIT, "initiative": initiative, "run": run}
 
 
 def _withhold_remote_unfetched(actions: list[Action], remote_unfetched: frozenset[str]) -> list[Action]:
     """Drop a relaunch for a remote-unfetched initiative; a dropped relaunch takes its paired clear_branches with it."""
-    dropped = {n for n, a in enumerate(actions) if a["kind"] == "relaunch" and a["initiative"] in remote_unfetched}
+    dropped = {n for n, a in enumerate(actions) if a["kind"] == "relaunch" and action_text(a, "initiative") in remote_unfetched}
     return [
         a
         for n, a in enumerate(actions)
-        if n not in dropped and not (a["kind"] == "clear_branches" and a["initiative"] in remote_unfetched)
+        if n not in dropped and not (a["kind"] == "clear_branches" and action_text(a, "initiative") in remote_unfetched)
     ]
 
 
@@ -465,11 +485,11 @@ def _withhold_not_exited(actions: list[Action], not_exited: frozenset[str]) -> l
 
     A stale-looking lease is never enough on its own; only facts run_exited being true clears this gate.
     """
-    dropped = {n for n, a in enumerate(actions) if a["kind"] == "relaunch" and a["initiative"] in not_exited}
+    dropped = {n for n, a in enumerate(actions) if a["kind"] == "relaunch" and action_text(a, "initiative") in not_exited}
     return [
         a
         for n, a in enumerate(actions)
-        if n not in dropped and not (a["kind"] == "clear_branches" and a["initiative"] in not_exited)
+        if n not in dropped and not (a["kind"] == "clear_branches" and action_text(a, "initiative") in not_exited)
     ]
 
 
@@ -482,12 +502,12 @@ def _withhold_lost_runs(actions: list[Action], lost: frozenset[str]) -> list[Act
     dropped = {
         n
         for n, a in enumerate(actions)
-        if a["initiative"] in lost and (a["kind"] == "relaunch" or a["kind"] in {"retry", "rescue"})
+        if action_text(a, "initiative") in lost and (a["kind"] == "relaunch" or a["kind"] in {"retry", "rescue"})
     }
     return [
         a
         for n, a in enumerate(actions)
-        if n not in dropped and not (a["kind"] == "clear_branches" and a["initiative"] in lost)
+        if n not in dropped and not (a["kind"] == "clear_branches" and action_text(a, "initiative") in lost)
     ]
 
 
@@ -515,7 +535,7 @@ def _lease_stuck_actions(facts: Facts, now: datetime | None) -> list[Action]:
     ]
     return [
         {
-            "kind": "needs_chair",
+            "kind": ActionKind.NEEDS_CHAIR,
             "initiative": initiative,
             "cause": "lease_stuck",
             "reason": f"run {s['holder_run']} still holds the lease; launches refused from {s['first_at']} to {s['last_at']}",
@@ -529,13 +549,13 @@ def _withhold_lease_held(actions: list[Action], held: frozenset[str]) -> list[Ac
     return [
         a
         for a in actions
-        if not (a["initiative"] in held and a["kind"] in ("relaunch", "retry", "rescue", "clear_branches"))
+        if not (action_text(a, "initiative") in held and a["kind"] in ("relaunch", "retry", "rescue", "clear_branches"))
     ]
 
 
 def _unmet_needs_ids(initiatives: list[InitiativeFacts]) -> frozenset[str]:
     """Initiatives no launch_epic may take this tick: no ready task has every need landed."""
-    return frozenset(i["id"] for i in initiatives if _initiative_first_unmet_need(i) is not None)
+    return frozenset(i["id"] for i in initiatives if initiative_first_unmet_need(i) is not None)
 
 
 def _steer_deferred(action: Action) -> bool:
@@ -547,9 +567,9 @@ def _unstarted_waiting_chair(initiatives: list[InitiativeFacts]) -> list[Action]
     """waiting-on reports for unstarted initiatives only; plan_recover's own waiting-on reports cover the
     started ones, so this never double-reports."""
     return [
-        {"kind": "needs_chair", "initiative": i["id"], "cause": f"waiting on {need}"}
+        {"kind": ActionKind.NEEDS_CHAIR, "initiative": i["id"], "cause": f"waiting on {need}"}
         for i in initiatives
-        if not i["started"] and (need := _initiative_first_unmet_need(i)) is not None
+        if not i["started"] and (need := initiative_first_unmet_need(i)) is not None
     ]
 
 
@@ -560,9 +580,10 @@ def _login_needs_chair_actions(facts: Facts, now: datetime | None) -> list[Actio
     return [*chair_login_watch.login_needs_chair(login_hosts), *chair_login_watch.host_unreachable_needs_chair(login_hosts), *back]
 
 
-def _held_reason(held: dict) -> str:
+def _held_reason(held: HeldFile) -> str:
     """The action's reason: the diff summary when the row has one, else the export's own reason text."""
-    what = f"changed with no matching store change ({held['diff_summary']})" if held.get("diff_summary") else held["reason"]
+    summary = held.get("diff_summary")
+    what = f"changed with no matching store change ({summary})" if summary else held["reason"]
     return f"{held['path']}: {what}; keep it with `cox route import`, or restore the export"
 
 
@@ -572,7 +593,7 @@ def plan_held_files(facts: Facts) -> list[Action]:
     reported = set(facts.get("held_reported", []))
     return [
         {
-            "kind": "needs_chair",
+            "kind": ActionKind.NEEDS_CHAIR,
             "initiative": held["initiative"],
             "cause": HELD_FILE_CAUSE,
             "path": held["path"],
@@ -587,7 +608,7 @@ def plan_held_files(facts: Facts) -> list[Action]:
 def plan_close_initiatives(facts: Facts) -> list[Action]:
     """One close_initiative per todo initiative with task rows that are all done or dropped; state is done when any task is done."""
     return [
-        {"kind": "close_initiative", "initiative": entry["id"], "state": "done" if "done" in entry["task_states"] else "dropped"}
+        {"kind": ActionKind.CLOSE_INITIATIVE, "initiative": entry["id"], "state": "done" if "done" in entry["task_states"] else "dropped"}
         for entry in facts.get("todo_initiatives", [])
         if entry["task_states"] and set(entry["task_states"]) <= {"done", "dropped"}
     ]
@@ -600,7 +621,7 @@ def _empty_decompose_needs_chair_actions(facts: Facts) -> list[Action]:
     reported = set(facts.get("empty_decompose_reported", []))
     return [
         {
-            "kind": "needs_chair",
+            "kind": ActionKind.NEEDS_CHAIR,
             "initiative": entry["initiative"],
             "run": entry["run"],
             "cause": "empty_decompose",
@@ -625,7 +646,7 @@ def _decompose_gate(facts: Facts) -> tuple[frozenset[str], list[Action]]:
     ]
     actions: list[Action] = [
         {
-            "kind": "needs_chair",
+            "kind": ActionKind.NEEDS_CHAIR,
             "initiative": initiative,
             "run": run,
             "cause": "decompose_stalled",
@@ -640,12 +661,57 @@ def _decompose_gate(facts: Facts) -> tuple[frozenset[str], list[Action]]:
     return frozenset(streaks), actions
 
 
+# The tick length the miss backoff counts in: chair_run.DEFAULT_INTERVAL, the service's default. A longer real interval
+# only makes the backoff shorter in ticks; it never makes a skipped intake launch more often than once per window.
+MISS_TICK_SECONDS = 60
+MISSING_IDEA_CAUSE = "decompose_missing_idea"  # chair_facts.MISSING_IDEA_CAUSE: chair_facts imports this module
+
+
+def _miss_skipped(miss: DecomposeMiss, current: str, now: datetime | None) -> bool:
+    """`is_skipped` at the tick's clock. With no clock, or a recorded time that does not parse, an unchanged intake is
+    skipped: holding one intake back a tick costs less than letting a broken launch take every tick's slot."""
+    if current != miss.fingerprint:
+        return False
+    try:
+        return True if now is None else is_skipped(miss, current, now.isoformat(), MISS_TICK_SECONDS)
+    except ValueError:
+        return True
+
+
+def _decompose_miss_gate(facts: Facts, now: datetime | None) -> tuple[frozenset[str], list[Action]]:
+    """Intake paths whose decompose found no idea file and are still backing off, and one needs_chair for each that has
+    missed MISS_ESCALATE_AT times on an unchanged intake and was not yet reported for that fingerprint.
+
+    A path with no current fingerprint is never skipped: nothing can say the intake is unchanged."""
+    current = facts.get("decompose_miss_fingerprints", {})
+    reported = set(facts.get("decompose_misses_reported", []))
+    unchanged = {
+        path: miss
+        for path, miss in facts.get("decompose_misses", {}).items()
+        if path in current and current[path] == miss.fingerprint
+    }
+    skipped = frozenset(path for path, miss in unchanged.items() if _miss_skipped(miss, current[path], now))
+    actions: list[Action] = [
+        {
+            "kind": ActionKind.NEEDS_CHAIR,
+            "initiative": miss.intake_id,
+            "cause": MISSING_IDEA_CAUSE,
+            "reason": escalation_reason(miss),
+            "intake": path,
+            "fingerprint": miss.fingerprint,
+        }
+        for path, miss in sorted(unchanged.items())
+        if needs_escalation(miss, f"{path}|{miss.fingerprint}" in reported)
+    ]
+    return skipped, actions
+
+
 def _login_check_actions(facts: Facts, now: datetime | None) -> list[Action]:
     """One check_login per due host; requires the tick's clock, like housekeeping."""
     if now is None:
         return []
     login_hosts = facts.get("login_hosts", [])
-    return [{"kind": "check_login", "host": name} for name in chair_login_watch.due_for_login_check(login_hosts, now.isoformat())]
+    return [{"kind": ActionKind.CHECK_LOGIN, "host": name} for name in chair_login_watch.due_for_login_check(login_hosts, now.isoformat())]
 
 
 def _probe_host_actions(facts: Facts, now: datetime | None) -> list[Action]:
@@ -653,7 +719,7 @@ def _probe_host_actions(facts: Facts, now: datetime | None) -> list[Action]:
     if now is None:
         return []
     login_hosts = facts.get("login_hosts", [])
-    return [{"kind": "probe_host", "host": name} for name in chair_login_watch.due_for_probe(login_hosts, now.isoformat())]
+    return [{"kind": ActionKind.PROBE_HOST, "host": name} for name in chair_login_watch.due_for_probe(login_hosts, now.isoformat())]
 
 
 def _stall_reason(last_call: LastCall | None, idle: float) -> str:
@@ -664,7 +730,7 @@ def _stall_reason(last_call: LastCall | None, idle: float) -> str:
 
 def _stall_needs_chair(candidate: StallCandidate, idle: float) -> Action:
     return {
-        "kind": "needs_chair",
+        "kind": ActionKind.NEEDS_CHAIR,
         "initiative": candidate["initiative"],
         "run": candidate["run"],
         "cause": "stalled",
@@ -684,9 +750,9 @@ def plan_stall(candidates: list[StallCandidate], now: datetime) -> list[Action]:
         if not candidate["local"]:
             actions.append(_stall_needs_chair(candidate, idle))
         elif not candidate["usr1_sent"]:
-            actions.append({"kind": "stalled_usr1", "run": candidate["run"], "initiative": candidate["initiative"]})
+            actions.append({"kind": ActionKind.STALLED_USR1, "run": candidate["run"], "initiative": candidate["initiative"]})
         else:
-            actions.append({"kind": "stalled_stop", "run": candidate["run"], "initiative": candidate["initiative"]})
+            actions.append({"kind": ActionKind.STALLED_STOP, "run": candidate["run"], "initiative": candidate["initiative"]})
             actions.append(_stall_needs_chair(candidate, idle))
     return actions
 
@@ -699,8 +765,8 @@ def plan_idle_stall(inputs: IdleStallInputs | None, now: datetime) -> list[Actio
     if inputs["open_signature"] == diagnosis["signature"]:
         return []
     return [
-        {  # type: ignore[typeddict-unknown-key]  # Action has no signature field yet
-            "kind": "needs_chair",
+        {
+            "kind": ActionKind.NEEDS_CHAIR,
             "initiative": diagnosis["subject"],
             "cause": "idle_stall",
             "reason": diagnosis["text"],
@@ -719,7 +785,7 @@ def deferred_land_deadlock(facts: Facts, now: datetime | None) -> tuple[str, App
 def _land_command(task: ApprovedTask) -> list[str] | None:
     from agent_tools.chair_exec import argv_for  # deferred: chair_exec imports chair_facts, which imports this module
 
-    return argv_for({"kind": "land", "run": task["run"], "task_id": task["id"], "repo": task["repo"]})  # type: ignore[typeddict-item]
+    return argv_for({"kind": ActionKind.LAND, "run": task["run"], "task_id": task["id"], "repo": task["repo"]})
 
 
 def plan_deferred_land_deadlock(facts: Facts, now: datetime | None) -> list[Action]:
@@ -729,19 +795,19 @@ def plan_deferred_land_deadlock(facts: Facts, now: datetime | None) -> list[Acti
         return []
     waiting, need = found
     signature = f"deferred_land:{waiting}"
-    if facts["idle_stall"]["open_signature"] == signature:  # type: ignore[typeddict-item]
+    if facts["idle_stall"]["open_signature"] == signature:
         return []
     command = _land_command(need)
-    return [
-        {  # type: ignore[typeddict-unknown-key]  # Action has no signature field yet
-            "kind": "needs_chair",
-            "initiative": need["initiative"],
-            "cause": DEADLOCK_CAUSE,
-            "reason": f"{waiting} needs approved {need['id']}; land_at defers that land",
-            "signature": signature,
-            **({"command": command} if command else {}),
-        }
-    ]
+    action: Action = {
+        "kind": ActionKind.NEEDS_CHAIR,
+        "initiative": need["initiative"],
+        "cause": DEADLOCK_CAUSE,
+        "reason": f"{waiting} needs approved {need['id']}; land_at defers that land",
+        "signature": signature,
+    }
+    if command:
+        action["command"] = command
+    return [action]
 
 
 def _without_deadlocked(actions: list[Action], deadlock: tuple[str, ApprovedTask] | None) -> list[Action]:
@@ -766,7 +832,7 @@ def reported_waiting(facts: Facts, now: datetime | None) -> list[WaitingInitiati
 
 def _silent_dead_pid(entry: object, now: datetime) -> bool:
     """alive is False and an aware last_beat_at at least _DEAD_PID_SILENCE before now."""
-    if not isinstance(entry, Mapping) or entry.get("alive") is not False:
+    if not is_mapping(entry) or entry.get("alive") is not False:
         return False
     beat_at = entry.get("last_beat_at")
     beat = _parse_utc(beat_at) if isinstance(beat_at, str) else None
@@ -779,8 +845,8 @@ def _dead_pid_lost(facts: Facts, now: datetime) -> dict[str, str]:
     An unfetched initiative is skipped: a cleanly finished remote run also has a dead pid, and only the fetch_exit
     planned for it this tick can show whether it exited. The next tick judges it with run_exited fetched.
     """
-    raw_probes = facts.get("pid_probe", {})
-    probes = raw_probes if isinstance(raw_probes, Mapping) else {}
+    raw_probes: object = facts.get("pid_probe", {})  # a malformed probe fact plans as if unprobed
+    probes: Mapping[str, object] = raw_probes if is_mapping(raw_probes) else {}
     known = {i["id"] for i in facts["initiatives"]}
     unfetched = facts.get("remote_unfetched", {})
     exited = facts.get("run_exited", {})
@@ -803,7 +869,7 @@ def _with_dead_pid_lost(facts: Facts, now: datetime | None) -> Facts:
     """facts with silent dead-pid initiatives merged into lost_runs; a lost_runs entry keeps its own run id."""
     if now is None:
         return facts
-    return {**facts, "lost_runs": {**_dead_pid_lost(facts, now), **facts.get("lost_runs", {})}}  # type: ignore[return-value]
+    return {**facts, "lost_runs": {**_dead_pid_lost(facts, now), **facts.get("lost_runs", {})}}
 
 
 @dataclass(frozen=True)
@@ -822,7 +888,7 @@ def _land_only_ids(initiatives: list[InitiativeFacts], approved: list[ApprovedTa
     return frozenset(
         i["id"]
         for i in initiatives
-        if i["started"] and _initiative_first_unmet_need(i) is not None and all((i["id"], n) in pending for n in unmet(i))
+        if i["started"] and initiative_first_unmet_need(i) is not None and all((i["id"], n) in pending for n in unmet(i))
     )
 
 
@@ -855,7 +921,7 @@ def _without_widened(actions: list[Action], widened: frozenset[tuple[str, str]])
     ]
 
 
-def _task_views(initiative: InitiativeFacts, rows: Sequence[Mapping]) -> tuple[tuple[TaskView, ...], tuple[str, ...]]:
+def _task_views(initiative: InitiativeFacts, rows: Sequence[PhaseTasks]) -> tuple[tuple[TaskView, ...], tuple[str, ...]]:
     """The initiative's tasks for `runnable_verdict`, and the sorted phases they span.
 
     A ready row task with no ready_tasks or waiting_tasks entry is claimed or held, so it is passed as `claimed`.
@@ -896,7 +962,7 @@ def _waiting_actions(waiting: Sequence[WaitingInitiative], reported: Mapping[str
     """One waiting action per initiative whose `<phase>|<quarantined>|<awaiting_land>` differs from what was last reported."""
     return [
         {
-            "kind": "waiting",
+            "kind": ActionKind.WAITING,
             "initiative": w.initiative,
             "phase": w.blocking.phase,
             "quarantined": w.blocking.quarantined,
@@ -913,7 +979,7 @@ def _no_host(free_lanes: int, host_free: Sequence[HostSlot], consumed: Mapping[s
     reserved is dispatch local_lanes "decompose": the local lanes then take no epic."""
     local_epics = sum(a["kind"] == "launch_epic" and "host" not in a for a in filled)
     taken = Counter(a["host"] for a in filled if a["kind"] == "launch_epic" and "host" in a)
-    host_slots = [free - taken[name] for name, *_, free, _ in _less_consumed(list(host_free), dict(consumed))]
+    host_slots = [free - taken[name] for name, *_, free, _ in less_consumed(list(host_free), dict(consumed))]
     return (reserved or free_lanes - local_epics <= 0) and not any(slot > 0 for slot in host_slots)
 
 
@@ -954,7 +1020,7 @@ def _stuck_steer_heads(
         return "no host" if no_host else "launch refused: left out of the launch list"
 
     return [
-        {"kind": "needs_chair", "initiative": h, "cause": "steer_head_stuck", "reason": reason(h)}
+        {"kind": ActionKind.NEEDS_CHAIR, "initiative": h, "cause": "steer_head_stuck", "reason": reason(h)}
         for h in heads
         if h not in running and h not in launched
     ]
@@ -963,7 +1029,7 @@ def _stuck_steer_heads(
 _SCHEDULED_LATER = "the schedule placed it later"
 
 
-def _placement_hints(facts: Facts, schedule: Schedule | None) -> dict[str, dict[str, str]]:
+def _placement_hints(facts: Facts, schedule: Schedule | None) -> dict[str, chair_launch_why.Placement]:
     """Per initiative the schedule places: host of its first this-tick launch, else scheduled_later.
 
     host is "" when that host is local in schedule_inputs. An Explanation names neither the node a placement waits
@@ -998,9 +1064,9 @@ def _unlaunched_actions(
     absent when there is no schedule or it does not place the initiative; scheduled_later marks one it places later."""
     if now is None:
         return []
-    launched = frozenset(a["initiative"] for a in launches if _is_launch(a))
+    launched = frozenset(action_text(a, "initiative") for a in launches if _is_launch(a))
     holds = [a for a in launches if a["kind"] == "steer_clear" or _steer_deferred(a)]
-    reported = frozenset(a["initiative"] for a in stuck)
+    reported = frozenset(action_text(a, "initiative") for a in stuck)
     history = facts.get("launch_history", {})
     hints = _placement_hints(facts, schedule)
     return [
@@ -1040,9 +1106,11 @@ def _planned_schedule(facts: Facts, now: datetime | None, withheld: frozenset[st
     return plan_from_inputs(facts["schedule_inputs"], now, withheld)[0]
 
 
-def _without_advice_clock(body: Mapping) -> dict:
+def _without_advice_clock(body: Mapping[str, object]) -> dict[str, object]:
     """A schedule body with the `at` stamp dropped from its advice: it moves every tick and says nothing new."""
-    return {**body, "advice": [{k: v for k, v in a.items() if k != "at"} for a in body.get("advice", [])]}
+    advice = body.get("advice", [])
+    rows = advice if is_list(advice) else []
+    return {**body, "advice": [{k: v for k, v in a.items() if k != "at"} for a in rows if is_mapping(a)]}
 
 
 def _schedule_update(facts: Facts, schedule: Schedule | None, now: datetime | None) -> list[Action]:
@@ -1051,8 +1119,12 @@ def _schedule_update(facts: Facts, schedule: Schedule | None, now: datetime | No
         return []
     feed = schedule_feed(schedule, now)
     previous = facts.get("previous_schedule_feed")
-    unchanged = previous is not None and _without_advice_clock(previous.get("schedule", {})) == _without_advice_clock(feed["schedule"])
-    return [] if unchanged else [feed["action"]]
+    old_body: object = {} if previous is None else previous.get("schedule", {})
+    new_body = feed["schedule"]
+    unchanged = (
+        previous is not None and is_mapping(old_body) and is_mapping(new_body) and _without_advice_clock(old_body) == _without_advice_clock(new_body)
+    )
+    return [] if unchanged else [action_from_store(feed["action"])]
 
 
 def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str] = frozenset()) -> list[Action]:
@@ -1067,7 +1139,16 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     login_needs_chair = _login_needs_chair_actions(facts, now)
     empty_decompose_needs_chair = _empty_decompose_needs_chair_actions(facts)
     held_needs_chair = plan_held_files(facts)
-    stalled_intake, decompose_stalled_needs_chair = _decompose_gate(facts)
+    # H4.1: an initiative whose last runs ended the same way is held for a person, and not relaunched meanwhile.
+    no_progress_holds = plan_no_progress(facts)
+    # Only an initiative held this tick is withheld: once its hold is visible the held gate takes over, and a hold a
+    # person cleared by any route lets it launch again.
+    no_progress = frozenset(action_text(a, "initiative") for a in no_progress_holds)
+    streak_stalled, streak_needs_chair = _decompose_gate(facts)
+    missed_intake, miss_needs_chair = _decompose_miss_gate(facts, now)
+    # A skipped intake stays in facts["intake"] (so no pull is planned), but plan_fill never launches it.
+    stalled_intake = streak_stalled | missed_intake
+    decompose_stalled_needs_chair = [*streak_needs_chair, *miss_needs_chair]
     review = plan_review(facts)
     planned_unstarted_waiting_chair = _unstarted_waiting_chair(facts["initiatives"])
     lost = frozenset(facts.get("lost_runs", {}))
@@ -1080,16 +1161,16 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     remote_unfetched = frozenset(facts.get("remote_unfetched", {}))
     run_exited = facts.get("run_exited", {})
     widen = plan_widen(facts)
-    widened = frozenset((a["initiative"], a["task_id"]) for a in widen)
+    widened = frozenset((action_text(a, "initiative"), action_text(a, "task_id")) for a in widen)
     lands = planned_lands
     recover_actions = plan_recover(facts, now)
     lost_actions = plan_lost_runs(facts, now)
     ordinary = _withhold_lost_runs(_without_widened(recover_actions, widened), lost)
     pre_exit_gate = _withhold_remote_unfetched(ordinary, remote_unfetched)
-    would_relaunch = frozenset(a["initiative"] for a in pre_exit_gate if a["kind"] == "relaunch")
+    would_relaunch = frozenset(action_text(a, "initiative") for a in pre_exit_gate if a["kind"] == "relaunch")
     not_exited = frozenset(i for i in would_relaunch if not run_exited.get(i, False))
     recoverable = _without_gated_launches(
-        _hold_for_ci([*_withhold_not_exited(pre_exit_gate, not_exited), *lost_actions], held | gated), gated
+        _hold_for_ci([*_withhold_not_exited(pre_exit_gate, not_exited), *lost_actions], held | gated | no_progress), gated | no_progress
     )
     lease_held = _lease_held_ids(facts)
     lease_stuck = _lease_stuck_actions(facts, now)
@@ -1103,17 +1184,17 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     closes = [*plan_close_initiatives(facts), *plan_finish(facts), *plan_missed_closes(facts)]
     # A blocked initiative's relaunch and its paired clear_branches go; the waiting action records why.
     recovered = _withhold_lease_held(
-        [a for a in _without_deadlocked(recoverable, deadlock) if not (a["kind"] in ("relaunch", "clear_branches") and a["initiative"] in waiting_ids)],
+        [a for a in _without_deadlocked(recoverable, deadlock) if not (a["kind"] in ("relaunch", "clear_branches") and action_text(a, "initiative") in waiting_ids)],
         lease_held,
     )
     if facts["limits"]["hard_stop"]:
         # Nothing launches, so every ready initiative is left out; a pace cap of 0 names the first reason, which the stop replaces.
-        stopped = [
+        stopped: list[Action] = [
             {**a, "reason": "hard stop: nothing launches until the stop lifts"}
             for a in _unlaunched_actions(facts, [], {}, {}, 0, False, 0, now, [])
         ]
         idle_ready = plan_idle_ready(facts, recovered, now) if now is not None else []
-        return [
+        stopped_plan = [
             *reverts,  # a revert starts no run, so a red main is healed under the hard stop too
             *lands,
             *fetch_exits,
@@ -1131,6 +1212,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
             *empty_decompose_needs_chair,
             *lease_stuck,
             *held_needs_chair,
+            *no_progress_holds,
             *decompose_stalled_needs_chair,
             *review,
             *unstarted_waiting_chair,
@@ -1139,6 +1221,8 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
             *stopped,
             *schedule_update,
         ]
+        # H7.1: the hard stop means no launch on purpose, so only the land and repeated-failure checks stand.
+        return [*stopped_plan, *(plan_stall_alarm(facts, stopped_plan, now, launch_paused=True) if now is not None else [])]
     cap = _launch_cap(facts["limits"])
     host_free = host_free_slots(facts)
     capped_actions, consumed = _cap_launches(
@@ -1153,11 +1237,11 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     # A steer deferral already reports its initiative; fill would find the same overlap and report it twice.
     # An initiative being landed, or whose phase lands this tick, must not launch until the land settles; the rest of
     # its repo launches beside the land.
-    decompose_only = frozenset(facts.get("remote_unfetched_decompose", ()))  # type: ignore[typeddict-item]
+    decompose_only = frozenset(facts.get("remote_unfetched_decompose", ()))
     # Each set is keyed by the plain words a stuck steer head reports when it is the reason the head is left out.
     withheld_by = {
         "recovery already holds it": frozenset(
-            {a["initiative"] for a in capped if a["kind"] == "relaunch" or a["kind"] == "steer_clear" or _steer_deferred(a)}
+            {action_text(a, "initiative") for a in capped if a["kind"] == "relaunch" or a["kind"] == "steer_clear" or _steer_deferred(a)}
         ),
         # chair_facts imports this module, so STRANDED_CAUSE comes from chair_plan_recover, which holds the same value.
         "quarantined": frozenset(q["initiative"] for q in facts["quarantines"] if q["cause"] != STRANDED_CAUSE),
@@ -1175,8 +1259,9 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         "waiting on a need": waiting_ids,
         "its launch was refused on a held lease": lease_held,
         "it is held or deferred to a later release": gated,
+        "its last runs ended the same way": no_progress,
     }
-    withheld = frozenset().union(*withheld_by.values())
+    withheld = frozenset[str]().union(*withheld_by.values())
     claimed = claimed_by(recover_actions, facts)
     free_lanes = _free_lanes(cap, kept, facts["dispatch"], _cap_count(capped) - kept)
     # Fill plans with the withheld set, so an initiative recovery holds does not keep others behind its surfaces.
@@ -1189,7 +1274,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     no_host = _no_host(free_lanes, host_free, consumed, filled, facts["dispatch"].get("local_lanes") == "decompose")
     stuck_heads = _stuck_steer_heads(
         steer_heads(launches),
-        frozenset(a["initiative"] for a in launches if _is_launch(a)),
+        frozenset(action_text(a, "initiative") for a in launches if _is_launch(a)),
         frozenset(r["id"] for r in facts.get("running", [])),
         {i["id"]: i for i in facts["initiatives"]},
         withheld_by,
@@ -1201,10 +1286,10 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         facts, launches, withheld_by, skips, free_lanes, no_host, cap_left, now, stuck_heads, schedule
     )
     # Read before the cap: a rebase starts no run, so a relaunch the cap dropped still gets its branch rebased.
-    relaunching = frozenset(a["initiative"] for a in [*recovered, *launches] if _is_launch(a))
+    relaunching = frozenset(action_text(a, "initiative") for a in [*recovered, *launches] if _is_launch(a))
     rebases = plan_rebase(facts.get("phase_branches", []), relaunching)
     idle_ready = plan_idle_ready(facts, [*launches, *stuck_heads, *unlaunched], now) if now is not None else []
-    return [
+    planned = [
         *reverts,
         *lands,
         *fetch_exits,
@@ -1222,6 +1307,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         *empty_decompose_needs_chair,
         *lease_stuck,
         *held_needs_chair,
+        *no_progress_holds,
         *decompose_stalled_needs_chair,
         *review,
         *unstarted_waiting_chair,
@@ -1231,6 +1317,9 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         *closes,
         *schedule_update,
     ]
+    # H7.1: one alarm per stall the tick sees and one all-clear per raised stall that no longer stands; a launch planned
+    # this tick means the lanes are not idle.
+    return [*planned, *(plan_stall_alarm(facts, planned, now) if now is not None else [])]
 
 
 def _parse_utc(ts: str | None) -> datetime | None:
@@ -1247,7 +1336,7 @@ def plan_housekeeping(facts: Facts, now: datetime) -> list[Action]:
     last = _parse_utc(facts["last_housekeeping_at"])
     if last is not None and now - last < timedelta(hours=facts["housekeeping_hours"]):
         return []
-    return [{"kind": "housekeeping", "reason": f"housekeeping due: last {facts['last_housekeeping_at'] if last else 'never'}"}]
+    return [{"kind": ActionKind.HOUSEKEEPING, "reason": f"housekeeping due: last {facts['last_housekeeping_at'] if last else 'never'}"}]
 
 
 def plan_tick_held(facts: Facts, now: datetime | None = None, gate: CiGate = _UNPAUSED) -> TickPlan:
@@ -1259,7 +1348,7 @@ def plan_tick_held(facts: Facts, now: datetime | None = None, gate: CiGate = _UN
     gated = _lease_gate(lease)
     housekeeping = plan_housekeeping(facts, now) if now is not None else []
     login_checks = [*_login_check_actions(facts, now), *_probe_host_actions(facts, now)]
-    held = _land_only_ids(facts["initiatives"], facts["approved"]) if gate.paused and gated is None else frozenset()
+    held = _land_only_ids(facts["initiatives"], facts["approved"]) if gate.paused and gated is None else frozenset[str]()
     holder = _withhold_blocked_hosts(_plan_as_holder(facts, now, held), facts) if gated is None else []
     # A lent lease plans the routine actions, then standby last, so the tick still reads as not acting.
     lent = gated is not None and gated[0]["kind"] == "standby" and lease.get("lent", False)

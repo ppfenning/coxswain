@@ -35,7 +35,7 @@ _AUTH_MARKERS: tuple[str, ...] = (
 # Not an auth stop: concurrent Claude Code processes collided on the OAuth refresh. The
 # credential is fine and a retry works. Keep it out of `_AUTH_MARKERS`, which stop the
 # whole run in harness/epic.py. Lowercase, matched against the lowercased reason.
-_TRANSIENT_AUTH: tuple[str, ...] = ("failed to refresh oauth token",)
+TRANSIENT_AUTH: tuple[str, ...] = ("failed to refresh oauth token",)
 
 
 # Must equal `harness.checks.HARNESS_FAULT_PREFIX`; this module imports nothing from the harness.
@@ -45,6 +45,10 @@ _HARNESS_FAULT_PREFIX = "harness fault:"
 _OUTSIDE_SURFACES_PREFIX = "configured check failed outside surfaces:"
 _OUTSIDE_SURFACES_WHY = "tests outside surfaces"
 
+# Must equal `harness.stale_base.WRONG_REPOSITORY_PREFIX`: a stale base whose missing files all live in another
+# repository is the ticket's, not the base's.
+_WRONG_REPOSITORY_PREFIX = "wrong repository:"
+
 
 def is_auth_failure(reason: str) -> bool:
     """True when the reason carries an authentication marker; `classify_cause` asks the same."""
@@ -52,12 +56,12 @@ def is_auth_failure(reason: str) -> bool:
 
 
 def classify_cause(kind: str, reason: str) -> Cause | None:
-    """An authentication failure first, then a budget, turn or session limit stop, then a transient OAuth refresh collision, then harness, an outside-surfaces check failure as ticket, code, a stale base as harness, ticket; None when no rule matches."""
+    """An authentication failure first, then a budget, turn or session limit stop, then a transient OAuth refresh collision, then harness, an outside-surfaces check failure as ticket, code, a stale base whose files all live in another repository as ticket, any other stale base as harness, ticket; None when no rule matches."""
     if is_auth_failure(reason):
         return "harness"
     if any(marker in reason.lower() for marker in _LIMIT_MARKERS):
         return "harness"
-    if any(marker in reason.lower() for marker in _TRANSIENT_AUTH):
+    if any(marker in reason.lower() for marker in TRANSIENT_AUTH):
         return "harness"
     if kind == "infra" or "patch did not apply" in reason:
         return "harness"
@@ -69,6 +73,8 @@ def classify_cause(kind: str, reason: str) -> Cause | None:
         return "ticket"
     if "configured check failed" in reason or "configured checks failed" in reason:
         return "code"
+    if kind == "stale_base" and reason.startswith(_WRONG_REPOSITORY_PREFIX):
+        return "ticket"
     if kind == "stale_base":
         return "harness"
     if kind == "no_work":

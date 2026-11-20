@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from agent_tools import run_store
+from agent_tools import bounded_run, run_store
 from agent_tools.events import Event, from_log
 from agent_tools.land import _ARBITER_SKIPPED, arbitration_verdict
 from agent_tools.records import load_trace
@@ -728,7 +728,7 @@ def resolve_provider_profile_sha(
         return None
     rel_path = f"providers/{profile}.yaml"
     try:
-        log = subprocess.run(
+        log = bounded_run.completed(
             ["git", "-C", str(cartridges_repo), "log", f"--before={started_at}", "-1", "--format=%H", "--", rel_path],
             capture_output=True, text=True, check=True,
         )
@@ -738,7 +738,7 @@ def resolve_provider_profile_sha(
     if not commit:
         return None
     try:
-        blob = subprocess.run(
+        blob = bounded_run.completed(
             ["git", "-C", str(cartridges_repo), "rev-parse", f"{commit}:{rel_path}"],
             capture_output=True, text=True, check=True,
         )

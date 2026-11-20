@@ -9,8 +9,6 @@ CONTRACT (implement against this; see docs/CLEAN-ROOM.md — write it fresh)
 
     autonomy_policy(kind, risk, ledger_rows, policy_config) -> "auto" | "propose"
 
-    plan_tier(cartridge, *, surfaces, patterns) -> 0 | 1 | 2
-
 Rules the implementation must honour:
 
 1.  ramp: never    -> always "propose". No streak can graduate it.
@@ -46,11 +44,6 @@ Rules the implementation must honour:
     this outcome. A clean that took three tries proves the loop converged, not
     that the kind is trustworthy first-try, so it neither builds nor breaks a
     streak. The fix loop must never launder struggle into trust.
-
-9.  Before a build there are no `change_facts`, only a task's `surfaces` and
-    `patterns`. `plan_tier` reads `cartridge["policy"]["review_tier"]`: 2 if
-    any surface is in `tier2_surfaces`, else 0 if any pattern is in
-    `tier0_patterns`, else 1. A missing list reads as empty.
 
 Unit tests for this file should need nothing but dicts and lists.
 
@@ -92,9 +85,11 @@ whichever entry is in front of us.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import TypedDict, cast
 
-__all__ = ["AUTO", "PROPOSE", "PolicyError", "autonomy_policy", "pacing_policy", "plan_tier", "tracker_for"]
+from core.jsontypes import is_mapping
+
+__all__ = ["AUTO", "PROPOSE", "PolicyError", "autonomy_policy", "pacing_policy", "tracker_for"]
 
 AUTO = "auto"
 PROPOSE = "propose"
@@ -116,7 +111,7 @@ class PolicyError(Exception):
     """The policy was asked a question it must refuse rather than guess at."""
 
 
-def _require_single_scope(rows: Sequence[Mapping[str, Any]]) -> None:
+def _require_single_scope(rows: Sequence[Mapping[str, object]]) -> None:
     """Refuse rows spanning more than one configuration. See rule 4."""
     for key in SCOPE_KEYS:
         values = {row.get(key) for row in rows}
@@ -128,23 +123,23 @@ def _require_single_scope(rows: Sequence[Mapping[str, Any]]) -> None:
             )
 
 
-def _first_try(row: Mapping[str, Any]) -> bool:
+def _first_try(row: Mapping[str, object]) -> bool:
     """Did this outcome arrive on the first build attempt? Absent means yes.
 
     See rule 8. Only cleans consult this: a reversal is a reversal however many
     tries preceded it, and reading `attempts` there would let a fix loop buy
     its way out of the ratchet.
     """
-    return int(row.get("attempts", 1) or 1) <= 1
+    return int(cast("int", row.get("attempts", 1) or 1)) <= 1
 
 
 def _streak_and_bar(
-    rows: Sequence[Mapping[str, Any]],
+    rows: Sequence[Mapping[str, object]],
     kind: str,
     risk: str,
     graduation_n: int,
     multiplier: int,
-    subject: Any = None,
+    subject: object = None,
 ) -> tuple[int, int]:
     """Consecutive clean outcomes for (kind, risk), and the bar they must clear.
 
@@ -174,12 +169,12 @@ def _streak_and_bar(
 
 
 def _has_graduated(
-    rows: Sequence[Mapping[str, Any]],
+    rows: Sequence[Mapping[str, object]],
     kind: str,
     risk: str,
     graduation_n: int,
     multiplier: int,
-    subject: Any = None,
+    subject: object = None,
 ) -> bool:
     streak, bar = _streak_and_bar(rows, kind, risk, graduation_n, multiplier, subject)
     return streak >= bar
@@ -188,16 +183,16 @@ def _has_graduated(
 def autonomy_policy(
     kind: str,
     risk: str,
-    ledger_rows: Sequence[Mapping[str, Any]],
-    policy_config: Mapping[str, Any],
+    ledger_rows: Sequence[Mapping[str, object]],
+    policy_config: Mapping[str, object],
 ) -> str:
     """Return AUTO if this kind has earned the right to write, else PROPOSE."""
     rows = list(ledger_rows)
     _require_single_scope(rows)
 
-    write_kinds = policy_config.get("write_kinds") or {}
+    write_kinds = cast("Mapping[str, object]", policy_config.get("write_kinds") or {})
     spec = write_kinds.get(kind)
-    if not isinstance(spec, Mapping):
+    if not is_mapping(spec):
         raise PolicyError(f"unknown write kind '{kind}'; it is not in the cartridge's taxonomy")
 
     ramp = spec.get("ramp")
@@ -209,21 +204,21 @@ def autonomy_policy(
         return PROPOSE
 
     subject = policy_config.get("subject")
-    graduation_n = int(policy_config.get("graduation_n", 5))
-    multiplier = int(policy_config.get("regraduation_multiplier", 2))
+    graduation_n = int(cast("int", policy_config.get("graduation_n", 5)))
+    multiplier = int(cast("int", policy_config.get("regraduation_multiplier", 2)))
 
     if ramp == "deferred":
         # Deferred kinds wait for the basics. Until every eligible kind has
         # earned its autonomy, nothing downstream of them gets to.
         eligible = [
-            (name, s) for name, s in write_kinds.items() if isinstance(s, Mapping) and s.get("ramp") == "eligible"
+            (name, s) for name, s in write_kinds.items() if is_mapping(s) and s.get("ramp") == "eligible"
         ]
         if not eligible:
             return PROPOSE
         for name, s in eligible:
             # Kind-level on purpose: "are the basics trusted yet" is a question
             # about the taxonomy, not about whichever subject is in front of us.
-            if not _has_graduated(rows, name, s.get("risk", risk), graduation_n, multiplier):
+            if not _has_graduated(rows, name, cast("str", s.get("risk", risk)), graduation_n, multiplier):
                 return PROPOSE
     elif ramp != "eligible":
         raise PolicyError(f"write kind '{kind}' has unknown ramp '{ramp}'")
@@ -233,65 +228,61 @@ def autonomy_policy(
 
     # Graduated. Caps still bound how much it may do in one run; the overflow is
     # proposed rather than dropped, and does not touch the streak.
-    caps = policy_config.get("caps") or {}
+    caps = cast("Mapping[str, object]", policy_config.get("caps") or {})
     cap = caps.get(kind)
-    if cap is not None and int(policy_config.get("applied_this_run", 0)) >= int(cap):
+    if cap is not None and int(cast("int", policy_config.get("applied_this_run", 0))) >= int(cast("int", cap)):
         return PROPOSE
 
     return AUTO
 
 
-def plan_tier(cartridge: Mapping[str, Any], *, surfaces: Sequence[str], patterns: Sequence[str]) -> int:
-    """The pre-build tier, from a task's `surfaces` and `patterns` alone (rule 9).
-
-    Before a build there are no change facts, so this reads the same
-    `review_tier` config block the post-build tier does and answers from what
-    the work item declares: a dangerous surface is tier 2, a tier-0 pattern is
-    tier 0, anything else is tier 1.
-    """
-    review_tier = (cartridge.get("policy") or {}).get("review_tier") or {}
-    tier2_surfaces = set(review_tier.get("tier2_surfaces") or [])
-    tier0_patterns = set(review_tier.get("tier0_patterns") or [])
-
-    if tier2_surfaces & set(surfaces):
-        return 2
-    if tier0_patterns & set(patterns):
-        return 0
-    return 1
+def _section(parent: Mapping[str, object], key: str) -> Mapping[str, object]:
+    """The mapping at `parent[key]`, empty when the key is unset or falsy."""
+    return cast("Mapping[str, object]", parent.get(key) or {})
 
 
 TIER_LADDER = ("deep", "standard", "cheap")
 EFFORT_LADDER = ("high", "low")
 
 
-def _optional_number(pacing: Mapping[str, Any], field: str) -> float | None:
+def _optional_number(pacing: Mapping[str, object], field: str) -> float | None:
     value = pacing.get(field)
     if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))):
         raise PolicyError(f"policy.pacing.{field} must be a number or null, got {type(value).__name__}")
-    return value
+    return cast("float | None", value)
 
 
-def _number(pacing: Mapping[str, Any], field: str, default: float) -> float:
+def _number(pacing: Mapping[str, object], field: str, default: float) -> float:
     value = pacing.get(field, default)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise PolicyError(f"policy.pacing.{field} must be a number, got {type(value).__name__}")
     return value
 
 
-def _late_threshold(pacing: Mapping[str, Any]) -> dict[str, float]:
+def _late_threshold(pacing: Mapping[str, object]) -> dict[str, float]:
     """Merge field-by-field so a team naming only `fraction` still gets a
     usable `hours_left` — a whole-value override would silently drop it."""
     raw = pacing.get("late_threshold")
-    if raw is not None and not isinstance(raw, Mapping):
+    if raw is not None and not is_mapping(raw):
         raise PolicyError(f"policy.pacing.late_threshold must be a mapping, got {type(raw).__name__}")
     merged = {"fraction": 0.70, "hours_left": 2, **(raw or {})}
     for key in ("fraction", "hours_left"):
         if not isinstance(merged[key], (int, float)):
             raise PolicyError(f"policy.pacing.late_threshold.{key} must be a number, got {type(merged[key]).__name__}")
-    return merged
+    return cast("dict[str, float]", merged)
 
 
-def pacing_policy(cartridge: Mapping[str, Any]) -> dict[str, Any]:
+class PacingPolicy(TypedDict):
+    ceiling_usd: float | None
+    window_hours: float
+    spent_vs_elapsed_margin: float
+    late_threshold: dict[str, float]
+    min_headroom_usd: float
+    tier_ladder: list[str]
+    effort_ladder: list[str]
+
+
+def pacing_policy(cartridge: Mapping[str, object]) -> PacingPolicy:
     """Resolve `policy.pacing`, filling in the defaults a launch reasons from.
 
     Field names and shapes are the Policy contract the tools package's
@@ -304,22 +295,22 @@ def pacing_policy(cartridge: Mapping[str, Any]) -> dict[str, Any]:
     through as given, same as any other field here; nothing in this repo
     knows the direction `assess()` walks them in, so nothing here polices it.
     """
-    pacing = (cartridge.get("policy") or {}).get("pacing") or {}
-    if not isinstance(pacing, Mapping):
+    pacing = _section(_section(cartridge, "policy"), "pacing")
+    if not is_mapping(pacing):
         raise PolicyError(f"policy.pacing must be a mapping, got {type(pacing).__name__}")
 
-    return {
-        "ceiling_usd": _optional_number(pacing, "ceiling_usd"),
-        "window_hours": _number(pacing, "window_hours", 5),
-        "spent_vs_elapsed_margin": _number(pacing, "spent_vs_elapsed_margin", 0.15),
-        "late_threshold": _late_threshold(pacing),
-        "min_headroom_usd": _number(pacing, "min_headroom_usd", 1.0),
-        "tier_ladder": list(pacing.get("tier_ladder", TIER_LADDER)),
-        "effort_ladder": list(pacing.get("effort_ladder", EFFORT_LADDER)),
-    }
+    return PacingPolicy(
+        ceiling_usd=_optional_number(pacing, "ceiling_usd"),
+        window_hours=_number(pacing, "window_hours", 5),
+        spent_vs_elapsed_margin=_number(pacing, "spent_vs_elapsed_margin", 0.15),
+        late_threshold=_late_threshold(pacing),
+        min_headroom_usd=_number(pacing, "min_headroom_usd", 1.0),
+        tier_ladder=list(cast("Sequence[str]", pacing.get("tier_ladder", TIER_LADDER))),
+        effort_ladder=list(cast("Sequence[str]", pacing.get("effort_ladder", EFFORT_LADDER))),
+    )
 
 
-def tracker_for(cartridge: Mapping[str, Any], remote_url: str | None) -> str:
+def tracker_for(cartridge: Mapping[str, object], remote_url: str | None) -> str:
     """Which tracker mirrors the work store, if any.
 
     `policy.tracker` set to anything — including the literal `none` — wins
@@ -329,9 +320,9 @@ def tracker_for(cartridge: Mapping[str, Any], remote_url: str | None) -> str:
     store stays the source of truth either way; a tracker only ever mirrors
     it, one way, never the reverse.
     """
-    tracker = (cartridge.get("policy") or {}).get("tracker")
+    tracker = _section(cartridge, "policy").get("tracker")
     if tracker is not None:
-        return tracker
+        return cast("str", tracker)
     if remote_url and "github.com" in remote_url:
         return "github-projects"
     return "none"

@@ -37,17 +37,22 @@ def test_a_stranded_cause_plans_carry_with_the_land_argv() -> None:
     assert (action["remedy"], action["command"]) == ("carry", LAND)
 
 
-def test_a_second_ticket_cause_on_the_body_plans_re_ground() -> None:
-    assert _plan(_fact(["ticket", "ticket"]))["remedy"] == "re-ground"
+def test_a_ticket_cause_the_chair_already_triaged_and_held_plans_re_ground() -> None:
+    facts: Facts = {
+        "quarantines": [_fact(["ticket", "ticket"])], "approved": [], "initiatives": [],
+        "handled_keys": ["triage:q1:r-9", "hold:q1:r-9"],
+    }  # type: ignore[typeddict-item]
+    (action,) = plan_recover(facts)
+    assert (action["kind"], action["remedy"]) == ("needs_chair", "re-ground")
 
 
-def test_a_first_ticket_cause_on_the_body_plans_a_relaunch_not_the_chair() -> None:
+def test_a_first_ticket_cause_on_the_body_requests_triage_then_relaunches_not_the_chair() -> None:
     facts: Facts = {
         "quarantines": [_fact(["ticket"])],
         "approved": [],
         "initiatives": [{"id": "i", "started": True, "ready_tasks": [{"id": "t1", "needs": []}], "landed": set()}],
     }  # type: ignore[typeddict-item]
-    assert [a["kind"] for a in plan_recover(facts)] == ["clear_branches", "relaunch"]
+    assert [a["kind"] for a in plan_recover(facts)] == ["request_triage", "clear_branches", "relaunch"]
 
 
 def test_a_fact_with_no_causes_list_uses_its_own_cause() -> None:

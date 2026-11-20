@@ -52,7 +52,7 @@ cox runs land RUN_ID --repo REPO [--task TASK] [--phase PHASE] [--label LABEL] [
 cox runs land-batch --repo REPO [--label LABEL] [--source SOURCE] [--batch-size BATCH_SIZE] [--wait-s WAIT_S] [--force] [--no-claim] [--base BASE] [--worktree-root WORKTREE_ROOT] [--apply] [--runs-dir RUNS_DIR] [--profile PROFILE] [--gate ticket|phase|epic|full]   land disjoint approved phases together as one pull request (the merge queue)
 cox runs fetch [--runs-dir RUNS_DIR] [--profile PROFILE] [RUN_ID] [--all]   pull an ended remote lane's run directory, log and branches to this machine
 cox runs review --pr PR [--profile PROFILE]   review a contributor PR with the review graph and post the verdict
-cox runs recover RUN_ID TASK_ID --repo REPO [--runs-dir RUNS_DIR] [--profile PROFILE] [--dry-run]   merge an approved task's commit into its phase branch after an escalated merge
+cox runs recover RUN_ID TASK_ID --repo REPO [--runs-dir RUNS_DIR] [--profile PROFILE] [--dry-run] [--reopen]   merge an approved task's commit into its phase branch after an escalated merge
 cox runs series [--runs-dir RUNS_DIR] [--json] [--append APPEND]   per-run summary rows across a runs directory
 cox runs wait [--runs-dir RUNS_DIR] [--max-seconds MAX_SECONDS] [--interval INTERVAL] [--json]   block until a busy lane's run exits, then print its outcome lines
 cox runs events [--runs-dir RUNS_DIR] [--follow] [--json]   poll a run's log for structured events
@@ -78,7 +78,7 @@ cox dash [--runs-dir RUNS_DIR] [--work-dir WORK_DIR] [--feed] [--once] [--interv
 cox settings get [--json] [--profile PROFILE]   print every setting, grouped by section; unset keys appear as built-in defaults, which set can override
 cox settings set cartridge|profile|host KEY VALUE [--dry-run] [--commit] [--profile PROFILE]   change one setting: print the diff and write the file; --commit also commits a git-tracked cartridge
 cox install [--root ROOT] [--home HOME] [--manifest MANIFEST] [--provider PROVIDER] [--with FLAG] [--team TEAM] [--workspace WORKSPACE] [--edge] [--dry-run]   clone/update coxswain components against the manifest
-cox upgrade [--root ROOT] [--home HOME] [--manifest MANIFEST] [--provider PROVIDER] [--with FLAG] [--team TEAM] [--workspace WORKSPACE] [--to TO] [--dry-run]   fetch and check out newer pinned versions; refuses dirty checkouts
+cox upgrade [--root ROOT] [--home HOME] [--manifest MANIFEST] [--provider PROVIDER] [--with FLAG] [--team TEAM] [--workspace WORKSPACE] [--to TO] [--dry-run] [--profile PROFILE] [--scheduled] [--install-timer] [--uninstall-timer] [--interval-minutes INTERVAL_MINUTES] [--environment-file ENVIRONMENT_FILE]   fetch and check out newer pinned versions; refuses dirty checkouts
 cox home [--profile PROFILE]   the live dashboard: runs, leader, backlog
 cox session [--profile PROFILE] [--no-plugin] [--print-argv] [--workspace] [CLAUDE_ARG...]   open the coxswain Claude session
 cox stats ingest [RUNS_DIR] [--db DB] [--work-store-root WORK_STORE_ROOT] [--cartridges-repo CARTRIDGES_REPO]   load usage, task, node and launch records into stats.db
@@ -122,7 +122,7 @@ cox route paths [--profile PROFILE] [--workspace WORKSPACE] [--apply] [--move ('
 cox route store-fill [--profile PROFILE] [--workspace WORKSPACE]   fill the store's work_items from the workspace files
 cox route approve INITIATIVE [--task TASK] [--by BY] [--profile PROFILE]   approve a draft initiative's todo tickets: todo becomes ready
 cox route decline INITIATIVE --reason REASON [--by BY] [--profile PROFILE]   decline a draft initiative: its todo tickets become dropped
-cox route edit ID [--title TITLE] [--body BODY] [--body-file BODY_FILE] [--note NOTE] [--repo REPO] [--surfaces SURFACES] [--state STATE] [--pr PR] [--rebuild] [--force] [--link LINK] [--after AFTER] [--epic EPIC] [--dry-run] [--profile PROFILE]   change a queued intake, an initiative or a task ticket
+cox route edit ID [--title TITLE] [--body BODY] [--body-file BODY_FILE] [--note NOTE] [--repo REPO] [--initiative INITIATIVE] [--surfaces SURFACES] [--state STATE] [--pr PR] [--rebuild] [--force] [--link LINK] [--after AFTER] [--epic EPIC] [--dry-run] [--profile PROFILE]   change a queued intake, an initiative or a task ticket
 cox route epic ACTION ID [--title TITLE] [--target-branch TARGET_BRANCH] [--dry-run] [--profile PROFILE]   create an epic definition file: `route epic new <id>`
 cox route remove [ID...] [--match GLOB] --reason REASON [--by BY] [--dry-run] [--profile PROFILE]   remove queued intakes or initiatives that have no live run
 cox route hold ID --reason REASON [--by BY] [--dry-run] [--profile PROFILE]   hold a queued intake or an initiative so the chair skips it until released; for an intake, an alias for draft with a reason
@@ -176,17 +176,25 @@ cox host sync NAME   bring a host's checkouts to the commits this machine runs (
 cox router select --role ROLE [--db DB] [--profile PROFILE] [--json]   the effective tier for a role under the profile's router: off|shadow|on flag
 cox steward propose [--db DB] [--profile PROFILE] [--json]   write each candidate clearing the evidence bar as a new intake file; never edits a provider profile
 cox steward draft [--profile PROFILE] [--json]   write each grounded proposal in intake as a draft initiative under work/, list those that exist or could not be grounded
-cox setup doctor [--profile PROFILE] [--repo REPO] [--json] [--host HOST]   check this machine's profile against what it needs
+cox setup doctor [--profile PROFILE] [--repo REPO] [--json] [--host HOST] [--fix]   check this machine's profile against what it needs
 cox setup install [--root ROOT] --team TEAM [--workspace WORKSPACE] [--home HOME] [--provider-profile PROVIDER_PROFILE] [--skills-root SKILLS_ROOT] [--assume a|r] [--plugins] [--hook] [--force-profile] [--dry-run] [--window-ceiling-usd WINDOW_CEILING_USD] [--weekly-ceiling-usd WEEKLY_CEILING_USD]   sync the checkout's venv, install cox and write a profile for this machine
 cox setup extras [--with EXTRA] [--dry-run]   install the optional extras into this venv, pinned and hash-checked from uv.lock
 cox setup migrate [--home HOME] [--dry-run] [--apply] [--hosts] [--finish] [--old-root PATH] [--to VERSION]   plan moving this host to the one monorepo checkout; --apply migrates
 cox setup store switch files|shared [--host HOST] [--port PORT] [--database DATABASE] [--user USER] [--bucket BUCKET] [--endpoint ENDPOINT] [--region REGION] [--password-env PASSWORD_ENV] [--access-key-env ACCESS_KEY_ENV] [--secret-key-env SECRET_KEY_ENV] [--dry-run]   copy an old local run store and its traces into the shared store, then record store.mode
+cox setup unit-env [--environment-file ENVIRONMENT_FILE]   write the one env file the chair, lander and upgrade units read, with the stored token
 cox setup token status [--probe]   report whether the stored token file exists and claude accepts it
 ```
 <!-- commands:end -->
 
 Bare `cox setup` opens towpath; it needs a terminal and towpath, and otherwise
 points you at `setup doctor` and `setup install`.
+
+`cox setup doctor` also checks the three append-only logs under the profile's
+workspace: `courier.jsonl`, and `land.jsonl` and `chair.actions.jsonl` in its
+`runs` folder. A damaged line, such as one of NUL bytes left by a crash, is a
+warning row that points at `--fix`. `cox setup doctor --fix` moves each damaged
+line to a `.damaged` file beside its log, prints one line per log it changed,
+and then checks again. `--host` ignores `--fix`.
 
 The `route` group reads one profile, `~/.config/agent-tools/profile.yaml` (the
 directory keeps the deprecated agent-tools name), or the path in

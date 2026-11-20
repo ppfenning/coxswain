@@ -7,7 +7,6 @@ from core.landing import (
     canonical_land_at,
     land_at_warnings,
     land_gate_level,
-    lands_at_initiative,
     phase_counts_complete,
     phase_land_deferred,
     resolve_land_at,
@@ -35,12 +34,6 @@ def test_retired_level_reads_as_initiative_with_a_warning() -> None:
     assert len(warnings) == 2
     assert "cartridge land_at 'level' is retired" in warnings[0]
     assert "initiative land_at 'level' is retired" in warnings[1]
-
-
-def test_lands_at_initiative_reads_every_spelling_and_the_default() -> None:
-    assert [lands_at_initiative(v) for v in (None, "initiative", "ticket", "level", "task", "epic")] == [
-        True, True, True, True, False, False,
-    ]
 
 
 def test_overlay_value_merges_and_keeps_siblings() -> None:

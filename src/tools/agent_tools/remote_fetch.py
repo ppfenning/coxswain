@@ -43,15 +43,14 @@ which steps to run."""
 from __future__ import annotations
 
 import json
-import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from agent_tools import repo_path, run_store
-from agent_tools.land import _approved as land_approved
+from agent_tools import bounded_run, repo_path, run_store
+from agent_tools.land import approved_reason as land_approved
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_argv import (
     INCOMING_PREFIX,
@@ -419,7 +418,7 @@ def phase_update(local_exists: bool, local_in_fetched: bool, fetched_in_local: b
 def _git_output(argv: list[str]) -> tuple[int, str]:
     """Edge. (exit code, stdout) of one git argv; a git that cannot start is exit 127."""
     try:
-        done = subprocess.run(argv, capture_output=True, text=True)
+        done = bounded_run.completed(argv, capture_output=True, text=True)
     except OSError as exc:
         return 127, str(exc)
     return done.returncode, done.stdout

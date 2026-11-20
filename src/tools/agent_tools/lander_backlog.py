@@ -12,7 +12,8 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+
+from core.jsontypes import is_list, is_mapping
 
 APPLIED = "applied"
 
@@ -25,21 +26,21 @@ class Step:
     why: str = ""
 
 
-def read_manifest(path: Path) -> list[dict[str, Any]]:
+def read_manifest(path: Path) -> list[dict[str, object]]:
     """The manifest's task rows; a missing or unreadable file raises ValueError with the path."""
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise ValueError(f"backlog manifest {path} could not be read: {exc}") from exc
-    tasks = data.get("tasks") if isinstance(data, Mapping) else None
-    if not isinstance(tasks, list):
+    tasks = data.get("tasks") if is_mapping(data) else None
+    if not is_list(tasks):
         raise ValueError(f"backlog manifest {path} has no tasks list")
-    return [dict(t) for t in tasks if isinstance(t, Mapping)]
+    return [dict(t) for t in tasks if is_mapping(t)]
 
 
-def plan(manifest: Sequence[Mapping[str, Any]], state_of: Callable[[str, str], str | None]) -> list[Step]:
+def plan(manifest: Sequence[Mapping[str, object]], state_of: Callable[[str, str], str | None]) -> list[Step]:
     """Pure but for `state_of(initiative, task)`. One step per manifest task, in manifest order."""
-    steps = []
+    steps: list[Step] = []
     for row in manifest:
         initiative, task, status = str(row.get("initiative") or ""), str(row.get("task_id") or ""), str(row.get("status") or "")
         if not status.startswith(APPLIED):
@@ -54,7 +55,7 @@ def plan(manifest: Sequence[Mapping[str, Any]], state_of: Callable[[str, str], s
 
 
 def apply(steps: Sequence[Step], mark_done: Callable[[str, str, str], str | None], pr: str) -> list[str]:
-    lines = []
+    lines: list[str] = []
     for step in steps:
         if step.action != "done":
             lines.append(f"{step.task}: skipped: {step.why}")

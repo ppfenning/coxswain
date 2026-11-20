@@ -1,16 +1,17 @@
 """An intake's decompose runs as DecomposeRun values, oldest first."""
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
-from agent_tools import run_store
+from agent_tools import route, run_store
 from agent_tools.chair_decompose_streak import DecomposeRun
 from agent_tools.chair_facts import run_initiative
 from agent_tools.chair_read_cache import Stamp, StampCache, file_stamp
 from agent_tools.chair_read_exits import exit_rows, row_exited
 from agent_tools.store_dialect import is_postgres
+from core.jsontypes import is_list, is_mapping
 
 REFUSAL_MARKERS = ("approved but not executed", "initiative-decompose failed:")
 LINT_REFUSAL_MARKER = "initiative-decompose failed:"  # the reach lint's refusal; such a run wrote nothing
@@ -44,19 +45,18 @@ def log_wrote_items(run_id: str, log: str) -> bool | None:
     return int(recorded.group(1)) > 0 if recorded else None
 
 
-def _is_count(value: Any) -> bool:
+def _is_count(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
-def parse_run(record: Any) -> DecomposeRun:
+def parse_run(record: object) -> DecomposeRun:
     """The run's own log decides wrote_items; `task_items`, the initiative's task count (None means unknown), is the fallback.
 
     The fallback reads zero as a run that wrote nothing, since no run can have created an item the store lacks.
     Unknown, or an unreadable record, reads as wrote_items True, so it never joins a streak or blocks an intake."""
-    get = record.get if isinstance(record, Mapping) else (lambda key: None)
-    run_id, log, items = get("run_id"), get("log"), get("task_items")
-    readable = isinstance(run_id, str) and (log is None or isinstance(log, str)) and (items is None or _is_count(items))
-    if not readable:
+    fields: Mapping[str, object] = record if is_mapping(record) else {}
+    run_id, log, items = fields.get("run_id"), fields.get("log"), fields.get("task_items")
+    if not (isinstance(run_id, str) and (log is None or isinstance(log, str)) and (items is None or _is_count(items))):
         return DecomposeRun(run_id=run_id if isinstance(run_id, str) else "", wrote_items=True, refusal_line=None)
     verdict = log_wrote_items(run_id, log or "")
     return DecomposeRun(
@@ -64,10 +64,40 @@ def parse_run(record: Any) -> DecomposeRun:
     )
 
 
-def select_runs(rows: Sequence[Mapping[str, Any]], intake_id: str) -> list[Mapping[str, Any]]:
-    """The `runs` rows whose id is `<intake_id>-<n>`, oldest `launched_at` first."""
-    own = (r for r in rows if run_initiative(str(r.get("run_id") or "")) == intake_id)
+# `harness cli _refuse_start` stamps a run `refused` when the intake's `runs:` lease was held: no graph ran, so it is
+# not a decompose attempt. Counted, it made one real empty run plus an overlapping refused launch stall the intake.
+NOT_STARTED = frozenset({"refused"})
+
+
+def select_runs(rows: Sequence[Mapping[str, object]], intake_id: str) -> list[Mapping[str, object]]:
+    """The `runs` rows whose id is `<intake_id>-<n>`, oldest `launched_at` first, leaving out runs that never started."""
+    own = (
+        r for r in rows
+        if run_initiative(str(r.get("run_id") or "")) == intake_id and r.get("status") not in NOT_STARTED
+    )
     return sorted(own, key=lambda r: str(r.get("launched_at") or ""))
+
+
+def parse_when(value: object) -> datetime | None:
+    """An ISO time as a timezone-aware datetime, a naive one read as UTC; None for anything else."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        when = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return when if when.tzinfo is not None else when.replace(tzinfo=UTC)
+
+
+def read_released_at(workspace: Path, path: str) -> datetime | None:
+    """Edge. The `released_at` that `route release` and `route requeue` stamp on the intake file at `workspace/path`.
+
+    None when the file is unreadable or carries no readable time: then every decompose run of the intake counts."""
+    try:
+        fields, _ = route.parse_frontmatter((workspace / path).read_text(encoding="utf-8"))
+    except OSError:
+        return None
+    return parse_when(fields.get("released_at"))
 
 
 # Deliberate process-lifetime cache, a bend of charter A4: one parse per (run_id, log mtime_ns).
@@ -100,11 +130,46 @@ def _log_facts(runs_dir: Path, run_id: str, cache: StampCache | None = None) -> 
         return (None, None)
 
 
-def _task_items(runs_dir: Path, initiative: str) -> int | None:
-    """None when the harness python is missing, since `run_store.work_items` then reads as empty."""
-    if run_store._harness_python() is None:
+@dataclass(frozen=True)
+class TickRuns:
+    """The reads every intake's `read_decompose_runs` shares in one tick: the started `runs` rows of each intake id, as
+    `select_runs` returns them, and each initiative's work item count (None when the store cannot say)."""
+
+    runs: Mapping[str, Sequence[Mapping[str, object]]]
+    items: Mapping[str, int] | None
+
+
+def runs_by_intake(rows: Sequence[Mapping[str, object]]) -> dict[str, list[Mapping[str, object]]]:
+    """Pure. `select_runs(rows, intake_id)` for every intake id the rows name, from one pass over them."""
+    groups: dict[str, list[Mapping[str, object]]] = {}
+    for r in rows:
+        if r.get("status") not in NOT_STARTED:
+            groups.setdefault(run_initiative(str(r.get("run_id") or "")), []).append(r)
+    return {intake: sorted(own, key=lambda r: str(r.get("launched_at") or "")) for intake, own in groups.items()}
+
+
+def item_counts(rows: object) -> dict[str, int] | None:
+    """Pure. Each initiative's work item count from every work item row; None when the read failed (not a list)."""
+    if not is_list(rows):
         return None
-    return sum(1 for row in run_store.work_items(runs_dir, initiative) if row.get("kind", "task") == "task")
+    counts: dict[str, int] = {}
+    for row in rows:
+        initiative = str(row.get("initiative")) if is_mapping(row) else ""
+        counts[initiative] = counts.get(initiative, 0) + 1
+    return counts
+
+
+def read_tick_runs(runs_dir: Path) -> TickRuns:
+    """Edge. One `runs` read and one work item read for the whole tick, where each intake read its own: 230 intakes
+    sent 460 queries a tick to a Postgres store, and each `runs` read was scanned whole for one intake."""
+    found = run_store.harness_store_api().work_item_rows(run_store.store_url_for(runs_dir), None)
+    return TickRuns(runs_by_intake(exit_rows(runs_dir)), item_counts(found))
+
+
+def _task_items(runs_dir: Path, initiative: str) -> int | None:
+    """The initiative's work item count; None when the store cannot say, which `run_store.work_items` would read as empty."""
+    found = run_store.harness_store_api().work_item_rows(run_store.store_url_for(runs_dir), initiative)
+    return len(found) if is_list(found) else None
 
 
 def _log_key(runs_dir: Path, run_id: str) -> tuple[str, str, str]:
@@ -113,10 +178,10 @@ def _log_key(runs_dir: Path, run_id: str) -> tuple[str, str, str]:
 
 def _store_files(runs_dir: Path) -> list[Path]:
     """Edge. The SQLite store file and its `-wal` sidecar; empty for Postgres, which has no file to stamp."""
-    url = run_store._store_url(runs_dir)
+    url = run_store.store_url_for(runs_dir)
     if is_postgres(url):
         return []
-    db = run_store._sqlite_path(url)
+    db = run_store.sqlite_path(url)
     return [db, db.with_name(db.name + "-wal")]
 
 
@@ -131,31 +196,32 @@ def _store_stamp(runs_dir: Path) -> Stamp | None:
     return (max(s[0] for s in present), sum(s[1] for s in present))
 
 
-def read_decompose_runs(runs_dir: Path, intake_id: str, cache: StampCache | None = None) -> list[DecomposeRun]:
+def read_decompose_runs(
+    runs_dir: Path, intake_id: str, cache: StampCache | None = None, tick: TickRuns | None = None
+) -> list[DecomposeRun]:
     """Edge. A run that has not exited gets `task_items` None; the intake id is the `chair_exec.decompose_id` value.
 
     With a cache, the exit rows, the task count and each run's log facts are keyed by file stamp, so an unchanged
-    file is not read again. Entries not seen in this call are dropped, so give each intake its own cache."""
-    if cache is None:
+    file is not read again. Entries not seen in this call are dropped, so give each intake its own cache.
+    With `tick` (`read_tick_runs`), the runs and the count come from the tick's shared reads instead."""
+    exits_key, items_key = ("decompose-exits", str(runs_dir)), ("decompose-items", str(runs_dir), intake_id)
+    if tick is not None:
+        items = None if tick.items is None else tick.items.get(intake_id, 0)
+        selected = list(tick.runs.get(intake_id, ()))
+    elif cache is None:
         items = _task_items(runs_dir, intake_id)
-        rows = exit_rows(runs_dir)
+        selected = select_runs(exit_rows(runs_dir), intake_id)
     else:
         stamp = _store_stamp(runs_dir)
-        exits_key, items_key = ("decompose-exits", str(runs_dir)), ("decompose-items", str(runs_dir), intake_id)
-        # a missing harness python reads as unknown and is judged on every call, never stored
-        items = (
-            None
-            if run_store._harness_python() is None
-            else cache.get(items_key, stamp, lambda: _task_items(runs_dir, intake_id))
-        )
-        rows = cache.get(exits_key, stamp, lambda: exit_rows(runs_dir))
-    out = []
-    for row in select_runs(rows, intake_id):
+        items = cache.get(items_key, stamp, lambda: _task_items(runs_dir, intake_id))
+        selected = select_runs(cache.get(exits_key, stamp, lambda: exit_rows(runs_dir)), intake_id)
+    out: list[DecomposeRun] = []
+    for row in selected:
         exited = row_exited(row)
         run = parse_run({"run_id": str(row["run_id"]), "log": None, "task_items": items if exited else None})
         refusal, verdict = _log_facts(runs_dir, run.run_id, cache)
         wrote = verdict if exited and verdict is not None else run.wrote_items
-        out.append(replace(run, wrote_items=wrote, refusal_line=refusal))
+        out.append(replace(run, wrote_items=wrote, refusal_line=refusal, launched_at=parse_when(row.get("launched_at"))))
     if cache is not None:
         cache.keep([exits_key, items_key, *(_log_key(runs_dir, run.run_id) for run in out)])
     return out
@@ -177,10 +243,10 @@ def decompose_refusals(runs_dir: Path, run_ids: Iterable[str]) -> dict[str, str]
 
 def live_decompose_initiatives(runs_dir: Path) -> frozenset[str]:
     """Edge. Initiatives with a live `<run_id>.pid` process; epic-build pid files count too, holding conservatively."""
-    from agent_tools.chair_read_lost import _pid_alive  # lazy: chair_read_lost imports chair_facts
+    from agent_tools.chair_read_lost import pid_alive  # lazy: chair_read_lost imports chair_facts
 
     try:
         pidfiles = sorted(runs_dir.glob("*.pid"))
     except OSError:
         return frozenset()
-    return frozenset(run_initiative(path.stem) for path in pidfiles if _pid_alive(path))
+    return frozenset(run_initiative(path.stem) for path in pidfiles if pid_alive(path))

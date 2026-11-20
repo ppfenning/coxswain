@@ -9,11 +9,13 @@ The guard: a branch is never moved to a tip that lacks a sha the record says is 
 
 from __future__ import annotations
 
-import subprocess
 import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from harness import bounded_proc
+from harness.worktree import registry_lock
 
 # Mechanical commits: the lander joins branches, it never authors.
 IDENTITY = ("-c", "user.email=lander@invalid", "-c", "user.name=lander")
@@ -23,7 +25,8 @@ Checks = Callable[[Path], tuple[bool, str]]
 
 @dataclass(frozen=True)
 class Merge:
-    """The outcome of one merge onto a branch. `status` is merged, up_to_date, conflict, checks_failed, guard or error."""
+    """The outcome of one merge onto a branch. `status` is merged, up_to_date, conflict, checks_failed, guard, busy (another
+    worker holds the branch lease) or error."""
 
     status: str
     tip: str = ""  # the branch's tip afterwards (unchanged unless merged)
@@ -38,7 +41,7 @@ class Merge:
 
 def git(repo: Path | str, *args: str) -> tuple[bool, str]:
     """Run git in `repo`. (ok, stdout stripped, or stderr when it failed)."""
-    done = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    done = bounded_proc.completed(["git", "-C", str(repo), *args], capture_output=True, text=True)
     return done.returncode == 0, (done.stdout if done.returncode == 0 else done.stderr or done.stdout).strip()
 
 
@@ -83,12 +86,14 @@ def ensure_branch(repo: Path | str, branch: str, parent_ref: str) -> tuple[str |
 
 def _scratch(repo: Path | str, at: str) -> tuple[Path | None, str]:
     path = Path(tempfile.mkdtemp(prefix="lander-"))
-    ok, out = git(repo, "worktree", "add", "--detach", str(path), at)
+    with registry_lock(repo):
+        ok, out = git(repo, "worktree", "add", "--detach", str(path), at)
     return (path, "") if ok else (None, out)
 
 
 def _drop(repo: Path | str, path: Path) -> None:
-    git(repo, "worktree", "remove", "--force", str(path))
+    with registry_lock(repo):
+        git(repo, "worktree", "remove", "--force", str(path))
 
 
 def _move(repo: Path | str, branch: str, new: str, old: str) -> tuple[bool, str]:

@@ -27,7 +27,7 @@ content.
 
 (c) `gate(gated, assume=ctx.assume)` (1240) runs once per phase over the whole
 `batch`. The slot lookup at 1247/1253 shows a `"rebase"` slot beside the merge
-path, consistent with `_build_batch` (1223, body outside this fence) placing
+path, consistent with `build_batch` (1223, body outside this fence) placing
 more than one entry per task, each a distinct `id(item)` with its own
 decision and `gate_diff` (1264) — two entries, two
 `decision: a (--assume)` lines. `state.moved`/`state.merged` key only by task
@@ -39,8 +39,8 @@ while the entry with the real change stays partial — `done` plus
 in-window merge, #99 (`cdea44f`), touching only
 `graphs/ops/triage_quarantine.py` and its test. `--stat` on every #95-#101
 commit shows only #96 (`db1e709`, 05:49:12, outside the window) touches
-`harness/epic.py`, adding `_trace_evidence` to `_build_task` and a comment
-near `_trim_phase` — nowhere in 440-700 or 1220-1330. No merged change in
+`harness/epic.py`, adding `trace_evidence` to `build_task` and a comment
+near `trim_phase` — nowhere in 440-700 or 1220-1330. No merged change in
 #95-#101 altered the gate/landing sequence.
 
 Named for context only, not inspected: coxswain-tools PRs #148-#153 and the

@@ -36,17 +36,65 @@ substantiates.
   result `subtype` per node, the evidence array, and whether the attempts predate the ticket's last
   revision (`attempts[].ts` vs the item file's last commit). Keyed facts: `attempt-<n>|<field>`.
 - `triage` (role `triage`, deep tier, ceiling `role_budget_usd.triage` default $0.80): returns
-  `{class, diagnosis, cites[], action}` with `class` one of `ticket_defect | platform_defect | shape |
-  genuine_reject`. A cite naming a fact key not in `facts` is a fabricated citation and the answer is
-  refused; zero cites is refused; a `diagnosis` that quotes no objection text from the record is refused.
-- `emit`: by class —
-  `ticket_defect` -> a `ticket_amend` proposal (§2) carrying the exact text to append;
-  `platform_defect` -> an `item_create` intake proposal (existing kind) naming the mechanism;
-  `shape` -> a `decompose` handoff (the split is decompose's job, not triage's);
-  `genuine_reject` -> `notify` (gated, no ramp) and the item stays `ready` with the classification recorded.
-- Recorded on the work item under `attempts[].triage: {class, diagnosis, run}`; the cap is cleared by
-  the arm only on `ticket_defect`/`shape`/`platform_defect`, and NEVER twice with the same `(class,
-  diagnosis)` on one item — that pair escalates to a person with both records quoted.
+  `{class, diagnosis, cites[], action, into?}` with `class` one of `ticket_defect | platform_defect |
+  shape | drop | combine | hold`. The model reads the whole initiative beside the record: its goal, its
+  phases with their goals, and every sibling task's id, phase, state, title and needs. A cite naming a
+  fact key not in `facts` is a fabricated citation and the answer is refused; zero cites is refused; a
+  `diagnosis` that quotes no objection text from the record is refused, whatever the class. A `combine`
+  whose `into` names no open sibling (one not done, approved or dropped) in the task's own phase is
+  refused: phases build apart, so a sibling elsewhere may already be building without the scope, and
+  moving needs across phases can stall the phase order.
+- `emit`: by class, each with the effect the epic applies to the task —
+
+  | Class | Emits | Effect on the task |
+  |---|---|---|
+  | `ticket_defect` | a `ticket_amend` proposal (§2) carrying the exact text to append | built again in the same run on the amended body |
+  | `platform_defect` | an `item_create` intake proposal (existing kind) naming the mechanism | held for a person with the mark |
+  | `shape` | a `decompose` handoff (the split is decompose's job, not triage's) | held for a person with the proposed split |
+  | `hold` | nothing | held for a person with the diagnosis |
+  | `drop` | nothing | every task that needed it stops needing it, then it is dropped, so the board stays a valid DAG |
+  | `combine` | nothing | every task that needed it needs the sibling `into` names, the sibling takes on its needs, it is dropped, then its title and body are appended to the sibling; a step that fails undoes the earlier ones and holds the task |
+
+  `genuine_reject`, the old class for an objection that stood, is read as `hold`.
+- Held means store state `blocked` with a hold reason that begins `needs you:` in the row's `extra`
+  (`hold_reason`), written before the state. The chair lists a held task under `needs chair` and sends
+  one inbox entry for it.
+- Under `work_state: store`, when the cartridge names no model arm for `ticket_amend`, the epic writes an
+  append-only, ramp-eligible amendment to the task's store row itself and rebuilds on it. An amendment
+  it cannot apply goes to the gate as before; a task the chair flagged is then held, never rebuilt
+  without its instruction.
+- Recorded on the work item under `attempts[].triage: {class, diagnosis, run}`, and in the store row's
+  `extra.triage` list; the cap is cleared only on `ticket_defect`, and NEVER twice with the same `(class,
+  diagnosis)` on one item — that pair holds the task for a person, quoting the earlier run.
+
+The chair asks for triage too. A quarantine that needs a tweak (cause `code`, `review`, `ticket` or
+unknown) gets `extra.triage_requested` on its store row and goes back to `ready`. The epic triages a
+flagged task before any rebuild, whatever its attempt count, and takes the flag off once triage answered.
+A triage that could not run (its graph raised, or it refused every answer it was given) holds the task for a
+person, with the failure named on the mark, rather than quarantining it into another triage that fails the same way.
+
+Under `work_state: store` no work file holds an attempt, so both sides read the attempts from the run task
+records (`runs/<run>/tasks/<phase>/<task>.json`, and the store's `task_records` copy): each record that
+names a `cause` is one attempt (`core/run_record.py`). The chair takes a quarantine's cause, run, reason and
+failure count from them; the epic hands a flagged task's records to triage as its `attempts`, with the
+record's review, adversary and arbitration verdicts, `fix_loop` and evidence beside each. A record names
+the body it was built on (`body_sha`), so an attempt on an earlier body is not one on the current body, and
+records are ordered by run number. A rescue reads its attempts and the kept patch from them too.
+
+A person's fix starts a task fresh. `cox route edit <task> --initiative <initiative> --state ready` on a blocked or quarantined task,
+or on one still flagged (a flagged task is already `ready`, so the move cancels its triage request), takes
+`triage_requested` off its row and marks it `fresh_after_run`: the newest number of each of the
+initiative's run series then, `{"<initiative>": 9, "<initiative>.<phase>": 3}`, since a phase run
+(`route launch --phase`) is numbered in a series of its own. The edit is refused while a run of the
+initiative is live, and warns when the store names no run to mark. `cox route release <initiative>` on a
+held initiative marks the initiative row the same way. Neither side counts an attempt from a run at or
+below its own series' number in the later of the two marks: not toward the attempt cap, not toward
+`chair.quarantine_hold_after`, and a triage flag that names such a run is dropped and the task built. A
+run of a series the mark never saw began after it and counts. Runs, not a time: a record is dated by day
+only. A task still quarantined when its initiative was released keeps its newest attempt alone, so it
+still names its run and the chair plans for it as before the release, on a failure count of one: a
+triage request when that run's request was never made (the epic, seeing it predates the release, builds
+the task), and `hold_task` when it was, since triage then left it quarantined in the same state.
 
 ## 2. `ticket_amend`: specify, never relax  (cartridges, graphs)
 
@@ -82,8 +130,10 @@ never appears — only approved work may be recovered by landing.
 
 ## 5. Out of bounds
 
-Auto-applying `genuine_reject`; letting triage edit frontmatter other than `attempts`; changing the cap
-(2) itself; alert triage (`triage-propose`); the router (P4).
+Letting triage edit frontmatter other than `attempts`, the state it moves the task to, and the `needs`
+a `drop` or a `combine` moves; changing the cap (2) itself; alert triage (`triage-propose`); the
+router (P4). A `hold`, the successor of `genuine_reject`, is applied without the gate: it only stops the
+task and tells a person.
 
 ## 6. Rules, one literal test each
 

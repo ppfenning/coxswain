@@ -5,38 +5,43 @@ An unknown host is None, not an error. Nothing here reads the clock.
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
+from typing import cast
 
-from harness.store_dialect import Connection, json_load, json_text, upsert
+from harness.store_dialect import Cell, Connection, Json, JsonObject, json_load, json_text, upsert
+from harness.store_types import HostRow
 
-__all__ = ["HOST_STATES", "host_beat", "host_list", "host_set_state", "host_upsert", "update_host_login"]
+__all__ = ["HOST_STATES", "host_beat", "host_delete", "host_list", "host_set_state", "host_upsert", "update_host_login"]
 
 HOST_STATES = ("active", "draining", "offline", "deploy_only", "unreachable")
 HOST_COLUMNS = ("name", "ssh", "capacity", "state", "beat_at", "versions_json", "updated_at", "updated_by")
 HOST_KEY = ("name",)
 
 
-def _row(values: tuple[Any, ...]) -> dict[str, Any]:
-    return {c: json_load(v) if c == "versions_json" else v for c, v in zip(HOST_COLUMNS, values, strict=True)}
+def _row(values: tuple[Cell, ...]) -> HostRow:
+    return cast(
+        HostRow, {c: json_load(v) if c == "versions_json" else v for c, v in zip(HOST_COLUMNS, values, strict=True)}
+    )
 
 
-def _find(conn: Connection, name: str) -> dict[str, Any] | None:
+def _find(conn: Connection, name: str) -> HostRow | None:
     mark = conn.dialect.placeholder
     found = conn.query_all(f"SELECT {', '.join(HOST_COLUMNS)} FROM hosts WHERE name = {mark}", [name])
     return _row(found[0]) if found else None
 
 
-def host_upsert(conn: Connection, name: str, ssh: str, capacity: int, state: str, by: str, now: str) -> dict[str, Any]:
+def host_upsert(conn: Connection, name: str, ssh: str, capacity: int, state: str, by: str, now: str) -> HostRow:
     """Insert or overwrite the row. beat_at and versions_json stay as they were, "" and {} on insert."""
     with conn.transaction():
-        kept = _find(conn, name) or {"beat_at": "", "versions_json": {}}
-        row = {
+        found = _find(conn, name)
+        kept_beat, kept_versions = ("", {}) if found is None else (found["beat_at"], found["versions_json"])
+        row: HostRow = {
             "name": name,
             "ssh": ssh,
             "capacity": capacity,
             "state": state,
-            "beat_at": kept["beat_at"],
-            "versions_json": kept["versions_json"],
+            "beat_at": kept_beat,
+            "versions_json": kept_versions,
             "updated_at": now,
             "updated_by": by,
         }
@@ -45,14 +50,14 @@ def host_upsert(conn: Connection, name: str, ssh: str, capacity: int, state: str
     return row
 
 
-def _carry_back_at(incoming: dict[str, Any], stored: dict[str, Any]) -> dict[str, Any]:
+def _carry_back_at(incoming: Mapping[str, Json], stored: Mapping[str, Json]) -> JsonObject:
     """Keep the stored host_back_at when the incoming versions lack it."""
     if "host_back_at" not in incoming and "host_back_at" in stored:
         return {**incoming, "host_back_at": stored["host_back_at"]}
     return dict(incoming)
 
 
-def host_beat(conn: Connection, name: str, versions: dict[str, Any], now: str) -> dict[str, Any] | None:
+def host_beat(conn: Connection, name: str, versions: Mapping[str, Json], now: str) -> HostRow | None:
     """Set beat_at and versions_json; an unreachable host also becomes active, by beat, with host_back_at."""
     mark = conn.dialect.placeholder
     with conn.transaction():
@@ -76,7 +81,7 @@ def host_beat(conn: Connection, name: str, versions: dict[str, Any], now: str) -
         return _find(conn, name)
 
 
-def host_set_state(conn: Connection, name: str, state: str, by: str, now: str) -> dict[str, Any] | None:
+def host_set_state(conn: Connection, name: str, state: str, by: str, now: str) -> HostRow | None:
     """Rewrite state, updated_at and updated_by only."""
     mark = conn.dialect.placeholder
     with conn.transaction():
@@ -87,12 +92,12 @@ def host_set_state(conn: Connection, name: str, state: str, by: str, now: str) -
         return _find(conn, name) if changed else None
 
 
-def _merge_login(versions: dict[str, Any], login: dict[str, Any]) -> dict[str, Any]:
+def _merge_login(versions: Mapping[str, Json], login: Mapping[str, Json]) -> JsonObject:
     """Keys in login win; keys it does not carry stay. Neither argument is changed."""
     return {**versions, **login}
 
 
-def update_host_login(conn: Connection, name: str, login: dict[str, Any]) -> bool:
+def update_host_login(conn: Connection, name: str, login: Mapping[str, Json]) -> bool:
     """Merge login into versions_json and write that column only. False when no host has the name."""
     # Login does not survive a beat: host_beat replaces versions_json wholesale. The read takes no row lock,
     # so two concurrent writers on Postgres can each merge into the same old value and the later one wins.
@@ -108,5 +113,18 @@ def update_host_login(conn: Connection, name: str, login: dict[str, Any]) -> boo
         return True
 
 
-def host_list(conn: Connection) -> list[dict[str, Any]]:
+def host_delete(conn: Connection, name: str) -> HostRow | None:
+    """Delete a draining host's row and return it as it was; None, with nothing deleted, when no host has the name
+    or the host is in any other state. The state is checked in the DELETE itself, so a host that was activated
+    after the caller read it is kept."""
+    mark = conn.dialect.placeholder
+    with conn.transaction():
+        found = _find(conn, name)
+        if found is None or found["state"] != "draining":
+            return None
+        deleted = conn.execute(f"DELETE FROM hosts WHERE name = {mark} AND state = {mark}", [name, "draining"])
+        return found if deleted else None
+
+
+def host_list(conn: Connection) -> list[HostRow]:
     return [_row(r) for r in conn.query_all(f"SELECT {', '.join(HOST_COLUMNS)} FROM hosts ORDER BY name")]

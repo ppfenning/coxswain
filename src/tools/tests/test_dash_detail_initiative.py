@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import sys
 from pathlib import Path
 
 from agent_tools import dash_detail_initiative as ddi
@@ -78,6 +77,62 @@ _EXPECTED = {
     ],
 }
 
+_SETTLED = "settled-demo"
+_SETTLED_NOW = "2026-10-01T00:00:00Z"
+
+
+def _settled_rows(state: str) -> list[tuple]:
+    """Store rows for an initiative whose every task is `state`; p2's task needs a p1 task."""
+    return [
+        (_SETTLED, "a1", "p1", state, "[]", "2026-09-20T00:00:00Z", "me"),
+        (_SETTLED, "a2", "p1", state, "[]", "2026-09-21T00:00:00Z", "me"),
+        (_SETTLED, "b1", "p2", state, '["a1"]', "2026-09-22T00:00:00Z", "me"),
+    ]
+
+
+def _seed_store(tmp_path, monkeypatch, rows: list[tuple]) -> None:
+    """A real migrated sqlite store at `<tmp_path>/s.db`, one work item per `(initiative, task, phase, state, needs_json, at, by)`."""
+    from harness.store_migrate import open_store
+    from harness.store_write import upsert_work_item
+
+    url = f"sqlite:///{tmp_path / 's.db'}"
+    conn = open_store(url, "2026-09-01T00:00:00Z")
+    try:
+        for initiative, task, phase, state, needs_json, at, by in rows:
+            upsert_work_item(conn, initiative, task, phase, state, json.loads(needs_json), at, by)
+    finally:
+        conn.close()
+    monkeypatch.setattr(run_store, "store_url_for", lambda runs_dir: url)
+
+
+def _settled_detail(state: str) -> dict:
+    return {
+        "schema": 1,
+        "kind": "initiative",
+        "at": _SETTLED_NOW,
+        "initiative": _SETTLED,
+        "phases": [
+            {
+                "id": "p1",
+                "landed_at": "2026-09-21T00:00:00Z",
+                "tasks": [
+                    {"id": "a1", "needs": [], "state": state, "error": None},
+                    {"id": "a2", "needs": [], "state": state, "error": None},
+                ],
+            },
+            {
+                "id": "p2",
+                "landed_at": "2026-09-22T00:00:00Z",
+                "tasks": [{"id": "b1", "needs": ["a1"], "state": state, "error": None}],
+            },
+        ],
+        "history": [
+            {"at": "2026-09-21T00:00:00Z", "event": "phase p1 landed"},
+            {"at": "2026-09-22T00:00:00Z", "event": "phase p2 landed"},
+        ],
+    }
+
+
 _NODE_CALLS_TABLE = (
     "CREATE TABLE node_calls (call_id TEXT PRIMARY KEY, run_id TEXT, seq INTEGER, task_id TEXT, role TEXT, "
     "tier TEXT, model_alias TEXT, cost_usd REAL, ceiling_usd REAL, ceiling_source TEXT, turns INTEGER, "
@@ -108,22 +163,16 @@ def test_build_wires_the_work_store_and_run_record_readers_through_shape(monkeyp
 
 
 def test_items_reads_task_id_state_needs_and_updated_at_from_the_store(tmp_path, monkeypatch) -> None:
-    db = tmp_path / "s.db"
-    conn = sqlite3.connect(db)
-    conn.execute("CREATE TABLE work_items (initiative, task_id, phase, state, needs_json, updated_at, updated_by)")
-    conn.executemany(
-        "INSERT INTO work_items VALUES (?, ?, ?, ?, ?, ?, 'me')",
+    _seed_store(
+        tmp_path,
+        monkeypatch,
         [
-            ("demo", "t1", "p1", "done", "[]", "2026-09-20T00:00:00Z"),
-            ("demo", "t2", "p1", "dropped", "[]", "2026-09-21T00:00:00Z"),
-            ("demo", "t3", "p2", "todo", '["t1"]', "2026-09-22T00:00:00Z"),
-            ("other", "x1", "p1", "done", "[]", "2026-09-01T00:00:00Z"),
+            ("demo", "t1", "p1", "done", "[]", "2026-09-20T00:00:00Z", "me"),
+            ("demo", "t2", "p1", "dropped", "[]", "2026-09-21T00:00:00Z", "me"),
+            ("demo", "t3", "p2", "todo", '["t1"]', "2026-09-22T00:00:00Z", "me"),
+            ("other", "x1", "p1", "done", "[]", "2026-09-01T00:00:00Z", "me"),
         ],
     )
-    conn.commit()
-    conn.close()
-    monkeypatch.setattr(run_store, "_harness_python", lambda: Path(sys.executable))
-    monkeypatch.setattr(run_store, "_store_url", lambda runs_dir: f"sqlite:///{db}")
 
     items = ddi._items(tmp_path, "demo")
 
@@ -198,3 +247,19 @@ def test_build_initiative_detail_flags_only_the_same_phase_needs_edge() -> None:
     assert p1_tasks[1]["error"] == "needs edge inside phase p1-foundations"
     assert p2_tasks[0]["needs"] == [_SCHEMA]
     assert p2_tasks[0]["error"] is None
+
+
+def test_build_returns_every_phase_and_task_for_an_all_landed_initiative(tmp_path, monkeypatch) -> None:
+    _seed_store(tmp_path, monkeypatch, _settled_rows("done"))
+
+    result = ddi.build(_SETTLED, tmp_path / "work", tmp_path, _SETTLED_NOW)
+
+    assert result == _settled_detail("done")
+
+
+def test_build_returns_every_phase_and_task_for_an_all_dropped_initiative(tmp_path, monkeypatch) -> None:
+    _seed_store(tmp_path, monkeypatch, _settled_rows("dropped"))
+
+    result = ddi.build(_SETTLED, tmp_path / "work", tmp_path, _SETTLED_NOW)
+
+    assert result == _settled_detail("dropped")

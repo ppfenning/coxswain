@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from agent_tools import lease_standing
 from agent_tools.events import Event
 
-__all__ = ["UNSET", "Row", "chair_highlight", "column_widths", "highlight", "label", "order", "render", "row", "tail_lines"]
+__all__ = ["UNSET", "Row", "column_widths", "label", "order", "render", "row", "tail_lines"]
 
 _COLUMNS = ("MACHINE", "PHASE", "NODE", "ATT", "TURNS", "COST", "VERDICT", "STATUS", "CEIL", "BY")
 _HEADERS = ("RUN", *_COLUMNS)
@@ -230,21 +230,3 @@ def render(rows: list[Row], width: int, chair=UNSET, expanded=None, detail_lines
         if r.run == expanded:
             body.extend("  " + line for line in detail_lines)
     return [_cut(line, width) for line in [*prefix, header, *body]]
-
-
-def highlight(row: Row) -> str:
-    """Pure: the label the screen maps to a colour. Names no colour itself."""
-    if row.status in ("quarantined", "budget", "orphaned"):
-        return "alert"
-    if row.status == "fenced":
-        return "fenced"
-    if row.status == "exited":
-        return "dim"
-    if row.lease_state in ("fenced", "expired"):
-        return "fenced"
-    return "normal"
-
-
-def chair_highlight(chair: dict | None) -> str:
-    """Pure: the label the screen maps to a colour for the chair line itself."""
-    return "alert" if chair is not None and chair.get("state") in ("stale", "crashed") else "normal"

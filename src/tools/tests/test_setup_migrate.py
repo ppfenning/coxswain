@@ -141,7 +141,7 @@ def test_the_047_layout_plans_every_rule_in_order():
         ("run", "claude plugin install local-skills@coxswain-cartridges"),
         ("run", "uv tool uninstall coxswain-tools"),
         ("run", "uv tool uninstall agent-cartridges"),
-        ("run", f"uv tool install --force -q --editable {CO}[traces,postgres]"),
+        ("run", f"uv tool install --force -q --editable {CO}[parquet,postgres,traces]"),
         ("move", f"{NEW}/{TOOLS}"),
         ("move", f"{NEW}/{GRAPHS}"),
         ("move", f"{NEW}/{CART}"),
@@ -337,7 +337,7 @@ def test_a_leftover_old_tool_is_uninstalled_even_when_coxswain_is_already_instal
     assert steps == [
         ["uv", "sync", "--frozen", "--all-extras", "--inexact", "-q"],
         ["uv", "tool", "uninstall", "agent-cartridges"],
-        ["uv", "tool", "install", "--force", "-q", "--editable", f"{CO}[traces,postgres,x]"],
+        ["uv", "tool", "install", "--force", "-q", "--editable", f"{CO}[parquet,postgres,traces,x]"],
     ]
 
 

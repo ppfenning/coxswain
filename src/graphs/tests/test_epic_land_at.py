@@ -53,7 +53,7 @@ def prs(monkeypatch) -> Forge:
 
     monkeypatch.setattr(epic_module, "_push_review_ref", lambda ctx, local, name: (True, ""))
     monkeypatch.setattr(epic_module, "_existing_pr", existing)
-    monkeypatch.setattr(epic_module, "_open_review_pr", open_pr)
+    monkeypatch.setattr(epic_module, "open_review_pr", open_pr)
     return forge
 
 
@@ -205,8 +205,9 @@ def test_at_ticket_a_built_p1_merges_into_the_initiative_branch_and_p2_builds_wh
     assert _p2(result)["status"] != "blocked" and _p2(result)["base"] == "init/demo-initiative"
     assert "exit_code" not in result or result["exit_code"] != EXIT_AWAITING_LAND
     assert git("merge-base", "--is-ancestor", "epic/demo-initiative/p1-foundations", "epic/demo-initiative/p2-rollout", cwd=repo) == ""
-    # The parent no longer floats: main moved after the branch was cut, and neither branch took it.
-    assert git("rev-list", "--count", "init/demo-initiative..main", cwd=repo) == "1"
+    # Main moved after the branch was cut: the run took it forward before any phase built (H4.2), so p2 built on it.
+    assert git("rev-list", "--count", "init/demo-initiative..main", cwd=repo) == "0"
+    assert git("merge-base", "--is-ancestor", "main", "epic/demo-initiative/p2-rollout", cwd=repo) == ""
     assert prs == []
 
 

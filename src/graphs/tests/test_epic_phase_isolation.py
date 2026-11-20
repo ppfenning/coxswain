@@ -6,8 +6,10 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 from harness import epic as epic_module
-from harness.epic import _Ctx, _PhaseRunner, _run_phase
+from harness.epic import Ctx, PhaseRunner, run_phase_tasks
 from harness.runners import _DelegatingFastPath
 from tests.test_epic_driver import (  # noqa: F401
     TASK_IDS,
@@ -59,12 +61,12 @@ def _two_independent_phases() -> dict:
     return work
 
 
-def _run_both_phases(ctx: _Ctx, work: dict) -> None:
+def _run_both_phases(ctx: Ctx, work: dict) -> None:
     errors: list[BaseException] = []
 
     def phase(name: str) -> None:
         try:
-            _run_phase(ctx, initiative=work, phase=name, parents=(), items=work["items"])
+            run_phase_tasks(ctx, initiative=work, phase=name, parents=(), items=work["items"])
         except BaseException as exc:
             errors.append(exc)
 
@@ -76,7 +78,7 @@ def _run_both_phases(ctx: _Ctx, work: dict) -> None:
     assert errors == []
 
 
-def _assert_each_call_saw_its_own_worktree(ctx: _Ctx, leaf: Recording) -> None:
+def _assert_each_call_saw_its_own_worktree(ctx: Ctx, leaf: Recording) -> None:
     tasked = [(t, d) for t, d in leaf.seen if t]
     assert {t for t, _ in tasked} == set(TASK_IDS)
     assert all(d == ctx.phase_worktree(PHASE_OF[t]) for t, d in tasked)
@@ -87,7 +89,7 @@ def _assert_each_call_saw_its_own_worktree(ctx: _Ctx, leaf: Recording) -> None:
 def test_two_phases_in_two_threads_each_see_only_their_own_worktree(repo, cart, tmp_path) -> None:  # noqa: F811
     leaf = Recording({t: new_file_patch(f"{t}.txt") for t in TASK_IDS})
     ctx, work = _ctx(repo, cart, tmp_path, leaf), _two_independent_phases()
-    epic_module._mirror_read(ctx, work["items"])
+    epic_module.mirror_read(ctx, work["items"])
     _run_both_phases(ctx, work)
     _assert_each_call_saw_its_own_worktree(ctx, leaf)
 
@@ -96,7 +98,7 @@ def test_the_delegating_fast_path_hands_each_inner_run_its_own_worktree(repo, ca
     leaf = Recording({t: new_file_patch(f"{t}.txt") for t in TASK_IDS})
     wrapper = _DelegatingFastPath(leaf, object(), {}, {})
     ctx, work = _ctx(repo, cart, tmp_path, wrapper), _two_independent_phases()
-    epic_module._mirror_read(ctx, work["items"])
+    epic_module.mirror_read(ctx, work["items"])
     _run_both_phases(ctx, work)
     _assert_each_call_saw_its_own_worktree(ctx, leaf)
 
@@ -111,13 +113,21 @@ def test_run_epic_closes_the_runner_once_after_every_phase(repo, cart, tmp_path)
 
 def test_a_phase_view_overrides_the_three_names_and_leaves_the_shared_runner_alone() -> None:
     leaf = Recording({})
-    view = _PhaseRunner(leaf, Path("/wt/a"), "digest", ["pytest"])
+    view = PhaseRunner(leaf, Path("/wt/a"), "digest", ["pytest"])
     assert (view.repo_dir, view.repo_digest, view.check_commands) == (Path("/wt/a"), "digest", ["pytest"])
     assert leaf.repo_dir is None
     assert leaf.assigned == []
-    assert not hasattr(_PhaseRunner(object(), Path("/wt/a"), None, []), "repo_dir")
+    assert not hasattr(PhaseRunner(object(), Path("/wt/a"), None, []), "repo_dir")
+
+
+def test_a_phase_view_refuses_a_new_class_rather_than_retype_the_shared_runner() -> None:
+    leaf = Recording({})
+    view = PhaseRunner(leaf, Path("/wt/a"), "digest", ["pytest"])
+    with pytest.raises(TypeError, match="read-only"):
+        object.__setattr__(view, "__class__", dict)
+    assert type(leaf) is Recording and view.__class__ is Recording
 
 
 def test_items_lock_stays_out_of_comparison_and_repr() -> None:
-    field = _Ctx.__dataclass_fields__["items_lock"]
+    field = Ctx.__dataclass_fields__["items_lock"]
     assert (field.compare, field.repr) == (False, False)

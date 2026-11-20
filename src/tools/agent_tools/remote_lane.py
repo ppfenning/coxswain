@@ -6,6 +6,17 @@ from __future__ import annotations
 import json
 from collections.abc import Collection, Mapping
 from pathlib import Path
+from typing import NotRequired, TypedDict
+
+
+class RemoteRecord(TypedDict):
+    """What `remote_record` writes and `parse_remote_record` reads back."""
+
+    host: str
+    launched_at: str
+    repo: NotRequired[str]
+    base_sha: NotRequired[str]
+    graph: NotRequired[str]
 
 
 def remote_record(
@@ -14,23 +25,24 @@ def remote_record(
     repo: str | None = None,
     base_sha: str | None = None,
     graph: str = "epic",
-) -> dict:
+) -> RemoteRecord:
     """`repo` and `base_sha` (the commit the lane was verified at before the build) are absent from older records.
     `graph` is written only when it is not epic, so an absent key means epic."""
-    base = {"host": host, "launched_at": launched_at}
-    return {
-        **base,
-        **({} if repo is None else {"repo": repo}),
-        **({} if base_sha is None else {"base_sha": base_sha}),
-        **({} if graph == "epic" else {"graph": graph}),
-    }
+    record: RemoteRecord = {"host": host, "launched_at": launched_at}
+    if repo is not None:
+        record["repo"] = repo
+    if base_sha is not None:
+        record["base_sha"] = base_sha
+    if graph != "epic":
+        record["graph"] = graph
+    return record
 
 
 def record_graph(record: Mapping) -> str:
     return record.get("graph", "epic")
 
 
-def is_decompose_record(record: Mapping) -> bool:
+def is_decompose_record(record: Mapping[str, object]) -> bool:
     return record_graph(record) == "decompose"
 
 
@@ -42,7 +54,7 @@ def fetched_record_path(runs_dir: Path, run: str) -> Path:
     return runs_dir / f"{run}.fetched.json"
 
 
-def parse_remote_record(text: str) -> dict | None:
+def parse_remote_record(text: str) -> RemoteRecord | None:
     try:
         parsed = json.loads(text)
     except ValueError:

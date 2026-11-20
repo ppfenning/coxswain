@@ -6,6 +6,7 @@ import os
 import threading
 import uuid
 from collections.abc import Mapping
+from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -186,6 +187,19 @@ def _git_templates_are_empty(tmp_path_factory):
         yield
 
 
+_SOURCE_ROOTS = tuple(str(Path(__file__).resolve().parents[2] / name) for name in ("graphs", "tools", "cartridges"))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _child_interpreters_import_this_tree():
+    """A child `sys.executable` (the store-traces dump, the pool edge's acquire) imports the source roots pytest.ini
+    puts on `sys.path`, not the checkout an editable install in the venv points at: that one may be older than this tree."""
+    inherited = os.environ.get("PYTHONPATH", "")
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("PYTHONPATH", os.pathsep.join(p for p in (*_SOURCE_ROOTS, inherited) if p))
+        yield
+
+
 @pytest.fixture(autouse=True)
 def _git_environment_is_hermetic(tmp_path_factory, monkeypatch) -> None:
     """Git reads only the repository it is pointed at, so no inherited variable or global config may reach a child git.
@@ -275,5 +289,5 @@ def at_task(cart, monkeypatch):
     cart["landing_areas"]["land_at"] = "task"
     monkeypatch.setattr(epic, "_push_review_ref", lambda ctx, local, name: (True, ""))
     monkeypatch.setattr(epic, "_existing_pr", lambda ctx, head: (True, ""))
-    monkeypatch.setattr(epic, "_open_review_pr", lambda ctx, *, title, body, head, base: (True, f"pr:{head}"))
+    monkeypatch.setattr(epic, "open_review_pr", lambda ctx, *, title, body, head, base: (True, f"pr:{head}"))
     return cart

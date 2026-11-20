@@ -87,14 +87,15 @@ import hashlib
 import json
 import re
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from functools import reduce
 from pathlib import Path
-from typing import Any
+from typing import TypeGuard, cast
 
 import yaml
 
 from core.init import init_plan, render_plan
+from core.jsontypes import is_dict, is_mapping
 from core.landing import valid_branch
 
 __all__ = ["CartridgeError", "load"]
@@ -128,19 +129,19 @@ class CartridgeError(Exception):
     """A cartridge could not be resolved, or resolved into something invalid."""
 
 
-def _read_yaml(path: Path, *, empty_ok: bool = False) -> dict[str, Any]:
+def _read_yaml(path: Path, *, empty_ok: bool = False) -> dict[str, object]:
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as exc:
         raise CartridgeError(f"{path}: cannot read cartridge: {exc}") from exc
     if data is None and empty_ok:
         return {}
-    if not isinstance(data, dict):
+    if not is_dict(data):
         raise CartridgeError(f"{path}: expected a mapping at the top level, got {type(data).__name__}")
     return data
 
 
-def _normalize_crew(raw: Mapping[str, Any], label: str) -> tuple[dict[str, Any], str | None, str | None]:
+def _normalize_crew(raw: Mapping[str, object], label: str) -> tuple[dict[str, object], str | None, str | None]:
     """`cast` is a deprecated alias for `crew`, treated exactly as `crew` for
     merging and validation. `label` is the layer or fragment name a problem
     or deprecation names, matching the labels `layers()` uses. A conflict is
@@ -173,11 +174,11 @@ def cartridge_dir(name: str, cartridges_dir: Path, shipped_dir: Path = SHIPPED_D
     return shipped if (shipped / "cartridge.yaml").is_file() else own
 
 
-def _chain(team: str, cartridges_dir: Path) -> list[tuple[str, Path, dict[str, Any]]]:
+def _chain(team: str, cartridges_dir: Path) -> list[tuple[str, Path, dict[str, object]]]:
     """Resolve the `extends` chain, returned base-first (root ... team)."""
     seen: list[str] = []
-    chain: list[tuple[str, Path, dict[str, Any]]] = []
-    name: Any = team
+    chain: list[tuple[str, Path, dict[str, object]]] = []
+    name: object = team
     while name is not None:
         if not isinstance(name, str):
             raise CartridgeError(f"'extends' must name a cartridge, got {name!r}")
@@ -195,7 +196,7 @@ def _chain(team: str, cartridges_dir: Path) -> list[tuple[str, Path, dict[str, A
     return chain
 
 
-def _fragments(directory: Path) -> list[tuple[Path, dict[str, Any]]]:
+def _fragments(directory: Path) -> list[tuple[Path, dict[str, object]]]:
     """Read `<directory>/cartridge.d/*.yaml`, sorted by filename.
 
     A directory with no `cartridge.d/` yields no fragments — a team that has
@@ -207,7 +208,7 @@ def _fragments(directory: Path) -> list[tuple[Path, dict[str, Any]]]:
     frag_dir = directory / "cartridge.d"
     if not frag_dir.is_dir():
         return []
-    fragments: list[tuple[Path, dict[str, Any]]] = []
+    fragments: list[tuple[Path, dict[str, object]]] = []
     for path in sorted(frag_dir.glob("*.yaml")):
         raw = _read_yaml(path, empty_ok=True)
         frag = dict(raw)
@@ -216,15 +217,15 @@ def _fragments(directory: Path) -> list[tuple[Path, dict[str, Any]]]:
     return fragments
 
 
-def _absolutise_context(raw: Mapping[str, Any], directory: Path) -> list[str]:
+def _absolutise_context(raw: Mapping[str, object], directory: Path) -> list[str]:
     """Context paths are relative to the cartridge that declared them."""
     entries = raw.get("context", [])
     if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes)):
         raise CartridgeError(f"{directory}: 'context' must be a list, got {type(entries).__name__}")
-    return [str((directory / str(entry)).resolve()) for entry in entries]
+    return [str((directory / str(entry)).resolve()) for entry in cast("Sequence[object]", entries)]
 
 
-def _merge(parent: Mapping[str, Any], child: Mapping[str, Any]) -> dict[str, Any]:
+def _merge(parent: Mapping[str, object], child: Mapping[str, object]) -> dict[str, object]:
     """Deep-merge child over parent. `context` concatenates; other lists replace.
 
     A list that is not `context` is a value, not a tree — a team that names its
@@ -239,25 +240,25 @@ def _merge(parent: Mapping[str, Any], child: Mapping[str, Any]) -> dict[str, Any
     merged = dict(parent)
     for key, value in child.items():
         if key == "context":
-            merged[key] = [*parent.get(key, []), *value]
-        elif isinstance(value, Mapping) and isinstance(parent.get(key), Mapping):
-            merged[key] = _merge(parent[key], value)
+            merged[key] = [*cast("Sequence[object]", parent.get(key, [])), *cast("Sequence[object]", value)]
+        elif is_mapping(value) and is_mapping(parent_value := parent.get(key)):
+            merged[key] = _merge(parent_value, value)
         else:
             merged[key] = value
     return merged
 
 
-def _loosenings(parent_kinds: Mapping[str, Any], child_kinds: Mapping[str, Any], child: str) -> list[str]:
+def _loosenings(parent_kinds: Mapping[str, object], child_kinds: Mapping[str, object], child: str) -> list[str]:
     """A team may tighten a risk or ramp. It may never loosen one."""
     problems: list[str] = []
     for kind, spec in child_kinds.items():
         base = parent_kinds.get(kind)
-        if not isinstance(spec, Mapping) or not isinstance(base, Mapping):
+        if not is_mapping(spec) or not is_mapping(base):
             continue
         for field, order in (("risk", RISK_ORDER), ("ramp", RAMP_ORDER)):
             if field not in spec or field not in base:
                 continue
-            new, old = spec[field], base[field]
+            new, old = cast("str", spec[field]), cast("str", base[field])
             if new not in order:
                 problems.append(f"'{child}' sets {kind}.{field} to unknown value '{new}'")
             elif old in order and order[new] < order[old]:
@@ -292,12 +293,12 @@ def cost_level_loosening(parent: str, child: str, label: str) -> str | None:
     return None
 
 
-def _is_plain_list(value: Any) -> bool:
+def _is_plain_list(value: object) -> TypeGuard[Sequence[object]]:
     return isinstance(value, Sequence) and not isinstance(value, (str, bytes))
 
 
-def _as_mapping(value: Any) -> Mapping[str, Any]:
-    return value if isinstance(value, Mapping) else {}
+def _as_mapping(value: object) -> Mapping[str, object]:
+    return value if is_mapping(value) else {}
 
 
 # `landing_areas.checks` is the build/lint/test list a project layer may
@@ -334,7 +335,7 @@ _OVERLAY_NESTED_ALLOWED = {
 _OVERLAY_LIST_SUBKEYS = frozenset({"checks", "level_checks", "ticket_checks", "integration_checks"})
 
 
-def _checks_problems(checks: Any, key: str = "checks") -> list[str]:
+def _checks_problems(checks: object, key: str = "checks") -> list[str]:
     """A `checks`-shaped list named `key`: non-empty, each entry a mapping with `name` and `cmd`, names unique."""
     if not _is_plain_list(checks):
         return [f"project layer overlay refuses landing_areas.{key}: must be a list, got {type(checks).__name__}"]
@@ -343,26 +344,26 @@ def _checks_problems(checks: Any, key: str = "checks") -> list[str]:
     problems: list[str] = []
     seen: list[str] = []
     for entry in checks:
-        if not isinstance(entry, Mapping) or "name" not in entry or "cmd" not in entry:
+        if not is_mapping(entry) or "name" not in entry or "cmd" not in entry:
             problems.append(f"project layer overlay refuses {key} entry {entry!r}: missing 'name' or 'cmd'")
             continue
-        if not all(isinstance(entry.get(k), str) and entry[k].strip() for k in ("name", "cmd")):
+        if not all(isinstance(entry.get(k), str) and cast("str", entry[k]).strip() for k in ("name", "cmd")):
             problems.append(f"project layer overlay refuses {key} entry {entry!r}: 'name' and 'cmd' must be non-empty strings")
             continue
         if entry["name"] in seen:
             problems.append(f"project layer overlay refuses {key} entry '{entry['name']}': duplicate name")
-        seen.append(entry["name"])
+        seen.append(cast("str", entry["name"]))
     return problems
 
 
-def _land_checks_problems(value: Any) -> list[str]:
+def _land_checks_problems(value: object) -> list[str]:
     """`land_checks` must be the string `ci` or `local`."""
     if isinstance(value, str) and value in ("ci", "local"):
         return []
     return [f"project layer overlay refuses landing_areas.land_checks: must be 'ci' or 'local', got {value!r}"]
 
 
-def _land_at_problems(value: Any) -> list[str]:
+def _land_at_problems(value: object) -> list[str]:
     """`land_at` must be `initiative` or `task`; the alias `ticket` and the retired `level` are still read."""
     from core.landing import ACCEPTED_LAND_AT  # lazy: keeps the import edge one way
 
@@ -372,7 +373,7 @@ def _land_at_problems(value: Any) -> list[str]:
     return [f"project layer overlay refuses landing_areas.land_at: must be one of {allowed}, got {value!r}"]
 
 
-def _target_branch_problems(value: Any) -> list[str]:
+def _target_branch_problems(value: object) -> list[str]:
     """`target_branch` must be a bare branch name under git's ref-name rules."""
     try:
         valid_branch(value, "overlay")
@@ -385,10 +386,10 @@ _TEST_DATABASE_KEYS = frozenset({"env", "template", "drop", "schema", "create"})
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
-def _test_database_problems(value: Any) -> list[str]:
+def _test_database_problems(value: object) -> list[str]:
     """`test_database` is {env, template, drop?, schema?, create?}: `template` holds one `{lane}` with a non-empty suffix, `drop` and `create` hold `{name}`, `create` needs a repo-relative `schema`."""
     prefix = "project layer overlay refuses landing_areas.test_database"
-    if not isinstance(value, Mapping):
+    if not is_mapping(value):
         return [f"{prefix}: must be a mapping, got {type(value).__name__}"]
     problems = [f"{prefix}: unknown key '{key}'" for key in value if key not in _TEST_DATABASE_KEYS]
     env, template, drop = value.get("env"), value.get("template"), value.get("drop")
@@ -418,14 +419,14 @@ def _test_database_problems(value: Any) -> list[str]:
     return problems
 
 
-def _cost_overlay_problems(cost: Any) -> list[str]:
+def _cost_overlay_problems(cost: object) -> list[str]:
     """Only `level` is overlayable under `policy.cost`; `bounds` is a base/team concern, never a project one."""
-    if not isinstance(cost, Mapping):
+    if not is_mapping(cost):
         return [f"overlay key 'policy.cost' must be a mapping, got {type(cost).__name__}"]
     return [f"project layer overlay refuses key 'policy.cost.{sub}'" for sub in cost if sub != "level"]
 
 
-def overlay_errors(overlay: Mapping[str, Any]) -> list[str]:
+def overlay_errors(overlay: Mapping[str, object]) -> list[str]:
     """Refused top-level keys, refused nested keys, and malformed values, named for `CartridgeError`."""
     problems = [f"project layer overlay refuses key '{key}'" for key in overlay if key not in OVERLAY_ALLOWED_KEYS]
     context = overlay.get("context")
@@ -435,7 +436,7 @@ def overlay_errors(overlay: Mapping[str, Any]) -> list[str]:
         value = overlay.get(key)
         if value is None:
             continue
-        if not isinstance(value, Mapping):
+        if not is_mapping(value):
             problems.append(f"overlay key '{key}' must be a mapping, got {type(value).__name__}")
             continue
         problems += [f"project layer overlay refuses key '{key}.{sub}'" for sub in value if sub not in allowed_subkeys]
@@ -455,17 +456,17 @@ def overlay_errors(overlay: Mapping[str, Any]) -> list[str]:
                 problems += _test_database_problems(sub_value)
             elif allowed_subkey == "cost":
                 problems += _cost_overlay_problems(sub_value)
-            elif not isinstance(sub_value, Mapping):
+            elif not is_mapping(sub_value):
                 problems.append(f"overlay key '{key}.{allowed_subkey}' must be a mapping, got {type(sub_value).__name__}")
     return problems
 
 
-def _overlay_review_tier(overlay: Mapping[str, Any]) -> Mapping[str, Any]:
+def _overlay_review_tier(overlay: Mapping[str, object]) -> Mapping[str, object]:
     return _as_mapping(_as_mapping(overlay.get("policy")).get("review_tier"))
 
 
-def _overlay_cost_level(overlay: Mapping[str, Any]) -> str | None:
-    return _as_mapping(_as_mapping(overlay.get("policy")).get("cost")).get("level")
+def _overlay_cost_level(overlay: Mapping[str, object]) -> str | None:
+    return cast("str | None", _as_mapping(_as_mapping(overlay.get("policy")).get("cost")).get("level"))
 
 
 # Lists whose membership review_tier's tighten-only rule bounds in opposite
@@ -475,7 +476,7 @@ _REVIEW_TIER_GROW_ONLY = frozenset({"tier2_surfaces"})
 _REVIEW_TIER_SHRINK_ONLY = frozenset({"tier0_patterns"})
 
 
-def _review_tier_problems(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> list[str]:
+def _review_tier_problems(base: Mapping[str, object], overlay: Mapping[str, object]) -> list[str]:
     """Every tighten-only violation in `overlay` against `base`'s `review_tier`."""
     problems: list[str] = []
     for key, new in overlay.items():
@@ -499,19 +500,19 @@ def _review_tier_problems(base: Mapping[str, Any], overlay: Mapping[str, Any]) -
 
 
 def apply_overlay(
-    resolved: Mapping[str, Any], overlay: Mapping[str, Any] | None, overlay_dir: Path | str | None = None
-) -> dict[str, Any]:
+    resolved: Mapping[str, object], overlay: Mapping[str, object] | None, overlay_dir: Path | str | None = None
+) -> dict[str, object]:
     """Merge the project layer's whitelisted keys over `resolved`, unchecked; `overlay=None` returns it unchanged."""
     if overlay is None:
         return dict(resolved)
     merged = dict(resolved)
     if "context" in overlay:
-        entries = (
-            [str((Path(overlay_dir) / str(entry)).resolve()) for entry in overlay["context"]]
+        entries: list[object] = (
+            [str((Path(overlay_dir) / str(entry)).resolve()) for entry in cast("Iterable[object]", overlay["context"])]
             if overlay_dir is not None
-            else list(overlay["context"])
+            else list(cast("Iterable[object]", overlay["context"]))
         )
-        merged["context"] = [*resolved.get("context", []), *entries]
+        merged["context"] = [*cast("Sequence[object]", resolved.get("context", [])), *entries]
     if "description" in overlay:
         merged["description"] = overlay["description"]
     landing_areas = _as_mapping(overlay.get("landing_areas"))
@@ -544,28 +545,28 @@ def apply_overlay(
     return merged
 
 
-def test_database_setting(cartridge: Mapping[str, Any]) -> Mapping[str, Any] | None:
+def test_database_setting(cartridge: Mapping[str, object]) -> Mapping[str, object] | None:
     """The `landing_areas.test_database` mapping of a resolved cartridge, or None when absent."""
-    return _as_mapping(cartridge.get("landing_areas")).get("test_database")
+    return cast("Mapping[str, object] | None", _as_mapping(cartridge.get("landing_areas")).get("test_database"))
 
 
-def integration_checks_setting(cartridge: Mapping[str, Any]) -> list[Any]:
+def integration_checks_setting(cartridge: Mapping[str, object]) -> list[object]:
     """The `landing_areas.integration_checks` list of a resolved cartridge, or an empty list when absent."""
-    return list(_as_mapping(cartridge.get("landing_areas")).get("integration_checks") or [])
+    return list(cast("Iterable[object]", _as_mapping(cartridge.get("landing_areas")).get("integration_checks") or []))
 
 
 def _merge_overlay(
     team: str,
-    merged: Mapping[str, Any],
-    overlay: Mapping[str, Any],
+    merged: Mapping[str, object],
+    overlay: Mapping[str, object],
     overlay_dir: Path | str | None,
-    skill_index: Mapping[str, Sequence[Any]],
-) -> dict[str, Any]:
+    skill_index: Mapping[str, Sequence[object]],
+) -> dict[str, object]:
     """`merged` with `overlay` applied, raising CartridgeError listing EVERY overlay problem found."""
     review_tier = _overlay_review_tier(overlay)
     base_review_tier = _as_mapping(_as_mapping(merged.get("policy")).get("review_tier"))
     cost_level = _overlay_cost_level(overlay)
-    base_cost_level = _as_mapping(_as_mapping(merged.get("policy")).get("cost")).get("level")
+    base_cost_level = cast("str | None", _as_mapping(_as_mapping(merged.get("policy")).get("cost")).get("level"))
     cost_problem = (
         cost_level_loosening(base_cost_level, cost_level, team)
         if cost_level is not None and base_cost_level is not None
@@ -592,10 +593,10 @@ def _merge_overlay(
 
 
 def _fold_fragments(
-    layer: Mapping[str, Any],
-    fragments: Sequence[tuple[str, Mapping[str, Any]]],
-    authority: Mapping[str, Any],
-) -> tuple[dict[str, Any], list[str]]:
+    layer: Mapping[str, object],
+    fragments: Sequence[tuple[str, Mapping[str, object]]],
+    authority: Mapping[str, object],
+) -> tuple[dict[str, object], list[str]]:
     """Fold `fragments` (sorted-filename order, already read) over `layer`.
 
     Each fragment is checked against the ACCUMULATED authority: `authority`
@@ -608,24 +609,24 @@ def _fold_fragments(
     """
 
     def step(
-        acc: tuple[dict[str, Any], dict[str, Any], list[str]],
-        fragment: tuple[str, Mapping[str, Any]],
-    ) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+        acc: tuple[dict[str, object], dict[str, object], list[str]],
+        fragment: tuple[str, Mapping[str, object]],
+    ) -> tuple[dict[str, object], dict[str, object], list[str]]:
         folded, current_authority, problems = acc
         label, frag = fragment
-        frag_kinds = frag.get("write_kinds") or {}
-        authority_kinds = current_authority.get("write_kinds") or {}
+        frag_kinds = frag.get("write_kinds")
+        authority_kinds = current_authority.get("write_kinds")
         frag_gate = _as_mapping(frag.get("policy")).get("gate")
         authority_gate = _as_mapping(current_authority.get("policy")).get("gate")
         gate_problem = (
-            gate_loosening(authority_gate, frag_gate, label)
+            gate_loosening(cast("str", authority_gate), cast("str", frag_gate), label)
             if frag_gate is not None and authority_gate is not None
             else None
         )
         found = [
             *(
                 _loosenings(authority_kinds, frag_kinds, label)
-                if isinstance(frag_kinds, Mapping) and isinstance(authority_kinds, Mapping)
+                if is_mapping(frag_kinds) and is_mapping(authority_kinds)
                 else []
             ),
             *([gate_problem] if gate_problem else []),
@@ -638,8 +639,8 @@ def _fold_fragments(
 
 
 def _walk(
-    chain: Sequence[tuple[str, Path, dict[str, Any]]],
-) -> tuple[list[tuple[str, dict[str, Any]]], list[str], list[Path], list[str]]:
+    chain: Sequence[tuple[str, Path, dict[str, object]]],
+) -> tuple[list[tuple[str, dict[str, object]]], list[str], list[Path], list[str]]:
     """Walk `chain` base-first, snapshotting the resolved-so-far cartridge.
 
     One entry per layer right after its `cartridge.yaml` merges, labelled by
@@ -657,8 +658,8 @@ def _walk(
     layer or fragment declaring both `cast` and `crew` appends to the
     returned problems instead of raising, alongside every other problem.
     """
-    entries: list[tuple[str, dict[str, Any]]] = []
-    merged: dict[str, Any] = {}
+    entries: list[tuple[str, dict[str, object]]] = []
+    merged: dict[str, object] = {}
     problems: list[str] = []
     deprecations: list[str] = []
     fragment_paths: list[Path] = []
@@ -670,14 +671,14 @@ def _walk(
             problems.append(layer_problem)
         level = dict(normalized_layer)
         level["context"] = _absolutise_context(normalized_layer, directory)
-        child_kinds = level.get("write_kinds") or {}
-        parent_kinds = merged.get("write_kinds") or {}
-        if isinstance(child_kinds, Mapping) and isinstance(parent_kinds, Mapping):
+        child_kinds = level.get("write_kinds")
+        parent_kinds = merged.get("write_kinds")
+        if is_mapping(child_kinds) and is_mapping(parent_kinds):
             problems.extend(_loosenings(parent_kinds, child_kinds, name))
         child_gate = _as_mapping(level.get("policy")).get("gate")
         parent_gate = _as_mapping(merged.get("policy")).get("gate")
         if child_gate is not None and parent_gate is not None:
-            gate_problem = gate_loosening(parent_gate, child_gate, name)
+            gate_problem = gate_loosening(cast("str", parent_gate), cast("str", child_gate), name)
             if gate_problem:
                 problems.append(gate_problem)
         layer_authority = _merge(merged, level)
@@ -698,15 +699,15 @@ def _walk(
     return entries, problems, fragment_paths, deprecations
 
 
-def _overlay_text(overlay: Mapping[str, Any]) -> str:
+def _overlay_text(overlay: Mapping[str, object]) -> str:
     return json.dumps(overlay, sort_keys=True, separators=(",", ":"), default=str)
 
 
 def _cartridge_sha(
-    merged: Mapping[str, Any],
+    merged: Mapping[str, object],
     context_paths: Sequence[str],
     fragment_paths: Sequence[Path] = (),
-    overlay: Mapping[str, Any] | None = None,
+    overlay: Mapping[str, object] | None = None,
 ) -> str:
     payload = {k: v for k, v in merged.items() if k not in DERIVED_KEYS and k != "context"}
     digest = hashlib.sha256()
@@ -723,20 +724,20 @@ def _cartridge_sha(
     return digest.hexdigest()
 
 
-def _validate(merged: Mapping[str, Any], skill_index: Mapping[str, Sequence[Any]]) -> list[str]:
+def _validate(merged: Mapping[str, object], skill_index: Mapping[str, Sequence[object]]) -> list[str]:
     problems: list[str] = []
-    skills = merged.get("skills") or {}
-    if not isinstance(skills, Mapping):
+    skills = cast("object", merged.get("skills") or {})
+    if not is_mapping(skills):
         return [f"'skills' must be a mapping, got {type(skills).__name__}"]
 
-    roles = merged.get("roles") or {}
-    required = roles.get("required", []) if isinstance(roles, Mapping) else []
+    roles = cast("object", merged.get("roles") or {})
+    required = cast("Iterable[object]", roles.get("required", []) if is_mapping(roles) else [])
     for role in required:
         if role not in skills:
             problems.append(f"required role '{role}' is unbound; bind it under 'skills'")
 
     for role, name in skills.items():
-        bodies = skill_index.get(name, ())
+        bodies = skill_index.get(cast("str", name), ())
         if len(bodies) == 1:
             continue
         if not bodies:
@@ -748,7 +749,7 @@ def _validate(merged: Mapping[str, Any], skill_index: Mapping[str, Sequence[Any]
     # Seats bind Claude Code plugin skills (superpowers:*, example-skills:*, ...)
     # that live in the provider's plugin cache, not in the harness skill index;
     # they are not validated here. Only role bindings under `skills` are.
-    for entry in merged.get("context", []):
+    for entry in cast("Iterable[str]", merged.get("context", [])):
         if not Path(entry).is_file():
             problems.append(f"context pack does not exist: {entry}")
 
@@ -767,10 +768,10 @@ def _validate(merged: Mapping[str, Any], skill_index: Mapping[str, Sequence[Any]
         if bounds is not None and not isinstance(bounds, str):
             problems.append(f"policy.cost.bounds must be null or a string, got {type(bounds).__name__}")
 
-    write_kinds = merged.get("write_kinds") or {}
-    if isinstance(write_kinds, Mapping):
+    write_kinds = cast("object", merged.get("write_kinds") or {})
+    if is_mapping(write_kinds):
         for kind, spec in write_kinds.items():
-            if not isinstance(spec, Mapping):
+            if not is_mapping(spec):
                 continue
             arm = spec.get("apply_arm")
             if arm is None or arm in NON_ROLE_APPLY_ARMS or arm in skills:
@@ -778,9 +779,9 @@ def _validate(merged: Mapping[str, Any], skill_index: Mapping[str, Sequence[Any]
             problems.append(f"write kind '{kind}' names apply_arm '{arm}', which is not a bound role")
 
     crew = merged.get("crew")
-    if isinstance(crew, Mapping):
+    if is_mapping(crew):
         for seat, entry in crew.items():
-            if isinstance(entry, Mapping) and "enabled" in entry and not isinstance(entry["enabled"], bool):
+            if is_mapping(entry) and "enabled" in entry and not isinstance(entry["enabled"], bool):
                 problems.append(f"seat '{seat}' sets enabled to {entry['enabled']!r}; enabled must be a bool")
 
     return problems
@@ -790,10 +791,10 @@ def _resolve(
     team: str,
     cartridges_dir: Path | str,
     *,
-    skill_index: Mapping[str, Sequence[Any]],
-    overlay: Mapping[str, Any] | None = None,
+    skill_index: Mapping[str, Sequence[object]],
+    overlay: Mapping[str, object] | None = None,
     overlay_dir: Path | str | None = None,
-) -> list[tuple[str, dict[str, Any]]]:
+) -> list[tuple[str, dict[str, object]]]:
     """Resolve `team`'s full chain, then the project layer's `overlay`, and return every snapshot `_walk` recorded.
 
     Raises CartridgeError listing EVERY problem found, not just the first — a
@@ -818,7 +819,7 @@ def _resolve(
 
     final = dict(overlaid)
     final["cartridge_dir"] = str(chain[-1][1].resolve())
-    final["cartridge_sha"] = _cartridge_sha(final, final.get("context", []), fragment_paths, overlay)
+    final["cartridge_sha"] = _cartridge_sha(final, cast("Sequence[str]", final.get("context", [])), fragment_paths, overlay)
     final["overlay_sha"] = (
         hashlib.sha256(_overlay_text(overlay).encode("utf-8")).hexdigest() if overlay is not None else None
     )
@@ -837,10 +838,10 @@ def load(
     team: str,
     cartridges_dir: Path | str,
     *,
-    skill_index: Mapping[str, Sequence[Any]],
-    overlay: Mapping[str, Any] | None = None,
+    skill_index: Mapping[str, Sequence[object]],
+    overlay: Mapping[str, object] | None = None,
     overlay_dir: Path | str | None = None,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     """Resolve `team` against its inheritance chain and the project layer's overlay, and validate the result.
 
     Raises CartridgeError listing EVERY problem found, not just the first — a
@@ -850,8 +851,8 @@ def load(
 
 
 def layers(
-    team: str, cartridges_dir: Path | str, *, skill_index: Mapping[str, Sequence[Any]]
-) -> list[tuple[str, dict[str, Any]]]:
+    team: str, cartridges_dir: Path | str, *, skill_index: Mapping[str, Sequence[object]]
+) -> list[tuple[str, dict[str, object]]]:
     """Resolve `team` and return the resolved-so-far cartridge after each step.
 
     One entry per layer after its `cartridge.yaml` merges (labelled `base`,
@@ -874,7 +875,7 @@ def _main(argv: Sequence[str] | None = None) -> int:
 
         return providers_refresh.main(resolved_argv[2:])
 
-    parser = argparse.ArgumentParser(prog="python -m core.cartridge", description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(prog="python -m core.cartridge", description=cast("str", __doc__).splitlines()[0])
     parser.add_argument("--team", required=True, help="team cartridge to resolve")
     parser.add_argument(
         "--cartridges-dir",
@@ -901,12 +902,12 @@ def _main(argv: Sequence[str] | None = None) -> int:
 
     from core.skills import index_from_roots
 
-    index: Mapping[str, Sequence[Any]] = index_from_roots(args.skills_root)
+    index: Mapping[str, Sequence[object]] = index_from_roots(args.skills_root)
     if args.unverified_skills:
         print("warning: skill bindings NOT verified (--unverified-skills)", file=sys.stderr)
 
-        class _Unverified(dict):
-            def get(self, key, default=None):
+        class _Unverified(dict[str, Sequence[object]]):
+            def get(self, key: str, default: object = None) -> list[str]:
                 return [key]
 
         index = _Unverified()
@@ -931,7 +932,7 @@ def _example_team_template() -> Mapping[str, str]:
     }
 
 
-def _apply_init_step(step: Mapping[str, Any], *, force: bool) -> None:
+def _apply_init_step(step: Mapping[str, str], *, force: bool) -> None:
     """Perform one `init_plan` step; refuse an unforceable conflict by path."""
     op = step["op"]
     if op == "mkdir":

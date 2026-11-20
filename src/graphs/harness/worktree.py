@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
+import os
 import shutil
-import subprocess
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
+
+from harness import bounded_proc
 
 __all__ = [
     "apply_patch",
@@ -29,11 +33,40 @@ __all__ = [
 # just made and not yet checked out ("gitfile does not point to a valid repository"). Re-entrant, so
 # `remove_worktree` can prune under the lock it already holds.
 _REGISTRY_LOCK = threading.RLock()
+# Processes share the repository too (two runs, the lander, warm pool leases): an `add` reads every other
+# registration, and one made by another process and not yet written fails it ("failed to read
+# .git/worktrees/<name>/commondir"). So the thread lock is joined by an `flock` on a file in the repository's
+# common git directory. An `flock` is per open file, so this process takes it once per repository, under the thread
+# lock; a nested hold on the same thread takes nothing more.
+_REGISTRY_FILE = "coxswain-worktree-registry.lock"
+_held: set[str] = set()  # the lock files this process holds; read and written only under _REGISTRY_LOCK
 
 
-def registry_lock() -> threading.RLock:
-    """The lock to hold around any `git worktree add`, `remove` or `prune`, so no two of them overlap."""
-    return _REGISTRY_LOCK
+def _registry_lock_path(repo: Path | str) -> Path | None:
+    """The registry lock file of `repo`'s common git directory; None when `repo` is not a git repository."""
+    found = bounded_proc.completed(
+        ["git", "-C", str(repo), "rev-parse", "--path-format=absolute", "--git-common-dir"], capture_output=True, text=True
+    )
+    return Path(found.stdout.strip()) / _REGISTRY_FILE if found.returncode == 0 and found.stdout.strip() else None
+
+
+@contextlib.contextmanager
+def registry_lock(repo: Path | str) -> Iterator[None]:
+    """Hold around any `git worktree add`, `remove` or `prune` on `repo`, so no two of them overlap in any process."""
+    with _REGISTRY_LOCK:
+        path = _registry_lock_path(repo)
+        if path is None or str(path) in _held:
+            # Nothing to lock across processes, or this thread already holds the file lock further up its stack.
+            yield
+            return
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            _held.add(str(path))
+            yield
+        finally:
+            _held.discard(str(path))
+            os.close(fd)  # the only descriptor of this open file: closing it drops the flock
 
 
 _TRAILING_MARKERS = ("</patch>", "</diff>", "</code>", "```")
@@ -95,7 +128,7 @@ def apply_patch(patch: str, worktree: Path) -> tuple[bool, str]:
         return False, refusal
     worktree.mkdir(parents=True, exist_ok=True)
     if not (worktree / ".git").exists():
-        subprocess.run(["git", "init", "-q"], cwd=worktree, capture_output=True, text=True)
+        bounded_proc.completed(["git", "init", "-q"], cwd=worktree, capture_output=True, text=True)
     # A diff that arrives through a JSON field can lose its final newline,
     # and git rejects such a patch as corrupt at its last line even though
     # every hunk is intact. Restoring the newline changes no hunk; it only
@@ -105,7 +138,7 @@ def apply_patch(patch: str, worktree: Path) -> tuple[bool, str]:
     # trusting the header. It does not relax context matching, so a hunk
     # whose content does not fit the file still fails with git's own message.
     normalised = cleaned if cleaned.endswith("\n") or not cleaned else cleaned + "\n"
-    result = subprocess.run(
+    result = bounded_proc.completed(
         ["git", "apply", "--verbose", "--allow-empty", "--recount", "-"],
         input=normalised,
         cwd=worktree,
@@ -134,8 +167,8 @@ def create_worktree(repo: Path, worktree: Path, *, branch: str, base: str | None
     cmd = ["git", "-C", str(repo), "worktree", "add", "-b", branch, str(worktree)]
     if base is not None:
         cmd.append(base)
-    with _REGISTRY_LOCK:
-        result = subprocess.run(cmd, capture_output=True, text=True)
+    with registry_lock(repo):
+        result = bounded_proc.completed(cmd, capture_output=True, text=True)
     return result.returncode == 0, (result.stderr or result.stdout).strip()
 
 
@@ -149,7 +182,7 @@ def link_venv(repo: Path, worktree: Path) -> bool:
     venv, link = Path(repo) / ".venv", Path(worktree) / ".venv"
     if not venv.is_dir() or link.exists() or link.is_symlink():
         return False
-    common = subprocess.run(["git", "-C", str(worktree), "rev-parse", "--git-common-dir"], capture_output=True, text=True)
+    common = bounded_proc.completed(["git", "-C", str(worktree), "rev-parse", "--git-common-dir"], capture_output=True, text=True)
     if common.returncode != 0:
         return False
     exclude = Path(worktree) / common.stdout.strip() / "info" / "exclude"
@@ -169,8 +202,8 @@ def prune_registrations(repo: Path) -> tuple[bool, str]:
     then blocks the next `worktree add` on the same branch or path with a
     phantom "already exists" until this runs.
     """
-    with _REGISTRY_LOCK:
-        result = subprocess.run(
+    with registry_lock(repo):
+        result = bounded_proc.completed(
             ["git", "-C", str(repo), "worktree", "prune", "--verbose"],
             capture_output=True,
             text=True,
@@ -187,8 +220,8 @@ def remove_worktree(repo: Path, worktree: Path) -> tuple[bool, str]:
     when there is no real repo behind a patch. Either way, `prune_registrations`
     runs last so a stale entry never survives this call.
     """
-    with _REGISTRY_LOCK:
-        result = subprocess.run(
+    with registry_lock(repo):
+        result = bounded_proc.completed(
             ["git", "-C", str(repo), "worktree", "remove", "--force", str(worktree)],
             capture_output=True,
             text=True,
@@ -211,7 +244,7 @@ def reset_worktree(worktree: Path, *, branch: str, base: str) -> tuple[bool, str
     )
     messages: list[str] = []
     for args in steps:
-        result = subprocess.run(["git", "-C", str(worktree), *args], capture_output=True, text=True)
+        result = bounded_proc.completed(["git", "-C", str(worktree), *args], capture_output=True, text=True)
         detail = (result.stderr or result.stdout).strip()
         if result.returncode != 0:
             return False, detail
@@ -227,7 +260,7 @@ def read_lock(worktree: Path, names: Sequence[str] = ("uv.lock",)) -> bytes | No
 
 def sync_env(worktree: Path, argv: Sequence[str]) -> tuple[bool, str]:
     """Run the caller's environment sync `argv` with the worktree as cwd; the command is never named here."""
-    result = subprocess.run(list(argv), cwd=worktree, capture_output=True, text=True)
+    result = bounded_proc.completed(list(argv), bounded_proc.STEP_TIMEOUT_SECONDS, cwd=worktree, capture_output=True, text=True)
     return result.returncode == 0, "\n".join(s for s in (result.stdout.strip(), result.stderr.strip()) if s)
 
 
@@ -250,7 +283,7 @@ def stale_holders(porcelain: str, branch: str, worktree_root: Path, alive: Calla
 
 def release_stale_holders(repo: Path, branch: str, worktree_root: Path, alive: Callable[[str], bool]) -> list[Path]:
     """Remove every worktree `stale_holders` finds for `branch`; the branch itself is kept. Returns the removed paths."""
-    listing = subprocess.run(
+    listing = bounded_proc.completed(
         ["git", "-C", str(repo), "worktree", "list", "--porcelain"],
         capture_output=True,
         text=True,

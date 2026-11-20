@@ -1,5 +1,5 @@
 from test_route_edit_rebuild import CONFLICT, _approved_file, _approved_row
-from test_route_edit_task import INTAKE, TICKET_FILE, _file, _intake_row, _store, _ticket_row
+from test_route_edit_task import INTAKE, TICKET_FILE, _file, _intake_row, _runs, _store, _ticket_row
 
 from agent_tools import route_edit
 
@@ -32,6 +32,7 @@ def test_hand_edited_needs_and_body_survive_a_move_to_ready(tmp_path, monkeypatc
 
 
 def test_the_output_names_what_was_kept(tmp_path, monkeypatch):
+    _runs(monkeypatch, "ship-3")  # a run to mark, so no warning that none was found closes the output
     _store(monkeypatch, [_blocked_row()])
     _file(tmp_path, REL, _hand_edited())
     result = route_edit.apply_edit(tmp_path, tmp_path, "t1", state="ready", live_runs=())
@@ -100,6 +101,7 @@ def test_a_note_is_appended_once(tmp_path, monkeypatch):
 
 
 def test_a_note_goes_with_a_state_move_on_top_of_the_kept_body(tmp_path, monkeypatch):
+    _runs(monkeypatch, "ship-3")
     store = _store(monkeypatch, [_blocked_row()])
     _file(tmp_path, REL, _hand_edited())
     result = route_edit.apply_edit(tmp_path, tmp_path, "t1", state="ready", note="Back in the queue", live_runs=())

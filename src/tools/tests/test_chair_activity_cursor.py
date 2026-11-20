@@ -18,6 +18,12 @@ from agent_tools.chair_activity_read import (
 )
 
 
+@pytest.fixture
+def tmp_path(short_tmp_path):
+    """The project folder is named for the whole workspace path, so the workspace's path stays short."""
+    return short_tmp_path
+
+
 def _tree(tmp_path: Path) -> tuple[Path, Path, Path]:
     projects = tmp_path / "projects"
     workspace = tmp_path / "ws"

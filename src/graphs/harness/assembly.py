@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import subprocess
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+
+from harness import bounded_proc
 
 IDENTITY = ("-c", "user.name=coxswain", "-c", "user.email=coxswain@localhost")
 
@@ -34,7 +35,7 @@ def failure_cause(parent: str, previous: str, files: Iterable[str], *, output: s
 
 
 def git(worktree: Path, *args: str) -> tuple[int, str]:
-    result = subprocess.run(["git", *IDENTITY, "-C", str(worktree), *args], capture_output=True, text=True)
+    result = bounded_proc.completed(["git", *IDENTITY, "-C", str(worktree), *args], capture_output=True, text=True)
     return result.returncode, (result.stdout + result.stderr).strip()
 
 

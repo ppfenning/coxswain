@@ -14,7 +14,6 @@ from core.workstore import (
     attempts_on_current_body,
     body_sha,
     foreign_states,
-    phase_complete,
     phases,
     read_initiative,
     read_item,
@@ -638,10 +637,9 @@ def test_an_approved_task_is_never_itself_returned(land_at: str) -> None:
     assert ready_tasks(items, land_at=land_at) == []
 
 
-def test_an_approved_merged_task_is_not_itself_ready_and_not_phase_complete() -> None:
+def test_an_approved_merged_task_is_not_itself_ready() -> None:
     items = [{"id": "a", "phase": "p1", "state": "approved", "merged": True, "needs": []}]
     assert ready_tasks(items) == []
-    assert phase_complete(items, "p1") is False
 
 
 @pytest.mark.parametrize("land_at", ["ticket", "level", "task"])
@@ -800,14 +798,6 @@ def test_set_state_can_drop_an_item(initiative: Path) -> None:
     assert read_item(path)["state"] == "dropped"
 
 
-def test_a_phase_of_done_and_dropped_items_is_complete(initiative: Path) -> None:
-    set_state(initiative / "p1-foundations" / "t1-schema-probe.md", "dropped")
-    set_state(initiative / "p1-foundations" / "t2-bench-harness.md", "done")
-    set_state(initiative / "p1-foundations" / "t3-cutover.md", "done")
-    items = read_initiative(initiative)["items"]
-    assert phase_complete(items, "p1-foundations") is True
-
-
 def test_ready_tasks_counts_a_dropped_need_as_met() -> None:
     items = [
         {"id": "t1", "phase": "p1", "state": "dropped", "needs": []},
@@ -863,15 +853,6 @@ def test_quarantined_to_anything_but_ready_is_refused(tmp_path: Path) -> None:
     assert read_item(path)["state"] == "quarantined"
 
 
-def test_an_approved_item_leaves_its_phase_incomplete(initiative: Path) -> None:
-    set_state(initiative / "p1-foundations" / "t1-schema-probe.md", "ready")
-    set_state(initiative / "p1-foundations" / "t1-schema-probe.md", "approved")
-    set_state(initiative / "p1-foundations" / "t2-bench-harness.md", "done")
-    set_state(initiative / "p1-foundations" / "t3-cutover.md", "done")
-    items = read_initiative(initiative)["items"]
-    assert phase_complete(items, "p1-foundations") is False
-
-
 # ── surfaces ───────────────────────────────────────────────────────────────
 
 
@@ -911,7 +892,7 @@ def test_surface_problem_names_every_unresolved_surface() -> None:
 
 def test_a_quarantined_item_reads_and_is_neither_runnable_nor_complete(tmp_path):
     # The store's export writes `quarantined` into ticket files (2026-10-06); reading one must not raise.
-    from core.workstore import phase_complete, read_item, ready_tasks
+    from core.workstore import read_item, ready_tasks
 
     path = tmp_path / "q.md"
     path.write_text("---\nid: q\ntitle: Q\nphase: p\nstate: quarantined\nneeds: []\nsurfaces: []\n---\nBody.\n", encoding="utf-8")
@@ -919,7 +900,6 @@ def test_a_quarantined_item_reads_and_is_neither_runnable_nor_complete(tmp_path)
     sibling = {"id": "r", "phase": "p", "state": "ready", "needs": []}
     assert item["state"] == "quarantined"
     assert [t["id"] for t in ready_tasks([item, sibling])] == ["r"]
-    assert not phase_complete([item, sibling], "p")
 
 
 def _literal(path: Path, text: str) -> Path:
@@ -940,7 +920,6 @@ def test_an_unknown_state_in_an_own_item_reads_back_opaque(tmp_path: Path, caplo
 
     items = read_initiative(root)["items"]
     assert ready_tasks(items) == []
-    assert not phase_complete(items, "p1")
     assert ready_tasks([item, {"id": "x", "phase": "p1", "state": "ready", "needs": ["odd"]}]) == []
     with pytest.raises(WorkStoreError, match="unknown state 'nearly'"):
         write_item(item, tmp_path / "out" / "odd.md")

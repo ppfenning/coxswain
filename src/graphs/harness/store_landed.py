@@ -6,9 +6,9 @@ unknown: whether updated_at should track the landed time instead.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import cast
 
-from harness.store_dialect import Connection, json_load
+from harness.store_dialect import Connection, JsonObject, json_load
 from harness.store_write import Store
 
 # Mirror what `cox runs land` writes into runs/<run>/tasks/<phase>/<task>.json (another repo).
@@ -17,20 +17,20 @@ LANDED_PR = "pr"
 LANDED_AT = "at"
 
 
-def _fetch(conn: Connection, run_id: str, phase: str, task: str) -> tuple[dict[str, Any], str] | None:
+def _fetch(conn: Connection, run_id: str, phase: str, task: str) -> tuple[JsonObject, str] | None:
     """The stored record and its updated_at, or None when the key has no row."""
     p = conn.dialect.placeholder
     sql = f"SELECT record_json, updated_at FROM task_records WHERE run_id = {p} AND phase_id = {p} AND task_id = {p}"
     row = conn.query_one(sql, (run_id, phase, task))
-    return None if row is None else (json_load(row[0]), row[1])
+    return None if row is None else (cast(JsonObject, json_load(row[0])), cast(str, row[1]))
 
 
-def _with_landed(record: dict[str, Any], pr: str, at: str) -> dict[str, Any]:
+def _with_landed(record: JsonObject, pr: str, at: str) -> JsonObject:
     """A copy of the record whose landed object is replaced whole."""
     return {**record, LANDED_KEY: {LANDED_PR: pr, LANDED_AT: at}}
 
 
-def mark_landed(conn: Connection, run_id: str, phase: str, task: str, pr: str, at: str) -> dict[str, Any] | None:
+def mark_landed(conn: Connection, run_id: str, phase: str, task: str, pr: str, at: str) -> JsonObject | None:
     """Set the landed fields on a task record; None, and no write, when the record is absent."""
     found = _fetch(conn, run_id, phase, task)
     if found is None:

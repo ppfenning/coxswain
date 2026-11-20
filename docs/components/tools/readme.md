@@ -51,7 +51,7 @@ cox runs clean RUN_ID --repo REPO [--worktree-root WORKTREE_ROOT] [--runs-dir RU
 cox runs land RUN_ID --repo REPO [--task TASK] [--phase PHASE] [--label LABEL] [--force] [--no-claim] [--behind-limit BEHIND_LIMIT] [--worktree-root WORKTREE_ROOT] [--apply] [--no-merge] [--runs-dir RUNS_DIR] [--profile PROFILE] [--gate ticket|phase|epic|full]   merge a run's branch into the target repo
 cox runs fetch [--runs-dir RUNS_DIR] [--profile PROFILE] [RUN_ID] [--all]   pull an ended remote lane's run directory, log and branches to this machine
 cox runs review --pr PR [--profile PROFILE]   review a contributor PR with the review graph and post the verdict
-cox runs recover RUN_ID TASK_ID --repo REPO [--runs-dir RUNS_DIR] [--profile PROFILE] [--dry-run]   merge an approved task's commit into its phase branch after an escalated merge
+cox runs recover RUN_ID TASK_ID --repo REPO [--runs-dir RUNS_DIR] [--profile PROFILE] [--dry-run] [--reopen]   merge an approved task's commit into its phase branch after an escalated merge
 cox runs series [--runs-dir RUNS_DIR] [--json] [--append APPEND]   per-run summary rows across a runs directory
 cox runs wait [--runs-dir RUNS_DIR] [--max-seconds MAX_SECONDS] [--interval INTERVAL] [--json]   block until a busy lane's run exits, then print its outcome lines
 cox runs events [--runs-dir RUNS_DIR] [--follow] [--json]   poll a run's log for structured events

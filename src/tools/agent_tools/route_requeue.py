@@ -2,9 +2,10 @@
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
-from agent_tools import route_guard, run_store
+from agent_tools import route_guard, route_hold, run_store
 
 DONE = route_guard.DONE
 REFUSED = route_guard.REFUSED
@@ -204,14 +205,16 @@ def _read_intake_field(workspace: Path, initiative_id: str) -> str | None:
     return None
 
 
-def _clean_intake_files(workspace: Path, intake_id: str) -> None:
-    """Edge. Drop the `initiative:` line from intake/<id>.md and intake/done/<id>.md; a missing file or line is skipped, an unchanged file is not written."""
+def _clean_intake_files(workspace: Path, intake_id: str, at: str | None = None) -> None:
+    """Edge. Drop the `initiative:` line from intake/<id>.md and intake/done/<id>.md, and set `released_at` to `at` when given;
+    a missing file or line is skipped, an unchanged file is not written."""
     for path in (workspace / "intake" / f"{intake_id}.md", workspace / "intake" / "done" / f"{intake_id}.md"):
         try:
             text = path.read_bytes().decode()
         except (OSError, UnicodeDecodeError):
             continue
         cleaned = without_initiative_line(text)
+        cleaned = route_hold.stamped_text(cleaned, at) if at is not None else cleaned
         if cleaned != text:
             path.write_bytes(cleaned.encode())
 
@@ -226,10 +229,22 @@ def _drop_initiative_file(workspace: Path, initiative_id: str) -> None:
         path.parent.rmdir()
 
 
-def requeue(workspace: Path, runs_dir: Path, id: str, *, dry_run: bool = False) -> tuple[int, str]:
+def _stamped(row: dict, intake_id: str, at: str | None) -> dict:
+    """The intake's full row with `released_at` set to `at`; any other row, or no `at`, unchanged."""
+    if at is None or row.get("task_id") != intake_id or "extra" not in row:
+        return row
+    return {**row, "extra": {**row["extra"], route_hold.RELEASED_AT: at}}
+
+
+def requeue(
+    workspace: Path, runs_dir: Path, id: str, *, dry_run: bool = False, now: datetime | None = None
+) -> tuple[int, str]:
     """Edge. (0, message) done or already done, (2, message) refused. Writes the store rows, then edits two files under `workspace`:
     the intake file (intake/ and intake/done/) loses its `initiative:` line, and the dropped initiative's work/<id>/initiative.md is
-    deleted, with its folder when that leaves it empty. A dry run or a refusal touches no file; a plan with no rows left still cleans a stale file."""
+    deleted, with its folder when that leaves it empty. A dry run or a refusal touches no file; a plan with no rows left still cleans a stale file.
+
+    With `now`, a requeue that writes the intake's row also stamps `released_at` on it and on the intake file, so the chair
+    stops counting the intake's earlier empty decompose runs."""
     rows = run_store.read_queue(runs_dir)
     plan = plan_requeue(rows, id)
     if isinstance(plan, Refused):  # the row link is absent or unusable: try the field in initiative.md
@@ -238,10 +253,12 @@ def requeue(workspace: Path, runs_dir: Path, id: str, *, dry_run: bool = False) 
         return REFUSED, f"requeue: refused: {plan.reason}"
     if dry_run:
         return DONE, plan.note if not plan.writes else f"would requeue: {plan.note}"
+    writes_intake = any(r.get("task_id") == plan.intake and "extra" in r for r in plan.writes)
+    at = route_hold.released_at_value(now) if now is not None and writes_intake else None
     for row in plan.writes:
-        reason = run_store.upsert_row_detail(runs_dir, row)
+        reason = run_store.upsert_row_detail(runs_dir, _stamped(row, plan.intake, at))
         if reason:
             return REFUSED, f"requeue: the store did not take {row['task_id']}: {reason}"
-    _clean_intake_files(workspace, plan.intake)
+    _clean_intake_files(workspace, plan.intake, at)
     _drop_initiative_file(workspace, plan.initiative)
     return DONE, plan.note if not plan.writes else f"requeue: {plan.note}"

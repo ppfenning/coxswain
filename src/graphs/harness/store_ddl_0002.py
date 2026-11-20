@@ -24,7 +24,7 @@ def _text(*names: str) -> tuple[Column, ...]:
 
 # Name, columns, key. The JSON token is resolved per dialect.
 # version is TEXT: the registration task must write it as text.
-_TABLES: tuple[tuple[str, tuple[Column, ...], tuple[str, ...]], ...] = (
+TABLES: tuple[tuple[str, tuple[Column, ...], tuple[str, ...]], ...] = (
     (
         "graphs",
         _text("graph_id", "name", "version", "content_hash", "registered_at") + (("definition_json", _JSON),),
@@ -39,7 +39,7 @@ _TABLES: tuple[tuple[str, tuple[Column, ...], tuple[str, ...]], ...] = (
 )
 
 # Table and TEXT column that the ALTERs append to a migration 0001 table.
-_ADDED: tuple[tuple[str, str], ...] = (("runs", "graph_id"), ("node_calls", "node_id"))
+ADDED: tuple[tuple[str, str], ...] = (("runs", "graph_id"), ("node_calls", "node_id"))
 
 
 def _table(dialect: Dialect, name: str, columns: tuple[Column, ...], key: tuple[str, ...]) -> str:
@@ -50,7 +50,7 @@ def _table(dialect: Dialect, name: str, columns: tuple[Column, ...], key: tuple[
 def statements(dialect: Dialect) -> tuple[str, ...]:
     """Three registry tables, the name/version index, then the two ALTERs."""
     return (
-        *(_table(dialect, n, c, k) for n, c, k in _TABLES),
+        *(_table(dialect, n, c, k) for n, c, k in TABLES),
         "CREATE INDEX IF NOT EXISTS ix_graphs_name_version ON graphs (name, version)",
-        *(f"ALTER TABLE {t} ADD COLUMN {c} TEXT" for t, c in _ADDED),
+        *(f"ALTER TABLE {t} ADD COLUMN {c} TEXT" for t, c in ADDED),
     )

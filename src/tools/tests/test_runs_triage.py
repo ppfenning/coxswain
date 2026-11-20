@@ -323,7 +323,7 @@ def sqlite_store(monkeypatch, tmp_path):
         conn.row_factory = sqlite3.Row
         return conn, "?"
 
-    monkeypatch.setattr(run_store, "_open", opened)
+    monkeypatch.setattr(run_store, "open_store", opened)
     return tmp_path
 
 
@@ -358,7 +358,7 @@ def test_run_reads_a_sqlite_store_end_to_end(sqlite_store):
 
 
 def test_unreadable_store_is_named_in_the_unknown_task_message(monkeypatch, tmp_path):
-    monkeypatch.setattr(run_store, "_open", lambda _runs_dir: None)
+    monkeypatch.setattr(run_store, "open_store", lambda _runs_dir: None)
     reader = StoreTriageReader(tmp_path, actions_reader=lambda _dir: [], queue_reader=lambda *_a: [])
     code, out = run("t-7", False, store=reader, git=StubGit([]))
     assert code == 1 and "\n" not in out
@@ -386,7 +386,7 @@ def test_refusal_row_keeps_the_initiative_and_phase():
 
 
 def test_store_reader_land_refusal_uses_stub_rows_without_a_store(monkeypatch, tmp_path):
-    monkeypatch.setattr(run_store, "_open", lambda _runs_dir: None)
+    monkeypatch.setattr(run_store, "open_store", lambda _runs_dir: None)
     rows = [land_row("2026-10-16T10:00:00Z", "init-a", "p1", "refused", "main moved")]
     item = {
         "kind": "task",

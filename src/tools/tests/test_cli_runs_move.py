@@ -18,7 +18,7 @@ def _patch_edges(monkeypatch, *, stop_ok=True, stop_reason="", clear_extra=None)
     """Fakes the pause, stop, clear_branches and relaunch edges; returns the call-order list."""
     order: list[str] = []
 
-    def fake_pause(run_id, reason=None):
+    def fake_pause(store_url, run_id, reason=None):
         order.append("pause")
         return store_cli.Paused(reason=reason)
 

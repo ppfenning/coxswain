@@ -23,3 +23,13 @@ def test_lines_come_back_oldest_first_and_a_repeated_line_id_is_added_once(conn)
     added = store_courier.append_many(conn, [("a", "x", "dup"), ("c", "2026-11-12T10:00:01.000000Z", '{"id": "m3"}')])
     assert added == 1 and store_courier.count(conn) == 3
     assert store_courier.lines(conn)[1:] == ['{"id": "m2"}', '{"id": "m3"}'], "the same instant orders by line id"
+
+
+def test_the_log_exists_only_once_a_writer_has_migrated_the_store(store_url):
+    c = connect(store_url)
+    try:
+        assert store_courier.exists(c) is False, "a store no writer has migrated has no courier log"
+        migrate(c, "2026-11-12T00:00:00Z", default_modules())
+        assert store_courier.exists(c) is True
+    finally:
+        c.close()

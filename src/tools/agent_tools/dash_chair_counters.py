@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 
 from agent_tools.chair_exec import Result
 from agent_tools.chair_report import lands_this_tick
-from agent_tools.dash_chair_today import _ts, local_midnight
+from agent_tools.dash_chair_today import local_midnight, row_ts
 
 
 def _age_s(stamp: str | None, now: datetime) -> int:
@@ -27,7 +27,7 @@ def chair_counters(
     start = local_midnight(now, utc_offset)
     phases = [
         row for row in action_rows
-        if row.get("kind") == "land_phase" and row.get("status") == "landed" and (at := _ts(row)) is not None and at >= start
+        if row.get("kind") == "land_phase" and row.get("status") == "landed" and (at := row_ts(row)) is not None and at >= start
     ]
     return {
         "lands_today": lands_this_tick(results),

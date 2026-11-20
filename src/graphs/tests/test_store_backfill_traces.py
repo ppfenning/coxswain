@@ -200,9 +200,9 @@ def test_one_call_short_in_the_parquet_keeps_every_source_of_the_run(repacked):
     falls back to comparing totals; short by the dropped row, it keeps the run and names a source."""
     traces = resolve_traces_root(str(repacked), Path("."), {})
     path = str(_parquet(repacked, "r1"))
-    rows = st._parquet_rows(traces, path)
+    rows = st.parquet_rows(traces, path)
     dropped = next(i for i, r in enumerate(rows) if r["call_id"] == "r1-review-1")
-    st._put(traces, path, st._table(rows[:dropped] + rows[dropped + 1 :]))
+    st.put_table(traces, path, st.build_table(rows[:dropped] + rows[dropped + 1 :]))
     before = _sources(repacked)
     lines = _prune(repacked)
     assert lines[0].startswith("r1 2026/08/31 ")
@@ -244,12 +244,12 @@ def test_uuid_parquet_call_ids_resolve_through_calls_dir_and_still_prune(repacke
     through --calls-dir rather than look it up by the synthetic id, and still prune once they match."""
     traces = resolve_traces_root(str(repacked), Path("."), {})
     path = str(_parquet(repacked, "r1"))
-    rows = st._parquet_rows(traces, path)
+    rows = st.parquet_rows(traces, path)
     uuids = {
         "r1-build-1": "11111111-1111-4111-8111-111111111111",
         "r1-review-1": "22222222-2222-4222-8222-222222222222",
     }
-    st._put(traces, path, st._table([{**r, "call_id": uuids[r["call_id"]]} for r in rows]))
+    st.put_table(traces, path, st.build_table([{**r, "call_id": uuids[r["call_id"]]} for r in rows]))
     calls = tmp_path / "calls"
     _write_calls(
         calls,

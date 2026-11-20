@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import NamedTuple
 
 from agent_tools.route import intake_entries, parse_frontmatter
 from agent_tools.stats_ingest import LEDGER_PATH, _read_ledger
+from core.jsontypes import is_dict
 
 __all__ = [
     "EVENTS", "EXCEPTION_EVENTS", "Reference", "ack", "ack_file", "append_file", "append_line", "format_reference",
@@ -19,6 +21,7 @@ _KINDS = ("run", "task", "pr", "intake", "proposal", "finding", "initiative")
 EVENTS = (
     "needs_attention", "level_merged", "merge_failed", "relaunched", "stuck", "gate_passed", "gate_failed",
     "epic_complete", "run_exited",
+    "stall_raised", "stall_cleared",  # the chair's stall alarm (chair_stall_alarm): one entry as a stall starts, one as it clears
     "chat_directive", "chat_question", "chat_answer", "directive_applied", "directive_refused",
     "chat_action",  # a record of a write an MCP client already made; nothing acts on it
 )
@@ -141,24 +144,26 @@ def run_exited_fields(run: str, initiative: str, outcome: str) -> dict:
     return {"run": run, "initiative": initiative, "outcome": outcome}
 
 
-def parse_run_exited(entry: dict) -> tuple[str, str, str] | None:
+def parse_run_exited(entry: Mapping[str, object]) -> tuple[str, str, str] | None:
     fields = entry.get("fields")
-    if entry.get("event") != "run_exited" or not isinstance(fields, dict):
+    if entry.get("event") != "run_exited" or not is_dict(fields):
         return None
-    values = tuple(fields.get(k) for k in ("run", "initiative", "outcome"))
-    return values if all(isinstance(v, str) for v in values) else None
+    run, initiative, outcome = fields.get("run"), fields.get("initiative"), fields.get("outcome")
+    if isinstance(run, str) and isinstance(initiative, str) and isinstance(outcome, str):
+        return run, initiative, outcome
+    return None
 
 
 def send(
     ref: Reference, sender: str, to: str, note: str, message_id: str,
-    *, event: str | None = None, fields: dict | None = None, topic: str | None = None,
-) -> dict:
+    *, event: str | None = None, fields: Mapping[str, object] | None = None, topic: str | None = None,
+) -> dict[str, object]:
     """Builds one bus entry; never writes it (docs/design/courier.md `#the-bus`).
     `event`, `fields` and `topic` add their key only when given; an unknown `event` raises ValueError."""
     if event is not None and event not in EVENTS:
         raise ValueError(f"unknown courier event {event!r}; expected one of {', '.join(EVENTS)}")
-    base = {"ref": format_reference(ref), "from": sender, "to": to, "note": note, "id": message_id, "ack": False}
-    extras = {"event": event, "fields": fields, "topic": topic}
+    base: dict[str, object] = {"ref": format_reference(ref), "from": sender, "to": to, "note": note, "id": message_id, "ack": False}
+    extras: dict[str, object] = {"event": event, "fields": fields, "topic": topic}
     return {**base, **{k: v for k, v in extras.items() if v is not None}}
 
 
@@ -192,7 +197,7 @@ def _fold(prior: dict | None, entry: dict) -> dict:
 def inbox(
     blob: str, label: str | None = None, holder: str | None = None,
     topic: str | None = None, event: str | None = None, consumer: str | None = None,
-) -> list[dict]:
+) -> list[dict[str, object]]:
     """`holder`: the label currently holding the leader lock, read at the edge.
     An entry addressed to the generic `chair` reaches `label` when `label` is the
     holder or `label` itself starts with `chair`; any other `to` needs an exact match.
@@ -253,7 +258,7 @@ def stamp(path: Path) -> tuple:
     return (str(path), info.st_size, info.st_mtime_ns)
 
 
-def append_file(path: Path, entry: dict) -> None:
+def append_file(path: Path, entry: dict[str, object]) -> None:
     """Appends one line and never reads or rewrites the bus. In a file, a final line missing its newline
     (a torn write) is closed first so the entry stays on its own line."""
     from agent_tools import courier_bus
@@ -282,6 +287,6 @@ def ack_file(path: Path, message_id: str, consumer: str | None = None) -> bool:
     return True
 
 
-def entries(blob: str) -> list[dict]:
+def entries(blob: str) -> list[dict[str, object]]:
     """Every entry once, in first-seen order, at its latest state."""
     return list(_latest_by_id(blob).values())

@@ -2,7 +2,7 @@
 from collections.abc import Sequence
 from typing import Literal
 
-from agent_tools.chair_types import Action
+from agent_tools.chair_types import Action, ActionKind
 
 TaskState = tuple[str, str]  # (task id, state), in the phase's order
 PhaseVerdict = Literal["land_phase", "partial_land", "wait"]
@@ -25,7 +25,7 @@ def partial_land_action(initiative: str, phase: str, tasks: Sequence[TaskState])
     if classify_phase(tasks) != "partial_land":
         return None
     return {
-        "kind": "partial_land",
+        "kind": ActionKind.PARTIAL_LAND,
         "initiative": initiative,
         "phase": phase,
         "task_ids": [task_id for task_id, state in tasks if state == "approved"],

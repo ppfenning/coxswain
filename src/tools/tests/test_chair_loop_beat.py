@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -15,11 +16,26 @@ INTERVAL = 0.02
 HOST = "box"
 
 
+class ManualClock:
+    """A clock only the test moves, so a lease's expiry never depends on how long the runner took to schedule a thread."""
+
+    def __init__(self) -> None:
+        self.t = 0.0
+
+    def __call__(self) -> float:
+        return self.t
+
+
 class FakeLeaseStore:
-    """A one-row lease store with the real fence: renew needs the held holder and epoch, and a steal takes a higher epoch."""
+    """A one-row lease store with the real fence: renew needs the held holder and epoch, and a steal takes a higher epoch.
+
+    Expiry is read off `now`, real time unless a test swaps in a `ManualClock`. `changed` is notified on every renew and
+    refusal, so a test waits for a beat with `wait_for` instead of sleeping and hoping one landed."""
 
     def __init__(self) -> None:
         self.guard = threading.Lock()
+        self.changed = threading.Condition(self.guard)
+        self.now: Callable[[], float] = time.monotonic
         self.holder: str | None = None
         self.epoch = 0
         self.expires = 0.0
@@ -28,11 +44,16 @@ class FakeLeaseStore:
 
     def live(self) -> bool:
         with self.guard:
-            return time.monotonic() < self.expires
+            return self.now() < self.expires
+
+    def wait_for(self, predicate: Callable[[], bool], timeout: float = 10.0) -> bool:
+        """True once `predicate` holds under the store's lock; False after `timeout`, a bound on a hang, not a schedule."""
+        with self.changed:
+            return self.changed.wait_for(predicate, timeout)
 
     def acquire(self, _runs_dir, _name, holder, _ttl, steal=False):
         with self.guard:
-            now = time.monotonic()
+            now = self.now()
             if self.holder not in (None, holder) and now < self.expires and not steal:
                 return store_cli.LeaseRefused(self.epoch, self.holder)
             if self.holder != holder:
@@ -44,9 +65,11 @@ class FakeLeaseStore:
         with self.guard:
             if holder != self.holder or epoch != self.epoch:
                 self.refusals[holder] = self.refusals.get(holder, 0) + 1
+                self.changed.notify_all()
                 return store_cli.LeaseRefused(self.epoch, self.holder)
             self.renewals[holder] = self.renewals.get(holder, 0) + 1
-            self.expires = time.monotonic() + TTL
+            self.expires = self.now() + TTL
+            self.changed.notify_all()
             return store_cli.LeaseGranted(self.epoch, holder)
 
 
@@ -84,16 +107,24 @@ def _loop_deps(runs_dir, session: str, pid: int, during_tick) -> RunDeps:
 
 
 def test_a_tick_longer_than_the_lease_ttl_leaves_the_lease_live(tmp_path, store):
+    clock = ManualClock()
+    store.now = clock
     assert chair.acquire_lease(tmp_path, "a", 1, HOST) == ""
+    holder = chair.lease_holder("a", 1, HOST)
     at_end: list[bool] = []
 
     def long_tick() -> None:
-        time.sleep(TTL * 4)
+        # Four TTLs of lease time pass in half-TTL steps, each only after one more beat landed; without the beat the
+        # lease would lapse on the third step.
+        for _ in range(8):
+            seen = store.renewals.get(holder, 0)
+            assert store.wait_for(lambda seen=seen: store.renewals.get(holder, 0) > seen)
+            clock.t += TTL / 2
         at_end.append(store.live())
 
     run(True, 60, False, _loop_deps(tmp_path, "a", 1, long_tick))
     assert at_end == [True]
-    assert store.renewals[chair.lease_holder("a", 1, HOST)] >= 3
+    assert store.renewals[holder] >= 8
 
 
 def test_after_the_loop_exits_the_beat_stops_and_the_lease_goes_stale(tmp_path, store):
@@ -101,13 +132,15 @@ def test_after_the_loop_exits_the_beat_stops_and_the_lease_goes_stale(tmp_path, 
     holder = chair.lease_holder("a", 1, HOST)
     run(True, 60, False, _loop_deps(tmp_path, "a", 1, lambda: time.sleep(INTERVAL * 3)))
     time.sleep(INTERVAL * 3)  # a beat already past its wait may still land
-    settled = store.renewals[holder]
+    # On a loaded runner no beat may land before the loop exits; the property is that beats stop, not that one landed.
+    settled = store.renewals.get(holder, 0)
     time.sleep(TTL * 2)
-    assert store.renewals[holder] == settled
+    assert store.renewals.get(holder, 0) == settled
     assert not store.live()
 
 
 def test_the_older_epoch_is_rejected_once_a_newer_loop_holds_the_lease(tmp_path, store):
+    store.now = ManualClock()  # no lease time passes: a slow runner cannot expire the newer loop's lease under the test
     older, newer = tmp_path / "older", tmp_path / "newer"
     older.mkdir()
     newer.mkdir()
@@ -117,9 +150,11 @@ def test_the_older_epoch_is_rejected_once_a_newer_loop_holds_the_lease(tmp_path,
     assert store.holder == newer_holder and store.epoch == 2
 
     def newer_beats() -> None:
-        for _ in range(10):
+        assert chair.renew_lease(newer, "b", 2, HOST) == ""
+        # The older loop's beat has been refused by the time the tick ends, however late its thread was scheduled.
+        assert store.wait_for(lambda: store.refusals.get(older_holder, 0) >= 1)
+        for _ in range(9):
             assert chair.renew_lease(newer, "b", 2, HOST) == ""
-            time.sleep(INTERVAL)
 
     run(True, 60, False, _loop_deps(older, "a", 1, newer_beats))
     assert store.refusals[older_holder] == 1  # one rejected beat, then the thread stopped

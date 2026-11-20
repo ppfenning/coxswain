@@ -12,13 +12,13 @@ import fcntl
 import json
 import math
 import os
-import subprocess
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Literal
 
+from harness import bounded_proc
 from harness.warm_pool import PoolEntry, choose_evictions, lock_digest, sync_decision
 from harness.worktree import (
     create_worktree,
@@ -87,7 +87,7 @@ def pick_reusable(
 
 
 def _git_out(path: Path, *args: str) -> str:
-    result = subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True)
+    result = bounded_proc.completed(["git", "-C", str(path), *args], capture_output=True, text=True)
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
@@ -104,7 +104,7 @@ def _is_worktree(path: Path) -> bool:
 def _drop_branch(repo: Path, branch: str, *, force: bool) -> None:
     """Delete a local branch; the safe form (`-d`) refuses a branch with unmerged work."""
     if branch:
-        subprocess.run(["git", "-C", str(repo), "branch", "-D" if force else "-d", branch], capture_output=True)
+        bounded_proc.completed(["git", "-C", str(repo), "branch", "-D" if force else "-d", branch], capture_output=True)
 
 
 def _read_index(pool_dir: Path) -> list[PoolEntry]:

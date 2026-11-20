@@ -25,7 +25,7 @@ import pytest
 from core import ledger
 from harness import cli, split_by_policy
 from harness.cli import _default_ledger, _observe_trap_failures
-from harness.epic import _policy_split
+from harness.epic import policy_split
 from harness.store_write import Store
 
 SHA = "sha-fixture"
@@ -383,7 +383,7 @@ def _row(i: int) -> dict:
 
 
 def _epic_ctx(cart, path, store):
-    """The fields of the epic driver's `_Ctx` its policy step reads."""
+    """The fields of the epic driver's `Ctx` its policy step reads."""
     return SimpleNamespace(cartridge=cart, ledger_path=path, provider_profile=PROFILE, store=store)
 
 
@@ -395,7 +395,7 @@ def test_the_epic_policy_step_spends_the_streak_the_store_earned(cart, tmp_path,
     path = tmp_path / "host.jsonl"
     ledger.append([], path)
 
-    auto, gated = _policy_split(_epic_ctx(cart, path, store), [proposal()])
+    auto, gated = policy_split(_epic_ctx(cart, path, store), [proposal()])
     assert len(auto) == 1 and gated == []
 
 
@@ -403,7 +403,7 @@ def test_the_epic_policy_step_without_a_store_is_gated_on_an_empty_host_file(car
     path = tmp_path / "host.jsonl"
     ledger.append([], path)
 
-    auto, gated = _policy_split(_epic_ctx(cart, path, None), [proposal()])
+    auto, gated = policy_split(_epic_ctx(cart, path, None), [proposal()])
     assert auto == [] and len(gated) == 1
 
 

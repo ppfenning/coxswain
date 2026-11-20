@@ -7,10 +7,13 @@ clear path after the phase lands.
 """
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-from agent_tools.chair_types import Action
+from agent_tools.chair_types import Action, action_text
 from agent_tools.store_cli import Failed, Landed, StateSet
+
+if TYPE_CHECKING:
+    from agent_tools.store_cli import WorkState
 
 NO_RUN_CAUSE = "review_no_run"
 NO_HOST_CAUSE = "review_no_host"
@@ -61,17 +64,18 @@ def refusal(action: Action) -> str:
 
 def review_steps(action: Action) -> list[Step]:
     """Set done, stamp landed with the PR url and merge time, then delete the agents/ branch here and on the host."""
-    run, task_id, repo, host = action["run"], action["task_id"], action["repo"], action.get("host", "")
+    run, task_id, repo = action_text(action, "run"), action_text(action, "task_id"), action_text(action, "repo")
+    host = action.get("host", "")
     pattern = f"agents/{run}/{task_id}"
     return [
-        SetDone(action["initiative"], task_id),
-        MarkLanded(run, action["phase"], task_id, action["url"], action.get("merged_at")),
+        SetDone(action_text(action, "initiative"), task_id),
+        MarkLanded(run, action_text(action, "phase"), task_id, action_text(action, "url"), action.get("merged_at")),
         DeleteBranch(repo, pattern, ""),
         *([DeleteBranch(repo, pattern, host)] if host else []),
     ]
 
 
-def _set_done(result: object) -> str:
+def set_done_reason(result: object) -> str:
     """"" when the store holds the task as done, else why it does not. A refusal that names done is a repeat."""
     if isinstance(result, StateSet):
         return ""
@@ -80,7 +84,7 @@ def _set_done(result: object) -> str:
     return f"set-state done: {result}"
 
 
-def _stamped(result: object) -> str:
+def stamped_reason(result: object) -> str:
     """"" when the record is landed. The store saying it was already landed is the same as Landed."""
     if isinstance(result, Landed):
         return ""
@@ -92,7 +96,7 @@ def _stamped(result: object) -> str:
 def apply_review(
     action: Action,
     *,
-    set_state: Callable[[str, str, str, str], object],  # (initiative, task, state, by) -> a store_cli SetStateResult
+    set_state: Callable[[str, str, WorkState, str], object],  # (initiative, task, state, by) -> a store_cli SetStateResult
     mark_landed: Callable[[str, str, str, str, str], object],  # (run, phase, task, pr, at) -> a store_cli MarkLandedResult
     delete_branches: Callable[[str, str, str], tuple[list[str], str]],  # (ssh, repo, pattern); ssh "" is here
     ssh_for: Callable[[str], str],
@@ -109,9 +113,9 @@ def apply_review(
     notes: list[str] = []
     for step in review_steps(action):
         if isinstance(step, SetDone):
-            error = _set_done(set_state(step.initiative, step.task_id, "done", "chair"))
+            error = set_done_reason(set_state(step.initiative, step.task_id, "done", "chair"))
         elif isinstance(step, MarkLanded):
-            error = _stamped(mark_landed(step.run, step.phase, step.task_id, step.pr, step.at or now()))
+            error = stamped_reason(mark_landed(step.run, step.phase, step.task_id, step.pr, step.at or now()))
         else:
             deleted, error = delete_branches(ssh if step.host else "", step.repo, step.pattern)
             notes += [f"deleted {name}{f' on {step.host}' if step.host else ''}" for name in deleted]

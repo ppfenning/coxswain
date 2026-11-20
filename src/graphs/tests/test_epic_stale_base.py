@@ -33,6 +33,20 @@ class FailingBuild(Runner):
         return super().run(role=role, **kw)
 
 
+class CountingFailingBuild(FailingBuild):
+    """A FailingBuild that counts its build calls, so a free retry would show."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.builds = 0
+
+    def run(self, *, role, **kw):
+        if role == "build":
+            with self.lock:
+                self.builds += 1
+        return super().run(role=role, **kw)
+
+
 def _one_task(surfaces: list[str], body: str = "read the vendor schema") -> dict:
     work = initiative(two_phases=False)
     probe = {**work["items"][0], "surfaces": surfaces, "body": body}
@@ -73,6 +87,25 @@ def test_a_failure_that_is_not_patch_empty_stays_no_work_with_a_missing_file(rep
 
     assert entry["kind"] == "no_work"
     assert attempt[0] == "no_work"
+
+
+def test_a_patch_empty_build_on_another_repository_s_file_is_the_ticket_s(repo, cart, tmp_path) -> None:
+    # The run drives a repository whose key is coxswain; src/ui/ belongs to coxswain-dash.
+    own = repo.parent / "coxswain"
+    repo.rename(own)
+    store = Store(open_store("sqlite:///:memory:", datetime.now(UTC).isoformat()))
+    runner = CountingFailingBuild("node 'build' failed: patch_empty")
+    work = _one_task(["README.md", "src/ui/regatta.rs"])
+    result, _ = drive(own, cart, tmp_path, runner=runner, work=work, store=store, run_id="epic-wrong-repo")
+
+    entry = next(q for q in result["quarantined"] if q["id"] == TASK)
+    assert entry["kind"] == "stale_base"
+    assert entry["reason"].startswith("wrong repository:")
+    assert "src/ui/regatta.rs" in entry["reason"]
+    assert "coxswain-dash" in entry["reason"]
+    attempt = store.conn.query_one(f"SELECT kind, cause FROM attempts WHERE task_id = '{TASK}'")
+    assert tuple(attempt) == ("stale_base", "ticket")
+    assert runner.builds == 1
 
 
 def test_a_surface_marked_new_never_counts_as_missing(repo, cart, tmp_path) -> None:

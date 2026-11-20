@@ -5,7 +5,6 @@ from agent_tools.runs_top import (
     _chair_line,
     _status,
     column_widths,
-    highlight,
     remote_row,
     render,
     row,
@@ -56,17 +55,15 @@ def test_the_last_node_started_and_verdict_win():
     assert r.verdict == "revise"
 
 
-def test_a_quarantined_event_gives_status_quarantined_and_alert():
+def test_a_quarantined_event_gives_status_quarantined():
     events = [Event("r1", "task_quarantined", 0, {"task": "t1", "reason": "boom"})]
     r = row("r1", True, ["build"], events, [])
     assert r.status == "quarantined"
-    assert highlight(r) == "alert"
 
 
-def test_a_dead_run_with_no_events_is_exited_and_dim():
+def test_a_dead_run_with_no_events_is_exited():
     r = row("r1", False, [], [], [])
     assert r.status == "exited"
-    assert highlight(r) == "dim"
 
 
 def test_turns_sum_across_calls():
@@ -276,11 +273,10 @@ def test_a_remote_row_with_no_host_shows_a_question_mark():
     assert render([remote_row("x-1", None, 5)], 200)[1].split()[:2] == ["x-1", "?"]
 
 
-def test_a_live_row_with_a_foreign_or_expired_lease_is_fenced_and_prominent():
+def test_a_live_row_with_a_foreign_or_expired_lease_is_fenced():
     for standing in ("fenced", "expired"):
         r = row("r1", True, [], [], [], standing=standing)
         assert r.status == "fenced"
-        assert highlight(r) == "fenced"
 
 
 def test_a_held_released_or_absent_lease_stays_running():
@@ -331,18 +327,10 @@ def test_a_fenced_row_shows_its_holder():
     assert _cell(lines, 1, "LEASE", "HB") == "fenced by host-b"
 
 
-def test_an_expired_row_shows_expired_and_stands_out():
+def test_an_expired_row_shows_expired():
     r = row("r1", True, [], [], [], lease_state="expired", lease_holder="host-a", lease_epoch=2)
     assert _cell(_lines([r]), 1, "LEASE", "HB") == "expired"
-    assert (r.status, highlight(r)) == ("running", "fenced")
-
-
-def test_a_held_or_released_lease_does_not_stand_out():
-    assert [highlight(row("r1", True, [], [], [], lease_state=s)) for s in ("held", "released", "none", "")] == ["normal"] * 4
-
-
-def test_an_exited_row_with_an_expired_lease_stays_dim():
-    assert highlight(row("r1", False, [], [], [], lease_state="expired")) == "dim"
+    assert r.status == "running"
 
 
 def test_a_remote_row_carries_its_lane_host_as_holder_context():

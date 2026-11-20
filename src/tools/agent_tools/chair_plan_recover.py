@@ -5,7 +5,7 @@ Pure. Takes the facts, returns actions. No pacing, no run history, no I/O.
 from collections.abc import Collection, Mapping, Sequence
 from datetime import UTC, datetime
 from functools import reduce
-from typing import Literal, cast
+from typing import Literal
 
 from agent_tools import chair_sort
 from agent_tools.chair_launch_budget import DEFAULT_MAX_LAUNCHES_PER_HOUR, Launch, RunOutcome, Verdict, launch_budget
@@ -14,32 +14,40 @@ from agent_tools.chair_remedy import remedy_for, trim_reason
 from agent_tools.chair_revert import revert_stopped
 from agent_tools.chair_steer import steer_check
 from agent_tools.chair_types import (
+    DEFAULT_QUARANTINE_HOLD_AFTER,
+    QUARANTINED_CAUSE,
     Action,
+    ActionKind,
     Facts,
+    HeldTask,
     InitiativeFacts,
+    LaunchRecord,
     QuarantineFacts,
     ReadyTask,
     RunningInitiative,
     SteerPolicy,
+    action_text,
 )
 from agent_tools.run_death_cause import SCHEMA_VERSION_CAUSE
 
-Recovery = Literal["rescue", "retry", "needs_chair", "relaunch", "none"]
+Recovery = Literal["rescue", "retry", "needs_chair", "relaunch", "triage", "hold", "none"]
 
 STRANDED_CAUSE = "stranded"
 MAIN_RED_CAUSE = "main_red"
-REPEATED_OBJECTION_CAUSE = "repeated_objection"
-# The epic harness triages these on its next launch and amends the ticket, so one relaunch precedes the chair.
+# A ticket or code quarantine that reaches the chair names its first and newest reason.
 TRIAGED_CAUSES = ("ticket", "code")
+# A failure that needs a tweak, not a stoppage: the model triages it from the record and the whole initiative before
+# any rebuild. "quarantined" is an open quarantine whose attempts name no cause, which is as unknown as "unknown".
+TWEAK_CAUSES = ("code", "review", "ticket", "unknown", QUARANTINED_CAUSE)
 _HALF_REASON = 300
 
 
-def _attempts_on_body(q: QuarantineFacts) -> int:
-    """Quarantined attempts on the current body; 0 when the fact lists none, so an unknown count never relaunches."""
-    return len(q.get("causes") or [])
-
-
-def _recovery(q: QuarantineFacts, approved: set[tuple[str, str]], outcomes: Mapping[str, list[str]]) -> Recovery:
+def _recovery(
+    q: QuarantineFacts,
+    approved: set[tuple[str, str]],
+    outcomes: Mapping[str, list[str]],
+    hold_after: int = DEFAULT_QUARANTINE_HOLD_AFTER,
+) -> Recovery:
     # A runaway-ceiling quarantine always reaches the chair, ahead of every other rule: no harness_failures
     # count, retry count or approval state ever turns it into a retry or a rescue.
     if q["cause"] == RUNAWAY_CAUSE:
@@ -50,13 +58,20 @@ def _recovery(q: QuarantineFacts, approved: set[tuple[str, str]], outcomes: Mapp
     # another phase of the same initiative still matches.
     if q["cause"] == STRANDED_CAUSE and (q["initiative"], q["task_id"]) in approved:
         return "none"
-    # A main_red quarantine recovers by the ordinary relaunch pair until two reverts in a row. Then it plans
-    # nothing and still blocks its initiative (_blocks): relaunching onto a main that keeps going red stacks work on it.
+    # A main_red quarantine does not block its initiative's relaunch pair until two reverts in a row; then it plans
+    # nothing and blocks it (_blocks): relaunching onto a main that keeps going red stacks work on it. Either way the
+    # reverted tasks themselves stay quarantined, so the relaunch builds the initiative's other ready work, never them:
+    # a person releases each one (`cox route edit <task> --initiative <initiative> --state ready`), which the revert's
+    # needs_chair names.
     if q["cause"] == MAIN_RED_CAUSE:
         return "none" if revert_stopped(outcomes.get(q["initiative"], [])) else "relaunch"
-    # A ticket or code quarantine gets one relaunch on its current body; the second attempt on that body reaches the chair.
-    if q["cause"] in TRIAGED_CAUSES:
-        return "relaunch" if _attempts_on_body(q) == 1 else "needs_chair"
+    # A failure that needs a tweak is never rebuilt as it was: the next run triages it first. A fact that names no run
+    # has no attempt for triage to read and no state to ask once for, so it reaches the chair. At the hold limit the
+    # task waits for a person.
+    if q["cause"] in TWEAK_CAUSES:
+        if not q.get("run"):
+            return "needs_chair"
+        return "hold" if 0 < hold_after <= q.get("failures", 0) else "triage"
     # harness_failures == 0 on a harness cause is not a case the rules name; the chair looks at it.
     if q["cause"] != "harness" or q["harness_failures"] != 1:
         return "needs_chair"
@@ -76,7 +91,7 @@ def _first_cause(q: QuarantineFacts) -> str:
 def _reason_text(q: QuarantineFacts) -> str:
     """The first and newest attempt's reason for a ticket or code quarantine with two or more, each cut to 300 characters;
     the newest reason cut to 600 otherwise. `reasons` is every attempt's reason on the current body, oldest first."""
-    reasons: Sequence[str] = cast(Mapping[str, Sequence[str]], q).get("reasons") or []
+    reasons: Sequence[str] = q.get("reasons") or []
     if q["cause"] in TRIAGED_CAUSES and len(reasons) >= 2:
         return f"first: {reasons[0].strip()[:_HALF_REASON]} | latest: {reasons[-1].strip()[:_HALF_REASON]}"
     return trim_reason(q.get("reason"))
@@ -85,12 +100,12 @@ def _reason_text(q: QuarantineFacts) -> str:
 def _quarantine_action(q: QuarantineFacts, kind: Recovery) -> Action:
     if kind == "needs_chair" and "reason" not in q:
         # A fact that carries no row reason keeps the old shape: there is nothing to record beyond the cause.
-        return {"kind": "needs_chair", "initiative": q["initiative"], "task_id": q["task_id"], "cause": q["cause"]}
+        return {"kind": ActionKind.NEEDS_CHAIR, "initiative": q["initiative"], "task_id": q["task_id"], "cause": q["cause"]}
     if kind == "needs_chair":
         cause = _first_cause(q)
-        remedy = remedy_for(cause, q.get("run", ""), q["task_id"], q.get("repo", ""))
+        remedy = remedy_for(cause, q.get("run", ""), q["task_id"], q.get("repo", ""), q["initiative"])
         return {
-            "kind": "needs_chair",
+            "kind": ActionKind.NEEDS_CHAIR,
             "initiative": q["initiative"],
             "task_id": q["task_id"],
             "cause": cause,
@@ -98,38 +113,67 @@ def _quarantine_action(q: QuarantineFacts, kind: Recovery) -> Action:
             "remedy": remedy["kind"],
             "command": remedy["command"],
         }
-    return {"kind": kind, "task_id": q["task_id"], "initiative": q["initiative"]}
+    return {"kind": ActionKind(kind), "task_id": q["task_id"], "initiative": q["initiative"]}
 
 
 def _blocks(q: QuarantineFacts, kind: Recovery) -> bool:
-    """A "relaunch" recovery leaves the relaunch pair to _relaunch_actions; a stopped main_red keeps blocking it."""
-    return False if kind == "relaunch" else kind != "none" or q["cause"] == MAIN_RED_CAUSE
+    """A "relaunch" recovery leaves the relaunch pair to _relaunch_actions; a stopped main_red keeps blocking it.
+
+    A triage request or a hold blocks nothing: the initiative's other ready work relaunches, and that run triages the task."""
+    return False if kind in ("relaunch", "triage", "hold") else kind != "none" or q["cause"] == MAIN_RED_CAUSE
+
+
+def _hold_reason(q: QuarantineFacts, kind: Recovery, hold_after: int) -> str:
+    """Why a person must decide, with the mark: the count reached the limit, or a requested triage left the task quarantined."""
+    from core.workstore import hold_text  # lazy: core sits beside agent_tools in one venv
+
+    newest = trim_reason(q.get("reason")) or "no reason recorded"
+    if kind == "hold":
+        why = f"failed {q.get('failures', 0)} times (chair.quarantine_hold_after is {hold_after}), so it is not triaged again"
+    else:
+        why = f"triage was asked for after run {q.get('run') or '(unknown)'} and the task is quarantined again in that state"
+    return hold_text(f"{why}; newest: {newest}")
+
+
+def _tweak_actions(q: QuarantineFacts, kind: Recovery, handled: Collection[str], hold_after: int) -> list[Action]:
+    """A failure that needs a tweak: one triage request per task state, else one hold per state, else the chair."""
+    run = q.get("run", "")
+    if kind == "triage" and (key := chair_sort.triage_key(q["task_id"], run)) not in handled:
+        return [{
+            "task_id": q["task_id"], "initiative": q["initiative"], "cause": q["cause"],
+            "kind": ActionKind.REQUEST_TRIAGE, "key": key, "reason": trim_reason(q.get("reason")),
+        }]
+    hold = chair_sort.hold_key(q["task_id"], run)
+    if hold in handled:
+        return [_quarantine_action(q, "needs_chair")]
+    return [{
+        "task_id": q["task_id"], "initiative": q["initiative"], "cause": q["cause"],
+        "kind": ActionKind.HOLD_TASK, "key": hold, "reason": _hold_reason(q, kind, hold_after),
+    }]
+
+
+def _rescue_actions(q: QuarantineFacts, handled: Collection[str]) -> list[Action]:
+    """One rescue per task state (`rescue:<task>:<run>`). A rescue already launched for this state that left the task
+    quarantined in it (a rescue that found the task not eligible writes nothing) reaches the chair, never goes out again."""
+    key = chair_sort.rescue_key(q["task_id"], q.get("run", ""))
+    if key in handled:
+        return [_quarantine_action(q, "needs_chair")]
+    return [{"kind": ActionKind.RESCUE, "initiative": q["initiative"], "task_id": q["task_id"], "key": key}]
 
 
 def _sorted_action(q: QuarantineFacts, handled: Collection[str], recovery: Recovery) -> list[Action] | None:
-    """chair_sort's answer for a quarantine it names: its actions, [] for a skip. None when the sort does not name it.
+    """chair_sort's answer for a harness quarantine: its actions, [] for a skip. None when the sort does not name it.
 
-    A review quarantine is named by its `held_objection`. A harness quarantine is named by its `task_state_key`, and
-    only while the existing rules would retry it: a patch to rescue, a failed rescue or a repeated failure stay as they were."""
+    A harness quarantine is named by its `task_state_key`, and only while the existing rules would retry it: a patch to
+    rescue, a failed rescue or a repeated failure stay as they were. A review or code quarantine is no longer sorted
+    here: it goes to the model's triage (`_tweak_actions`)."""
     if q["cause"] == chair_sort.HARNESS_CAUSE and "task_state_key" in q and recovery == "retry":
         keyed, state = q, q["task_state_key"]
-    elif q["cause"] == chair_sort.OBJECTION_CAUSE and "held_objection" in q:
-        keyed, state = {**q, "reason": q["held_objection"]}, ""
     else:
         return None
-    base: Action = {"task_id": q["task_id"], "initiative": q["initiative"]}
-    match chair_sort.classify(keyed, state, handled):
-        case "rebuild_on_main":
-            return [{**base, "kind": "rebuild_quarantined", "key": chair_sort.state_key(q["task_id"], state)}]
-        case "annotate_objection":
-            objection = keyed["reason"]
-            return [{**base, "kind": "annotate_objection", "objection": objection, "key": chair_sort.objection_key(q["task_id"], objection)}]
-        case "needs_attention":
-            # A blank objection repeated nothing: it reports under its own cause. A repeat carries its own cause, remedy and command.
-            repeated = keyed if not keyed["reason"].strip() else {**keyed, "causes": [REPEATED_OBJECTION_CAUSE]}
-            return [_quarantine_action(repeated, "needs_chair")]
-        case _:
-            return []
+    if chair_sort.classify(keyed, state, handled) == "rebuild_on_main":
+        return [{"task_id": q["task_id"], "initiative": q["initiative"], "kind": ActionKind.REBUILD_QUARANTINED, "key": chair_sort.state_key(q["task_id"], state)}]
+    return []
 
 
 def _quarantine_actions(
@@ -137,9 +181,15 @@ def _quarantine_actions(
     approved: set[tuple[str, str]],
     outcomes: Mapping[str, list[str]],
     handled: Collection[str] = (),
+    hold_after: int = DEFAULT_QUARANTINE_HOLD_AFTER,
 ) -> list[Action]:
-    kinds = {id(q): _recovery(q, approved, outcomes) for q in quarantines}
-    named = {id(q): _sorted_action(q, handled, kinds[id(q)]) for q in quarantines}
+    kinds: dict[int, Recovery] = {id(q): _recovery(q, approved, outcomes, hold_after) for q in quarantines}
+    named = {
+        id(q): _tweak_actions(q, kinds[id(q)], handled, hold_after) if kinds[id(q)] in ("triage", "hold")
+        else _rescue_actions(q, handled) if kinds[id(q)] == "rescue"
+        else _sorted_action(q, handled, kinds[id(q)])
+        for q in quarantines
+    }
     # A sorted needs_chair holds back the initiative's other retries exactly as an unsorted one does.
     chair = {
         q["initiative"]
@@ -153,7 +203,11 @@ def _quarantine_actions(
         emitted = kind not in ("none", "relaunch") and (kind == "needs_chair" or q["initiative"] not in chair)
         return [_quarantine_action(q, kind)] if emitted else []
 
-    return [a for q in quarantines for a in (named[id(q)] if named[id(q)] is not None else plain(q))]
+    out: list[Action] = []
+    for q in quarantines:
+        got = named[id(q)]
+        out.extend(got if got is not None else plain(q))
+    return out
 
 
 def _first_unmet_need(t: ReadyTask, landed: set[str]) -> str | None:
@@ -165,7 +219,7 @@ def _ready_and_met(t: ReadyTask, landed: set[str]) -> bool:
     return _first_unmet_need(t, landed) is None
 
 
-def _initiative_first_unmet_need(i: InitiativeFacts) -> str | None:
+def initiative_first_unmet_need(i: InitiativeFacts) -> str | None:
     """None when a ready task has every need landed; else the first unmet need, ready tasks before waiting ones."""
     if any(_ready_and_met(t, i["landed"]) for t in i["ready_tasks"]):
         return None
@@ -179,13 +233,13 @@ def _can_relaunch(i: InitiativeFacts, blocked: set[str]) -> bool:
         and not i.get("dag_problem")
         and i["id"] not in blocked
         and bool(i["ready_tasks"])
-        and _initiative_first_unmet_need(i) is None
+        and initiative_first_unmet_need(i) is None
     )
 
 
 def relaunch_pair(initiative: str) -> list[Action]:
     """The clear_branches then relaunch pair a healthy relaunch emits for one initiative."""
-    return [{"kind": "clear_branches", "initiative": initiative}, {"kind": "relaunch", "initiative": initiative}]
+    return [{"kind": ActionKind.CLEAR_BRANCHES, "initiative": initiative}, {"kind": ActionKind.RELAUNCH, "initiative": initiative}]
 
 
 def landing_initiatives(facts: Facts) -> frozenset[str]:
@@ -199,7 +253,7 @@ def landing_initiatives(facts: Facts) -> frozenset[str]:
     return named | frozenset(i["id"] for i in facts["initiatives"] if i.get("repo") in whole_repos)
 
 
-def _launch(record: Mapping[str, str]) -> Launch | None:
+def _launch(record: LaunchRecord) -> Launch | None:
     """None for a record whose timestamp is missing or unparseable. A naive timestamp is read as UTC, so a
     `datetime.utcnow().isoformat()` record still counts against the budget instead of silently not counting."""
     try:
@@ -267,7 +321,7 @@ def _relaunch_actions(
 ) -> list[Action]:
     """The relaunch pair per relaunchable initiative. A refused one plans no pair; a relaunch_loop refusal plans
     one needs_chair naming both runs, unless its `<run1>|<run2>` key is already in `reported`."""
-    refusals = {} if refused is None else refused
+    refusals: Mapping[str, Verdict] = {} if refused is None else refused
     return [
         action
         for i in initiatives
@@ -281,27 +335,27 @@ def _relaunch_or_refusal(initiative: str, refusal: Verdict | None, reported: Col
         return relaunch_pair(initiative)
     if refusal.kind != "relaunch_loop" or _loop_key(refusal) in reported:
         return []
-    return [{"kind": "needs_chair", "initiative": initiative, "cause": "relaunch_loop", "reason": refusal.reason}]
+    return [{"kind": ActionKind.NEEDS_CHAIR, "initiative": initiative, "cause": "relaunch_loop", "reason": refusal.reason}]
 
 
 def _waiting_actions(initiatives: list[InitiativeFacts], blocked: set[str]) -> list[Action]:
     """One `waiting on <need>` needs_chair per started initiative with no quarantine of its own and an unmet need."""
     return [
-        {"kind": "needs_chair", "initiative": i["id"], "cause": f"waiting on {need}"}
+        {"kind": ActionKind.NEEDS_CHAIR, "initiative": i["id"], "cause": f"waiting on {need}"}
         for i in initiatives
         if i["started"]
         and not i.get("dag_problem")
         and i["id"] not in blocked
-        and (need := _initiative_first_unmet_need(i)) is not None
+        and (need := initiative_first_unmet_need(i)) is not None
     ]
 
 
 def _invalid_dag_actions(initiatives: list[InitiativeFacts]) -> list[Action]:
     """One `invalid_dag (<problem>)` needs_chair per initiative whose task DAG is invalid, started or not."""
     return [
-        {"kind": "needs_chair", "initiative": i["id"], "cause": f"invalid_dag ({i['dag_problem']})"}
+        {"kind": ActionKind.NEEDS_CHAIR, "initiative": i["id"], "cause": f"invalid_dag ({problem})"}
         for i in initiatives
-        if i.get("dag_problem")
+        if (problem := i.get("dag_problem"))
     ]
 
 
@@ -309,7 +363,7 @@ def _schema_death_actions(deaths: dict[str, list[str]]) -> list[Action]:
     """One needs_chair per initiative whose newest two runs both died on the schema-version refusal."""
     return [
         {
-            "kind": "needs_chair",
+            "kind": ActionKind.NEEDS_CHAIR,
             "initiative": i,
             "cause": SCHEMA_VERSION_CAUSE,
             "reason": f"the lane host's graphs is older than the shared store; runs {' and '.join(runs)} both died on a schema-version refusal",
@@ -320,7 +374,7 @@ def _schema_death_actions(deaths: dict[str, list[str]]) -> list[Action]:
 
 def _without_schema_dead_launches(actions: list[Action], deaths: dict[str, list[str]]) -> list[Action]:
     """Drop a retry or rescue for a schema-dead initiative: both start a run on the stale graphs."""
-    return [a for a in actions if not (a["kind"] in {"retry", "rescue"} and a["initiative"] in deaths)]
+    return [a for a in actions if not (a["kind"] in {"retry", "rescue"} and action_text(a, "initiative") in deaths)]
 
 
 _LAUNCHES = {"relaunch", "retry", "rescue"}
@@ -328,7 +382,7 @@ _LAUNCHES = {"relaunch", "retry", "rescue"}
 
 def _without_over_budget(actions: list[Action], over: Collection[str]) -> list[Action]:
     """Drop a retry or rescue for an initiative the launch budget refuses; a needs_chair stays."""
-    return [a for a in actions if not (a["kind"] in _RETRIES and a["initiative"] in over)]
+    return [a for a in actions if not (a["kind"] in _RETRIES and action_text(a, "initiative") in over)]
 
 
 def _entry(i: InitiativeFacts) -> RunningInitiative | None:
@@ -345,7 +399,7 @@ def _steer(
     policy: SteerPolicy | None,
 ) -> tuple[Action, RunningInitiative | None]:
     """The action to return for a launch, and the running entry it claims; a deferral claims nothing."""
-    i = by_id.get(a["initiative"])
+    i = by_id.get(action_text(a, "initiative"))
     entry = None if i is None else _entry(i)
     if entry is None:
         return a, None
@@ -355,10 +409,10 @@ def _steer(
 
 def _without_deferred_clears(before: list[Action], after: list[Action]) -> list[Action]:
     """A deferred relaunch takes its paired clear_branches with it: the clear prunes epic/<initiative>/* branches."""
-    deferred = {a["initiative"] for a in before if a["kind"] == "relaunch"} - {
-        a["initiative"] for a in after if a["kind"] == "relaunch"
+    deferred = {action_text(a, "initiative") for a in before if a["kind"] == "relaunch"} - {
+        action_text(a, "initiative") for a in after if a["kind"] == "relaunch"
     }
-    return [a for a in after if not (a["kind"] == "clear_branches" and a["initiative"] in deferred)]
+    return [a for a in after if not (a["kind"] == "clear_branches" and action_text(a, "initiative") in deferred)]
 
 
 def _steered(actions: list[Action], facts: Facts) -> list[Action]:
@@ -389,7 +443,7 @@ def claimed_by(actions: list[Action], facts: Facts) -> list[RunningInitiative]:
     """
     by_id = {i["id"]: i for i in facts["initiatives"]}
     entries = (
-        e for a in actions if a["kind"] in _LAUNCHES and (i := by_id.get(a["initiative"])) is not None and (e := _entry(i))
+        e for a in actions if a["kind"] in _LAUNCHES and (i := by_id.get(action_text(a, "initiative"))) is not None and (e := _entry(i))
     )
     return list({e["id"]: e for e in entries}.values())
 
@@ -399,7 +453,8 @@ def recover_blocked(facts: Facts) -> set[str]:
     approved = {(a["initiative"], a["id"]) for a in facts["approved"]}
     outcomes = facts.get("land_outcomes", {})
     quarantines = facts["quarantines"]
-    return {q["initiative"] for q in quarantines if _blocks(q, _recovery(q, approved, outcomes))} | set(
+    hold_after = facts.get("quarantine_hold_after", DEFAULT_QUARANTINE_HOLD_AFTER)
+    return {q["initiative"] for q in quarantines if _blocks(q, _recovery(q, approved, outcomes, hold_after))} | set(
         facts.get("schema_deaths", {})
     )
 
@@ -415,12 +470,35 @@ def _over_budget(facts: Facts, now: datetime | None, initiatives: Collection[str
 
 
 def _retry_initiatives(actions: list[Action]) -> set[str]:
-    return {a["initiative"] for a in actions if a["kind"] in _RETRIES}
+    return {action_text(a, "initiative") for a in actions if a["kind"] in _RETRIES}
 
 
 def _quarantine_plan(facts: Facts) -> list[Action]:
     approved = {(a["initiative"], a["id"]) for a in facts["approved"]}
-    return _quarantine_actions(facts["quarantines"], approved, facts.get("land_outcomes", {}), facts.get("handled_keys", []))
+    return _quarantine_actions(
+        facts["quarantines"], approved, facts.get("land_outcomes", {}), facts.get("handled_keys", []),
+        facts.get("quarantine_hold_after", DEFAULT_QUARANTINE_HOLD_AFTER),
+    )
+
+
+HELD_CAUSE = "held"
+
+
+def _held_actions(held: list[HeldTask], handled: Collection[str]) -> list[Action]:
+    """Per held task, one needs_chair each tick, so the status line lists it under `needs chair`, and one announce_hold
+    until its key is handled, so the inbox gets one entry per hold reason."""
+    actions: list[Action] = []
+    for h in held:
+        actions.append({
+            "initiative": h["initiative"], "task_id": h["task_id"], "reason": h["reason"],
+            "kind": ActionKind.NEEDS_CHAIR, "cause": f"{HELD_CAUSE} {h['task_id']}",
+        })
+        if (key := chair_sort.announce_key(h["task_id"], h["reason"])) not in handled:
+            actions.append({
+                "initiative": h["initiative"], "task_id": h["task_id"], "reason": h["reason"],
+                "kind": ActionKind.ANNOUNCE_HOLD, "key": key,
+            })
+    return actions
 
 
 def refused_launches(facts: Facts, now: datetime | None) -> frozenset[str]:
@@ -445,14 +523,20 @@ def plan_recover(facts: Facts, now: datetime | None = None) -> list[Action]:
 
     An initiative with a `dag_problem` is never relaunched. It reaches the chair once, as `invalid_dag (<problem>)`.
 
-    Every open quarantine blocks its initiative's relaunch except one whose recovery is "none" or "relaunch".
-    A main_red quarantine recovers by relaunch until `land_outcomes` for its initiative ends in two reverts.
-    Then its recovery is "none" and it keeps blocking.
-    A ticket or code quarantine with exactly one attempt on its current body recovers by relaunch; the second goes to the chair.
+    Every open quarantine blocks its initiative's relaunch except one whose recovery is "none", "relaunch", "triage" or "hold".
+    A main_red quarantine leaves its initiative's relaunch pair alone until `land_outcomes` for it ends in two reverts.
+    Then its recovery is "none" and it keeps blocking. The reverted tasks stay quarantined either way: the relaunch
+    builds the initiative's other ready work, and a person releases each reverted task.
+    A failure that needs a tweak (code, review, ticket, unknown) plans one request_triage per task state (`triage:<task>:<run>`):
+    the next run triages the task before any rebuild. Once the task's own failures reach `quarantine_hold_after` (default 3,
+    0 never), or a requested triage left it quarantined in the same state, it plans one hold_task instead, which marks it
+    `needs you:` for a person. A fact with no `run` names no state and reaches the chair.
+    Each held task in `held_tasks` reports one needs_chair every tick and one announce_hold per hold reason.
     A runaway-ceiling quarantine always reaches the chair, ahead of every other rule: it is never retried or
     rescued, whatever its harness_failures, retry count or approval state.
     A one-failure harness quarantine is rescued if it kept a patch, retried if not, and goes to the chair once a
-    rescue failed. A stranded quarantine whose task is also an approved row of its initiative plans no action:
+    rescue failed. A rescue goes out once per task state (`rescue:<task>:<run>`); the same state quarantined again
+    after it reaches the chair. A stranded quarantine whose task is also an approved row of its initiative plans no action:
     `plan_lands` lands that task once its whole phase is done, approved or dropped, and recovery never lands it alone.
     A started initiative with a ready task but no ready task whose needs are all landed is not relaunched
     either; it reaches the chair instead, as `waiting on <need>`, naming the first unmet need.
@@ -467,11 +551,14 @@ def plan_recover(facts: Facts, now: datetime | None = None) -> list[Action]:
     outcomes = facts.get("land_outcomes", {})
     blocked = recover_blocked(facts)
     refused = refused_relaunches(facts, now, blocked)
-    quarantine_actions = _quarantine_actions(quarantines, approved, outcomes, facts.get("handled_keys", []))
+    handled = facts.get("handled_keys", [])
+    hold_after = facts.get("quarantine_hold_after", DEFAULT_QUARANTINE_HOLD_AFTER)
+    quarantine_actions = _quarantine_actions(quarantines, approved, outcomes, handled, hold_after)
     over = _over_budget(facts, now, _retry_initiatives(quarantine_actions))
     return _steered(
         _schema_death_actions(deaths)
         + _without_schema_dead_launches(_without_over_budget(quarantine_actions, over), deaths)
+        + _held_actions(facts.get("held_tasks", []), handled)
         + _relaunch_actions(
             facts["initiatives"], blocked, landing_initiatives(facts), refused, facts.get("relaunch_loop_reported", [])
         )
@@ -493,11 +580,15 @@ def plan_lost_runs(facts: Facts, now: datetime | None = None) -> list[Action]:
     """
     deaths = facts.get("schema_deaths", {})
     over = _over_budget(facts, now, facts.get("lost_runs", {}))
+
+    def _mark_lost(initiative: str, run: str) -> Action:
+        return {"kind": ActionKind.MARK_LOST, "initiative": initiative, "run": run}
+
     return [
         action
         for initiative, run in facts.get("lost_runs", {}).items()
         for action in (
-            {"kind": "mark_lost", "initiative": initiative, "run": run},
+            _mark_lost(initiative, run),
             *([] if initiative in deaths or initiative in over else relaunch_pair(initiative)),
         )
     ]

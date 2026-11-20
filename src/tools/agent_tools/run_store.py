@@ -17,16 +17,15 @@ import json
 import os
 import re
 import sqlite3
-import subprocess
 import time
 import zlib
 from collections import Counter
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Hashable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from agent_tools import analytics_snapshot, epic, install_root
+from agent_tools import analytics_snapshot, epic
 from agent_tools.chair_read_cache import Stamp, StampCache
 from agent_tools.jsonl_log import parse_log
 from agent_tools.lake_config import _LITERAL_SECRETS, _from_env
@@ -34,7 +33,7 @@ from agent_tools.store_dialect import connect_readonly_url, is_postgres, placeho
 from agent_tools.store_url import TracesRoot, profile_traces_root, read_provider_profile, resolve_store_url
 
 
-def _db_errors() -> tuple[type[BaseException], ...]:
+def db_error_types() -> tuple[type[BaseException], ...]:
     """Store errors to catch; psycopg's join them only when it is installed. Imported here so the module loads lazily."""
     try:
         import psycopg
@@ -46,16 +45,30 @@ def _db_errors() -> tuple[type[BaseException], ...]:
 def __getattr__(name: str) -> tuple[type[BaseException], ...]:
     """Keep `run_store._DB_ERRORS` for other modules and cli.py, computed on first access instead of at import."""
     if name == "_DB_ERRORS":
-        return _db_errors()
+        return db_error_types()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [
-    "Lane", "ParquetCheck", "TracesUnavailable", "all_phase_manifests", "attempt_causes", "attempt_causes_for", "build_counts",
-    "call_events", "call_from_row", "connect_readonly", "cost_since", "efficiency_rows", "gate_call_rows",
-    "harness_python", "hosts", "last_call_at", "latest_chair_meter", "lease", "live_lanes", "parquet_readable", "phase_manifests", "phase_names", "remote_lanes", "resolve_id", "run_ids", "run_spans",
-    "run_started", "store_usages", "summarize", "task_verdict_rows", "usage", "usages",
+    "LEASE_SNAPSHOT_S", "Lane", "ParquetCheck", "TracesUnavailable", "all_phase_manifests", "attempt_causes", "attempt_causes_for", "build_counts",
+    "call_events", "call_from_row", "connect_readonly", "cost_since", "db_error_types", "efficiency_rows", "gate_call_rows",
+    "harness_store_api", "hosts", "json_cell", "last_call_at", "latest_chair_meter", "lease", "lease_name_for", "lease_table_for", "live_lanes", "open_store", "parquet_readable", "phase_manifests", "phase_names", "remote_lanes", "resolve_run_id", "run_ids", "run_spans",
+    "run_started", "runs_columns", "sql_for", "sqlite_path", "store_url_for", "store_usages", "summarize", "task_verdict_rows", "traces_root_for", "usage", "usages",
 ]
+
+if TYPE_CHECKING:
+    from types import ModuleType
+
+    from harness import store_api
+
+
+def harness_store_api() -> ModuleType:
+    """`harness.store_api`, imported on first use: importing any `harness` module loads the package's runtime (and the
+    postgres driver), which a `cox` command that never opens the store must not pay for (test_lazy_heavy_imports)."""
+    from harness import store_api
+
+    return store_api
+
 
 STORE_FILENAME = "cox.db"
 _PHASE_FILE = re.compile(r"^[^:]+:(.+)\.json$")
@@ -99,7 +112,7 @@ def summarize(calls: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _json_cell(raw: Any) -> Any:
+def json_cell(raw: Any) -> Any:
     """A store JSON cell decoded: SQLite hands back text, Postgres a decoded value. None when the text is not JSON."""
     if isinstance(raw, (str, bytes)):
         try:
@@ -112,7 +125,7 @@ def _json_cell(raw: Any) -> Any:
 def _detail_of(row: Mapping[str, Any]) -> dict[str, Any]:
     """The row's `detail_json` as an object; empty when the column is absent, null, unparseable or not an object."""
     raw = row["detail_json"] if "detail_json" in row.keys() else None  # noqa: SIM118 -- sqlite3.Row's `in` tests values, not keys
-    detail = _json_cell(raw)
+    detail = json_cell(raw)
     return detail if isinstance(detail, dict) else {}
 
 
@@ -125,7 +138,7 @@ def call_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
         "model": row["model_alias"],
         "model_id": row["model_id"] if "model_id" in row.keys() else None,  # noqa: SIM118 -- a store from before the column has none; sqlite3.Row's `in` tests values
         "ok": bool(row["ok"]),
-        "decision": _json_cell(row["decision_json"]),
+        "decision": json_cell(row["decision_json"]),
         **{k: detail[k] for k in ("summary", "commands_run") if k in detail},
     }
 
@@ -134,16 +147,16 @@ def call_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
 _DEFAULT_PROFILE = "~/.config/agent-tools/profile.yaml"
 
 
-def _sql(template: str, token: str) -> str:
+def sql_for(template: str, token: str) -> str:
     """Pure: `template` with each `{p}` marker replaced by the dialect's bind-parameter token."""
     return template.replace("{p}", token)
 
 
-def _sqlite_path(url: str) -> Path:
+def sqlite_path(url: str) -> Path:
     return Path(url.removeprefix("sqlite:///") if url.startswith("sqlite:") else url)
 
 
-def _store_url(runs_dir: Path) -> str:
+def store_url_for(runs_dir: Path) -> str:
     """Edge. The store URL: the provider profile named by the routing profile (`$AGENT_TOOLS_PROFILE` or the default), else `cox.db` in `runs_dir`."""
     return _store_url_for(str(runs_dir), os.environ.get("AGENT_TOOLS_PROFILE") or _DEFAULT_PROFILE)
 
@@ -156,7 +169,7 @@ def _store_url_for(runs_dir: str, routing_profile: str) -> str:
     return resolve_store_url(named if isinstance(named, str) else "", runs_dir)
 
 
-def _traces_root(runs_dir: Path) -> TracesRoot:
+def traces_root_for(runs_dir: Path) -> TracesRoot:
     """Edge. The traces root: the `traces_url` of the provider profile the routing profile names, else `<runs_dir>/traces`."""
     return _traces_root_for(str(runs_dir), os.environ.get("AGENT_TOOLS_PROFILE") or _DEFAULT_PROFILE)
 
@@ -168,78 +181,121 @@ def _traces_root_for(runs_dir: str, routing_profile: str) -> TracesRoot:
     return profile_traces_root(read_provider_profile(named) if isinstance(named, str) and named else {}, runs_dir)
 
 
-def harness_python(routing: Mapping[str, Any]) -> Path | None:
-    """Edge: the python `install_root.harness_python` chooses for the routing profile's `harness_dir` when that file exists, else None."""
-    harness_dir = routing.get("harness_dir")
-    if not isinstance(harness_dir, str) or not harness_dir:
-        return None
-    python = install_root.harness_python(harness_dir)
-    return python if python.is_file() else None
-
-
-@functools.lru_cache(maxsize=32)
-def _harness_python_for(routing_profile: str) -> Path | None:
-    """Cached per process: `harness_python` of the routing profile at that path."""
-    return harness_python(read_provider_profile(routing_profile))
-
-
-def _harness_python() -> Path | None:
-    """Edge. `_harness_python_for` for `$AGENT_TOOLS_PROFILE` or the default routing profile."""
-    return _harness_python_for(os.environ.get("AGENT_TOOLS_PROFILE") or _DEFAULT_PROFILE)
-
-
-def _open(runs_dir: Path) -> tuple[Any, str] | None:
+def open_store(runs_dir: Path) -> tuple[Any, str] | None:
     """Edge. A read-only connection and its bind-parameter token; None when a SQLite store file is absent."""
-    url = _store_url(Path(runs_dir))
-    if not is_postgres(url) and not _sqlite_path(url).exists():
+    url = store_url_for(Path(runs_dir))
+    if not is_postgres(url) and not sqlite_path(url).exists():
         return None
     return connect_readonly_url(url), placeholder(url)
 
 
 def connect_readonly(runs_dir: Path) -> Any | None:
     """None when a SQLite store is absent. Opened read-only, so it can never create the file. Rows are addressable by column name."""
-    opened = _open(runs_dir)
+    opened = open_store(runs_dir)
     return None if opened is None else opened[0]
+
+
+def _change_stamp_sql() -> str:
+    """One row per user table the connection's `search_path` resolves to: its name and the rows inserted, updated and
+    deleted since statistics began. `pg_table_is_visible` keeps a same-named table in another schema (a `public.work_items`
+    beside the store's own, say) out, so its writes neither move the stamp nor hide the store's."""
+    return (
+        "SELECT relname, n_tup_ins + n_tup_upd + n_tup_del AS changes FROM pg_stat_user_tables "
+        "WHERE pg_table_is_visible(relid)"
+    )
+
+
+def _stamp_of_rows(rows: Sequence[Any]) -> Hashable:
+    """Sorted (table, changes) pairs, so row order never moves the stamp. Accepts mapping rows and plain pairs."""
+    pairs = ((r["relname"], int(r["changes"])) if isinstance(r, Mapping) else (r[0], int(r[1])) for r in rows)
+    return tuple(sorted(pairs))
+
+
+def table_counters(runs_dir: Path) -> dict[str, int] | None:
+    """Edge. Each user table's inserted, updated and deleted row count (`_change_stamp_sql`), one query; None for a
+    SQLite store, an absent store or any failure, which the chair's reader cache reads as "re-read everything".
+    The counters trail a write as `store_change_stamp` says. Never raises."""
+    stamp = store_change_stamp(runs_dir)
+    return None if stamp is None else dict(stamp)  # type: ignore[arg-type]
+
+
+def store_change_stamp(runs_dir: Path) -> Hashable | None:
+    """Edge. A value that moves when any table the feed reads is written; None means treat the store as always changed.
+
+    The feed reads runs, leases, hosts, node_calls, attempts, phases, task_records, work_items, chair_actions and
+    export_hashes. The stamp sums inserted, updated and deleted rows for every user table, so it covers those and
+    any table added later. Reads leave the counters alone, which a transaction commit counter would not.
+    The counters are cumulative statistics, not part of the write's transaction. The writing backend flushes them
+    when it goes idle, no more often than about once a second and, under lock contention, as late as about 60 s.
+    So the stamp can trail a committed write by about 10 s, and up to about 60 s on a busy server. A section held
+    over that gap shows its pre-write value until the stamp moves or its own step runs out.
+    The stamp never moves when the counters do not count this database's writes: on a read replica (a standby keeps
+    no write counters of its own) or with `track_counts = off`. Then each store-driven section goes stale for up to
+    its hold step in `dash_feed._SECTION_STEP_S`, an hour for most. Point the feed at the primary, with
+    `track_counts` on.
+    TRUNCATE is not counted as deleted rows, and the counters restart on crash recovery or `pg_stat_reset`.
+    None for a SQLite store, an absent store or any failure, from config, psycopg or the database. Never raises.
+    """
+    try:
+        if not is_postgres(store_url_for(Path(runs_dir))):
+            return None
+        opened = open_store(runs_dir)
+        if opened is None:
+            return None
+        conn = opened[0]
+        try:
+            return _stamp_of_rows(conn.execute(_change_stamp_sql()).fetchall())
+        finally:
+            conn.close()
+    except Exception:  # never raise: store config, a missing psycopg and an unreachable Postgres all mean "always changed"
+        return None
 
 
 def run_started_at(runs_dir: Path, run_id: str) -> str | None:
     """Edge. `runs.started_at` text for `run_id`; None with no store, no row, a null value or an unreadable store."""
-    opened = _open(runs_dir)
+    opened = open_store(runs_dir)
     if opened is None:
         return None
     conn, token = opened
     try:
-        row = conn.execute(_sql("SELECT started_at FROM runs WHERE run_id = {p}", token), (run_id,)).fetchone()
-    except _db_errors():
+        row = conn.execute(sql_for("SELECT started_at FROM runs WHERE run_id = {p}", token), (run_id,)).fetchone()
+    except db_error_types():
         return None
     finally:
         conn.close()
     return None if row is None or row["started_at"] is None else str(row["started_at"])
 
 
-def _lease_name(run_id: str) -> str:
+def lease_name_for(run_id: str) -> str:
     # mirrors graphs `harness/run_lease.lease_name`: the lease is per prefix, so `x-3` and `x-4` share `runs:x`
     return "runs:" + re.sub(r"-\d+$", "", run_id)
 
 
 def lease(runs_dir: Path, run_id: str) -> tuple[str, str, str] | None:
     """Edge. The (holder, expires_at, heartbeat_at) of the store lease for `run_id`'s prefix; None with no store, no row, or an unreadable store."""
-    return _lease_table(str(runs_dir), int(time.monotonic() // _LEASE_SNAPSHOT_S)).get(_lease_name(run_id))
+    return lease_table_for(str(runs_dir), _snapshot_window()).get(lease_name_for(run_id))
 
 
-_LEASE_SNAPSHOT_S = 2  # one read of the leases table serves every liveness check within this window
+LEASE_SNAPSHOT_S = 2  # one read of the leases table serves every liveness check within this window
+_snapshot_clock: Callable[[], float] = time.monotonic  # the windows' clock; a test swaps in one it moves by hand
+
+
+def _snapshot_window() -> int:
+    """Edge. The `LEASE_SNAPSHOT_S` window the clock is in now. Windows are aligned buckets, so two reads a moment apart
+    fall in two windows when a boundary passes between them, and each window reads the table once."""
+    return int(_snapshot_clock() // LEASE_SNAPSHOT_S)
 
 
 @functools.lru_cache(maxsize=8)
-def _lease_table(runs_dir: str, _window: int) -> dict[str, tuple[str, str, str]]:
-    """Every lease row by name, read once per `_LEASE_SNAPSHOT_S` window: a docket asks about ~800 pidfiles."""
-    opened = _open(Path(runs_dir))
+def lease_table_for(runs_dir: str, _window: int) -> dict[str, tuple[str, str, str]]:
+    """Every lease row by name, read once per `LEASE_SNAPSHOT_S` window: a docket asks about ~800 pidfiles."""
+    opened = open_store(Path(runs_dir))
     if opened is None:
         return {}
     conn, _ = opened
     try:
         rows = conn.execute("SELECT name, holder, expires_at, heartbeat_at FROM leases").fetchall()
-    except _db_errors():
+    except db_error_types():
         return {}
     finally:
         conn.close()
@@ -263,19 +319,19 @@ def _leases_columns(conn: Any, token: str) -> set[str]:
     """Edge. The column names of `leases`, asked of the backend: a failed SELECT would abort a Postgres transaction."""
     if token == placeholder("postgres://"):
         sql = "SELECT column_name AS name FROM information_schema.columns WHERE table_name = {p} AND table_schema = current_schema()"
-        return {r["name"] for r in conn.execute(_sql(sql, token), ("leases",)).fetchall()}
+        return {r["name"] for r in conn.execute(sql_for(sql, token), ("leases",)).fetchall()}
     return {r["name"] for r in conn.execute("PRAGMA table_info(leases)").fetchall()}
 
 
 def lease_row(runs_dir: Path, run_id: str) -> LeaseRow | None:
     """Edge. The full store lease row for `run_id`'s prefix; None with no store, no row, or an unreadable store."""
-    return _lease_rows(str(runs_dir), int(time.monotonic() // _LEASE_SNAPSHOT_S)).get(_lease_name(run_id))
+    return _lease_rows(str(runs_dir), _snapshot_window()).get(lease_name_for(run_id))
 
 
 @functools.lru_cache(maxsize=8)
 def _lease_rows(runs_dir: str, _window: int) -> dict[str, LeaseRow]:
-    """Every lease row by name with its epoch, read once per `_LEASE_SNAPSHOT_S` window. `status` and `progress` are read only when the table has them."""
-    opened = _open(Path(runs_dir))
+    """Every lease row by name with its epoch, read once per `LEASE_SNAPSHOT_S` window. `status` and `progress` are read only when the table has them."""
+    opened = open_store(Path(runs_dir))
     if opened is None:
         return {}
     conn, token = opened
@@ -283,7 +339,7 @@ def _lease_rows(runs_dir: str, _window: int) -> dict[str, LeaseRow]:
         columns = _leases_columns(conn, token)
         extra = ", ".join(c if c in columns else f"NULL AS {c}" for c in ("status", "progress"))
         rows = conn.execute(f"SELECT name, holder, epoch, expires_at, heartbeat_at, {extra} FROM leases").fetchall()
-    except _db_errors():
+    except db_error_types():
         return {}
     finally:
         conn.close()
@@ -321,11 +377,11 @@ def running_phases(progress: str | None) -> int:
     return max(1, len(phases))
 
 
-def _runs_columns(conn: Any, token: str) -> set[str]:
+def runs_columns(conn: Any, token: str) -> set[str]:
     """Edge. The column names of `runs`, asked of the backend: a failed SELECT would abort a Postgres transaction."""
     if token == placeholder("postgres://"):
         sql = "SELECT column_name AS name FROM information_schema.columns WHERE table_name = {p} AND table_schema = current_schema()"
-        return {r["name"] for r in conn.execute(_sql(sql, token), ("runs",)).fetchall()}
+        return {r["name"] for r in conn.execute(sql_for(sql, token), ("runs",)).fetchall()}
     return {r["name"] for r in conn.execute("PRAGMA table_info(runs)").fetchall()}
 
 
@@ -333,11 +389,11 @@ def _newest_run(conn: Any, token: str, name: str, host_expr: str) -> Any | None:
     """Edge. The run row of lease `name`'s prefix with the latest `launched_at`; None when the prefix has no run."""
     prefix = name.removeprefix("runs:")
     like = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "-%"
-    sql = _sql(
+    sql = sql_for(
         f"SELECT run_id, launched_at, {host_expr} FROM runs WHERE (run_id = {{p}} OR run_id LIKE {{p}} ESCAPE '\\') ORDER BY launched_at DESC",
         token,
     )
-    return next((r for r in conn.execute(sql, (prefix, like)).fetchall() if _lease_name(r["run_id"]) == name), None)
+    return next((r for r in conn.execute(sql, (prefix, like)).fetchall() if lease_name_for(r["run_id"]) == name), None)
 
 
 def live_lanes(runs_dir: Path, now: str) -> list[Lane]:
@@ -345,7 +401,7 @@ def live_lanes(runs_dir: Path, now: str) -> list[Lane]:
 
     A lease with no run row is skipped. `phases` is `running_phases` of the lease's progress, read in the same snapshot.
     Empty with no store or an unreadable one."""
-    rows = _lease_rows(str(runs_dir), int(time.monotonic() // _LEASE_SNAPSHOT_S))
+    rows = _lease_rows(str(runs_dir), _snapshot_window())
     live = sorted((n, r.heartbeat_at, running_phases(r.progress)) for n, r in rows.items() if n.startswith("runs:") and r.expires_at > now)
     return _joined_lanes(runs_dir, live)
 
@@ -355,21 +411,21 @@ def lost_lanes(runs_dir: Path, now: str) -> list[Lane]:
 
     A release writes a 1970 `expires_at`, so a released lease is never listed. A lane whose host died stops renewing, and
     its lease lapses a ttl after its last beat, so it is listed here and not in `live_lanes`."""
-    table = _lease_table(str(runs_dir), int(time.monotonic() // _LEASE_SNAPSHOT_S))
+    table = lease_table_for(str(runs_dir), _snapshot_window())
     lapsed = sorted((n, beat, 1) for n, (_, expires, beat) in table.items() if n.startswith("runs:") and beat < expires <= now)
     return _joined_lanes(runs_dir, lapsed)
 
 
 def _joined_lanes(runs_dir: Path, live: list[tuple[str, str, int]]) -> list[Lane]:
     """Edge. Each (lease name, heartbeat, phases) joined to its prefix's newest run row; a lease with no run row is skipped."""
-    opened = _open(runs_dir) if live else None
+    opened = open_store(runs_dir) if live else None
     if opened is None:
         return []
     conn, token = opened
     try:
-        host_expr = "host" if "host" in _runs_columns(conn, token) else "NULL AS host"
+        host_expr = "host" if "host" in runs_columns(conn, token) else "NULL AS host"
         joined = [(_newest_run(conn, token, name, host_expr), beat, phases) for name, beat, phases in live]
-    except _db_errors():
+    except db_error_types():
         return []
     finally:
         conn.close()
@@ -380,32 +436,32 @@ def newest_run_hosts(runs_dir: Path, initiatives: Collection[str]) -> dict[str, 
     """Edge. Each initiative's newest run's `runs.host` ("" when the column is absent or the row's host is blank).
 
     An initiative with no run row is omitted. Empty with no store or an unreadable one."""
-    opened = _open(runs_dir)
+    opened = open_store(runs_dir)
     if opened is None:
         return {}
     conn, token = opened
     try:
-        host_expr = "host" if "host" in _runs_columns(conn, token) else "NULL AS host"
+        host_expr = "host" if "host" in runs_columns(conn, token) else "NULL AS host"
         rows = {i: _newest_run(conn, token, f"runs:{i}", host_expr) for i in initiatives}
-    except _db_errors():
+    except db_error_types():
         return {}
     finally:
         conn.close()
     return {i: (r["host"] or "") for i, r in rows.items() if r is not None}
 
 
-def hosts(runs_dir: Path) -> list[dict]:
+def hosts(runs_dir: Path) -> list[dict[str, object]]:
     """Edge. The `hosts` table's rows by name; empty with no store, no table, or an unreadable store. Read every chair tick, so it never raises."""
     try:
-        opened = _open(runs_dir)
-    except (*_db_errors(), RuntimeError):  # an unreachable Postgres, or psycopg not installed
+        opened = open_store(runs_dir)
+    except (*db_error_types(), RuntimeError):  # an unreachable Postgres, or psycopg not installed
         return []
     if opened is None:
         return []
     conn, _ = opened
     try:
         return [dict(r) for r in conn.execute("SELECT * FROM hosts ORDER BY name").fetchall()]
-    except _db_errors():
+    except db_error_types():
         return []
     finally:
         conn.close()
@@ -418,13 +474,13 @@ def remote_lanes(lanes: Sequence[Lane], local_runs: Collection[str]) -> list[Lan
 
 def run_ids(runs_dir: Path) -> set[str]:
     """Edge. Every `run_id` in the store's `runs` table; empty with no store or an unreadable one."""
-    opened = _open(runs_dir)
+    opened = open_store(runs_dir)
     if opened is None:
         return set()
     conn, _ = opened
     try:
         return {row["run_id"] for row in conn.execute("SELECT run_id FROM runs")}
-    except _db_errors():
+    except db_error_types():
         return set()
     finally:
         conn.close()
@@ -494,13 +550,13 @@ _SINCE_TASKS = " WHERE run_id IN (SELECT run_id FROM node_calls WHERE ts >= {p})
 
 def _store_tuples(runs_dir: Path, template: str, params: Sequence[Any], keys: Sequence[str]) -> list[tuple]:
     """Edge. The `keys` columns of `template` run on the store, as tuples; empty with no store or an unreadable one."""
-    opened = _open(runs_dir)
+    opened = open_store(runs_dir)
     if opened is None:
         return []
     conn, p = opened
     try:
-        return [tuple(r[k] for k in keys) for r in conn.execute(_sql(template, p), tuple(params)).fetchall()]
-    except _db_errors():
+        return [tuple(r[k] for k in keys) for r in conn.execute(sql_for(template, p), tuple(params)).fetchall()]
+    except db_error_types():
         return []
     finally:
         conn.close()
@@ -515,12 +571,12 @@ def _snapshot_rows(runs_dir: Path, template: str, params: Sequence[Any], keys: S
     def fallback() -> list[tuple]:
         return _store_tuples(runs_dir, template, params, keys)
 
-    url = _store_url(Path(runs_dir))
+    url = store_url_for(Path(runs_dir))
     if not is_postgres(url):
         return fallback()
     profile = read_provider_profile(os.environ.get("AGENT_TOOLS_PROFILE") or _DEFAULT_PROFILE)
     return analytics_snapshot.query(
-        _sql(template, "?"),  # DuckDB binds with `?`, whatever the store's own token is
+        sql_for(template, "?"),  # DuckDB binds with `?`, whatever the store's own token is
         params,
         runs_dir=runs_dir,
         store_url=url,
@@ -547,15 +603,15 @@ def gate_call_rows(runs_dir: Path, since: str | None) -> list[dict[str, Any]]:
 
 def cost_since(runs_dir: Path, since: str, until: str | None = None) -> float | None:
     """Edge. Sum of `node_calls.cost_usd` with `since <= ts < until` (ISO text); None with no store or an unreadable one."""
-    opened = _open(runs_dir)
+    opened = open_store(runs_dir)
     if opened is None:
         return None
     conn, p = opened
     bound, params = (" AND ts < {p}", (since, until)) if until is not None else ("", (since,))
     try:
-        row = conn.execute(_sql("SELECT SUM(cost_usd) AS total FROM node_calls WHERE ts >= {p}" + bound, p), params).fetchone()
+        row = conn.execute(sql_for("SELECT SUM(cost_usd) AS total FROM node_calls WHERE ts >= {p}" + bound, p), params).fetchone()
         return float(row["total"] or 0.0)
-    except _db_errors():
+    except db_error_types():
         return None
     finally:
         conn.close()
@@ -564,56 +620,56 @@ def cost_since(runs_dir: Path, since: str, until: str | None = None) -> float | 
 def latest_chair_meter(runs_dir: Path) -> dict | None:
     """Edge. The newest `meter` row's `action_json` as a dict; None for no store, no row, a store error, or a non-object."""
     try:
-        opened = _open(runs_dir)
-    except (*_db_errors(), RuntimeError):  # an unreachable Postgres, or psycopg not installed
+        opened = open_store(runs_dir)
+    except (*db_error_types(), RuntimeError):  # an unreachable Postgres, or psycopg not installed
         return None
     if opened is None:
         return None
     conn, token = opened
     try:
-        sql = _sql("SELECT action_json FROM chair_actions WHERE kind = {p} ORDER BY ts DESC LIMIT 1", token)
+        sql = sql_for("SELECT action_json FROM chair_actions WHERE kind = {p} ORDER BY ts DESC LIMIT 1", token)
         row = conn.execute(sql, ("meter",)).fetchone()
-    except _db_errors():
+    except db_error_types():
         return None
     finally:
         conn.close()
-    # Postgres rows are `dict_row`, so the cell is read by name, never `row[0]`; `_json_cell` takes text or a decoded dict.
-    doc = _json_cell(row["action_json"]) if row is not None else None
+    # Postgres rows are `dict_row`, so the cell is read by name, never `row[0]`; `json_cell` takes text or a decoded dict.
+    doc = json_cell(row["action_json"]) if row is not None else None
     return doc if isinstance(doc, dict) else None
 
 
 def latest_chair_status(runs_dir: Path) -> dict | None:
     """Edge. The newest `status` row's `action_json` as a dict; None for no store, no row, a store error, or a non-object."""
     try:
-        opened = _open(runs_dir)
-    except (*_db_errors(), RuntimeError):  # an unreachable Postgres, or psycopg not installed
+        opened = open_store(runs_dir)
+    except (*db_error_types(), RuntimeError):  # an unreachable Postgres, or psycopg not installed
         return None
     if opened is None:
         return None
     conn, token = opened
     try:
-        sql = _sql("SELECT action_json FROM chair_actions WHERE kind = {p} ORDER BY ts DESC LIMIT 1", token)
+        sql = sql_for("SELECT action_json FROM chair_actions WHERE kind = {p} ORDER BY ts DESC LIMIT 1", token)
         row = conn.execute(sql, ("status",)).fetchone()
-    except _db_errors():
+    except db_error_types():
         return None
     finally:
         conn.close()
-    doc = _json_cell(row["action_json"]) if row is not None else None
+    doc = json_cell(row["action_json"]) if row is not None else None
     return doc if isinstance(doc, dict) else None
 
 
 def last_call_at(runs_dir: Path, run_ids: Sequence[str]) -> dict[str, str]:
     """Edge. Each id in `run_ids` mapped to its newest `node_calls.ts`; a run with no call row is absent.
     `{}` with no store, an unreadable one, or an empty `run_ids`."""
-    opened = _open(runs_dir) if run_ids else None
+    opened = open_store(runs_dir) if run_ids else None
     if opened is None:
         return {}
     conn, p = opened
     try:
         marks = ", ".join(["{p}"] * len(run_ids))
-        sql = _sql(f"SELECT run_id, MAX(ts) AS last FROM node_calls WHERE run_id IN ({marks}) GROUP BY run_id", p)
+        sql = sql_for(f"SELECT run_id, MAX(ts) AS last FROM node_calls WHERE run_id IN ({marks}) GROUP BY run_id", p)
         return {r["run_id"]: r["last"] for r in conn.execute(sql, tuple(run_ids)).fetchall()}
-    except _db_errors():
+    except db_error_types():
         return {}
     finally:
         conn.close()
@@ -622,16 +678,16 @@ def last_call_at(runs_dir: Path, run_ids: Sequence[str]) -> dict[str, str]:
 def build_counts(runs_dir: Path, task_ids: Collection[str], runs: Collection[str] = ()) -> dict[str, int]:
     """Edge. Build calls per `task_id` equal to one of `task_ids` or a `<run>:...` composite of one of `runs`; empty with no store or an unreadable one."""
     ids, prefixes = sorted(set(task_ids)), sorted(set(runs))
-    opened = _open(runs_dir) if ids or prefixes else None
+    opened = open_store(runs_dir) if ids or prefixes else None
     if opened is None:
         return {}
     conn, p = opened
     match = " OR ".join(["task_id = {p}"] * len(ids) + ["task_id LIKE {p} ESCAPE '\\'"] * len(prefixes))
     likes = tuple(r.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + ":%" for r in prefixes)
     try:
-        sql = _sql(f"SELECT task_id, COUNT(*) AS n FROM node_calls WHERE role = 'build' AND ({match}) GROUP BY task_id", p)
+        sql = sql_for(f"SELECT task_id, COUNT(*) AS n FROM node_calls WHERE role = 'build' AND ({match}) GROUP BY task_id", p)
         return {r["task_id"]: int(r["n"]) for r in conn.execute(sql, (*ids, *likes)).fetchall()}
-    except _db_errors():
+    except db_error_types():
         return {}
     finally:
         conn.close()
@@ -665,7 +721,7 @@ def _attempts_columns(conn: Any, token: str) -> set[str]:
     """Edge. The column names of `attempts`, asked of the backend: a failed SELECT would abort a Postgres transaction."""
     if token == placeholder("postgres://"):
         sql = "SELECT column_name AS name FROM information_schema.columns WHERE table_name = {p} AND table_schema = current_schema()"
-        return {r["name"] for r in conn.execute(_sql(sql, token), ("attempts",)).fetchall()}
+        return {r["name"] for r in conn.execute(sql_for(sql, token), ("attempts",)).fetchall()}
     return {r["name"] for r in conn.execute("PRAGMA table_info(attempts)").fetchall()}
 
 
@@ -674,16 +730,16 @@ def attempt_causes(runs_dir: Path, since: str) -> list[dict[str, Any]]:
 
     `ts` is ISO text, so a `YYYY-MM-DD` `since` compares correctly as text. A store below schema 5 has no `cause`
     or `cause_why` column: both read as None."""
-    opened = _open(runs_dir)
+    opened = open_store(runs_dir)
     if opened is None:
         return []
     conn, p = opened
     try:
         cols = "cause, cause_why" if "cause" in _attempts_columns(conn, p) else "NULL AS cause, NULL AS cause_why"
-        sql = _sql(f"SELECT kind, {cols}, reason, ts FROM attempts WHERE ts >= {{p}} ORDER BY ts", p)
+        sql = sql_for(f"SELECT kind, {cols}, reason, ts FROM attempts WHERE ts >= {{p}} ORDER BY ts", p)
         keys = ("kind", "cause", "cause_why", "reason", "ts")
         return [{k: r[k] for k in keys} for r in conn.execute(sql, (since,)).fetchall()]
-    except _db_errors():
+    except db_error_types():
         return []
     finally:
         conn.close()
@@ -693,17 +749,17 @@ def attempt_causes_for(runs_dir: Path, run_ids: Sequence[str]) -> list[dict[str,
     """Edge. Each attempt's run_id, task_id, seq and cause for the given runs, by run then seq; empty with no store, no runs or an unreadable store.
 
     A store below schema 5 has no `cause` column: it reads as None."""
-    opened = _open(runs_dir) if run_ids else None
+    opened = open_store(runs_dir) if run_ids else None
     if opened is None:
         return []
     conn, p = opened
     try:
         cols = "cause" if "cause" in _attempts_columns(conn, p) else "NULL AS cause"
         marks = ", ".join(["{p}"] * len(run_ids))
-        sql = _sql(f"SELECT run_id, task_id, seq, {cols} FROM attempts WHERE run_id IN ({marks}) ORDER BY run_id, seq", p)
+        sql = sql_for(f"SELECT run_id, task_id, seq, {cols} FROM attempts WHERE run_id IN ({marks}) ORDER BY run_id, seq", p)
         keys = ("run_id", "task_id", "seq", "cause")
         return [{k: r[k] for k in keys} for r in conn.execute(sql, tuple(run_ids)).fetchall()]
-    except _db_errors():
+    except db_error_types():
         return []
     finally:
         conn.close()
@@ -713,16 +769,16 @@ def rescue_failures(runs_dir: Path) -> list[dict[str, Any]]:
     """Edge. Each attempts row of kind rescue_failed as run_id, task_id, phase_id, ts and cause, oldest first; empty with no store or an unreadable one.
 
     A store below schema 5 has no `cause` column: it reads as None."""
-    opened = _open(runs_dir)
+    opened = open_store(runs_dir)
     if opened is None:
         return []
     conn, p = opened
     try:
         cols = "cause" if "cause" in _attempts_columns(conn, p) else "NULL AS cause"
-        sql = _sql(f"SELECT run_id, task_id, phase_id, ts, {cols} FROM attempts WHERE kind = {{p}} ORDER BY ts", p)
+        sql = sql_for(f"SELECT run_id, task_id, phase_id, ts, {cols} FROM attempts WHERE kind = {{p}} ORDER BY ts", p)
         keys = ("run_id", "task_id", "phase_id", "ts", "cause")
         return [{k: r[k] for k in keys} for r in conn.execute(sql, ("rescue_failed",)).fetchall()]
-    except _db_errors():
+    except db_error_types():
         return []
     finally:
         conn.close()
@@ -733,21 +789,21 @@ def run_spans(runs_dir: Path, since: str) -> list[tuple[str, str, str | None]]:
 
     A run with no `ended_at` that is not live (killed, or from before ended_at was stamped) ends at its last
     recorded call, or at its launch when it has none; only a live run stays open."""
-    opened = _open(runs_dir)
+    opened = open_store(runs_dir)
     if opened is None:
         return []
     conn, p = opened
 
     def last_call(run_id: str) -> str | None:
         try:
-            return conn.execute(_sql("SELECT MAX(ts) AS last FROM node_calls WHERE run_id = {p}", p), (run_id,)).fetchone()["last"]
-        except _db_errors():
+            return conn.execute(sql_for("SELECT MAX(ts) AS last FROM node_calls WHERE run_id = {p}", p), (run_id,)).fetchone()["last"]
+        except db_error_types():
             return None
 
     spans = []
     try:
         rows = conn.execute(
-            _sql(
+            sql_for(
                 "SELECT run_id, launched_at, ended_at FROM runs "
                 "WHERE launched_at IS NOT NULL AND (ended_at IS NULL OR ended_at >= {p}) ORDER BY launched_at",
                 p,
@@ -761,14 +817,14 @@ def run_spans(runs_dir: Path, since: str) -> list[tuple[str, str, str | None]]:
                 if ended_at < since:
                     continue
             spans.append((run_id, launched_at, ended_at))
-    except _db_errors():
+    except db_error_types():
         return []
     finally:
         conn.close()
     return spans
 
 
-def _read_file(path: Path) -> dict | None:
+def _read_file(path: Path) -> dict[str, object] | None:
     try:
         loaded = json.loads(path.read_text())
     except (OSError, ValueError):
@@ -789,20 +845,20 @@ def _run_ended(runs_dir: Path, run_id: str, ended_at: Any) -> bool:
 
 
 def _read_calls(runs_dir: Path, run_id: str) -> list[dict]:
-    opened = _open(runs_dir)
+    opened = open_store(runs_dir)
     if opened is None:
         return []
     conn, p = opened
     try:
         rows = conn.execute(
-            _sql(
+            sql_for(
                 "SELECT n.*, r.ended_at AS run_ended_at FROM node_calls n JOIN runs r ON r.run_id = n.run_id "
                 "WHERE n.run_id = {p} ORDER BY n.ts, n.seq",
                 p,
             ),
             (run_id,),
         ).fetchall()
-    except _db_errors():
+    except db_error_types():
         return []
     finally:
         conn.close()
@@ -827,14 +883,14 @@ def _store_usage(run_id: str, calls: list[dict]) -> dict:
 def _store_runs(runs_dir: Path, exclude: Collection[str] = (), since: str | None = None) -> dict[str, list[dict]]:
     """Every run with `node_calls` rows and a `runs` row that has ended (`ended_at` set, or no live pid), its calls ordered by ts then seq.
     Runs in `exclude` are dropped before any row becomes a call and before the pid check. With `since`, a run whose `ended_at` is set and earlier is dropped in SQL."""
-    opened = _open(runs_dir)
+    opened = open_store(runs_dir)
     if opened is None:
         return {}
     conn, p = opened
     where, params = ("WHERE r.ended_at IS NULL OR r.ended_at >= {p} ", (since,)) if since is not None else ("", ())
     try:
         rows = conn.execute(
-            _sql(
+            sql_for(
                 "SELECT n.*, r.ended_at AS run_ended_at FROM node_calls n JOIN runs r ON r.run_id = n.run_id "
                 + where
                 + "ORDER BY n.run_id, n.ts, n.seq",
@@ -842,7 +898,7 @@ def _store_runs(runs_dir: Path, exclude: Collection[str] = (), since: str | None
             ),
             params,
         ).fetchall()
-    except _db_errors():
+    except db_error_types():
         return {}
     finally:
         conn.close()
@@ -873,52 +929,52 @@ def usages(runs_dir: Path) -> dict[str, dict]:
     return {**files, **store_usages(runs_dir, exclude=files)}
 
 
-def _manifest_files(runs_dir: Path) -> dict[str, list[dict]]:
+def _manifest_files(runs_dir: Path) -> dict[str, list[dict[str, object]]]:
     """Run id to its parsing `<run_id>:<phase>.json` manifests, sorted by file name. The phase follows the last colon."""
     named = [
         (path.name.removesuffix(".json").rpartition(":")[0], path)
         for path in sorted(Path(runs_dir).glob("*:*.json"))
         if not path.name.endswith(".usage.json")
     ]
-    by_run: dict[str, list[dict]] = {}
+    by_run: dict[str, list[dict[str, object]]] = {}
     for run_id, path in named:
         if (body := _read_file(path)) is not None:
             by_run.setdefault(run_id, []).append(body)
     return by_run
 
 
-def _manifest_record(record_json: Any) -> dict | None:
-    record = _json_cell(record_json)
+def _manifest_record(record_json: Any) -> dict[str, object] | None:
+    record = json_cell(record_json)
     found = record.get("manifest_record") if isinstance(record, dict) else None
     return found if isinstance(found, dict) else None
 
 
-def _store_manifests(runs_dir: Path) -> dict[str, list[dict]]:
+def _store_manifests(runs_dir: Path) -> dict[str, list[dict[str, object]]]:
     """Run id to the `manifest_record` of each of its `phases` rows, ended run or not, ordered by the row's ts."""
-    opened = _open(runs_dir)
+    opened = open_store(runs_dir)
     if opened is None:
         return {}
     conn, _ = opened
     try:
         rows = conn.execute("SELECT run_id, record_json FROM phases ORDER BY run_id, ts").fetchall()
-    except _db_errors():
+    except db_error_types():
         return {}
     finally:
         conn.close()
-    by_run: dict[str, list[dict]] = {}
+    by_run: dict[str, list[dict[str, object]]] = {}
     for row in rows:
         if (manifest := _manifest_record(row["record_json"])) is not None:
             by_run.setdefault(row["run_id"], []).append(manifest)
     return by_run
 
 
-def phase_manifests(runs_dir: Path, run_id: str) -> list[dict]:
+def phase_manifests(runs_dir: Path, run_id: str) -> list[dict[str, object]]:
     """The run's manifest files when any parse, else the `manifest_record` of its store phases, else []."""
     from_files = _manifest_files(Path(runs_dir)).get(run_id)
     return from_files or _store_manifests(Path(runs_dir)).get(run_id, [])
 
 
-def all_phase_manifests(runs_dir: Path) -> dict[str, list[dict]]:
+def all_phase_manifests(runs_dir: Path) -> dict[str, list[dict[str, object]]]:
     """Run id to phase manifests: every run with manifest files, then each store run that has none."""
     files = _manifest_files(Path(runs_dir))
     stored = {rid: ms for rid, ms in _store_manifests(Path(runs_dir)).items() if rid not in files}
@@ -926,13 +982,13 @@ def all_phase_manifests(runs_dir: Path) -> dict[str, list[dict]]:
 
 
 def _store_phase_names(runs_dir: Path, run_id: str) -> list[str]:
-    opened = _open(runs_dir)
+    opened = open_store(runs_dir)
     if opened is None:
         return []
     conn, p = opened
     try:
-        rows = conn.execute(_sql("SELECT phase_id FROM phases WHERE run_id = {p} ORDER BY ts", p), (run_id,)).fetchall()
-    except _db_errors():
+        rows = conn.execute(sql_for("SELECT phase_id FROM phases WHERE run_id = {p} ORDER BY ts", p), (run_id,)).fetchall()
+    except db_error_types():
         return []
     finally:
         conn.close()
@@ -990,173 +1046,35 @@ def _parquet_call_events(rows: Sequence[Mapping[str, Any]], call_id: str) -> lis
     return _json_objects(r["event"] for r in mine if isinstance(r.get("event"), str))
 
 
-def _dump_rows(stdout: str) -> list[dict]:
-    """Pure: the rows of `harness.store_traces dump` output, one JSON object per line, cut to `_PARQUET_COLUMNS`."""
-    return [{c: row[c] for c in _PARQUET_COLUMNS} for row in map(json.loads, filter(str.strip, stdout.splitlines()))]
-
-
-_TASK_RECORD_SCRIPT = """import json, sqlite3, sys
-url, *ids = sys.argv[1:]
-sql = "SELECT record_json FROM task_records WHERE run_id = {0} AND phase_id = {0} AND task_id = {0}"
-if url.startswith(("postgres:", "postgresql:")):
-    import psycopg
-    conn, mark = psycopg.connect(url), "%s"
-else:
-    path = url.removeprefix("sqlite:///")
-    conn, mark = sqlite3.connect("file:" + path + "?mode=ro", uri=True), "?"
-row = conn.execute(sql.format(mark), ids).fetchone()
-if row:
-    print(row[0] if isinstance(row[0], str) else json.dumps(row[0]))
-"""
-
-
-def _task_record_argv(python: str, url: str, run_id: str, phase_id: str, task_id: str) -> list[str]:
-    """Pure: the argv that prints one task record's `record_json`. The ids are bound parameters, never SQL text."""
-    return [python, "-c", _TASK_RECORD_SCRIPT, url, run_id, phase_id, task_id]
-
-
-def _task_record_from(stdout: str) -> dict | None:
-    """Pure: the record dict in the output, None when it is empty, not JSON, or not a JSON object."""
-    try:
-        record = json.loads(stdout.strip())
-    except ValueError:
-        return None
-    return record if isinstance(record, dict) else None
-
-
-def task_record(runs_dir: Path, run_id: str, phase_id: str, task_id: str) -> dict | None:
-    """Edge: one task's record from the store through the harness python, None when it cannot say (caller falls back to the file)."""
-    python = _harness_python()
-    if python is None:
-        return None
-    argv = _task_record_argv(str(python), _store_url(Path(runs_dir)), run_id, phase_id, task_id)
-    try:
-        done = subprocess.run(argv, capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return _task_record_from(done.stdout) if done.returncode == 0 else None
-
-
-_TASK_RECORD_PHASES_SCRIPT = """import sqlite3, sys
-url, *ids = sys.argv[1:]
-sql = "SELECT DISTINCT phase_id FROM task_records WHERE run_id = {0} AND task_id = {0} ORDER BY phase_id"
-if url.startswith(("postgres:", "postgresql:")):
-    import psycopg
-    conn, mark = psycopg.connect(url), "%s"
-else:
-    path = url.removeprefix("sqlite:///")
-    conn, mark = sqlite3.connect("file:" + path + "?mode=ro", uri=True), "?"
-for row in conn.execute(sql.format(mark), ids).fetchall():
-    print(row[0])
-"""
-
-
-def _task_record_phases_argv(python: str, url: str, run_id: str, task_id: str) -> list[str]:
-    """Pure: the argv that prints each phase holding a record for the run and task. The ids are bound parameters."""
-    return [python, "-c", _TASK_RECORD_PHASES_SCRIPT, url, run_id, task_id]
-
-
-def _phases_from(stdout: str) -> list[str]:
-    """Pure: the non-blank lines of the output, in order."""
-    return [line.strip() for line in stdout.splitlines() if line.strip()]
+def task_record(runs_dir: Path, run_id: str, phase_id: str, task_id: str) -> dict[str, object] | None:
+    """Edge: one task's record from the store, None when it has none or cannot say (the caller falls back to the file)."""
+    found = harness_store_api().task_record(store_url_for(Path(runs_dir)), run_id, phase_id, task_id)
+    return found if isinstance(found, dict) else None
 
 
 def task_record_phases(runs_dir: Path, run_id: str, task: str) -> list[str]:
     """Edge: the distinct phases whose `task_records` rows name this run and task; empty with no store or on a failed read."""
-    python = _harness_python()
-    if python is None:
-        return []
-    argv = _task_record_phases_argv(str(python), _store_url(Path(runs_dir)), run_id, task)
-    try:
-        done = subprocess.run(argv, capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.SubprocessError):
-        return []
-    return _phases_from(done.stdout) if done.returncode == 0 else []
-
-
-_RUN_TASK_IDS_SCRIPT = """import sqlite3, sys
-url, *ids = sys.argv[1:]
-sql = "SELECT DISTINCT task_id FROM task_records WHERE run_id = {0} ORDER BY task_id"
-if url.startswith(("postgres:", "postgresql:")):
-    import psycopg
-    conn, mark = psycopg.connect(url), "%s"
-else:
-    path = url.removeprefix("sqlite:///")
-    conn, mark = sqlite3.connect("file:" + path + "?mode=ro", uri=True), "?"
-for row in conn.execute(sql.format(mark), ids).fetchall():
-    print(row[0])
-"""
-
-
-def _run_task_ids_argv(python: str, url: str, run_id: str) -> list[str]:
-    """Pure: the argv that prints each task id holding a record for the run. The run id is a bound parameter."""
-    return [python, "-c", _RUN_TASK_IDS_SCRIPT, url, run_id]
+    found = harness_store_api().task_record_phases(store_url_for(Path(runs_dir)), run_id, task)
+    return found if isinstance(found, list) else []
 
 
 def run_task_ids(runs_dir: Path, run_id: str) -> list[str]:
     """Edge: the distinct task ids whose `task_records` rows name this run; empty with no store or on a failed read."""
-    python = _harness_python()
-    if python is None:
-        return []
-    argv = _run_task_ids_argv(str(python), _store_url(Path(runs_dir)), run_id)
-    try:
-        done = subprocess.run(argv, capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.SubprocessError):
-        return []
-    return _phases_from(done.stdout) if done.returncode == 0 else []
+    found = harness_store_api().run_task_ids(store_url_for(Path(runs_dir)), run_id)
+    return found if isinstance(found, list) else []
 
 
-def _resolve_id_argv(python: str, url: str, token: str) -> list[str]:
-    """Pure: the argv that resolves a short run id or an old run key to its run record, printed as one JSON object."""
-    return [python, "-m", "harness.store_ids", "resolve", url, token, "--json"]
-
-
-def resolve_id(runs_dir: Path, token: str) -> dict | None:
-    """Edge: the run record `harness.store_ids resolve` names for `token` -- a short run id (`I412-7`) or an old
-    run key both resolve to the same record. None when the harness, the call, or the output cannot say."""
-    python = _harness_python()
-    if python is None:
-        return None
-    argv = _resolve_id_argv(str(python), _store_url(Path(runs_dir)), token)
-    try:
-        done = subprocess.run(argv, capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return _task_record_from(done.stdout) if done.returncode == 0 else None
-
-
-def _initiative_ids_argv(python: str, url: str) -> list[str]:
-    """Pure: the argv that lists every initiative's short id as a JSON array of `{"initiative", "short_id"}` rows.
-    Unmeasured: the `initiatives` subcommand name and this reply shape are assumed, not read from harness.store_ids."""
-    return [python, "-m", "harness.store_ids", "initiatives", url, "--json"]
-
-
-def _short_ids_from(stdout: str) -> dict[str, str]:
-    """Pure: slug to short id from the reply rows. Empty when the output is not a JSON array; rows missing either field are skipped."""
-    try:
-        rows = json.loads(stdout.strip())
-    except ValueError:
-        return {}
-    if not isinstance(rows, list):
-        return {}
-    return {
-        row["initiative"]: row["short_id"]
-        for row in rows
-        if isinstance(row, dict) and row.get("initiative") and row.get("short_id")
-    }
+def resolve_run_id(runs_dir: Path, token: str) -> str | None:
+    """Edge: the run id a short run id (`I412-7`) or an old run key names; None when it names no run or the store
+    cannot say."""
+    found = harness_store_api().resolve_token(store_url_for(Path(runs_dir)), token)
+    return found.key if isinstance(found, harness_store_api().Resolved) and found.kind == "run" else None
 
 
 def initiative_short_ids(runs_dir: Path) -> dict[str, str]:
-    """Edge: slug to short id for every initiative that has one. Empty when the harness, the call, or the output cannot say."""
-    python = _harness_python()
-    if python is None:
-        return {}
-    argv = _initiative_ids_argv(str(python), _store_url(Path(runs_dir)))
-    try:
-        done = subprocess.run(argv, capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.SubprocessError):
-        return {}
-    return _short_ids_from(done.stdout) if done.returncode == 0 else {}
+    """Edge: slug to short id for every initiative that has one. Empty when the store cannot say."""
+    found = harness_store_api().initiative_short_ids(store_url_for(Path(runs_dir)))
+    return found if isinstance(found, dict) else {}
 
 
 def resolve_initiative(runs_dir: Path, token: str) -> str:
@@ -1165,133 +1083,81 @@ def resolve_initiative(runs_dir: Path, token: str) -> str:
     return by_short_id.get(token, token)
 
 
-_WORK_ITEMS_COLUMNS = ("initiative", "task_id", "phase", "state", "needs_json", "updated_at", "updated_by")
-
-_WORK_ITEMS_SCRIPT = """import json, sqlite3, sys
-url, *want = sys.argv[1:]
-sql = "SELECT {columns} FROM work_items" + (" WHERE initiative = {0}" if want else "")
-if url.startswith(("postgres:", "postgresql:")):
-    import psycopg
-    conn, mark = psycopg.connect(url), "%s"
-else:
-    path = url.removeprefix("sqlite:///")
-    conn, mark = sqlite3.connect("file:" + path + "?mode=ro", uri=True), "?"
-cur = conn.execute(sql.format(mark), want)
-names = [d[0] for d in cur.description]
-for row in cur.fetchall():
-    print(json.dumps(dict(zip(names, row)), default=str))
-""".replace("{columns}", ", ".join(_WORK_ITEMS_COLUMNS))
-
-
-def _work_items_argv(python: str, url: str, initiative: str | None) -> list[str]:
-    """Pure: the argv that prints `work_items` rows as JSON lines. The initiative is a bound argument, never SQL text."""
-    return [python, "-c", _WORK_ITEMS_SCRIPT, url, *([] if initiative is None else [initiative])]
-
-
-def _work_items_from(stdout: str) -> list[dict]:
-    """Pure: the JSON-object lines of the output whole, so extra columns pass through. Anything else is skipped."""
-    parsed = map(_task_record_from, stdout.splitlines())
-    return [row for row in parsed if row is not None]
-
-
 def task_state(rows: list[dict], initiative: str, task: str) -> str | None:
     """Pure: the `state` of the row for this initiative and task, or None when no row matches."""
     return next((row.get("state") for row in rows if row.get("initiative") == initiative and row.get("task_id") == task), None)
 
 
-_STAMP_SCRIPT = """import hashlib, json, sqlite3, sys
-url, *want = sys.argv[1:]
-if url.startswith(("postgres:", "postgresql:")):
-    import psycopg
-    conn, mark = psycopg.connect(url), "%s"
-else:
-    path = url.removeprefix("sqlite:///")
-    conn, mark = sqlite3.connect("file:" + path + "?mode=ro", uri=True), "?"
-where = (" WHERE " + " AND ".join(name + " = " + mark for name in @NAMES@)) if @NAMES@ else ""
-cur = conn.execute("SELECT * FROM work_items" + where + " ORDER BY initiative, task_id", want)
-upd = [d[0] for d in cur.description].index("updated_at")
-rows = cur.fetchall()
-newest = max((str(r[upd]) for r in rows if r[upd] is not None), default=None)
-print(json.dumps([len(rows), newest, hashlib.sha256(repr(rows).encode()).hexdigest()]))
-"""
+def rows_by_task(rows: Sequence[Mapping[str, Any]]) -> dict[tuple[Any, Any], Mapping[str, Any]]:
+    """Pure: (initiative, task_id) to the first row with that key, the row `task_state` reads, so a caller asking for
+    every item's row does one pass over `rows` instead of one per item."""
+    index: dict[tuple[Any, Any], Mapping[str, Any]] = {}
+    for row in rows:
+        index.setdefault((row.get("initiative"), row.get("task_id")), row)
+    return index
 
 
 class _ReadFailed(Exception):
     """A full read produced no rows because the reader failed, so the cache must not store it."""
 
 
-def _stamp_argv(python: str, url: str, filters: Sequence[tuple[str, str | None]]) -> list[str]:
-    """Pure: the argv that prints `[row count, greatest updated_at, sha256 of every column of every row]` as one JSON line.
-
-    The digest covers all columns because the mirror and the queue upsert keep an older updated_at on a changed row,
-    so count and greatest updated_at alone miss ordinary writes. Filter columns are fixed names; values are bound arguments."""
-    narrow = [(column, value) for column, value in filters if value is not None]
-    script = _STAMP_SCRIPT.replace("@NAMES@", repr(tuple(column for column, _ in narrow)))
-    return [python, "-c", script, url, *(value for _, value in narrow)]
-
-
-def _work_items_stamp_argv(python: str, url: str, initiative: str | None) -> list[str]:
-    """Pure: the stamp argv for the table, or for one initiative."""
-    return _stamp_argv(python, url, [("initiative", initiative)])
-
-
-def _stamp_from(stdout: str) -> Stamp | None:
-    """Pure: (row count, crc32 of the greatest updated_at and row digest) from the probe's JSON line. None unless it is a list led by an int count."""
-    try:
-        parsed = json.loads(stdout)
-    except ValueError:
+def _stamp(found: store_api.TableStamp | store_api.Failed | store_api.NotAvailable) -> Stamp | None:
+    """Pure: the cache stamp of a probe, (row count, crc32 of the greatest updated_at and the row digest); None when
+    the store could not say. The digest covers every column: a queue upsert keeps an older updated_at on a changed row."""
+    if not isinstance(found, harness_store_api().TableStamp):
         return None
-    if not isinstance(parsed, list) or not parsed or isinstance(parsed[0], bool) or not isinstance(parsed[0], int):
-        return None
-    return (parsed[0], zlib.crc32(json.dumps(parsed[1:]).encode()))
+    return (found.count, zlib.crc32(json.dumps([found.newest, found.digest]).encode()))
 
 
-def _stamp_of(done: Any) -> Stamp | None:
-    """Pure: the stamp of a finished probe, None when it did not run, failed or printed nothing usable."""
-    return None if done is None or done.returncode != 0 else _stamp_from(done.stdout)
+def _rows(found: Sequence[Mapping[str, Any]] | store_api.Failed | store_api.NotAvailable) -> list[dict[str, Any]] | None:
+    """Pure: the rows as plain dicts, None when the store could not say."""
+    return [dict(row) for row in found] if isinstance(found, list) else None
 
 
-def _run_argv(argv: list[str]) -> Any | None:
-    """Edge: the finished process for argv, None when it cannot be launched or times out."""
-    try:
-        return subprocess.run(argv, capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.SubprocessError):
-        return None
-
-
-def _versioned(cache: StampCache, key: Any, probe: Any, read_rows: Callable[[], list[dict] | None]) -> list[dict]:
+def _versioned(cache: StampCache, key: Any, stamp: Stamp | None, read_rows: Callable[[], list[dict[str, Any]] | None]) -> list[dict[str, Any]]:
     """Edge: rows from `cache` keyed by the probe's stamp, as copies. A failed full read is [] and is never stored."""
 
-    def full() -> list[dict]:
+    def full() -> list[dict[str, Any]]:
         rows = read_rows()
         if rows is None:
             raise _ReadFailed
         return rows
 
     try:
-        return copy.deepcopy(cache.get(key, _stamp_of(probe), full))
+        return copy.deepcopy(cache.get(key, stamp, full))
     except _ReadFailed:
         return []
 
 
-def work_items(runs_dir: Path, initiative: str | None = None, cache: StampCache | None = None) -> list[dict]:
-    """Edge: `work_items` rows through the harness python, optionally for one initiative.
+def work_items(runs_dir: Path, initiative: str | None = None, cache: StampCache | None = None) -> list[dict[str, Any]]:
+    """Edge: `work_items` rows from the store, optionally for one initiative.
 
-    Empty when the table, the harness or the store is missing or unreadable, so an old store reads as an empty one.
+    Empty when the table or the store is missing or unreadable, so an old store reads as an empty one.
     With a cache, a probe of the row count, greatest updated_at and a digest of every row decides whether the stored rows still stand."""
-    python = _harness_python()
-    if python is None:
-        return []
-    url = _store_url(Path(runs_dir))
+    url = store_url_for(Path(runs_dir))
 
-    def read_rows() -> list[dict] | None:
-        done = _run_argv(_work_items_argv(str(python), url, initiative))
-        return _work_items_from(done.stdout) if done is not None and done.returncode == 0 else None
+    def read_rows() -> list[dict[str, Any]] | None:
+        return _rows(harness_store_api().work_item_rows(url, initiative))
 
     if cache is None:
         return read_rows() or []
-    probe = _run_argv(_work_items_stamp_argv(str(python), url, initiative))
+    probe = _stamp(harness_store_api().work_items_stamp(url, [("initiative", initiative)]))
     return _versioned(cache, ("work_items", str(runs_dir), initiative), probe, read_rows)
+
+
+def task_merge_row(runs_dir: Path, initiative: str, task: str) -> tuple[str, str | None] | None:
+    """Edge: (state, merged_commit) of the task's `work_items` row; None with no store, no row or an unreadable one."""
+    conn = connect_readonly(Path(runs_dir))
+    if conn is None:
+        return None
+    sql = sql_for("SELECT state, merged_commit FROM work_items WHERE initiative = {p} AND task_id = {p}", placeholder(store_url_for(Path(runs_dir))))
+    try:
+        row = conn.execute(sql, (initiative, task)).fetchone()
+    except db_error_types():
+        return None
+    finally:
+        conn.close()
+    return None if row is None else (row["state"], row["merged_commit"])
 
 
 def task_state_of(runs_dir: Path, initiative: str, task: str) -> str | None:
@@ -1316,7 +1182,7 @@ def _one_land_per_key(rows: Sequence[Mapping[str, str]]) -> tuple[dict[str, str]
 def _done_work_item_lands(conn: Any, token: str, since: str, until: str) -> list[dict[str, str]]:
     """Edge. Done work items stamped `since <= updated_at < until`."""
     # A work item carries no run_id, so its initiative stands in as run_id; (initiative, task_id) is the table's own key.
-    sql = _sql("SELECT initiative, task_id, updated_at FROM work_items WHERE state = {p} AND updated_at >= {p} AND updated_at < {p}", token)
+    sql = sql_for("SELECT initiative, task_id, updated_at FROM work_items WHERE state = {p} AND updated_at >= {p} AND updated_at < {p}", token)
     rows = conn.execute(sql, ("done", since, until)).fetchall()
     return [{"run_id": r["initiative"], "task_id": r["task_id"], "ts": r["updated_at"]} for r in rows if r["updated_at"]]
 
@@ -1342,13 +1208,13 @@ def _land_record_lands(runs_dir: Path, since: str, until: str) -> list[dict[str,
 
 def landed_tasks(runs_dir: Path, since: str, until: str) -> Landed:
     """Edge. Tasks landed in `since <= ts < until` (ISO text): done work items, else `land.jsonl` lands; never both."""
-    opened = _open(runs_dir)
+    opened = open_store(runs_dir)
     done: list[dict[str, str]] = []
     if opened is not None:
         conn, token = opened
         try:
             done = _done_work_item_lands(conn, token, since, until)
-        except _db_errors():
+        except db_error_types():
             done = []
         finally:
             conn.close()
@@ -1359,193 +1225,89 @@ def landed_tasks(runs_dir: Path, since: str, until: str) -> Landed:
 
 _QUEUE_COLUMNS = ("kind", "initiative", "task_id", "phase", "state", "needs", "title", "surfaces", "body", "extra")
 _CLAIM_KEYS = ("holder", "epoch", "expires_at")
-_HELD_EXIT = 4
 HELD = "held"
 UNAVAILABLE = "unavailable"
 
-# Assumed harness subcommands, for graphs to match. Each is `<python> -m harness.store_queue <verb> <store-url> ...`:
-#   read URL [--initiative I] [--kind K]       one JSON object per row per line, extra columns allowed
-#   upsert URL ROW_JSON                        one row keyed (initiative, task_id); exit 0 when written, safe to repeat
-#   claim URL INITIATIVE TASK HOLDER TTL_S NOW one conditional row update that bumps epoch; exit 0 prints the
-#                                              claim JSON {holder, epoch, expires_at}; exit 4 means a live claim by
-#                                              another holder (unknown: graphs must confirm 4 for held)
-#   release URL INITIATIVE TASK HOLDER         clears the claim only when HOLDER matches; exit 0 when cleared
-# Any other non-zero exit, or a harness that is absent, reads as unavailable.
+
+def _now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def _queue_read_argv(python: str, url: str, initiative: str | None, kind: str | None) -> list[str]:
-    """Pure: the argv that prints queue rows as JSON lines, narrowed by initiative and kind when given."""
-    narrow = [*([] if initiative is None else ["--initiative", initiative]), *([] if kind is None else ["--kind", kind])]
-    return [python, "-m", "harness.store_queue", "read", url, *narrow]
-
-
-def _queue_upsert_argv(python: str, url: str, row: Mapping[str, Any]) -> list[str]:
-    """Pure: the argv that upserts one row. The row is one JSON argument with sorted keys, so equal rows give equal argv."""
-    return [python, "-m", "harness.store_queue", "upsert", url, json.dumps(row, sort_keys=True, default=str)]
-
-
-def _queue_claim_argv(python: str, url: str, initiative: str, task_id: str, holder: str, ttl_s: float, now: str) -> list[str]:
-    """Pure: the argv that claims a row. `now` is the caller's clock reading, so the store never consults its own."""
-    return [python, "-m", "harness.store_queue", "claim", url, initiative, task_id, holder, str(ttl_s), now]
-
-
-def _queue_release_argv(python: str, url: str, initiative: str, task_id: str, holder: str) -> list[str]:
-    """Pure: the argv that clears a row's claim when `holder` holds it."""
-    return [python, "-m", "harness.store_queue", "release", url, initiative, task_id, holder]
-
-
-def _queue_rows_from(stdout: str) -> list[dict]:
-    """Pure: the JSON-object lines of the output, each with every queue and claim key present (None when absent) and extras kept."""
+def _queue_rows(found: Sequence[Mapping[str, Any]] | store_api.Failed | store_api.NotAvailable) -> list[dict[str, Any]] | None:
+    """Pure: each row with every queue and claim key present (None when absent) and extras kept; None when the store
+    could not say."""
     blank = dict.fromkeys((*_QUEUE_COLUMNS, *_CLAIM_KEYS))
-    return [{**blank, **row} for row in _work_items_from(stdout)]
+    rows = _rows(found)
+    return None if rows is None else [{**blank, **row} for row in rows]
 
 
-def _claim_from(stdout: str) -> dict | None:
-    """Pure: `{holder, epoch, expires_at}` from a JSON object naming a holder, else None."""
-    claim = _task_record_from(stdout)
-    return None if claim is None or claim.get("holder") is None else {key: claim.get(key) for key in _CLAIM_KEYS}
-
-
-def _claim_reason(returncode: int) -> str:
-    """Pure: why a non-zero claim exit failed, `HELD` for the assumed held code, else `UNAVAILABLE`."""
-    return HELD if returncode == _HELD_EXIT else UNAVAILABLE
-
-
-def _queue_run(runs_dir: Path, build: Any) -> Any | None:
-    """Edge: run the argv `build(python, url)` through the harness python; None when it cannot run. Never raises."""
-    python = _harness_python()
-    if python is None:
-        return None
-    try:
-        argv = build(str(python), _store_url(Path(runs_dir)))
-        return subprocess.run(argv, capture_output=True, text=True, timeout=60)
-    except Exception:  # an unreadable profile or store must read as unavailable, not crash the caller
-        return None
-
-
-def _queue_stamp_argv(python: str, url: str, initiative: str | None, kind: str | None) -> list[str]:
-    """Pure: the stamp argv narrowed by initiative and kind when given. Claim and release change holder, epoch and expires_at without touching updated_at; the digest covers them."""
-    return _stamp_argv(python, url, [("initiative", initiative), ("kind", kind)])
-
-
-def read_queue(runs_dir: Path, initiative: str | None = None, kind: str | None = None, cache: StampCache | None = None) -> list[dict]:
-    """Edge: queue rows from the store, optionally for one initiative and kind. Empty when the harness, table or store is unavailable.
+def read_queue(runs_dir: Path, initiative: str | None = None, kind: str | None = None, cache: StampCache | None = None) -> list[dict[str, Any]]:
+    """Edge: queue rows from the store, optionally for one initiative and kind. Empty when the table or store is unavailable.
 
     With a cache, a probe of the table's version decides whether the stored rows still stand."""
+    url = store_url_for(Path(runs_dir))
 
-    def read_rows() -> list[dict] | None:
-        done = _queue_run(runs_dir, lambda python, url: _queue_read_argv(python, url, initiative, kind))
-        return _queue_rows_from(done.stdout) if done is not None and done.returncode == 0 else None
+    def read_rows() -> list[dict[str, Any]] | None:
+        return _queue_rows(harness_store_api().queue_rows(url, initiative, kind))
 
     if cache is None:
         return read_rows() or []
-    probe = _queue_run(runs_dir, lambda python, url: _queue_stamp_argv(python, url, initiative, kind))
+    probe = _stamp(harness_store_api().work_items_stamp(url, [("initiative", initiative), ("kind", kind)]))
     return _versioned(cache, ("queue", str(runs_dir), initiative, kind), probe, read_rows)
 
 
 def queue_stamp(runs_dir: Path) -> Stamp | None:
     """Edge: the version of the whole queue (row count and a digest of every row), None when the store cannot say.
     Two equal stamps mean no row changed in between."""
-    return _stamp_of(_queue_run(runs_dir, lambda python, url: _queue_stamp_argv(python, url, None, None)))
+    return _stamp(harness_store_api().work_items_stamp(store_url_for(Path(runs_dir)), []))
 
 
 def upsert_row(runs_dir: Path, row: Mapping[str, Any]) -> bool:
     """Edge: True when the store took the row, False when it could not."""
-    done = _queue_run(runs_dir, lambda python, url: _queue_upsert_argv(python, url, row))
-    return done is not None and done.returncode == 0
+    return upsert_row_detail(runs_dir, row) == ""
+
+
+def plain_row(row: Mapping[str, Any]) -> dict:
+    """Pure: the row as JSON holds it. A value JSON cannot hold (a Path, a datetime) becomes its text, as it did when
+    the row crossed to the store as one JSON argument."""
+    return json.loads(json.dumps(dict(row), sort_keys=True, default=str))
 
 
 def upsert_row_detail(runs_dir: Path, row: Mapping[str, Any]) -> str:
-    """Edge: "" only when the store took the row; otherwise a non-empty reason: the command's last
-    line of stderr, `exit N` when it failed silently, or "harness python not found"."""
-    done = _queue_run(runs_dir, lambda python, url: _queue_upsert_argv(python, url, row))
-    if done is None:
-        return "harness python not found"
-    if done.returncode == 0:
-        return ""
-    lines = done.stderr.strip().splitlines()
-    return lines[-1] if lines else f"exit {done.returncode}"
+    """Edge: "" only when the store took the row (or already held it); otherwise a non-empty reason."""
+    done = harness_store_api().upsert_queue_row(store_url_for(Path(runs_dir)), plain_row(row), _now())
+    if isinstance(done, harness_store_api().Failed):
+        return done.detail or f"exit {done.code}"
+    if isinstance(done, harness_store_api().NotAvailable):
+        return done.reason or "the store is not available"
+    return ""
 
 
 def release_row(runs_dir: Path, initiative: str, task_id: str, holder: str) -> bool:
-    """Edge: True when the claim was cleared, False when `holder` did not hold it or the store could not say."""
-    done = _queue_run(runs_dir, lambda python, url: _queue_release_argv(python, url, initiative, task_id, holder))
-    return done is not None and done.returncode == 0
-
-
-# The export's own table, apart from the harness-owned work_items: one row per (initiative, task_id) holding the sha256
-# of the file text the export last wrote. `CREATE TABLE IF NOT EXISTS` makes it additive and safe to rerun, and a row
-# with no entry reads as no hash. Run through the harness python, like every other queue write.
-_EXPORT_HASH_SCRIPT = """import json, os, sqlite3, sys
-url, verb, *row = sys.argv[1:]
-if url.startswith(("postgres:", "postgresql:")):
-    import psycopg
-    conn, mark = psycopg.connect(url), "%s"
-else:
-    path = url.removeprefix("sqlite:///")
-    if not os.path.exists(path):
-        sys.exit(3)
-    conn, mark = sqlite3.connect(path), "?"
-conn.execute("CREATE TABLE IF NOT EXISTS export_hashes (initiative TEXT NOT NULL, task_id TEXT NOT NULL, sha256 TEXT NOT NULL, PRIMARY KEY (initiative, task_id))")
-if verb == "set":
-    conn.execute(
-        "INSERT INTO export_hashes (initiative, task_id, sha256) VALUES ({0}, {0}, {0}) "
-        "ON CONFLICT (initiative, task_id) DO UPDATE SET sha256 = excluded.sha256".format(mark),
-        row,
-    )
-else:
-    for found in conn.execute("SELECT initiative, task_id, sha256 FROM export_hashes").fetchall():
-        print(json.dumps(list(found)))
-conn.commit()
-"""
-
-
-def _export_hash_argv(python: str, url: str, verb: str, row: Sequence[str] = ()) -> list[str]:
-    """Pure: the argv that lists ("get") or sets ("set", with `row` = initiative, task_id, sha256) export hashes. Values are bound arguments, never SQL text."""
-    return [python, "-c", _EXPORT_HASH_SCRIPT, url, verb, *row]
-
-
-def _export_hashes_from(stdout: str) -> dict[tuple[str, str], str]:
-    """Pure: (initiative, task_id) to sha256 from the getter's JSON-array lines. Anything else is skipped."""
-    parsed = (_hash_line_from(line) for line in stdout.splitlines())
-    return {(r[0], r[1]): r[2] for r in parsed if r is not None}
-
-
-def _hash_line_from(line: str) -> list[str] | None:
-    """Pure: the three-string JSON array on this line, else None."""
-    try:
-        found = json.loads(line)
-    except ValueError:
-        return None
-    return found if isinstance(found, list) and len(found) == 3 and all(isinstance(v, str) for v in found) else None
+    """Edge: True when the store answered; a release by a holder that did not hold the row changes nothing and is
+    still True, as the harness CLI exits 0 either way. False only when the store could not say."""
+    done = harness_store_api().release_queue_row(store_url_for(Path(runs_dir)), initiative, task_id, holder, _now())
+    return isinstance(done, harness_store_api().Released)
 
 
 def export_hashes(runs_dir: Path) -> dict[tuple[str, str], str]:
     """Edge: the sha256 of the file the export last wrote, by (initiative, task_id). A row the export never wrote is absent; empty when the store cannot say."""
-    done = _queue_run(runs_dir, lambda python, url: _export_hash_argv(python, url, "get"))
-    return _export_hashes_from(done.stdout) if done is not None and done.returncode == 0 else {}
+    found = harness_store_api().export_hashes(store_url_for(Path(runs_dir)), _now())
+    return found if isinstance(found, dict) else {}
 
 
 def set_export_hash(runs_dir: Path, initiative: str, task_id: str, digest: str) -> bool:
     """Edge: True when the store recorded `digest` for this row, False when it could not."""
-    done = _queue_run(runs_dir, lambda python, url: _export_hash_argv(python, url, "set", (initiative, task_id, digest)))
-    return done is not None and done.returncode == 0
+    done = harness_store_api().set_export_hash(store_url_for(Path(runs_dir)), initiative, task_id, digest, _now())
+    return not isinstance(done, harness_store_api().Failed | harness_store_api().NotAvailable)
 
 
 def claim_outcome(runs_dir: Path, initiative: str, task_id: str, holder: str, ttl_s: float, now: str) -> tuple[dict | None, str | None]:
     """Edge: `(claim, None)` when taken, else `(None, HELD)` or `(None, UNAVAILABLE)` so a caller can tell them apart."""
-    done = _queue_run(runs_dir, lambda python, url: _queue_claim_argv(python, url, initiative, task_id, holder, ttl_s, now))
-    if done is None:
-        return None, UNAVAILABLE
-    if done.returncode != 0:
-        return None, _claim_reason(done.returncode)
-    claim = _claim_from(done.stdout)
-    return (claim, None) if claim is not None else (None, UNAVAILABLE)
-
-
-def claim_row(runs_dir: Path, initiative: str, task_id: str, holder: str, ttl_s: float, now: str) -> dict | None:
-    """Edge: the claim taken on a free or expired row at `now`, None when held or unavailable; `claim_outcome` says which."""
-    return claim_outcome(runs_dir, initiative, task_id, holder, ttl_s, now)[0]
+    done = harness_store_api().claim_queue_row(store_url_for(Path(runs_dir)), initiative, task_id, holder, int(ttl_s), now)
+    if isinstance(done, harness_store_api().Claimed):
+        return dict(done.claim), None
+    return None, HELD if isinstance(done, harness_store_api().Held) else UNAVAILABLE
 
 
 def _import_pyarrow() -> tuple[Any, Any]:
@@ -1604,69 +1366,15 @@ def _filesystem(pafs: Any, root: TracesRoot) -> tuple[Any, str]:
     return pafs.LocalFileSystem(), str(Path(root.url).absolute())
 
 
-def _dump_failure(returncode: int, stderr: str) -> str:
-    """Pure: the exit code and the last stderr line of a failed dump, for the TracesUnavailable message."""
-    last = next((line.strip() for line in reversed(stderr.splitlines()) if line.strip()), "")
-    return f"exit {returncode}: {last}" if last else f"exit {returncode}"
-
-
-@functools.lru_cache(maxsize=8)
-def _harness_dump(python: str, url: str, run_id: str) -> tuple[dict, ...] | str:
-    """Edge, cached per process: the run's dumped rows, else the failure as text, so a broken harness runs once.
-
-    Exit 3 raises LookupError, which lru_cache does not store: a live run's file can appear later."""
-    argv = [python, "-m", "harness.store_traces", "dump", url, run_id]
-    try:
-        done = subprocess.run(argv, capture_output=True, text=True, timeout=60)
-    except subprocess.TimeoutExpired:
-        return "timed out after 60s"
-    except (OSError, subprocess.SubprocessError) as exc:
-        return f"{type(exc).__name__}: {exc}"
-    if done.returncode == 3:
-        raise LookupError(run_id)
-    if done.returncode != 0:
-        return _dump_failure(done.returncode, done.stderr)
-    try:
-        return tuple(_dump_rows(done.stdout))
-    except (ValueError, KeyError, TypeError) as exc:
-        return f"unreadable output: {type(exc).__name__}: {exc}"
-
-
-def _harness_parquet_rows(root: TracesRoot, run_id: str, missing: TracesUnavailable) -> list[dict] | None:
-    """Edge: the run's rows through the harness `store_traces dump`, None on exit 3, else `missing` re-raised."""
-    python = _harness_python()
-    if python is None:
-        raise missing
-    try:
-        dumped = _harness_dump(str(python), root.url, run_id)
-    except LookupError:
-        return None
-    if isinstance(dumped, str):
-        raise TracesUnavailable(f"{missing} (the harness could not read it either): {dumped}") from missing
-    return list(dumped)
-
-
-def _harness_can_read(python: Path) -> bool:
-    """Edge: whether the harness python imports pyarrow and `harness.store_traces`, the two things a dump needs."""
-    argv = [str(python), "-c", "import pyarrow.parquet, harness.store_traces"]
-    try:
-        return subprocess.run(argv, capture_output=True, text=True, timeout=60).returncode == 0
-    except (OSError, subprocess.SubprocessError):
-        return False
-
-
 def _parquet_rows(root: TracesRoot, run_id: str) -> list[dict] | None:
     """Edge: the rows of the run's `YYYY/MM/DD/<run_id>.parquet` files, None when it has none.
 
     A local root is probed with a glob first, so a missing pyarrow only matters once a file exists. A remote root
-    cannot be probed without pyarrow. Without pyarrow the rows come through the harness when it has a python,
-    else TracesUnavailable is raised."""
+    cannot be probed without pyarrow. Without pyarrow TracesUnavailable is raised: the harness is this same package,
+    so no other interpreter could read them either."""
     name = f"{run_id}.parquet"
     if root.remote:
-        try:
-            pafs, pq = _import_pyarrow()
-        except TracesUnavailable as missing:
-            return _harness_parquet_rows(root, run_id, missing)
+        pafs, pq = _import_pyarrow()
         fs, base = _filesystem(pafs, root)
         selector = pafs.FileSelector(base, recursive=True, allow_not_found=True)
         found = sorted(i.path for i in fs.get_file_info(selector) if i.type == pafs.FileType.File and i.base_name == name)
@@ -1674,10 +1382,7 @@ def _parquet_rows(root: TracesRoot, run_id: str) -> list[dict] | None:
         found = sorted(str(p) for p in Path(root.url).absolute().glob(f"*/*/*/{name}"))
         if not found:
             return None
-        try:
-            pafs, pq = _import_pyarrow()
-        except TracesUnavailable as missing:
-            return _harness_parquet_rows(root, run_id, missing)
+        pafs, pq = _import_pyarrow()
         fs, _ = _filesystem(pafs, root)
     if not found:
         return None
@@ -1712,19 +1417,19 @@ def synthetic_call_id(run_id: str, trace: object) -> str | None:
 def _store_ids_by_trace(runs_dir: str, run_id: str) -> dict[str, str]:
     """Edge, cached per run: the store's call id for each trace path its node_calls rows name. Calls from before call
     ids carry `legacy:<run>:<seq>` in the store, and the Parquet traces are relinked to it (graphs #445)."""
-    opened = _open(Path(runs_dir))
+    opened = open_store(Path(runs_dir))
     if opened is None:
         return {}
     conn, p = opened
     try:
-        rows = conn.execute(_sql("SELECT call_id, detail_json FROM node_calls WHERE run_id = {p}", p), (run_id,)).fetchall()
-    except _db_errors():
+        rows = conn.execute(sql_for("SELECT call_id, detail_json FROM node_calls WHERE run_id = {p}", p), (run_id,)).fetchall()
+    except db_error_types():
         return {}
     finally:
         conn.close()
     ids = {}
     for row in rows:
-        detail = _json_cell(row["detail_json"])
+        detail = json_cell(row["detail_json"])
         trace = detail.get("trace") if isinstance(detail, dict) else None
         if isinstance(trace, str) and trace:
             ids[trace] = row["call_id"]
@@ -1738,7 +1443,7 @@ def call_events(runs_dir: Path, run_id: str, call: Mapping[str, Any]) -> list[di
     call_id = str(call.get("id"))
     trace = call.get("trace")
     synthetic = synthetic_call_id(run_id, trace)
-    rows, fault = _parquet_rows_or_fault(_traces_root(Path(runs_dir)), run_id)
+    rows, fault = _parquet_rows_or_fault(traces_root_for(Path(runs_dir)), run_id)
     if rows and (
         found := _parquet_call_events(rows, call_id)
         or (isinstance(trace, str) and trace and _parquet_call_events(rows, _store_ids_by_trace(str(runs_dir), run_id).get(trace, "")))
@@ -1767,17 +1472,16 @@ def _parquet_rows_or_fault(root: TracesRoot, run_id: str) -> tuple[tuple[dict, .
 
 @dataclass(frozen=True)
 class ParquetCheck:
-    """`readable` with the `reason`: `ok`, `through the harness`, `pyarrow missing`, `root unreachable`, or the
+    """`readable` with the `reason`: `ok`, `pyarrow missing`, `root unreachable`, or the
     object_store error text, which names the literal secret or the unset env var."""
 
     readable: bool
     reason: str
 
 
-def parquet_readable(traces_root: TracesRoot, harness: Path | None) -> ParquetCheck:
+def parquet_readable(traces_root: TracesRoot) -> ParquetCheck:
     """Edge: whether Parquet traces under `traces_root` can be read, for the doctor. Opens no trace file.
 
-    `harness` is the diagnosed profile's harness python; without pyarrow it counts only when it imports what a dump needs.
     A bad object_store block is reported first, by its own message, since no filesystem can be built from it."""
     try:
         _block_options(traces_root)
@@ -1786,8 +1490,7 @@ def parquet_readable(traces_root: TracesRoot, harness: Path | None) -> ParquetCh
     try:
         pafs, _ = _import_pyarrow()
     except TracesUnavailable:
-        readable = harness is not None and _harness_can_read(harness)
-        return ParquetCheck(True, "through the harness") if readable else ParquetCheck(False, "pyarrow missing")
+        return ParquetCheck(False, "pyarrow missing")
     import pyarrow
 
     try:
@@ -1802,13 +1505,13 @@ def runs_started(runs_dir: Path) -> dict[str, str]:
     """Run id to the `launched_at` of every store `runs` row that has one, read in one query; {} for no store or a
     failed read. Callers that need many runs' start times use this instead of `run_started` per run, which opened one
     connection each (445 of them made `cox route context` take 24 s over the tailnet, 2026-10-06)."""
-    opened = _open(Path(runs_dir))
+    opened = open_store(Path(runs_dir))
     if opened is None:
         return {}
     conn, p = opened
     try:
-        rows = conn.execute(_sql("SELECT run_id, launched_at FROM runs WHERE launched_at IS NOT NULL", p)).fetchall()
-    except _db_errors():
+        rows = conn.execute(sql_for("SELECT run_id, launched_at FROM runs WHERE launched_at IS NOT NULL", p)).fetchall()
+    except db_error_types():
         return {}
     finally:
         conn.close()
@@ -1817,13 +1520,13 @@ def runs_started(runs_dir: Path) -> dict[str, str]:
 
 def run_started(runs_dir: Path, run_id: str) -> str | None:
     """The `launched_at` of the store's `runs` row, else None."""
-    opened = _open(Path(runs_dir))
+    opened = open_store(Path(runs_dir))
     if opened is None:
         return None
     conn, p = opened
     try:
-        row = conn.execute(_sql("SELECT launched_at FROM runs WHERE run_id = {p}", p), (run_id,)).fetchone()
-    except _db_errors():
+        row = conn.execute(sql_for("SELECT launched_at FROM runs WHERE run_id = {p}", p), (run_id,)).fetchone()
+    except db_error_types():
         return None
     finally:
         conn.close()

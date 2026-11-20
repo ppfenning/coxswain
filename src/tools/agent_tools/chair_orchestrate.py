@@ -5,12 +5,11 @@ module, so they cannot disagree. A hosts-table row has `name`, `state` and `beat
 `active`, `draining` and `removed`.
 """
 from collections.abc import Mapping, Sequence
-from typing import Any
 
 from agent_tools.chair_login_watch import PLACEMENT_STALE_S
 from agent_tools.chair_read_lost import stale_hosts
 
-Row = Mapping[str, Any]
+Row = Mapping[str, object]
 
 FALLBACK_NOTICE = "orchestration mode on but no other active host; building on the chair machine"
 REFUSAL = "orchestration needs another active lane host"

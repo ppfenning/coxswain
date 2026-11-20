@@ -11,18 +11,13 @@ from pathlib import Path
 from typing import Any
 
 from agent_tools import run_store, store_connect
+from agent_tools.chair_types import LandFreeze
 from agent_tools.store_dialect import is_postgres, placeholder
 
 LAND_FREEZE_NAME = "land-freeze"
 NOT_FROZEN = "lands are not frozen"
 USAGE = "usage: freeze MINUTES REASON, freeze off, or freeze with no arguments"
 _STAMP = "%Y-%m-%dT%H:%M:%SZ"
-
-
-@dataclass(frozen=True)
-class LandFreeze:
-    reason: str
-    expires_at: datetime
 
 
 @dataclass(frozen=True)
@@ -38,14 +33,14 @@ def _expiry(expires_at: object) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
-def active_freeze(row: Mapping[str, Any] | None, now: datetime) -> LandFreeze | None:
+def active_freeze(row: Mapping[str, object] | None, now: datetime) -> LandFreeze | None:
     """An expiry at or before `now`, or one that does not parse, is no freeze."""
     if row is None:
         return None
     expiry = _expiry(row.get("expires_at"))
     if expiry is None or expiry <= now:
         return None
-    return LandFreeze(reason=row.get("holder") or "", expires_at=expiry)
+    return LandFreeze(reason=str(row.get("holder") or ""), expires_at=expiry)
 
 
 def freeze_text(freeze: LandFreeze) -> str:
@@ -66,17 +61,18 @@ def expiry_after(now: datetime, minutes: int) -> datetime | UsageError:
 def _open_writable(runs_dir: Path) -> tuple[Any, str] | None:
     """Edge. A writable connection and its bind token; None when a SQLite store file is absent, so it never creates one.
 
-    `run_store._open` is read-only, so a DELETE or INSERT through it always fails."""
-    url = run_store._store_url(runs_dir)
+    `run_store.open_store` is read-only, so a DELETE or INSERT through it always fails. The connection is typed as the driver gives it, loosely, as
+    `open_store`'s does: psycopg types `execute` for literal SQL only, and this SQL is built at run time."""
+    url = run_store.store_url_for(runs_dir)
     if is_postgres(url):
         return store_connect.connect(url), placeholder(url)
-    path = run_store._sqlite_path(url)
+    path = run_store.sqlite_path(url)
     return (sqlite3.connect(path), placeholder(url)) if path.exists() else None
 
 
 def read_freeze(runs_dir: Path, now: datetime) -> LandFreeze | None:
     """Edge. None with no store, no row, an expired row, or an unreadable store."""
-    opened = run_store._open(runs_dir)
+    opened = run_store.open_store(runs_dir)
     if opened is None:
         return None
     conn, mark = opened
@@ -89,7 +85,7 @@ def read_freeze(runs_dir: Path, now: datetime) -> LandFreeze | None:
     return active_freeze(None if row is None else dict(row), now)
 
 
-def _write(runs_dir: Path, statements: list[tuple[str, tuple[Any, ...]]]) -> bool:
+def _write(runs_dir: Path, statements: list[tuple[str, tuple[object, ...]]]) -> bool:
     """Edge. Runs `statements` in one transaction; False with no store or a database error."""
     try:
         opened = _open_writable(Path(runs_dir))
@@ -100,7 +96,7 @@ def _write(runs_dir: Path, statements: list[tuple[str, tuple[Any, ...]]]) -> boo
     conn, token = opened
     try:
         for sql, params in statements:
-            conn.execute(run_store._sql(sql, token), params)
+            conn.execute(run_store.sql_for(sql, token), params)
         conn.commit()
     except (*run_store._DB_ERRORS, RuntimeError):
         return False

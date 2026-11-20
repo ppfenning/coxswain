@@ -977,8 +977,8 @@ class ClaudeCodeRunner:
     def tag_decision(self) -> Callable[[NodeResult], CallDecision | None] | None:
         """The calling thread's hook, set by a shadow-mode FastPathRunner around one call.
 
-        It tags the decision before the ledger write, because `record_usage` lets the
-        ledger row win over `calls`. It is thread-local: another thread's call never sees it.
+        It tags the decision before the ledger write, so the ledger row carries the tag.
+        It is thread-local: another thread's call never sees it.
         """
         return getattr(self._local, "tag_decision", None)
 
@@ -1139,7 +1139,7 @@ class ClaudeCodeRunner:
         scratch = parent / "tree"
         from harness.worktree import link_venv, registry_lock  # here, not at the top: harness imports this module
 
-        with registry_lock():
+        with registry_lock(self.repo_dir):
             proc = subprocess.run(
                 ["git", "-C", str(self.repo_dir), "worktree", "add", "--detach", str(scratch), "HEAD"],
                 capture_output=True, text=True,
@@ -1154,7 +1154,7 @@ class ClaudeCodeRunner:
     def _drop_scratch(self, parent: Path, scratch: Path) -> None:
         from harness.worktree import registry_lock  # here, not at the top: harness imports this module
 
-        with registry_lock():
+        with registry_lock(self.repo_dir):
             subprocess.run(
                 ["git", "-C", str(self.repo_dir), "worktree", "remove", "--force", str(scratch)],
                 capture_output=True, text=True,

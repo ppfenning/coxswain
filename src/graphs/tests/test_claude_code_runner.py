@@ -349,7 +349,7 @@ def test_the_profile_may_set_effort_per_tier(fake_claude, tmp_path) -> None:
 
 
 def test_usage_is_recorded_per_call_and_summarised(fake_claude, tmp_path) -> None:
-    from harness.usage import record_usage, summarize
+    from harness.usage import summarize
 
     _, _, set_output = fake_claude
     set_output({"is_error": False, "structured_output": {"ok": True}, "total_cost_usd": 0.02, "num_turns": 3,
@@ -364,14 +364,10 @@ def test_usage_is_recorded_per_call_and_summarised(fake_claude, tmp_path) -> Non
     assert summary["calls"] == 2 and summary["cost_usd"] == 0.04 and summary["input_total"] == 2000
     assert summary["cache_read_tokens"] == 1800, "the split survives the summary"
     assert set(summary["by_model"]) == {"sonnet", "opus"}
-    out = record_usage(runner, runs_dir=tmp_path / "runs", run_id="r1")
-    assert out == summary
-    assert json.loads((tmp_path / "runs" / "r1.usage.json").read_text())["summary"]["calls"] == 2
 
 
-def test_a_shadow_tagged_decision_reaches_the_ledger_and_usage_json(fake_claude, tmp_path, conn) -> None:
+def test_a_shadow_tagged_decision_reaches_the_ledger(fake_claude, tmp_path, conn) -> None:
     from harness.runners import _DelegatingFastPath
-    from harness.usage import record_usage
     from runner.system_one import Answer, Noul, RoleSetting, RoleSpec
 
     class Decider:
@@ -385,17 +381,13 @@ def test_a_shadow_tagged_decision_reaches_the_ledger_and_usage_json(fake_claude,
     fast.run(role="plan", schema=SCHEMA, prompt="go")
     assert inner.tag_decision is None, "the hook is cleared after each call"
     ledger = _ledger_lines(conn, "r1")
-    assert [row["decision"]["system_one_agreed"] for row in ledger] == [True, True]
-    record_usage(fast, runs_dir=tmp_path / "runs", run_id="r1")
-    calls = json.loads((tmp_path / "runs" / "r1.usage.json").read_text())["calls"]
-    assert [(c["decision"]["system_one_agreed"], c["decision"]["system_one_backend"]) for c in calls] == [(True, "jev-1.13.0")] * 2
+    assert [(row["decision"]["system_one_agreed"], row["decision"]["system_one_backend"]) for row in ledger] == [(True, "jev-1.13.0")] * 2
 
 
 def test_overlapping_shadow_calls_on_a_shared_runner_each_keep_their_own_tag(fake_claude, tmp_path, conn) -> None:
     from concurrent.futures import ThreadPoolExecutor
 
     from harness.runners import _DelegatingFastPath
-    from harness.usage import record_usage
     from runner.system_one import Answer, Noul, RoleSetting, RoleSpec
 
     class Decider:
@@ -429,9 +421,6 @@ def test_overlapping_shadow_calls_on_a_shared_runner_each_keep_their_own_tag(fak
     assert {role: r.decision.system_one_agreed for role, r in results.items()} == {"plan": True, "review": False}
     ledger = _ledger_lines(conn, "r1")
     assert {row["role"]: row["decision"]["system_one_agreed"] for row in ledger} == {"plan": True, "review": False}
-    record_usage(fast, runs_dir=tmp_path / "runs", run_id="r1")
-    calls = json.loads((tmp_path / "runs" / "r1.usage.json").read_text())["calls"]
-    assert {c["role"]: c["decision"]["system_one_agreed"] for c in calls} == {"plan": True, "review": False}
 
 
 def test_the_tag_hook_is_per_thread(fake_claude, tmp_path) -> None:
@@ -463,16 +452,6 @@ def test_a_limit_banner_with_is_error_true_raises_limit_stop(fake_claude, tmp_pa
     with pytest.raises(LimitStop) as exc_info:
         runner.run(role="plan", schema=SCHEMA, prompt="go")
     assert "session limit" in exc_info.value.detail
-
-
-def test_a_runner_with_nothing_to_count_records_nothing(tmp_path) -> None:
-    from harness.usage import record_usage
-
-    class Mute:
-        pass
-
-    assert record_usage(Mute(), runs_dir=tmp_path, run_id="r") is None
-    assert not (tmp_path / "r.usage.json").exists()
 
 
 # ── the builder's scratch worktree ───────────────────────────────────────────

@@ -6,22 +6,41 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 from agent_tools import intake_queue, release_gate, route
+from core.jsontypes import is_list, is_mapping
+
+Row = Mapping[str, object]
 
 
-def queued_oldest_first(groups: Mapping[str, Sequence[Mapping]], mtimes: Mapping[str, float]) -> list[str]:
+def _priority(row: Row) -> int | float:
+    value = row.get("priority", 0)
+    if not isinstance(value, (int, float)):
+        raise TypeError("intake priority is not a number")
+    return value
+
+
+def queued_oldest_first(
+    groups: Mapping[str, Sequence[Row]], mtimes: Mapping[str, float], current: str | None = None
+) -> list[str]:
     """Paths of the `queued` group of `route.intake_groups`: priority descending, then oldest mtime, then path.
 
-    A held entry is skipped. An entry with any non-empty `after` is skipped too: files and mtimes cannot say whether
-    its target has landed, so it waits for the row path, which can. This is the conservative choice."""
-    free = [row for row in groups["queued"] if not row.get("held") and not row.get("after")]
-    return [path for _, _, path in sorted((-row.get("priority", 0), mtimes[row["path"]], row["path"]) for row in free)]
+    A held entry (a draft) is skipped. An entry with any non-empty `after` is skipped too: files and mtimes cannot say
+    whether its target has landed, so it waits for the row path, which can. This is the conservative choice.
+    With `current` (the release in progress), an entry whose `target_release` is later is skipped as well."""
+    free = [
+        row
+        for row in groups["queued"]
+        if not row.get("held")
+        and not row.get("after")
+        and not (current is not None and release_gate.is_deferred(str(row.get("target_release") or ""), current))
+    ]
+    return [path for _, _, path in sorted((-_priority(row), mtimes[str(row["path"])], str(row["path"])) for row in free)]
 
 
-def has_sources(sources: Sequence[str]) -> bool:
+def has_sources(sources: Sequence[object]) -> bool:
     return len(sources) > 0
 
 
-def intake_from_rows(rows: Sequence[Mapping], current: str | None = None) -> list[Mapping]:
+def intake_from_rows(rows: Sequence[Row], current: str | None = None) -> list[Row]:
     """Runnable intake rows naming no initiative: `intake_queue.runnable_intake` over every row, then the initiative filter.
 
     Held rows and rows with an unmet `after` are dropped; order is priority descending, then row order. All rows go in
@@ -34,22 +53,31 @@ def intake_from_rows(rows: Sequence[Mapping], current: str | None = None) -> lis
     return [
         r
         for r in intake_queue.runnable_intake(list(rows))
-        if r["extra"].get("initiative") is None and str(r["task_id"]) not in deferred
+        if _extra(r).get("initiative") is None and str(r["task_id"]) not in deferred
     ]
 
 
-def read_intake(ws: Path, initiative_texts: Mapping[Path, str] | None = None) -> list[str]:
+def _extra(row: Row) -> Row:
+    extra = row["extra"]
+    if not is_mapping(extra):
+        raise TypeError("intake row extra is not a mapping")
+    return extra
+
+
+def read_intake(ws: Path, initiative_texts: Mapping[Path, str] | None = None, current: str | None = None) -> list[str]:
     """Edge. Queued intake paths under `ws/intake`, oldest first; none when the directory is absent.
 
-    `initiative_texts` (path to text of each `work/*/initiative.md`) stands in for reading them when a tick already holds them."""
+    `initiative_texts` (path to text of each `work/*/initiative.md`) stands in for reading them when a tick already holds them.
+    `current` is the release in progress; see `queued_oldest_first`."""
     root = ws / "intake"
     paths = sorted(root.glob("*.md")) + sorted((root / "done").glob("*.md"))
     files = {str(p.relative_to(root)): p.read_text(encoding="utf-8") for p in paths}
     groups = route.intake_groups(route.intake_entries(files), _initiatives(ws, initiative_texts))
-    return queued_oldest_first(groups, {row["path"]: (ws / row["path"]).stat().st_mtime for row in groups["queued"]})
+    mtimes = {str(row["path"]): (ws / str(row["path"])).stat().st_mtime for row in groups["queued"]}
+    return queued_oldest_first(groups, mtimes, current)
 
 
-def _initiatives(ws: Path, texts: Mapping[Path, str] | None = None) -> list[dict]:
+def _initiatives(ws: Path, texts: Mapping[Path, str] | None = None) -> list[dict[str, object]]:
     """Initiative rows as `route.intake_groups` reads them. `done` is False: it never decides membership of `queued`."""
     held = texts if texts is not None else {p: p.read_text(encoding="utf-8") for p in sorted((ws / "work").glob("*/initiative.md"))}
     return [{"id": p.parent.name, "done": False, "text": text} for p, text in held.items()]
@@ -71,7 +99,8 @@ def read_sources_configured(profile_path: Path) -> bool | route.ProfileError:
     except OSError:
         return False
     try:
-        return has_sources(list(route.parse_profile(text).get("sources", {})))
+        sources = route.parse_profile(text).get("sources", {})
+        return has_sources(list(sources) if is_mapping(sources) or is_list(sources) else [])
     except route.ProfileError as exc:
         return exc
 

@@ -423,7 +423,7 @@ class AnthropicRunner:
         # raises BudgetStop, once the call's own row is written. `model` and
         # `effort` arrive finished from above the runner and are used as given.
         # `task` is accepted for the protocol and ignored: this runner keeps
-        # no call ledger for `_trace_evidence` to read, so there is nothing to
+        # no call ledger for `trace_evidence` to read, so there is nothing to
         # stamp it onto.
         for name, value in (("model", model), ("effort", effort)):
             if value is not None and not value.strip():

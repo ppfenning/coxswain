@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import NamedTuple
 
-from agent_tools import base_branch, lane_toolchain, repo_path
+from agent_tools import base_branch, bounded_run, lane_toolchain, repo_path
 from agent_tools.host_cmd import ChairHead, sync_argvs
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_argv import (
@@ -61,7 +61,7 @@ def _checkout(path: str, host_checkouts: Sequence[str]) -> str | None:
 
 
 def _git_out(path: str, *args: str) -> str:
-    done = subprocess.run(["git", "-C", path, *args], capture_output=True, text=True, check=False)
+    done = bounded_run.completed(["git", "-C", path, *args], capture_output=True, text=True, check=False)
     return done.stdout.strip() if done.returncode == 0 else ""
 
 

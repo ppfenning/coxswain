@@ -109,8 +109,7 @@ def test_a_missing_store_row_is_reported_and_the_file_is_not_baselined(tmp_path,
 
 
 def test_an_unavailable_real_store_is_reported_and_the_file_is_not_baselined(tmp_path, monkeypatch) -> None:
-    """No fake: the real `run_store.read_queue` answers [] when the harness python is missing."""
-    monkeypatch.setattr(chair_apply_release.run_store, "_harness_python", lambda: None)
+    """No fake: the real `run_store.read_queue` answers [] for a store file that does not exist."""
     (tmp_path / PATH).parent.mkdir(parents=True)
     (tmp_path / PATH).write_text(render_item(ROW), encoding="utf-8")
     ok, message = apply_release(tmp_path, "epic-a", ["t1"], "stuck", DAY, runs_dir=tmp_path / "runs")

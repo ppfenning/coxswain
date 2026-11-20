@@ -11,9 +11,9 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import cast
 
-from harness.store_dialect import Connection, connect, json_load
+from harness.store_dialect import Cell, Connection, JsonObject, connect, json_load
 
 __all__ = ["backfill", "card_keys"]
 
@@ -23,19 +23,19 @@ EXIT_BAD_INPUT = 2
 _COLUMNS = ("issue_number", "project_item_id", "parent_item")
 
 
-def card_keys(extra: Mapping[str, Any] | None) -> dict[str, Any]:
+def card_keys(extra: Mapping[str, object] | None) -> dict[str, int | str]:
     """The card columns extra can fill; a value that is not clearly one is left out."""
     if not isinstance(extra, Mapping):
         return {}
     issue = extra.get("issue")
     if isinstance(issue, int) and not isinstance(issue, bool):
-        found: dict[str, Any] = {"issue_number": issue}
+        found: dict[str, int | str] = {"issue_number": issue}
     elif isinstance(issue, str) and issue.isascii() and issue.isdigit():
         found = {"issue_number": int(issue)}
     else:
         found = {}
     texts = {
-        name: extra[name]
+        name: cast(str, extra[name])
         for name in ("project_item_id", "parent_item")
         if isinstance(extra.get(name), str) and extra[name]
     }
@@ -52,8 +52,8 @@ def backfill(conn: Connection) -> int:
             " FROM work_items WHERE extra_json IS NOT NULL"
         )
         for initiative, task_id, extra_json, *current in rows:
-            held = dict(zip(_COLUMNS, current, strict=True))
-            fills = {name: value for name, value in card_keys(json_load(extra_json)).items() if held[name] is None}
+            held: dict[str, Cell] = dict(zip(_COLUMNS, current, strict=True))
+            fills = {name: value for name, value in card_keys(cast(JsonObject | None, json_load(cast(str | None, extra_json)))).items() if held[name] is None}
             if not fills:
                 continue
             sets = ", ".join(f"{name} = {ph}" for name in fills)

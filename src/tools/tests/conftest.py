@@ -1,6 +1,9 @@
 import os
 import re
+import shutil
 import sys
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -36,8 +39,8 @@ def _fresh_store_url():
     """run_store caches the store URL per process; each test starts without it."""
     from agent_tools import console_screen, run_store
 
-    caches = (run_store._store_url_for, run_store._lease_table, run_store._lease_rows, run_store._traces_root_for,
-              run_store._harness_python_for, run_store._harness_dump, run_store._found_parquet_rows,
+    caches = (run_store._store_url_for, run_store.lease_table_for, run_store._lease_rows, run_store._traces_root_for,
+              run_store._found_parquet_rows,
               run_store._store_ids_by_trace, console_screen._work_items_snapshot)
     for cache in caches:
         cache.cache_clear()
@@ -59,19 +62,23 @@ def _git_templates_are_empty(tmp_path_factory):
         yield
 
 
+_SOURCE_ROOTS = tuple(str(Path(__file__).resolve().parents[2] / name) for name in ("tools", "graphs", "cartridges"))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _child_interpreters_import_this_tree():
+    """A child `sys.executable` (the store double, the land's leases) imports the source roots pytest.ini puts on
+    `sys.path`, not the checkout an editable install in the venv points at: that one may be older than this tree."""
+    inherited = os.environ.get("PYTHONPATH", "")
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("PYTHONPATH", os.pathsep.join(p for p in (*_SOURCE_ROOTS, inherited) if p))
+        yield
+
+
 @pytest.fixture(autouse=True)
 def _no_host_profile(monkeypatch, tmp_path_factory):
     """The default profile is not absent in tests: `~/.config/agent-tools/profile.yaml` is read unless a test names another."""
     monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(tmp_path_factory.getbasetemp() / "no-profile.yaml"))
-
-
-@pytest.fixture(autouse=True)
-def _no_real_harness(monkeypatch):
-    """No test reaches the machine's real harness: a store_cli call would write leases into a real store. A test that
-    needs a harness monkeypatches `store_cli._harness_python` itself."""
-    from agent_tools import store_cli
-
-    monkeypatch.setattr(store_cli, "_harness_python", lambda: None)
 
 
 @pytest.fixture(autouse=True)
@@ -96,21 +103,20 @@ def _no_real_usage_meter(monkeypatch, request):
 @pytest.fixture
 def board_store(monkeypatch):
     """The store as the board, for a test that drives a command end to end: queue reads and writes run for real, in
-    this interpreter's environment, against the sqlite file in the test's own runs directory. sqlite is the test
-    double for the Postgres store; nothing here reaches a real one."""
-    import sys
+    process, against the sqlite file in the test's own runs directory, migrated before a direct read opens it. sqlite
+    is the test double for the Postgres store; nothing here reaches a real one."""
     from pathlib import Path
 
     from agent_tools import run_store
 
     migrated: set[str] = set()
-    real_run, real_readonly = run_store._queue_run, run_store.connect_readonly
+    real_readonly = run_store.connect_readonly
 
     def ensure(runs_dir) -> None:
         from harness.store_dialect import connect
         from harness.store_migrate import default_modules, migrate
 
-        url = run_store._store_url(Path(runs_dir))
+        url = run_store.store_url_for(Path(runs_dir))
         if not url.startswith("sqlite") or url in migrated:
             return
         Path(runs_dir).mkdir(parents=True, exist_ok=True)
@@ -121,17 +127,27 @@ def board_store(monkeypatch):
             conn.close()
         migrated.add(url)
 
-    def run(runs_dir, build):
-        ensure(runs_dir)
-        return real_run(runs_dir, build)
-
     def readonly(runs_dir):
         ensure(runs_dir)
         return real_readonly(runs_dir)
 
-    monkeypatch.setattr(run_store, "_harness_python", lambda: Path(sys.executable))
-    monkeypatch.setattr(run_store, "_queue_run", run)
     monkeypatch.setattr(run_store, "connect_readonly", readonly)
+
+
+@pytest.fixture
+def store_at(monkeypatch, tmp_path_factory):
+    """A function that points every store call at `url` for the rest of the test, through a routing profile whose
+    provider profile carries `storage_url`. `nosuch://x` or an unreachable `postgresql://` makes the store unopenable."""
+
+    def point(url: str) -> None:
+        base = tmp_path_factory.mktemp("store-at")
+        provider = base / "provider.yaml"
+        provider.write_text(f"storage_url: {url}\n", encoding="utf-8")
+        routing = base / "routing.yaml"
+        routing.write_text(f"provider_profile: {provider}\n", encoding="utf-8")
+        monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(routing))
+
+    return point
 
 
 @pytest.fixture(autouse=True)
@@ -143,3 +159,25 @@ def _no_real_conversation_file(monkeypatch, tmp_path_factory):
     home = tmp_path_factory.getbasetemp() / "no-state-home"
     real = cli.chair_attach.conversation_path
     monkeypatch.setattr(cli, "_conversation_file", lambda: real(os.environ.get("XDG_STATE_HOME") or str(home), home))
+
+
+@pytest.fixture(autouse=True)
+def _no_token_in_the_environment(monkeypatch):
+    """The token status and the doctor count a token kept in the environment. A machine that keeps its real one
+    there must not change what a test sees: a test that wants one sets it."""
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+
+SHORT_TEMP_ROOT = Path("/tmp")
+
+
+@pytest.fixture
+def short_tmp_path():
+    """A fresh directory whose path is short whatever the temp root is. Claude's project folder is the whole workspace
+    path in one file name, so a test that makes one for a workspace under `tmp_path` failed with "File name too long"
+    when the run's temp root was long, as a lane's TMPDIR is. A module that names project folders overrides `tmp_path`
+    with this one."""
+    root = SHORT_TEMP_ROOT if SHORT_TEMP_ROOT.is_dir() else Path(tempfile.gettempdir())
+    path = Path(tempfile.mkdtemp(prefix="t-", dir=root)).resolve()
+    yield path
+    shutil.rmtree(path, ignore_errors=True)

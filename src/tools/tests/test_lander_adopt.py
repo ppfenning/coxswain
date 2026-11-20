@@ -44,7 +44,7 @@ def adopt(world: World, initiative: str) -> list[str]:
 
 def snapshot(world: World) -> tuple:
     refs = run(world.repo, "for-each-ref", "--format=%(refname) %(objectname)")
-    return refs, ls.list_records(world.conn), ls.list_items(world.conn), [dict(r) for rows in world.rows.values() for r in rows]
+    return refs, list(ls.list_records(world.conn).records), ls.list_items(world.conn), [dict(r) for rows in world.rows.values() for r in rows]
 
 
 def assert_nothing_lost(world: World, initiative: str) -> None:
@@ -79,7 +79,7 @@ def test_a_straight_stack_with_nothing_landed_keeps_its_old_branch_and_merges_ev
     assert lg.is_ancestor(world.repo, old_tip, "pr/stack"), "the old branch only moved forward"
     assert {p: e["state"] for p, e in record["phases"].items()} == {"p1": "merged", "p2": "merged"}
     assert lr.phase_states(record, world.rows["stack"])["p3"] != "merged"
-    assert world.forge.kinds() == [] and world.sent_back == []
+    assert set(world.forge.kinds()) <= {"push"} and world.sent_back == [], "only the phase merges' pushes"
     assert any("phase p2 of stack merged into pr/stack" in e for e in events)
     assert_nothing_lost(world, "stack")
 
@@ -172,4 +172,4 @@ def test_an_initiative_whose_repository_is_not_known_is_skipped_and_git_never_ru
     found = lander_adopt.plan(world.ports, "nowhere")
     assert found.skip == "nowhere: its repository is not known on this machine"
     assert lander_adopt.apply(world.ports, found, world.send_back) == ["nowhere: skipped: nowhere: its repository is not known on this machine"]
-    assert ls.list_records(world.conn) == []
+    assert ls.list_records(world.conn) == lr.Listing()

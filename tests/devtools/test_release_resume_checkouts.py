@@ -192,5 +192,5 @@ def test_a_component_with_the_tag_and_no_branch_is_resuming_only_while_the_umbre
         return run
 
     args = (manifest, V0, {"dash": 3}, str(tmp_path / "coxswain"), str(tmp_path), {})
-    assert cli._resuming(*args, origin(True), tags) == {"coxswain", "dash"}
-    assert cli._resuming(*args, origin(False), tags) == set()
+    assert cli._resuming(*args, origin(True), tags) == ({"coxswain", "dash"}, set())
+    assert cli._resuming(*args, origin(False), tags) == (set(), set())

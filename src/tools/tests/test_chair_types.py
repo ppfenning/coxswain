@@ -1,4 +1,7 @@
-from agent_tools.chair_types import Action, Facts, is_fenced, stamp
+import pytest
+
+from agent_tools.chair_types import Action, ActionKind, Facts, action_from_store, action_text, is_fenced, stamp
+from core.jsontypes import ShapeError
 
 
 def test_stamp_returns_a_new_action_carrying_the_epoch_and_leaves_the_input_alone():
@@ -124,3 +127,28 @@ def test_a_full_facts_literal_has_the_keys_the_planners_read():
         "sources_configured",
         "work_store_ready",
     ]
+
+
+def test_an_action_read_back_from_json_keeps_its_plain_kind_and_dispatches_as_its_member():
+    raw = {"kind": "land_phase", "initiative": "i", "phase": "p1", "task_runs": {"t1": "r1"}, "epoch": 2, "head": "abc"}
+    action = action_from_store(raw)
+    assert action is raw  # validated, not rebuilt: a key Action does not name (head) rides along
+    assert action["kind"] == ActionKind.LAND_PHASE
+
+
+@pytest.mark.parametrize(("raw", "named"), [
+    ({"task_id": "t1"}, "missing kind"),
+    ({"kind": "land_task"}, r"action\.kind"),
+    ({"kind": "land", "epoch": True}, r"action\.epoch"),
+    ({"kind": "land_phase", "task_runs": {"t1": 3}}, r"action\.task_runs\.t1"),
+    ([{"kind": "land"}], "expected an object"),
+])
+def test_a_malformed_action_read_back_is_refused_naming_the_bad_value(raw, named):
+    with pytest.raises(ShapeError, match=named):
+        action_from_store(raw)
+
+
+def test_action_text_reads_a_carried_key_and_raises_as_the_index_did_when_it_is_absent():
+    assert action_text({"kind": ActionKind.LAND, "initiative": "i"}, "initiative") == "i"
+    with pytest.raises(KeyError, match="phase"):
+        action_text({"kind": ActionKind.LAND}, "phase")

@@ -30,8 +30,9 @@ APPLY_SCHEMA = {
 }
 
 
-def apply_arm_for(kind: str, cartridge: dict[str, Any]) -> str | None:
-    spec = (cartridge.get("write_kinds") or {}).get(kind)
+def apply_arm_for(kind: str, cartridge: Mapping[str, object]) -> str | None:
+    kinds = cartridge.get("write_kinds")
+    spec = kinds.get(kind) if isinstance(kinds, Mapping) else None
     return spec.get("apply_arm") if isinstance(spec, Mapping) else None
 
 
@@ -79,12 +80,17 @@ def workstore_route(kind: str, apply: object) -> tuple[str, dict[str, Any]]:
     return "fallback", {}
 
 
-def _apply_workstore(route: str, fields: dict[str, Any]) -> tuple[bool, str]:
-    """The edge: perform the workstore write a route chose. Errors come back as values."""
-    path = fields["path"]
+def _apply_workstore(route: str, fields: dict[str, Any], root: Path) -> tuple[bool, str]:
+    """The edge: perform the workstore write a route chose. Errors come back as values.
+
+    A relative path is store-relative, so it resolves against `root`, the work root, and never against the
+    process cwd: a decompose launched over ssh stands in the login directory, and its task files once all
+    landed under `~/work/` while the settle step read the work root and found none of them.
+    """
+    path = str(root / fields["path"])
     try:
         if route == "retire":
-            source, target = Path(path), Path(fields["retire_to"])
+            source, target = Path(path), root / fields["retire_to"]
             if not source.exists():
                 return False, f"refused: {path} does not exist"
             if target.exists():
@@ -109,6 +115,12 @@ def _apply_workstore(route: str, fields: dict[str, Any]) -> tuple[bool, str]:
         return True, f"{path} {'created' if route == 'item_create' else 'updated'}"
     except (OSError, ValueError, workstore.WorkStoreError) as error:
         return False, str(error)
+
+
+def _work_root(runner: Any) -> Path:
+    """Where store-relative paths resolve: the runner's `cwd` (the harness's `--workdir`), else the process cwd."""
+    root = getattr(runner, "cwd", None)
+    return Path(root).expanduser() if root else Path.cwd()
 
 
 def _apply_tier(runner: Any, role: str, tier: str) -> tuple[str, str | None]:
@@ -155,13 +167,23 @@ def auto_apply(
     if arm == "workstore":
         route, fields = workstore_route(item["kind"], item.get("apply"))
         if route != "fallback":
-            return _apply_workstore(route, fields)
+            return _apply_workstore(route, fields, _work_root(runner))
         arm = _FALLBACK_ROLE.get(item["kind"])
         if arm is None:
             return False, f"the workstore arm does not apply to '{item['kind']}'"
     tier, refusal = _apply_tier(runner, arm, "standard")
     if refusal is not None:
         return False, refusal
+    # A guard for model-arm writes when the runner's cwd is not the process cwd: the model writes absolute paths,
+    # so it is told the root that `work/...` is relative to. The task files once found under the home directory on
+    # a lane host were not the model arm's: `_apply_workstore` opened the store-relative path with a bare Path,
+    # resolved against the process cwd, and now resolves it against the work root.
+    root = getattr(runner, "cwd", None)
+    where = (
+        f"The work root is {root}. Every relative path in this proposal is relative to it: write "
+        f"work/<initiative>/... at {root}/work/<initiative>/..., never under the home directory.\n\n"
+        if root else ""
+    )
     result = runner.run(
         role=arm,
         tier=tier,
@@ -172,7 +194,7 @@ def auto_apply(
         # writes, and an arm handed only the action and the evidence was left
         # to refuse — correctly — for want of the content it was told to land.
         prompt=(
-            f"Apply this approved proposal exactly as written. Do not widen it.\n\n"
+            f"Apply this approved proposal exactly as written. Do not widen it.\n\n{where}"
             f"kind: {item['kind']}\ntarget: {item['target']}\n"
             f"action: {item['suggested_action']}\n"
             f"rationale (the content, where the action calls for one):\n{item['rationale']}\n\n"
@@ -182,7 +204,7 @@ def auto_apply(
     return bool(result.get("applied")), str(result.get("detail", ""))
 
 
-def gate(proposals: list[dict[str, Any]], *, assume: str | None) -> tuple[list[dict[str, Any]], float]:
+def gate(proposals: list[dict[str, Any]], *, assume: str | None) -> tuple[list[tuple[dict[str, Any], str, bool]], float]:
     """Present each proposal and capture a decision. Nothing applies without one.
 
     `human_minutes` is entered here, at the gate, not reconstructed later. A time

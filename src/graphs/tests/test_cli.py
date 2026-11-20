@@ -540,9 +540,9 @@ def _three_calls(runner) -> int:
 
 
 def test_storage_url_is_the_profile_key_else_the_sqlite_file_in_the_runs_dir() -> None:
-    assert cli._storage_url({"storage_url": "sqlite:///x.db"}, "runs") == "sqlite:///x.db"
-    assert cli._storage_url({}, "runs") == "sqlite:///runs/cox.db"
-    assert cli._storage_url({"storage_url": ""}, "runs") == "sqlite:///runs/cox.db"
+    assert cli.profile_storage_url({"storage_url": "sqlite:///x.db"}, "runs") == "sqlite:///x.db"
+    assert cli.profile_storage_url({}, "runs") == "sqlite:///runs/cox.db"
+    assert cli.profile_storage_url({"storage_url": ""}, "runs") == "sqlite:///runs/cox.db"
 
 
 def test_a_run_leaves_a_runs_row_joined_to_its_graph_and_a_node_call_per_scripted_call(monkeypatch, tmp_path) -> None:
@@ -1859,7 +1859,7 @@ def test_a_setup_step_that_raises_after_the_lease_still_releases_it_and_ends_the
 
 def test_a_heartbeat_build_that_raises_after_the_lease_still_releases_it_and_ends_the_run(monkeypatch, tmp_path) -> None:
     _store_run(monkeypatch, tmp_path)
-    real, calls = cli._storage_url, []
+    real, calls = cli.profile_storage_url, []
 
     def url(profile, runs_dir):
         calls.append(runs_dir)
@@ -1867,7 +1867,7 @@ def test_a_heartbeat_build_that_raises_after_the_lease_still_releases_it_and_end
             raise RuntimeError("profile unreadable")
         return real(profile, runs_dir)
 
-    monkeypatch.setattr(cli, "_storage_url", url)
+    monkeypatch.setattr(cli, "profile_storage_url", url)
 
     with pytest.raises(RuntimeError, match="profile unreadable"):
         cli.main([])
@@ -2325,39 +2325,53 @@ def _record_run_checks(monkeypatch: pytest.MonkeyPatch, scratch: Path, raises: b
     return seen
 
 
-def test_worktree_checks_env_carries_the_basetemp_and_the_dir_is_removed_after_a_pass(tmp_path, monkeypatch):
+def _worktree_scratch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    """(the run's scratch root, the checks' TMPDIR in it), with the system temp directory moved under `tmp_path`."""
+    import tempfile
+
+    from harness.lane_pytest_tmp import lane_scratch_dir, run_scratch_root
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "temp"))
+    root = run_scratch_root(tmp_path / "temp", tmp_path / "run")
+    return root, lane_scratch_dir(root, "checks", "wt")
+
+
+def test_worktree_checks_env_carries_the_tmpdir_and_the_dir_is_removed_after_a_pass(tmp_path, monkeypatch):
     monkeypatch.delenv("COX_LANE_CAPACITY", raising=False)
     monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
     monkeypatch.setenv("COX_TEST_MARKER", "kept")
-    scratch = tmp_path / "run" / "pytest-tmp" / "checks--wt"
+    root, scratch = _worktree_scratch(tmp_path, monkeypatch)
     seen = _record_run_checks(monkeypatch, scratch, raises=False)
 
     cli._run_worktree_checks(tmp_path / "wt", [], tmp_path / "run" / "checks")
 
     assert seen["env"]["TMPDIR"] == str(scratch)
-    assert seen["env"]["PYTEST_ADDOPTS"] == f"--basetemp={scratch}"
+    assert "PYTEST_ADDOPTS" not in seen["env"]
     assert seen["env"]["COX_TEST_MARKER"] == "kept"
     assert seen["existed"] is True
-    assert not scratch.exists()
+    assert not root.exists()
+    assert not (tmp_path / "run" / "pytest-tmp").exists()
 
 
 def test_worktree_checks_remove_the_scratch_dir_when_a_check_raises(tmp_path, monkeypatch):
-    scratch = tmp_path / "run" / "pytest-tmp" / "checks--wt"
+    root, scratch = _worktree_scratch(tmp_path, monkeypatch)
     seen = _record_run_checks(monkeypatch, scratch, raises=True)
 
     with pytest.raises(RuntimeError, match="check blew up"):
         cli._run_worktree_checks(tmp_path / "wt", [], tmp_path / "run" / "checks")
 
     assert seen["existed"] is True
-    assert not scratch.exists()
+    assert not root.exists()
 
 
-def test_worktree_checks_with_a_stated_capacity_keep_the_worker_cap_and_the_basetemp(tmp_path, monkeypatch):
+def test_worktree_checks_with_a_stated_capacity_keep_the_worker_cap_and_the_tmpdir(tmp_path, monkeypatch):
     monkeypatch.setenv("COX_LANE_CAPACITY", "2")
-    scratch = tmp_path / "run" / "pytest-tmp" / "checks--wt"
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-q")
+    _, scratch = _worktree_scratch(tmp_path, monkeypatch)
     seen = _record_run_checks(monkeypatch, scratch, raises=False)
 
     cli._run_worktree_checks(tmp_path / "wt", [], tmp_path / "run" / "checks")
 
-    assert f"--basetemp={scratch}" in seen["env"]["PYTEST_ADDOPTS"]
+    assert seen["env"]["TMPDIR"] == str(scratch)
+    assert seen["env"]["PYTEST_ADDOPTS"] == "-q"  # the caller's own, passed through and never added to
     assert "PYTEST_XDIST_AUTO_NUM_WORKERS" in seen["env"]

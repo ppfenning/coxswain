@@ -50,7 +50,7 @@ def test_url_keepalive_values_win(recorded):
 
 def test_tick_status_connects_through_store_connect(monkeypatch):
     urls: list[str] = []
-    monkeypatch.setattr(run_store, "_store_url", lambda runs_dir: "postgresql://h/db")
+    monkeypatch.setattr(run_store, "store_url_for", lambda runs_dir: "postgresql://h/db")
     monkeypatch.setattr(store_connect, "connect", lambda url, **kw: urls.append(url) or object())
     conn, token = chair_tick_status._open_writable(Path("runs"))
     assert urls == ["postgresql://h/db"]

@@ -1,23 +1,16 @@
 import subprocess
 from collections.abc import Callable
 
-import pytest
-
-from agent_tools import chair_smoke
 from agent_tools.chair_smoke import (
     clear_hold,
     hold_record,
     read_hold,
-    revert_pr_argv,
-    run_revert_pr,
     smoke_result,
     smoke_verdict,
     write_hold,
 )
-from agent_tools.land import pr_footer
 
 _OK = {"command": ["cox", "route", "context"], "ok": True, "tail": "fine"}
-_LAND = {"repo": "org/repo", "pr": 42, "commit": "abc123"}
 
 
 def test_smoke_verdict_all_ok() -> None:
@@ -101,47 +94,10 @@ def test_smoke_verdict_failure_after_a_timeout_still_fails() -> None:
     assert smoke_verdict([timed_out, failing]) == (False, failing)
 
 
-def test_revert_pr_create_runs_in_the_checkout_without_a_repo_flag() -> None:
-    argv = revert_pr_argv({"repo": "/home/user/repos/tools", "pr": 7, "commit": "abc"}, "boom")
-    assert "--repo" not in argv["pr_create"]
-    assert argv["cwd"] == "/home/user/repos/tools"
-
-
-def test_revert_pr_argv_carries_commit_and_pr() -> None:
-    argv = revert_pr_argv(_LAND, "boom")
-    assert "abc123" in argv["revert"]
-    assert any("42" in part for part in argv["checkout"])
-    assert any("42" in part for part in argv["pr_create"])
-
-
-def test_revert_pr_body_ends_with_footer() -> None:
-    argv = revert_pr_argv(_LAND, "boom", "r-1")["pr_create"]
-    body = argv[argv.index("--body") + 1]
-    assert body == "boom\n\n" + pr_footer("r-1")
-    assert body.endswith(" · run r-1")
-
-
 def _fake_run(calls: list[list[str]], fail_on: str | None) -> Callable[..., None]:
-    def run(argv: list[str], check: bool, cwd: str | None = None) -> None:
+    def run(argv: list[str], check: bool, cwd: str | None = None, timeout: float | None = None) -> None:
         calls.append(argv)
         if fail_on is not None and fail_on in argv:
             raise subprocess.CalledProcessError(1, argv)
 
     return run
-
-
-def test_run_revert_pr_runs_four_steps_in_order(monkeypatch) -> None:
-    argv = revert_pr_argv(_LAND, "boom")
-    calls: list[list[str]] = []
-    monkeypatch.setattr(chair_smoke.subprocess, "run", _fake_run(calls, None))
-    run_revert_pr(argv)
-    assert calls == [argv["checkout"], argv["revert"], argv["push"], argv["pr_create"]]
-
-
-def test_run_revert_pr_stops_when_checkout_fails(monkeypatch) -> None:
-    argv = revert_pr_argv(_LAND, "boom")
-    calls: list[list[str]] = []
-    monkeypatch.setattr(chair_smoke.subprocess, "run", _fake_run(calls, "checkout"))
-    with pytest.raises(subprocess.CalledProcessError):
-        run_revert_pr(argv)
-    assert calls == [argv["checkout"]]

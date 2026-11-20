@@ -73,7 +73,7 @@ def test_build_result_totals_count_integration_apart_from_unit() -> None:
         {"id": "p2", "status": "partial", "level_integration": [_row(False, failed=1)]},
         {"id": "p3", "status": "complete"},
     ]
-    result = epic._build_result(
+    result = epic.build_result(
         run_id="r5",
         date="2026-11-07",
         initiative_id="i",

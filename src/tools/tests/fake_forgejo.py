@@ -73,7 +73,7 @@ class FakeForgejo:
                 return (200, pull) if pull else (404, {"message": "not found"})
             if method == "GET" and (m := _STATUS.match(path)):
                 state = self._statuses.get(m.group(1))
-                return 200, {"state": state or "pending", "statuses": [{"state": state}] if state else []}
+                return 200, {"state": state or "pending", "statuses": [{"status": state}] if state else []}
             if method == "POST" and (m := _MERGE.match(path)):
                 refusal = self._refusals.get(int(m.group(1)))
                 return (refusal[0], {"message": refusal[1]}) if refusal else (200, None)

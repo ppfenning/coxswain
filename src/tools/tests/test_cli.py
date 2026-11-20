@@ -75,7 +75,7 @@ def test_phase_mode_dry_run_step_list_has_no_checkout_step(phase_runs_dir, tmp_p
 
 
 def test_phase_mode_resolves_a_short_id_to_the_run_the_phase_record_lives_under(phase_runs_dir, tmp_path, capsys, monkeypatch):
-    monkeypatch.setattr(cli.run_store, "resolve_id", lambda rd, token: {"run_id": "epic-x-5"} if token == "I999-1" else None)
+    monkeypatch.setattr(cli.run_store, "resolve_run_id", lambda rd, token: "epic-x-5" if token == "I999-1" else None)
     repo = _land_repo(tmp_path)
     ns = _land_ns(repo=str(repo), run_id="I999-1", phase="seams", runs_dir=str(phase_runs_dir))
     rc = cli._runs_land(ns)
@@ -854,10 +854,6 @@ def test_chair_perform_with_smoke_holds_on_a_traceback_and_opens_no_revert_pr(mo
         ],
     )
 
-    def _fail_if_called(argv):
-        raise AssertionError("run_revert_pr must not be called")
-
-    monkeypatch.setattr(cli.chair_smoke, "run_revert_pr", _fail_if_called)
     land_result = _land_result("/repos/coxswain-tools", pr=9, commit="deadbeef")
     results = [land_result]
     wrapped = cli._chair_perform_with_smoke(runs_dir, lambda *a: results)
@@ -1173,7 +1169,7 @@ def test_dash_detail_dispatches_run_with_the_run_id_runs_dir_and_now(monkeypatch
 def test_dash_detail_run_resolves_a_short_id_before_dispatching(monkeypatch, tmp_path, capsys):
     calls = []
     monkeypatch.setattr(cli.dash_detail_run, "build", lambda *a: calls.append(a) or {"kind": "run"})
-    monkeypatch.setattr(cli.run_store, "resolve_id", lambda rd, token: {"run_id": "canonical-1"} if token == "I412-7" else None)
+    monkeypatch.setattr(cli.run_store, "resolve_run_id", lambda rd, token: "canonical-1" if token == "I412-7" else None)
     assert cli.main(["dash", "--detail", "run", "I412-7", "--runs-dir", str(tmp_path)]) == 0
     (run_id, runs_dir, now), = calls
     assert run_id == "canonical-1" and runs_dir == tmp_path and isinstance(now, str)
@@ -1243,7 +1239,7 @@ def test_runs_detail_resolves_a_short_id_before_reading_facts(monkeypatch, tmp_p
         return {"run": run, "alive": False, "events": [], "calls": [], "record": {}, "tail": []}
 
     monkeypatch.setattr(cli.runs_detail_screen, "facts_for", fake_facts_for)
-    monkeypatch.setattr(cli.run_store, "resolve_id", lambda rd, token: {"run_id": "canonical-1"} if token == "I412-7" else None)
+    monkeypatch.setattr(cli.run_store, "resolve_run_id", lambda rd, token: "canonical-1" if token == "I412-7" else None)
     ns = argparse.Namespace(runs_dir=str(tmp_path), run_id="I412-7", json=True)
     rc = cli._runs_detail(ns)
     assert rc == 0
@@ -1395,7 +1391,6 @@ def _commit(root: Path, text: str, message: str) -> str:
 def _apply_land(repo: Path, runs_dir: Path, monkeypatch) -> int:
     monkeypatch.setattr(cli, "_open_prs_for", lambda *a, **k: [])
     monkeypatch.setattr(cli, "_sync_default_branch", lambda repo, branch: ("up_to_date", ""))
-    monkeypatch.setattr(cli.store_cli, "_harness_python", lambda: Path(sys.executable))  # the land's leases, in the test store
     store_fill.fill_workspace(runs_dir.parent)  # the store is the board: the land reads each task's state from its row
     return cli._runs_land(_land_ns(repo=str(repo), runs_dir=str(runs_dir), apply=True, phase="seams", no_claim=True))
 

@@ -20,6 +20,11 @@ requeue: a move to ready from a state other than todo, or a rebuild. There the f
 `queue_rows.parse_item`, and when they differ from the row they are adopted into the planned row (`file_edit`), so the export
 keeps them. With a differing file and `--body` or `--body-file` the edit is refused with a diff of the two bodies.
 `--note` appends its text to the body with `append_note`, once; it applies to a task ticket only.
+`--state ready` on a blocked or quarantined ticket, or on one the chair flagged for triage, drops the flag and marks the
+row `fresh_after_run` with the newest number of each of the initiative's run series (`fresh_start_extra`): the next run
+builds it fresh, counting no attempt and honouring no triage request from a run at or below its series' number. It is
+refused while a run of the initiative is live (`initiative_live`, every live run; `route_guard.live_on` picks the initiative's), and
+it says so when the store names no run to mark.
 `--surfaces` and `--state` apply to a task ticket only.
 `--epic` takes an epic id or `none` and applies to an initiative only: it sets or removes the `epic` frontmatter key and
 the same key in the stored row's `extra`. The chair reads epic membership each tick and it changes no ticket, so an edit
@@ -31,10 +36,10 @@ from __future__ import annotations
 
 import difflib
 import os
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from functools import reduce
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from agent_tools import (
     land_manual,
@@ -249,7 +254,8 @@ def _rewrite(path: Path, runs_dir: Path, is_intake: bool, new_text: str) -> str 
 # that has started or ended. todo and ready share a rank, both unstarted. store_cli's set-state has no override flag.
 _STATE_RANK = {"todo": 0, "ready": 0, "in_progress": 1, "approved": 2, "done": 3}
 _FINAL_STATES = frozenset({"done", "dropped"})
-# The states `harness.store_cli set-state` takes, as its target and as its `--expect`.
+# The states `cox route edit --state` moves a ticket to by hand. `harness.store_cli set-state` itself takes every work
+# state (`core.workstore.STATES`), as its target and as its `--expect`.
 SET_STATES = ("ready", "approved", "done", "dropped")
 _CONTENT_FIELDS = ("title", "body", "needs", "surfaces", "extra")  # needs changes only when a requeue adopts the file's
 EDITED_BY = "cox route edit"
@@ -328,15 +334,10 @@ def _stored_row(runs_dir: Path, row: dict) -> dict | None:
 
 def _set_state(runs_dir: Path, row: dict, state: str) -> EditResult | None:
     """Edge: move the row's state through store_cli's single writer, compare-and-set on the state the edit read.
-    None when the store took it. set-state's `--expect` takes only `SET_STATES`; from any other state (todo, blocked,
-    quarantined, in_progress) the row is re-read just before the write instead, which narrows the race but does not close it."""
+    None when the store took it. set-state's `--expect` takes every work state (`core.workstore.STATES`), so the compare
+    lives in the store's own write whatever state the edit read, todo, blocked, quarantined and in_progress included."""
     read = row.get("state")
-    if read not in SET_STATES:
-        stored = _stored_row(runs_dir, row)
-        if stored is None or stored.get("state") != read:
-            now = "no row" if stored is None else stored.get("state")
-            return EditResult(f"{row['task_id']} moved to {now!r} after the edit read it as {read!r}; nothing written", REFUSED)
-    expected = read if read in SET_STATES else None
+    expected = read if isinstance(read, str) and read else None
     result = store_cli.set_state(runs_dir, row["initiative"], row["task_id"], state, EDITED_BY, expected=expected)
     if isinstance(result, store_cli.StateSet):
         return None
@@ -434,6 +435,26 @@ def kept_refusal(stored: dict, rel: str, kept: dict) -> str:
     return f"{rel} was edited by hand; --body or --body-file would overwrite it. Stored against file:\n{diff}"
 
 
+_HELD_BACK = frozenset({"blocked", "quarantined"})  # a task a run or the chair stopped: a hand move to ready restarts it
+
+
+def fresh_start_extra(extra: dict | None, mark: dict[str, int]) -> dict:
+    """Pure: `extra` without the chair's triage request and, when the initiative has a run, marked with `mark`, the newest
+    number of each of its run series (`core.workstore.FRESH_AFTER_RUN`): no attempt or request from a run at or below its
+    series' number counts any more."""
+    from core.workstore import FRESH_AFTER_RUN, TRIAGE_FLAG  # lazy: core sits beside agent_tools in one venv
+
+    kept = {key: value for key, value in (extra or {}).items() if key != TRIAGE_FLAG}
+    return {**kept, FRESH_AFTER_RUN: dict(mark)} if mark else kept
+
+
+def _restarts(row: dict, state: str | None) -> bool:
+    """Pure: a hand move to ready of a task a run or the chair stopped, or one that still carries a triage request."""
+    from core.workstore import TRIAGE_FLAG  # lazy: core sits beside agent_tools in one venv
+
+    return state == "ready" and (row.get("state") in _HELD_BACK or TRIAGE_FLAG in (row.get("extra") or {}))
+
+
 def _requeues(row: dict, new_row: dict, *, moves: bool, allowed: bool) -> bool:
     """Pure: True when the edit sends a ticket to ready as a requeue. A rebuild always is. A todo ticket has never been
     launched, so its move to ready keeps writing the stored text over the file."""
@@ -448,7 +469,7 @@ def _report(text: str, lines: Sequence[str]) -> str:
 def _edit_task(
     runs_dir: Path, ws: Path, row: dict, *, title: str | None, body: str | None, body_file: str | None,
     surfaces: str | None, state: str | None, dry_run: bool, now: str | None, rebuild: bool = False, force: bool = False,
-    pr: str | None = None, user_note: str | None = None,
+    pr: str | None = None, user_note: str | None = None, initiative_live: Collection[str] = (),
 ) -> EditResult:
     """Edge: a state move first, through `store_cli.set_state` with a compare-and-set on the state read; then the changed
     content fields only, as a partial row `upsert_row_detail` merges (never `state`); then the store's row as it now stands,
@@ -491,6 +512,20 @@ def _edit_task(
         if not superseded and row.get("state") == "approved":
             unmarked = f"note: no run holds {row.get('task_id')}; its old approval is not marked superseded\n"
         new_row = {**new_row, "body": append_note(new_row.get("body") or "", note), "extra": marked}
+    if _restarts(row, state):
+        # The person fixed what stopped it: the next run builds it fresh, not from the old attempts or their triage.
+        # A run in flight could still record an attempt or a request numbered below the mark, so the move waits for it.
+        if running := route_guard.live_on(row["initiative"], initiative_live):
+            return EditResult(route_guard.live_refusal(running[0], row["initiative"], f"readying {row['task_id']}"), REFUSED)
+        from core.workstore import fresh_mark  # lazy: core sits beside agent_tools in one venv
+
+        mark = fresh_mark(row["initiative"], run_store.run_ids(runs_dir))
+        if not mark:
+            report.append(
+                f"warning: no run of {row['initiative']} found in the store; no fresh_after_run mark written, "
+                "so attempts from earlier runs still count"
+            )
+        new_row = {**new_row, "extra": fresh_start_extra(new_row.get("extra"), mark)}
     if user_note is not None:
         text = user_note.strip()
         noted = append_note(new_row.get("body") or "", text)
@@ -544,6 +579,21 @@ def intake_reach_refusal(text: str, new_body: str, title: str | None) -> str | N
     return route_reach.launch_text_refusal(candidate)
 
 
+def pick_ticket(rows: Sequence[Mapping[str, Any]], id: str, initiative: str | None) -> Mapping[str, Any] | str:
+    """Pure. The task row `id` names among queue `rows`, or the refusal. With `initiative`, only that initiative's task
+    counts, so a task id repeated across initiatives picks one; without it a repeated id is refused, never guessed."""
+    tickets = [
+        row for row in rows
+        if row.get("kind", "task") == "task" and row.get("task_id") == id and initiative in (None, row.get("initiative"))
+    ]
+    if not tickets:
+        return f"no task {id!r} in initiative {initiative!r}" if initiative is not None else f"no queued intake or initiative named {id!r}"
+    if len(tickets) > 1:
+        initiatives = ", ".join(sorted(str(row.get("initiative")) for row in tickets))
+        return f"{id!r} names a task in several initiatives ({initiatives}); give --initiative to pick one"
+    return tickets[0]
+
+
 def apply_edit(
     runs_dir: Path,
     ws: Path,
@@ -565,6 +615,8 @@ def apply_edit(
     link: str | None = None,
     epic: str | None = None,
     note: str | None = None,
+    initiative_live: Collection[str] = (),
+    initiative: str | None = None,
 ) -> EditResult:
     """Edge: edit the queued intake, the initiative or the task ticket named `id`. Exit 0 returns the diff; exit 2 returns the
     reason and writes nothing, whether the options are wrong, the id is unknown, or the guard refuses. With
@@ -575,19 +627,17 @@ def apply_edit(
     it is refused anywhere else.
     `epic` sets an initiative's epic to an id, or removes it with `none`, in the store row and in initiative.md; it is
     refused on an intake and a task ticket. Given alone it skips the initiative guard; see the module docstring.
-    `note` is appended once to a task ticket's body, with or without a state move; it is refused on an intake and an initiative."""
+    `note` is appended once to a task ticket's body, with or without a state move; it is refused on an intake and an initiative.
+    `initiative` makes `id` a task ticket of that initiative (`pick_ticket`), never an intake or an initiative."""
     problem = check_options(title, body, body_file, repo, surfaces, state, rebuild, force, pr, after, link, epic, note)
     if problem is not None:
         return EditResult(problem, REFUSED)
     rows: Sequence[dict] = run_store.read_queue(runs_dir)
-    target = route_guard.resolve_target(rows, id)
+    target = route_guard.NotFound(id) if initiative is not None else route_guard.resolve_target(rows, id)
     if isinstance(target, route_guard.NotFound):
-        tickets = [row for row in rows if row.get("kind", "task") == "task" and row.get("task_id") == id]
-        if not tickets:
-            return EditResult(f"no queued intake or initiative named {id!r}", REFUSED)
-        if len(tickets) > 1:
-            initiatives = ", ".join(sorted(str(row.get("initiative")) for row in tickets))
-            return EditResult(f"{id!r} names a task in several initiatives ({initiatives}); the id alone cannot pick one", REFUSED)
+        ticket = pick_ticket(rows, id, initiative)
+        if isinstance(ticket, str):
+            return EditResult(ticket, REFUSED)
         if repo is not None:
             return EditResult("--repo applies to an intake or an initiative, not a task ticket", REFUSED)
         if after is not None:
@@ -600,8 +650,8 @@ def apply_edit(
         if problem is not None:
             return EditResult(problem, REFUSED)
         return _edit_task(
-            runs_dir, ws, dict(tickets[0]), title=title, body=body, body_file=body_file, surfaces=surfaces, state=state, dry_run=dry_run,
-            now=now, rebuild=rebuild, force=force, pr=pr, user_note=note,
+            runs_dir, ws, dict(ticket), title=title, body=body, body_file=body_file, surfaces=surfaces, state=state, dry_run=dry_run,
+            now=now, rebuild=rebuild, force=force, pr=pr, user_note=note, initiative_live=initiative_live,
         )
     if note is not None:
         return EditResult("--note applies to a task ticket, not an intake or an initiative", REFUSED)

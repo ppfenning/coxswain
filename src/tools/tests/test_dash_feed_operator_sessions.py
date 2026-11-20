@@ -20,7 +20,13 @@ _CATALOG = "models:\n  m1:\n    price: {input: 1.0, output: 2.0}\n"
 _SESSION_A = "5f0c2a9e-3b1d-4c7a-9e21-0a6b7d8c1f34"
 _SESSION_B = "c81e4d57-92a0-4f6b-b3d5-71e2a9f04c68"
 _SESSION_C = "9a7b6c5d-1e2f-4a3b-8c4d-5e6f7a8b9c0d"
-_NODE_KEYS = {"by_node", "cost_per_landed_task"}
+_NODE_KEYS = {"by_node", "cost_per_landed_task", "completions", "cost_per_completion"}
+
+
+@pytest.fixture
+def tmp_path(short_tmp_path):
+    """The project folder is named for the whole workspace path, so the workspace's path stays short."""
+    return short_tmp_path
 
 
 def _line(message_id: str, timestamp: str, input_tokens: int = 0, output_tokens: int = 0) -> str:

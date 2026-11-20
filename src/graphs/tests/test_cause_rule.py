@@ -101,6 +101,17 @@ def test_a_stale_base_is_harness_while_no_work_stays_ticket():
     assert classify_cause("no_work", reason) == "ticket"
 
 
+def test_a_wrong_repository_stale_base_is_the_ticket_s():
+    reason = "wrong repository: t1 names src/ui/regatta.rs, which belong to coxswain-dash, not this repository"
+    assert classify_cause("stale_base", reason) == "ticket"
+
+
+def test_the_wrong_repository_prefix_matches_stale_base():
+    from harness.stale_base import WRONG_REPOSITORY_PREFIX
+
+    assert cause_rule._WRONG_REPOSITORY_PREFIX == WRONG_REPOSITORY_PREFIX
+
+
 def test_no_matching_rule_returns_none():
     assert classify_cause("refused", "the reviewer asked for changes") is None
 

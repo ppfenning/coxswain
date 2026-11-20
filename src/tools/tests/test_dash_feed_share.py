@@ -1,4 +1,4 @@
-from agent_tools.dash_feed_share import follow_step, is_stale, publish, read_if_changed, release, try_own
+from agent_tools.dash_feed_share import is_stale, publish, read_if_changed, release, try_own
 
 _NS = 1_000_000_000
 
@@ -36,19 +36,3 @@ def test_missing_snapshot_reads_nothing(tmp_path):
 def test_is_stale_boundary():
     assert not is_stale(0, 3 * 2 * _NS, 2)
     assert is_stale(0, 3 * 2 * _NS + 1, 2)
-
-
-def test_follower_prints_once_then_takes_over_when_owner_releases(tmp_path):
-    owner = try_own(tmp_path)
-    publish(tmp_path, "x\n")
-    line, stamp, handle = follow_step(tmp_path, None, None, 0, 1)
-    assert (line, handle) == ("x\n", None)
-    assert follow_step(tmp_path, stamp, None, 0, 1) == (None, stamp, None)
-    release(owner)
-    _, _, handle = follow_step(tmp_path, stamp, None, 0, 1)
-    assert handle is not None
-
-
-def test_owner_keeps_handle_and_prints_nothing(tmp_path):
-    handle = try_own(tmp_path)
-    assert follow_step(tmp_path, None, handle, 0, 1) == (None, None, handle)

@@ -112,7 +112,7 @@ def _decomposed_workspace(tmp_path, monkeypatch, tasks: tuple[str, ...], intake_
         (tmp_path / "cited.md").write_text(f"---\nid: {intake_id}\n---\nbody\n", encoding="utf-8")
     seen: list[str] = []
 
-    def fake_runs(runs_dir, intake, cache=None):
+    def fake_runs(runs_dir, intake, cache=None, tick=None):
         seen.append(intake)
         return [SimpleNamespace(run_id="cited-1"), SimpleNamespace(run_id="cited-2")]
 
@@ -372,7 +372,7 @@ def test_the_dispatch_facts_fall_back_to_the_profile_host_when_the_table_has_no_
     profile.write_text("lane_hosts:\n  - name: other\n    ssh: other\n    workspace_dir: /w\n", encoding="utf-8")
     runs = tmp_path / "runs"
     _hosts_table(runs)
-    deps = cli._chair_run_deps(runs, {}, "chair", 1, "h", False, print, profile, "files")
+    deps = cli._chair_run_deps(runs, {}, "chair", 1, "h", True, print, profile, "files")  # a dry run registers no host
     assert deps.facts_deps.dispatch({"max_in_flight": 3})["hosts"] == [  # type: ignore[misc]
         {"name": "other", "live_runs": 0, "capabilities": []}
     ]
@@ -963,7 +963,7 @@ def _two_intake_workspace(tmp_path, monkeypatch, dry_run: bool):
     (tmp_path / "runs").mkdir()
     seen: list = []
 
-    def fake_runs(runs_dir, intake, cache=None):
+    def fake_runs(runs_dir, intake, cache=None, tick=None):
         seen.append((intake, cache))
         cache.get(("facts", intake), (1, 1), lambda: f"log of {intake}")
         return [SimpleNamespace(run_id=f"{intake}-1")]

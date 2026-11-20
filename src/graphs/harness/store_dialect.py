@@ -12,11 +12,12 @@ import os
 import re
 import sqlite3
 import threading
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Protocol, TypeVar, cast
 from urllib.parse import parse_qs, urlsplit
 
 from harness.traces_url import redact_url
@@ -26,8 +27,11 @@ _T = TypeVar("_T")
 __all__ = [
     "POSTGRES",
     "SQLITE",
+    "Cell",
     "Connection",
     "Dialect",
+    "Json",
+    "JsonObject",
     "StoreDriverMissing",
     "connect",
     "default_url",
@@ -37,6 +41,35 @@ __all__ = [
     "json_text",
     "upsert",
 ]
+
+
+type Json = bool | int | float | str | list[Json] | dict[str, Json] | None
+type JsonObject = dict[str, Json]
+# What a driver hands back for one column: text, a number, bytes, or None. Postgres SUM gives Decimal.
+type Cell = str | int | float | bytes | Decimal | None
+
+
+class RawCursor(Protocol):
+    """The part of a DB-API cursor `Connection` uses."""
+
+    @property
+    def rowcount(self) -> int: ...
+
+    def execute(self, sql: str, params: tuple[object, ...] = (), /) -> object: ...
+
+    def executemany(self, sql: str, rows: list[tuple[object, ...]], /) -> object: ...
+
+    def fetchall(self) -> Sequence[Sequence[Cell]]: ...
+
+
+class RawConnection(Protocol):
+    """The part of a DB-API connection `Connection` uses (sqlite3 and psycopg both satisfy it)."""
+
+    def cursor(self) -> RawCursor: ...
+
+    def rollback(self) -> None: ...
+
+    def close(self) -> None: ...
 
 
 class StoreDriverMissing(RuntimeError):
@@ -98,14 +131,14 @@ def upsert(dialect: Dialect, table: str, columns: Sequence[str], key_columns: Se
     return f"{_insert(dialect, table, columns)} ON CONFLICT ({keys}) {action}"
 
 
-def json_text(value: Any) -> str:
+def json_text(value: object) -> str:
     """Serialise a value for a json column; keys sorted so equal values give equal text."""
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
-def json_load(raw: str | bytes | None) -> Any:
-    """Inverse of `json_text`; None stays None. `connect` makes both engines return json as text."""
-    return None if raw is None else json.loads(raw)
+def json_load(raw: Cell) -> Json:
+    """Inverse of `json_text`; None stays None. `raw` is the cell of a json column, text or bytes. `connect` makes both engines return json as text."""
+    return None if raw is None else json.loads(cast("str | bytes", raw))
 
 
 class Connection:
@@ -117,14 +150,14 @@ class Connection:
     a statement waits while another thread's transaction is open, and never joins it.
     """
 
-    def __init__(self, raw: Any, dialect: Dialect, begin: str = "BEGIN") -> None:
+    def __init__(self, raw: RawConnection, dialect: Dialect, begin: str = "BEGIN") -> None:
         self.raw = raw
         self.dialect = dialect
         self._begin = begin
         self._in_tx = False
         self._lock = threading.RLock()
 
-    def _run(self, action: Callable[[Any], _T]) -> _T:
+    def _run(self, action: Callable[[RawCursor], _T]) -> _T:
         with self._lock:
             try:
                 return action(self.raw.cursor())
@@ -133,37 +166,37 @@ class Connection:
                     self.raw.rollback()
                 raise
 
-    def execute(self, sql: str, params: Sequence[Any] = ()) -> int:
+    def execute(self, sql: str, params: Sequence[object] = ()) -> int:
         """Rows the statement changed; 0 when ON CONFLICT DO NOTHING skipped the row."""
 
-        def act(cur: Any) -> int:
+        def act(cur: RawCursor) -> int:
             cur.execute(sql, tuple(params))
             return cur.rowcount
 
         return self._run(act)
 
-    def executemany(self, sql: str, rows: Sequence[Sequence[Any]]) -> int:
+    def executemany(self, sql: str, rows: Sequence[Sequence[object]]) -> int:
         """Rows changed across the batch."""
 
-        def act(cur: Any) -> int:
+        def act(cur: RawCursor) -> int:
             cur.executemany(sql, [tuple(r) for r in rows])
             return cur.rowcount
 
         return self._run(act)
 
-    def query_all(self, sql: str, params: Sequence[Any] = ()) -> list[tuple[Any, ...]]:
-        def act(cur: Any) -> list[tuple[Any, ...]]:
+    def query_all(self, sql: str, params: Sequence[object] = ()) -> list[tuple[Cell, ...]]:
+        def act(cur: RawCursor) -> list[tuple[Cell, ...]]:
             cur.execute(sql, tuple(params))
             return [tuple(r) for r in cur.fetchall()]
 
         return self._run(act)
 
-    def query_one(self, sql: str, params: Sequence[Any] = ()) -> tuple[Any, ...] | None:
+    def query_one(self, sql: str, params: Sequence[object] = ()) -> tuple[Cell, ...] | None:
         rows = self.query_all(sql, params)
         return rows[0] if rows else None
 
     @contextmanager
-    def transaction(self) -> Iterator[Connection]:
+    def transaction(self) -> Generator[Connection]:
         """Commit on clean exit, roll back and re-raise on error. A nested use in the same thread joins the outer one."""
         with self._lock:
             if self._in_tx:
@@ -199,25 +232,47 @@ def _driver_free_url(url: str) -> str:
     return "postgresql://" + url[len(prefix) :] if url.startswith(prefix) else url
 
 
-# A dead peer must fail a connect in seconds and a silent drop must surface in about a minute.
+# Every bound on a store call, in one place. A store call runs in process (`harness.store_api`), so these are what keep
+# a chair tick from hanging on the store: a dead peer fails a connect in seconds, a silent drop surfaces in about a
+# minute, a statement runs at most a minute and waits at most half that for a lock. Migrations lift the statement bound
+# and widen the lock wait to minutes for their own transactions only (`store_migrate.exempt_from_bounds`, SET LOCAL).
+# A URL's own `options` adds to the bounds rather than replacing them (`merged_options`). sqlite, the suites' double, waits
+# on a locked file as long as Postgres waits on a lock.
 _PG_CONNECT_TIMEOUT_S = 10
 _PG_KEEPALIVES_IDLE_S = 30
 _PG_KEEPALIVES_INTERVAL_S = 10
 _PG_KEEPALIVES_COUNT = 3
+STATEMENT_TIMEOUT_MS = 60_000
+LOCK_TIMEOUT_MS = 30_000
+TCP_USER_TIMEOUT_MS = 60_000
+SQLITE_BUSY_TIMEOUT_MS = LOCK_TIMEOUT_MS
 
 
-def _pg_connect_kwargs(pg_url: str, extra: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """Keyword arguments for psycopg.connect. A key in `extra` or in the URL query beats the default."""
+BOUND_OPTIONS = f"-c statement_timeout={STATEMENT_TIMEOUT_MS} -c lock_timeout={LOCK_TIMEOUT_MS}"
+
+
+def merged_options(bounds: str, in_url: Sequence[str]) -> str:
+    """Pure. The libpq `options` for a URL whose query carries its own: the bounds first, then the URL's values in
+    order. Postgres applies `-c` settings left to right, so a URL that sets `statement_timeout` itself still wins for
+    that setting, and one that sets only `search_path` keeps every bound."""
+    return " ".join([bounds, *(value.strip() for value in in_url if value.strip())])
+
+
+def _pg_connect_kwargs(pg_url: str, extra: Mapping[str, str | int | bool] | None = None) -> dict[str, str | int | bool]:
+    """Keyword arguments for psycopg.connect. A key in `extra` or in the URL query beats the default, except `options`,
+    which merges with the bounds (`merged_options`): a URL setting its own options must not drop the lock bound."""
+    in_url = parse_qs(urlsplit(pg_url).query)
     defaults = {
         "connect_timeout": _PG_CONNECT_TIMEOUT_S,
         "keepalives": 1,
         "keepalives_idle": _PG_KEEPALIVES_IDLE_S,
         "keepalives_interval": _PG_KEEPALIVES_INTERVAL_S,
         "keepalives_count": _PG_KEEPALIVES_COUNT,
+        "tcp_user_timeout": TCP_USER_TIMEOUT_MS,
+        "options": merged_options(BOUND_OPTIONS, in_url.get("options", [])),
         "autocommit": True,
     }
-    in_url = parse_qs(urlsplit(pg_url).query)
-    return {**{k: v for k, v in defaults.items() if k not in in_url}, **(extra or {})}
+    return {**{k: v for k, v in defaults.items() if k not in in_url or k == "options"}, **(extra or {})}
 
 
 # The one store is Postgres. sqlite stays in this module only as the test suites' stand-in for it, and opens only
@@ -243,26 +298,31 @@ def connect(url: str) -> Connection:
             raise ValueError(SQLITE_RETIRED)
         # isolation_level=None: no implicit BEGIN, so a failed statement holds no lock.
         # check_same_thread=False: the Connection's own lock serialises the threads that share it.
-        raw = sqlite3.connect(_sqlite_target(url), timeout=30.0, isolation_level=None, check_same_thread=False)
+        raw = sqlite3.connect(
+            _sqlite_target(url), timeout=SQLITE_BUSY_TIMEOUT_MS / 1000, isolation_level=None, check_same_thread=False
+        )
         raw.execute("PRAGMA journal_mode=WAL")
         raw.execute("PRAGMA foreign_keys=ON")
-        raw.execute("PRAGMA busy_timeout=30000")
+        raw.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
         # IMMEDIATE takes the write lock at BEGIN, where the busy timeout applies,
         # instead of a late read-to-write upgrade that fails SQLITE_BUSY at once.
-        return Connection(raw, SQLITE, begin="BEGIN IMMEDIATE")
+        return Connection(cast(RawConnection, raw), SQLITE, begin="BEGIN IMMEDIATE")
     if pg_url.startswith(("postgresql://", "postgres://")):
         try:
             import psycopg
+            from psycopg.rows import TupleRow
             from psycopg.types.string import TextLoader
         except ImportError as exc:
             raise StoreDriverMissing(
                 "a postgresql URL needs the psycopg driver: install the postgres extra"
             ) from exc
-        raw = psycopg.connect(pg_url, **_pg_connect_kwargs(pg_url))
+        # psycopg.connect types each keyword on its own; the options dict is built from a URL, so it goes in as one.
+        open_pg = cast("Callable[..., psycopg.Connection[TupleRow]]", psycopg.connect)
+        raw = open_pg(pg_url, **_pg_connect_kwargs(pg_url))
         # Hand json columns back as text, as sqlite does, so json_load sees one shape.
         raw.adapters.register_loader("json", TextLoader)
         raw.adapters.register_loader("jsonb", TextLoader)
-        return Connection(raw, POSTGRES, begin="BEGIN")
+        return Connection(cast(RawConnection, raw), POSTGRES, begin="BEGIN")
     raise ValueError(
         f"unsupported store URL {redact_url(url)!r}: the accepted scheme is postgresql://"
     )

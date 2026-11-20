@@ -21,7 +21,7 @@ mapping when either says no, so a caller that writes what it is given writes not
 files or tickets. Building this shape from a candidate is the job of a separate adapter
 module, and a raw candidate passed here grounds as `no repo`.
 
-Two wrong beliefs this guards against. First, that `_yaml_scalar` quoting makes any value
+Two wrong beliefs this guards against. First, that `yaml_scalar` quoting makes any value
 safe in a header: it leaves a newline raw inside the quotes and `parse_frontmatter` splits
 the header on newlines, so "x\\nstate: done" would write a second `state:` line that wins
 when read. Every header value therefore goes through `_line`. Second, that a quoted list
@@ -39,7 +39,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from agent_tools.route import _yaml_scalar, slugify
+from agent_tools.route import slugify, yaml_scalar
 
 # C0 and C1 control characters, plus the Unicode line and paragraph separators.
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f" + chr(0x2028) + chr(0x2029) + "]+")
@@ -195,7 +195,7 @@ def draft_problem(proposal: Mapping[str, Any], proposed_by: str, now: str) -> st
 
 
 def _scalar(value: str) -> str:
-    return _yaml_scalar(_line(value))
+    return yaml_scalar(_line(value))
 
 
 def _flow(items: Sequence[str]) -> str:

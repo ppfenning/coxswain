@@ -11,16 +11,17 @@ import hashlib
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import cast
 
-from harness.store_dialect import Connection, insert_ignore, json_load, json_text, upsert
+from harness.store_dialect import Connection, JsonObject, insert_ignore, json_load, json_text, upsert
+from harness.store_types import TaskRecordWriteRow, WorkItemWriteRow
 
 log = logging.getLogger(__name__)
 
-Row = dict[str, Any]
+Row = dict[str, object]
 
 # Table to primary key, as harness/store_ddl_0001.py declares them.
-_KEYS: dict[str, tuple[str, ...]] = {
+KEYS: dict[str, tuple[str, ...]] = {
     "runs": ("run_id",),
     "phases": ("run_id", "phase_id"),
     "tasks": ("run_id", "task_id"),
@@ -33,7 +34,7 @@ _KEYS: dict[str, tuple[str, ...]] = {
     "leases": ("name",),
 }
 
-_RUN_KEYS = ("principal", "cartridge_sha", "cartridge_team", "overlay_sha", "provider_profile")
+RUN_KEYS = ("principal", "cartridge_sha", "cartridge_team", "overlay_sha", "provider_profile")
 _CALL_KEYS = (
     "task_id",
     "role",
@@ -77,7 +78,7 @@ _GATE_KEYS = ("kind", "target", "decision", "risk", "outcome")
 _GATE_FLAGS = ("applied", "edited")
 
 
-def _pick(src: Mapping[str, Any], keys: Sequence[str]) -> Row:
+def _pick(src: Mapping[str, object], keys: Sequence[str]) -> Row:
     return {k: src.get(k) for k in keys}
 
 
@@ -85,18 +86,18 @@ def _flag(value: bool | None) -> int | None:
     return None if value is None else int(value)
 
 
-def _rest(src: Mapping[str, Any], known: Sequence[str]) -> Row | None:
+def _rest(src: Mapping[str, object], known: Sequence[str]) -> Row | None:
     """The keys of `src` outside `known`, or None when there are none."""
     extra = {k: v for k, v in src.items() if k not in known}
     return extra or None
 
 
-def _params(row: Row) -> list[Any]:
+def _params(row: Mapping[str, object]) -> list[object]:
     """Row values in column order, with each non-None *_json value encoded as text."""
     return [json_text(v) if c.endswith("_json") and v is not None else v for c, v in row.items()]
 
 
-def merge_outcome(record: Mapping[str, Any] | None, outcome: Mapping[str, Any]) -> dict[str, Any]:
+def merge_outcome(record: Mapping[str, object] | None, outcome: Mapping[str, object]) -> dict[str, object]:
     """A new record with `outcome` under the key 'outcome'; a null or empty record starts from {}."""
     return {**(record or {}), "outcome": dict(outcome)}
 
@@ -107,12 +108,12 @@ def split_phase_id(run_id: str) -> tuple[str, str]:
     return run, phase
 
 
-def run_row(record: Mapping[str, Any], launch: Mapping[str, Any] | None = None, *, host: str | None = None) -> Row:
+def run_row(record: Mapping[str, object], launch: Mapping[str, object] | None = None, *, host: str | None = None) -> Row:
     """`host` is passed in, never read from `launch` (written by tools) or from the machine: this stays pure."""
     launched = launch or {}
     return {
         "run_id": record["run_id"],
-        **_pick(record, _RUN_KEYS),
+        **_pick(record, RUN_KEYS),
         "launched_by": launched.get("launched_by"),
         "launched_at": launched.get("at"),
         "graph_id": launched.get("graph_id"),
@@ -124,8 +125,8 @@ def run_row(record: Mapping[str, Any], launch: Mapping[str, Any] | None = None, 
     }
 
 
-def phase_row(record: Mapping[str, Any]) -> Row:
-    run_id, phase_id = split_phase_id(record["run_id"])
+def phase_row(record: Mapping[str, object]) -> Row:
+    run_id, phase_id = split_phase_id(cast(str, record["run_id"]))
     return {
         "run_id": run_id,
         "phase_id": phase_id,
@@ -139,12 +140,12 @@ def task_row(run_id: str, phase_id: str, task_id: str, state: str, updated_at: s
     return {"run_id": run_id, "phase_id": phase_id, "task_id": task_id, "state": state, "updated_at": updated_at}
 
 
-def task_record_row(run_id: str, phase_id: str, task_id: str, record: Mapping[str, Any], updated_at: str) -> Row:
+def task_record_row(run_id: str, phase_id: str, task_id: str, record: Mapping[str, object], updated_at: str) -> TaskRecordWriteRow:
     return {
         "run_id": run_id,
         "phase_id": phase_id,
         "task_id": task_id,
-        "record_json": dict(record),
+        "record_json": cast(JsonObject, dict(record)),
         "updated_at": updated_at,
     }
 
@@ -157,7 +158,7 @@ def work_item_row(
     needs: Sequence[str],
     updated_at: str,
     updated_by: str,
-) -> Row:
+) -> WorkItemWriteRow:
     """A work_items row; needs stays a list here and `_params` encodes it into needs_json."""
     return {
         "initiative": initiative,
@@ -182,7 +183,7 @@ def upsert_work_item(
 ) -> int:
     """Save a work item, replacing phase, state, needs_json, updated_at and updated_by when the key is there."""
     row = work_item_row(initiative, task_id, phase, state, needs, updated_at, updated_by)
-    sql = upsert(conn.dialect, "work_items", list(row), _KEYS["work_items"])
+    sql = upsert(conn.dialect, "work_items", list(row), KEYS["work_items"])
     return conn.execute(sql, _params(row))
 
 
@@ -208,7 +209,7 @@ def record_merge(conn: Connection, initiative: str, task_id: str, commit: str, u
 
 
 def record_handoff(
-    conn: Connection, initiative: str, task_id: str, handoff: Any, updated_at: str, updated_by: str
+    conn: Connection, initiative: str, task_id: str, handoff: object, updated_at: str, updated_by: str
 ) -> int:
     """Store a task's handoff record as JSON; rows changed, 0 for no such row or the same handoff again.
 
@@ -223,9 +224,9 @@ def record_handoff(
     return conn.execute(sql, [text, updated_at, updated_by, initiative, task_id, text])
 
 
-def task_cause(record: Mapping[str, Any]) -> tuple[str | None, str | None]:
+def task_cause(record: Mapping[str, object]) -> tuple[str | None, str | None]:
     """The (cause, cause_why) a task record carries; None for each one it does not."""
-    return record.get("cause"), record.get("cause_why")
+    return cast("str | None", record.get("cause")), cast("str | None", record.get("cause_why"))
 
 
 def attempt_row(
@@ -254,8 +255,8 @@ def attempt_row(
 
 
 def call_row(
-    call: Mapping[str, Any],
-    decision: Mapping[str, Any] | None = None,
+    call: Mapping[str, object],
+    decision: Mapping[str, object] | None = None,
     *,
     run_id: str,
     seq: int,
@@ -275,7 +276,7 @@ def call_row(
         "phase_id": phase_id,
         **_pick(call, _CALL_KEYS),
         "model_alias": call.get("model"),
-        "ok": _flag(call.get("ok")),
+        "ok": _flag(cast("bool | None", call.get("ok"))),
         **_pick(chosen, _DECISION_KEYS),
         "decision_reason": chosen.get("reason"),
         "system_one_prediction": chosen.get("system_one_answer"),
@@ -284,14 +285,14 @@ def call_row(
     }
 
 
-def ledger_row(entry: Mapping[str, Any], *, epoch: int | None = None) -> Row:
+def ledger_row(entry: Mapping[str, object], *, epoch: int | None = None) -> Row:
     """row_hash is sha256 of the canonical row without row_hash and epoch, so a rerun under a new epoch is the same row."""
     body = {**_pick(entry, _LEDGER_KEYS), "row_json": dict(entry)}
     return {**body, "row_hash": hashlib.sha256(json_text(body).encode()).hexdigest(), "epoch": epoch}
 
 
 def gate_rows(
-    run_id: str, phase_id: str, decisions: Sequence[Mapping[str, Any]], *, epoch: int | None = None
+    run_id: str, phase_id: str, decisions: Sequence[Mapping[str, object]], *, epoch: int | None = None
 ) -> list[Row]:
     """One row per decision, seq being its index. A run-level list passes phase_id ''."""
     return [
@@ -300,7 +301,7 @@ def gate_rows(
             "phase_id": phase_id,
             "seq": i,
             **_pick(d, _GATE_KEYS),
-            **{k: _flag(d.get(k)) for k in _GATE_FLAGS},
+            **{k: _flag(cast("bool | None", d.get(k))) for k in _GATE_FLAGS},
             "epoch": epoch,
             "detail_json": _rest(d, (*_GATE_KEYS, *_GATE_FLAGS)),
         }
@@ -318,19 +319,19 @@ class Store:
 
     conn: Connection
 
-    def _insert(self, table: str, row: Row) -> int:
-        sql = insert_ignore(self.conn.dialect, table, list(row), _KEYS[table])
+    def insert_row(self, table: str, row: Mapping[str, object]) -> int:
+        sql = insert_ignore(self.conn.dialect, table, list(row), KEYS[table])
         return self.conn.execute(sql, _params(row))
 
     def record_run(
         self,
-        record: Mapping[str, Any],
-        launch: Mapping[str, Any] | None = None,
+        record: Mapping[str, object],
+        launch: Mapping[str, object] | None = None,
         epoch: int | None = None,
         *,
         host: str | None = None,
     ) -> int:
-        return self._insert("runs", run_row(record, launch, host=host))
+        return self.insert_row("runs", run_row(record, launch, host=host))
 
     def finish_run(self, run_id: str, ended_at: str, status: str) -> int:
         """Stamp how a run ended. Returns the rows changed; the same values twice is harmless."""
@@ -338,7 +339,7 @@ class Store:
         sql = f"UPDATE runs SET ended_at = {mark}, status = {mark} WHERE run_id = {mark}"
         return self.conn.execute(sql, (ended_at, status, run_id))
 
-    def record_outcome(self, run_id: str, outcome: Mapping[str, Any]) -> bool:
+    def record_outcome(self, run_id: str, outcome: Mapping[str, object]) -> bool:
         """Merge `outcome` into the run's record_json. False, logged, on any failure or a missing run; never raises."""
         mark = self.conn.dialect.placeholder
         try:
@@ -347,7 +348,7 @@ class Store:
                 if row is None:
                     log.error("record_outcome: no run %r to record an outcome on", run_id)
                     return False
-                merged = merge_outcome(json_load(row[0]), outcome)
+                merged = merge_outcome(cast("Mapping[str, object] | None", json_load(row[0])), outcome)
                 sql = f"UPDATE runs SET record_json = {mark} WHERE run_id = {mark}"
                 self.conn.execute(sql, (json_text(merged), run_id))
             return True
@@ -355,20 +356,20 @@ class Store:
             log.exception("record_outcome: could not write the outcome for run %r", run_id)
             return False
 
-    def record_phase(self, record: Mapping[str, Any], epoch: int | None = None) -> int:
-        return self._insert("phases", phase_row(record))
+    def record_phase(self, record: Mapping[str, object], epoch: int | None = None) -> int:
+        return self.insert_row("phases", phase_row(record))
 
     def record_task(
         self, run_id: str, phase_id: str, task_id: str, state: str, updated_at: str, epoch: int | None = None
     ) -> int:
-        return self._insert("tasks", task_row(run_id, phase_id, task_id, state, updated_at))
+        return self.insert_row("tasks", task_row(run_id, phase_id, task_id, state, updated_at))
 
     def record_task_record(
-        self, run_id: str, phase_id: str, task_id: str, record: Mapping[str, Any], updated_at: str
+        self, run_id: str, phase_id: str, task_id: str, record: Mapping[str, object], updated_at: str
     ) -> int:
         """Save a task's record, replacing record_json and updated_at when the key is already there."""
         row = task_record_row(run_id, phase_id, task_id, record, updated_at)
-        sql = upsert(self.conn.dialect, "task_records", list(row), _KEYS["task_records"])
+        sql = upsert(self.conn.dialect, "task_records", list(row), KEYS["task_records"])
         return self.conn.execute(sql, _params(row))
 
     def record_attempt(
@@ -386,7 +387,7 @@ class Store:
         cause_why: str | None = None,
     ) -> int:
         row = attempt_row(run_id, task_id, seq, phase_id, kind, reason, ts, cause=cause, cause_why=cause_why)
-        return self._insert("attempts", row)
+        return self.insert_row("attempts", row)
 
     def set_attempt_cause(self, run_id: str, task_id: str, seq: int, cause: str | None, cause_why: str | None) -> int:
         """Set cause and cause_why on an existing attempt. Returns the rows changed, 0 when there is no such attempt."""
@@ -396,28 +397,28 @@ class Store:
 
     def record_call(
         self,
-        call: Mapping[str, Any],
-        decision: Mapping[str, Any] | None = None,
+        call: Mapping[str, object],
+        decision: Mapping[str, object] | None = None,
         *,
         run_id: str,
         seq: int,
         phase_id: str | None = None,
         epoch: int | None = None,
     ) -> int:
-        return self._insert("node_calls", call_row(call, decision, run_id=run_id, seq=seq, phase_id=phase_id))
+        return self.insert_row("node_calls", call_row(call, decision, run_id=run_id, seq=seq, phase_id=phase_id))
 
-    def record_ledger(self, entry: Mapping[str, Any], epoch: int | None = None) -> int:
-        return self._insert("ledger", ledger_row(entry, epoch=epoch))
+    def record_ledger(self, entry: Mapping[str, object], epoch: int | None = None) -> int:
+        return self.insert_row("ledger", ledger_row(entry, epoch=epoch))
 
     def record_gate_decisions(
-        self, run_id: str, phase_id: str, decisions: Sequence[Mapping[str, Any]], epoch: int | None = None
+        self, run_id: str, phase_id: str, decisions: Sequence[Mapping[str, object]], epoch: int | None = None
     ) -> int:
         with self.conn.transaction():
-            return sum(self._insert("gate_decisions", r) for r in gate_rows(run_id, phase_id, decisions, epoch=epoch))
+            return sum(self.insert_row("gate_decisions", r) for r in gate_rows(run_id, phase_id, decisions, epoch=epoch))
 
     def total_rows(self, table: str) -> int:
         """Row count of a run-record table, for asserting that a write landed."""
-        if table not in _KEYS:
-            raise ValueError(f"unknown table {table!r}: expected one of {sorted(_KEYS)}")
+        if table not in KEYS:
+            raise ValueError(f"unknown table {table!r}: expected one of {sorted(KEYS)}")
         row = self.conn.query_one(f"SELECT COUNT(*) FROM {table}")
-        return 0 if row is None else int(row[0])
+        return 0 if row is None else int(cast(int, row[0]))

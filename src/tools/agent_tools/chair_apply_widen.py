@@ -1,4 +1,4 @@
-"""Apply a `widen_ticket` action to its ticket file; `chair_exec._widen_ticket` mirrors the `ready` state to the store."""
+"""Apply a `widen_ticket` action to its ticket file; `chair_exec.perform_widen_ticket` mirrors the `ready` state to the store."""
 from __future__ import annotations
 
 from pathlib import Path

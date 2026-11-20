@@ -14,8 +14,12 @@ import signal
 import subprocess
 import sys
 import tempfile
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+from agent_tools.chair_types import Action, action_from_store
+from core.jsontypes import ShapeError, is_dict, is_list
 
 TIMEOUT_CODE = 124
 
@@ -23,7 +27,7 @@ TIMEOUT_CODE = 124
 @dataclass(frozen=True)
 class LandSpec:
     key: str
-    action: dict
+    action: Action
     argv: list[str]
     repo: str
     timeout_s: float
@@ -46,51 +50,53 @@ def encode_outcome(outcome: LandOutcome) -> str:
     return json.dumps(asdict(outcome), sort_keys=True)
 
 
-def _is_num(v: object) -> bool:
-    return isinstance(v, int | float) and not isinstance(v, bool)
-
-
-def _is_int(v: object) -> bool:
-    return isinstance(v, int) and not isinstance(v, bool)
-
-
-def _object(text: str) -> dict | None:
+def _object(text: str) -> dict[str, object] | None:
     try:
-        data = json.loads(text)
+        data: object = json.loads(text)
     except ValueError:
         return None
-    return data if isinstance(data, dict) else None
+    return data if is_dict(data) else None
+
+
+def _number(v: object) -> float | None:
+    return v if isinstance(v, int | float) and not isinstance(v, bool) else None
+
+
+def _integer(v: object) -> int | None:
+    return v if isinstance(v, int) and not isinstance(v, bool) else None
 
 
 def parse_spec(text: str) -> LandSpec | None:
     d = _object(text)
     if d is None:
         return None
-    argv = d.get("argv")
-    well_formed = (
-        isinstance(d.get("key"), str)
-        and isinstance(d.get("action"), dict)
-        and isinstance(argv, list)
-        and all(isinstance(a, str) for a in argv)
-        and isinstance(d.get("repo"), str)
-        and _is_num(d.get("timeout_s"))
-        and _is_num(d.get("started_at"))
-        and isinstance(d.get("host"), str)
-        and _is_int(d.get("pid"))
-    )
-    if not well_formed:
+    try:
+        action = action_from_store(d.get("action"))
+    except ShapeError:
         return None
-    return LandSpec(d["key"], d["action"], argv, d["repo"], d["timeout_s"], d["started_at"], d["host"], d["pid"])
+    key, argv, repo, host = d.get("key"), d.get("argv"), d.get("repo"), d.get("host")
+    timeout_s, started_at, pid = _number(d.get("timeout_s")), _number(d.get("started_at")), _integer(d.get("pid"))
+    if not (isinstance(key, str) and is_list(argv) and isinstance(repo, str) and isinstance(host, str)):
+        return None
+    if timeout_s is None or started_at is None or pid is None:
+        return None
+    words = [a for a in argv if isinstance(a, str)]
+    if len(words) != len(argv):
+        return None
+    return LandSpec(key, action, words, repo, timeout_s, started_at, host, pid)
 
 
 def parse_outcome(text: str) -> LandOutcome | None:
     d = _object(text)
-    if d is None or not _is_int(d.get("code")) or not isinstance(d.get("output"), str):
+    if d is None:
         return None
-    return LandOutcome(d["code"], d["output"])
+    code, output = _integer(d.get("code")), d.get("output")
+    if code is None or not isinstance(output, str):
+        return None
+    return LandOutcome(code, output)
 
 
-def land_key(action: dict) -> str:
+def land_key(action: Mapping[str, object]) -> str:
     """Readable slug of run plus task_id, else phase, then a hash of the raw identity so distinct actions never collide."""
     run, task, phase = (str(action.get(k, "")) for k in ("run", "task_id", "phase"))
     identity = (
@@ -118,7 +124,7 @@ def count_by_repo(specs: list[LandSpec]) -> dict[str, int]:
     return {repo: sum(1 for s in specs if s.repo == repo) for repo in {s.repo for s in specs}}
 
 
-def _write_atomic(path: Path, text: str) -> None:
+def write_atomic(path: Path, text: str) -> None:
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name, suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as f:
@@ -174,7 +180,7 @@ def main(spec_path: str) -> int:
     if spec is None:
         return 2
     _, outcome_path = paths_for(path.parent, spec.key)
-    _write_atomic(outcome_path, encode_outcome(_run(spec)))
+    write_atomic(outcome_path, encode_outcome(_run(spec)))
     return 0
 
 

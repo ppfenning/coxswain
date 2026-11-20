@@ -41,7 +41,6 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any
 
 __all__ = ["OUTCOMES", "REQUIRED_FIELDS", "LedgerError", "append", "append_observation", "read"]
 
@@ -53,7 +52,7 @@ class LedgerError(Exception):
     """A row was refused, or the ledger on disk could not be read."""
 
 
-def _validate(row: Mapping[str, Any]) -> dict[str, Any]:
+def _validate(row: Mapping[str, object]) -> dict[str, object]:
     missing = [f for f in REQUIRED_FIELDS if f not in row]
     if missing:
         raise LedgerError(f"ledger row missing required field(s): {', '.join(missing)}")
@@ -62,7 +61,7 @@ def _validate(row: Mapping[str, Any]) -> dict[str, Any]:
     return dict(row)
 
 
-def append(rows: Iterable[Mapping[str, Any]], path: Path | str) -> None:
+def append(rows: Iterable[Mapping[str, object]], path: Path | str) -> None:
     """Append rows as JSON lines. Validates every row BEFORE opening the file.
 
     All-or-nothing on purpose: a partial append would leave the ledger holding
@@ -78,12 +77,12 @@ def append(rows: Iterable[Mapping[str, Any]], path: Path | str) -> None:
             handle.write(json.dumps(row, sort_keys=True, default=str) + "\n")
 
 
-def read(path: Path | str) -> tuple[dict[str, Any], ...]:
+def read(path: Path | str) -> tuple[dict[str, object], ...]:
     """Read the ledger oldest-first. A missing ledger is empty, not an error."""
     path = Path(path)
     if not path.is_file():
         return ()
-    rows: list[dict[str, Any]] = []
+    rows: list[dict[str, object]] = []
     for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip():
             continue
@@ -94,7 +93,7 @@ def read(path: Path | str) -> tuple[dict[str, Any], ...]:
     return tuple(rows)
 
 
-def append_observation(row: Mapping[str, Any], path: Path | str) -> None:
+def append_observation(row: Mapping[str, object], path: Path | str) -> None:
     """Record a post-hoc detector hit — the `failure` outcome.
 
     Separate from `append` because it arrives LATER, from something that went

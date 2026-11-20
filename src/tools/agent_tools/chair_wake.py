@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Mapping, Sequence
 
 from agent_tools.courier import parse_run_exited
 
-__all__ = ["new_run_exits", "new_wake_events", "wait_for_events", "wait_for_run_exit"]
+__all__ = ["new_wake_events", "wait_for_events", "wait_for_run_exit"]
 
 RUN_EXITED = "run_exited"
 INTAKE = "intake"  # courier has no intake event: a plain entry, with no `event`, whose ref is `coxswain://intake/<id>`
 CHAT_DIRECTIVE = "chat_directive"  # a courier event name, matched on the entry's `event`
 
 
-def _wakes(entry: dict, kind: str) -> bool:
+Entry = Mapping[str, object]
+
+
+def _wakes(entry: Entry, kind: str) -> bool:
     if kind == RUN_EXITED:
         return parse_run_exited(entry) is not None
     if kind == INTAKE:  # every entry carries a `ref`, so an event on an intake ref (an answer, an applied note) is not new intake
@@ -21,21 +24,21 @@ def _wakes(entry: dict, kind: str) -> bool:
     return entry.get("event") == kind
 
 
-def new_wake_events(entries: list[dict], seen_ids: Collection[str], kinds: Collection[str]) -> list[dict]:
+def _entry_id(entry: Entry) -> str | None:
+    entry_id = entry.get("id")
+    return entry_id if isinstance(entry_id, str) else None
+
+
+def new_wake_events(entries: Sequence[Entry], seen_ids: Collection[str], kinds: Collection[str]) -> list[Entry]:
     """Entries of one of `kinds` that are unacked and whose id is not in `seen_ids`."""
     return [
         e for e in entries
-        if not e.get("ack") and isinstance(e.get("id"), str) and e["id"] not in seen_ids and any(_wakes(e, k) for k in kinds)
+        if not e.get("ack") and (entry_id := _entry_id(e)) is not None and entry_id not in seen_ids and any(_wakes(e, k) for k in kinds)
     ]
 
 
-def new_run_exits(entries: list[dict], seen_ids: Collection[str]) -> list[dict]:
-    """Entries `parse_run_exited` accepts that are unacked and whose id is not in `seen_ids`."""
-    return new_wake_events(entries, seen_ids, (RUN_EXITED,))
-
-
 def wait_for_events(
-    read_entries: Callable[[], list[dict]],
+    read_entries: Callable[[], Sequence[Entry]],
     sleep: Callable[[float], None],
     now: Callable[[], float],
     poll_seconds: float,
@@ -47,7 +50,7 @@ def wait_for_events(
     """
     returned: set[str] = set()  # the one piece of state; a wake is spent per id for the life of the wait
 
-    def poll() -> list[dict]:
+    def poll() -> list[Entry]:
         try:
             return new_wake_events(read_entries(), returned, kinds)
         except Exception:  # a failed fetch is a quiet poll, not a crash of the chair loop
@@ -58,7 +61,7 @@ def wait_for_events(
         while True:
             fresh = poll()
             if fresh:
-                returned.update(e["id"] for e in fresh)
+                returned.update(i for i in map(_entry_id, fresh) if i is not None)
                 return True
             remaining = deadline - now()
             if remaining <= 0:
@@ -69,7 +72,7 @@ def wait_for_events(
 
 
 def wait_for_run_exit(
-    read_entries: Callable[[], list[dict]],
+    read_entries: Callable[[], Sequence[Entry]],
     sleep: Callable[[float], None],
     now: Callable[[], float],
     poll_seconds: float,

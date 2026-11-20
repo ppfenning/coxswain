@@ -6,14 +6,12 @@ its own key's error so no panel blocks another.
 `_last_backup` always reports unavailable: no backup reader exists anywhere in agent_tools/ (checked
 with `rg -n "backup" agent_tools/`), though this module's ticket assumed one did.
 
-`build` accepts `provider`/`harness` as keywords for tests that want to hand it a literal profile
-directly. Its sole caller (`cox dash --detail health`) calls `build(runs_dir, work_dir, now)` with
-none of those, so when either is left `None`, `build` resolves it itself at its own edge, the way
-`cli._lake_provider` and `cli._parquet_traces_line` do: read the routing profile at
-`$AGENT_TOOLS_PROFILE` or `~/.config/agent-tools/profile.yaml`, `route.parse_profile` it, then
-`store_url.read_provider_profile` its named `provider_profile` and `run_store.harness_python` it
-for the harness. A missing or unreadable routing profile leaves both `None`, and the two lake panels
-report `NO_PROFILE`, same as today."""
+`build` accepts `provider` as a keyword for tests that want to hand it a literal profile directly.
+Its sole caller (`cox dash --detail health`) calls `build(runs_dir, work_dir, now)` without it, so when
+it is left `None`, `build` resolves it itself at its own edge, the way `cli._lake_provider` does: read
+the routing profile at `$AGENT_TOOLS_PROFILE` or `~/.config/agent-tools/profile.yaml`,
+`route.parse_profile` it, then `store_url.read_provider_profile` its named `provider_profile`. A missing
+or unreadable routing profile leaves it `None`, and the two lake panels report `NO_PROFILE`."""
 
 from __future__ import annotations
 
@@ -24,7 +22,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from agent_tools import chair, dash_feed, lake_config, lake_doctor, route, route_drift, run_store, store_url
+from agent_tools import (
+    chair,
+    dash_contract,
+    dash_feed,
+    lake_config,
+    lake_doctor,
+    route,
+    route_drift,
+    run_store,
+    store_url,
+)
 from agent_tools.chair_read_housekeeping import read_last_housekeeping
 from agent_tools.chair_read_lease import lease_record
 
@@ -52,22 +60,20 @@ def _read(path: Path) -> str | None:
         return None
 
 
-def _resolve_profile() -> tuple[Mapping[str, Any] | None, Path | None]:
-    """`(provider, harness)` read at this module's own edge, used only for whichever of `build`'s
-    `provider`/`harness` keywords the caller left `None`. `(None, None)` when the routing profile at
-    `$AGENT_TOOLS_PROFILE` or `DEFAULT_PROFILE` is missing or fails `route.parse_profile`, which
-    leaves the two lake panels reporting `NO_PROFILE` rather than a silent default lake."""
+def _resolve_profile() -> Mapping[str, Any] | None:
+    """The provider profile read at this module's own edge, used only when `build`'s `provider` is left `None`.
+    None when the routing profile at `$AGENT_TOOLS_PROFILE` or `DEFAULT_PROFILE` is missing or fails
+    `route.parse_profile`, which leaves the two lake panels reporting `NO_PROFILE` rather than a silent default lake."""
     path = Path(os.environ.get("AGENT_TOOLS_PROFILE") or DEFAULT_PROFILE).expanduser()
     text = _read(path)
     if text is None:
-        return None, None
+        return None
     try:
         routing_profile = route.parse_profile(text)
     except route.ProfileError:
-        return None, None
+        return None
     provider_path = routing_profile.get("provider_profile")
-    provider = store_url.read_provider_profile(provider_path) if provider_path else {}
-    return provider, run_store.harness_python(routing_profile)
+    return store_url.read_provider_profile(provider_path) if provider_path else {}
 
 
 def _work_items(ws: Path) -> list[dict]:
@@ -123,17 +129,13 @@ def _lake_doctor(runs_dir: Path, provider: Mapping[str, Any] | None) -> dict:
     }
 
 
-def _object_store(runs_dir: Path, provider: Mapping[str, Any] | None, harness: Path | None) -> dict:
-    """A live probe of the traces root the provider profile names, through `run_store.parquet_readable`.
-
-    The same two arguments `cli._parquet_traces_line` passes: the traces root and the routing
-    profile's harness python. Without the harness, a pyarrow-less install reads as unreadable
-    even when the harness venv could read it, so `harness` must be the caller's resolved
-    `run_store.harness_python(routing_profile)`, not left `None`."""
+def _object_store(runs_dir: Path, provider: Mapping[str, Any] | None) -> dict:
+    """A live probe of the traces root the provider profile names, through `run_store.parquet_readable`, as
+    `cli._parquet_traces_line` probes it."""
     if provider is None:
         return {"ok": False, "error": NO_PROFILE}
     root = store_url.profile_traces_root(provider, Path(runs_dir))
-    check = run_store.parquet_readable(root, harness)
+    check = run_store.parquet_readable(root)
     endpoint = root.object_store.get("endpoint") if root.object_store else None
     return {"ok": check.readable, "reachable": check.readable, "reason": check.reason, "endpoint": endpoint}
 
@@ -228,7 +230,7 @@ def schema_1(
     read's result and milliseconds, the last housekeeping stamp, and the snapshot time `at`, the one clock."""
     now = _parse_now(at)
     return {
-        "schema": 1,
+        "schema": dash_contract.CONTRACT_VERSION,
         "kind": "health",
         "at": at,
         "hosts": _hosts(machines),
@@ -262,12 +264,12 @@ def _machines(runs_dir: Path, work_dir: Path, now: str, profile: Mapping[str, An
 
 
 def _timed_store_read(runs_dir: Path, clock: Callable[[], float] = time.monotonic) -> tuple[dict, int]:
-    """Edge. One store open through `run_store._open`, as every store reader does: `({"ok", "detail"}, elapsed_ms)`.
+    """Edge. One store open through `run_store.open_store`, as every store reader does: `({"ok", "detail"}, elapsed_ms)`.
 
     No store, or one that cannot be opened, is `ok` False with the reason; it never raises."""
     started = clock()
     try:
-        opened = run_store._open(Path(runs_dir))
+        opened = run_store.open_store(Path(runs_dir))
         if opened is None:
             result = {"ok": False, "detail": "no store under the runs dir"}
         else:
@@ -279,11 +281,11 @@ def _timed_store_read(runs_dir: Path, clock: Callable[[], float] = time.monotoni
 
 
 def _lease_row(runs_dir: Path, clock: Callable[[], float] = time.monotonic) -> tuple[dict | None, str | None]:
-    """Edge. `(row, error)`: the chair lease as `{"holder", "expires_at"}` from `run_store._lease_table`, which selects
+    """Edge. `(row, error)`: the chair lease as `{"holder", "expires_at"}` from `run_store.lease_table_for`, which selects
     `expires_at`; `chair_read_lease.read_lease` reads the same row but drops it. No row is `(None, None)`; a raising
     read or a row of another shape is `(None, reason)`."""
     try:
-        row = run_store._lease_table(str(runs_dir), int(clock())).get(chair.LEASE_NAME)
+        row = run_store.lease_table_for(str(runs_dir), int(clock())).get(chair.LEASE_NAME)
         return (None, None) if row is None else ({"holder": row[0], "expires_at": row[1]}, None)
     except Exception as exc:  # reported in `errors`, so a broken read does not read as a released lease
         return None, f"chair_lease: {type(exc).__name__}: {exc}"
@@ -295,22 +297,17 @@ def build(
     now: str,
     *,
     provider: Mapping[str, Any] | None = None,
-    harness: Path | None = None,
 ) -> dict:
     """The five panels behind `cox dash --detail health`, each `_safe` so one's failure never reaches another's key,
     plus the schema-1 keys coxtop parses (`schema_1`).
 
-    `provider` is the operator's provider profile and `harness` its routing profile's harness python.
-    A caller who already has them (a test, or a future caller with its own routing profile in hand)
-    passes them directly and they are used as given. A caller with neither — `cox dash --detail
-    health`, which calls `build(runs_dir, work_dir, now)` — gets them resolved here, at this module's
-    own edge, via `_resolve_profile`; only the keyword left `None` is filled in, so a caller who
-    passes `provider={}` on purpose is never second-guessed. `now` is the caller's stamp and the
+    `provider` is the operator's provider profile. A caller who already has it (a test, or a future caller
+    with its own routing profile in hand) passes it and it is used as given. `cox dash --detail health`, which
+    calls `build(runs_dir, work_dir, now)`, gets it resolved here, at this module's own edge, via
+    `_resolve_profile`, so a caller who passes `provider={}` on purpose is never second-guessed. `now` is the caller's stamp and the
     snapshot's `at`; only the edges below read a clock, to time the store read."""
-    if provider is None or harness is None:
-        resolved_provider, resolved_harness = _resolve_profile()
-        provider = resolved_provider if provider is None else provider
-        harness = resolved_harness if harness is None else harness
+    if provider is None:
+        provider = _resolve_profile()
     housekeeping_panel = _safe(lambda: _housekeeping(runs_dir))
     store_result, latency_ms = _timed_store_read(runs_dir)
     machines, machines_error = _machines(runs_dir, work_dir, now, _routing_profile())
@@ -318,7 +315,7 @@ def build(
     return {
         "store_drift": _safe(lambda: _store_drift(runs_dir, work_dir)),
         "lake_doctor": _safe(lambda: _lake_doctor(runs_dir, provider)),
-        "object_store": _safe(lambda: _object_store(runs_dir, provider, harness)),
+        "object_store": _safe(lambda: _object_store(runs_dir, provider)),
         "last_backup": _safe(_last_backup),
         # `housekeeping` was this panel's `{"ok", "last_at"}` until schema 1 took the name for `{last_run_at, age_hours}`.
         # coxtop reads the schema-1 object, so the panel moved here; only this module's tests read it.

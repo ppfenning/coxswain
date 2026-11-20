@@ -113,7 +113,7 @@ def test_a_parent_still_ready_blocks_the_named_phase_and_nothing_runs(repo, cart
 
 
 def test_an_unknown_phase_refuses_the_run_before_any_worktree_or_store_write(repo, cart, tmp_path, monkeypatch) -> None:  # noqa: F811
-    monkeypatch.setattr(epic_module, "_record_run_exit", lambda *a, **k: pytest.fail("the refused run wrote an exit"))
+    monkeypatch.setattr(epic_module, "record_run_exit", lambda *a, **k: pytest.fail("the refused run wrote an exit"))
     with pytest.raises(ValueError, match=f"unknown phase.*p9-nope.*{P1}, {P2}"):
         drive(repo, cart, tmp_path, work=staged(), only_phases=[P2, "p9-nope"])
     assert not (tmp_path / "worktrees").exists()

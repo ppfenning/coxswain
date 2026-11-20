@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
+from typing import TypedDict, cast
 
 from core.bounds import ChairBounds
 from core.catalog import Catalog, ModelEntry
@@ -29,7 +30,15 @@ BASE_EFFORT = "medium"
 DIFF_THRESHOLD = 400
 FILE_THRESHOLD = 10
 STOP = "stop"
-_RULE_KW = {"reviewed": REVIEWED, "diff_threshold": DIFF_THRESHOLD, "file_threshold": FILE_THRESHOLD}
+
+
+class _RuleKw(TypedDict):
+    reviewed: frozenset[str]
+    diff_threshold: int
+    file_threshold: int
+
+
+_RULE_KW = _RuleKw(reviewed=REVIEWED, diff_threshold=DIFF_THRESHOLD, file_threshold=FILE_THRESHOLD)
 
 
 @dataclass(frozen=True)
@@ -203,4 +212,5 @@ def decide(
         ("effort_ceiling", effort_clipped),
         (cap_name, cap_name is not None),
     )
-    return Decision(entry.id, final_effort, capped, reasons, tuple(name for name, hit in named if hit), chosen_class)
+    clipped_by = cast("tuple[str, ...]", tuple(name for name, hit in named if hit))
+    return Decision(entry.id, final_effort, capped, reasons, clipped_by, chosen_class)

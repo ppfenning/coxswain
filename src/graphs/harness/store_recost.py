@@ -12,10 +12,11 @@ again, but its reported figure still counts as the previous call's total for a l
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any, NamedTuple
+from decimal import Decimal
+from typing import NamedTuple, cast
 
 from harness import store_traces
-from harness.store_dialect import Connection, json_load, json_text
+from harness.store_dialect import Connection, JsonObject, json_load, json_text
 from harness.store_write import Store
 from harness.traces_url import TracesRoot
 
@@ -29,7 +30,7 @@ class Change(NamedTuple):
     call_id: str
     cost: float
     reported: float
-    detail: dict[str, Any]
+    detail: JsonObject
 
 
 def _own_cost(previous: float | None, reported: float) -> float:
@@ -49,7 +50,7 @@ def recost(calls: Sequence[Call]) -> list[tuple[str, float, float]]:
     ]
 
 
-def session_id_of(events: Sequence[dict[str, Any]]) -> str | None:
+def session_id_of(events: Sequence[JsonObject]) -> str | None:
     """The session_id of the first system init event, else None."""
     inits = [e for e in events if e.get("type") == "system" and e.get("subtype") == "init"]
     session = inits[0].get("session_id") if inits else None
@@ -66,12 +67,22 @@ def read_session_id(traces: TracesRoot | str, run_id: str, call_id: str) -> str 
 
 def plan_recost(conn: Connection, traces: TracesRoot | str) -> list[Change]:
     """Calls whose own cost differs from the stored one, and that do not carry `reported_cost_usd` yet. Reads only."""
-    rows = conn.query_all(
-        "SELECT call_id, run_id, ts, cost_usd, detail_json FROM node_calls WHERE cost_usd IS NOT NULL ORDER BY run_id, seq"
+    rows = cast(
+        "list[tuple[str, str, str | None, Decimal | float, str | None]]",
+        conn.query_all(
+            "SELECT call_id, run_id, ts, cost_usd, detail_json FROM node_calls WHERE cost_usd IS NOT NULL ORDER BY run_id, seq"
+        ),
     )
-    details = {call_id: d if isinstance(d := json_load(raw), dict) else {} for call_id, _r, _t, _c, raw in rows}
+    details: dict[str, JsonObject] = {
+        call_id: d if isinstance(d := json_load(raw), dict) else {} for call_id, _r, _t, _c, raw in rows
+    }
     calls = [
-        (call_id, read_session_id(traces, run_id, call_id), ts or "", float(details[call_id].get(REPORTED_KEY, cost)))
+        (
+            call_id,
+            read_session_id(traces, run_id, call_id),
+            ts or "",
+            float(cast(float, details[call_id].get(REPORTED_KEY, cost))),
+        )
         for call_id, run_id, ts, cost, _raw in rows
     ]
     return [

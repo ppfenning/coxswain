@@ -16,6 +16,8 @@ from typing import Any
 
 import yaml
 
+from agent_tools import bounded_run
+
 Run = Callable[[list[str]], tuple[int, str]]
 
 DEFAULT_BASE = "main"
@@ -44,9 +46,12 @@ def base_setting(overlay: Mapping[str, Any] | None, repo_name: str) -> str | Non
 
 
 def run_git(argv: list[str]) -> tuple[int, str]:
-    """Edge. Run `argv`; its exit code and stdout then stderr, 127 when it cannot start."""
+    """Edge. Run `argv`; its exit code and stdout then stderr, 127 when it cannot start. A `git` or `gh` call is bounded
+    by `bounded_run.default_timeout`, and the `sh -c` wrapper the merged-PR lookup runs gh in by the gh bound: a
+    timeout is 124 with the failure line, which the manual land reads as not merged, as any other nonzero exit."""
     try:
-        done = subprocess.run(argv, capture_output=True, text=True, check=False, timeout=120)
+        limit = None if argv[:1] in (["git"], ["gh"]) else bounded_run.GH_TIMEOUT_SECONDS
+        done = bounded_run.completed(argv, limit, capture_output=True, text=True, check=False)
     except (OSError, subprocess.SubprocessError) as exc:
         return 127, str(exc)
     return done.returncode, done.stdout + done.stderr

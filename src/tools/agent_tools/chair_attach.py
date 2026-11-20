@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from agent_tools.chair_resolve import SessionHolder
+from core.jsontypes import is_dict
 
 SERVER_NAME = "coxswain-chair"
 CONVERSATION_ENV = "COXSWAIN_MCP_CONVERSATION"
@@ -19,7 +20,7 @@ def attach_mode(holder: SessionHolder | None, own_label: str, force_workspace: b
     return "mcp" if live_other and not force_workspace else "workspace"
 
 
-def mcp_config(entry: str, conversation_id: str) -> dict[str, Any]:
+def mcp_config(entry: str, conversation_id: str) -> dict[str, dict[str, dict[str, object]]]:
     """One stdio MCP server running `entry mcp`; the env carries the conversation id the server resumes."""
     return {
         "mcpServers": {
@@ -33,7 +34,7 @@ def mcp_config(entry: str, conversation_id: str) -> dict[str, Any]:
     }
 
 
-def attach_argv(plugin_root: Path | str | None, config: Mapping[str, Any], extra_args: Sequence[str]) -> list[str]:
+def attach_argv(plugin_root: Path | str | None, config: Mapping[str, object], extra_args: Sequence[str]) -> list[str]:
     """The claude argv: the config as one JSON string, the plugin dir when given, then extra_args last."""
     plugin = [] if plugin_root is None else ["--plugin-dir", str(plugin_root)]
     return ["claude", "--mcp-config", json.dumps(config), *plugin, *extra_args]
@@ -50,10 +51,10 @@ def read_conversation(text: str | None) -> str | None:
     if not text:
         return None
     try:
-        data = json.loads(text)
+        data: object = json.loads(text)
     except ValueError:
         return None
-    conversation_id = data.get("id") if isinstance(data, dict) else None
+    conversation_id = data.get("id") if is_dict(data) else None
     return conversation_id if isinstance(conversation_id, str) else None
 
 

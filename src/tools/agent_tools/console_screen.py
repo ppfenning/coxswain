@@ -285,24 +285,3 @@ def render(sections: dict, selected: int, width: int, now: datetime, tz: tzinfo)
             if selectable:
                 index += 1
     return lines
-
-
-def _selection(name: str, row) -> dict:
-    if name == "drafts":
-        return {"kind": "draft", "id": row.id}
-    if name == "hosts":
-        return {"kind": "host", "name": row["name"]}
-    if name == "lanes":
-        return {"kind": "lane", "run": row.run, "pid": None}
-    return {"kind": "chair"}
-
-
-def _selectable_rows(sections: dict) -> list[tuple[str, object]]:
-    """Pure. Every selectable row paired with its section name, in selection order: drafts, hosts, lanes, chair."""
-    return [(name, row) for name in _SELECTABLE_SECTIONS for row in sections.get(name, [])]
-
-
-def selection_at(sections: dict, index: int) -> dict | None:
-    """Pure. The `plan_command` selection for the index-th selectable item; None past the last one."""
-    flat = _selectable_rows(sections)
-    return _selection(*flat[index]) if 0 <= index < len(flat) else None

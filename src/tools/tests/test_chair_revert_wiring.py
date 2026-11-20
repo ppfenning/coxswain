@@ -66,7 +66,7 @@ def test_green_since_reader_reads_a_descendant_green_run_as_true() -> None:
 
     assert cli._green_since_reader(runner)("o/r", "abc") is True
     assert calls[0][calls[0].index("--repo") + 1] == "o/r"
-    assert calls[1] == ["git", "-C", "o/r", "merge-base", "--is-ancestor", "abc", "later"]
+    assert calls[1:] == [["git", "-C", "o/r", "merge-base", "--is-ancestor", "abc", c] for c in ("abc", "later")]
 
 
 def test_green_since_reader_reads_a_runner_exit_1_as_false() -> None:
@@ -87,10 +87,10 @@ def test_green_since_reader_caches_per_repo_and_commit_until_cleared() -> None:
     assert read("o/r", "abc") is True
     assert len(calls) == 1
     read("o/r", "def")
-    assert len(calls) == 3
+    assert len(calls) == 4  # gh, then git: is `def` there at all, then is it under the green run
     read.cache.clear()
     read("o/r", "abc")
-    assert len(calls) == 4
+    assert len(calls) == 5
 
 
 def test_slug_forge_open_pr_hands_gh_the_slug(tmp_path) -> None:
@@ -124,17 +124,58 @@ def test_revert_ports_gives_a_git_port_and_a_slug_forge_for_any_action() -> None
     assert isinstance(forge, cli._SlugForge)
 
 
-def test_quarantine_phase_sets_state_once_per_matching_item_only() -> None:
-    items = [
-        {"id": "a", "initiative": "i1", "phase": "p1", "state": "ready"},
-        {"id": "b", "initiative": "i1", "phase": "p1", "state": "landed"},
-        {"id": "c", "initiative": "i1", "phase": "p2", "state": "ready"},
-        {"id": "d", "initiative": "i2", "phase": "p1", "state": "ready"},
+def _task(task_id: str, phase: str, state: str, initiative: str = "i1") -> dict:
+    return {"kind": "task", "initiative": initiative, "task_id": task_id, "phase": phase, "state": state, "extra": {"k": "v"}}
+
+
+def _quarantine(rows: list[dict], answers: dict | None = None, refused_marks: dict | None = None, attempts: dict | None = None):
+    moved: list[tuple[str, str, str]] = []
+    marked: list[tuple[str, str, dict]] = []
+
+    def move(initiative: str, task: str, expected: str):
+        moved.append((initiative, task, expected))
+        return (answers or {}).get(task, cli.store_cli.StateSet({"state": "quarantined"}))
+
+    def mark(initiative: str, task: str, extra: dict) -> str:
+        marked.append((initiative, task, extra))
+        return (refused_marks or {}).get(task, "")
+
+    quarantine = cli._quarantine_phase_with(
+        lambda i: [r for r in rows if r["initiative"] == i],
+        lambda: ["i1-2", "i1-7", "i2-9"],
+        lambda i, p, t: (attempts or {}).get(t, []),
+        move,
+        mark,
+    )
+    return quarantine("i1", "p1", "main_red", "why"), moved, marked
+
+
+def _mark(run: str) -> dict:
+    return {"k": "v", "quarantine_mark": {"cause": "main_red", "reason": "why", "run": run}}
+
+
+def test_quarantine_phase_moves_only_the_tasks_its_land_carried_each_on_the_state_read() -> None:
+    rows = [
+        _task("a", "p1", "approved"), _task("b", "p1", "done"), _task("c", "p1", "dropped"), _task("d", "p1", "in_progress"),
+        _task("e", "p1", "ready"), _task("f", "p2", "approved"), _task("g", "p1", "approved", initiative="i2"),
     ]
-    seen: list[tuple[str, str, str, str]] = []
-    quarantine = cli._quarantine_phase_with(lambda: items, lambda *args: seen.append(args), "holder")
-    quarantine("i1", "p1", "main_red", "why")
-    assert seen == [("i1", "a", "quarantined", "holder"), ("i1", "b", "quarantined", "holder")]
+    done, moved, marked = _quarantine(rows, attempts={"b": ["i1-9"]})
+    assert done == cli.chair_phase_quarantine.Quarantined(("a", "b"), ())
+    assert moved == [("i1", "a", "approved"), ("i1", "b", "done")]
+    # b's own attempt in i1-9 is newer than any recorded run, so its mark names that run and the attempt never outdates it.
+    assert marked == [("i1", "a", _mark("i1-7")), ("i1", "b", _mark("i1-9"))]
+
+
+def test_quarantine_phase_answers_one_line_per_write_the_store_refused_and_marks_no_row_it_did_not_move() -> None:
+    rows = [_task("a", "p1", "approved"), _task("b", "p1", "approved"), _task("c", "p1", "done")]
+    refused = {"a": cli.store_cli.StateRefused('{"actual": "in_progress", "expected": "approved"}', None)}
+    done, _, marked = _quarantine(rows, answers=refused, refused_marks={"c": "exit 1"})
+    assert done.moved == ("b", "c")
+    assert done.failures == (
+        'warning: store did not record i1/a as quarantined: refused: {"actual": "in_progress", "expected": "approved"}',
+        "warning: store did not record the main_red cause on i1/c: exit 1",
+    )
+    assert [t for _, t, _ in marked] == ["b", "c"]
 
 
 def _watch_row(initiative: str, phase: str, commit: str) -> dict:

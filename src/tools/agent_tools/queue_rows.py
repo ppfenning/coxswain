@@ -63,19 +63,19 @@ def requires_of(fields: Any) -> list[str]:
     return _strs(fields.get("requires")) if isinstance(fields, Mapping) else []
 
 
-def row_requires(row: Row) -> list[str]:
+def row_requires(row: Mapping[str, object]) -> list[str]:
     """`requires:` from a parsed or stored row. It stays in `extra`, not a lifted field: the store's work_items
     table has no requires column, so a lifted key would never persist and every import would read as changed."""
     return requires_of(row.get("extra"))
 
 
-def _initiative_extra(row: Row, key: str) -> Any:
+def _initiative_extra(row: Mapping[str, Any], key: str) -> Any:
     """`extra[key]` of an initiative row; None for any other kind or when absent."""
     extra = row.get("extra")
     return extra.get(key) if row.get("kind") == "initiative" and isinstance(extra, Mapping) else None
 
 
-def epic_of_row(row: Row) -> str | None:
+def epic_of_row(row: Mapping[str, Any]) -> str | None:
     """The epic an initiative row belongs to. A bad value is None, not an error: a chair tick must not crash on a row."""
     from core.epics import valid_epic_id  # lazy: core sits beside agent_tools in one venv
 
@@ -86,7 +86,7 @@ def epic_of_row(row: Row) -> str | None:
         return None
 
 
-def target_branch_of_row(row: Row) -> str | None:
+def target_branch_of_row(row: Mapping[str, Any]) -> str | None:
     """The branch an initiative row lands on. A bad value is None, not an error: a chair tick must not crash on a row."""
     from core.landing import valid_branch  # lazy: core sits beside agent_tools in one venv
 
@@ -205,7 +205,7 @@ def intake_stamp(intake_row: Row, initiative_id: str) -> Row:
     return {**intake_row, "state": _INTAKE_STAMPED_STATE, "extra": extra}
 
 
-def row_path(row: Row) -> str:
+def row_path(row: Mapping[str, Any]) -> str:
     if row["kind"] == "task":
         return f"work/{row['initiative']}/{row['phase']}/{row['task_id']}.md"
     if row["kind"] == "initiative":

@@ -50,18 +50,3 @@ def read_if_changed(dir: Path, last_stamp: Stamp | None) -> tuple[str | None, St
 def is_stale(mtime_ns: int, now_ns: int, interval_s: float) -> bool:
     """True once the snapshot is older than STALE_INTERVALS intervals; exactly that old is not stale."""
     return now_ns - mtime_ns > STALE_INTERVALS * interval_s * 1_000_000_000
-
-
-def follow_step(
-    dir: Path, last_stamp: Stamp | None, handle: IO[str] | None, now_ns: int, interval_s: float
-) -> tuple[str | None, Stamp | None, IO[str] | None]:
-    """One pass: an owner keeps its handle and prints nothing, a follower tries the lock then reads."""
-    if handle is not None:
-        return None, last_stamp, handle
-    won = try_own(dir)
-    if won is not None:
-        return None, last_stamp, won
-    line, stamp = read_if_changed(dir, last_stamp)
-    if stamp is None or is_stale(stamp[0], now_ns, interval_s):
-        return line, stamp, try_own(dir)
-    return line, stamp, None

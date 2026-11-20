@@ -25,14 +25,14 @@ def _cycle_in(facts: Facts, repo: str) -> Cycle | None:
     if len(ready) < 2 or any(_live(e) for e in entries):
         return None
     policy = facts.get("steer_policy")
-    if any(steer_check(i["id"], repo, i["ready_surfaces"], entries, {}, None, policy) is None for i in ready):
+    if any(steer_check(i["id"], repo, i.get("ready_surfaces", []), entries, {}, None, policy) is None for i in ready):
         return None
     return {"repo": repo, "members": [i["id"] for i in ready]}
 
 
 def find_cycle(facts: Facts) -> Cycle | None:
     """The first repo, in order of its first ready initiative, where no run is live and every ready initiative is held by another's approvals."""
-    repos = dict.fromkeys(i["repo"] for i in facts["initiatives"] if i.get("repo") and i.get("ready_surfaces"))
+    repos = dict.fromkeys(repo for i in facts["initiatives"] if (repo := i.get("repo")) and i.get("ready_surfaces"))
     return next((c for repo in repos if (c := _cycle_in(facts, repo)) is not None), None)
 
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-KINDS = ("needs_chair", "host_login", "stall", "release_cut", "decision_card", "needs_attention")
+KINDS = ("needs_chair", "host_login", "stall", "all_clear", "release_cut", "decision_card", "needs_attention")
 
 TITLE_MAX = 60
 BODY_MAX = 200
@@ -48,9 +48,10 @@ def render(event: Event) -> tuple[str, str, str]:
 def due(events: Sequence[Event], sent: Mapping[str, float], now: float,
         window_s: float = 3600) -> tuple[list[Event], dict[str, float]]:
     """Events to push and the new sent map. A key is pushed once per occurrence: while it is in `events` (the hold still
-    stands) it is never pushed again, however old its entry; once it is gone from `events` its entry is kept for
-    `window_s`, so a hold that clears and comes back within that window stays quiet, and is then pruned."""
+    stands) it is never pushed again, and its entry is stamped `now` on every call it stands in; once it is gone from
+    `events` its entry is kept for `window_s` from the last call it stood in, so a hold that clears for a tick or two and
+    comes back stays quiet however long it has stood, and is pruned only after `window_s` with no sign of it."""
     standing = {e.key for e in events}
-    live = {k: t for k, t in sent.items() if k in standing or now - t < window_s}
+    live = {k: (now if k in standing else t) for k, t in sent.items() if k in standing or now - t < window_s}
     fresh = [e for i, e in enumerate(events) if e.key not in live and e.key not in {p.key for p in events[:i]}]
     return fresh, {**live, **{e.key: now for e in fresh}}

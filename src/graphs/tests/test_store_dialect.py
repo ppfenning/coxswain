@@ -11,8 +11,12 @@ from harness.store_dialect import (
     _PG_KEEPALIVES_COUNT,
     _PG_KEEPALIVES_IDLE_S,
     _PG_KEEPALIVES_INTERVAL_S,
+    LOCK_TIMEOUT_MS,
     POSTGRES,
     SQLITE,
+    SQLITE_BUSY_TIMEOUT_MS,
+    STATEMENT_TIMEOUT_MS,
+    TCP_USER_TIMEOUT_MS,
     StoreDriverMissing,
     _pg_connect_kwargs,
     connect,
@@ -21,6 +25,7 @@ from harness.store_dialect import (
     insert_ignore,
     json_load,
     json_text,
+    merged_options,
     upsert,
 )
 
@@ -265,8 +270,35 @@ def test_pg_connect_kwargs_set_the_timeout_and_keepalives():
         "keepalives_idle": _PG_KEEPALIVES_IDLE_S,
         "keepalives_interval": _PG_KEEPALIVES_INTERVAL_S,
         "keepalives_count": _PG_KEEPALIVES_COUNT,
+        "tcp_user_timeout": 60_000,
+        "options": "-c statement_timeout=60000 -c lock_timeout=30000",
         "autocommit": True,
     }
+
+
+def test_every_store_bound_is_set_and_a_lock_wait_is_shorter_than_a_statement():
+    kwargs = _pg_connect_kwargs("postgresql://h/db")
+    assert (STATEMENT_TIMEOUT_MS, LOCK_TIMEOUT_MS, TCP_USER_TIMEOUT_MS) == (60_000, 30_000, 60_000)
+    assert f"statement_timeout={STATEMENT_TIMEOUT_MS}" in kwargs["options"]
+    assert f"lock_timeout={LOCK_TIMEOUT_MS}" in kwargs["options"]
+    assert kwargs["tcp_user_timeout"] == TCP_USER_TIMEOUT_MS
+    assert 0 < LOCK_TIMEOUT_MS < STATEMENT_TIMEOUT_MS and SQLITE_BUSY_TIMEOUT_MS == LOCK_TIMEOUT_MS
+
+
+def test_a_url_that_sets_its_own_options_keeps_them_and_the_bounds():
+    kwargs = _pg_connect_kwargs("postgresql://h/db?options=-c%20search_path%3Dcox")
+    assert kwargs["options"] == "-c statement_timeout=60000 -c lock_timeout=30000 -c search_path=cox"
+    assert kwargs["tcp_user_timeout"] == TCP_USER_TIMEOUT_MS
+
+
+def test_a_url_option_naming_a_bound_comes_last_so_it_wins():
+    kwargs = _pg_connect_kwargs("postgresql://h/db?options=-c%20statement_timeout%3D5000")
+    assert kwargs["options"] == "-c statement_timeout=60000 -c lock_timeout=30000 -c statement_timeout=5000"
+
+
+def test_merged_options_puts_the_bounds_first_and_drops_blank_values():
+    assert merged_options("-c a=1", []) == "-c a=1"
+    assert merged_options("-c a=1", ["  ", "-c b=2", " -c c=3 "]) == "-c a=1 -c b=2 -c c=3"
 
 
 def test_pg_connect_kwargs_keep_caller_supplied_values():

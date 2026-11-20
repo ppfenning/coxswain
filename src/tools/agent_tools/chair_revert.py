@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 
-from agent_tools.chair_types import Action, LandedMain
+from agent_tools.chair_types import Action, ActionKind, LandedMain
 
 
 def revert_reason(m: LandedMain) -> str | None:
@@ -22,7 +22,7 @@ def _action(m: LandedMain) -> Action | None:
     reason = revert_reason(m)
     if reason is not None:
         return Action(
-            kind="revert_land",
+            kind=ActionKind.REVERT_LAND,
             initiative=m["initiative"],
             phase=m["phase"],
             repo=m["repo"],
@@ -32,7 +32,7 @@ def _action(m: LandedMain) -> Action | None:
         )
     if m["ci"] == "infra" and not m.get("green_after", False):
         return Action(
-            kind="rerun_main",
+            kind=ActionKind.RERUN_MAIN,
             initiative=m["initiative"],
             phase=m["phase"],
             repo=m["repo"],

@@ -1,9 +1,9 @@
 """`route hold` and `route release` core: mark a queued intake or an initiative held, or free it again. The edge writes; the name, date and reason come in as arguments."""
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from agent_tools import queue_export, route_guard, run_store
@@ -92,6 +92,19 @@ def released_text(text: str) -> str:
     return _rewritten(text, edit, "stage: ready\n")
 
 
+RELEASED_AT = "released_at"  # the chair counts no decompose run launched before it toward an intake's empty streak
+
+
+def released_at_value(now: datetime) -> str:
+    return now.astimezone(UTC).isoformat(timespec="seconds")
+
+
+def stamped_text(text: str, at: str) -> str:
+    """The intake text with `released_at` set to `at` and nothing else touched."""
+    line = f"{RELEASED_AT}: {json.dumps(at)}"
+    return _rewritten(text, lambda lines: _with_line(lines, RELEASED_AT, line), f"{line}\n")
+
+
 def _initiative_held_text(text: str, reason: str, by: str, date: str) -> str:
     """Initiatives have no stage: `held: true` and `hold_reason`, as before."""
     reason_line = _reason_line(by, date, reason)
@@ -100,6 +113,29 @@ def _initiative_held_text(text: str, reason: str, by: str, date: str) -> str:
         return f"---\nheld: true\n{reason_line}\n---\n{text}"
     eol, lines, rest = split
     return _join(eol, _with_line(_with_line(lines, "held", "held: true"), "hold_reason", reason_line), rest)
+
+
+def initiative_held_as(text: str, value: str) -> str:
+    """The initiative text with `held: true` and `hold_reason` set to `value` as it is: the chair's own hold, whose
+    reason starts with the `needs you:` mark rather than a person's name and date."""
+    line = f"hold_reason: {json.dumps(value, ensure_ascii=False)}"
+    split = _split(text)
+    if split is None:
+        return f"---\nheld: true\n{line}\n---\n{text}"
+    eol, lines, rest = split
+    return _join(eol, _with_line(_with_line(lines, "held", "held: true"), "hold_reason", line), rest)
+
+
+def initiative_row_held_as(row: Mapping[str, object], value: str) -> dict[str, object]:
+    return _initiative_row_held(row, value)
+
+
+def initiative_row_of(rows: Sequence[Mapping[str, object]], initiative: str) -> Mapping[str, object] | None:
+    return _initiative_row(rows, initiative)
+
+
+def is_held_initiative(row: Mapping[str, object]) -> bool:
+    return _was_held(row)
 
 
 def _initiative_released_text(text: str) -> str:
@@ -168,6 +204,20 @@ def _initiative_row_without_held(row: Mapping) -> dict:
     return {**row, "extra": _extra_without(row, _INITIATIVE_KEYS)}
 
 
+def _was_held(row: Mapping) -> bool:
+    return any(key in (row.get("extra") or {}) for key in _INITIATIVE_KEYS)
+
+
+def _initiative_row_released(row: Mapping, mark: Mapping[str, int]) -> dict:
+    """The released initiative's row, marked with the newest number of each of its run series when it was held and has
+    a run: its tasks' attempts and triage requests from those runs or earlier no longer count
+    (`core.workstore.FRESH_AFTER_RUN`)."""
+    from core.workstore import FRESH_AFTER_RUN  # lazy: core sits beside agent_tools in one venv
+
+    freed = _initiative_row_without_held(row)
+    return {**freed, "extra": {**freed["extra"], FRESH_AFTER_RUN: dict(mark)}} if _was_held(row) and mark else freed
+
+
 def _initiative_row_held(row: Mapping, value: str) -> dict:
     return {**row, "extra": {**(row.get("extra") or {}), "held": "true", "hold_reason": value}}
 
@@ -224,14 +274,51 @@ def hold(
     return _apply("hold", ws, runs_dir, plan, rows, lambda row: _row_held(row, value), lambda text: held_text(text, reason, by, date), value, dry_run)
 
 
-def release(ws: Path, runs_dir: Path, id: str, rows: Sequence[Mapping], *, dry_run: bool = False) -> int:
-    """Edge. Exit codes as `hold`. Releasing an initiative that is not held, or an intake that is ready and not held, writes nothing."""
+def _row_released(row: Mapping, at: str) -> dict:
+    freed = _row_without_held(row)
+    return {**freed, "extra": {**freed["extra"], RELEASED_AT: at}}
+
+
+def release(
+    ws: Path, runs_dir: Path, id: str, rows: Sequence[Mapping], *, initiative_live: Collection[str], dry_run: bool = False,
+    now: datetime | None = None,
+) -> int:
+    """Edge. Exit codes as `hold`. Releasing an initiative that is not held writes nothing.
+
+    A held initiative's row is marked with the initiative's newest run (`core.workstore.FRESH_AFTER_RUN`), so the next run
+    builds its tasks fresh rather than triaging or capping them on the attempts before the release. So an initiative is
+    refused while one of its runs is live (`initiative_live`, every live run, required so no caller skips the check): that
+    run could still record an attempt numbered below the mark.
+
+    With `now`, a released intake's row and file also get `released_at`, so the chair stops counting the intake's earlier
+    empty decompose runs; then even an intake that was ready and not held is written. Without it, such an intake writes nothing."""
     plan = plan_release(rows, id)
     if isinstance(plan, Refused):
         return _refuse("release", plan.reason)
     if isinstance(plan, route_guard.InitiativeFound):
-        return _apply("release", ws, runs_dir, plan, rows, _initiative_row_without_held, _initiative_released_text, "held fields removed", dry_run)
-    return _apply("release", ws, runs_dir, plan, rows, _row_without_held, released_text, "stage ready, hold removed", dry_run)
+        if running := route_guard.live_on(plan.initiative, initiative_live):
+            return _refuse("release", route_guard.live_refusal(running[0], plan.initiative, f"releasing {plan.initiative}"))
+        from core.workstore import fresh_mark  # lazy: core sits beside agent_tools in one venv
+
+        mark = fresh_mark(plan.initiative, run_store.run_ids(runs_dir))
+        row = _initiative_row(rows, plan.initiative)
+        if not mark and row is not None and _was_held(row):
+            print(
+                f"release: warning: no run of {plan.initiative} found in the store; no fresh_after_run mark written, "
+                "so its tasks' attempts from earlier runs still count"
+            )
+        after = ", ".join(f"{series}-{number}" for series, number in sorted(mark.items()))
+        return _apply(
+            "release", ws, runs_dir, plan, rows, lambda row: _initiative_row_released(row, mark), _initiative_released_text,
+            "held fields removed" + (f", tasks start fresh after {after}" if mark else ""), dry_run,
+        )
+    if now is None:
+        return _apply("release", ws, runs_dir, plan, rows, _row_without_held, released_text, "stage ready, hold removed", dry_run)
+    at = released_at_value(now)
+    return _apply(
+        "release", ws, runs_dir, plan, rows, lambda row: _row_released(row, at),
+        lambda text: stamped_text(released_text(text), at), f"stage ready, hold removed, released at {at}", dry_run,
+    )
 
 
 def set_stage(ws: Path, runs_dir: Path, target_id: str, stage: str, rows: Sequence[Mapping], dry_run: bool = False) -> int:

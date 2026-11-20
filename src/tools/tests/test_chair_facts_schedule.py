@@ -1,7 +1,6 @@
 import json
 import sqlite3
 from dataclasses import replace
-from typing import get_args
 
 from test_chair_facts_phases import NOW, _deps, _write
 
@@ -175,7 +174,7 @@ def _recorded(tmp_path, monkeypatch, lines):
         conn.row_factory = sqlite3.Row
         return conn, "?"
 
-    monkeypatch.setattr(run_store, "_open", open_store)
+    monkeypatch.setattr(run_store, "open_store", open_store)
     record = recorder(tmp_path, lambda: 4, lambda: clock[0], store=store, holder="h")
     for stamp, action in lines:
         clock[0] = stamp
@@ -209,7 +208,7 @@ def test_hosts_load_and_mode_come_from_the_dispatch_facts():
 
 
 def test_schedule_updated_is_an_action_kind():
-    assert "schedule_updated" in get_args(ActionKind)
+    assert ActionKind("schedule_updated") is ActionKind.SCHEDULE_UPDATED
 
 
 def _running(**kw):

@@ -1,6 +1,5 @@
 import logging
 import sqlite3
-import sys
 from pathlib import Path
 
 from agent_tools import run_store
@@ -99,8 +98,7 @@ def test_is_ahead_of_store_on_literals() -> None:
 def test_export_hashes_round_trip_is_additive_and_safe_to_rerun(tmp_path: Path, monkeypatch) -> None:
     db = tmp_path / "cox.db"
     sqlite3.connect(db).close()
-    monkeypatch.setattr(run_store, "_harness_python", lambda: Path(sys.executable))
-    monkeypatch.setattr(run_store, "_store_url", lambda runs_dir: f"sqlite:///{db}")
+    monkeypatch.setattr(run_store, "store_url_for", lambda runs_dir: f"sqlite:///{db}")
     assert run_store.export_hashes(tmp_path) == {}
     assert run_store.set_export_hash(tmp_path, "queue", "codec", "aaa")
     assert run_store.set_export_hash(tmp_path, "queue", "codec", "bbb")

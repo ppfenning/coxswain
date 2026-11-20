@@ -4,7 +4,6 @@ CONTRACT (implement against this; see docs/CLEAN-ROOM.md — write it fresh)
 
     build_manifest(...) -> dict          # pure
     gate_diff(proposal, decision, applied, edited) -> dict   # pure
-    agreement_rate(manifest) -> float    # pure
     record_run(manifest, ...) -> None    # THE I/O EDGE: writes runs/ + ledger
     append_ledger(manifest, ...) -> None # I/O edge: ledger rows only
 
@@ -19,7 +18,6 @@ Design rules:
 4.  `human_minutes` is run-level and entered AT THE GATE, not reconstructed
     later. A time saving recalled a month afterwards convinces nobody, least
     of all the person who has to fund the next quarter of this.
-5.  `agreement_rate` answers "how often was it right" from gate diffs alone.
 
 Shell duty after a run is two calls — build_manifest, then record_run — not a
 convention someone has to remember.
@@ -30,13 +28,12 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import cast
 
 from core import ledger
 
 __all__ = [
     "ManifestError",
-    "agreement_rate",
     "append_ledger",
     "build_manifest",
     "gate_diff",
@@ -65,13 +62,13 @@ def build_manifest(
     run_id: str,
     ts: str,
     principal: str,
-    cartridge: Mapping[str, Any],
+    cartridge: Mapping[str, object],
     provider_profile: str,
-    proposals: Sequence[Mapping[str, Any]],
-    gate_diffs: Sequence[Mapping[str, Any]] = (),
+    proposals: Sequence[Mapping[str, object]],
+    gate_diffs: Sequence[Mapping[str, object]] = (),
     human_minutes: float | None = None,
-    totals: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
+    totals: Mapping[str, object] | None = None,
+) -> dict[str, object]:
     """Assemble the run record. Pure — every input is passed in, nothing read.
 
     `ts` and `run_id` are arguments for the same reason a graph's date is: a run
@@ -97,11 +94,11 @@ def build_manifest(
 
 
 def gate_diff(
-    proposal: Mapping[str, Any],
+    proposal: Mapping[str, object],
     decision: str,
     applied: bool,
     edited: bool,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     """One human decision at the gate, reduced to the fields policy reads.
 
     The outcome is DERIVED here rather than supplied, so no caller can assert a
@@ -121,7 +118,7 @@ def gate_diff(
         outcome = "clean"
     else:
         outcome = "skipped"
-    diff = {
+    diff: dict[str, object] = {
         "kind": proposal.get("kind"),
         "risk": proposal.get("risk"),
         "target": proposal.get("target"),
@@ -136,26 +133,12 @@ def gate_diff(
     return diff
 
 
-def agreement_rate(manifest: Mapping[str, Any]) -> float:
-    """How often the gate accepted what was proposed, unedited.
-
-    Denominator is decisions actually made — a proposal nobody ruled on says
-    nothing about agreement, and padding the denominator with it would quietly
-    depress a number this whole system is judged by.
-    """
-    diffs = manifest.get("gate_diffs") or []
-    decided = [d for d in diffs if d.get("outcome") in {"clean", "reversal"}]
-    if not decided:
-        return 0.0
-    return sum(1 for d in decided if d["outcome"] == "clean") / len(decided)
-
-
-def append_ledger(manifest: Mapping[str, Any], *, ledger_path: Path | str) -> None:
+def append_ledger(manifest: Mapping[str, object], *, ledger_path: Path | str) -> None:
     """Derive ledger rows from the manifest's gate diffs and append them; writes no manifest file."""
     if not manifest.get("run_id"):
         raise ManifestError("manifest has no run_id")
 
-    rows = [
+    rows: list[dict[str, object]] = [
         {
             "run_id": manifest["run_id"],
             "ts": manifest["ts"],
@@ -167,13 +150,13 @@ def append_ledger(manifest: Mapping[str, Any], *, ledger_path: Path | str) -> No
             "provider_profile": manifest["provider_profile"],
             **{field: diff[field] for field in CARRIED_TO_LEDGER if field in diff},
         }
-        for diff in manifest.get("gate_diffs") or []
+        for diff in cast("Sequence[Mapping[str, object]]", manifest.get("gate_diffs") or [])
     ]
     ledger.append(rows, ledger_path)
 
 
 def record_run(
-    manifest: Mapping[str, Any],
+    manifest: Mapping[str, object],
     *,
     runs_dir: Path | str,
     ledger_path: Path | str,

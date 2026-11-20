@@ -38,8 +38,10 @@ from agent_tools.chair_exec import (
     smoke_targets,
     tail,
 )
-from agent_tools.chair_facts import STRANDED_CAUSE
+from agent_tools.chair_facts import STRANDED_CAUSE, stale_draft_keys
+from agent_tools.chair_plan_stale import plan_stale
 from agent_tools.chair_report import format_status
+from agent_tools.chair_types import ActionKind
 from agent_tools.draft_apply import plan_approve
 from agent_tools.remote_argv import probe_argv, ssh_argv, sync_argv
 from agent_tools.store_url import TracesRoot
@@ -195,7 +197,7 @@ def test_a_failed_command_records_its_stdout_verdict_before_its_stderr_noise(mon
     done = chair_exec.ArgvResult(2, stdout, stderr, stdout + stderr)
     monkeypatch.setattr(chair_exec, "run_argv_split", lambda *a, **k: done)
     code, output = run_argv(argv)
-    reason = chair_exec._recorded({"action": {"kind": "fetch_exit", "run": "r-1"}, "status": "failed", "reason": output})["reason"]
+    reason = chair_exec.recorded_action({"action": {"kind": "fetch_exit", "run": "r-1"}, "status": "failed", "reason": output})["reason"]
     assert code == 2
     assert reason.startswith(start)
     assert reason.endswith(end)
@@ -401,17 +403,16 @@ def test_a_carry_conflict_is_surfaced_as_needs_chair_and_marks_nothing_landed() 
 
 
 def _store_edge(tmp_path, monkeypatch, pr_url: str) -> tuple[list, chair_exec._StoreEdge]:
-    argvs: list = []
+    calls: list = []
 
-    def fake_run(build, run=None):
-        argvs.append(build("py"))
-        return 0, "{}"
+    def fake_mark_landed(runs_dir, run, phase, task, pr, at):
+        calls.append((run, phase, task, pr, at))
+        return chair_exec.store_cli.Landed({})
 
-    monkeypatch.setattr(chair_exec.store_cli, "_run", fake_run)
-    monkeypatch.setattr(chair_exec.store_cli, "_store_url", lambda runs_dir: None)
+    monkeypatch.setattr(chair_exec.store_cli, "mark_landed", fake_mark_landed)
     forge = chair_exec._ForgeEdge(None)
     forge.pr_url = pr_url
-    return argvs, chair_exec._StoreEdge(tmp_path, tmp_path, _carry(), forge, lambda: "2026-10-05T00:00:00+00:00")
+    return calls, chair_exec._StoreEdge(tmp_path, tmp_path, _carry(), forge, lambda: "2026-10-05T00:00:00+00:00")
 
 
 @pytest.mark.parametrize(
@@ -419,19 +420,16 @@ def _store_edge(tmp_path, monkeypatch, pr_url: str) -> tuple[list, chair_exec._S
     [
         (
             "https://github.com/o/r/pull/7",
-            [[
-                "py", "-m", "harness.store_cli", "mark-landed", "run-1", "p1", "t1",
-                "--pr", "https://github.com/o/r/pull/7", "--at", "2026-10-05T00:00:00+00:00",
-            ]],
+            [("run-1", "p1", "t1", "https://github.com/o/r/pull/7", "2026-10-05T00:00:00+00:00")],
         ),
         ("", []),
     ],
     ids=["pr_opened", "no_pr"],
 )
 def test_the_store_edge_stamps_the_pr_url_open_pr_returned_and_writes_nothing_without_one(tmp_path, monkeypatch, pr_url, expected) -> None:
-    argvs, store = _store_edge(tmp_path, monkeypatch, pr_url)
+    calls, store = _store_edge(tmp_path, monkeypatch, pr_url)
     store.mark_landed("t1", "run-1")
-    assert argvs == expected
+    assert calls == expected
 
 
 def test_the_forge_edge_keeps_only_the_url_gh_printed(monkeypatch) -> None:
@@ -1416,6 +1414,16 @@ def test_a_rescue_launches_through_cox_route_launch_rescue() -> None:
     assert [r["status"] for r in results] == ["done"]
 
 
+@pytest.mark.parametrize(("code", "marked"), [(0, ["rescue:t1:a-3"]), (1, [])])
+def test_a_launched_rescue_marks_its_task_state_handled_and_a_failed_launch_does_not(code: int, marked: list) -> None:
+    # The rescue run may answer not_eligible and write nothing: its key is what keeps the next tick from launching it again.
+    calls: list = []
+    handled: list[str] = []
+    deps = replace(_deps(calls, code=code), mark_handled=handled.append)
+    perform([{"kind": "rescue", "initiative": "a", "task_id": "t1", "key": "rescue:t1:a-3", "epoch": 1}], deps, lambda: 1, False)
+    assert handled == marked
+
+
 @pytest.mark.parametrize(
     "action",
     [
@@ -1857,7 +1865,7 @@ def _hk_deps(monkeypatch, calls: list, fail: tuple = ()) -> Deps:
         calls.append(argv)
         return (1, f"boom: {argv[0]}") if argv in fail else (0, "ok")
 
-    monkeypatch.setattr(chair_exec.run_store, "_traces_root", lambda runs_dir: TracesRoot("t/traces", False))
+    monkeypatch.setattr(chair_exec.run_store, "traces_root_for", lambda runs_dir: TracesRoot("t/traces", False))
     return Deps(
         run=run, delete_branches=lambda repo, pattern: ([], ""), acquire_lease=lambda holder, host: "",
         record=lambda action: None, run_id=lambda action: "", repo_for=lambda action: "",
@@ -1951,6 +1959,62 @@ def test_a_stale_to_draft_for_an_already_draft_initiative_writes_nothing(tmp_pat
     assert (tmp_path / "work" / "demo" / "initiative.md").read_text(encoding="utf-8") == before_initiative
     assert (tmp_path / "work" / "demo" / "phase-1" / "t1.md").read_text(encoding="utf-8") == before_ticket
     assert not (tmp_path / "courier.jsonl").exists()
+
+
+def _store_rows(held: bool) -> list[dict]:
+    extra = {"held": "true"} if held else {}
+    return [
+        {"kind": "initiative", "initiative": "demo", "task_id": "demo", "phase": None, "state": "todo", "needs": [],
+         "title": "Demo", "surfaces": [], "body": "Prose.\n", "extra": extra},
+        {"kind": "task", "initiative": "demo", "task_id": "t1", "phase": "phase-1", "state": "ready", "needs": [],
+         "title": "T1", "surfaces": [], "body": "Ticket body.\n", "extra": {}},
+    ]
+
+
+def _write_exported(tmp_path, rows: list[dict]) -> dict[str, tuple[str, int]]:
+    """Write the files the board export renders for `rows`; return each path's text and mtime."""
+    for rel, text in queue_export.export_rows(rows).items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text, encoding="utf-8")
+    return _snapshot(tmp_path)
+
+
+def _snapshot(tmp_path) -> dict[str, tuple[str, int]]:
+    return {str(p.relative_to(tmp_path)): (p.read_text(encoding="utf-8"), p.stat().st_mtime_ns) for p in sorted((tmp_path / "work").rglob("*.md"))}
+
+
+def test_a_stale_to_draft_the_board_export_would_restore_writes_nothing_and_sends_no_note(tmp_path) -> None:
+    rows = _store_rows(held=False)
+    before = _write_exported(tmp_path, rows)
+    deps = replace(_stale_deps([], tmp_path), initiative_rows=lambda: rows)
+    [result] = perform([_stale_action()], deps, lambda: 1, False)
+    assert result["status"] == "refused"
+    assert "store" in result["reason"]
+    assert _snapshot(tmp_path) == before
+    assert not (tmp_path / "courier.jsonl").exists()
+
+
+def test_a_held_initiative_across_several_ticks_is_never_rewritten_and_is_refused_once(tmp_path) -> None:
+    rows = _store_rows(held=True)
+    before = _write_exported(tmp_path, rows)
+    recorded: list = []
+    deps = replace(_stale_deps([], tmp_path), initiative_rows=lambda: rows, record=recorded.append)
+    candidate = {"initiative": "demo", "task_id": "t1", "state": "ready", "last_file_change": "2026-09-01T00:00:00+00:00",
+                 "last_run": None, "last_chair_action": None, "quarantine_non_harness_count": 0}
+    planned = []
+    for tick in range(4):
+        now = datetime(2026, 9, 27, 12, 3 * tick, tzinfo=UTC)
+        facts = {"stale_days": 7, "initiatives": [], "stale_candidates": [candidate],
+                 "stale_drafts_reported": stale_draft_keys([{"action_json": a} for a in recorded])}
+        actions = [{**a, "epoch": 1} for a in plan_stale(facts, now)]  # type: ignore[arg-type]
+        planned += actions
+        perform(actions, deps, lambda: 1, False)
+    assert len(planned) == 1
+    assert [a["status"] for a in recorded if a["kind"] == "stale_to_draft"] == ["refused"]
+    assert _snapshot(tmp_path) == before
+    assert not (tmp_path / "courier.jsonl").exists()
+    held_facts = {"stale_days": 7, "initiatives": [], "stale_candidates": [candidate], "held_initiatives": ["demo"]}
+    assert plan_stale(held_facts, datetime(2026, 9, 27, 13, tzinfo=UTC)) == []  # type: ignore[arg-type]
 
 
 def _signal_deps(calls: list, tmp_path) -> Deps:
@@ -2361,3 +2425,17 @@ def test_a_merging_launch_with_no_runs_directory_fails_before_touching_anything(
     assert [r["status"] for r in results] == ["failed"]
     assert "runs directory" in results[0]["reason"]
     assert {name: path.read_text() for name, path in files.items()} == before and set(store) == {("initiative", "init")}
+
+
+@pytest.mark.parametrize("kind", [ActionKind.LAND_BATCH, "land_batch"])
+def test_a_planned_only_kind_is_refused_naming_its_plain_value(kind):
+    """Built with the enum or read back from the log as a string, the refusal names the kind's value, never its repr."""
+    calls: list = []
+    [result] = perform([{"kind": kind, "epoch": 1}], _deps(calls), lambda: 1, False)
+    assert (result["status"], result["reason"]) == ("refused", "unsupported action kind 'land_batch'")
+
+
+def test_an_unknown_kind_is_refused_naming_it():
+    calls: list = []
+    [result] = perform([{"kind": "no_such_kind", "epoch": 1}], _deps(calls), lambda: 1, False)
+    assert (result["status"], result["reason"]) == ("refused", "unsupported action kind 'no_such_kind'")

@@ -1,9 +1,20 @@
 """Select the previous run's phase worktrees to prune before a relaunch."""
 
+from collections.abc import Sequence
+from collections.abc import Set as AbstractSet
+from typing import TypedDict
+
+from agent_tools.chair_types import ApprovedTask
+
 _HEADS = "refs/heads/"
 
 
-def _entry(block: str) -> dict:
+class Worktree(TypedDict):
+    path: str
+    branch: str  # empty when detached or bare
+
+
+def _entry(block: str) -> Worktree:
     """Path and branch of one porcelain block; the branch is empty when detached or bare."""
     lines = block.splitlines()
     path = next((ln[len("worktree "):] for ln in lines if ln.startswith("worktree ")), "")
@@ -11,19 +22,19 @@ def _entry(block: str) -> dict:
     return {"path": path, "branch": ref[len(_HEADS):] if ref.startswith(_HEADS) else ""}
 
 
-def worktrees_to_prune(porcelain: str, initiative: str) -> list[dict]:
+def worktrees_to_prune(porcelain: str, initiative: str) -> list[Worktree]:
     """Worktrees on epic/<initiative>/<phase>, in porcelain order; git lists the main checkout first, so it is skipped."""
     blocks = [b for b in porcelain.strip().split("\n\n") if b.strip()]
     prefix = f"epic/{initiative}/"
     return [e for e in map(_entry, blocks[1:]) if e["path"] and e["branch"].startswith(prefix)]
 
 
-def phases_to_carry(approved: list[dict], initiative: str) -> set[str]:
+def phases_to_carry(approved: Sequence[ApprovedTask], initiative: str) -> set[str]:
     """Phases of the initiative's approved rows that are not yet phase_done: partial work a prune must not delete."""
     return {r["phase"] for r in approved if r["initiative"] == initiative and not r["phase_done"]}
 
 
-def prune_argv(entries: list[dict], carry: set[str] = frozenset()) -> list[list[str]]:
+def prune_argv(entries: Sequence[Worktree], carry: AbstractSet[str] = frozenset()) -> list[list[str]]:
     """Every worktree remove first, then a branch delete for every entry not on a carried phase.
 
     git refuses to delete a branch a worktree holds, so removes go first regardless of carry.

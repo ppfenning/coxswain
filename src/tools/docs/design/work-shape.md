@@ -114,7 +114,7 @@ G1 and G2 were done by hand. `cox route groups` prints the latest file.
 prune dead registrations in a `finally` on every exit path — quarantine, budget stop, `RunnerError`,
 `KeyboardInterrupt` — not only on land. Branches are left for `land`. A run that wants its worktree kept for
 post-mortem sets `--keep-worktrees`, which moves them under `<worktree_root>/_kept/<run_id>` with a 7-day
-expiry the next run sweeps. Before creating a phase worktree, `_open_phase_worktree` runs `git worktree
+expiry the next run sweeps. Before creating a phase worktree, `open_phase_worktree` runs `git worktree
 prune` so a stale registration can never block a branch name (the 2026-09-08 `tools-chair-rename-18`
 failure).
 

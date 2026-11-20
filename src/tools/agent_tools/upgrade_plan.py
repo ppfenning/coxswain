@@ -1,4 +1,5 @@
 """Pure upgrade planner: what an upgrade must do and which components it leaves behind. No file, process, network or clock access."""
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -36,6 +37,16 @@ class Plan:
 def release_tag(version: str) -> str:
     """A release tag always carries a leading v; a bare 0.43.0 becomes v0.43.0, a bare 2026.10.0 v2026.10.0."""
     return release_version.release_tag(version)
+
+
+_COMMIT = re.compile(r"[0-9a-f]{7,40}")
+
+
+def target_ref(value: str) -> str:
+    """What `cox upgrade --to` checks out: a commit (7 to 40 hex digits) as given, lower case, else the release tag
+    of a version. No release is spelled in hex digits alone: every one has dots."""
+    text = value.strip().lower()
+    return text if _COMMIT.fullmatch(text) else release_tag(value)
 
 
 def _decide(

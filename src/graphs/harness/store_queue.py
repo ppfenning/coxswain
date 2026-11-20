@@ -19,20 +19,19 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import cast
 
-from harness.store_dialect import Connection, connect, json_load, json_text
+from harness.store_dialect import Cell, Connection, JsonObject, connect, json_load, json_text
 from harness.store_dialect import upsert as upsert_sql
+from harness.store_types import Claim, QueueRow
 
 __all__ = ["claim", "read", "release", "upsert"]
 
 EXIT_OK = 0
 EXIT_BAD_INPUT = 2
 EXIT_CLAIMED = 4
-
-Row = dict[str, Any]
 
 # Every column read/upsert touches, in select order. The claim columns (holder, epoch,
 # expires_at) are last: claim and release below address them directly, by name, and
@@ -51,12 +50,12 @@ _CONTENT = (
 _KEY_COLS = ("initiative", "task_id")
 
 
-def _decode(cols: Sequence[str], row: Sequence[Any]) -> Row:
+def _decode(cols: Sequence[str], row: Sequence[Cell]) -> QueueRow:
     """Column names zipped to a row; needs_json, surfaces_json and extra_json decoded and renamed."""
-    return {_RENAME.get(c, c): (json_load(v) if c in _RENAME else v) for c, v in zip(cols, row)}
+    return cast(QueueRow, {_RENAME.get(c, c): (json_load(v) if c in _RENAME else v) for c, v in zip(cols, row)})
 
 
-def read(conn: Connection, initiative: str | None = None, kind: str | None = None) -> list[Row]:
+def read(conn: Connection, initiative: str | None = None, kind: str | None = None) -> list[QueueRow]:
     """Queue rows, optionally filtered by initiative and/or kind, in (initiative, task_id) order."""
     p = conn.dialect.placeholder
     filters = [(col, val) for col, val in (("initiative", initiative), ("kind", kind)) if val is not None]
@@ -65,7 +64,7 @@ def read(conn: Connection, initiative: str | None = None, kind: str | None = Non
     return [_decode(_QUEUE_COLS, r) for r in conn.query_all(sql, [val for _, val in filters])]
 
 
-def _insert_row(row: Row) -> Row:
+def _insert_row(row: Mapping[str, object]) -> dict[str, object]:
     """`row` (read()'s decoded shape) turned into the insert column values upsert writes; holder/epoch/expires_at excluded."""
     return {
         "initiative": row["initiative"],
@@ -89,20 +88,20 @@ def _insert_row(row: Row) -> Row:
     }
 
 
-def _params(values: Row) -> list[Any]:
+def _params(values: Mapping[str, object]) -> list[object]:
     return [json_text(v) if c in _RENAME and v is not None else v for c, v in values.items()]
 
 
-def _current(conn: Connection, initiative: str, task: str) -> Row | None:
+def _current(conn: Connection, initiative: str, task: str) -> QueueRow | None:
     return next((r for r in read(conn, initiative) if r["task_id"] == task), None)
 
 
-def _unchanged(current: Row | None, row: Row) -> bool:
+def _unchanged(current: QueueRow | None, row: Mapping[str, object]) -> bool:
     """True when the stored row already holds every content field `row` carries; updated_at and updated_by do not count."""
-    return current is not None and all(current[k] == row.get(k) for k in _CONTENT)
+    return current is not None and all(cast(Mapping[str, object], current)[k] == row.get(k) for k in _CONTENT)
 
 
-def _priority_problem(row: Row) -> str | None:
+def _priority_problem(row: Mapping[str, object]) -> str | None:
     """A refusal message when `row` carries a priority that is not an integer; a bool is not one."""
     value = row.get("priority", 0)
     if isinstance(value, int) and not isinstance(value, bool):
@@ -110,7 +109,7 @@ def _priority_problem(row: Row) -> str | None:
     return f"priority must be an integer, got {value!r}"
 
 
-def _issue_number_problem(row: Row) -> str | None:
+def _issue_number_problem(row: Mapping[str, object]) -> str | None:
     """A refusal message when `row` carries an issue_number that is neither None nor an integer; a bool is not one."""
     value = row.get("issue_number")
     if value is None or (isinstance(value, int) and not isinstance(value, bool)):
@@ -118,7 +117,7 @@ def _issue_number_problem(row: Row) -> str | None:
     return f"issue_number must be an integer, got {value!r}"
 
 
-def upsert(conn: Connection, row: Row) -> bool:
+def upsert(conn: Connection, row: Mapping[str, object]) -> bool:
     """Insert a new (initiative, task_id) row, or update its queue columns; False when the content was already stored.
 
     holder, epoch and expires_at are not in the column list, so the SET never touches a claim.
@@ -131,9 +130,11 @@ def upsert(conn: Connection, row: Row) -> bool:
     if problem is not None:
         raise ValueError(problem)
     with conn.transaction():
-        current = _current(conn, row["initiative"], row["task_id"])
+        current = _current(conn, cast(str, row["initiative"]), cast(str, row["task_id"]))
         stored = 0 if current is None else current["priority"]
-        kept = {} if current is None else {k: current[k] for k in _CONTENT if k not in row}
+        kept: dict[str, object] = (
+            {} if current is None else {k: cast(Mapping[str, object], current)[k] for k in _CONTENT if k not in row}
+        )
         resolved = {**kept, **row, "priority": row.get("priority", stored)}
         values = _insert_row(resolved)
         # store_dialect.upsert overwrites every listed column, updated_at included: this guard keeps
@@ -150,7 +151,7 @@ def _until(now: str, ttl_s: int) -> str:
     return (parsed + timedelta(seconds=ttl_s)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def claim(conn: Connection, initiative: str, task: str, holder: str, ttl_s: int, now: str) -> Row | None:
+def claim(conn: Connection, initiative: str, task: str, holder: str, ttl_s: int, now: str) -> Claim | None:
     """Claim (initiative, task) for `holder`, bumping epoch by one and setting expires_at = now + ttl_s.
 
     Wins in one conditional UPDATE when the row is unclaimed, its expires_at is before `now`, or its
@@ -171,7 +172,11 @@ def claim(conn: Connection, initiative: str, task: str, holder: str, ttl_s: int,
             f"SELECT holder, epoch, expires_at FROM work_items WHERE initiative = {p} AND task_id = {p}",
             [initiative, task],
         )
-    return None if row is None else {"holder": row[0], "epoch": row[1], "expires_at": row[2]}
+    return (
+        None
+        if row is None
+        else {"holder": cast(str, row[0]), "epoch": cast(int, row[1]), "expires_at": cast(str, row[2])}
+    )
 
 
 def release(conn: Connection, initiative: str, task: str, holder: str) -> bool:
@@ -184,14 +189,14 @@ def release(conn: Connection, initiative: str, task: str, holder: str) -> bool:
     return conn.execute(sql, [initiative, task, holder]) == 1
 
 
-def _json_object(text: str) -> Row:
+def _json_object(text: str) -> JsonObject:
     try:
         value = json.loads(text)
     except ValueError:
         raise argparse.ArgumentTypeError(f"not JSON: {text!r}") from None
     if not isinstance(value, dict):
         raise argparse.ArgumentTypeError("must be a JSON object")
-    return value
+    return cast(JsonObject, value)
 
 
 def _positive_int(text: str) -> int:
@@ -205,7 +210,7 @@ def _positive_int(text: str) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(prog="python -m harness.store_queue", description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(prog="python -m harness.store_queue", description=cast(str, __doc__).splitlines()[0])
     commands = ap.add_subparsers(dest="command", required=True)
 
     r = commands.add_parser("read", help="print one JSON object per queue row, one per line")

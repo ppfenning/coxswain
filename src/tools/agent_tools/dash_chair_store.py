@@ -5,6 +5,7 @@ import sys
 from collections.abc import Iterable, Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any, cast
 
 from agent_tools import run_store
 from agent_tools.chair import LEASE_NAME
@@ -33,7 +34,7 @@ def _aware(value: object) -> datetime | None:
 
 def _tick_fields(status: object, now: datetime) -> dict:
     """last_tick_at, last_status, current_action and tick_age_s from the lease's `status` cell; all None unless it is a JSON object."""
-    doc = run_store._json_cell(status) if status else None
+    doc = run_store.json_cell(status) if status else None
     if not isinstance(doc, dict):
         return {"last_tick_at": None, "last_status": None, "current_action": None, "tick_age_s": None}
     tick_at = _iso(doc.get("tick_at"))
@@ -72,7 +73,7 @@ def chair_from_store(
     return {
         "holder": label,
         "host": str(lease.get("host") or rest.split(":", 1)[0]),
-        "epoch": int(lease.get("epoch") or 0),
+        "epoch": int(cast(Any, lease.get("epoch") or 0)),
         "liveness": _liveness(full, lease.get("expires_at"), now),
         "beat_age_s": max(0, age) if age is not None else 0,
         **_tick_fields(lease.get("status"), now),
@@ -82,7 +83,7 @@ def chair_from_store(
 
 def _flat(row: Mapping[str, object]) -> dict:
     """A `chair_actions` row with its `action_json` keys beneath the row's own columns."""
-    doc = run_store._json_cell(row.get("action_json"))
+    doc = run_store.json_cell(row.get("action_json"))
     return {**(doc if isinstance(doc, dict) else {}), **{k: v for k, v in row.items() if k != "action_json"}}
 
 
@@ -97,15 +98,15 @@ def read_chair_rows(runs_dir: Path, now: datetime, utc_offset: timedelta) -> tup
     None with no store, no chair lease, or a store error; an error also prints one line to stderr so a fallback is visible.
     """
     try:
-        opened = run_store._open(runs_dir)
+        opened = run_store.open_store(runs_dir)
         if opened is None:
             return None
         conn, token = opened
         try:
-            lease = conn.execute(run_store._sql("SELECT * FROM leases WHERE name = {p}", token), (LEASE_NAME,)).fetchone()
+            lease = conn.execute(run_store.sql_for("SELECT * FROM leases WHERE name = {p}", token), (LEASE_NAME,)).fetchone()
             if lease is None:
                 return None
-            sql = run_store._sql("SELECT * FROM chair_actions WHERE ts >= {p}", token)
+            sql = run_store.sql_for("SELECT * FROM chair_actions WHERE ts >= {p}", token)
             rows = conn.execute(sql, (_since(now, utc_offset),)).fetchall()
             return dict(lease), [_flat(dict(r)) for r in rows]
         finally:

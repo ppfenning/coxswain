@@ -19,12 +19,12 @@ import hashlib
 import json
 import logging
 import os
-import subprocess
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
+from agent_tools import bounded_run
 from agent_tools.queue_rows import _split_frontmatter, render_item, row_path
 
 Row = dict[str, Any]
@@ -123,7 +123,7 @@ def held_files(
 def committed_blob(workspace: Path, path: str) -> str | None:
     """Edge: the blob id of `path` at the workspace's HEAD, None when it is untracked or git cannot answer."""
     try:
-        done = subprocess.run(
+        done = bounded_run.completed(
             ["git", "-C", str(workspace), "rev-parse", "--verify", "--quiet", f"HEAD:./{path}"],
             capture_output=True, text=True, check=False,
         )
@@ -306,7 +306,7 @@ def store_hashes(runs_dir: Path) -> Hashes:
     return Hashes(run_store.export_hashes(runs_dir), functools.partial(run_store.set_export_hash, runs_dir))
 
 
-def is_contentless(row: Row) -> bool:
+def is_contentless(row: Mapping[str, Any]) -> bool:
     """True for a row with nothing to render: no kind, or title, body and extra all None."""
     return row.get("kind") is None or all(row.get(key) is None for key in ("title", "body", "extra"))
 

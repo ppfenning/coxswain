@@ -39,16 +39,29 @@ else about the attempt changes.
 The `triage` node that follows must cite exactly the keys `facts` produced; a
 cite naming one it did not produce is a fabricated citation, and
 `check_citation` is the mechanical check that catches it — alongside zero
-cites and a diagnosis that quotes no objection text.
+cites and a diagnosis that quotes no objection text, or, when review did not
+object, no line of the failed check's output.
 
 `_objections` collects the record's own words — each attempt's reason,
 review finding, adversary claim and counter, and arbitration reasoning — the
-vocabulary `check_citation` holds a diagnosis to. `_already_fired` reads
+vocabulary `check_citation` holds a diagnosis to when review, adversary or
+arbitration objected (`_review_objected`). `_check_output` collects the lines
+of each attempt's `evidence`; a quarantine from a failed configured check that
+review approved holds no objection, so the diagnosis may quote one of those
+lines instead. `_already_fired` reads
 `attempts[].triage` for a prior run's `(class, diagnosis)`: an exact repeat
 means the cap was already cleared on this reasoning once, and clearing it
 again teaches nothing, so `run` escalates instead of emitting again. `_emit`
 is the class table in §1 made mechanical: the graph never invents which
 write kind a class deserves.
+
+The chair asks for triage of a quarantine that needs a tweak, so the model
+decides from the whole initiative: `initiative_context` carries the goal, the
+phases with their goals and every sibling task. Each class names the `effect`
+the epic applies: `rebuild` (ticket_defect), `hold` (platform_defect, shape,
+hold, and an escalated repeat), `drop` and `combine` (into a named open
+sibling). `triaged` carries the triage records the store kept for this task,
+which the repeat guard reads beside `attempts[].triage`.
 """
 
 from __future__ import annotations
@@ -59,7 +72,7 @@ from typing import Any
 from graphs._contract import ContractViolation, proposal, require, require_cartridge
 from runner.protocol import NodeRunner
 
-__all__ = ["GRAPH_NAME", "check_citation", "facts", "run"]
+__all__ = ["CLASSES", "EFFECTS", "GRAPH_NAME", "check_citation", "check_combine", "facts", "run"]
 
 GRAPH_NAME = "triage"
 
@@ -105,32 +118,102 @@ def check_citation(
     diagnosis: str,
     facts_: Mapping[str, Any],
     objections: Sequence[str],
+    *,
+    check_output: Sequence[str] = (),
+    objected: bool = True,
 ) -> str | None:
-    """None when the citation stands; otherwise the reason it is refused, per §1."""
+    """None when the citation stands; otherwise the reason it is refused, per §1.
+
+    With `objected` the diagnosis must quote an objection; without it, a line of the failed check's output also counts."""
     if not cites:
         return "zero cites: a triage answer must cite at least one fact"
     fabricated = [cite for cite in cites if cite not in facts_]
     if fabricated:
         return f"fabricated citation: {fabricated[0]!r} is not a key `facts` produced"
-    if not any(objection and objection in diagnosis for objection in objections):
-        return "diagnosis quotes no objection text verbatim from the record"
+    sources = objections if objected else [*objections, *check_output]
+    if not any(text and text in diagnosis for text in sources):
+        if objected:
+            return "diagnosis quotes no objection text verbatim from the record"
+        return "diagnosis quotes no objection or failed-check text verbatim from the record"
     return None
 
+
+CLASSES = ("ticket_defect", "platform_defect", "shape", "drop", "combine", "hold")
+# `genuine_reject` was the class for an objection that stood; a person now decides it through the hold mark.
+_ALIASES = {"genuine_reject": "hold"}
+# What the epic does with the task for each class. `rebuild` builds it again on its amended body; `hold` leaves it for a
+# person with the mark; `drop` drops it; `combine` folds it into the sibling `into` names and drops it.
+EFFECTS = {
+    "ticket_defect": "rebuild",
+    "platform_defect": "hold",
+    "shape": "hold",
+    "hold": "hold",
+    "drop": "drop",
+    "combine": "combine",
+}
+# A sibling in one of these states is built or gone: there is nothing left to fold scope into.
+_CLOSED = frozenset({"done", "dropped", "approved"})
 
 TRIAGE_SCHEMA = {
     "type": "object",
     "properties": {
-        "class": {
-            "type": "string",
-            "enum": ["ticket_defect", "platform_defect", "shape", "genuine_reject"],
-        },
+        "class": {"type": "string", "enum": list(CLASSES)},
         "diagnosis": {"type": "string"},
         "cites": {"type": "array", "items": {"type": "string"}},
         "action": {"type": "string"},
+        "into": {"type": "string"},
     },
     "required": ["class", "diagnosis", "cites", "action"],
     "additionalProperties": False,
 }
+
+_CLASS_GUIDE = (
+    "Classes, pick the one that finishes the initiative:\n"
+    "- ticket_defect: the ticket was missing an instruction; `action` is the exact text to append to it, quoting the objection.\n"
+    "- platform_defect: the platform, not the ticket, failed; `action` names the mechanism to fix. A person is told.\n"
+    "- shape: the task is really several tasks; `action` is the split. A person is told.\n"
+    "- drop: the initiative's goal does not need this task; it is dropped and tasks that need it go on.\n"
+    "- combine: this task's scope belongs in a sibling of the same phase; set `into` to that sibling's id (one not done, approved or dropped).\n"
+    "- hold: a person must decide; `action` says what they must decide."
+)
+
+
+def _class_of(raw: Any) -> str:
+    """The model's class, with a retired name read as the class that replaced it."""
+    name = str(raw or "")
+    return _ALIASES.get(name, name)
+
+
+def check_combine(into: str, task_id: str, context: Mapping[str, Any] | None, phase: str = "") -> str | None:
+    """None when `into` names an open sibling of the task in `context`, in the task's own `phase` when it is known;
+    otherwise why the combine is refused. Phases build apart: a sibling in another phase may already be building
+    without the folded scope, and moving needs across phases can stall the phase order."""
+    if not into:
+        return "combine names no sibling in `into`"
+    if into == task_id:
+        return f"combine names the task itself ({into!r}) in `into`"
+    siblings = {str(s.get("id")): s for s in (context or {}).get("siblings") or [] if isinstance(s, Mapping)}
+    sibling = siblings.get(into)
+    if sibling is None:
+        return f"combine names {into!r}, which is not a sibling in this initiative"
+    if str(sibling.get("state") or "") in _CLOSED:
+        return f"combine names {into!r}, which is {sibling.get('state')}; scope can only fold into an open task"
+    if phase and str(sibling.get("phase") or "") != phase:
+        return f"combine names {into!r}, in phase {sibling.get('phase')}; scope folds only into a sibling in the same phase ({phase})"
+    return None
+
+
+def _context_text(context: Mapping[str, Any] | None) -> str:
+    """The initiative as the prompt shows it: its goal, its phases with their goals, and every sibling task."""
+    if not context:
+        return "Initiative: not given."
+    phases = "\n".join(f"  - {p.get('id')}: {p.get('goal') or ''}" for p in context.get("phases") or [] if isinstance(p, Mapping))
+    siblings = "\n".join(
+        f"  - {s.get('id')} [{s.get('phase')}, {s.get('state')}] {s.get('title') or ''}; needs {list(s.get('needs') or [])}"
+        for s in context.get("siblings") or []
+        if isinstance(s, Mapping)
+    )
+    return f"Initiative goal: {context.get('goal') or ''}\nPhases:\n{phases or '  none'}\nSibling tasks:\n{siblings or '  none'}"
 
 
 def _objections(attempts: Sequence[Mapping[str, Any]]) -> list[str]:
@@ -155,11 +238,33 @@ def _objections(attempts: Sequence[Mapping[str, Any]]) -> list[str]:
     return texts
 
 
-def _already_fired(attempts: Sequence[Mapping[str, Any]], class_: str, diagnosis: str) -> dict[str, Any] | None:
-    """A prior `attempts[].triage` entry with this exact `(class, diagnosis)`, or None, per §1."""
+def _review_objected(attempts: Sequence[Mapping[str, Any]]) -> bool:
+    """True when review, adversary or arbitration said something beyond each attempt's bare `reason`."""
+    reasons = [attempt for attempt in attempts if attempt.get("reason")]
+    return len(_objections(attempts)) > len(reasons)
+
+
+def _check_output(attempts: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Each non-blank line of every attempt's `evidence`, a string or a mapping's `output`: a failed check's words."""
+    lines: list[str] = []
     for attempt in attempts:
-        triage = attempt.get("triage") or {}
-        if triage.get("class") == class_ and triage.get("diagnosis") == diagnosis:
+        for entry in attempt.get("evidence") or []:
+            text = entry.get("output") if isinstance(entry, Mapping) else entry
+            if isinstance(text, str):
+                lines.extend(line.strip() for line in text.splitlines() if line.strip())
+    return lines
+
+
+def _already_fired(
+    attempts: Sequence[Mapping[str, Any]], class_: str, diagnosis: str, triaged: Sequence[Mapping[str, Any]] = ()
+) -> dict[str, Any] | None:
+    """A prior `attempts[].triage` entry, or a prior record the store kept (`triaged`), with this exact `(class, diagnosis)`,
+    or None, per §1. A record under a retired class name compares as the class that replaced it."""
+    records = [*(attempt.get("triage") or {} for attempt in attempts), *triaged]
+    for triage in records:
+        if not isinstance(triage, Mapping):
+            continue
+        if _class_of(triage.get("class")) == class_ and triage.get("diagnosis") == diagnosis:
             return dict(triage)
     return None
 
@@ -172,8 +277,8 @@ def _emit(
     action: str,
     evidence: Sequence[Mapping[str, Any]],
     target: str,
-) -> dict[str, Any]:
-    """The write (or handoff) a class earns, per §1's table."""
+) -> dict[str, Any] | None:
+    """The write (or handoff) a class earns, per §1's table; None for a class whose effect the epic applies itself."""
     if class_ == "ticket_defect":
         return proposal(
             cartridge,
@@ -201,15 +306,8 @@ def _emit(
             "rationale": diagnosis,
             "suggested_action": action,
         }
-    if class_ == "genuine_reject":
-        return proposal(
-            cartridge,
-            kind="notify",
-            target=target,
-            evidence=evidence,
-            rationale=diagnosis,
-            suggested_action=action,
-        )
+    if class_ in ("drop", "combine", "hold"):
+        return None
     raise ContractViolation(f"triage returned an unknown class {class_!r}")
 
 
@@ -219,9 +317,13 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
     run_id, date = require(args, "run_id", "date")
     work_item, raw_attempts = require(args, "work_item", "attempts")
     attempts = list(raw_attempts)
+    initiative_context = args.get("initiative_context") if isinstance(args.get("initiative_context"), Mapping) else None
+    prior_records = [r for r in args.get("triaged") or () if isinstance(r, Mapping)]
 
     facts_ = facts(work_item, attempts)
     objections = _objections(attempts)
+    check_output = _check_output(attempts)
+    objected = _review_objected(attempts)
     context = list(cartridge.get("context") or [])
 
     triaged = dict(
@@ -231,25 +333,37 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
             schema=TRIAGE_SCHEMA,
             context=context,
             prompt=(
-                "Classify this stranded item from its attempt record.\n\n"
-                f"Item: {work_item}\nFacts: {facts_}\n\n"
+                "Classify this stranded item from its attempt record and decide what finishes the "
+                "initiative it belongs to, not just this task.\n\n"
+                f"{_context_text(initiative_context)}\n\n"
+                f"Item: {work_item}\nFacts: {facts_}\n"
+                f"Earlier triage of this item: {prior_records or 'none'}\n\n"
+                f"{_CLASS_GUIDE}\n\n"
+                f"Failed-check output lines: {check_output or 'none'}\n\n"
                 "Cite the fact key(s) that support your diagnosis, quote the "
-                "objection text verbatim in the diagnosis, and return the class, "
-                "diagnosis, cites and the action to take."
+                "objection text verbatim in the diagnosis (or, when review did not "
+                "object, one of the failed check's output lines verbatim), and return "
+                "the class, diagnosis, cites and the action to take."
             ),
         )
     )
 
-    class_ = str(triaged.get("class") or "")
+    class_ = _class_of(triaged.get("class"))
     diagnosis = str(triaged.get("diagnosis") or "")
     cites = list(triaged.get("cites") or [])
     action = str(triaged.get("action") or "")
+    into = str(triaged.get("into") or "")
+    target = str(work_item.get("id"))
 
-    refusal = check_citation(cites, diagnosis, facts_, objections)
+    refusal = check_citation(cites, diagnosis, facts_, objections, check_output=check_output, objected=objected)
     if refusal is not None:
         raise ContractViolation(f"triage answer refused: {refusal}")
+    if class_ not in EFFECTS:
+        raise ContractViolation(f"triage returned an unknown class {class_!r}")
+    if class_ == "combine" and (why := check_combine(into, target, initiative_context, str(work_item.get("phase") or ""))) is not None:
+        raise ContractViolation(f"triage answer refused: {why}")
 
-    prior = _already_fired(attempts, class_, diagnosis)
+    prior = _already_fired(attempts, class_, diagnosis, prior_records)
     if prior is not None:
         return {
             "run_id": run_id,
@@ -257,6 +371,7 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
             "escalated": True,
             "class": class_,
             "diagnosis": diagnosis,
+            "effect": "hold",
             "prior": prior,
         }
 
@@ -267,7 +382,7 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
         diagnosis=diagnosis,
         action=action,
         evidence=evidence,
-        target=str(work_item.get("id")),
+        target=target,
     )
 
     return {
@@ -276,7 +391,10 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
         "escalated": False,
         "class": class_,
         "diagnosis": diagnosis,
-        "emit": emitted,
+        "action": action,
+        "effect": EFFECTS[class_],
+        **({"into": into} if class_ == "combine" else {}),
+        **({"emit": emitted} if emitted is not None else {}),
         "attempts_triage_entry": {"class": class_, "diagnosis": diagnosis, "run": run_id},
     }
 
@@ -305,6 +423,20 @@ SPEC = GraphSpec(
             flag="--attempts",
             kind="json_file",
             help="the task's attempt records this item accumulated",
+        ),
+        Need(
+            "initiative_context",
+            flag="--initiative-context",
+            kind="json_file",
+            help="the initiative's goal, phases with their goals, and sibling tasks (id, phase, state, title, needs)",
+            required=False,
+        ),
+        Need(
+            "triaged",
+            flag="--triaged",
+            kind="json_file",
+            help="earlier triage records of this item, {class, diagnosis, run} each",
+            required=False,
         ),
     ),
 )

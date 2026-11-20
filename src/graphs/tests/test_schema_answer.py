@@ -1,6 +1,6 @@
 import json
 
-from runner.schema_answer import extract_json, retry_prompt, schema_instruction, shape_answer, validate
+from runner.schema_answer import retry_prompt, schema_instruction, shape_answer, validate
 
 SCHEMA = {
     "type": "object",
@@ -14,22 +14,6 @@ SCHEMA = {
 
 def test_schema_instruction_ends_with_the_sorted_key_dump():
     assert schema_instruction({"b": 1, "a": 2}).endswith('{"a": 2, "b": 1}')
-
-
-def test_extract_takes_a_fenced_json_block():
-    assert extract_json('Here:\n```json\n{"a": 1}\n```\nDone.') == {"a": 1}
-
-
-def test_extract_takes_bare_json_wrapped_in_prose():
-    assert extract_json('Sure, {"a": {"b": 2}} is my answer.') == {"a": {"b": 2}}
-
-
-def test_extract_skips_a_first_span_that_does_not_parse():
-    assert extract_json('Use {not json} then {"ok": true}') == {"ok": True}
-
-
-def test_extract_returns_none_when_there_is_no_json():
-    assert extract_json("no braces here") is None
 
 
 def test_validate_reports_a_missing_required_key_with_its_path():

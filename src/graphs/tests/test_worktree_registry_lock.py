@@ -11,6 +11,7 @@ import subprocess
 import threading
 from pathlib import Path
 
+from harness import bounded_proc
 from harness import worktree as wt
 
 
@@ -37,7 +38,7 @@ def test_a_prune_waits_for_an_add_in_flight_on_another_thread(tmp_path, monkeypa
             order.append("prune")
         return real(cmd, *args, **kwargs)
 
-    monkeypatch.setattr(wt.subprocess, "run", run)
+    monkeypatch.setattr(bounded_proc.subprocess, "run", run)  # worktree runs git through bounded_proc
     results: dict[str, tuple[bool, str]] = {}
     adder = threading.Thread(
         target=lambda: results.update(add=wt.create_worktree(repo, tmp_path / "wt", branch="lane-a", base="main"))

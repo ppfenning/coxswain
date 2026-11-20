@@ -51,6 +51,9 @@ nav:
       - Providers: install/providers.md
   - Methodology:
       - Methodology: methodology/index.md
+      - Hardening plan: hardening.md
+      - "Design: the event-driven chair (proposed)": design/event-driven-chair.md
+      - Smoke suite: smoke.md
       - Crew and seats: methodology/crew-and-seats.md
       - Cartridges: methodology/cartridges.md
       - Graphs:
@@ -100,6 +103,8 @@ nav:
   - Releases:
       - Releases: releases/index.md
       - From 0.47 to the monorepo: monorepo.md
+      - 2026.11.9: releases/2026.11.9.md
+      - 2026.11.8: releases/2026.11.8.md
       - 2026.11.7: releases/2026.11.7.md
       - 2026.11.6: releases/2026.11.6.md
       - 2026.11.5: releases/2026.11.5.md

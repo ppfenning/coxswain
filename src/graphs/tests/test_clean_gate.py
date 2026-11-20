@@ -1,4 +1,4 @@
-from graphs.delivery.clean_gate import clean_checks, clean_finding, clean_gate_finding
+from graphs.delivery.clean_gate import clean_checks, clean_finding
 
 CLEAN = "python .github/check_clean.py . --require-names"
 PYTEST = "cd src/graphs && pytest -q -n auto"
@@ -30,8 +30,3 @@ def test_exit_one_quotes_the_hit_and_states_the_fix() -> None:
 
 def test_exit_two_is_a_gate_that_did_not_run() -> None:
     assert clean_finding(2, "COXSWAIN_CLEAN_DENY is not set and --require-names was given") is None
-
-
-def test_no_clean_entry_or_no_repo_is_no_finding() -> None:
-    assert clean_gate_finding("diff", [{"name": PYTEST, "cmd": PYTEST}], "/nonexistent") is None
-    assert clean_gate_finding("diff", [{"name": CLEAN, "cmd": CLEAN}], None) is None

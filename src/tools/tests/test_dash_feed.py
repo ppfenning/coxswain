@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -76,7 +77,7 @@ def _fixture_inputs() -> tuple[tuple, dict]:
         "weekly_resets_at": "2026-10-04T04:00:00Z",
         "weekly_target_fraction": 0.0,
         "weekly_pace": "not_judged",
-        "today": {"date": "2026-09-29", "cost": 6.0, "landed": 3, "per_landed": 2.0, "first_try_rate": 0.5, "measured": 2},
+        "today": {"date": "2026-09-29", "cost": 6.0, "landed": 3, "per_landed": 2.0, "completions": 3, "cost_per_completion": 2.0, "first_try_rate": 0.5, "measured": 2},
     }
     machines = [
         {
@@ -339,7 +340,8 @@ def test_the_feed_built_from_the_fixtures_inputs_equals_the_fixture(monkeypatch,
     node_rows = {name: [row for group in split[name]["by_node"] for row in _node_rows_of(group)] for name in split}
     chair_usd = {("session", "2026-10-16"): 3.1, ("agent", "2026-10-16"): 1.2, ("session", "2026-10-11"): 41.2, ("agent", "2026-10-11"): 18.4}
     _stub_activity_readers(monkeypatch, chair_usd, 2.0, 96.9)
-    monkeypatch.setattr(dash_feed, "_window_node_inputs", lambda rows, windows: (node_rows, {"five_hour": 2, "weekly": 6}))
+    # The contract fixtures' windows carry 3 completions each.
+    monkeypatch.setattr(dash_feed, "_window_node_inputs", lambda rows, windows: (node_rows, {"five_hour": 3, "weekly": 3}))
     args, kwargs = _fixture_inputs()
 
     built = dash_feed._activity(tmp_path, {}, "sess", tmp_path, _SPEND, _ACTIVITY_AT, {})
@@ -541,6 +543,8 @@ def test_activity_cuts_the_store_rows_into_each_windows_by_node_and_cost_per_lan
     assert split["five_hour"]["cost_per_landed_task"] == 2.0
     assert split["weekly"]["by_node"] == [review_group, built_group]
     assert split["weekly"]["cost_per_landed_task"] == 2.5
+    assert (split["five_hour"]["completions"], split["five_hour"]["cost_per_completion"]) == (1, 2.0)
+    assert (split["weekly"]["completions"], split["weekly"]["cost_per_completion"]) == (2, 2.5)
 
 
 def test_history_rows_keep_the_runs_the_history_reads_and_drop_the_rest_of_the_week():
@@ -588,6 +592,72 @@ def test_window_node_inputs_cut_calls_and_landed_tasks_at_each_window_start():
     assert done == {"five_hour": 1, "weekly": 2}
 
 
+def _merged(task: str, at: str) -> dict:
+    record = {"status": "approved", "merged": True, "merged_commit": f"c-{task}"}
+    return {"run_id": "r-live", "task_id": task, "updated_at": at, "record_json": json.dumps(record)}
+
+
+def test_tasks_merged_in_a_run_still_in_flight_count_through_the_real_store_read(monkeypatch, tmp_path):
+    # Wrong belief this pins: "the store rows hold every completion". `read_history_rows` reads ended runs only, so the
+    # in-flight run's merged tasks reach the windows only through the open task records the store read adds.
+    conn = sqlite3.connect(tmp_path / "cox.db")
+    conn.execute("CREATE TABLE runs (run_id TEXT, launched_at TEXT, ended_at TEXT)")
+    conn.execute("CREATE TABLE task_records (run_id TEXT, phase_id TEXT, task_id TEXT, record_json TEXT, updated_at TEXT)")
+    conn.execute("CREATE TABLE node_calls (run_id TEXT, task_id TEXT, role TEXT, cost_usd REAL, ts TEXT)")
+    conn.execute("INSERT INTO runs VALUES ('r-live', '2026-10-16T16:00:00Z', NULL)")
+    for row in (_merged("a", "2026-10-16T17:10:00Z"), _merged("b", "2026-10-14T09:00:00Z"), _merged("c", "2026-10-16T17:30:00Z")):
+        conn.execute(
+            "INSERT INTO task_records VALUES (?, 'p1', ?, ?, ?)",
+            (row["run_id"], row["task_id"], row["record_json"], row["updated_at"]),
+        )
+    conn.commit()
+    conn.close()
+    _stub_activity_readers(monkeypatch, {}, 2.0, 96.9)
+
+    rows = dash_feed._store_rows(tmp_path, _ACTIVITY_AT, _SPEND)
+    split = dash_feed._activity(tmp_path, {}, "sess", tmp_path, _SPEND, _ACTIVITY_AT, rows)["spend_split"]
+
+    assert rows["runs"] == []
+    assert (split["five_hour"]["completions"], split["weekly"]["completions"]) == (2, 3)
+    assert split["weekly"]["cost_per_completion"] == round(96.9 / 3, 4)
+
+
+def test_three_tasks_merged_into_the_pr_branch_and_none_on_main_are_three_completions(monkeypatch, tmp_path):
+    # The run is still in flight (no `runs` row ends it) and nothing has landed on main.
+    _stub_activity_readers(monkeypatch, {}, 2.0, 96.9)
+    store_rows = {
+        "runs": [],
+        "node_calls": [],
+        "task_records": [
+            _merged("a", "2026-10-16T17:10:00Z"), _merged("b", "2026-10-16T17:20:00Z"), _merged("c", "2026-10-16T17:30:00Z"),
+        ],
+    }
+
+    split = dash_feed._activity(tmp_path, {}, "sess", tmp_path, _SPEND, _ACTIVITY_AT, store_rows)["spend_split"]
+
+    assert (split["five_hour"]["completions"], split["weekly"]["completions"]) == (3, 3)
+    assert split["five_hour"]["cost_per_completion"] == round(2.0 / 3, 4)
+    assert split["weekly"]["cost_per_completion"] == round(96.9 / 3, 4)
+    assert all(w["cost_per_landed_task"] == w["cost_per_completion"] for w in split.values())
+
+
+def test_a_task_merged_and_later_landed_counts_once_at_its_merge():
+    windows = {"five_hour": {"start": "2026-10-16T17:00:00+00:00"}, "weekly": {"start": "2026-10-11T08:00:00+00:00"}}
+    landed = {"status": "done", "merged": True, "landed": {"at": "2026-10-16T17:40:00Z", "pr": 9}}
+    rows = {
+        "runs": [],
+        "node_calls": [],
+        "task_records": [
+            _merged("a", "2026-10-12T09:00:00Z"),
+            {"run_id": "r-live", "task_id": "a", "updated_at": "2026-10-16T17:40:00Z", "record_json": json.dumps(landed)},
+        ],
+    }
+
+    _, done = dash_feed._window_node_inputs(rows, windows)
+
+    assert done == {"five_hour": 0, "weekly": 1}
+
+
 def test_a_store_reader_returning_no_rows_leaves_by_node_empty_and_cost_per_landed_task_zero(monkeypatch, tmp_path):
     monkeypatch.setattr(
         dash_feed, "read_history_rows", lambda store, since: {"runs": [], "task_records": [], "node_calls": []},
@@ -599,6 +669,7 @@ def test_a_store_reader_returning_no_rows_leaves_by_node_empty_and_cost_per_land
     for window in feed["spend_split"].values():
         assert window["by_node"] == []
         assert window["cost_per_landed_task"] == 0.0
+        assert (window["completions"], window["cost_per_completion"]) == (0, 0.0)
 
 
 def _meter(five_pct: float, seven_pct: float, observed_at: datetime) -> usage_meter.Meter:
@@ -1011,7 +1082,7 @@ def test_local_login_is_true_false_or_unknown_by_what_the_token_verb_said(monkey
             return code, output
 
         monkeypatch.setattr(dash_feed, "_run_capturing", run)
-        return dash_feed.chair_login_check._login_ok("m", "", dash_feed._run_capturing)
+        return dash_feed.chair_login_check.probe_login("m", "", dash_feed._run_capturing)
 
     replies = [
         says(0, '{"loggedIn": true, "tokenFile": true}'),

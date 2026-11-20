@@ -26,17 +26,34 @@ Quarantines by cause is also a chart.
 
 ## Cost per completion
 
-A task counts as a completion when it is done, or approved and merged
-into its phase or PR branch, or landed on main. It counts once, however
-it later lands.
+A task counts as a completion when its task record shows it done, or
+approved and merged into its phase or PR branch, or landed on main. It
+counts once, at the earliest of those stamps, however it later lands. A
+task still counts while its run is in flight.
 
 Cost per completion is spend divided by completions in the same window.
 The status line and the feed report it for today, the five-hour window
-and the week.
+and the week. Today and the two windows count completions the same way:
+
+- **Today** (`spend.today`, and the status line). Tasks whose completion
+  falls on today's UTC day, divided into today's spend. The land log also
+  counts: a task logged as landed today counts if the store holds no
+  record for it. A task merged yesterday that lands today does not count
+  again.
+- **Five-hour and weekly windows** (`spend_split`). Tasks whose
+  completion falls in the window, divided into the window's cox-seat
+  spend. A landed record with no stamp of its own counts at the end of
+  its run.
+
+`spend.today.landed` is a different figure: the tasks the land log shows
+reaching `mark_done` today. The first-try rate is measured over those
+tasks.
 
 The feed keeps the old keys for one release as deprecated aliases:
 `per_landed` under `spend.today`, and `cost_per_landed_task` under each
-`spend_split` window. Towpath reads `cost_per_completion` first.
+`spend_split` window. Each alias has the same value as
+`cost_per_completion`. It is a cost per completion, not a cost per task
+landed on main. Towpath reads `cost_per_completion` first.
 
 ## `cox stats gates`
 

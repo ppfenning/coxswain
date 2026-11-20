@@ -9,6 +9,10 @@ have nothing in the system become invisible." Groups intake items G1 from
 `workspace/plans/agent-platform/2026-09-08-intake-grouping.md`. This file is committed identically to
 `coxswain-graphs/docs/design/` and `coxswain-tools/docs/design/` so a build seat in either repo can read it.
 
+Update 2026-11-18: the store replaced `usage.json`. `harness/usage.py`'s `record_usage` lost its last caller in
+the storage cutover and was deleted in #1221 (H10); the per-call ledger now lives in the store. The sections
+below that name `record_usage` or `usage.json` describe the design as it was approved, not the code today.
+
 ## 0. The defect, once
 
 The platform NARRATES what it already OBSERVES. It asks a model to report the files it touched while
@@ -64,7 +68,7 @@ Measured over every run: fix-loop refusals 131, budget/plan deaths 64, `validate
 (26 with a patch and an approving review+arbitration chain), attempt cap 23, handoff incomplete 18,
 phase-infra failures 14. All reach the ledger and the stats store as `quarantined`.
 
-Change: `_quarantine_task` (`harness/epic.py:608`) takes `kind: str` and writes it into the phase record entry,
+Change: `quarantine_task` (`harness/epic.py:608`) takes `kind: str` and writes it into the phase record entry,
 the printed line (`quarantined task [<kind>]: <id> — <reason>`), and `record_attempt` onto the work item
 (`attempts[].kind`). Kinds, closed set:
 
@@ -73,12 +77,12 @@ the printed line (`quarantined task [<kind>]: <id> — <reason>`), and `record_a
 | `refused`    | reviewers/arbiter rejected the patch                 | `epic.py:890`                        |
 | `no_work`    | nothing produced: budget death, attempt cap, handoff incomplete | `:763`, `:856`, plan/budget paths |
 | `unverified` | approved chain, validator unsatisfied — PATCH KEPT    | `:1011`                              |
-| `infra`      | nothing ran: worktree/branch failure                  | `_open_phase_worktree` `:276` callers |
+| `infra`      | nothing ran: worktree/branch failure                  | `open_phase_worktree` `:276` callers |
 
 `unverified` never discards: the task record keeps `build.patch` (it already does) and the phase record entry
 carries `"patch_kept": true` so `cox runs land` can offer it. `infra` is NOT a task outcome: it is recorded on
 the phase as `phase_failed_to_start` with the reason, and the tasks stay `ready` untouched. The two
-`quarantined.append` sites that bypass `_quarantine_task` (`:754`, `:936`) go through it.
+`quarantined.append` sites that bypass `quarantine_task` (`:754`, `:936`) go through it.
 
 ## 4. Consumers read the record, not the prose  (tools)
 

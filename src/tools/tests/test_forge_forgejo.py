@@ -228,11 +228,13 @@ def test_parse_open_pr():
 
 
 def test_parse_checks():
-    row = {"context": "ci", "state": "failure"}
-    assert ff.parse_checks({"state": "success", "statuses": [{"state": "success"}]}) == (0, "")
+    # The rollup says `state`; each row says `status`. The rows were once read by `state`, so a failure never named its
+    # context; the smoke land against a real Forgejo showed it.
+    row = {"context": "ci", "status": "failure"}
+    assert ff.parse_checks({"state": "success", "statuses": [{"status": "success"}]}) == (0, "")
     assert ff.parse_checks({"state": "failure", "statuses": [row]}) == (1, "failing checks: ci")
-    assert ff.parse_checks({"state": "error", "statuses": [{"state": "error"}]}) == (1, "failing checks: status")
-    assert ff.parse_checks({"state": "pending", "statuses": [{"context": "ci", "state": "pending"}]}) == (
+    assert ff.parse_checks({"state": "error", "statuses": [{"status": "error"}]}) == (1, "failing checks: status")
+    assert ff.parse_checks({"state": "pending", "statuses": [{"context": "ci", "status": "pending"}]}) == (
         land.PENDING_RC, "checks pending: ci")
     assert ff.parse_checks({"state": "pending", "statuses": []}) == (1, land._NO_CHECKS)
     assert ff.parse_checks({"state": "weird", "statuses": [row]}) == (1, "unrecognised combined status: weird")
@@ -259,3 +261,28 @@ def test_parse_merge_response():
 def test_parse_delete_response():
     assert ff.parse_delete_response(204, None) == (True, "deleted")
     assert ff.parse_delete_response(404, {"message": "gone"}) == (False, "branch not deleted: gone")
+
+
+def test_first_green_is_the_first_passing_commit_and_reads_no_further():
+    checks = {"c3": (land.PENDING_RC, "checks pending: ci"), "c2": (1, "failing checks: ci"), "c1": (0, ""), "c0": (0, "")}
+    read: list[str] = []
+
+    def lookup(sha):
+        read.append(sha)
+        return checks[sha]
+
+    assert ff.first_green(["c3", "c2", "c1", "c0"], lookup) == ("c1",)
+    assert read == ["c3", "c2", "c1"]
+    assert ff.first_green(["c3", "c2"], checks.__getitem__) == ()
+    assert ff.first_green([], checks.__getitem__) == ()
+
+
+@pytest.mark.parametrize(("status", "body", "expected"), [
+    (200, {"name": "pr/t1", "commit": {"id": "a" * 40}}, "a" * 40),
+    (404, {"message": "branch does not exist"}, None),
+    (200, {"name": "pr/t1", "commit": {}}, None),
+    (200, ["not", "a", "branch"], None),
+])
+def test_parse_branch_tip_reads_the_commit_the_server_shows(status, body, expected):
+    # Forgejo shows a pushed branch only once its push queue has run; `push` waits until this says the pushed commit.
+    assert ff.parse_branch_tip(status, body) == expected

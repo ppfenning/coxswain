@@ -21,6 +21,7 @@ import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import ModuleType
+from typing import cast
 from urllib.parse import urlsplit
 
 import harness
@@ -30,7 +31,6 @@ __all__ = [
     "MigrationError",
     "check_version",
     "default_modules",
-    "discover_migrations",
     "migrate",
     "open_store",
     "pending",
@@ -68,11 +68,6 @@ def _ordered(given: Sequence[ModuleType | str]) -> tuple[ModuleType, ...]:
     if gaps:
         raise MigrationError(f"migration numbering has a gap: expected {gaps[0][0]}, found {gaps[0][1]}")
     return ordered
-
-
-def discover_migrations(modules: Sequence[ModuleType | str]) -> tuple[Migration, ...]:
-    """(version, statements) pairs in version order; a gap or duplicate raises."""
-    return tuple((m.VERSION, m.statements) for m in _ordered(modules))
 
 
 def default_modules() -> tuple[ModuleType, ...]:
@@ -152,9 +147,27 @@ def _sqlite_backup(conn: Connection, dest: Path) -> None:
     """Back up the live connection, not a fresh reconnect: a `sqlite:///:memory:` store has no file to reopen."""
     target = sqlite3.connect(str(dest))
     try:
-        conn.raw.backup(target)
+        cast(sqlite3.Connection, conn.raw).backup(target)
     finally:
         target.close()
+
+
+# A backup before a migration may take minutes on a large store, but never forever.
+PG_DUMP_TIMEOUT_S = 1800
+
+
+# A migration waits this long for the tables it alters, then fails and is retried by the next opener. Long enough for
+# a busy chair's row writes to drain; short enough that a session left holding a lock surfaces as an error, not a hang.
+MIGRATION_LOCK_TIMEOUT_MS = 300_000
+
+
+def exempt_from_bounds(dialect: Dialect) -> tuple[str, ...]:
+    """Pure. The statements that widen the connection's statement and lock bounds (`store_dialect`) for one
+    migration's own transaction: a schema change may run longer than a row write, so its statements are unbounded,
+    and it may wait for the tables it alters, but only `MIGRATION_LOCK_TIMEOUT_MS`, never forever."""
+    if dialect.name != "postgres":
+        return ()
+    return ("SET LOCAL statement_timeout = 0", f"SET LOCAL lock_timeout = {MIGRATION_LOCK_TIMEOUT_MS}")
 
 
 def _pg_dump(url: str, dest: Path, safe_url: str) -> None:
@@ -164,9 +177,16 @@ def _pg_dump(url: str, dest: Path, safe_url: str) -> None:
             f"pg_dump is not on PATH; cannot back up {safe_url} before migrating. "
             f"Install pg_dump, or set {_WITHOUT_BACKUP}=1 to migrate without a backup."
         )
-    result = subprocess.run(
-        ["pg_dump", "-Fc", f"--dbname={url}", "-f", str(dest)], capture_output=True, check=False
-    )
+    try:
+        result = subprocess.run(
+            ["pg_dump", "-Fc", f"--dbname={url}", "-f", str(dest)], capture_output=True, check=False,
+            timeout=PG_DUMP_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        raise MigrationError(
+            f"pg_dump did not finish backing up {safe_url} in {PG_DUMP_TIMEOUT_S} s. "
+            f"Set {_WITHOUT_BACKUP}=1 to migrate without a backup."
+        ) from None
     if result.returncode != 0:
         raise MigrationError(
             f"pg_dump exited {result.returncode} backing up {safe_url}. "
@@ -205,6 +225,8 @@ def migrate(conn: Connection, applied_at: str, modules: Sequence[ModuleType | st
     record = f"INSERT INTO schema_version (version, applied_at, description) VALUES ({p}, {p}, {p})"
     for m in ordered[before:]:
         with conn.transaction():
+            for sql in exempt_from_bounds(conn.dialect):
+                conn.execute(sql)
             for sql in _lock_versions(conn.dialect):
                 conn.execute(sql)
             for sql, params in _steps(m, conn.dialect, record, applied_at, _current_version(conn)):
@@ -235,7 +257,7 @@ def open_store(url: str, now: str) -> Connection:
 
 
 def main(argv: Sequence[str]) -> int:
-    ap = argparse.ArgumentParser(prog="python -m harness.store_migrate", description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(prog="python -m harness.store_migrate", description=cast(str, __doc__).split("\n")[0])
     ap.add_argument("--pending", metavar="URL", required=True, help="list migrations newer than this store's version")
     args = ap.parse_args(argv)
     conn = connect(args.pending)

@@ -118,7 +118,7 @@ def _parse_counts(output: str) -> dict[str, int]:
     return counts
 
 
-def _tail_lines(text: str, n: int = _TAIL_LINES) -> str:
+def tail_lines(text: str, n: int = _TAIL_LINES) -> str:
     lines = text.splitlines()
     if len(lines) <= n:
         return text
@@ -160,8 +160,11 @@ def check_outcome(returncode: int | None, error: str | None) -> str:
     return "passed" if returncode == 0 else "failed"
 
 
-def repo_checks(text: str) -> list[dict]:
+def repo_checks(text: str) -> list[dict[str, Any]]:
     """Parse a `.agent-checks` file: one shell command per line, pure.
+
+    A line may end `# fix: <command>`: the check then carries that `fix`, which the build runs mechanically
+    before the gate (a formatter, for example) instead of failing the task on a style-only difference.
 
     Blank lines and lines starting with `#` are ignored. Each surviving line,
     stripped, becomes an entry whose `name` and `cmd` are the stripped line
@@ -173,8 +176,21 @@ def repo_checks(text: str) -> list[dict]:
     if not isinstance(text, str):
         return []
     lines = (stripped for stripped in (line.strip() for line in text.splitlines()) if stripped and not stripped.startswith("#"))
-    unique = dict.fromkeys(lines)  # first occurrence wins, order preserved
-    return [{"name": line, "cmd": line} for line in unique]
+    entries: dict[str, dict] = {}  # first occurrence of a cmd wins, order preserved
+    for line in lines:
+        cmd, fix = _split_fix(line)
+        entries.setdefault(cmd, {"name": line, "cmd": cmd, **({"fix": fix} if fix else {})})
+    return list(entries.values())
+
+
+_FIX_MARK = re.compile(r"\s+#\s*fix:\s*(\S.*)$")
+
+
+def _split_fix(line: str) -> tuple[str, str]:
+    """A `.agent-checks` line as (command, fix command). `cmd  # fix: other` names `other` as the check's fix, and the
+    comment never reaches the gate's shell; any other trailing comment stays part of the line."""
+    mark = _FIX_MARK.search(line)
+    return (line[: mark.start()].rstrip(), mark.group(1).strip()) if mark else (line, "")
 
 
 def fixable_checks(checks: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -500,7 +516,7 @@ def checks_evidence(
             body = f"{error_text}\n{captured}" if captured else error_text
         else:
             body = captured
-        tail = f"\ncmd: {result.get('cmd')}\n{_tail_lines(body)}"
+        tail = f"\ncmd: {result.get('cmd')}\n{tail_lines(body)}"
         carries_tail = always_tail or not result.get("passed")
         output = summary + tail if carries_tail else summary
         if result.get("reused"):
@@ -524,7 +540,7 @@ def is_harness_fault(reason: str) -> bool:
 def check_feedback(results: Sequence[Mapping[str, Any]]) -> str:
     """The failing checks' name, command, exit code and output tail, for a builder to read."""
     return "\n\n".join(
-        f"{r.get('name')}: {r.get('cmd')}\nexit {r.get('exit_code')}\n{_tail_lines(str(r.get('output_tail') or ''))}"
+        f"{r.get('name')}: {r.get('cmd')}\nexit {r.get('exit_code')}\n{tail_lines(str(r.get('output_tail') or ''))}"
         for r in results
         if not r.get("passed")
     )

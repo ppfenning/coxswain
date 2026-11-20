@@ -6,7 +6,7 @@ from pathlib import Path
 
 from core import workstore
 from graphs.ops import triage_quarantine
-from harness.epic import _newest_attempt_text
+from harness.epic import newest_attempt_text
 from tests.test_epic_driver import (  # noqa: F401 -- cart and repo are fixtures
     SPECS,
     TriageAttemptRunner,
@@ -66,7 +66,7 @@ def test_two_attempts_recorded_on_the_current_body_cap_the_task_and_it_goes_to_t
     assert "t1-probe" not in builds_per_task(runner)
 
 
-def test_triage_sees_its_prior_entry_on_an_older_body_and_escalates(repo, cart, tmp_path) -> None:  # noqa: F811
+def test_triage_sees_its_prior_entry_on_an_older_body_and_escalates(repo, cart, tmp_path, capsys) -> None:  # noqa: F811
     work = initiative(two_phases=False)
     task = next(item for item in work["items"] if item["id"] == "t1-probe")
     current = workstore.body_sha(task["body"])
@@ -83,21 +83,24 @@ def test_triage_sees_its_prior_entry_on_an_older_body_and_escalates(repo, cart, 
     runner = TriageAttemptRunner({"t2-bench": new_file_patch("t2-bench.txt")})
     result, _ = drive(repo, _amend_cart(cart), tmp_path, runner=runner, work=work, specs=TRIAGE_SPECS)
 
-    entry = next(q for q in result["quarantined"] if q["id"] == "t1-probe")
-    assert "triage repeats a prior" in entry["reason"]
-    assert "epic-prior-0" in entry["reason"]
+    # A repeated (class, diagnosis) used to quarantine the task; it now holds it for a person with the mark.
+    held = next(ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("  triage: t1-probe held"))
+    assert "needs you: triage repeats its earlier ticket_defect diagnosis" in held
+    assert "epic-prior-0" in held
+    assert not any(q["id"] == "t1-probe" for q in result["quarantined"])
+    assert "t1-probe" not in builds_per_task(runner)
     assert not any(p["target"] == "t1-probe" for p in result["proposals"])
 
 
 def test_newest_attempt_text_picks_the_newest_by_ts_and_reads_unrecorded_and_truncates() -> None:
     older = {"ts": "2026-09-02T00:00:00+00:00", "kind": "check_failed", "cause": "code", "reason": "old"}
     newest = {"ts": "2026-09-03T00:00:00+00:00", "kind": "no_work", "reason": "node 'build':\nno result event " + "x" * 300}
-    text = _newest_attempt_text([newest, older])
+    text = newest_attempt_text([newest, older])
 
     assert text.startswith("newest attempt: kind no_work, cause unrecorded, reason node 'build': no result event x")
     assert "\n" not in text
     assert len(text.split("reason ", 1)[1]) == 120
-    assert _newest_attempt_text([older]) == "newest attempt: kind check_failed, cause code, reason old"
+    assert newest_attempt_text([older]) == "newest attempt: kind check_failed, cause code, reason old"
 
 
 def test_a_capped_task_names_the_newest_attempt_in_its_printed_line_and_quarantine_reason(repo, cart, tmp_path, capsys) -> None:  # noqa: F811

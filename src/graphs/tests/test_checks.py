@@ -844,6 +844,26 @@ def test_repo_checks_names_are_the_whole_line():
     assert repo_checks(line) == [{"name": line, "cmd": line}]
 
 
+def test_repo_checks_reads_a_fix_command_after_a_fix_marker():
+    line = "fmt-tool --check  # fix: fmt-tool"
+    assert repo_checks(line) == [{"name": line, "cmd": "fmt-tool --check", "fix": "fmt-tool"}]
+
+
+def test_repo_checks_leaves_an_ordinary_trailing_comment_and_a_quoted_hash_alone():
+    lines = "build-tool --all  # slow\nsearch-tool '#' src\n"
+    assert repo_checks(lines) == [
+        {"name": "build-tool --all  # slow", "cmd": "build-tool --all  # slow"},
+        {"name": "search-tool '#' src", "cmd": "search-tool '#' src"},
+    ]
+
+
+def test_a_repo_check_with_a_fix_marker_is_a_fixable_check_and_routes_as_style():
+    checks = repo_checks("fmt-tool --check  # fix: fmt-tool")
+    assert fixable_checks(checks) == [{"name": checks[0]["name"], "cmd": "fmt-tool"}]
+    results = [{"name": checks[0]["name"], "passed": False, "outcome": "failed", "output_tail": "diff"}]
+    assert refix_route(results, checks, attempts_left=1, style_bound=True) == "style_pass"
+
+
 def test_a_whole_line_ruff_name_still_routes_as_lint():
     checks = [{"name": "ruff check .", "cmd": "ruff check ."}]
     results = [{"name": "ruff check .", "passed": False, "outcome": "failed", "output_tail": "F401"}]

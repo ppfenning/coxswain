@@ -34,14 +34,6 @@ def _diff_adding(path: Path, name: str, text: str) -> str:
     return diff
 
 
-def test_review_request_shapes_a_diff_repo_and_ref() -> None:
-    assert review_entry.review_request("diff-text", "org/repo", "main") == {
-        "diff": "diff-text",
-        "repo": "org/repo",
-        "ref": "main",
-    }
-
-
 def test_run_returns_a_verdict_and_postable_findings_from_a_stub_runner(cartridge) -> None:
     charter = {
         "verdict": "revise",

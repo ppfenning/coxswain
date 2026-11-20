@@ -54,7 +54,7 @@ def test_the_key_defaults_to_files_and_refuses_any_other_value():
         "files",
         "store",
     ]
-    assert epic._Ctx.__dataclass_fields__["work_state"].default == "files"
+    assert epic.Ctx.__dataclass_fields__["work_state"].default == "files"
     with pytest.raises(ValueError, match="'work_state' must be one of files, store, not 'db'"):
         epic.work_state_of({"work_state": "db"})
 
@@ -89,7 +89,7 @@ def test_files_mode_leaves_a_stale_file_and_the_items_alone(store_conn, items, c
     ctx = _ctx(store_conn, "files")
     _put(ctx, items[0], "done")
     before = [dict(i) for i in items]
-    epic._mirror_read(ctx, items)
+    epic.mirror_read(ctx, items)
     assert items == before
     assert Path(items[0]["path"]).read_bytes() == FILE_BYTES
     assert _ready(items) == ["t1"]
@@ -98,7 +98,7 @@ def test_files_mode_leaves_a_stale_file_and_the_items_alone(store_conn, items, c
 def test_store_mode_repairs_only_the_state_line_and_the_driver_follows_the_row(store_conn, items):
     ctx = _ctx(store_conn, "store")
     _put(ctx, items[0], "done")
-    epic._mirror_read(ctx, items)
+    epic.mirror_read(ctx, items)
     assert Path(items[0]["path"]).read_bytes() == REPAIRED
     assert items[0]["state"] == "done"
     assert _ready(items) == ["t2"]
@@ -108,15 +108,15 @@ def test_store_mode_repairs_only_the_state_line_and_the_driver_follows_the_row(s
 def test_the_rewrite_is_one_log_line_naming_task_old_and_new(store_conn, items, caplog):
     ctx = _ctx(store_conn, "store")
     _put(ctx, items[0], "done")
-    with caplog.at_level(logging.WARNING, logger=epic._log.name):
-        epic._mirror_read(ctx, items)
+    with caplog.at_level(logging.WARNING, logger=epic.epic_log.name):
+        epic.mirror_read(ctx, items)
     messages = [r.getMessage() for r in caplog.records]
     assert messages == ["work file state rewritten from the store: task=t1 old=ready new=done"]
 
 
 def test_store_mode_with_no_row_reads_the_file_and_upserts(store_conn, items):
     ctx = _ctx(store_conn, "store")
-    epic._mirror_read(ctx, items)
+    epic.mirror_read(ctx, items)
     rows = {r["task_id"]: (r["state"], r["needs"], r["updated_by"]) for r in read.work_items(store_conn, INITIATIVE)}
     assert rows == {"t1": ("ready", [], f"epic-driver:{RUN}"), "t2": ("ready", ["t1"], f"epic-driver:{RUN}")}
     assert Path(items[0]["path"]).read_bytes() == FILE_BYTES
@@ -126,7 +126,7 @@ def test_store_mode_with_no_row_reads_the_file_and_upserts(store_conn, items):
 def test_a_row_that_agrees_changes_nothing(store_conn, items):
     ctx = _ctx(store_conn, "store")
     _put(ctx, items[0], "ready")
-    epic._mirror_read(ctx, items)
+    epic.mirror_read(ctx, items)
     assert Path(items[0]["path"]).read_bytes() == FILE_BYTES
     assert _states(ctx) == {"t1": "ready", "t2": "ready"}
     assert {r["task_id"]: r["updated_by"] for r in read.work_items(store_conn, INITIATIVE)}["t1"] == "alice"
@@ -136,8 +136,8 @@ def test_a_file_that_cannot_be_rewritten_warns_and_the_store_state_still_wins(st
     bare = _item(tmp_path, "t1", "ready", body=b"no frontmatter\n")
     ctx = _ctx(store_conn, "store")
     _put(ctx, bare, "done")
-    with caplog.at_level(logging.WARNING, logger=epic._log.name):
-        epic._mirror_read(ctx, [bare])
+    with caplog.at_level(logging.WARNING, logger=epic.epic_log.name):
+        epic.mirror_read(ctx, [bare])
     assert [r.getMessage() for r in caplog.records] == [
         "work file state not rewritable, store state used: task=t1 file=ready"
     ]

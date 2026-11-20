@@ -3,7 +3,6 @@ import importlib.metadata
 import json
 import os
 import subprocess as sp
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -23,7 +22,6 @@ pytestmark = pytest.mark.usefixtures("board_store")
 def _store_leases(monkeypatch):
     """The land's state writes go to the test store, through this interpreter. Its leases are granted in memory: a land
     renews one before every step, and each would be a process. A test about a lease replaces these with its own."""
-    monkeypatch.setattr(store_cli, "_harness_python", lambda: Path(sys.executable))
     monkeypatch.setattr(store_cli, "lease_acquire", lambda runs_dir, name, holder, ttl, steal=False: store_cli.LeaseGranted(1, holder))
     monkeypatch.setattr(store_cli, "lease_renew", lambda runs_dir, name, holder, epoch, ttl: store_cli.LeaseGranted(epoch, holder))
     monkeypatch.setattr(store_cli, "lease_release", lambda runs_dir, name, holder, epoch: store_cli.LeaseReleased())
@@ -195,6 +193,7 @@ def test_recover_plan_a_commit_already_on_the_phase_branch_plans_nothing():
     assert steps == [{
         "kind": "already_recovered",
         "branch": "epic/x/seams",
+        "source": "agents/epic-x-5/seams-task",
         "reason": "agents/epic-x-5/seams-task has no commits ahead of epic/x/seams",
     }]
 
@@ -1113,42 +1112,6 @@ def test_phase_land_refuses_when_two_initiatives_hold_the_phase(repo, tmp_path, 
     assert "no single initiative holds phase seams" in out
 
 
-# --- cli end to end: recover closes the work item too ---
-
-def _on_disk_record(**overrides):
-    """The task record as the harness writes it: `ticket` and a truncated
-    composite `run_id`, with no run, task, phase or initiative key."""
-    return {"run_id": "epic-x-5:seams:seams-t", "ticket": "seams-task", "review": {"verdict": "approve"}, "proposals": [], **overrides}
-
-
-def _recover_dry_run(repo, tmp_path, record, capsys, work_dirs=("x/seams",)):
-    sp.run(["git", "-C", str(repo), "branch", "epic/x/seams", "main"], check=True, env=_ENV)
-    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
-    (task_dir / "seams-task.json").write_text(json.dumps(record), encoding="utf-8")
-    for d in work_dirs:
-        (tmp_path / "work" / d).mkdir(parents=True)
-        (tmp_path / "work" / d / "seams-task.md").write_text("---\nid: seams-task\nstate: approved\n---\n\nBody.\n", encoding="utf-8")
-    rc = cli.main(["runs", "recover", "epic-x-5", "seams-task", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs"), "--dry-run"])
-    return rc, capsys.readouterr().out
-
-
-def test_cli_recover_resolves_a_record_with_only_the_on_disk_keys(repo, tmp_path, capsys):
-    rc, out = _recover_dry_run(repo, tmp_path, _on_disk_record(), capsys)
-    assert rc == 0, out
-    assert "would merge agents/epic-x-5/seams-task into epic/x/seams" in out
-
-
-@pytest.mark.parametrize("overrides, work_dirs, said", [
-    ({"ticket": "other-task"}, ("x/seams",), "disagrees with its filename"),
-    ({}, (), "no single initiative"),
-    ({}, ("x/seams", "y/seams"), "no single initiative"),
-], ids=["ticket-disagrees-with-filename", "no-initiative-holds-the-task", "two-initiatives-hold-the-task"])
-def test_cli_recover_refuses_an_unresolvable_record(repo, tmp_path, capsys, overrides, work_dirs, said):
-    rc, out = _recover_dry_run(repo, tmp_path, _on_disk_record(**overrides), capsys, work_dirs=work_dirs)
-    assert rc == 2
-    assert said in out
-
-
 def test_initiative_of_takes_the_id_from_frontmatter_and_falls_back_to_the_stem(tmp_path):
     (tmp_path / "a/p").mkdir(parents=True)
     (tmp_path / "b/p").mkdir(parents=True)
@@ -1157,31 +1120,6 @@ def test_initiative_of_takes_the_id_from_frontmatter_and_falls_back_to_the_stem(
     assert cli._initiative_of(tmp_path, "from-frontmatter") == "a"
     assert cli._initiative_of(tmp_path, "renamed") is None
     assert cli._initiative_of(tmp_path, "from-stem") == "b"
-
-
-def _item_text(state):
-    return f"---\nid: seams-task\nstate: {state}\n---\n\nBody.\n"
-
-
-@pytest.mark.parametrize("phase_at, state, dry_run, closed, said", [
-    ("main", "approved", False, True, ("epic/x/seams",)),
-    ("agents/epic-x-5/seams-task", "approved", False, True, ("already contains the commit",)),
-    ("agents/epic-x-5/seams-task", "approved", True, False, ("already contains the commit",)),
-    ("agents/epic-x-5/seams-task", "ready", False, False, ("already contains the commit", "not moving to done")),
-], ids=["merges-then-closes", "already-recovered-still-closes", "dry-run-writes-nothing", "ready-stays-ready-unmerged"])
-def test_cli_recover_closes_the_work_item_only_for_a_real_run_that_may_close_it(repo, tmp_path, capsys, phase_at, state, dry_run, closed, said):
-    sp.run(["git", "-C", str(repo), "branch", "epic/x/seams", phase_at], check=True, env=_ENV)
-    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
-    (task_dir / "seams-task.json").write_text(json.dumps(_on_disk_record()), encoding="utf-8")
-    item_dir = tmp_path / "work/x/seams"; item_dir.mkdir(parents=True)
-    item_path = item_dir / "seams-task.md"
-    item_path.write_text(_item_text(state), encoding="utf-8")
-    rc = cli.main(["runs", "recover", "epic-x-5", "seams-task", "--repo", str(repo), "--runs-dir", str(tmp_path / "runs"),
-                   *(["--dry-run"] if dry_run else [])])
-    out = capsys.readouterr().out
-    assert rc == 0, out
-    assert all(phrase in out for phrase in said)
-    assert item_path.read_text() == _item_text("done" if closed else state)
 
 
 def _apply_gated(repo, tmp_path, monkeypatch, *gate):
@@ -1273,6 +1211,15 @@ def test_cli_apply_takes_over_a_repo_lease_held_by_a_dead_pid_on_this_host(repo,
     assert calls["walked"] == 1
     assert "land: taking over the repo lease from chair-x@host-a:4242 (pid gone)" in capsys.readouterr().out
     assert [release[3] for release in calls["release"]] == [5]
+
+
+def test_cli_apply_reads_pid_alive_at_the_call_so_a_live_pid_with_the_dead_holders_number_cannot_refuse(
+        repo, tmp_path, monkeypatch, capsys):
+    """The takeover asks `land_repo_lease.pid_alive` as it stands at the call, not the def-time default of
+    `acquire_in_slots`. With the real probe answering alive for every pid, as it did on a runner where some
+    process held pid 4242, the patched answer still decides."""
+    monkeypatch.setattr(cli.land_repo_lease.os, "kill", lambda _pid, _sig: None)
+    test_cli_apply_takes_over_a_repo_lease_held_by_a_dead_pid_on_this_host(repo, tmp_path, monkeypatch, capsys)
 
 
 def test_cli_apply_refuses_a_repo_lease_held_by_a_holder_on_another_host(repo, tmp_path, monkeypatch, capsys):
@@ -2140,7 +2087,7 @@ def test_a_profile_naming_github_routes_the_land_to_it_handing_the_planned_head_
     out = capsys.readouterr().out
     assert rc == 3, out
     assert "forge: github" in out.splitlines()
-    assert "pr_create: https://x/pull/7" in out.splitlines()  # chair_exec._PR_URL_RE parses this exact line
+    assert "pr_create: https://x/pull/7" in out.splitlines()  # chair_exec.PR_URL_RE parses this exact line
     assert calls == [("push", "pr/seams-task"), ("open_pr", "pr/seams-task", "main"), ("wait_checks", "pr/seams-task")]
 
 

@@ -10,6 +10,15 @@ from xml.sax.saxutils import escape
 
 from agent_tools.chair_restart import RESTART_EXIT_CODE
 
+# cli.py and setup_install.py still call these through chair_service; the rules now live in unit_env.
+from agent_tools.unit_env import (
+    environment_file_line,
+    launchd_arguments,
+)
+from agent_tools.unit_env import export_lines as export_lines
+from agent_tools.unit_env import unit_environment_file as unit_environment_file
+from agent_tools.unit_env import unsafe_values as unsafe_values
+
 UNIT_NAME = "coxswain-chair.service"
 WATCHDOG_SERVICE_NAME = "coxswain-chair-watchdog.service"
 WATCHDOG_TIMER_NAME = "coxswain-chair-watchdog.timer"
@@ -18,10 +27,7 @@ CHAIR_PLIST_NAME = "coxswain-chair.plist"
 WATCHDOG_PLIST_LABEL = "coxswain-chair-watchdog"
 WATCHDOG_PLIST_NAME = "coxswain-chair-watchdog.plist"
 
-# systemd splits ExecStart on whitespace and expands `%`, `$` and `\`; a value outside this set reaches the chair changed.
-_UNIT_SAFE = re.compile(r"[A-Za-z0-9._@+:,/=-]+")
 _EXEC_START = re.compile(r"^ExecStart=(.*)$", re.MULTILINE)
-_ENV_FILE = re.compile(r"^EnvironmentFile=-(\S+)\s*$", re.MULTILINE)
 
 
 def unit_path[Home: PurePath](home: Home) -> Home:  # a Path in, a Path out: the edge calls .exists on the result
@@ -36,16 +42,6 @@ def systemctl_lines() -> list[str]:
     ]
 
 
-def unsafe_values(values: dict[str, str]) -> list[str]:
-    """The names whose value systemd would split or expand, in the order given."""
-    return [name for name, value in values.items() if not _UNIT_SAFE.fullmatch(value)]
-
-
-def export_lines(env_text: str) -> list[int]:
-    """1-based numbers of `export NAME=value` lines; systemd's EnvironmentFile= does not document that prefix."""
-    return [n for n, line in enumerate(env_text.splitlines(), start=1) if line.lstrip().startswith("export ")]
-
-
 def path_value(cox: str, tools_bin: str, graphs_bin: str, default_path: str) -> str:
     """The unit's PATH: cox's directory, then the two venv bins, then the default; empties dropped, first duplicate kept."""
     entries = [posixpath.dirname(cox), tools_bin, graphs_bin, *default_path.split(":")]
@@ -57,7 +53,7 @@ def unit_text(
     path: str | None = None,
 ) -> str:
     """`EnvironmentFile=-` keeps a missing file from failing the unit; `path` becomes the one `Environment=PATH=` line."""
-    env_lines = [f"EnvironmentFile=-{environment_file}"] if environment_file is not None else []
+    env_lines = [environment_file_line(environment_file)] if environment_file is not None else []
     path_lines = [f"Environment=PATH={path}"] if path is not None else []
     profile_args = f" --profile {profile}" if profile is not None else ""
     lines = [
@@ -81,7 +77,7 @@ def unit_text(
 
 def watchdog_service_text(cox: str, profile: str, path: str, environment_file: str | None) -> str:
     """`EnvironmentFile=-` is written only when a file is given; the oneshot is fired by the timer."""
-    env_lines = [f"EnvironmentFile=-{environment_file}"] if environment_file is not None else []
+    env_lines = [environment_file_line(environment_file)] if environment_file is not None else []
     lines = [
         "[Unit]",
         "Description=Coxswain chair watchdog",
@@ -111,9 +107,21 @@ def watchdog_timer_text(minutes: int) -> str:
     return "\n".join(lines) + "\n"
 
 
-def watchdog_plist_text(cox: str, profile: str, path: str, minutes: int) -> str:
-    """StartInterval is in seconds; every interpolated value is XML-escaped."""
-    arguments = [cox, "chair", "watchdog", "--profile", profile]
+def environment_variable_lines(path: str) -> list[str]:
+    """The EnvironmentVariables dict: PATH only. The env file's values are never copied into a plist; the agent
+    sources the file at launch (`program_arguments`)."""
+    return ["  <key>EnvironmentVariables</key>", "  <dict>", "    <key>PATH</key>", f"    <string>{escape(path)}</string>",
+            "  </dict>"]
+
+
+def program_arguments(environment_file: str | None, argv: list[str]) -> list[str]:
+    """`argv`, run through `unit_env.launchd_arguments` when an env file is given."""
+    return argv if environment_file is None else launchd_arguments(environment_file, argv)
+
+
+def watchdog_plist_text(cox: str, profile: str, path: str, minutes: int, environment_file: str | None = None) -> str:
+    """StartInterval is in seconds; every interpolated value is XML-escaped; the agent sources `environment_file`."""
+    arguments = program_arguments(environment_file, [cox, "chair", "watchdog", "--profile", profile])
     lines = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
@@ -127,11 +135,7 @@ def watchdog_plist_text(cox: str, profile: str, path: str, minutes: int) -> str:
         "  </array>",
         "  <key>StartInterval</key>",
         f"  <integer>{minutes * 60}</integer>",
-        "  <key>EnvironmentVariables</key>",
-        "  <dict>",
-        "    <key>PATH</key>",
-        f"    <string>{escape(path)}</string>",
-        "  </dict>",
+        *environment_variable_lines(path),
         "</dict>",
         "</plist>",
     ]
@@ -144,12 +148,21 @@ def chair_plist_path[Home: PurePath](home: Home) -> Home:
 
 def service_file[Home: PurePath](platform: str, home: Home) -> Home | None:
     """Where `setup install` puts the chair service file; None for a platform with no service manager supported."""
-    return {"linux": unit_path, "darwin": chair_plist_path}.get(platform, lambda _home: None)(home)
+    if platform == "linux":
+        return unit_path(home)
+    if platform == "darwin":
+        return chair_plist_path(home)
+    return None
 
 
-def chair_plist_text(cox: str, workspace_dir: str, label: str, interval: int, path: str, profile: str) -> str:
-    """KeepAlive true restarts the chair on any exit, including RESTART_EXIT_CODE; every interpolated value is XML-escaped."""
-    arguments = [cox, "chair", "run", "--label", label, "--interval", str(interval), "--profile", profile]
+def chair_plist_text(
+    cox: str, workspace_dir: str, label: str, interval: int, path: str, profile: str,
+    environment_file: str | None = None,
+) -> str:
+    """KeepAlive true restarts the chair on any exit, including RESTART_EXIT_CODE; every interpolated value is XML-escaped.
+    The agent sources `environment_file` at each launch."""
+    arguments = program_arguments(
+        environment_file, [cox, "chair", "run", "--label", label, "--interval", str(interval), "--profile", profile])
     lines = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
@@ -167,11 +180,7 @@ def chair_plist_text(cox: str, workspace_dir: str, label: str, interval: int, pa
         "  <true/>",
         "  <key>WorkingDirectory</key>",
         f"  <string>{escape(workspace_dir)}</string>",
-        "  <key>EnvironmentVariables</key>",
-        "  <dict>",
-        "    <key>PATH</key>",
-        f"    <string>{escape(path)}</string>",
-        "  </dict>",
+        *environment_variable_lines(path),
         "</dict>",
         "</plist>",
     ]
@@ -188,10 +197,10 @@ def unit_args(text: str) -> dict[str, str | None] | None:
     tokens = next((t for t in commands if ("chair", "run") in pairwise(t)), None)
     if tokens is None:
         return None
-    env = _ENV_FILE.search(text)
+    env_file = unit_environment_file(text)
     return {
         "label": _flag_value(tokens, "--label"),
         "interval": _flag_value(tokens, "--interval"),
         "profile": _flag_value(tokens, "--profile"),
-        "env_file": env.group(1) if env is not None else None,
+        "env_file": env_file,
     }

@@ -83,7 +83,7 @@ def test_a_four_flag_edit_changes_the_store_row_and_the_file_together(tmp_path, 
         tmp_path, tmp_path, "t1", title="New title", body_file=str(body_file), surfaces="a.py, b/c.py", state="ready", live_runs=()
     )
     assert result.code == route_edit.DONE
-    assert store.states == [("ship", "t1", "ready", route_edit.EDITED_BY, None)]
+    assert store.states == [("ship", "t1", "ready", route_edit.EDITED_BY, "todo")]  # compare-and-set on the state the edit read
     assert store.upserts == [
         {"initiative": "ship", "task_id": "t1", "title": "New title", "body": "\nNew body\n", "surfaces": ["a.py", "b/c.py"]}
     ]
@@ -186,9 +186,7 @@ def test_route_edit_dry_run_on_a_done_task_records_nothing(tmp_path, monkeypatch
 def test_a_task_finished_by_route_edit_shows_its_pr_in_the_feed(tmp_path, monkeypatch):
     """The real `store_cli.mark_landed` builds the harness argv; only the harness process is replaced, by one that
     stamps `landed` the way `harness.store_landed` does. The record it writes then goes through the real feed assembly."""
-    import subprocess
     from datetime import UTC, datetime
-    from pathlib import Path
 
     from agent_tools import dash_feed
 
@@ -196,16 +194,14 @@ def test_a_task_finished_by_route_edit_shows_its_pr_in_the_feed(tmp_path, monkey
     _file(tmp_path, "work/ship/p1/t1.md", TICKET_FILE)
     monkeypatch.setattr(run_store, "task_run_phases", lambda runs_dir, initiative, task: [("ship-2", "p1")])
     records = [{"run_id": "ship-2", "phase_id": "p1", "task_id": "t1", "record_json": "{}"}]
-    argvs: list[list[str]] = []
+    marked: list[tuple[str, str, str]] = []
 
-    def harness(argv, **kwargs):
-        argvs.append(argv)
-        landed = {"pr": argv[argv.index("--pr") + 1], "at": argv[argv.index("--at") + 1]}
-        records[0]["record_json"] = json.dumps({"landed": landed})
-        return subprocess.CompletedProcess(argv, 0, json.dumps({"landed": True}), "")
+    def mark_landed(runs_dir, run_id, phase, task, pr, at):
+        marked.append((run_id, phase, task))
+        records[0]["record_json"] = json.dumps({"landed": {"pr": pr, "at": at}})
+        return store_cli.Landed({"landed": {"pr": pr, "at": at}})
 
-    monkeypatch.setattr("agent_tools.store_cli._harness_python", lambda: Path("/fake/python"))
-    monkeypatch.setattr(subprocess, "run", harness)
+    monkeypatch.setattr(store_cli, "mark_landed", mark_landed)
     result = route_edit.apply_edit(tmp_path, tmp_path, "t1", state="done", pr="https://github.com/o/r/pull/259", live_runs=(), now="2026-11-01T10:00:00Z")
     runs = [{"run_id": "ship-2", "initiative": "ship", "status": "approved", "host": "h", "ended_at": "2026-11-01T10:30:00+00:00"}]
     rows = {"runs": runs, "task_records": records, "node_calls": []}
@@ -213,7 +209,7 @@ def test_a_task_finished_by_route_edit_shows_its_pr_in_the_feed(tmp_path, monkey
     history, _ = dash_feed._history_v1(rows, datetime(2026, 11, 1, 12, tzinfo=UTC), {}, {}, {("ship", "p1", "t1"): "done"})
 
     assert result.code == route_edit.DONE and store.states
-    assert [a[a.index("mark-landed") : a.index("mark-landed") + 4] for a in argvs] == [["mark-landed", "ship-2", "p1", "t1"]]
+    assert marked == [("ship-2", "p1", "t1")]
     assert [row["tasks"] for row in history] == [[{"id": "t1", "state": "done", "pr": 259}]]
 
 
@@ -235,7 +231,7 @@ def test_task_run_phases_lists_the_newest_run_first_and_only_of_the_initiative(t
         conn.row_factory = sqlite3.Row
         return conn, "?"
 
-    monkeypatch.setattr(run_store, "_open", opened)
+    monkeypatch.setattr(run_store, "open_store", opened)
     assert run_store.task_run_phases(tmp_path, "ship", "t1") == [("ship-2", "p2"), ("ship-1", "p1")]
 
 
@@ -387,8 +383,120 @@ def test_check_state_move(current, new, refused):
     assert (route_edit.check_state_move(current, new) is not None) is refused
 
 
+FLAG = "triage:t1:ship-9"
+HELD = {"id": "t1", "phase": "p1", "repo": "r", "hold_reason": "needs you: triage platform_defect", "triage_requested": FLAG}
+
+
+def _runs(monkeypatch, *runs):
+    monkeypatch.setattr(run_store, "run_ids", lambda runs_dir: set(runs))
+
+
+@pytest.mark.parametrize("state", ["blocked", "quarantined", "ready"])
+def test_a_hand_ready_drops_the_triage_request_and_marks_every_run_series(tmp_path, monkeypatch, state):
+    store = _store(monkeypatch, [{**_ticket_row(), "state": state, "extra": dict(HELD)}])
+    _runs(monkeypatch, "ship-8", "ship-9", "ship.p1-3", "ship.p1-1", "shipyard-40", "other-12")
+    _file(tmp_path, "work/ship/p1/t1.md", TICKET_FILE.replace("state: todo", f"state: {state}"))
+    result = route_edit.apply_edit(tmp_path, tmp_path, "t1", state="ready", live_runs=())
+    assert result.code == route_edit.DONE
+    [row] = store.rows
+    assert row["state"] == "ready"
+    assert "triage_requested" not in row["extra"]
+    assert row["extra"]["fresh_after_run"] == {"ship": 9, "ship.p1": 3}
+    assert row["extra"]["hold_reason"] == HELD["hold_reason"]
+
+
+def test_a_ready_move_on_a_flagged_ready_task_cancels_its_triage_request_on_purpose(tmp_path, monkeypatch):
+    # The chair flags a quarantine and sends it to ready in one step, so a task waiting for its triage is ready already.
+    # A person who says `--state ready` on it says they dealt with the failure: the request goes and the next run builds.
+    store = _store(monkeypatch, [{**_ticket_row(), "state": "ready", "extra": dict(HELD)}])
+    _runs(monkeypatch, "ship-9")
+    _file(tmp_path, "work/ship/p1/t1.md", TICKET_FILE.replace("state: todo", "state: ready"))
+    result = route_edit.apply_edit(tmp_path, tmp_path, "t1", state="ready", live_runs=())
+    assert result.code == route_edit.DONE and store.states == []
+    assert "triage_requested" not in store.rows[0]["extra"] and store.rows[0]["extra"]["fresh_after_run"] == {"ship": 9}
+
+
+def test_a_ready_task_with_no_request_and_no_hold_is_left_alone(tmp_path, monkeypatch):
+    store = _store(monkeypatch, [{**_ticket_row(), "state": "ready"}])
+    _runs(monkeypatch, "ship-9")
+    _file(tmp_path, "work/ship/p1/t1.md", TICKET_FILE.replace("state: todo", "state: ready"))
+    result = route_edit.apply_edit(tmp_path, tmp_path, "t1", state="ready", live_runs=())
+    assert result.code == route_edit.DONE and store.upserts == [] and store.states == []
+
+
+def test_a_todo_task_made_ready_has_no_history_to_mark(tmp_path, monkeypatch):
+    store = _store(monkeypatch, [_ticket_row()])
+    _runs(monkeypatch, "ship-9")
+    _file(tmp_path, "work/ship/p1/t1.md", TICKET_FILE)
+    route_edit.apply_edit(tmp_path, tmp_path, "t1", state="ready", live_runs=())
+    assert "fresh_after_run" not in store.rows[0]["extra"]
+
+
+def test_a_hand_ready_that_finds_no_run_drops_the_request_and_says_no_mark_was_written(tmp_path, monkeypatch):
+    store = _store(monkeypatch, [{**_ticket_row(), "state": "blocked", "extra": dict(HELD)}])
+    _runs(monkeypatch)
+    _file(tmp_path, "work/ship/p1/t1.md", TICKET_FILE.replace("state: todo", "state: blocked"))
+    result = route_edit.apply_edit(tmp_path, tmp_path, "t1", state="ready", live_runs=())
+    assert result.code == route_edit.DONE
+    assert "triage_requested" not in store.rows[0]["extra"] and "fresh_after_run" not in store.rows[0]["extra"]
+    assert "warning: no run of ship found in the store; no fresh_after_run mark written" in result.text
+
+
+@pytest.mark.parametrize("live", ["ship-10", "ship.p1-4"])
+def test_a_hand_ready_while_a_run_of_the_initiative_is_live_is_refused(tmp_path, monkeypatch, live):
+    store = _store(monkeypatch, [{**_ticket_row(), "state": "blocked", "extra": dict(HELD)}])
+    _runs(monkeypatch, "ship-9", live)
+    _file(tmp_path, "work/ship/p1/t1.md", TICKET_FILE.replace("state: todo", "state: blocked"))
+    result = route_edit.apply_edit(tmp_path, tmp_path, "t1", state="ready", live_runs=(), initiative_live=(live, "other-3"))
+    assert result.code == route_edit.REFUSED
+    assert result.text == f"{live} is live on ship; stop it with `cox runs stop {live}`, or let it finish, before readying t1"
+    assert store.states == [] and store.upserts == []
+
+
+def test_a_live_run_of_another_initiative_does_not_refuse_a_hand_ready(tmp_path, monkeypatch):
+    store = _store(monkeypatch, [{**_ticket_row(), "state": "blocked", "extra": dict(HELD)}])
+    _runs(monkeypatch, "ship-9")
+    _file(tmp_path, "work/ship/p1/t1.md", TICKET_FILE.replace("state: todo", "state: blocked"))
+    result = route_edit.apply_edit(tmp_path, tmp_path, "t1", state="ready", live_runs=(), initiative_live=("shipyard-2", "other-3"))
+    assert result.code == route_edit.DONE and store.rows[0]["state"] == "ready"
+
+
+def test_fresh_start_extra():
+    assert route_edit.fresh_start_extra(HELD, {"ship": 9}) == {
+        **{k: v for k, v in HELD.items() if k != "triage_requested"}, "fresh_after_run": {"ship": 9},
+    }
+    assert route_edit.fresh_start_extra({"id": "t1"}, {}) == {"id": "t1"}
+
+
 def test_check_claim_lets_an_expired_claim_go():
     row = {**_ticket_row(), "holder": "chair-mac", "expires_at": "2026-10-12T10:00:00+00:00"}
     assert route_edit.check_claim(row, "2026-10-12T11:00:00+00:00") is None
     assert route_edit.check_claim(row, None) is not None
     assert route_edit.check_claim(_ticket_row(), None) is None
+
+
+def test_pick_ticket_with_an_initiative_picks_that_initiatives_task():
+    rows = [
+        {"kind": "task", "initiative": "a", "task_id": "t1"},
+        {"kind": "task", "initiative": "b", "task_id": "t1"},
+        {"kind": "initiative", "initiative": "t1", "task_id": "t1"},
+    ]
+    assert route_edit.pick_ticket(rows, "t1", "b") == rows[1]
+    assert route_edit.pick_ticket(rows, "t1", "c") == "no task 't1' in initiative 'c'"
+    assert "give --initiative" in route_edit.pick_ticket(rows, "t1", None)
+    assert route_edit.pick_ticket(rows[:1], "t1", None) == rows[0]
+
+
+def test_a_task_id_in_two_initiatives_edits_the_named_one(tmp_path, monkeypatch):
+    store = _store(monkeypatch, [_ticket_row(), {**_ticket_row(), "initiative": "other"}])
+    result = route_edit.apply_edit(tmp_path, tmp_path, "t1", title="New", live_runs=(), initiative="other", dry_run=True)
+    assert result.code == route_edit.DONE, result.text
+    assert store.upserts == []
+
+
+def test_pick_ticket_refuses_an_unknown_task_and_ignores_initiative_rows():
+    rows = [{"kind": "initiative", "initiative": "t1", "task_id": "t1"}, {"initiative": "a", "task_id": "t2"}]
+    assert route_edit.pick_ticket(rows, "t1", None) == "no queued intake or initiative named 't1'"
+    assert route_edit.pick_ticket(rows, "t2", None) == rows[1]  # a row with no kind is a task
+    assert route_edit.pick_ticket(rows, "t2", "a") == rows[1]
+    assert route_edit.pick_ticket(rows, "t2", "b") == "no task 't2' in initiative 'b'"

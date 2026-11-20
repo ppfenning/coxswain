@@ -22,7 +22,6 @@ from agent_tools.chair_run import (
     error_line,
     land_sink,
     next_gate_record,
-    no_landing,
     overran,
     overrun_limit_hit,
     run,
@@ -411,10 +410,6 @@ def test_landing_lists_both_lands_in_progress_in_one_repo():
         {"initiative": "ind", "phase": "p2", "repo": "/repo"},
     ]
     release.set()
-
-
-def test_a_chair_with_no_land_worker_reports_no_landing():
-    assert no_landing() == []
 
 
 def test_a_dry_run_installs_no_sigterm_handler():

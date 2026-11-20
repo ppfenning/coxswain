@@ -337,6 +337,37 @@ def idea_parts(idea: str) -> tuple[str, str, str]:
     return title, block.get("repo", ""), body
 
 
+def initiative_frontmatter(
+    idea: Mapping[str, Any],
+    repo: str,
+    *,
+    intake: str | None = None,
+    size: Mapping[str, str] | None = None,
+    home: str | None = None,
+    epic: str | None = None,
+    target_branch: str | None = None,
+    lint: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Pure: the `initiative.md` frontmatter fields, in the order `initiative_text` renders them."""
+    carried = (("epic", epic), ("target_branch", target_branch))
+    return {
+        "id": idea.get("id"),
+        "title": idea.get("title"),
+        "repo": _tilde_repo(repo, home),
+        "budget_usd": idea.get("budget_usd"),
+        **({"intake": intake} if intake else {}),
+        **({key: size[key] for key in ("size", "size_reason", "size_source")} if size else {}),
+        **{key: value for key, value in carried if value is not None},
+        **({"lint": list(lint)} if lint else {}),
+    }
+
+
+def initiative_body_text(idea: Mapping[str, Any], phases: Sequence[str], goals: Mapping[str, str]) -> str:
+    """Pure: the `initiative.md` text after the frontmatter, the idea and its phase goals."""
+    goal_lines = "\n".join(f"- {phase_id}: {goals.get(phase_id, '')}" for phase_id in phases)
+    return f"{idea.get('why', '')}\n\nPHASE GOALS, each judged against ITS OWN line:\n{goal_lines}\n"
+
+
 def initiative_text(
     idea: Mapping[str, Any],
     phases: Sequence[str],
@@ -357,29 +388,16 @@ def initiative_text(
     """
     if "\n" in str(idea.get("title") or ""):
         raise ContractViolation(f"initiative {idea.get('id')} has a multi-line title; a title is one line")
-    goal_lines = "\n".join(f"- {phase_id}: {goals.get(phase_id, '')}" for phase_id in phases)
-    intake_line = f"intake: {_scalar(intake)}\n" if intake else ""
-    size_lines = (
-        "".join(f"{key}: {_scalar(size[key])}\n" for key in ("size", "size_reason", "size_source")) if size else ""
+    fields = initiative_frontmatter(
+        idea, repo, intake=intake, size=size, home=home, epic=epic, target_branch=target_branch, lint=lint
     )
-    carried = (("epic", epic), ("target_branch", target_branch))
-    carry_lines = "".join(f"{key}: {_scalar(value)}\n" for key, value in carried if value is not None)
-    lint_lines = "lint:\n" + "".join(f"  - {_scalar(note)}\n" for note in lint) if lint else ""
-    return (
-        "---\n"
-        f"id: {_scalar(idea.get('id'))}\n"
-        f"title: {_scalar(idea.get('title'))}\n"
-        f"repo: {_scalar(_tilde_repo(repo, home))}\n"
-        f"budget_usd: {_scalar(idea.get('budget_usd'))}\n"
-        f"{intake_line}"
-        f"{size_lines}"
-        f"{carry_lines}"
-        f"{lint_lines}"
-        "---\n\n"
-        f"{idea.get('why', '')}\n\n"
-        "PHASE GOALS, each judged against ITS OWN line:\n"
-        f"{goal_lines}\n"
+    lines = "".join(
+        "lint:\n" + "".join(f"  - {_scalar(note)}\n" for note in value)
+        if key == "lint"
+        else f"{key}: {_scalar(value)}\n"
+        for key, value in fields.items()
     )
+    return f"---\n{lines}---\n\n{initiative_body_text(idea, phases, goals)}"
 
 
 def resolve_surfaces(surfaces: Sequence[str], tree: Sequence[Mapping[str, Any]]) -> tuple[list[str], list[str]]:
@@ -1519,7 +1537,11 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
         lint=[*heal.notes, *ordering_notes, *split_notes],
     )
     initiative_where = "/".join(part for part in (landing, initiative_id) if part)
-
+    # One cleaned body per task, bound before the proposals and the returned plan read it, so the
+    # rationale, `apply.item.body` and the plan task cannot differ.
+    tasks = [
+        {**t, "body": _strip_trailing_tag(str(t.get("body") or decomposition.get("rationale", "")))} for t in tasks
+    ]
     proposals = (
         [
             proposal(
@@ -1555,13 +1577,14 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
                         for dropped in task.get("needs_dropped") or []
                     ),
                 ],
-                rationale=_strip_trailing_tag(str(task.get("body") or decomposition.get("rationale", ""))),
+                rationale=task["body"],
                 # The whole item, in the action. The arm sees the proposal and
                 # nothing else, so an action that named only an id would leave it
                 # inventing the title and guessing the initiative — the first live
                 # run proved exactly that. `initiative_id` is optional: absent, the
                 # store root's name is the initiative, as `read_initiative` reads it.
                 suggested_action=_item_action(task, landing=landing, initiative_id=initiative_id),
+                apply=_task_apply(task, task["body"], landing=landing, initiative_id=initiative_id),
             )
             for task in sorted(tasks, key=lambda t: str(t["id"]))
         ]
@@ -1572,6 +1595,8 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
                 target="initiative",
                 evidence=[{"check": "phases", "output": ", ".join(phase_order) or "none"}],
                 rationale=str(decomposition.get("rationale") or ""),
+                # No `apply` payload yet: `workstore.write_item` keeps only work-item fields, so an initiative.md
+                # written through it would lose `repo`, `intake` and the size fields. The model arm writes it.
                 suggested_action=f"create {initiative_where}/initiative.md with body =\n{initiative_body}",
             )
         ]
@@ -1588,6 +1613,7 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
                         f"set {intake_path}'s frontmatter to `initiative: {initiative_id or run_id}` and move it "
                         f"to `intake/done/{intake_path.rsplit('/', 1)[-1]}`"
                     ),
+                    apply=_intake_retire_apply(intake_path, initiative_id or run_id),
                 )
             ]
             if intake_path
@@ -1625,9 +1651,41 @@ def _strip_trailing_tag(body: str) -> str:
     return re.sub(r"\n?</[^\n>]+>\s*$", "", body)
 
 
+def _intake_retire_apply(intake_path: str, initiative: str) -> dict[str, Any]:
+    """Pure: the payload the workstore arm's retire route applies, the same move the prose action describes."""
+    return {
+        "path": intake_path,
+        "retire_to": f"intake/done/{intake_path.rsplit('/', 1)[-1]}",
+        "fields": {"initiative": initiative},
+    }
+
+
+def _task_path(task: Mapping[str, Any], *, landing: str, initiative_id: str | None) -> str:
+    """Pure: the store-relative ticket path, landing, initiative id when set, phase, then `<id>.md`."""
+    where = "/".join(part for part in (landing, initiative_id, str(task.get("phase"))) if part)
+    return f"{where}/{task['id']}.md"
+
+
+def _task_apply(task: Mapping[str, Any], rationale: str, *, landing: str, initiative_id: str | None) -> dict[str, Any]:
+    """Pure: the payload the workstore arm writes, the action's frontmatter plus the rationale as body."""
+    return {
+        "path": _task_path(task, landing=landing, initiative_id=initiative_id),
+        "item": {**_task_frontmatter(task), "body": rationale},
+    }
+
+
 def _item_action(task: Mapping[str, Any], *, landing: str, initiative_id: str | None) -> str:
     """Pure: the create action, carrying every field the work-item arm must write."""
-    where = "/".join(part for part in (landing, initiative_id, str(task.get("phase"))) if part)
+    # Real YAML, not a hand-quoted guess: the arm copies this block verbatim
+    # into the ticket's frontmatter, and a title carrying `: ` broke exactly
+    # that the first time nothing here quoted it.
+    block = yaml.safe_dump(_task_frontmatter(task), sort_keys=False, allow_unicode=True, width=1000)
+    path = _task_path(task, landing=landing, initiative_id=initiative_id)
+    return f"create {path} with frontmatter\n{block}body = the rationale"
+
+
+def _task_frontmatter(task: Mapping[str, Any]) -> dict[str, Any]:
+    """Pure: the ticket frontmatter the prose action renders and the apply payload writes."""
     # Empty stays `[]`, never a placeholder word: the arm copies this text into
     # frontmatter verbatim, and `needs: [none]` is an edge to a task that does
     # not exist — the third live run landed exactly that and the DAG refused.
@@ -1635,7 +1693,7 @@ def _item_action(task: Mapping[str, Any], *, landing: str, initiative_id: str | 
     # §3 puts them in the ticket's own `lint:` frontmatter list. A retried seat
     # can see the same advisory more than once; dedupe keeps it to one.
     task = notes_out_of_surfaces(task)
-    frontmatter = {
+    return {
         "id": task["id"],
         "title": task.get("title") or task["id"],
         "phase": task.get("phase"),
@@ -1646,11 +1704,6 @@ def _item_action(task: Mapping[str, Any], *, landing: str, initiative_id: str | 
         # Only a one-ticket initiative carries checks; an epic task writes none, as before.
         **({"checks": [str(x) for x in task["checks"]]} if task.get("checks") else {}),
     }
-    # Real YAML, not a hand-quoted guess: the arm copies this block verbatim
-    # into the ticket's frontmatter, and a title carrying `: ` broke exactly
-    # that the first time nothing here quoted it.
-    block = yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=True, width=1000)
-    return f"create {where}/{task['id']}.md with frontmatter\n{block}body = the rationale"
 
 
 from graphs._spec import GraphSpec, Need  # noqa: E402

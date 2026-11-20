@@ -17,10 +17,11 @@ import re
 import sys
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Any, NamedTuple
+from typing import NamedTuple, cast
 
-from harness.cli import _read_profile
-from harness.store_cli import _DB_ERRORS, _OPEN_ERRORS, _common, resolve_store_url
+from harness.cli import read_provider_profile
+from harness.store_api import db_errors, open_errors
+from harness.store_cli import add_common_args, resolve_store_url
 from harness.store_dialect import Connection, insert_ignore
 from harness.store_migrate import open_store
 
@@ -166,7 +167,7 @@ def _plan(items: Sequence[ItemRow], runs: Sequence[RunRow], start_n: int) -> Bac
 
 def _read_next(tx: Connection, scope: str) -> int:
     row = tx.query_one(f"SELECT next FROM id_sequence WHERE scope = {tx.dialect.placeholder}", (scope,))
-    return 1 if row is None else int(row[0])
+    return 1 if row is None else int(cast(int, row[0]))
 
 
 def _write_next(tx: Connection, scope: str, value: int) -> None:
@@ -200,10 +201,13 @@ def backfill(conn: Connection) -> dict[str, int]:
     with conn.transaction() as tx:
         _lock_row(tx, "initiative")
         items = tuple(
-            ItemRow(*row)
+            ItemRow(*cast("tuple[str, str, str, str, str | None]", row))
             for row in tx.query_all("SELECT initiative, task_id, phase, updated_at, short_id FROM work_items")
         )
-        runs = tuple(RunRow(*row) for row in tx.query_all("SELECT run_id, started_at, short_id FROM runs"))
+        runs = tuple(
+            RunRow(*cast("tuple[str, str, str | None]", row))
+            for row in tx.query_all("SELECT run_id, started_at, short_id FROM runs")
+        )
         plan = _plan(items, runs, _read_next(tx, "initiative"))
         for update in plan.item_updates:
             tx.execute(
@@ -233,7 +237,7 @@ def resolve(conn: Connection, token: str) -> tuple[str, str] | None:
         if row is not None:
             return ("work_item", f"{row[0]}/{row[1]}")
         row = conn.query_one(f"SELECT run_id FROM runs WHERE short_id = {p}", (token,))
-        return ("run", row[0]) if row is not None else None
+        return ("run", cast(str, row[0])) if row is not None else None
     if "/" in token:
         initiative, _, task_id = token.partition("/")
         row = conn.query_one(
@@ -242,24 +246,24 @@ def resolve(conn: Connection, token: str) -> tuple[str, str] | None:
         )
         return ("work_item", token) if row is not None else None
     row = conn.query_one(f"SELECT run_id FROM runs WHERE run_id = {p}", (token,))
-    return ("run", row[0]) if row is not None else None
+    return ("run", cast(str, row[0])) if row is not None else None
 
 
 def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(prog="python -m harness.store_ids", description=__doc__.splitlines()[0])
-    _common(ap, top=True)
+    ap = argparse.ArgumentParser(prog="python -m harness.store_ids", description=cast(str, __doc__).splitlines()[0])
+    add_common_args(ap, top=True)
     commands = ap.add_subparsers(dest="command", required=True)
 
     backfill_p = commands.add_parser("backfill", help="number every un-numbered initiative and set its short ids")
-    _common(backfill_p, top=False)
+    add_common_args(backfill_p, top=False)
     backfill_p.add_argument("--json", action="store_true", help="print the result as one JSON object")
 
     allocate_p = commands.add_parser("allocate", help="allocate the next initiative short id")
-    _common(allocate_p, top=False)
+    add_common_args(allocate_p, top=False)
     allocate_p.add_argument("--json", action="store_true", help="print the result as one JSON object")
 
     resolve_p = commands.add_parser("resolve", help="the (kind, key) a short id or an old-style key names")
-    _common(resolve_p, top=False)
+    add_common_args(resolve_p, top=False)
     resolve_p.add_argument("token")
     resolve_p.add_argument("--json", action="store_true", help="print the result as one JSON object")
 
@@ -275,7 +279,7 @@ def _fail(message: str) -> int:
     return EXIT_BAD_INPUT
 
 
-def _dispatch(conn: Connection, args: argparse.Namespace) -> tuple[dict[str, Any], int]:
+def _dispatch(conn: Connection, args: argparse.Namespace) -> tuple[Mapping[str, object], int]:
     if args.command == "allocate":
         return {"short_id": allocate_initiative(conn)}, EXIT_OK
     if args.command == "backfill":
@@ -287,7 +291,7 @@ def _dispatch(conn: Connection, args: argparse.Namespace) -> tuple[dict[str, Any
     return {"token": args.token, "kind": kind, "key": key}, EXIT_OK
 
 
-def _summary(command: str, payload: Mapping[str, Any]) -> str:
+def _summary(command: str, payload: Mapping[str, object]) -> str:
     if command == "allocate":
         return str(payload["short_id"])
     if command == "backfill":
@@ -305,15 +309,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         return exc.code if isinstance(exc.code, int) else EXIT_BAD_INPUT
     if not args.store_url and args.runs_dir is None:
         return _fail("--store-url or --runs-dir is required")
-    profile = {} if args.provider_profile is None else _read_profile(args.provider_profile)
+    profile: Mapping[str, object] = {} if args.provider_profile is None else read_provider_profile(args.provider_profile)
     url = resolve_store_url(args.store_url, profile, args.runs_dir)
     try:
         conn = open_store(url, _now())
-    except _OPEN_ERRORS as exc:
+    except open_errors() as exc:
         return _fail(f"cannot open the store: {exc}")
     try:
         payload, code = _dispatch(conn, args)
-    except _DB_ERRORS as exc:
+    except db_errors() as exc:
         return _fail(f"cannot read the store: {exc}")
     finally:
         conn.close()

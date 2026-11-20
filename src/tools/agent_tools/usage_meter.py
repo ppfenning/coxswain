@@ -7,6 +7,7 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from agent_tools import pacing, run_store
 
@@ -64,7 +65,7 @@ def _entry(doc: dict) -> MeterEntry:
     )
 
 
-def parse(doc: dict) -> Meter | None:
+def parse(doc: dict[str, Any]) -> Meter | None:
     """A null or absent `five_hour` parses to `five_hour=None`: the plan has no five-hour limit.
     A malformed non-null `five_hour`, a bad `seven_day` or a bad `observed_at` returns None."""
     five_hour_doc = doc.get("five_hour")

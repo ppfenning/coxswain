@@ -11,6 +11,22 @@ The dash repository owns the `towpath` binary (Rust and ratatui), its themes
 and its keymap. Every action it offers is a `cox` verb; it holds no state of
 its own beyond the view you left it on.
 
+## The feed contract
+
+Every feed and detail snapshot carries the contract version as `schema`
+(`dash_contract.CONTRACT_VERSION` in tools). The version moves only on a
+breaking change, a key removed or renamed or a type changed; an added key
+keeps it. Towpath refuses a snapshot at any other version and says which side
+to upgrade.
+
+The fixtures that fix the contract's shape live in tools at
+`tests/fixtures/`, listed with the version in `dash_contract.json`. Towpath
+keeps no hand copies: its `coxswain-contract.toml` pins one coxswain commit,
+its tests read the fixtures vendored from that commit, and its CI fails when
+the vendored set differs from the set at the pin. Bumping the pin is the only
+way towpath takes a changed fixture, so a changed fixture reaches towpath's
+tests in the same pull request that adapts towpath to it.
+
 ## Installing it
 
 Dash is optional: nothing else needs it. It lives in its own repository and

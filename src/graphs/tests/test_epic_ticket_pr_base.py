@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from harness.epic import _open_phase_worktree, _run_phase
+from harness.epic import open_phase_worktree, run_phase_tasks
 from tests.test_epic_driver import (  # noqa: F401 -- cart and repo are fixtures
     cart,
     drive,
@@ -103,7 +103,7 @@ def test_without_a_pr_branch_every_phase_is_cut_from_the_initiative_branch(repo,
 def test_a_reused_branch_is_rebased_when_the_pr_branch_moves(repo, cart, tmp_path) -> None:  # noqa: F811
     make_pr_branch(repo, tmp_path, "t1-probe.txt")
     first = _ctx(repo, tmp_path, "r1")
-    ok, detail, _ = _open_phase_worktree(first, PHASE, PR, ("p1-foundations",), [PR])
+    ok, detail, _ = open_phase_worktree(first, PHASE, PR, ("p1-foundations",), [PR])
     assert ok, detail
     tree = first.phase_worktree(PHASE)
     commit_file(tree, "done.md", "epic r1: t-done")
@@ -119,7 +119,7 @@ def test_a_reused_branch_is_rebased_when_the_pr_branch_moves(repo, cart, tmp_pat
         {"id": "t3-cutover", "phase": PHASE, "state": "approved", "needs": [], "surfaces": []},
     ]
     ctx = replace(_ctx(repo, tmp_path, "r2"), cartridge=cart)
-    record = _run_phase(ctx, initiative={"id": "x"}, phase=PHASE, parents=("p1-foundations",), items=items)
+    record = run_phase_tasks(ctx, initiative={"id": "x"}, phase=PHASE, parents=("p1-foundations",), items=items)
 
     assert record["base"] == PR
     assert record["rebased"] is True

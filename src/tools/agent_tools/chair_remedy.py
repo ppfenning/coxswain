@@ -1,5 +1,7 @@
 """Pure remedy choice and reason trim for a quarantined task. No I/O, no clock."""
 
+from typing import TypedDict
+
 _REASON_LIMIT = 600
 
 _REMEDY_BY_CAUSE = {
@@ -13,9 +15,9 @@ _REMEDY_BY_CAUSE = {
     "superseded": "drop",
 }
 
-# cli.py has no cox verb for set-state, so these argvs use the store_cli set-state shape. `run` stands in for the
-# initiative, `chair` is the --by label and `python` is the interpreter; the four inputs carry none of them.
-_SET_STATE = ("python", "-m", "harness.store_cli", "set-state")
+# A drop or a retry moves the ticket with `cox route edit --state`, which writes the file and the store together through
+# the store API. `cox inbox` runs these argvs as they are. They once ran `python -m harness.store_cli set-state` with the
+# run in place of the initiative and no store named, so every accept and deny failed (H1).
 
 
 def trim_reason(text: str | None) -> str:
@@ -28,21 +30,37 @@ def choose_remedy(cause: str | None) -> str:
     return _REMEDY_BY_CAUSE.get(cause or "", "re-ground")
 
 
-def _set_state(run: str, task: str, state: str) -> list[str]:
-    return [*_SET_STATE, run, task, state, "--by", "chair"]
+def set_state_argv(initiative: str, task: str, state: str) -> list[str]:
+    """The `route edit` argv that moves one ticket. It names the initiative, so a task id repeated across initiatives
+    moves this initiative's ticket; an empty initiative (a row that carries none) gives the id-only argv, which
+    `route edit` refuses rather than guess when the id repeats."""
+    return ["cox", "route", "edit", task, *(["--initiative", initiative] if initiative else []), "--state", state]
 
 
-def remedy_command(kind: str, run: str, task: str, repo: str) -> list[str]:
+def initiative_of(initiative: str, run: str) -> str:
+    """The initiative a row names, else the one its run id names: `x-3` and the phase run `x.p1-2` are both `x`."""
+    if initiative:
+        return initiative
+    series, _, tail = run.rpartition("-")
+    return series.split(".", 1)[0] if series and tail.isdigit() else ""
+
+
+def remedy_command(kind: str, run: str, task: str, repo: str, initiative: str = "") -> list[str]:
     """Argv of the existing command for a remedy kind; an unknown kind gets the re-ground argv."""
     if kind == "carry":
         return ["cox", "runs", "land", run, "--repo", repo, "--task", task, "--apply"]
     if kind == "drop":
         # No dedicated drop verb exists: the nearest set-state argv marks the ticket dropped.
-        return _set_state(run, task, "dropped")
+        return set_state_argv(initiative, task, "dropped")
     # Retry has no dedicated verb either: the nearest set-state argv puts the ticket ready. Re-ground and unknown kinds too.
-    return _set_state(run, task, "ready")
+    return set_state_argv(initiative, task, "ready")
 
 
-def remedy_for(cause: str | None, run: str, task: str, repo: str) -> dict:
+class Remedy(TypedDict):
+    kind: str
+    command: list[str]
+
+
+def remedy_for(cause: str | None, run: str, task: str, repo: str, initiative: str = "") -> Remedy:
     kind = choose_remedy(cause)
-    return {"kind": kind, "command": remedy_command(kind, run, task, repo)}
+    return Remedy(kind=kind, command=remedy_command(kind, run, task, repo, initiative))

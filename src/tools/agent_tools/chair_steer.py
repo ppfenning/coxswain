@@ -1,7 +1,7 @@
 """The pure overlap rule every launch path shares; the edge fills `running` and `steer_streaks`."""
 from collections.abc import Mapping, Sequence
 
-from agent_tools.chair_types import Action, RunningInitiative, SteerPolicy
+from agent_tools.chair_types import Action, ActionKind, RunningInitiative, SteerPolicy, action_text
 
 ESCALATE_AT = 3  # consecutive prior deferrals of one ordered pair before the chair is asked
 _NEW_MARKER = " (new)"
@@ -94,10 +94,15 @@ def steer_check(
         other = entry["id"]
         if streaks.get(f"{initiative}|{other}", 0) < ESCALATE_AT:
             other_phase = entry.get("phase")
-            named: Action = {} if phase is None else {"phase": phase, **({} if other_phase is None else {"other_phase": other_phase})}
-            return {"kind": "steer_clear", "initiative": initiative, "other": other, **named, "paths": paths}
+            clear: Action = {"kind": ActionKind.STEER_CLEAR, "initiative": initiative, "other": other}
+            if phase is not None:
+                clear["phase"] = phase
+                if other_phase is not None:
+                    clear["other_phase"] = other_phase
+            clear["paths"] = paths
+            return clear
         return {
-            "kind": "needs_chair",
+            "kind": ActionKind.NEEDS_CHAIR,
             "initiative": initiative,
             "other": other,
             "cause": "steer_deferred",
@@ -110,7 +115,10 @@ def steer_check(
     if sibling is None:
         return None
     entry, paths = sibling
-    return {"kind": "steer_clear", "initiative": initiative, "other": initiative, "phase": phase, "other_phase": entry["phase"], "paths": paths}
+    sibling_phase = entry.get("phase")
+    if sibling_phase is None:
+        raise KeyError("phase")
+    return {"kind": ActionKind.STEER_CLEAR, "initiative": initiative, "other": initiative, "phase": phase, "other_phase": sibling_phase, "paths": paths}
 
 
 def steer_heads(actions: Sequence[Action]) -> list[str]:
@@ -120,5 +128,5 @@ def steer_heads(actions: Sequence[Action]) -> list[str]:
     `other`, so it is deferred by itself and never a head.
     """
     steers = [a for a in actions if a["kind"] == "steer_clear" or (a["kind"] == "needs_chair" and a.get("cause") == "steer_deferred")]
-    deferred = {a["initiative"] for a in steers}
+    deferred = {action_text(a, "initiative") for a in steers}
     return list(dict.fromkeys(other for a in steers if (other := a.get("other")) and other not in deferred))

@@ -11,9 +11,10 @@ import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
-from agent_tools import repo_path
+from agent_tools import bounded_run, repo_path
 from agent_tools.chair_land_conflict import LandConflict
 from agent_tools.jsonl_log import parse_log
+from core.jsontypes import is_list
 
 Row = Mapping[str, object]
 Key = tuple[str, str, str]  # (initiative, phase, run)
@@ -32,6 +33,13 @@ def squash_key(row: Row) -> Key | None:
     return initiative, named["phase"], run
 
 
+def _paths(row: Row) -> list[str]:
+    paths: object = row.get("conflict_paths") or []
+    if not is_list(paths):
+        raise TypeError("conflict_paths is not a list")
+    return [str(p) for p in paths]
+
+
 def land_conflicts(rows: Sequence[Row], current: Mapping[tuple[str, str], Commits]) -> list[LandConflict]:
     """The newest `squash_phase` row per run and phase, when its recorded commits still equal `current`.
 
@@ -39,23 +47,23 @@ def land_conflicts(rows: Sequence[Row], current: Mapping[tuple[str, str], Commit
     or a phase absent from `current`, is never kept, so that land can be retried."""
     newest = {key: row for row in sorted(rows, key=lambda r: str(r.get("ts") or "")) if (key := squash_key(row)) is not None}
     return [
-        {"initiative": key[0], "phase": key[1], "run": key[2], "paths": [str(p) for p in row.get("conflict_paths") or []]}
+        {"initiative": key[0], "phase": key[1], "run": key[2], "paths": _paths(row)}
         for key, row in newest.items()
         if row.get("branch_sha") and row.get("from_sha")
         and (str(row["branch_sha"]), str(row["from_sha"])) == current.get((key[0], key[1]))
     ]
 
 
-def _rev_parse(repo: str, ref: str) -> str | None:
+def rev_parse_commit(repo: str, ref: str) -> str | None:
     argv = repo_path.git_argv(repo, os.path.expanduser("~"), "rev-parse", "--verify", "--quiet", ref)
-    r = subprocess.run(argv, capture_output=True, text=True)
+    r: subprocess.CompletedProcess[str] = bounded_run.completed(argv, capture_output=True, text=True)
     return r.stdout.strip() or None if r.returncode == 0 else None
 
 
 def read_land_conflicts(
     runs_dir: str,
     repos: Mapping[str, str],
-    rev_parse: Callable[[str, str], str | None] = _rev_parse,
+    rev_parse: Callable[[str, str], str | None] = rev_parse_commit,
 ) -> list[LandConflict]:
     """Edge. `[]` on an unreadable log. A phase whose repo is unknown or whose refs do not resolve has no current ids, so it is not a conflict."""
     if not runs_dir:
@@ -64,7 +72,7 @@ def read_land_conflicts(
         text = (Path(runs_dir) / "land.jsonl").read_bytes().decode("utf-8", errors="replace")
     except OSError:
         return []
-    rows = list(parse_log(text).rows)
+    rows: list[Row] = list(parse_log(text).rows)
     phases = dict.fromkeys((k[0], k[1]) for row in rows if (k := squash_key(row)) is not None)
     tips = {
         (i, p): (rev_parse(repos[i], f"epic/{i}/{p}"), rev_parse(repos[i], MAIN))

@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 
 from agent_tools import lander_ports
-from harness import store_work_state
+from core import landing_record as lr
+from harness import landing_ops, store_work_state
 
 ID = ("-c", "user.email=t@invalid", "-c", "user.name=t")
 NOW = "2026-11-12T10:00:00+00:00"
@@ -83,7 +84,7 @@ def test_the_ports_read_the_workspace(ws: Path, ports) -> None:
 def test_the_landing_tables_exist_after_connecting(ports) -> None:
     from harness import landing_store
 
-    assert landing_store.list_records(ports.conn) == [] and landing_store.list_items(ports.conn) == []
+    assert landing_store.list_records(ports.conn).records == () and landing_store.list_items(ports.conn) == []
 
 
 def test_notify_appends_one_courier_entry_for_the_chair(ws: Path, ports) -> None:
@@ -96,12 +97,9 @@ def test_notify_appends_one_courier_entry_for_the_chair(ws: Path, ports) -> None
 
 
 def test_mark_done_closes_an_approved_work_file(ws: Path, ports, capsys, monkeypatch) -> None:
-    import sys
 
-    from agent_tools import store_cli
 
     # The store moves first, approved to done; the file follows it.
-    monkeypatch.setattr(store_cli, "_harness_python", lambda: Path(sys.executable))
     store_work_state.set_state(ports.conn, "demo", "a", "approved", "tester", "p1", NOW)
     assert ports.mark_done("demo", "a", "https://forge.example/pull/1") is None
     assert "state: done" in (ws / "work" / "demo" / "p1" / "a.md").read_text()
@@ -148,11 +146,11 @@ def test_a_phase_has_one_open_rectify_task_and_a_new_one_takes_the_first_free_id
     def row(ident: str, state: str, phase: str = "p1") -> dict:
         return {"id": ident, "phase": phase, "state": state}
 
-    assert lander_ports.rectify_task("p1", [row("a", "approved")]) == ("p1-rectify", False)
-    assert lander_ports.rectify_task("p1", [row("a", "approved"), row("p1-rectify", "ready")]) == ("p1-rectify", True)
-    assert lander_ports.rectify_task("p1", [row("p1-rectify", "approved")]) == ("p1-rectify-2", False)
-    assert lander_ports.rectify_task("p1", [row("p1-rectify", "approved"), row("p1-rectify-2", "quarantined")]) == ("p1-rectify-2", True)
-    assert lander_ports.rectify_task("p2", [row("p1-rectify", "ready")]) == ("p2-rectify", False)
+    assert landing_ops.rectify_task("p1", [row("a", "approved")]) == ("p1-rectify", False)
+    assert landing_ops.rectify_task("p1", [row("a", "approved"), row("p1-rectify", "ready")]) == ("p1-rectify", True)
+    assert landing_ops.rectify_task("p1", [row("p1-rectify", "approved")]) == ("p1-rectify-2", False)
+    assert landing_ops.rectify_task("p1", [row("p1-rectify", "approved"), row("p1-rectify-2", "quarantined")]) == ("p1-rectify-2", True)
+    assert landing_ops.rectify_task("p2", [row("p1-rectify", "ready")]) == ("p2-rectify", False)
 
 
 def test_a_rectify_task_is_filed_once_as_a_ready_work_file_and_a_store_row(ws: Path, ports) -> None:
@@ -187,6 +185,31 @@ def test_reading_the_records_for_the_chair_leaves_no_trace_and_never_raises(tmp_
     (empty / "cox.db").write_bytes(b"not a database")
     assert lander_ports.read_records(empty, notes.append) == []
     assert len(notes) == 1 and notes[0].startswith("note: landing records not read (")
+
+
+def test_a_fault_in_the_reading_code_is_raised_never_read_as_an_empty_store() -> None:
+    """Finding 1: a renamed helper raised AttributeError, the broad except read it as "no records", and every stacked
+    initiative was held on every tick with nobody told why. A store that cannot be reached still reads as empty."""
+    assert AttributeError in lander_ports.PROGRAM_FAULTS and ImportError in lander_ports.PROGRAM_FAULTS
+    not_a_path: object = None  # what a caller holding the wrong value hands in: a fault in the code, not the store
+    with pytest.raises(TypeError):
+        lander_ports.read_records(not_a_path, lambda line: None)  # pyright: ignore[reportArgumentType]
+
+
+def test_one_malformed_row_leaves_the_chairs_read_of_every_other_record_and_is_named(ws: Path, ports) -> None:
+    """The bug: one row that did not read made the chair read no records at all."""
+    from harness import landing_store
+
+    landing_store.put_record(ports.conn, {"initiative": "demo", "repo": "r", "branch": "init/demo", "parent": "main",
+                                          "state": "building", "phases": {"p1": {"state": "merged"}}, "updated_at": NOW})
+    ports.conn.execute("INSERT INTO landing_records (initiative, repo, state, record_json, created_at, updated_at) "
+                       "VALUES ('bad', 'r', 'building', '{\"initiative\": \"bad\", \"phases\": [1]}', '', '')")
+    notes: list[str] = []
+    (read,) = lander_ports.read_records(ws / "runs", notes.append)
+    assert read["initiative"] == "demo"
+    assert len(notes) == 1 and notes[0].startswith("note: the landing record of bad cannot be read (")
+    table = lander_ports.read_listing(ws / "runs")
+    assert [u.initiative for u in table.unreadable] == ["bad"] and [r["initiative"] for r in table.records] == ["demo"]
 
 
 def test_send_back_moves_an_approved_work_file_to_ready_and_lists_the_workspaces_initiatives(ws: Path, ports) -> None:
@@ -224,7 +247,7 @@ def test_a_split_moves_the_blocked_phase_with_everything_it_built_and_can_be_run
     assert git(repo, "rev-parse", "epic/demo-2/p2") == tip == git(repo, "rev-parse", "epic/demo/p2"), "copied, and the original left"
     assert not (ws / "work" / "demo" / "p2").exists()
     assert sorted(p.name for p in (ws / "work" / "demo-2" / "p2").glob("*.md")) == ["b.md", "gate.md"]
-    overview = workstore._split_frontmatter((ws / "work" / "demo-2" / "initiative.md").read_text(), ws)[0]
+    overview = workstore.split_frontmatter((ws / "work" / "demo-2" / "initiative.md").read_text(), ws)[0]
     assert (overview["id"], overview["split_from"], overview["title"]) == ("demo-2", "demo", "Demo title (follow-up)")
     assert {t["id"]: t["state"] for t in ports.tasks("demo")} == {"a": "approved"}
     moved = {t["id"]: t for t in ports.tasks("demo-2")}
@@ -244,10 +267,19 @@ def test_a_stacked_initiative_is_based_on_the_unlanded_initiative_its_tasks_need
     write(ws / "work" / "second" / "p1" / "s1.md", {"id": "s1", "title": "S1", "state": "ready", "needs": ["a"]})
     assert lander_ports.needed_initiatives(ws / "work", "second") == ["demo"]
     assert lander_ports.needed_initiatives(ws / "work", "demo") == []
-    records = [{"initiative": "demo", "epic": "x", "branch": "init/demo", "state": "building"}]
-    assert lander_ports.stack_base(ws, "second", "x", "epic-x", records) == "init/demo"
-    assert lander_ports.stack_base(ws, "second", "x", "epic-x", [{**records[0], "state": "landed"}]) == "epic-x"
-    assert lander_ports.stack_base(ws, "second", "other-epic", "epic-x", records) == "epic-x"
+    records: tuple[lr.LandingRecord, ...] = ({"initiative": "demo", "epic": "x", "branch": "init/demo", "state": "building"},)
+    assert lander_ports.stack_base(ws, "second", "x", "epic-x", lr.Listing(records)) == ("init/demo", None)
+    assert lander_ports.stack_base(ws, "second", "x", "epic-x", lr.Listing(({**records[0], "state": "landed"},))) == ("epic-x", None)
+    assert lander_ports.stack_base(ws, "second", "other-epic", "epic-x", lr.Listing(records)) == ("epic-x", None)
+
+
+def test_a_stacked_initiative_whose_needed_initiatives_record_does_not_read_is_held_not_cut_from_the_epic_branch(ws: Path) -> None:
+    """The bug: the chair read no records at all and cut the new layer from the epic branch. Now it is held."""
+    write(ws / "work" / "second" / "initiative.md", {"id": "second", "title": "Second", "epic": "x"})
+    write(ws / "work" / "second" / "p1" / "s1.md", {"id": "s1", "title": "S1", "state": "ready", "needs": ["a"]})
+    table = lr.Listing((), (lr.Unreadable("demo", "record_json is not JSON"),))
+    base, held = lander_ports.stack_base(ws, "second", "x", "epic-x", table)
+    assert base is None and held is not None and "demo" in held and "record_json is not JSON" in held
 
 
 def test_the_forge_wrapper_retargets_through_the_modules_pr_edit_and_says_when_it_cannot() -> None:
@@ -305,3 +337,10 @@ def test_a_split_moves_each_row_whole_and_gives_the_follow_up_its_own_row(ws: Pa
     assert (moved["b"]["title"], moved["b"]["body"], moved["b"]["needs"], moved["b"]["phase"]) == ("Task B", "the text of b", ["a"], "p2")
     assert (moved[follow]["kind"], moved[follow]["extra"]["split_from"], moved[follow]["title"]) == ("initiative", "demo", "Demo title (follow-up)")
     assert "b" not in {r["task_id"] for r in store_queue.read(ports.conn, "demo")}
+
+
+def test_a_needs_is_read_as_its_ids_and_one_that_is_not_iterable_raises_rather_than_reading_as_none():
+    rows = lander_ports.task_rows([{"task_id": "b", "phase": "p1", "state": "ready", "needs": "a"}], {})
+    assert rows[0]["needs"] == ["a"]  # as the base iterated it
+    with pytest.raises(TypeError):
+        lander_ports.task_rows([{"task_id": "b", "phase": "p1", "state": "ready", "needs": 5}], {})

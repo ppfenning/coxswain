@@ -50,11 +50,6 @@ def _find(text: str) -> object:
     return parsed if parsed is not _NOT_FOUND else _first_brace_span(text)
 
 
-def extract_json(text: str) -> object | None:
-    found = _find(text)
-    return None if found is _NOT_FOUND else found
-
-
 def _type_name(value: object) -> str:
     return next((name for name, is_type in _TYPES.items() if is_type(value)), type(value).__name__)
 

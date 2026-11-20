@@ -12,12 +12,9 @@ from agent_tools.home_model import (
     Span,
     State,
     Talk,
-    attention_pane,
     backlog_pane,
     chair_pane,
-    chat_pane,
     frame,
-    health_pane,
     layout,
     leader_pane,
     runs_pane,
@@ -80,20 +77,6 @@ def test_leader_pane_is_a_back_compat_alias_for_chair_pane():
 
 def test_runs_pane_returns_runs_top_render_unchanged():
     assert runs_pane(_facts(), 80) == _RUNS_PANE
-
-
-def test_attention_pane_shows_one_line_per_stop_reason_and_skips_running():
-    rows = (
-        dataclasses.replace(_ROW, run="r1", status="exited"),
-        dataclasses.replace(_ROW, run="r2", status="quarantined"),
-        dataclasses.replace(_ROW, run="r3", status="budget"),
-        dataclasses.replace(_ROW, run="r4", status="running"),
-    )
-    assert attention_pane(_facts(runs_rows=rows), 80) == (
-        "r1: gate [l]",
-        "r2: quarantine [i]",
-        "r3: budget stop [i]",
-    )
 
 
 def test_backlog_pane_shows_counts_and_ready_per_initiative():
@@ -252,17 +235,6 @@ def test_step_esc_while_chat_is_focused_drops_focus_without_sending():
     assert state.chat_draft == "hello"
 
 
-def test_chat_pane_renders_sender_lines_and_the_draft():
-    thread = ({"from": "operator", "text": "hi"}, {"from": "cos1", "text": "hey"})
-    assert chat_pane(thread, 80, "draf") == ("CHAT", "operator: hi", "cos1: hey", "> draf")
-
-
-def test_chat_pane_cuts_a_too_long_message_with_an_ellipsis():
-    thread = ({"from": "operator", "text": "y" * 100},)
-    lines = chat_pane(thread, 80, "")
-    assert lines[1] == "operator: " + "y" * 69 + "…"
-
-
 def test_frame_at_a_wide_width_puts_leader_backlog_and_window_boxes_on_one_row():
     facts = _live_leader_facts()
     state = State(plugin_dir="/p", leader_liveness="none", other_holder=None)
@@ -303,16 +275,6 @@ def test_frame_omits_the_regatta_panel_below_the_minimum_height():
 def test_frame_passes_the_tick_to_the_lanes_unchanged():
     lane = frame(_live_leader_facts(tick=7), _STATE, 80, 60)[2]
     assert "<~~<" in "".join(s.text for s in lane)
-
-
-def test_health_pane_lists_only_the_failing_check_with_its_detail():
-    rows = [{"check": "profile", "ok": False, "detail": "missing"}, {"check": "venv", "ok": True, "detail": ""}]
-    assert health_pane(rows, 80) == ("profile: missing",)
-
-
-def test_health_pane_collapses_to_one_line_when_every_row_passes():
-    rows = [{"check": "profile", "ok": True, "detail": ""}, {"check": "venv", "ok": True, "detail": ""}]
-    assert health_pane(rows, 80) == ("health: ok",)
 
 
 _TIGHT_PANELS = {

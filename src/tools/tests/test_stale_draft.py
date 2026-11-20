@@ -46,3 +46,15 @@ def test_empty_stale_task_ids_refuses():
 def test_unknown_task_id_refuses():
     tickets = {"a": ticket("a", "blocked")}
     assert plan_stale_draft(initiative(), tickets, ["zz"], REASON, SINCE, NOW) == Refusal("no ticket named zz")
+
+
+def test_a_held_initiative_is_refused_and_nothing_is_rewritten():
+    held = HEAD + "held: 'true'\nhold_reason: 'paused'\n---\nProse.\n"
+    assert plan_stale_draft(held, {"a": ticket("a", "ready")}, ["a"], REASON, SINCE, NOW) == Refusal(
+        "initiative is held; a person already decides it"
+    )
+
+
+def test_a_held_false_initiative_is_still_drafted():
+    plan = plan_stale_draft(HEAD + "held: 'false'\n---\nProse.\n", {"a": ticket("a", "ready")}, ["a"], REASON, SINCE, NOW)
+    assert isinstance(plan, Plan)

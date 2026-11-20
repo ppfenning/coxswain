@@ -112,7 +112,7 @@ def test_the_snapshot_gives_the_rows_the_store_gives(name, runs_dir, monkeypatch
     read = READERS[name]
     expected = _normal(read(runs_dir))
     _write_snapshot(runs_dir, time.time())
-    monkeypatch.setattr(run_store, "_store_url", lambda _runs_dir: "postgresql://u@h/db")
+    monkeypatch.setattr(run_store, "store_url_for", lambda _runs_dir: "postgresql://u@h/db")
 
     def refuse(*args, **kwargs):
         raise AssertionError("the Postgres fallback ran with a fresh snapshot")

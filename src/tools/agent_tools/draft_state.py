@@ -63,7 +63,7 @@ def _field(text: str, key: str) -> str | None:
     return None if parts is None else read_field(parts[1], key)
 
 
-def _is_draft(initiative_text: str) -> bool:
+def is_draft(initiative_text: str) -> bool:
     return (_field(initiative_text, "draft") or "").lower() == "true"
 
 
@@ -90,7 +90,7 @@ def plan_approve(
 ) -> Plan | Refusal:
     todo = _todo(tickets)
     moved = todo if task_id is None else [t for t in todo if t == task_id]
-    if not _is_draft(initiative_text):
+    if not is_draft(initiative_text):
         return Refusal("initiative is not a draft")
     if task_id is not None and task_id not in tickets:
         return Refusal(f"no ticket named {task_id}")
@@ -107,7 +107,7 @@ def plan_decline(
     moved = _todo(tickets)
     if not reason.strip():
         return Refusal("a decline needs a reason")
-    if not _is_draft(initiative_text):
+    if not is_draft(initiative_text):
         return Refusal("initiative is not a draft")
     if not moved:
         return Refusal("no todo ticket to decline")

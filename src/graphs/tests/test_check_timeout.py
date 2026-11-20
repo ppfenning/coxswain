@@ -7,15 +7,15 @@ from __future__ import annotations
 
 import contextlib
 import os
+import select
 import signal
 import subprocess
 import time
-from pathlib import Path
 
 import pytest
 
 from harness.checks import fixable_checks, run_checks
-from harness.epic import _Ctx
+from harness.epic import Ctx
 
 
 class _ExplodingRunner:
@@ -28,8 +28,8 @@ class _ExplodingRunner:
         pytest.fail("model call made")
 
 
-def _ctx(tmp_path, cartridge_checks=(), repo_checks=()) -> _Ctx:
-    return _Ctx(
+def _ctx(tmp_path, cartridge_checks=(), repo_checks=()) -> Ctx:
+    return Ctx(
         repo=tmp_path,
         cartridge={"landing_areas": {"checks": list(cartridge_checks)}},
         runner=_ExplodingRunner(),
@@ -78,21 +78,23 @@ def test_a_check_with_no_timeout_falls_back_to_the_argument(tmp_path, monkeypatc
     assert seen == [45]
 
 
-def _is_dead(pid: int) -> bool:
-    """Gone, or a zombie waiting for its reaper: either way it no longer holds anything open."""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
-    try:
-        stat = Path(f"/proc/{pid}/stat").read_text()
-    except OSError:
-        return False
-    return stat.rpartition(")")[2].split()[0] == "Z"
+def _read_until(fd: int, done, bound: float) -> bool:
+    """Read the non-blocking FIFO `fd` until `done(bytes so far, last read)` holds (True) or `bound` seconds pass (False)."""
+    seen, deadline = b"", time.monotonic() + bound
+    while time.monotonic() < deadline:
+        ready, _, _ = select.select([fd], [], [], max(0.0, deadline - time.monotonic()))
+        chunk = os.read(fd, 64) if ready else None
+        seen += chunk or b""
+        if done(seen, chunk):
+            return True
+        if chunk == b"":
+            time.sleep(0.01)  # no writer has opened the FIFO yet: it reads as empty, not as the end
+    return False
 
 
-def _wait_for_pid_file_first(monkeypatch, pid_file: Path, bound: float, started: list) -> None:
-    """Start the timeout clock only once the shell has written `pid_file`: under `-n auto` it can be slow to start."""
+def _start_clock_once_up(monkeypatch, fifo: int, bound: float, started: list) -> None:
+    """Start the timeout clock only once the grandchild said `up` on `fifo`: under load the shell can be slow to start.
+    `started` gets (the time, whether `up` came)."""
     real = subprocess.Popen
 
     class Popen(real):
@@ -101,35 +103,35 @@ def _wait_for_pid_file_first(monkeypatch, pid_file: Path, bound: float, started:
         def communicate(self, input=None, timeout=None):
             if not self.waited:
                 self.waited = True
-                deadline = time.monotonic() + bound
-                while not (pid_file.exists() and pid_file.read_text().strip()) and time.monotonic() < deadline:
-                    time.sleep(0.05)
-                started.append(time.monotonic())
+                up = _read_until(fifo, lambda seen, _: b"up\n" in seen, bound)
+                started.append((time.monotonic(), up))
             return super().communicate(input, timeout)
 
     monkeypatch.setattr("harness.checks.subprocess.Popen", Popen)
 
 
-# serial: it waits on real process teardown inside a time bound, which `-n auto` load can overrun
-# (quarantined an approved task on 2026-10-30); it passed alone.
+# serial: it times a real kill, and `-n auto` load stretches how long the shell takes to start.
 @pytest.mark.serial
 def test_a_timeout_kills_a_backgrounded_grandchild_holding_the_pipes(tmp_path, monkeypatch) -> None:
-    timeout, bound = 1, 30
-    pid_file = tmp_path / "grandchild.pid"
-    started: list[float] = []
-    _wait_for_pid_file_first(monkeypatch, pid_file, bound, started)
-    cmd = "echo 3 passed\nsleep 600 &\necho $! > grandchild.pid\nwait"
-    [result] = run_checks(tmp_path, [{"name": "bg", "cmd": cmd}], timeout=timeout)
-    elapsed = time.monotonic() - started[0]
-    pid = int(pid_file.read_text())
+    """The grandchild holds a FIFO open for writing. Its read end reaches the end once every writer is closed, which the
+    kernel does as the process exits, before any reaper runs. So the death is observed, not inferred from `/proc` after
+    a deadline: a zombie nobody reaps or a reused pid cannot make it look alive, as they could in the earlier form."""
+    timeout, bound = 1, 60
+    os.mkfifo(tmp_path / "held.fifo")
+    fifo = os.open(tmp_path / "held.fifo", os.O_RDONLY | os.O_NONBLOCK)
+    started: list[tuple[float, bool]] = []
+    _start_clock_once_up(monkeypatch, fifo, bound, started)
+    cmd = "echo 3 passed\n(echo up >&3; exec sleep 600) 3>held.fifo &\necho $! > grandchild.pid\nwait"
     try:
-        deadline = time.monotonic() + bound
-        while not _is_dead(pid) and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert _is_dead(pid), "the backgrounded sleep outlived the timeout"
+        [result] = run_checks(tmp_path, [{"name": "bg", "cmd": cmd}], timeout=timeout)
+        (clock, up), = started
+        elapsed = time.monotonic() - clock
+        assert up, "the grandchild never started"
+        assert _read_until(fifo, lambda _, chunk: chunk == b"", bound), "the backgrounded sleep outlived the timeout"
     finally:
-        with contextlib.suppress(ProcessLookupError):
-            os.kill(pid, signal.SIGKILL)
+        with contextlib.suppress(ProcessLookupError, ValueError, OSError):
+            os.kill(int((tmp_path / "grandchild.pid").read_text()), signal.SIGKILL)
+        os.close(fifo)
     assert elapsed < timeout + 20
     assert result["outcome"] == "timed_out"
     assert result["output_tail"].count("3 passed") == 1

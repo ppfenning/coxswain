@@ -88,8 +88,9 @@ def test_any_refusal_is_settled_by_an_acquire_because_the_store_does_not_say_why
     assert cli._lease_standing(store_cli.NotAvailable()) == "unrenewable"
 
 
-def test_the_store_answers_a_refused_renew_with_no_holder_whether_it_lapsed_or_was_taken():
-    refused = store_cli.parse_lease(3, '{"ok": false, "epoch": null, "holder": null}')
+def test_the_store_answers_a_refused_renew_with_no_holder_whether_it_lapsed_or_was_taken(tmp_path):
+    assert store_cli.lease_acquire(tmp_path, "land:/r", "me", 60) == store_cli.LeaseGranted(1, "me")
+    refused = store_cli.lease_renew(tmp_path, "land:/r", "other", 1, 60)
     assert refused == store_cli.LeaseRefused(None, None)
     assert cli._lease_standing(refused) == "refused"
 

@@ -27,7 +27,7 @@ def _epic_pool(
     monkeypatch.setattr(epic, "run_epic", _driver)
     monkeypatch.setattr(epic, "work_state_of", lambda profile: None)
     monkeypatch.setattr(cli.workstore, "read_initiative", lambda name: {"id": "demo", "items": []})
-    monkeypatch.setattr(cli, "_read_profile", lambda path: {})
+    monkeypatch.setattr(cli, "read_provider_profile", lambda path: {})
     monkeypatch.setattr(cli, "_usage_bound", lambda parser, args, runner: (None, None))
     monkeypatch.setattr(cli, "register_stack_dump", lambda stream: None)
     args = cli._build_parser({}).parse_args(["--team", "t", *argv, "epic"])

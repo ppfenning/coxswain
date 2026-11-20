@@ -3,20 +3,21 @@
 from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import NotRequired, TypedDict
 
 from agent_tools import route, run_store
 from agent_tools.chair_facts import docket_by_land_at, empty_decompose_facts
-from agent_tools.chair_read_docket import _busy_lanes, local_runs, read_docket
+from agent_tools.chair_read_docket import busy_lane_count, local_runs, read_docket
 from agent_tools.chair_read_intake import read_intake
 from agent_tools.chair_read_live import read_live_initiatives
 from agent_tools.chair_read_quarantined import WorkFiles, initiative_files, read_work_items
 from agent_tools.chair_read_stale import read_chair_actions
 from agent_tools.chair_types import BlockedReady
-from agent_tools.draft_state import _is_draft
+from agent_tools.draft_state import is_draft
+from core.jsontypes import is_list, is_mapping
 from core.landing import DEFAULT_LAND_AT, need_met
 
-Item = Mapping[str, Any]
+Item = Mapping[str, object]
 
 LAUNCH_KINDS = frozenset({"launch_epic", "launch_decompose"})
 LAND_KINDS = frozenset({"land", "land_phase"})
@@ -33,13 +34,50 @@ class IdleBacklog(TypedDict):
     blocked_ready: list[BlockedReady]
 
 
+class BacklogInputs(TypedDict):
+    """What `idle_backlog` reads; `stored` and `land_at` may be absent."""
+
+    docket: Mapping[str, object] | None
+    items: Sequence[Item]
+    queued: Sequence[str]
+    last_launch: str | None
+    last_land: str | None
+    node_calls: Sequence[str]
+    with_file: Collection[str]
+    decomposed: Mapping[str, str]
+    live: Collection[str]
+    stored: NotRequired[Collection[str]]
+    land_at: NotRequired[Mapping[str, str]]
+
+
 def free_lanes(lanes: int, live_runs: int) -> int:
     return max(lanes - live_runs, 0)
 
 
-def docket_ready(docket: Mapping[str, Any] | None) -> int:
+def _docket_count(docket: Mapping[str, object], key: str) -> int:
+    value = docket[key]
+    if not isinstance(value, int):
+        raise TypeError(f"docket {key} is not an int")
+    return value
+
+
+def _ready_count(entry: object) -> int:
+    if not is_mapping(entry):
+        raise TypeError("docket initiative is not a mapping")
+    tasks = entry["ready_tasks"]
+    if not is_list(tasks):
+        raise TypeError("docket ready_tasks is not a list")
+    return len(tasks)
+
+
+def docket_ready(docket: Mapping[str, object] | None) -> int:
     """The tasks the launcher would take: the docket's `ready_tasks`, never a second readiness rule."""
-    return sum(len(i["ready_tasks"]) for i in docket["initiatives"]) if docket else 0
+    if not docket:
+        return 0
+    initiatives = docket["initiatives"]
+    if not is_list(initiatives):
+        raise TypeError("docket initiatives is not a list")
+    return sum(_ready_count(i) for i in initiatives)
 
 
 def _iso_utc(value: str) -> datetime | None:
@@ -59,7 +97,7 @@ def last_progress_at(last_launch: str | None, last_land: str | None, node_calls:
 
 def stub_candidates(initiative_texts: Mapping[str, str]) -> list[str]:
     """Initiative ids with an `initiative.md`, less drafts: a draft has no tasks by design until approved."""
-    return sorted(i for i, text in initiative_texts.items() if not _is_draft(text))
+    return sorted(i for i, text in initiative_texts.items() if not is_draft(text))
 
 
 def stored_initiatives(rows: Sequence[Item]) -> list[str]:
@@ -79,7 +117,7 @@ def empty_stubs(
     `stored` names initiatives that have a store row but may have no task file, as when a finished task's file is pruned."""
     # Applied here, not in chair_facts: the helper only sees the counts built below. A task in any state counts,
     # done and dropped included, and so does a store row whose task file is gone.
-    with_task = {item["initiative"] for item in items} | set(stored)
+    with_task = {str(item["initiative"]) for item in items} | set(stored)
     counts = {i: int(i in with_task) for i in with_file}
     reported = {e["initiative"] for e in empty_decompose_facts(decomposed, live, counts)}
     stubs = {i for i, n in counts.items() if n == 0 and i not in live}
@@ -93,20 +131,23 @@ def blocked_ready(items: Sequence[Item], land_at_by_initiative: Mapping[str, str
     rows: list[BlockedReady] = []
     for item in items:
         own = [i for i in items if i["initiative"] == item["initiative"]]
-        land_at = land_at_by_initiative.get(item["initiative"], DEFAULT_LAND_AT)
+        land_at = land_at_by_initiative.get(str(item["initiative"]), DEFAULT_LAND_AT)
         approved_met = need_met(land_at, "approved", False)
-        landed = {i["id"] for i in own if i["state"] in route.TERMINAL or (approved_met and i["state"] == "approved")}
-        approved = {i["id"] for i in own if i["state"] == "approved"}
-        unmet = [n for n in item.get("needs", []) if n not in landed]
+        landed = {str(i["id"]) for i in own if i["state"] in route.TERMINAL or (approved_met and i["state"] == "approved")}
+        approved = {str(i["id"]) for i in own if i["state"] == "approved"}
+        needs = item.get("needs", [])
+        if not is_list(needs):
+            raise TypeError("work item needs is not a list")
+        unmet = [str(n) for n in needs if n not in landed]
         if item["state"] not in _NOT_WAITING and unmet and all(n in approved for n in unmet):
-            rows.append({"task": item["id"], "unlanded_needs": unmet})
+            rows.append({"task": str(item["id"]), "unlanded_needs": unmet})
     return rows
 
 
-def idle_backlog(plain: Mapping[str, Any]) -> IdleBacklog:
+def idle_backlog(plain: BacklogInputs) -> IdleBacklog:
     """`plain` keys: docket, items, queued, last_launch, last_land, node_calls, with_file, decomposed, live, stored, land_at."""
     docket = plain["docket"]
-    lanes, busy = (int(docket["max_in_flight"]), int(docket["busy_lanes"])) if docket else (0, 0)
+    lanes, busy = (_docket_count(docket, "max_in_flight"), _docket_count(docket, "busy_lanes")) if docket else (0, 0)
     return {
         "free_lanes": free_lanes(lanes, busy),
         "ready": docket_ready(docket),
@@ -126,14 +167,14 @@ def _newest_action(actions: Sequence[Item], kinds: Collection[str]) -> str | Non
     return max(stamps).isoformat() if stamps else None
 
 
-def _safe(read: Any, default: Any) -> Any:
+def _safe[T](read: Callable[[], T], default: T) -> T:
     try:
         return read()
     except Exception:  # the edge never raises: an unreadable source reads as empty
         return default
 
 
-def _store_rows(runs_dir: Path, mode: str, store_rows: Sequence[Mapping] | None) -> Sequence[Mapping]:
+def _store_rows(runs_dir: Path, mode: str, store_rows: Sequence[Item] | None) -> Sequence[Item]:
     """Edge. The store's work-item rows under mode "store", or `store_rows` when the tick already holds them."""
     if mode != "store":
         return []
@@ -148,7 +189,7 @@ def _initiative_texts(ws: Path, files: WorkFiles | None = None) -> dict[str, str
 
 def read_idle_backlog(
     ws: Path, mode: str, max_in_flight: int, now: datetime,
-    files: WorkFiles | None = None, store_rows: Sequence[Mapping] | None = None,
+    files: WorkFiles | None = None, store_rows: Sequence[Item] | None = None,
     actions: Sequence[Item] | None = None,
     queued: Sequence[str] | None = None, items: Sequence[Item] | None = None,
     live: Callable[[Sequence[str]], list[str]] | None = None,
@@ -171,7 +212,7 @@ def read_idle_backlog(
     # Under mode "store" the store holds a task's state; a pruned task file must not make its initiative a stub.
     stored = stored_initiatives(_safe(lambda: _store_rows(runs_dir, mode, store_rows), []))
     # A stub has no work items, so its id comes from its file; probing only item initiatives never sees it live.
-    probe = sorted({i["initiative"] for i in work} | set(with_file))
+    probe = sorted({str(i["initiative"]) for i in work} | set(with_file))
     # None is the caller that has not been wired to the shared rows yet; it still reads its own.
     rows = actions if actions is not None else _safe(lambda: read_chair_actions(runs_dir), [])
     # `last_call_at` needs run ids; the runs a local pidfile names are the ones this machine can list.
@@ -182,7 +223,7 @@ def read_idle_backlog(
             "docket": _safe(
                 lambda: (
                     read_docket(ws, mode, max_in_flight, lambda: now, files, store_rows) if land_at is None
-                    else docket_by_land_at(work, _busy_lanes(runs_dir, now_text), max_in_flight, land_at)
+                    else docket_by_land_at(work, busy_lane_count(runs_dir, now_text), max_in_flight, land_at)
                 ),
                 None,
             ),

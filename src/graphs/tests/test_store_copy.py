@@ -28,6 +28,7 @@ EXPECTED_ORDER = (
     "land_queue",
     "courier_log",
     "cartridge_snapshots",
+    "lander_notices",
 )
 
 SEED = {
@@ -76,6 +77,7 @@ SEED = {
     "cartridge_snapshots": [
         {"sha": "a" * 64, "at": "2026-09-25T00:00:00Z", "by": "chair-host", "files_json": '{"team/cartridge.yaml": {"text": "k: v"}}'},
     ],
+    "lander_notices": [{"key": "unreadable:i2", "reason": "not JSON", "since": "2026-09-25T00:00:00Z"}],
 }
 
 

@@ -66,7 +66,9 @@ def test_a_branch_left_only_locally_by_an_earlier_run_is_published_on_reuse(repo
     assert _origin_heads(bare)[PHASE] == git("rev-parse", PHASE, cwd=repo)
 
 
-def test_a_failed_push_is_a_warning_and_the_phase_keeps_running(repo, cart, tmp_path, origin, monkeypatch) -> None:  # noqa: F811
+def test_a_failed_phase_push_is_a_warning_but_the_phase_is_not_recorded_merged_until_origin_takes_it(repo, cart, tmp_path, origin, monkeypatch) -> None:  # noqa: F811
+    """The phase branch's push is a warning and the phase builds. Its merge into the initiative branch is pushed
+    before it is recorded: with origin gone the merge is unwound, nothing is recorded, and the lander merges it later."""
     fetch_then_vanish = epic.resolve_default_ref
 
     def resolve_then_remove_origin(*args, **kwargs):
@@ -75,14 +77,18 @@ def test_a_failed_push_is_a_warning_and_the_phase_keeps_running(repo, cart, tmp_
         return resolved
 
     monkeypatch.setattr(epic, "resolve_default_ref", resolve_then_remove_origin)
+    main = git("rev-parse", "main", cwd=repo)
 
     result, _ = drive(repo, cart, tmp_path)
 
     p1 = result["phases"][0]
-    assert p1["status"] == "complete"
     assert PHASE in p1["remote_push_failed"]
     assert result["totals"]["tasks_quarantined"] == 0
     assert git("rev-parse", "--verify", PHASE, cwd=repo)
+    assert p1["status"] == "awaiting_land" and p1["initiative_merge"]["status"] == "error"
+    assert "is not recorded merged until origin holds its merge" in p1["initiative_merge"]["detail"]
+    init = p1["initiative_merge"]["branch"]
+    assert git("rev-parse", init, cwd=repo) == main, "the merge origin refused is unwound"
 
 
 def test_a_repo_with_no_origin_runs_unchanged(repo, cart, tmp_path) -> None:  # noqa: F811

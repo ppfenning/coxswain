@@ -3,27 +3,27 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import cast
 
 from core.epics import valid_epic_id
 from core.landing import valid_branch
-from core.workstore import WorkStoreError, _split_frontmatter
+from core.workstore import WorkStoreError, split_frontmatter
 
 
-def _title(raw: Any) -> str | None:
+def _title(raw: object) -> str | None:
     if raw is None or isinstance(raw, str):
         return raw
     raise ValueError(f"epic title must be a string, got {raw!r}")
 
 
-def parse_epic(text: str, name: str) -> dict[str, Any]:
+def parse_epic(text: str, name: str) -> dict[str, object]:
     """{id, title, target_branch} from one epic file's frontmatter; absent keys are None. Every failure is a ValueError.
 
     `issue` (the epic's tracker issue, which an initiative's pull request names as `Part of #n`) and `epic_stack`
     (its initiatives land as a stack on the epic branch) are added only when the file sets them."""
     stem = Path(name).stem
     try:
-        meta, _ = _split_frontmatter(text, Path(name))
+        meta, _ = split_frontmatter(text, Path(name))
     except WorkStoreError as exc:
         raise ValueError(str(exc)) from exc
     epic_id = valid_epic_id(meta.get("id", stem))
@@ -33,13 +33,13 @@ def parse_epic(text: str, name: str) -> dict[str, Any]:
     return {
         "id": epic_id,
         "title": _title(meta.get("title")),
-        "target_branch": None if branch is None else valid_branch(branch, "epic"),
+        "target_branch": None if branch is None else valid_branch(cast("str", branch), "epic"),
         **({"issue": meta["issue"]} if meta.get("issue") is not None else {}),
         **({"epic_stack": meta["epic_stack"]} if isinstance(meta.get("epic_stack"), bool) else {}),
     }
 
 
-def _read_one(path: Path) -> dict[str, Any]:
+def _read_one(path: Path) -> dict[str, object]:
     try:
         return parse_epic(path.read_text(encoding="utf-8"), path.name)
     except ValueError as exc:
@@ -48,10 +48,10 @@ def _read_one(path: Path) -> dict[str, Any]:
         raise WorkStoreError(f"{path}: cannot be read: {exc}") from exc
 
 
-def read_epic_definitions(store_root: Path | str) -> dict[str, dict[str, Any]]:
+def read_epic_definitions(store_root: Path | str) -> dict[str, dict[str, object]]:
     """Epic id to definition for every `*.md` under `<store_root>/epics/`; the `definitions` argument of `rollup`."""
     directory = Path(store_root) / "epics"
     if not directory.is_dir():
         return {}
     definitions = (_read_one(path) for path in sorted(directory.glob("*.md")))
-    return {definition["id"]: definition for definition in definitions}
+    return {cast("str", definition["id"]): definition for definition in definitions}

@@ -6,16 +6,17 @@ reads the store read-only and hands alerts to the notifier. Store, notifier and 
 
 import re
 import sys
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Protocol
 
 from agent_tools import run_store
 from agent_tools.chair import LEASE_NAME
 from agent_tools.notify_core import Event, NotifyConfig
 from agent_tools.notify_dispatch import dispatch
+from core.jsontypes import is_mapping
 
 LOOP_DOWN_TITLE = "Chair loop down"
 _LANES = re.compile(r"lanes (\d+)/(\d+)(?: \(here \d+/\d+\))?")  # the suffix is the fleet line's local share
@@ -112,12 +113,15 @@ def parse_ts(raw: object) -> datetime | None:
 def status_rows(raw: Iterable[tuple[object, object]], now: datetime, idle_minutes: int) -> list[tuple[datetime, str]]:
     """(ts, action_json cell) pairs as (ts, line) pairs from the last `idle_minutes`. A row with no parseable ts or no string `line` drops."""
     cutoff = now - timedelta(minutes=idle_minutes)
-    decoded = ((parse_ts(ts), run_store._json_cell(cell)) for ts, cell in raw)
-    return [
-        (ts, doc["line"])
-        for ts, doc in decoded
-        if ts is not None and ts >= cutoff and isinstance(doc, dict) and isinstance(doc.get("line"), str)
-    ]
+    decoded: Iterable[tuple[datetime | None, object]] = ((parse_ts(ts), run_store.json_cell(cell)) for ts, cell in raw)
+    rows: list[tuple[datetime, str]] = []
+    for ts, doc in decoded:
+        if ts is None or ts < cutoff or not is_mapping(doc):
+            continue
+        line = doc.get("line")
+        if isinstance(line, str):
+            rows.append((ts, line))
+    return rows
 
 
 def to_event(alert: Alert) -> Event:
@@ -125,8 +129,22 @@ def to_event(alert: Alert) -> Event:
     return Event("needs_chair", f"watchdog:{alert.title}", alert.title, alert.body)
 
 
-def _open_store(runs_dir: Path) -> tuple[Any, str]:
-    opened = run_store._open(runs_dir)
+class _Cursor(Protocol):
+    """The part of a DB-API cursor the edge reads; the driver (sqlite3 or psycopg) has no shared stub."""
+
+    def fetchone(self) -> Mapping[str, object] | None: ...
+
+    def fetchall(self) -> Sequence[Mapping[str, object]]: ...
+
+
+class _Conn(Protocol):
+    def execute(self, sql: str, params: tuple[str, ...], /) -> _Cursor: ...
+
+    def close(self) -> None: ...
+
+
+def _open_store(runs_dir: Path) -> tuple[_Conn, str]:
+    opened = run_store.open_store(runs_dir)
     if opened is None:
         raise StoreUnreadable(f"no store under {runs_dir}")
     return opened
@@ -137,20 +155,21 @@ def read_lease_row(runs_dir: Path) -> tuple[str | None, datetime | None]:
     Raises on an unreadable store, unlike the other chair readers, which fold that into an empty answer."""
     conn, token = _open_store(runs_dir)
     try:
-        sql = run_store._sql("SELECT holder, heartbeat_at FROM leases WHERE name = {p}", token)
+        sql = run_store.sql_for("SELECT holder, heartbeat_at FROM leases WHERE name = {p}", token)
         row = conn.execute(sql, (LEASE_NAME,)).fetchone()
     finally:
         conn.close()
     if row is None:
         return None, None
-    return (row["holder"] or None), parse_ts(row["heartbeat_at"])
+    holder = row["holder"]
+    return (holder if isinstance(holder, str) and holder else None), parse_ts(row["heartbeat_at"])
 
 
 def read_status_rows(runs_dir: Path, now: datetime, idle_minutes: int) -> list[tuple[datetime, str]]:
     """Edge, read-only. The `status` rows of `chair_actions` from the last `idle_minutes`, as (ts, line). Raises on an unreadable store."""
     conn, token = _open_store(runs_dir)
     try:
-        sql = run_store._sql(
+        sql = run_store.sql_for(
             f"SELECT ts, action_json FROM chair_actions WHERE kind = {{p}} ORDER BY ts DESC LIMIT {_STATUS_ROW_CAP}", token
         )
         raw = [(r["ts"], r["action_json"]) for r in conn.execute(sql, ("status",)).fetchall()]
@@ -182,7 +201,7 @@ def run_watchdog(
     try:
         holder, last_beat = read_lease(runs_dir)
         rows = read_rows(runs_dir, now, idle_minutes)
-    except (*run_store._db_errors(), RuntimeError, OSError) as exc:
+    except (*run_store.db_error_types(), RuntimeError, OSError) as exc:
         print(f"watchdog: cannot read store: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
     alerts = evaluate(holder, last_beat, rows, now, stale_minutes, idle_minutes)

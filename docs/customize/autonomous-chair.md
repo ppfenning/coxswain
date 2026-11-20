@@ -18,6 +18,9 @@ things in order. The default tick is 60 seconds.
 - It relaunches an initiative once its ready tasks' dependencies have
   landed.
 - It retries a quarantine caused by the harness once.
+- It sends every other quarantine to triage before the task is built again,
+  and holds a task for you once it has failed too often. See
+  [Quarantines](#quarantines).
 - It fills free lanes from the work store first, then decomposes intake in
   pairs.
 - It fills lanes on the lane hosts too, after the local lanes. The lane
@@ -362,8 +365,10 @@ a directory that is empty, or still exactly what the last fetch left, is
 replaced without `--replace`.
 
 With a shared store the courier bus is the store's `courier_log` table, one
-bus for every machine, with git on or off. The first use loads what
-`courier.jsonl` already held. `cox courier send`, `inbox` and `ack` work as
+bus for every machine, with git on or off. The first write loads what
+`courier.jsonl` already held. A read never writes: until that first write, it
+shows the file's lines, and it never migrates the store, so `cox chair run
+--dry-run` changes nothing. `cox courier send`, `inbox` and `ack` work as
 before.
 
 The rest of this section describes the default, with git on.
@@ -686,6 +691,154 @@ The epic steward that used to merge levels and run a gate is removed. A
 profile that still sets `chair.steward` is read and ignored, and the doctor
 report's `steward` row says it is retired.
 
+## Quarantines
+
+A run quarantines a task it could not finish. Each quarantine carries a
+cause, and the chair handles it by that cause without asking you.
+
+| Cause | What the chair does |
+|---|---|
+| `harness` | Retries the task, or rescues its kept patch, once for each run that quarantined it. |
+| `code`, `review`, `ticket`, `unknown` | Asks for triage. The task is not built again until a model has looked at it. |
+
+A `harness` cause is a stoppage, not a fault in the task. It covers a usage
+limit, an expired login, an infrastructure failure, a stale base, an
+interrupted run, and an empty build of a task whose base was stale.
+
+The other causes mean the task needs a change before it is built again.
+
+### Where the cause comes from
+
+With `work_state: store`, the board lives in the store and no ticket file
+holds an attempt. The chair reads each attempt from the run's task record
+instead. A run writes one record for each task, at
+`runs/<run>/tasks/<phase>/<task>.json`, and puts the cause of a quarantine
+on it. The newest record names the run and the reason. A record with no
+cause is not an attempt.
+
+A run writes the ticket's body hash on the record too. An attempt on an
+earlier version of the ticket then does not count against the amended
+one. A record without the hash still counts toward triage and the hold,
+but not toward the stale check.
+
+A run on a lane host keeps its records on that host until the chair
+fetches the run. The fetch copies the whole run directory, records
+included, and the next tick reads them. Until then, a quarantine from an
+earlier run of that initiative waits, so the chair never judges a task by
+an older record. The status line shows each one, as
+`awaiting fetch: <initiative>:<task> (run <run>)`. A quarantine from a
+later run does not wait.
+
+A quarantine with no record at all shows the cause `quarantined` and goes
+to `needs chair`.
+
+### Triage
+
+To ask for triage, the chair sets `triage_requested` on the task's row in
+the store and moves the task back to ready. It does this once for each run
+that quarantined the task. The initiative then relaunches as usual. That run
+triages the flagged task before it builds anything, whatever the task's
+attempt count, and clears the flag. A run that cannot read the store rows
+cannot see the flag, so it builds no task that has failed before and
+leaves it for the next run.
+
+The triage model reads the task's attempt record and the whole initiative:
+its goal, each phase and its goal, and every other task with its state,
+title and needs. It must cite the record. It answers with one class:
+
+| Class | What happens |
+|---|---|
+| `ticket_defect` | An instruction that quotes the objection is appended to the ticket, and the task is built again in the same run. |
+| `drop` | The task is dropped, because the initiative's goal does not need it. Any task that needed it stops needing it. |
+| `combine` | The task's scope is appended to a named sibling task in the same phase, and the task is dropped. The tasks that needed it now need the sibling. |
+| `shape` | The task is held for you with the split the model proposes. |
+| `platform_defect` | An intake is filed for the harness bug, and the task is held for you. |
+| `hold` | The task is held for you with the model's diagnosis. |
+
+If the model gives the same class and diagnosis that an earlier triage of
+the task gave, the task is held for you.
+
+### The hold limit
+
+After a task has failed a set number of times, the chair holds it for you
+and asks for no more triage. The limit is `chair.quarantine_hold_after` in
+the profile. It defaults to 3. Setting it to 0 turns the limit off.
+
+```yaml
+chair:
+  quarantine_hold_after: 3
+```
+
+The count covers every version of the task's ticket, so an amended ticket
+keeps its earlier failures. A stoppage and a failed rescue do not count.
+
+The chair also holds a task that comes back quarantined in the same run it
+already asked triage for. A triage that could not run no longer quarantines
+the task: the epic holds it itself, and the hold reason starts with
+`triage could not run:` and names what failed.
+
+### The no-progress hold
+
+The chair holds an initiative for you when its last runs all ended the same
+way. Two runs end the same way when every phase has the same state (such as
+`partial` or `blocked`) and the runs recorded no new task state. Another run
+would end the same way, so the chair stops relaunching it.
+
+The number of runs is `chair.no_progress_after` in the profile. It defaults
+to 2. Setting it to 0 turns the hold off.
+
+```yaml
+chair:
+  no_progress_after: 2
+```
+
+The held initiative's reason starts with `needs you: no progress:`. It names
+the runs and the outcome they repeated, with the reason of the first phase
+that did not complete. The inbox gets one `needs_attention` entry on the
+courier for the hold.
+
+Fix the cause, then release the initiative:
+
+```sh
+cox route release <initiative>
+```
+
+The release marks the initiative's newest run. Runs up to that mark no longer
+count, so the chair relaunches the initiative and holds it again only if the
+next runs also end the same way.
+
+A release is refused while a run of the initiative is live, since that run
+could still record attempts below the mark. The refusal names the run and the
+command that stops it, `cox runs stop <run>`. `cox route edit <task> --initiative
+<initiative> --state ready` on a blocked or quarantined task is refused the same way.
+
+The chair does not judge an initiative while its newest run is still going.
+If the hold is cleared some other way, without a release, the chair
+relaunches the initiative and holds it again only after a newer run ends the
+same way.
+
+### A held task
+
+A held task is in state `blocked`, and its row in the store carries a reason
+that starts with `needs you:`. You see it in three places:
+
+- The status line lists it under `needs chair` on every tick, as
+  `needs chair: <initiative>:held <task>`.
+- The dash feed shows the task as `blocked`, with the reason.
+- The inbox gets one `needs_attention` entry on the courier for each hold
+  reason.
+
+To release the task, edit its ticket if you need to, then set it back to
+ready. To give it up, drop it:
+
+```sh
+cox route edit <task> --initiative <initiative> --body-file <file> --state ready
+cox route edit <task> --initiative <initiative> --state dropped
+```
+
+A released task does not go to triage first. If it fails again and its
+count is still at the limit, the chair holds it again.
+
 ## Rescue
 
 A build can be quarantined for a harness reason and still keep its patch.
@@ -764,6 +917,52 @@ only the store and sends an alert when the loop has been idle or has not
 beaten its lease for too long. `cox chair watchdog --install` writes the
 timer files for this platform and prints the lines that activate them;
 `--uninstall` removes them.
+
+### The stall alarm
+
+Each tick, the chair checks three things that mean the loop has stopped moving:
+
+- **No land.** Initiatives are open, and nothing has landed for
+  `land_hours`. An initiative is open when its landing record is neither
+  `landed` nor `draft` and it is not held for a person. A phase merged into
+  its initiative branch counts as a land, and so does an initiative landed
+  on its parent. The clock starts at the latest of three times: the last
+  land, the oldest open initiative's creation, and the chair's first
+  recorded action.
+- **No launch.** Lanes are free and work is ready, but no launch has
+  completed for `launch_minutes`. If nothing has ever launched, the clock
+  starts at the chair's first recorded action. A planned launch does not
+  count, so a launch that is refused every tick does not hide the stall.
+  This check stays quiet while the chair's own idle-lanes line
+  (`idle_stall`, `idle_ready`) is raised for the same condition.
+- **The same failure.** One action on one target failed or was refused for
+  the same reason `repeat_ticks` times in a row, and the last attempt was
+  less than an hour ago. Numbers in the reason are ignored, so a changing
+  PR number or count does not hide a repeat. The alarm shows the newest
+  attempt's own reason.
+
+Under a hard stop, nothing launches or lands on purpose, so only the
+same-failure check runs. A no-land or no-launch alarm that is already
+raised is neither raised again nor cleared until the stop lifts.
+
+When a stall starts, the chair writes one `stall_raised` courier entry and
+pushes one `stall` notification. When the stall ends, it writes one
+`stall_cleared` entry and pushes one `all_clear`. A same-failure stall
+ends only when its streak breaks: the action succeeds, or fails for
+another reason. If the chair stops attempting the action and an hour
+passes with no attempt, the stall expires instead. It is closed without a
+message, because nothing showed that the failure was fixed. The alarm
+records its own actions, and the next tick reads them back. These rows are
+kept at any age, so a stall is never raised twice while it stands, however
+long it lasts.
+
+```yaml
+chair:
+  stall_alarm:
+    land_hours: 6       # 0 turns the check off
+    launch_minutes: 60  # 0 turns the check off
+    repeat_ticks: 3     # at least 2; 0 turns the check off
+```
 
 ## What it records
 

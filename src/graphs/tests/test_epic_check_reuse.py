@@ -108,13 +108,13 @@ def test_the_epic_gate_writes_its_pass_and_records_no_reuse_the_first_time(
     monkeypatch,
 ) -> None:
     cart["landing_areas"]["checks"] = CHECKS
-    build, seen = epic._build_task, {}
+    build, seen = epic.build_task, {}
 
     def spy_build(ctx, **kw):
         seen["record"] = build(ctx, **kw)
         return seen["record"]
 
-    monkeypatch.setattr(epic, "_build_task", spy_build)
+    monkeypatch.setattr(epic, "build_task", spy_build)
     work = initiative(two_phases=False)
     work["items"] = work["items"][:1]
     drive(repo, cart, tmp_path, work=work)

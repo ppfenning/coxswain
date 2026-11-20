@@ -195,8 +195,8 @@ def test_merge_back_runs_the_sequence_into_the_default_branch(tmp_path, capsys):
     rc, dash, _ = _execute(tmp_path, [step], origin)
     assert rc == 0
     ordered = [
-        release.checkout_tracking_argv(dash, _BRANCH),
         ["gh", "pr", "list", "--head", _BRANCH, "--base", "main", "--state", "open", "--json", "number"],
+        release.checkout_tracking_argv(dash, _BRANCH),
         release.pr_create_argv(f"Merge {_BRANCH} back into main",
                                f"Merges {_BRANCH} back into main so the release tag stays an ancestor of main.",
                                "main", _BRANCH),

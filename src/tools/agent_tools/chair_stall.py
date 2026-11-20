@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 STALL_MINUTES = 30
 
 def _parse(ts: str) -> datetime:
-    """Any ISO 8601 stamp the store writes: `...Z`, `...+00:00`, with or without microseconds; naive reads as UTC."""
+    """An ISO 8601 stamp the store writes: `...Z`, `...+00:00`, with or without microseconds; naive reads as UTC."""
     then = datetime.fromisoformat(ts.replace("Z", "+00:00"))
     return then if then.tzinfo is not None else then.replace(tzinfo=UTC)
 

@@ -71,13 +71,13 @@ def _drive_store(repo, cart, tmp_path, store_conn, **kw):  # noqa: F811
 
 
 def _before_audit(monkeypatch, change):
-    real_audit = epic._audit_approved_kept
+    real_audit = epic.audit_approved_kept
 
     def hooked(ctx, *args):
         change()
         return real_audit(ctx, *args)
 
-    monkeypatch.setattr(epic, "_audit_approved_kept", hooked)
+    monkeypatch.setattr(epic, "audit_approved_kept", hooked)
 
 
 def test_a_task_whose_phase_branch_still_holds_the_merge_stays_approved(repo, cart, tmp_path, store_conn):  # noqa: F811
@@ -170,7 +170,7 @@ def test_an_escalated_task_is_audited_on_its_scratch_branch(repo, monkeypatch): 
     )
     calls: list = []
     monkeypatch.setattr(
-        epic, "_quarantine_task", lambda *a, **k: calls.append(k) or {"id": k["task"], "reason": k["reason"]}
+        epic, "quarantine_task", lambda *a, **k: calls.append(k) or {"id": k["task"], "reason": k["reason"]}
     )
     tasks = [
         {"id": "t-kept", "phase": "p1", "state": "approved", "merged": False, "draft": None},
@@ -178,7 +178,7 @@ def test_an_escalated_task_is_audited_on_its_scratch_branch(repo, monkeypatch): 
     ]
     quarantined: list = []
 
-    epic._audit_approved_kept(ctx, {}, tasks, quarantined)
+    epic.audit_approved_kept(ctx, {}, tasks, quarantined)
 
     assert [(c["task"], c["kind"], c["approved_is_open"]) for c in calls] == [("t-gone", "no_work", True)]
     assert calls[0]["reason"].endswith("branch agents/r/t-gone no longer exists")

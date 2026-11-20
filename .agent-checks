@@ -6,4 +6,16 @@
 cd src/tools && pytest -q -n auto
 cd src/graphs && pytest -q -n auto
 cd src/cartridges && pytest -q -n auto
+# The smoke suite (docs/smoke.md): real cox from this worktree against real git and a throwaway Postgres container.
+# With no docker on PATH it skips and says why (-rs); a docker whose daemon does not answer fails unless the host sets
+# COX_SMOKE_SKIP_BROKEN_DOCKER=1. CI's required test job runs it with COX_SMOKE_REQUIRED.
+pytest -q -rs smoke
 python .github/check_clean.py . --require-names
+# H10 item 5 (docs/hardening.md): a public function, class or module the patch adds under src/ with no reference
+# outside tests fails the lane; entry points nothing calls by name are allowlisted, with a reason, in .github/unwired-allow.txt.
+# An epic lane's base is its phase branch (COX_LANE_BASE, exported by the harness); elsewhere origin/main.
+python .github/check_unwired.py
+# H2 (docs/hardening.md): the type check, strict on the typed core and basic elsewhere ([tool.pyright] in pyproject.toml).
+# Without pyright or the extras in this python it skips and says how to install them, as smoke skips without docker;
+# CI sets COX_TYPES_REQUIRED=1, which makes a missing one a failure.
+python .github/check_types.py

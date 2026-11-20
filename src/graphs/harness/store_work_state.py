@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import cast
 
+from core.workstore import STATES
 from harness.store_dialect import Connection, insert_ignore, json_text
-from harness.store_read import work_items
+from harness.store_read import WorkItemReadRow, work_items
+from harness.store_types import WorkItemRecord
 from harness.store_write import upsert_work_item, work_item_row
 
 ABSENT = "<absent>"
@@ -19,18 +21,23 @@ class Mismatch:
     current: str | None
 
 
-def _current(conn: Connection, initiative: str, task: str) -> dict[str, Any] | None:
+def _current(conn: Connection, initiative: str, task: str) -> WorkItemReadRow | None:
     return next((r for r in work_items(conn, initiative) if r["task_id"] == task), None)
 
 
-def _written(row: dict[str, Any]) -> dict[str, Any]:
-    keys = ("initiative", "task_id", "phase", "state", "updated_at", "updated_by")
-    return {**{k: row[k] for k in keys}, "needs": list(row["needs"])}
+def _written(row: WorkItemReadRow) -> WorkItemRecord:
+    return cast(
+        WorkItemRecord,
+        {
+            **{k: row[k] for k in ("initiative", "task_id", "phase", "state", "updated_at", "updated_by")},
+            "needs": list(row["needs"]),
+        },
+    )
 
 
 def _cas(
     conn: Connection, initiative: str, task: str, state: str, by: str, phase: str | None, now: str, expected: str
-) -> dict[str, Any] | Mismatch | None:
+) -> WorkItemRecord | Mismatch | None:
     """The compare lives in the write's own statement, so two writers cannot both match."""
     mark = conn.dialect.placeholder
     with conn.transaction():
@@ -61,14 +68,24 @@ def set_state(
     now: str,
     *,
     expected: str | None = None,
-) -> dict[str, Any] | Mismatch | None:
-    """The row as written; with `expected`, only if the state equals it, else Mismatch, and a missing row is Mismatch(None) unless expected is ABSENT."""
+) -> WorkItemRecord | Mismatch | None:
+    """The row as written; with `expected`, only if the state equals it, else Mismatch, and a missing row is Mismatch(None) unless expected is ABSENT.
+
+    Raises ValueError, writing nothing, for a `state` or an `expected` that is not a work state (`core.workstore.STATES`)."""
+    unknown = [s for s in (state, expected) if s is not None and s != ABSENT and s not in STATES]
+    if unknown:
+        raise ValueError(f"unknown work state {unknown[0]!r}; expected one of {', '.join(STATES)}")
     if expected is not None:
         return _cas(conn, initiative, task, state, by, phase, now, expected)
     current = _current(conn, initiative, task)
     if current is None and phase is None:
         return None
-    kept_phase, needs = (phase, []) if current is None else (current["phase"], current["needs"])
+    kept_phase: str
+    needs: list[str]
+    if current is None:
+        kept_phase, needs = cast(str, phase), []
+    else:
+        kept_phase, needs = cast(str, current["phase"]), current["needs"]
     upsert_work_item(conn, initiative, task, kept_phase, state, needs, now, by)
     return {
         "initiative": initiative,

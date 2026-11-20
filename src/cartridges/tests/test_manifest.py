@@ -10,7 +10,6 @@ import pytest
 from core import ledger
 from core.manifest import (
     ManifestError,
-    agreement_rate,
     append_ledger,
     build_manifest,
     gate_diff,
@@ -75,22 +74,6 @@ def test_absent_grain_stays_absent_rather_than_being_defaulted() -> None:
     """A default here would be an invented track record. Absent means absent."""
     diff = gate_diff(PROPOSAL, "approved", applied=True, edited=False)
     assert "subject" not in diff and "subject_new" not in diff and "attempts" not in diff
-
-
-# ── agreement_rate ─────────────────────────────────────────────────────────
-
-
-def test_agreement_rate_counts_only_decided_proposals() -> None:
-    m = manifest(
-        gate_diff(PROPOSAL, "approved", applied=True, edited=False),
-        gate_diff(PROPOSAL, "approved", applied=True, edited=True),
-        gate_diff(PROPOSAL, "approved", applied=False, edited=False),  # skipped: no signal
-    )
-    assert agreement_rate(m) == 0.5
-
-
-def test_agreement_rate_of_a_run_nobody_ruled_on_is_zero() -> None:
-    assert agreement_rate(manifest()) == 0.0
 
 
 # ── build_manifest ─────────────────────────────────────────────────────────

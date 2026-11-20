@@ -1,30 +1,30 @@
 """Plan the outcome of a task's review PR: a merged PR is landed, a closed one goes to the chair."""
-from agent_tools.chair_types import REVIEW_CLOSED_CAUSE, Action, Facts, ReviewPr
+from agent_tools.chair_types import REVIEW_CLOSED_CAUSE, Action, ActionKind, Facts, ReviewPr
 
 
 def _review_action(entry: ReviewPr) -> list[Action]:
     if entry["state"] == "merged":
         return [
             {
-                "kind": "review_landed",
+                "kind": ActionKind.REVIEW_LANDED,
                 "initiative": entry["initiative"],
                 "phase": entry["phase"],
                 "task_id": entry["task_id"],
                 "repo": entry["repo"],
                 "url": entry["url"],
                 "merged_at": entry["merged_at"],
-            }  # type: ignore[list-item]  # plan_tick stamps the epoch
+            }
         ]
     if entry["state"] == "closed":
         return [
             {
-                "kind": "needs_chair",
+                "kind": ActionKind.NEEDS_CHAIR,
                 "initiative": entry["initiative"],
                 "phase": entry["phase"],
                 "task_id": entry["task_id"],
                 "url": entry["url"],
                 "cause": REVIEW_CLOSED_CAUSE,
-            }  # type: ignore[list-item]
+            }
         ]
     return []
 

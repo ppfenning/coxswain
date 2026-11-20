@@ -37,10 +37,45 @@ def test_a_record_reads_back_as_written_and_a_second_write_replaces_it(conn):
 def test_records_list_by_initiative_and_filter_by_state(conn):
     ls.put_record(conn, _record("b", "landed"))
     ls.put_record(conn, _record("a"))
-    assert [r["initiative"] for r in ls.list_records(conn)] == ["a", "b"]
-    assert [r["initiative"] for r in ls.list_records(conn, states=("landed",))] == ["b"]
+    assert [r["initiative"] for r in ls.list_records(conn).records] == ["a", "b"]
+    assert [r["initiative"] for r in ls.list_records(conn, states=("landed",)).records] == ["b"]
     ls.delete_record(conn, "a")
-    assert [r["initiative"] for r in ls.list_records(conn)] == ["b"]
+    assert [r["initiative"] for r in ls.list_records(conn).records] == ["b"]
+
+
+def _put_raw(conn, initiative, record_json, state="building"):
+    p = conn.dialect.placeholder
+    conn.execute(f"INSERT INTO landing_records (initiative, repo, state, record_json, created_at, updated_at) "
+                 f"VALUES ({p}, 'r', {p}, {p}, {p}, {p})", (initiative, state, record_json, T0, T0))
+
+
+def test_one_malformed_row_is_listed_apart_and_stops_only_its_own_initiatives_reads(conn):
+    """The bug: one row that did not read made `list_records` raise for the whole table."""
+    ls.put_record(conn, _record("a"))
+    _put_raw(conn, "b", '{"initiative": "b", "phases": [1]}')
+    ls.put_record(conn, _record("c", "landed"))
+    table = ls.list_records(conn)
+    assert [r["initiative"] for r in table.records] == ["a", "c"]
+    assert [(u.initiative, "phases" in u.why) for u in table.unreadable] == [("b", True)]
+    assert [u.initiative for u in ls.list_records(conn, states=("building",)).unreadable] == ["b"], "the state column still filters"
+    assert ls.list_records(conn, states=("landed",)).unreadable == ()
+    assert ls.get_record(conn, "a") == _record("a")
+    with pytest.raises(ls.UnreadableRecord, match="landing record of b cannot be read") as raised:
+        ls.get_record(conn, "b")
+    assert raised.value.unreadable.initiative == "b"
+    assert ls.has_record(conn, "b") and ls.has_record(conn, "a") and not ls.has_record(conn, "z")
+    assert ls.read_record(conn, "z") is None
+
+
+def test_a_notice_is_remembered_by_key_until_it_is_forgotten(conn):
+    assert ls.told(conn, "unreadable:") == {}
+    ls.remember(conn, "unreadable:b", "reason one", T0)
+    ls.remember(conn, "other:x", "elsewhere", T0)
+    assert ls.told(conn, "unreadable:") == {"unreadable:b": "reason one"}
+    ls.remember(conn, "unreadable:b", "reason two", T1)
+    assert ls.told(conn, "unreadable:") == {"unreadable:b": "reason two"}
+    ls.forget(conn, "unreadable:b")
+    assert ls.told(conn, "unreadable:") == {} and ls.told(conn, "other:") == {"other:x": "elsewhere"}
 
 
 def test_item_ids_are_one_per_phase_merge_and_one_per_initiative_land():
@@ -99,9 +134,28 @@ def test_a_failed_item_keeps_its_error_and_history_when_it_is_queued_again(conn)
     assert ls.claim(conn, ident, "lander-b", now=T9, lease_until=T9) is False, "failed stays failed until queued again"
     assert ls.enqueue(conn, ls.PHASE_MERGE, "i1", phase="p1", repo="r", now=T2, reason="rectify task approved") is True
     again = ls.get_item(conn, ident)
+    # It keeps its first queueing: an item that fails and is queued again every pass still ages for the queue alarm.
     assert (again["state"], again["queued_at"], again["attempts"], again["last_error"]) == (
-        "queued", T2, 1, "merge conflict in src/a.py",
+        "queued", T0, 1, "merge conflict in src/a.py",
     )
+
+
+def test_a_done_item_queued_again_is_new_work_and_counts_from_now(conn):
+    ls.enqueue(conn, ls.INITIATIVE_LAND, "i1", repo="r", parent="main", now=T0)
+    ident = ls.item_id(ls.INITIATIVE_LAND, "i1")
+    ls.claim(conn, ident, "lander-a", now=T1, lease_until=T2)
+    assert ls.finish(conn, ident, "lander-a", now=T1) is True
+    assert ls.enqueue(conn, ls.INITIATIVE_LAND, "i1", repo="r", parent="main", now=T2) is True
+    assert ls.get_item(conn, ident)["queued_at"] == T2
+
+
+@pytest.mark.parametrize(("state", "queued_at", "expected"), [
+    ("failed", "2026-11-17T10:00:00Z", "2026-11-17T10:00:00Z"),
+    ("failed", "", "2026-11-17T12:00:00Z"),
+    ("done", "2026-11-17T10:00:00Z", "2026-11-17T12:00:00Z"),
+])
+def test_requeued_at_keeps_a_failed_items_first_queueing(state, queued_at, expected):
+    assert ls.requeued_at(state, queued_at, "2026-11-17T12:00:00Z") == expected
 
 
 def test_a_released_item_goes_back_to_queued_without_counting_an_attempt(conn):

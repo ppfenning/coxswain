@@ -37,6 +37,28 @@ now exists accomplishes it.
   what is missing against what the goal required — the next actor (another
   task, a redecomposition, a human) needs the gap, not just a false.
 
+## Two questions every review answers
+
+A phase whose tasks each added a well-tested helper can still have changed
+nothing that runs (docs/hardening.md, H10). Ask both questions of the phase as
+a whole, and name the file that proves each answer.
+
+1. **Is the logic pure, and tested without mocks?** A mock, `monkeypatch`,
+   stub or fake the phase's patches add to a unit test means `goal_met:
+   false`, with the test and the function to split out of the glue named in
+   `missing`.
+2. **Which smoke or end-to-end test runs the entry point that reaches this
+   change?** Every public function, class or module the phase added must be
+   called by an entry point the phase reaches, and a test under `smoke/` (or
+   one that runs the real command against a real repository) must run that
+   entry point. Library code with no caller outside tests (a task's
+   `check_unwired` row fails, or no caller is in the diffs), or no such test,
+   means the goal is not met: `goal_met: false`, with the helper and the
+   wiring it lacks named in `missing`. Set `partial: true` when some of the
+   goal does run and only this wiring is missing, `partial: false` when
+   nothing the phase added is reached. The smoke-test half applies as the
+   smoke suite (docs/smoke.md) grows to cover the entry point.
+
 ## Failure modes
 
 - Re-reviewing tasks one by one instead of reasoning about the whole.

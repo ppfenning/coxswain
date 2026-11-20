@@ -21,7 +21,7 @@ FAILED = 1  # the file could not be written, as in route_edit
 def render_epic(epic_id: str, title: str | None, target_branch: str | None) -> str:
     """The file text: frontmatter with id, then title and target_branch when given, a closing fence and an empty body line."""
     given = (("title", title), ("target_branch", target_branch))
-    lines = [f"id: {epic_id}", *(f"{key}: {route._yaml_scalar(value)}" for key, value in given if value is not None)]
+    lines = [f"id: {epic_id}", *(f"{key}: {route.yaml_scalar(value)}" for key, value in given if value is not None)]
     return "\n".join(["---", *lines, "---", "", ""])
 
 

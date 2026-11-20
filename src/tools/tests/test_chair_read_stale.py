@@ -1,19 +1,23 @@
 import os
 import sqlite3
 import subprocess
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from agent_tools.chair_plan_stale import plan_stale
 from agent_tools.chair_read_quarantined import body_sha
 from agent_tools.chair_read_stale import (
-    file_changed_at,
+    changed_at,
     last_chair_action_at,
     last_run_at,
+    newest_changes,
     quarantine_non_harness_count,
     read_chair_actions,
+    read_file_changes,
     read_stale_candidates,
 )
+from agent_tools.chair_types import ActionKind
 
 BODY = "the ticket body\n"
 SHA = body_sha(BODY)
@@ -112,22 +116,24 @@ def _git_repo_with_committed_file(tmp_path):
     return repo
 
 
-def test_file_changed_at_of_a_git_tracked_file_is_its_commit_instant(tmp_path):
+def test_changed_at_of_a_git_tracked_file_is_its_commit_instant(tmp_path):
     # %aI keeps a non-UTC offset as written; git versions differ on whether UTC prints as `Z` or `+00:00`.
-    changed = file_changed_at(_git_repo_with_committed_file(tmp_path), "a", "p1", "t1")
+    repo = _git_repo_with_committed_file(tmp_path)
+    changed = changed_at(read_file_changes(repo), repo, "a", "p1", "t1")
     assert datetime.fromisoformat(changed) == datetime(2026, 9, 20, 8, 0, tzinfo=UTC)
 
 
-def test_file_changed_at_of_an_uncommitted_ticket_on_disk_is_its_modification_time(tmp_path):
+def test_changed_at_of_an_uncommitted_ticket_on_disk_is_its_modification_time(tmp_path):
     repo = _git_repo_with_committed_file(tmp_path)
     fresh = repo / "work" / "a" / "p1" / "fresh.md"
     fresh.write_text("new ticket\n", encoding="utf-8")
     os.utime(fresh, (1790000000, 1790000000))
-    assert file_changed_at(repo, "a", "p1", "fresh") == datetime.fromtimestamp(1790000000, UTC).isoformat()
+    assert changed_at(read_file_changes(repo), repo, "a", "p1", "fresh") == datetime.fromtimestamp(1790000000, UTC).isoformat()
 
 
-def test_file_changed_at_of_a_file_with_no_commit_history_is_none(tmp_path):
-    assert file_changed_at(_git_repo_with_committed_file(tmp_path), "a", "p1", "never-committed") is None
+def test_changed_at_of_a_file_with_no_commit_history_is_none(tmp_path):
+    repo = _git_repo_with_committed_file(tmp_path)
+    assert changed_at(read_file_changes(repo), repo, "a", "p1", "never-committed") is None
 
 
 def _write_task(repo, phase, task, state, attempts=""):
@@ -154,3 +160,56 @@ def test_read_stale_candidates_gives_one_row_per_open_task_and_keeps_phases_apar
         {**blank, "state": "ready", "last_file_change": mtime("p1"), "last_run": "2026-09-23T00:00:00+00:00", "quarantine_non_harness_count": 2},
         {**blank, "state": "blocked", "last_file_change": mtime("p2"), "last_run": None, "quarantine_non_harness_count": 0},
     ]
+
+
+def test_newest_changes_keeps_the_first_date_each_path_is_named_by_newest_commit_first():
+    log = "\x002026-11-02T00:00:00Z\n\nwork/a/p1/t1.md\n\x002026-11-01T00:00:00Z\n\nwork/a/p1/t1.md\nwork/a/p1/t2.md\n"
+    assert newest_changes(log) == {"work/a/p1/t1.md": "2026-11-02T00:00:00Z", "work/a/p1/t2.md": "2026-11-01T00:00:00Z"}
+    assert newest_changes("") == {}
+
+
+def test_changed_at_with_no_history_falls_back_to_the_file_and_then_none(tmp_path):
+    ticket = tmp_path / "work" / "a" / "p1" / "t1.md"
+    ticket.parent.mkdir(parents=True)
+    ticket.write_text("x", encoding="utf-8")
+    os.utime(ticket, (1790000000, 1790000000))
+    assert changed_at(None, tmp_path, "a", "p1", "t1") == datetime.fromtimestamp(1790000000, UTC).isoformat()
+    assert changed_at({"work/a/p1/t1.md": "2026-01-01T00:00:00Z"}, tmp_path, "a", "p1", "t1") == "2026-01-01T00:00:00Z"
+    assert changed_at(None, tmp_path, "a", "p1", "gone") is None
+
+
+def _plan(rows, now):
+    return plan_stale({"initiatives": [], "stale_candidates": rows, "stale_days": 7}, now)
+
+
+def test_a_freshly_written_ticket_with_no_history_is_not_planned_stale(tmp_path):
+    repo = tmp_path / "workspace"
+    _write_task(repo, "p1", "t1", "ready")
+    ticket = repo / "work" / "a" / "p1" / "t1.md"
+    now = datetime.fromtimestamp(ticket.stat().st_mtime, UTC)
+    rows = read_stale_candidates(repo, now, attempts=[], actions=[])
+    assert [r["task_id"] for r in rows] == ["t1"]
+    assert [a for a in _plan(rows, now) if a["kind"] == ActionKind.STALE_TO_DRAFT] == []
+
+
+def test_a_ticket_older_than_stale_days_is_still_planned_stale(tmp_path):
+    repo = tmp_path / "workspace"
+    _write_task(repo, "p1", "t1", "ready")
+    ticket = repo / "work" / "a" / "p1" / "t1.md"
+    now = datetime.fromtimestamp(ticket.stat().st_mtime, UTC) + timedelta(days=30)
+    rows = read_stale_candidates(repo, now, attempts=[], actions=[])
+    planned = [a for a in _plan(rows, now) if a["kind"] == ActionKind.STALE_TO_DRAFT]
+    assert [a["stale_tasks"] for a in planned] == [["t1"]]
+
+
+def test_a_candidate_row_with_no_signal_is_not_planned_stale():
+    row = {
+        "initiative": "a",
+        "task_id": "t1",
+        "state": "ready",
+        "last_file_change": None,
+        "last_run": None,
+        "last_chair_action": None,
+        "quarantine_non_harness_count": 0,
+    }
+    assert _plan([row], datetime(2026, 11, 19, tzinfo=UTC)) == []

@@ -59,7 +59,7 @@ def resolve_target(store: Sequence[Mapping], id: str) -> Target:
     return NotFound(id)
 
 
-def fresh_initiative_id(intake_id: str, rows: Sequence[Mapping]) -> str:
+def fresh_initiative_id(intake_id: str, rows: Sequence[Mapping[str, object]]) -> str:
     """`rows` are queue rows. Only a dropped initiative with the intake id forces a new id; a live one keeps it. The new id is the first `id-N`, N from 2, that no initiative row uses in any state."""
     initiatives = [row for row in rows if row.get("kind") == "initiative"]
     taken = frozenset(row.get("task_id") for row in initiatives)
@@ -81,3 +81,15 @@ def initiative_guard(tasks: Sequence[Mapping], runs: Collection[str]) -> Guard:
         if task.get("state") not in EDITABLE_STATES:
             return Refusal("task_past_ready", task["task_id"], f"task {task['task_id']} is {task.get('state')!r}, past ready")
     return Ok()
+
+
+def live_on(initiative: str, live: Collection[str]) -> list[str]:
+    """Pure: the runs in `live` of `initiative`'s own series or one of its phase series (`<initiative>.<phase>-N`), sorted."""
+    from core.workstore import run_series  # lazy: core sits beside agent_tools in one venv
+
+    return sorted(r for r in live if (series := run_series(r)[0]) == initiative or series.startswith(f"{initiative}."))
+
+
+def live_refusal(run: str, initiative: str, before: str) -> str:
+    """Pure: why a move that marks a fresh start waits for a live run, naming the command that stops it."""
+    return f"{run} is live on {initiative}; stop it with `cox runs stop {run}`, or let it finish, before {before}"

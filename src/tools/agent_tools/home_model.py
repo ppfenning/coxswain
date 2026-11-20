@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 
@@ -32,18 +32,13 @@ __all__ = [
     "Span",
     "State",
     "Talk",
-    "attention_pane",
     "backlog_pane",
     "chair_pane",
-    "chat_pane",
     "frame",
-    "health_pane",
     "layout",
     "leader_pane",
-    "panel_status",
     "runs_pane",
     "step",
-    "time_to_reset",
     "window_pane",
 ]
 
@@ -55,7 +50,6 @@ _REGATTA_MIN_HEIGHT = 24
 _REGATTA_MIN_PANEL = 3
 OPENING_CONTEXT = "cox route context"
 SETUP_ARGV = ("cox", "setup")
-_ATTENTION_REASONS = {"exited": ("gate", "l"), "quarantined": ("quarantine", "i"), "budget": ("budget stop", "i")}
 
 
 @dataclass(frozen=True)
@@ -201,15 +195,6 @@ def _heartbeat_age(chair: dict | None, now: float) -> float | None:
     return now - heartbeat_at.timestamp()
 
 
-def panel_status(last_value, age_seconds: float | None, timeout_seconds: float) -> str:
-    """fresh within `timeout_seconds`, stale past it with a value, absent with none."""
-    if last_value is None:
-        return "absent"
-    if age_seconds is None or age_seconds > timeout_seconds:
-        return "stale"
-    return "fresh"
-
-
 def _cut_span(text: str, width: int, role: str = "plain") -> Line:
     return (Span(_cut(text, width), role),)
 
@@ -234,25 +219,12 @@ def runs_pane(facts: Facts, width: int) -> tuple[Line, ...]:
     return tuple((Span(line),) for line in runs_top.render(list(facts.runs_rows), width))
 
 
-def attention_pane(facts: Facts, width: int) -> tuple[str, ...]:
-    lines = tuple(
-        f"{row.run}: {_ATTENTION_REASONS[row.status][0]} [{_ATTENTION_REASONS[row.status][1]}]"
-        for row in facts.runs_rows
-        if row.status in _ATTENTION_REASONS
-    )
-    return tuple(_cut(line, width) for line in lines)
-
-
 def backlog_pane(facts: Facts, width: int) -> tuple[Line, ...]:
     b = facts.backlog
     counts = f"queued {b.get('queued', 0)}  decomposed {b.get('decomposed', 0)}  landed {b.get('landed', 0)}"
     ready = b.get("ready", {})
     ready_line = "ready: " + (", ".join(f"{k}={v}" for k, v in ready.items()) or "none")
     return tuple(_cut_span(line, width) for line in (counts, ready_line))
-
-
-def time_to_reset(end: datetime.datetime, now: datetime.datetime) -> str:
-    return f"{max(int((end - now).total_seconds() // 60), 0)}m"
 
 
 def _spend_line(w: Mapping) -> str:
@@ -273,17 +245,6 @@ def window_pane(facts: Facts, width: int) -> tuple[Line, ...]:
     reason = w.get("reason", "")
     lines = (verdict, block, spend, reason) if reason else (verdict, block, spend)
     return tuple(_cut_span(line, width) for line in lines)
-
-
-def health_pane(rows: list[dict], width: int) -> tuple[str, ...]:
-    failing = tuple(f"{row['check']}: {row['detail']}" for row in rows if not row["ok"])
-    lines = failing or ("health: ok",)
-    return tuple(_cut(line, width) for line in lines)
-
-
-def chat_pane(thread: Sequence[Mapping], width: int, draft: str) -> tuple[str, ...]:
-    lines = ("CHAT", *(f"{e.get('from', '?')}: {e.get('text', '')}" for e in list(thread)[-3:]), f"> {draft}")
-    return tuple(_cut(line, width) for line in lines)
 
 
 def _columns(width: int, n: int) -> tuple[int, ...]:

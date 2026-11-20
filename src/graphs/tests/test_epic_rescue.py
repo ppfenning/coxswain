@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from core import workstore
-from harness.epic import _Ctx, rescue_task, with_stored_causes, with_stored_rescues
+from harness.epic import Ctx, rescue_task, with_stored_causes, with_stored_rescues
 from harness.resume import load_result, save_result
 from harness.store_migrate import open_store
 from harness.store_write import Store
@@ -44,7 +44,7 @@ def _setup(repo: Path, cart: dict, tmp_path: Path, patch: str, attempts: list[di
     )
     save_result({"ticket": TASK, "build": {"patch": patch}}, runs_dir=tmp_path / "runs", run_id="epic-prior", phase=PHASE, task=TASK)
     store = Store(open_store("sqlite:///:memory:", datetime.now(UTC).isoformat()))
-    ctx = _Ctx(
+    ctx = Ctx(
         repo=repo, cartridge=cart, runner=None, specs={}, run_id="rescue-1", date="2026-09-26",
         max_parallel=1, ledger_path=tmp_path / "ledger.jsonl", provider_profile=PROFILE, runs_dir=tmp_path / "runs",
         worktree_root=tmp_path / "worktrees", assume=assume, fix_attempts=None, initiative_id="demo-initiative",
@@ -54,14 +54,14 @@ def _setup(repo: Path, cart: dict, tmp_path: Path, patch: str, attempts: list[di
     return ctx, item, path
 
 
-def _rescue(ctx: _Ctx, item: dict, runner: Runner) -> dict:
+def _rescue(ctx: Ctx, item: dict, runner: Runner) -> dict:
     """One rescue through `runner`, which must never be asked to plan or build."""
     result = rescue_task(replace(ctx, runner=runner), item, phase=PHASE)
     assert not {call["role"] for call in runner.calls} & {"plan", "build"}
     return result
 
 
-def _one(ctx: _Ctx, sql: str) -> tuple | None:
+def _one(ctx: Ctx, sql: str) -> tuple | None:
     return ctx.store.conn.query_one(sql, ())
 
 
@@ -196,6 +196,57 @@ def test_a_stored_rescue_older_than_the_current_body_is_stamped_as_an_older_body
     row = {"run_id": "r", "phase_id": PHASE, "kind": "rescue_failed", "reason": "x", "ts": "2026-08-01", "cause": "code"}
 
     assert with_stored_rescues(item, [row])["attempts"][0]["body_sha"] == "before the current body"
+
+
+# ── under work_state store, the attempts are the run task records ────────────
+
+
+def _record(runs: Path, run: str, patch: str) -> None:
+    """The record a store-mode run leaves for a harness quarantine that kept its patch: the cause and the body on it."""
+    save_result(
+        {"ticket": TASK, "initiative": "demo-initiative", "phase": PHASE, "build": {"patch": patch}, "cause": "harness",
+         "cause_why": "rule: kind infra", "body_sha": SHA, "date": "2026-09-25"},
+        runs_dir=runs, run_id=run, phase=PHASE, task=TASK,
+    )  # fmt: skip
+
+
+def test_under_store_a_task_with_no_file_attempt_is_rescued_from_its_run_record(repo, cart, tmp_path) -> None:  # noqa: F811
+    # The chair launched this rescue from the record; reading only the work file, the rescue found nothing and the
+    # chair launched it again every tick.
+    ctx, item, _ = _setup(repo, cart, tmp_path, new_file_patch("t1-probe.txt"), [])
+    _record(ctx.runs_dir, "demo-initiative-2", new_file_patch("t1-probe.txt", "bad"))
+
+    result = _rescue(replace(ctx, work_state="store"), item, Runner({}))
+
+    assert (result["status"], result["cause"]) == ("rescue_failed", "code")  # the record's patch, checked and failed
+    assert _one(ctx, "SELECT kind, cause FROM attempts") == ("rescue_failed", "code")
+
+
+def test_under_store_a_record_another_lane_wrote_is_read_from_the_store(repo, cart, tmp_path) -> None:  # noqa: F811
+    ctx, item, _ = _setup(repo, cart, tmp_path, new_file_patch("t1-probe.txt"), [])
+    _record(tmp_path / "elsewhere", "demo-initiative-2", new_file_patch("t1-probe.txt", "bad"))
+    record = load_result(tmp_path / "elsewhere", "demo-initiative-2", PHASE, TASK)
+    ctx.store.record_task_record("demo-initiative-2", PHASE, TASK, record, "2026-09-25T10:00:00+00:00")
+
+    assert _rescue(replace(ctx, work_state="store"), item, Runner({}))["status"] == "rescue_failed"
+
+
+def test_under_store_a_record_on_an_older_body_is_not_rescued(repo, cart, tmp_path) -> None:  # noqa: F811
+    ctx, item, _ = _setup(repo, cart, tmp_path, new_file_patch("t1-probe.txt"), [])
+    _record(ctx.runs_dir, "demo-initiative-2", new_file_patch("t1-probe.txt"))
+    runner = Runner({})
+
+    assert _rescue(replace(ctx, work_state="store"), {**item, "body": "an amended body"}, runner) == {
+        "status": "not_eligible", "why": "no attempts on the current body",
+    }
+    assert runner.calls == []
+
+
+def test_under_files_a_task_with_no_file_attempt_is_still_not_rescued(repo, cart, tmp_path) -> None:  # noqa: F811
+    ctx, item, _ = _setup(repo, cart, tmp_path, new_file_patch("t1-probe.txt"), [])
+    _record(ctx.runs_dir, "demo-initiative-2", new_file_patch("t1-probe.txt"))
+
+    assert _rescue(ctx, item, Runner({})) == {"status": "not_eligible", "why": "no patch kept"}
 
 
 def test_a_causeless_file_attempt_takes_the_cause_of_the_store_row_for_its_run_and_phase() -> None:

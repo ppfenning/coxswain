@@ -3,23 +3,24 @@
 `approved_rows` is pure. `read_approved` is the edge: it loads items through the existing work-store readers
 (`route.parse_frontmatter`, `route.work_item`, `route.with_store_states`, `run_store.work_items`) and hands them over.
 """
-import glob
 import json
 import os
-import re
 from collections.abc import Callable, Collection, Mapping, Sequence
+from functools import partial
 from pathlib import Path
-from typing import Any
 
 from agent_tools import epic, land_manual, repo_path, route, run_store
 from agent_tools.chair_facts import run_initiative
+from agent_tools.chair_read_cache import StampCache, file_stamp
+from agent_tools.chair_read_docket import str_items
 from agent_tools.chair_read_quarantined import WorkFiles, task_files
 from agent_tools.chair_read_remote_unfetched import is_remote_unfetched
 from agent_tools.chair_types import ApprovedTask, PhaseTasks
 from agent_tools.remote_lane import fetched_record_path, land_needs_fetch, remote_record_path
 from agent_tools.runs_stranded import SUPERSEDING_CAUSES
+from core.jsontypes import is_dict
 
-Item = Mapping[str, Any]
+Item = Mapping[str, object]
 
 
 _COMPLETE = frozenset({"done", "approved", "dropped"})
@@ -42,12 +43,12 @@ def approved_rows(items: Sequence[Item]) -> list[ApprovedTask]:
     """One row per item whose state is `approved`. `repo` is the item's own, `""` when the caller found none."""
     return [
         {
-            "id": item["id"],
-            "initiative": item["initiative"],
-            "repo": item.get("repo", ""),
-            "phase": item["phase"],
+            "id": str(item["id"]),
+            "initiative": str(item["initiative"]),
+            "repo": str(item.get("repo", "")),
+            "phase": str(item["phase"]),
             "phase_done": phase_done(item, items),
-            "needs": list(item.get("needs", [])),
+            "needs": str_items(item.get("needs", [])),
             "run": "",
             "needs_fetch": False,
             "merged": bool(item.get("merged")),
@@ -57,9 +58,10 @@ def approved_rows(items: Sequence[Item]) -> list[ApprovedTask]:
     ]
 
 
-def with_store_closed(items: Sequence[Item], rows: list[dict]) -> list[Item]:
+def with_store_closed(items: Sequence[Item], rows: Sequence[Mapping[str, object]]) -> list[Item]:
     """Each item whose store row (the one `run_store.task_state` picks) says `done` or `dropped` reads that state, in any mode."""
-    closed = [(i, run_store.task_state(rows, i["initiative"], i["id"])) for i in items]
+    index = run_store.rows_by_task(rows)
+    closed = [(i, index.get((i["initiative"], i["id"]), {}).get("state")) for i in items]
     return [{**i, "state": s} if s in ("done", "dropped") else i for i, s in closed]
 
 
@@ -70,9 +72,9 @@ def phase_task_rows(items: Sequence[Item]) -> list[PhaseTasks]:
     keys = dict.fromkeys((i["initiative"], i["phase"]) for i in items if i["state"] in ("approved", "quarantined"))
     return [
         {
-            "initiative": initiative,
-            "phase": phase,
-            "tasks": [(i["id"], route.state_word(i)) for i in items if (i["initiative"], i["phase"]) == (initiative, phase)],
+            "initiative": str(initiative),
+            "phase": str(phase),
+            "tasks": [(str(i["id"]), route.state_word(i)) for i in items if (i["initiative"], i["phase"]) == (initiative, phase)],
         }
         for initiative, phase in keys
     ]
@@ -91,7 +93,7 @@ def _run_order(run: str) -> tuple[int, str]:
 
 def with_runs(
     tasks: Sequence[ApprovedTask],
-    stranded: Sequence[Mapping[str, Any]],
+    stranded: Sequence[Mapping[str, object]],
     fetch_facts: Mapping[str, tuple[bool, bool]] = {},
 ) -> list[ApprovedTask]:
     """Each task gets the newest run with a stranded row for it under its initiative and phase, empty when none has.
@@ -114,7 +116,7 @@ def _newer_unsettled(run: str, unsettled: Collection[str]) -> bool:
     return any(run_initiative(u) == run_initiative(run) and _run_order(u) > _run_order(run) for u in unsettled)
 
 
-def land_records(records: Sequence[Mapping[str, Any]], unsettled: Collection[str] = frozenset()) -> list[dict]:
+def land_records(records: Sequence[Mapping[str, object]], unsettled: Collection[str] = frozenset()) -> list[dict[str, object]]:
     """The task records the land planner reads each approved task's run from: `records`, each a copy, with a code or
     ticket `cause` dropped unless a newer run of the record's initiative is in `unsettled`.
 
@@ -131,14 +133,25 @@ def land_records(records: Sequence[Mapping[str, Any]], unsettled: Collection[str
     ]
 
 
-def _initiative_runs(runs_dir: Path, initiative: str, suffix: str) -> dict[str, Path]:
-    """Edge. run -> `<run><suffix>` for every `<initiative>-<N><suffix>` file in `runs_dir`."""
-    own = re.compile(re.escape(initiative) + r"-\d+")
-    return {
-        run: p
-        for p in runs_dir.glob(f"{glob.escape(initiative)}-*{suffix}")
-        if own.fullmatch(run := p.name[: -len(suffix)])
-    }
+def run_file_index(names: Collection[str], suffix: str) -> dict[str, dict[str, str]]:
+    """Pure. Initiative to (run -> entry name) for every `<initiative>-<N><suffix>` among a runs directory's `names`,
+    built once a read instead of matching every initiative against every entry."""
+    index: dict[str, dict[str, str]] = {}
+    for name in names:
+        if not name.endswith(suffix):
+            continue
+        run = name[: -len(suffix)]
+        initiative, dash, number = run.rpartition("-")
+        if dash and initiative and number.isdigit() and number.isascii():
+            index.setdefault(initiative, {})[run] = name
+    return index
+
+
+def _entry_names(runs_dir: Path) -> list[str]:
+    try:
+        return os.listdir(runs_dir)
+    except OSError:
+        return []
 
 
 def _pid_live(pidfile: Path) -> bool:
@@ -155,23 +168,27 @@ def _remote_unfetched(runs_dir: Path, run: str) -> bool:
     return is_remote_unfetched(True, *local)
 
 
-def read_unsettled_runs(runs_dir: Path, records: Sequence[Mapping[str, Any]]) -> frozenset[str]:
+def read_unsettled_runs(runs_dir: Path, records: Sequence[Mapping[str, object]]) -> frozenset[str]:
     """Edge. The runs `land_records` keeps a code or ticket cause for: runs of a marked record's initiative, newer than
     it, that are remote and unfetched (`is_remote_unfetched`) or live here (`epic.run_live` on the pidfile). Only the
     initiatives of marked records are read, so a tick with none reads nothing."""
     marked = {str(r["run"]) for r in records if r.get("cause") in SUPERSEDING_CAUSES and r.get("run")}
     unsettled: set[str] = set()
-    for initiative in {run_initiative(run) for run in marked}:
+    initiatives = {run_initiative(run) for run in marked}
+    # One listing for every initiative: a glob each re-read the whole runs directory per initiative and suffix.
+    names = _entry_names(runs_dir) if initiatives else []
+    remote_index, pid_index = run_file_index(names, ".remote.json"), run_file_index(names, ".pid")
+    for initiative in initiatives:
         oldest = min(_run_order(run) for run in marked if run_initiative(run) == initiative)
-        remote = _initiative_runs(runs_dir, initiative, ".remote.json")
-        pids = _initiative_runs(runs_dir, initiative, ".pid")
+        remote = {run: runs_dir / name for run, name in remote_index.get(initiative, {}).items()}
+        pids = {run: runs_dir / name for run, name in pid_index.get(initiative, {}).items()}
         newer = [run for run in sorted(set(remote) | set(pids)) if _run_order(run) > oldest]
         unsettled |= {run for run in newer if run in remote and _remote_unfetched(runs_dir, run)}
         unsettled |= {run for run in newer if run in pids and _pid_live(pids[run])}
     return frozenset(unsettled)
 
 
-def read_fetch_facts(runs_dir: Path, stranded: Sequence[Mapping[str, Any]]) -> dict[str, tuple[bool, bool]]:
+def read_fetch_facts(runs_dir: Path, stranded: Sequence[Mapping[str, object]]) -> dict[str, tuple[bool, bool]]:
     """Edge. run -> (has_remote_record, fetched) for every run a stranded row names."""
     return {
         run: (remote_record_path(runs_dir, run).exists(), fetched_record_path(runs_dir, run).exists())
@@ -192,9 +209,10 @@ def _repo_of(initiative_md: Path) -> str:
     return _repo_from_text(text)
 
 
-def _load_items(ws: Path, files: WorkFiles | None = None) -> list[dict]:
+def _load_items(ws: Path, files: WorkFiles | None = None) -> list[dict[str, object]]:
     repos: dict[str, str] = {}
-    items = []
+    items: list[dict[str, object]] = []
+    texts: dict[Path, str]
     if files is None:
         texts = {}
         for path in sorted((ws / "work").glob("*/*/*.md")):
@@ -223,17 +241,18 @@ def _load_items(ws: Path, files: WorkFiles | None = None) -> list[dict]:
 
 
 def read_approved(
-    ws: Path, mode: str = "files", files: WorkFiles | None = None, store_rows: Sequence[Mapping[str, Any]] | None = None,
+    ws: Path, mode: str = "files", files: WorkFiles | None = None, store_rows: Sequence[Mapping[str, object]] | None = None,
+    landed: frozenset[str] | None = None,
 ) -> list[ApprovedTask]:
     """Edge. Approved rows for the work store under `ws`; under mode "store" each state comes from the run store.
 
-    `files` and `store_rows` stand in for the work-file and store reads when a tick already holds them. The tick
+    `files`, `store_rows` and `landed` (`read_landed_task_ids`) stand in for the reads when a tick already holds them. The tick
     caches `store_rows` once per beat, so a task landed after that read still says approved there; a task whose
     record says landed reads `done`, as in `read_phase_tasks`."""
     items = _load_items(ws, files)
     rows = store_rows if store_rows is not None else (run_store.work_items(ws / "runs") if mode == "store" else [])
-    merged = with_store_closed(route.with_store_states(items, list(rows), mode), list(rows))
-    return with_land_mode(approved_rows(mark_landed(merged, read_landed_task_ids(ws / "runs"))))
+    merged = with_store_closed(route.with_store_states(items, rows, mode), rows)
+    return with_land_mode(approved_rows(mark_landed(merged, read_landed_task_ids(ws / "runs") if landed is None else landed)))
 
 
 def with_land_mode(rows: Sequence[ApprovedTask], manual_of: Callable[[str], bool] = land_manual.is_manual) -> list[ApprovedTask]:
@@ -244,19 +263,30 @@ def with_land_mode(rows: Sequence[ApprovedTask], manual_of: Callable[[str], bool
 def _is_landed(path: Path) -> bool:
     """Edge. True when the task record at `path` has `landed: true`; an unreadable or malformed record is not landed."""
     try:
-        record = json.loads(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+        # Most records never landed: skip their parse. The record writers emit the key as plain `"landed"`.
+        record = json.loads(text) if '"landed"' in text else None
     except (OSError, ValueError):
         return False
-    return isinstance(record, dict) and record.get("landed") is True
+    return is_dict(record) and record.get("landed") is True
 
 
-def read_landed_task_ids(runs_dir: Path) -> frozenset[str]:
-    """Edge. Ids of tasks whose record under `runs_dir/<run>/tasks/*/<task>.json` says landed, the fact `runs clean` reads."""
-    return frozenset(p.stem for p in runs_dir.glob("*/tasks/*/*.json") if _is_landed(p))
+def read_landed_task_ids(runs_dir: Path, cache: StampCache | None = None) -> frozenset[str]:
+    """Edge. Ids of tasks whose record under `runs_dir/<run>/tasks/*/<task>.json` says landed, the fact `runs clean` reads.
+
+    With a cache, each record's verdict is kept by its file stamp, so an unchanged record is not read again; a record
+    gone from the glob leaves the cache."""
+    paths = list(runs_dir.glob("*/tasks/*/*.json"))
+    if cache is None:
+        return frozenset(p.stem for p in paths if _is_landed(p))
+    landed = frozenset(p.stem for p in paths if cache.get(p, file_stamp(p), partial(_is_landed, p)))
+    cache.keep(paths)
+    return landed
 
 
 def read_phase_tasks(
-    ws: Path, mode: str = "files", files: WorkFiles | None = None, store_rows: Sequence[Mapping[str, Any]] | None = None,
+    ws: Path, mode: str = "files", files: WorkFiles | None = None, store_rows: Sequence[Mapping[str, object]] | None = None,
+    landed: frozenset[str] | None = None,
 ) -> list[PhaseTasks]:
     """Edge. The task states of every phase with approved work, from the same reads as `read_approved`.
 
@@ -264,4 +294,5 @@ def read_phase_tasks(
     land refuses a task another machine landed. A merged approved task reads `merged` unless its record says landed."""
     items = _load_items(ws, files)
     rows = store_rows if store_rows is not None else (run_store.work_items(ws / "runs") if mode == "store" else [])
-    return phase_task_rows(mark_landed(route.with_store_states(items, rows, mode), read_landed_task_ids(ws / "runs")))
+    landed_ids = read_landed_task_ids(ws / "runs") if landed is None else landed
+    return phase_task_rows(mark_landed(route.with_store_states(items, rows, mode), landed_ids))

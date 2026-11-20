@@ -53,6 +53,7 @@ __all__ = [
     "GeneratedFile",
     "LeaseRenewal",
     "approve_to_done",
+    "approved_reason",
     "approved_state",
     "arbitration_verdict",
     "await_checks",
@@ -61,7 +62,6 @@ __all__ = [
     "check_poll_result",
     "checks_argv",
     "checks_detail",
-    "close_to_done",
     "gate_steps",
     "gate_stop",
     "generated_conflict_only",
@@ -70,6 +70,7 @@ __all__ = [
     "issue_closes",
     "land_log_row",
     "land_plan",
+    "landed_by_tree",
     "last_command",
     "mark_done",
     "merge_pages",
@@ -80,10 +81,14 @@ __all__ = [
     "phase_pr_title",
     "poll_backoff_s",
     "pr_body",
+    "recover_contained_refusal",
+    "recover_gate",
     "recover_plan",
     "recover_record",
+    "recovered_text",
     "renew_due",
     "renewal_stop",
+    "reopen_conflict_next_step",
     "resolve_block_conflicts",
     "rest_checks_argvs",
     "set_state_stop",
@@ -115,7 +120,7 @@ def arbitration_verdict(record: dict[str, Any]) -> str | None:
     return "approve" if arbitration == _ARBITER_SKIPPED else None
 
 
-def _approved(record: dict[str, Any]) -> str | None:
+def approved_reason(record: dict[str, Any]) -> str | None:
     """None when the record's decision is approve, else the reason it is not.
     An arbiter only runs on disagreement, so unanimous approval leaves no
     arbitration verdict at all — the best outcome, not a missing one."""
@@ -137,7 +142,7 @@ PYTHON_PROJECT_FILES = ("pyproject.toml", "setup.cfg", "pytest.ini", "setup.py",
 
 def resolved_checks(cartridge_checks: Sequence[dict[str, Any]], repo_checks: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     """The cartridge's checks, then the repo's `.agent-checks` entries whose `cmd` the cartridge does not already run.
-    The chair's rule (`_Ctx.checks` in harness/epic.py), so the land runs what the build was held to."""
+    The chair's rule (`Ctx.checks` in harness/epic_context.py), so the land runs what the build was held to."""
     known = {c.get("cmd") for c in cartridge_checks}
     return [*cartridge_checks, *(c for c in repo_checks if c.get("cmd") not in known)]
 
@@ -261,7 +266,7 @@ def phase_landable(items: list[dict[str, Any]], records: dict[str, dict[str, Any
             if status == "done":
                 continue
             return f"{item.get('id')} has no task record"
-        refusal = _approved(record)
+        refusal = approved_reason(record)
         if refusal is not None:
             return f"{item.get('id')}: {refusal}"
     return None
@@ -889,7 +894,7 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
                            ticket_records=ticket_records, ticket_unrecorded=ticket_unrecorded, phases=phases)
     if _proposal(record, "draft_pr_create") is None:
         return [{"kind": "refuse", "reason": "no draft_pr_create proposal in record"}]
-    refusal = _approved(record)
+    refusal = approved_reason(record)
     if refusal is not None:
         return [{"kind": "refuse", "reason": refusal}]
 
@@ -1074,13 +1079,97 @@ def recover_plan(record: dict[str, Any], branches: dict[str, list[str]]) -> list
             continue
         subjects = branches[candidate]
         if not subjects:
-            return [{"kind": "already_recovered", "branch": phase_branch,
+            return [{"kind": "already_recovered", "branch": phase_branch, "source": candidate,
                      "reason": f"{candidate} has no commits ahead of {phase_branch}"}]
         if len(subjects) == 1:
             return [{"kind": "merge", "source": candidate, "target": phase_branch, "commit_subject": subjects[0]}]
         return [{"kind": "refuse",
                  "reason": f"{candidate} is {len(subjects)} commits ahead of {phase_branch}, expected exactly one"}]
     return [{"kind": "refuse", "reason": f"no candidate branch found for {task}: tried {', '.join(candidates)}"}]
+
+
+def recover_gate(row: tuple[str, str | None] | None, *, reopen: bool, landed: bool) -> str | None:
+    """Why `cox runs recover` may not record this task as merged into its phase branch, or None when it may. Decided
+    before any merge, so a refusal leaves the phase branch as it was.
+
+    `row` is the task's store row as (state, merged_commit), None when the store has none. `landed` is true when the
+    task's commit, or a commit with the same patch, is on the default branch: the work landed, whatever the row says.
+    The epic, at land_at initiative, counts a task merged into its phase only while it is `approved` with a merge
+    commit. An earlier recover wrote `done` with no merge commit instead; `reopen` puts such a row back. A `done` row
+    with a merge commit, or whose work is on the default branch, landed and stays done."""
+    if row is None:
+        return "the store has no row for it"
+    state, merged_commit = row
+    if landed:
+        return f"its commit is already on the default branch, so it landed; it stays {state}"
+    if state == "approved":
+        return None
+    if state != "done":
+        return f"its state is {state!r}, not approved"
+    if not reopen:
+        return "it is done; pass --reopen to put a task an earlier recover closed back to approved"
+    if merged_commit:
+        return f"it is done with merge commit {merged_commit[:12]} recorded, so it landed; it stays done"
+    return None
+
+
+def landed_by_tree(merge_rc: int, merge_out: str, tree_rc: int, tree_out: str, default: str, source: str) -> tuple[bool | None, str]:
+    """Whether `source`'s work is on `default`, from `git merge-tree --write-tree <default> <source>` (exit code and
+    output, whose first line is the merged tree) and `git rev-parse <default>^{tree}`: landed exactly when the merge
+    leaves the tree as it is, which a merge, a cherry-pick and a squash all do. Fails closed: a conflict (exit 1) or a
+    git error is (None, why), never "not landed"."""
+    if merge_rc == 1:
+        return None, f"cannot tell whether {source} landed: merging it into {default} conflicts"
+    if merge_rc != 0 or tree_rc != 0 or not merge_out.strip() or not tree_out.strip():
+        return None, f"cannot tell whether {source} landed: git could not compare it with {default}"
+    return merge_out.splitlines()[0].strip() == tree_out.strip(), ""
+
+
+def reopen_conflict_next_step(
+    default: str, source: str, phase_branch: str, set_state_argv: Sequence[str], recover_argv: Sequence[str]
+) -> str:
+    """What to do when `--reopen` cannot tell whether a done task landed because its work conflicts with `default`:
+    check by hand (the task's pull request, or the commits on `default` that touch its files), and if it did not land,
+    put the row back to approved with the harness store command, then recover again without --reopen, which merges
+    into the phase branch and records it."""
+    files = f"$(git diff --name-only {default}...{source})"
+    return (
+        f"recover: the task's work conflicts with {default}, so recover cannot tell whether it landed. To check, look "
+        f"for the task's pull request, or for its change among the commits on {default} that touch its files:\n"
+        f"  git log --oneline {default} -- {files}\n"
+        f"If it did not land, put its row back to approved:\n  {shlex.join(set_state_argv)}\n"
+        f"then run recover again without --reopen; it merges the task into {phase_branch} and records it:\n  {shlex.join(recover_argv)}"
+    )
+
+
+def recover_contained_refusal(own_commits: int, source: str, default: str) -> str | None:
+    """Why a phase branch that holds `source` does not count as holding the task's work: `source` has no commit of its
+    own off `default`: an attempt that built nothing, or work that is on `default` already. None when it has one."""
+    return None if own_commits > 0 else f"{source} has no commit of its own off {default}: it built nothing, or its work is on {default} already"
+
+
+def recovered_text(text: str, commit: str) -> str | None:
+    """The work item with the recover's merge recorded: `state: approved`, `merged: true` and a quoted `merged_commit`;
+    None when it has no front matter or already reads so. Only those header lines change; every other byte stays."""
+    if not text.startswith("---\n"):
+        return None
+    close = text.find("\n---\n", 3)
+    if close == -1:
+        return None
+    lines, rest = text[4:close].split("\n"), text[close:]
+    keys = {line.split(":", 1)[0].strip(): i for i, line in enumerate(lines) if line[:1] not in (" ", "-", "") and ":" in line}
+    value = lambda key: lines[keys[key]].split(":", 1)[1].strip().strip("'\"") if key in keys else None  # noqa: E731
+    wanted = {"state": "approved", "merged": "true", "merged_commit": commit}
+    if all(value(k) == v for k, v in wanted.items()):
+        return None
+    for key, v in wanted.items():
+        line = f'{key}: "{v}"' if key == "merged_commit" else f"{key}: {v}"  # quoted: a hex sha can read as a YAML number
+        if key in keys:
+            lines[keys[key]] = line
+        else:
+            keys[key] = len(lines)
+            lines.append(line)
+    return "---\n" + "\n".join(lines) + rest
 
 
 _NO_CHECKS = "no checks reported"
@@ -1111,6 +1200,79 @@ def wait_decision(returncode: int, output: str, elapsed_s: float, timeout_s: flo
     if _NO_CHECKS in output.lower():
         return "retry" if elapsed_s < timeout_s else "timeout"
     return "failed"
+
+
+def check_state(returncode: int, output: str) -> str:
+    """Pure. One poll's `(returncode, output)` as a state a caller that does not wait reads: `green`, `pending` or
+    `failed`. No check reported yet is `pending`: the caller polls again on its next pass instead of sleeping here."""
+    decision = wait_decision(returncode, output, 0.0, float("inf"))
+    return "pending" if decision == "retry" else decision
+
+
+# A caller that polls once per pass keeps, between passes, what `wait_checks` kept in its loop: the commit it is
+# about, failed reads in a row, refused rerun calls, the run ids gh took a rerun for, the failed check runs a rerun
+# replaced, and the polls since that still showed only those. All bounded by `POLL_ERROR_LIMIT`, as in `wait_checks`.
+
+def poll_memo(memo: Mapping[str, Any] | None, head: str) -> dict[str, Any]:
+    """Pure. What earlier passes saw of `head`'s checks; a fresh memory when the commit is new."""
+    fresh: dict[str, Any] = {"head": head, "errors": 0, "rerun_tries": 0, "stale_polls": 0, "accepted": [], "rerun_of": []}
+    return {**fresh, **dict(memo)} if memo and memo.get("head") == head else fresh
+
+
+def unreadable_step(memo: Mapping[str, Any], detail: str) -> tuple[str, str, dict[str, Any]]:
+    """Pure. A read of the checks that failed: `pending` for the next pass, until `POLL_ERROR_LIMIT` passes in a row
+    have failed, which is `error`: the land still waits, and the caller tells a person (the memo keeps the reason)."""
+    errors = int(memo.get("errors") or 0) + 1
+    after = {**memo, "errors": errors, "unreadable": detail}
+    if errors >= POLL_ERROR_LIMIT:
+        return "error", f"checks unreadable {errors} passes in a row: {detail}", after
+    return "pending", f"checks unreadable, read again next pass ({errors}/{POLL_ERROR_LIMIT}): {detail}", after
+
+
+@dataclass(frozen=True)
+class FailedPoll:
+    """What to do with red checks. `state`: failed (final), pending (a rerun not yet registered), or rerun (call a
+    rerun for `todo`, then `rerun_step`)."""
+
+    state: str
+    detail: str
+    memo: dict
+    todo: tuple[str, ...] = ()
+
+
+def failed_poll_step(memo: Mapping[str, Any], failed_ids: Collection[str], rerun_ids: Sequence[str], output: str) -> FailedPoll:
+    """Pure. Red checks on a commit: rerun its failed runs once, then judge. A failure made only of the check runs a
+    rerun replaced is the rerun not yet registered (`pending`) for at most `POLL_ERROR_LIMIT` polls; any other failure
+    after the rerun is final. A startup failure, a failure with no run to rerun, and one whose rerun gh has refused
+    `POLL_ERROR_LIMIT` times are final at once."""
+    memo = dict(memo)
+    if output.startswith(WORKFLOW_ISSUE):
+        return FailedPoll("failed", output, memo)
+    if memo.get("rerun_of"):
+        stale_polls = int(memo.get("stale_polls") or 0)
+        if set(failed_ids) <= set(memo["rerun_of"]) and stale_polls < POLL_ERROR_LIMIT:
+            return FailedPoll("pending", f"rerun not yet registered: {output}", {**memo, "stale_polls": stale_polls + 1})
+        return FailedPoll("failed", output, memo)
+    if not rerun_ids:
+        return FailedPoll("failed", output, memo)
+    tries = int(memo.get("rerun_tries") or 0)
+    if tries >= POLL_ERROR_LIMIT:
+        return FailedPoll("failed", f"{output}; the rerun was refused {tries} times", memo)
+    accepted = set(memo.get("accepted") or ())
+    return FailedPoll("rerun", output, memo, tuple(i for i in rerun_ids if i not in accepted))
+
+
+def rerun_step(memo: Mapping[str, Any], todo: Sequence[str], refused: Collection[str], failed_ids: Collection[str],
+               output: str) -> tuple[str, str, dict[str, Any]]:
+    """Pure. After the rerun calls for `todo`: the runs gh took are kept, so none is rerun twice. A refusal (gh refuses
+    while a sibling job runs) is `pending` and counted; with none, the rerun is made and its failures are remembered."""
+    accepted = [*(memo.get("accepted") or ()), *(i for i in todo if i not in refused)]
+    if refused:
+        tries = int(memo.get("rerun_tries") or 0) + 1
+        return ("pending", f"{output}; rerun refused for runs {', '.join(refused)}, tried again next pass ({tries}/{POLL_ERROR_LIMIT})",
+                {**memo, "accepted": accepted, "rerun_tries": tries})
+    return ("rerun", f"{output}; failed runs rerun once: {', '.join(accepted)}",
+            {**memo, "accepted": accepted, "rerun_of": sorted(str(i) for i in failed_ids)})
 
 
 def merge_expects_check(output: str) -> bool:
@@ -1483,18 +1645,6 @@ def set_state_stop(result: Any) -> str | None:
     if kind == "Failed":
         return f"land: store set-state failed: exit {result.code}: {result.detail}"
     return "land: store not available; cannot compare-and-set the task to done"
-
-
-def close_to_done(
-    text: str, *, mode: str, merged: bool, set_state: Callable[[str], Any]
-) -> tuple[str | None, str | None]:
-    """`approve_to_done` under `mode`. `files` is `approve_to_done` unchanged and never calls `set_state`.
-    `store` calls `set_state(expected)` for `done --expect approved` only when the item would move; a stop comes back as `(None, reason)`, so the file is never rewritten."""
-    new_text, message = approve_to_done(text, merged=merged)
-    if mode != "store" or new_text is None:
-        return new_text, message
-    stop = set_state_stop(set_state("approved"))
-    return (None, stop) if stop is not None else (new_text, message)
 
 
 _Hunk = tuple[list[str], list[str], list[str]]

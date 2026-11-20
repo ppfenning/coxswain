@@ -9,7 +9,7 @@ def test_the_traces_line_names_the_endpoint_when_the_profile_has_a_block(tmp_pat
     )
     seen = []
     monkeypatch.setattr(run_store, "parquet_readable",
-                        lambda root, harness: seen.append(root) or run_store.ParquetCheck(True, "ok"))
+                        lambda root: seen.append(root) or run_store.ParquetCheck(True, "ok"))
     profile = {"workspace_dir": str(tmp_path / "ws"), "provider_profile": str(provider)}
     assert cli._parquet_traces_line(profile) == "parquet traces: readable via http://garage.example:3900"
     assert seen[0].url == "s3://coxswain/traces"
@@ -19,7 +19,7 @@ def test_the_traces_line_names_the_endpoint_when_the_profile_has_a_block(tmp_pat
 def test_the_traces_line_is_unchanged_without_a_block(tmp_path, monkeypatch):
     provider = tmp_path / "provider.yaml"
     provider.write_text("traces_url: s3://coxswain/traces\n")
-    monkeypatch.setattr(run_store, "parquet_readable", lambda root, harness: run_store.ParquetCheck(True, "ok"))
+    monkeypatch.setattr(run_store, "parquet_readable", lambda root: run_store.ParquetCheck(True, "ok"))
     profile = {"workspace_dir": str(tmp_path / "ws"), "provider_profile": str(provider)}
     assert cli._parquet_traces_line(profile) == "parquet traces: readable"
 

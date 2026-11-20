@@ -1,7 +1,8 @@
 """A second chair tick over an unchanged workspace re-reads no work file, decompose run or store table.
 
-The counters wrap the leaf readers (file bodies, run-record parses, the store's full-read processes), never the cached
-wrappers, so they see exactly what the caches are meant to save. Nothing here asserts on time.
+The counters wrap the leaf readers (file bodies, run-record parses, the run exit rows), never the cached wrappers, so
+they see exactly what the caches are meant to save. The store tables are read for real, in process, from a migrated
+sqlite store; their caches report their own hits and misses. Nothing here asserts on time.
 
 Known residual: the idle-stall reader chain showed no unchanged-source read through these counters on the second tick.
 Sources the counters do not wrap (the hosts table, the courier bus, run pid files, `gh` checks) are not covered here.
@@ -10,10 +11,8 @@ Sources the counters do not wrap (the hosts table, the courier bus, run pid file
 from __future__ import annotations
 
 import sqlite3
-import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -43,19 +42,22 @@ def _write(path: Path, text: str) -> None:
 def ws(tmp_path: Path) -> Path:
     runs = tmp_path / "runs"
     runs.mkdir()
-    conn = sqlite3.connect(runs / "cox.db")
-    conn.execute("CREATE TABLE runs (run_id TEXT, launched_at TEXT, ended_at TEXT, status TEXT)")
+    from harness.store_migrate import open_store
+
+    conn = open_store(f"sqlite:///{runs / 'cox.db'}", "2026-11-01T00:00:00Z")
     for intake, run_ids in INTAKES.items():
         _write(tmp_path / f"{intake}.md", f"---\nid: {intake}\n---\nbody\n")
         _write(tmp_path / "work" / intake / "initiative.md", f"---\nintake: {intake}.md\n---\n")
         (tmp_path / "work" / intake / "p1").mkdir()
         for n, run_id in enumerate(run_ids):
-            conn.execute("INSERT INTO runs VALUES (?, ?, ?, ?)", (run_id, f"2026-11-0{n + 1}T00:00:00Z", f"2026-11-0{n + 1}T01:00:00Z", "ok"))
+            conn.execute(
+                "INSERT INTO runs (run_id, launched_at, ended_at, status) VALUES (?, ?, ?, ?)",
+                (run_id, f"2026-11-0{n + 1}T00:00:00Z", f"2026-11-0{n + 1}T01:00:00Z", "ok"),
+            )
             _write(runs / f"{run_id}.log", f"recorded {run_id}: 0 auto-applied, 0 gated decision(s), 0 proposal(s)\n")
     for n in range(3):  # tasks in a third initiative, so the board is not only empty initiatives
         _write(tmp_path / "work" / "busy" / "p1" / f"t{n}.md", f"---\nid: t{n}\nstate: todo\nneeds: []\n---\n\nBody\n")
     _write(tmp_path / "work" / "busy" / "initiative.md", "---\nid: busy\n---\n")
-    conn.commit()
     conn.close()
     return tmp_path
 
@@ -78,20 +80,8 @@ def made(monkeypatch) -> list[chair_read_cache.StampCache]:
 @pytest.fixture
 def deps(monkeypatch, ws: Path, counts: Counts, made):
     runs = ws / "runs"
-    monkeypatch.setattr(run_store, "_store_url", lambda runs_dir: f"sqlite:///{runs / 'cox.db'}")
-    monkeypatch.setattr(run_store, "_harness_python", lambda: Path(sys.executable))
+    monkeypatch.setattr(run_store, "store_url_for", lambda runs_dir: f"sqlite:///{runs / 'cox.db'}")
     monkeypatch.setattr(cli, "_sync_filed_items", lambda *_a, **_k: None)
-
-    def run_argv(argv: list[str]) -> SimpleNamespace:
-        probe = "sha256" in argv[2]
-        counts["work_items_probe" if probe else "work_items_read"] += 1
-        return SimpleNamespace(returncode=0, stdout='[0, null, "digest"]' if probe else "")
-
-    def queue_run(_runs_dir: Path, build) -> SimpleNamespace:
-        argv = build(sys.executable, "sqlite:///unused")
-        probe = "sha256" in argv[2] if argv[1] == "-c" else False
-        counts["queue_probe" if probe else "queue_read"] += 1
-        return SimpleNamespace(returncode=0, stdout='[0, null, "digest"]' if probe else "")
 
     real_read_text = Path.read_text
 
@@ -101,8 +91,6 @@ def deps(monkeypatch, ws: Path, counts: Counts, made):
         return real_read_text(self, *args, **kwargs)
 
     real_parse, real_exits = chair_decompose_runs._parse_log, chair_decompose_runs.exit_rows
-    monkeypatch.setattr(run_store, "_run_argv", run_argv)
-    monkeypatch.setattr(run_store, "_queue_run", queue_run)
     monkeypatch.setattr(Path, "read_text", read_text)
     monkeypatch.setattr(chair_decompose_runs, "_parse_log", lambda *a: counts.update(run_parse=counts["run_parse"] + 1) or real_parse(*a))
     monkeypatch.setattr(chair_decompose_runs, "exit_rows", lambda *a: counts.update(exit_rows=counts["exit_rows"] + 1) or real_exits(*a))
@@ -114,17 +102,34 @@ def _tick(deps) -> chair_facts.Facts:
     return chair_facts.gather_facts(deps.facts_deps, NOW)
 
 
-FULL_READS = ("work_file_read", "run_parse", "exit_rows", "work_items_read", "queue_read")
+FULL_READS = ("work_file_read", "run_parse", "exit_rows")
 
 
-def test_the_second_gather_reads_no_body_no_run_record_and_no_full_store_table(deps, counts) -> None:
+def _store_caches(made) -> list[chair_read_cache.StampCache]:
+    return [c for c in made if c.max_entries == cli.CHAIR_STORE_CACHE_MAX]
+
+
+def test_the_second_gather_reads_no_body_no_run_record_and_no_full_store_table(deps, counts, made) -> None:
     first = _tick(deps)
     after_first = {key: counts[key] for key in FULL_READS}
+    store_after_first = [c.reads for c in _store_caches(made)]
     second = _tick(deps)
+    store_after_second = [c.reads for c in _store_caches(made)]
+    # Every store read of the first tick was a miss (a full read); the second was answered by the stamp alone.
+    assert all(misses > 0 for _hits, misses in store_after_first), store_after_first
+    assert [misses for _hits, misses in store_after_second] == [misses for _hits, misses in store_after_first]
+    assert all(after[0] > before[0] for before, after in zip(store_after_first, store_after_second, strict=True))
     assert all(after_first[key] > 0 for key in FULL_READS), after_first
     assert {key: counts[key] - after_first[key] for key in FULL_READS} == dict.fromkeys(FULL_READS, 0)
-    # `tuning` reads the real clock for the week's elapsed fraction, so two gathers differ there and nowhere else
-    assert {k: v for k, v in first.items() if k != "tuning"} == {k: v for k, v in second.items() if k != "tuning"}
+    # Two fields read the real clock, so two gathers can differ there and nowhere else: `tuning` for the week's
+    # elapsed fraction, and `limits.window_start_day`, the start of a rolling weekly window shown to the minute, which
+    # moves when the two gathers straddle a minute boundary.
+    assert _clock_free(first) == _clock_free(second)
+
+
+def _clock_free(facts: chair_facts.Facts) -> dict:
+    limits = {k: v for k, v in facts["limits"].items() if k != "window_start_day"}
+    return {**{k: v for k, v in facts.items() if k != "tuning"}, "limits": limits}
 
 
 def test_a_changed_work_file_is_read_again_and_only_that_one(deps, counts, ws: Path) -> None:
@@ -158,9 +163,10 @@ def test_cache_entries_follow_the_files_and_runs_that_remain(deps, made, ws: Pat
 
 def test_the_bounds_are_set_from_the_work_cached(made, deps) -> None:
     assert sorted(c.max_entries for c in made if c.max_entries != cli.CHAIR_DECOMPOSE_CACHE_MAX) == [
-        cli.CHAIR_STORE_CACHE_MAX, cli.CHAIR_STORE_CACHE_MAX, cli.CHAIR_FILES_CACHE_MAX,
+        cli.CHAIR_STORE_CACHE_MAX, cli.CHAIR_STORE_CACHE_MAX, cli.CHAIR_FILES_CACHE_MAX, cli.CHAIR_RECORDS_CACHE_MAX,
+        cli.CHAIR_LANDED_CACHE_MAX,
     ]
-    assert cli.CHAIR_FILES_CACHE_MAX >= 2000 and cli.CHAIR_DECOMPOSE_CACHE_MAX >= 200
+    assert cli.CHAIR_FILES_CACHE_MAX >= 2000 and cli.CHAIR_DECOMPOSE_CACHE_MAX >= 200 and cli.CHAIR_RECORDS_CACHE_MAX >= 2000
 
 
 def test_a_reader_without_a_cache_parameter_is_called_exactly_as_before() -> None:

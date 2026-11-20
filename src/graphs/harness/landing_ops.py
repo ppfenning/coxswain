@@ -57,7 +57,7 @@ class PhaseMerge:
 
 def start_record(conn: Connection, repo: Path | str, *, initiative: str, branch: str, parent: str, parent_ref: str,
                  now: str, land_at: str = "initiative", epic: str | None = None, stack_base: str | None = None,
-                 adopted: bool = False) -> tuple[dict[str, Any] | None, str]:
+                 adopted: bool = False) -> tuple[lr.LandingRecord | None, str]:
     """The initiative's landing record, made on first use: cut the branch from the parent and record where.
 
     A record that exists is returned as it is: the parent no longer floats, and the branch is never cut twice.
@@ -114,14 +114,15 @@ def take_parent_forward(conn: Connection, repo: Path | str, *, initiative: str, 
 
     Under the branch lease, after `fetch`, with the guard: a merge that would drop a recorded sha is refused. A
     conflict leaves the branch where it was and names the paths; resolving it is build work (the `integrate` phase),
-    never this function's. `up_to_date` when the branch already holds the parent."""
+    never this function's. `up_to_date` when the branch already holds the parent; `busy` when another worker holds the
+    branch lease."""
     record = ls.get_record(conn, initiative)
     if record is None:
         return lg.Merge("error", detail=f"{initiative} has no landing record")
     branch = str(record["branch"])
     held = store_lease.acquire(conn, branch_lease(initiative), worker, now, lease_seconds)
     if not held.ok:
-        return lg.Merge("error", detail=f"{held.holder or 'another worker'} is moving the branch of {initiative}")
+        return lg.Merge("busy", detail=f"{held.holder or 'another worker'} is moving the branch of {initiative}")
     try:
         if fetch is not None and (refused := fetch(branch)):
             return lg.Merge("error", detail=refused)
@@ -143,6 +144,16 @@ def off_branch(repo: Path | str, source: str, tasks: Sequence[Mapping[str, Any]]
     ]
 
 
+def after_push(merge_status: str, push_warning: str | None) -> str:
+    """Pure. What a phase merge git has made does once the push of the initiative branch is answered: `record` it (the
+    push was taken), or, refused, `unwind` the merge this call made (the local branch goes back to origin's tip, so the
+    next pass merges again on what origin holds) or `fail` it as it is (the branch already held the phase: nothing to
+    undo). Either way nothing is recorded: a phase recorded merged is always on origin."""
+    if push_warning is None:
+        return "record"
+    return "unwind" if merge_status == "merged" else "fail"
+
+
 def merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: str, tasks: Sequence[Mapping[str, Any]],
                 worker: str, now: str, checks: lg.Checks | None = None, source: str | None = None,
                 claim_seconds: int = CLAIM_SECONDS, fetch: Callable[[str], str | None] | None = None,
@@ -157,7 +168,9 @@ def merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: s
 
     The initiative branch has one mover at a time, on any host: the merge runs under `branch_lease`. `fetch` brings
     the branch up to origin's copy first (it returns why the merge must not go ahead here, or None), and `publish`
-    pushes the merged branch (it returns a warning, or None). Both are given the branch name."""
+    pushes the merged branch (it returns a warning, or None). Both are given the branch name. With `publish`, the
+    phase is recorded merged only once the push is taken (`after_push`): a refused push unwinds the merge and fails
+    the item, which the sweep queues again."""
     held = store_lease.acquire(conn, branch_lease(initiative), worker, now, claim_seconds)
     if not held.ok:
         return PhaseMerge("busy", initiative, phase, detail=f"{held.holder or 'another worker'} is moving the branch of {initiative}")
@@ -174,6 +187,10 @@ def _merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: 
     record = ls.get_record(conn, initiative)
     if record is None:
         return PhaseMerge("error", initiative, phase, detail=f"{initiative} has no landing record")
+    if record.get("held"):
+        # The lander holds an initiative whose record and origin's branch disagree: nothing merges into it until they agree.
+        why = (record.get("held") or {}).get("reason") or "its record and its branch disagree"
+        return PhaseMerge("not_ready", initiative, phase, detail=f"{initiative} is held: {why}")
     state = lr.phase_state(record, phase, tasks)
     if state == "merged":
         entry = (record.get("phases") or {}).get(phase) or {}
@@ -195,8 +212,19 @@ def _merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: 
         holder = (ls.get_item(conn, ident) or {}).get("claimed_by") or "another worker"
         return PhaseMerge("busy", initiative, phase, detail=f"{holder} is merging phase {phase}")
     branch = str(record["branch"])
+    before = lg.rev(repo, f"refs/heads/{branch}")
     merged = lg.merge_into(repo, branch=branch, source=source or phase_branch(initiative, phase),
                            message=f"{initiative}: merge phase {phase}", recorded=lr.recorded_shas(record), checks=checks)
+    if merged.ok and publish is not None:
+        # Pushed before it is recorded: a phase recorded merged is on origin, where every host reads it.
+        warning = publish(branch)
+        step = after_push(merged.status, warning)
+        if step != "record":
+            if step == "unwind" and before:
+                lg.git(repo, "update-ref", "-m", "lander: origin refused the merge", f"refs/heads/{branch}", before, merged.tip)
+            detail = f"{warning}; phase {phase} is not recorded merged until origin holds its merge"
+            ls.fail(conn, ident, worker, now=now, error=detail)
+            return PhaseMerge("error", initiative, phase, tip=merged.merged, detail=detail)
     # Read again: the record may have moved (a sibling phase merged) while git worked. Only this phase's entry is ours.
     record = ls.get_record(conn, initiative) or record
     if merged.ok:
@@ -210,9 +238,8 @@ def _merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: 
         ls.put_record(conn, updated)
         ls.finish(conn, ident, worker, now=now)
         done = tuple(str(t["id"]) for t in lr.phase_tasks(tasks, phase) if t.get("state") == "approved")
-        warning = (publish(branch) if publish is not None else None) or ""
         return PhaseMerge("merged", initiative, phase, tip=merged.merged, merge_sha=tip, merged_tasks=done,
-                          assembled=assembled, detail=warning)
+                          assembled=assembled)
     if merged.status == "error":
         ls.fail(conn, ident, worker, now=now, error=merged.detail)
         return PhaseMerge("error", initiative, phase, detail=merged.detail)
@@ -222,3 +249,48 @@ def _merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: 
     ls.put_record(conn, updated)
     ls.fail(conn, ident, worker, now=now, error=merged.detail)
     return PhaseMerge("conflicted", initiative, phase, tip=merged.merged, paths=merged.paths, detail=merged.detail, cause=cause)
+
+
+# -- rectify tasks: what the lander and the epic file when a merge conflicts or fails its checks -----------------
+
+
+RECTIFY_OPEN_STATES = frozenset({"todo", "ready", "in_progress", "blocked", "quarantined"})
+
+
+def rectify_task(phase: str, tasks: Sequence[Mapping[str, Any]]) -> tuple[str, bool]:
+    """Pure. (the rectify task's id for `phase`, whether it is one already open).
+
+    A phase has at most one open rectify task: a merge that fails again before it is built names the same task.
+    A new one is `<phase>-rectify`, then `-2`, `-3`: the first id no task of the initiative has."""
+    stem = f"{phase}-rectify"
+    mine = [t for t in tasks if str(t.get("phase")) == phase and (str(t["id"]) == stem or str(t["id"]).startswith(f"{stem}-"))]
+    still_open = [str(t["id"]) for t in mine if str(t.get("state")) in RECTIFY_OPEN_STATES]
+    if still_open:
+        return sorted(still_open)[-1], True
+    taken = {str(t["id"]) for t in tasks}
+    number = 1
+    while (ident := stem if number == 1 else f"{stem}-{number}") in taken:
+        number += 1
+    return ident, False
+
+
+def rectify_body(branch: str, phase: str, paths: Sequence[str], check_output: str) -> str:
+    """The body of a rectify task. It names what to fix and says, first, that nothing already built is to be redone."""
+    keep = (
+        f"The work of phase `{phase}` is already built, reviewed and on this phase's branch, and the tip of `{branch}` "
+        "has been merged into it. Start from this tree. Change only what the problem below needs: do not rebuild, "
+        "rewrite or remove work that is already here."
+    )
+    if paths:
+        listed = "\n".join(f"- `{p}`" for p in paths)
+        return (
+            f"{keep}\n\n**Problem**\n\nMerging `{branch}` into this phase conflicted. The files below hold conflict markers "
+            f"(`<<<<<<<`, `=======`, `>>>>>>>`), with both sides present:\n\n{listed}\n\n**Wanted**\n\nResolve each conflict so "
+            "both sides' intent holds, remove every marker, and keep the checks passing.\n\n**Checks**\n\nNo conflict marker "
+            "is left in the tree, and the phase's checks pass."
+        )
+    return (
+        f"{keep}\n\n**Problem**\n\nThis phase merges cleanly with `{branch}`, but the checks fail on the merged tree:\n\n"
+        f"```\n{check_output.strip()[:4000]}\n```\n\n**Wanted**\n\nFix what the merge broke, so the checks pass on this tree.\n\n"
+        "**Checks**\n\nThe checks above pass."
+    )

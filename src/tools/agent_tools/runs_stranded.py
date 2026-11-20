@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any
 
 from agent_tools import land_manual
 from agent_tools.base_branch import DEFAULT_BASE
-from agent_tools.land import _approved as land_approved
+from agent_tools.land import approved_reason as land_approved
 
 
 def _scoped_item(record: dict, candidates: list[dict]) -> dict | None:
@@ -76,12 +77,12 @@ def _row(record: dict, item: dict | None, base_of: Callable[[str], str] | None =
 _LIVE_STATES = frozenset({"ready", "approved"})
 
 
-def _rebuilt(record: dict, item: dict | None) -> bool:
+def was_rebuilt(record: Mapping[str, Any], item: Mapping[str, Any] | None) -> bool:
     """True when a `route edit --rebuild` listed this record's run in the item's `rebuilt_from`, whatever the item's state now."""
     return bool(item) and record.get("run") in (item.get("rebuilt_from") or [])
 
 
-def _awaiting_rebuild(item: dict | None) -> bool:
+def awaiting_rebuild(item: Mapping[str, Any] | None) -> bool:
     """True for a ready item a land conflict sent back: the relaunch rebuilds it, nothing is stranded."""
     return bool(item) and item.get("state") == "ready" and bool(item.get("land_conflict"))
 
@@ -101,7 +102,7 @@ def _live_pairs(records: list[dict], items: list[dict]) -> list[tuple[dict, dict
         if not candidates:
             continue
         item = _scoped_item(record, candidates)
-        if item is not None and (item.get("state") not in _LIVE_STATES or _rebuilt(record, item) or _awaiting_rebuild(item)):
+        if item is not None and (item.get("state") not in _LIVE_STATES or was_rebuilt(record, item) or awaiting_rebuild(item)):
             continue
         pairs.append((record, item))
     return pairs
@@ -123,11 +124,36 @@ def _carried(record: dict, item: dict | None, branch_exists: Callable[[str, str]
             and branch_exists(repo, branch))
 
 
-def stranded(records: list[dict], items: list[dict],
+def missing_from_phase_branch(item: Mapping[str, Any], on_phase_branch: Callable[[Mapping[str, Any]], bool]) -> bool:
+    """True for an `approved` item not marked merged, with no `live_run`, whose commit `on_phase_branch` says is absent.
+
+    A rebuilt item (`rebuilt_from` set) and a ready item awaiting a rebuild are not stranded."""
+    return (
+        item.get("state") == "approved"
+        and not item.get("merged")
+        and not item.get("live_run")
+        and not item.get("rebuilt_from")
+        and not awaiting_rebuild(item)
+        and not on_phase_branch(item)
+    )
+
+
+def reground_row(item: Mapping[str, Any]) -> dict[str, Any]:
+    """The row for an approved item whose commit never reached its phase branch: no record, so no `cox runs land` line."""
+    branch = f"epic/{item.get('initiative')}/{item.get('phase')}"
+    return {
+        "run": None, "task": item.get("id"), "phase": item.get("phase"), "branch": branch,
+        "remedy": f"re-ground ticket {item.get('id')} and relaunch it: no approved commit is on {branch}",
+        "expected": False,
+    }
+
+
+def stranded(records: Sequence[Mapping[str, Any]], items: list[dict[str, Any]],
              repo_exists: Callable[[str], bool] | None = None,
              branch_exists: Callable[[str, str], bool] | None = None,
              base_of: Callable[[str], str] | None = None,
-             manual_of: Callable[[str], bool] | None = None) -> list[dict]:
+             manual_of: Callable[[str], bool] | None = None,
+             on_phase_branch: Callable[[Mapping[str, Any]], bool] | None = None) -> list[dict[str, Any]]:
     """Rows for approved, unlanded records whose matching item is `ready`
     or `approved`. `items` are expected to carry a resolved `repo` (the edge
     reads it from the initiative's own frontmatter, since a work item's
@@ -142,10 +168,18 @@ def stranded(records: list[dict], items: list[dict],
     branch under the one-merge-per-phase relaunch rule, while `None`, any
     task-scoped branch, and a record with no resolvable repo behave exactly
     as before. `base_of` is injected too: it names a repo's integration branch for the remedy's `--base`.
-    `manual_of` is injected too: a `land: manual` repo's remedy is `land_manual.REMEDY`, not a `cox runs land` line."""
-    return [_row(record, item, base_of, manual_of) for record, item in _live_pairs(records, items)
+    `manual_of` is injected too: a `land: manual` repo's remedy is `land_manual.REMEDY`, not a `cox runs land` line.
+    `on_phase_branch` is injected too: an approved item it reports absent from its phase branch gets a re-ground row,
+    unless an approved, unlanded record already names its task; `None` adds none."""
+    pairs = _live_pairs(records, items)
+    rows = [_row(record, item, base_of, manual_of) for record, item in pairs
             if (repo_exists is None or not _missing(record, repo_exists))
             and (branch_exists is None or not _carried(record, item, branch_exists))]
+    if on_phase_branch is None:
+        return rows
+    reported = {record.get("task") for record, _ in pairs}
+    return rows + [reground_row(item) for item in items
+                   if item.get("id") not in reported and missing_from_phase_branch(item, on_phase_branch)]
 
 
 _APPROVED_PREFIX = "approved but not landed:"
@@ -160,7 +194,7 @@ def _task_and_remedy(line: str) -> tuple[str, str | None] | None:
     return (task, (remedy or None) if dash else None) if task else None
 
 
-def stranded_from_log(run: str, approved_lines: list[str], items: list[dict], repo: str) -> list[dict]:
+def stranded_from_log(run: str, approved_lines: list[str], items: list[dict[str, Any]], repo: str) -> list[dict[str, Any]]:
     """Rows for a run log's approved-but-not-landed lines. A line yields a row only when its task id names exactly one item in `repo` and that item is `ready` or `approved`; the remedy is the line's own text, `branch` is `None` and `expected` is `False`: the caller knows the repo's landing mode."""
     in_repo = [item for item in items if item.get("repo") == repo]
     parsed = [p for p in map(_task_and_remedy, approved_lines) if p is not None]
@@ -172,7 +206,7 @@ def stranded_from_log(run: str, approved_lines: list[str], items: list[dict], re
     ]
 
 
-def missing_repos(records: list[dict], items: list[dict],
+def missing_repos(records: list[dict[str, Any]], items: list[dict[str, Any]],
                   repo_exists: Callable[[str], bool]) -> list[str]:
     """Sorted, de-duplicated repo paths of records `stranded` skips because
     the repo is missing. A record with a non-live item is not counted."""

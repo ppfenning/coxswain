@@ -33,7 +33,7 @@ def _recording_run():
 def test_rev_parse_argv_carries_expanded_path(home, monkeypatch, recorded):
     seen: list[list[str]] = []
     monkeypatch.setattr(subprocess, "run", lambda argv, **kw: seen.append(argv) or _Done())
-    assert chair_read_land_conflicts._rev_parse(recorded, "main") == "abc"
+    assert chair_read_land_conflicts.rev_parse_commit(recorded, "main") == "abc"
     assert seen == [["git", "-C", f"{home}/r", "rev-parse", "--verify", "--quiet", "main"]]
 
 

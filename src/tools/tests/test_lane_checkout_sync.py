@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
@@ -149,6 +150,17 @@ def test_two_hosts_one_dirty_one_clean_yield_one_action() -> None:
     assert run.merges == []
 
 
+def test_the_install_verdict_is_one_action_naming_the_checkout_and_cox_upgrade() -> None:
+    assert lcs.is_install("install=1\n") is True
+    assert lcs.is_install("clean=1\nbranch=main\n") is False
+    action = lcs.needs_chair_action("alpha", ALPHA_PATH, lcs.INSTALL)
+    assert action == {
+        "kind": "needs_chair", "host": "alpha", "cause": "lane_checkout_install",
+        "reason": f"lane host alpha, checkout {ALPHA_PATH}: is this host's install checkout, which moves only through "
+                  "cox upgrade; give the lane its own checkout",
+    }
+
+
 def test_every_host_and_repo_is_visited() -> None:
     run = FakeRunner({"me@alpha": (0, facts_out(at_tip=True)), "me@beta": (0, facts_out(at_tip=True))})
     repos = ["/chair/ws/one", "/chair/ws/two"]
@@ -199,3 +211,40 @@ def test_read_and_merge_scripts_run_against_a_real_clone(clone_behind_origin: Pa
     assert lcs.parse_facts(read_dirty.stdout) == (False, "main", "main", True, True)
     missing = subprocess.run(["sh", "-c", lcs._READ_SCRIPT, "lane-sync", str(lane / "nope")], capture_output=True)
     assert missing.returncode != 0
+
+
+def _head(repo: Path) -> str:
+    return git(repo, "rev-parse", "HEAD")
+
+
+@pytest.mark.parametrize("spelling", ["symlink", "trailing slash"])
+def test_a_lane_sync_never_moves_the_install_checkout_however_its_path_is_spelled(
+    clone_behind_origin: Path, tmp_path: Path, spelling: str
+) -> None:
+    """Done when: a lane sync never moves the install. The read script runs for real against a real clone that is
+    the host's install checkout (COXSWAIN_HOME points at it), behind origin, reached through a symlink or with a
+    trailing slash; it answers install=1 before any fetch, so the checkout's HEAD stays where it was."""
+    home = tmp_path / "coxswain-home"
+    (home / "installs").mkdir(parents=True)
+    install = home / "installs" / "coxswain"
+    clone_behind_origin.rename(install)
+    if spelling == "symlink":
+        (tmp_path / "lane-link").symlink_to(install)
+        lane_path = str(tmp_path / "lane-link")
+    else:
+        lane_path = f"{install}/"
+    before = _head(install)
+    env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path), "COXSWAIN_HOME": str(home)}
+    read = subprocess.run(["sh", "-c", lcs._READ_SCRIPT, "lane-sync", lane_path], capture_output=True, text=True, env=env)
+    assert (read.returncode, read.stdout) == (0, "install=1\n")
+    assert _head(install) == before
+    assert git(install, "rev-parse", "origin/main") == before  # not even fetched
+
+
+def test_a_lane_checkout_beside_the_install_is_read_as_before(clone_behind_origin: Path, tmp_path: Path) -> None:
+    home = tmp_path / "coxswain-home"
+    (home / "installs" / "coxswain").mkdir(parents=True)
+    env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path), "COXSWAIN_HOME": str(home)}
+    read = subprocess.run(["sh", "-c", lcs._READ_SCRIPT, "lane-sync", str(clone_behind_origin)],
+                          capture_output=True, text=True, env=env)
+    assert lcs.parse_facts(read.stdout) == (True, "main", "main", True, False)

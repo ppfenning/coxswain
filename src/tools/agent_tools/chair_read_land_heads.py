@@ -2,13 +2,13 @@
 
 from collections.abc import Callable, Mapping, Sequence
 
-from agent_tools.chair_read_land_conflicts import _rev_parse
+from agent_tools.chair_read_land_conflicts import rev_parse_commit
 
 
 def read_land_heads(
     refusals: Sequence[Mapping[str, object]],
     repos: Mapping[str, str],
-    rev_parse: Callable[[str, str], str | None] = _rev_parse,
+    rev_parse: Callable[[str, str], str | None] = rev_parse_commit,
 ) -> dict[str, str]:
     """Edge. `<initiative>/<phase>` to the tip of `epic/<initiative>/<phase>`, for refused phases only; an unknown repo or an unresolved branch is omitted."""
     phases = dict.fromkeys((str(r["initiative"]), str(r["phase"])) for r in refusals)

@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 _WINDOWS = ("five_hour", "weekly")
 _PARTS = ("chair_session", "chair_agents", "cox_seats")
+_Cell = float | str | None
+_Window = Mapping[str, _Cell]
 
 
-def _usd(value: float | None) -> float:
+def _usd(value: _Cell) -> float:
     return 0.0 if value is None else float(value)
 
 
@@ -14,7 +18,7 @@ def _share(usd: float, total: float) -> float:
     return round(usd / total, 4) if total else 0.0
 
 
-def _split_window(window: dict | None) -> dict:
+def _split_window(window: _Window | None) -> dict[str, float | str]:
     raw = window or {}
     usd = {p: _usd(raw.get(f"{p}_usd")) for p in _PARTS}
     rounded = {p: round(v, 4) for p, v in usd.items()}
@@ -30,6 +34,6 @@ def _split_window(window: dict | None) -> dict:
     }
 
 
-def spend_split(windows: dict) -> dict:
+def spend_split(windows: Mapping[str, _Window]) -> dict[str, dict[str, float | str]]:
     """Split each window's spend three ways; a missing window is all zero."""
     return {name: _split_window(windows.get(name)) for name in _WINDOWS}

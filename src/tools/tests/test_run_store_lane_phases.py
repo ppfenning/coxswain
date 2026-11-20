@@ -61,7 +61,7 @@ def test_lane_phases_defaults_to_one_and_lost_lanes_keep_it(tmp_path):
 def test_live_lanes_opens_the_store_once_for_the_lease_read_and_once_for_the_join(tmp_path, monkeypatch):
     store(tmp_path, nodes(("running", "p1")))
     opens = []
-    real_open = run_store._open
-    monkeypatch.setattr(run_store, "_open", lambda runs_dir: opens.append(runs_dir) or real_open(runs_dir))
+    real_open = run_store.open_store
+    monkeypatch.setattr(run_store, "open_store", lambda runs_dir: opens.append(runs_dir) or real_open(runs_dir))
     run_store.live_lanes(tmp_path, NOW)
     assert len(opens) == 2

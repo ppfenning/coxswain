@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 
 from core import landing_record as lr
+from core.jsontypes import ShapeError
 
 NOW = "2026-11-12T10:00:00Z"
 LATER = "2026-11-12T10:05:00Z"
@@ -35,9 +36,25 @@ def test_waves_are_depths_and_merge_order_is_parents_first_in_natural_order() ->
     assert lr.dependents(parents, "p1") == {"p3", "p10"}
 
 
-def test_the_integrate_phase_needs_every_other_phase() -> None:
+def test_the_integrate_phase_needs_no_other_phase_so_a_conflict_filed_at_run_start_merges_first() -> None:
     tasks = [task("a", "p1"), task("b", "p2"), task("fix", lr.INTEGRATE_PHASE)]
-    assert lr.phase_parents(tasks)[lr.INTEGRATE_PHASE] == {"p1", "p2"}
+    assert lr.phase_parents(tasks)[lr.INTEGRATE_PHASE] == set()
+    assert lr.placeable_phases(record(), tasks) == ["integrate", "p1", "p2"]
+
+
+def test_phases_on_a_cycle_wait_instead_of_recursing_forever() -> None:
+    # p1 needs p2 and p2 needs p1, so neither can merge first. Before this, phase_state recursed until RecursionError,
+    # which ended the chair's whole fact gathering (seen restoring a store slice for H6).
+    tasks = [task("a", "p1", needs=("b",)), task("b", "p2", needs=("a",)), task("c", "p3")]
+    assert lr.phase_states(record(), tasks) == {"p1": "waiting", "p2": "waiting", "p3": "open"}
+
+
+def test_phase_cycle_names_one_cycle_as_a_path_and_none_for_a_dag() -> None:
+    assert lr.phase_cycle({"p1": {"p2"}, "p2": {"p1"}, "p3": set()}) == ["p1", "p2", "p1"]
+    assert lr.phase_cycle({"p1": set(), "p2": {"p3"}, "p3": {"p10"}, "p10": {"p2"}}) == ["p2", "p3", "p10", "p2"]
+    assert lr.phase_cycle(lr.phase_parents(TWO_WAVES)) == []
+    assert lr.phase_cycle({"p1": {"p1"}}) == []  # a phase's own needs are not a cycle
+    assert lr.phase_cycle({}) == []
 
 
 def test_a_new_initiative_has_wave_one_open_and_the_rest_waiting() -> None:
@@ -160,7 +177,54 @@ def test_split_moves_the_blocked_phase_and_its_dependents_and_refuses_when_a_mer
     assert lr.blocked_split(parents, {**states, "p10": "merged"}, "p3") == ([], "merged phase(s) p10 depend on blocked phase p3")
 
 
+def test_split_never_moves_the_integrate_phase() -> None:
+    parents = lr.phase_parents([task("a", "p1"), task("fix", lr.INTEGRATE_PHASE)])
+    assert lr.blocked_split(parents, {"p1": "open", "integrate": "blocked"}, lr.INTEGRATE_PHASE) == (
+        [], "the integrate phase resolves this initiative's branch with its parent and cannot move to another",
+    )
+
+
+def _layer(initiative: str, branch: str, parent: str, state: str = "building") -> dict:
+    return {"initiative": initiative, "branch": branch, "parent": parent, "state": state}
+
+
+def test_a_stacked_record_takes_forward_the_parent_of_each_landed_layer_below_it() -> None:
+    a = _layer("a", "init/a", "main")
+    b = _layer("b", "init/b", "init/a")
+    c = _layer("c", "init/c", "init/b")
+    def resolved(record, records):
+        parent, unknown = lr.stack_resolved_parent(record, lr.Listing(tuple(records)), stacked=True, epic_branch="main")
+        assert unknown is None
+        return parent
+
+    assert resolved(c, [a, b, c]) == "init/b", "the layer below has not landed: its branch is the parent"
+    assert resolved(c, [a, {**b, "state": "landed"}, c]) == "init/a"
+    assert resolved(c, [{**a, "state": "landed"}, {**b, "state": "landed"}, c]) == "main"
+    assert resolved(a, [a, b, c]) == "main"
+    loop = [_layer("x", "init/x", "init/y", "landed"), _layer("y", "init/y", "init/x", "landed")]
+    assert resolved(_layer("z", "init/z", "init/x"), loop) in ("init/x", "init/y"), "a cycle ends"
+
+
 def test_follow_up_ids_take_the_first_free_number() -> None:
     assert lr.follow_up_id("aim-slack", {"aim-slack"}) == "aim-slack-2"
     assert lr.follow_up_id("aim-slack", {"aim-slack", "aim-slack-2"}) == "aim-slack-3"
     assert lr.follow_up_id("aim-slack-2", {"aim-slack", "aim-slack-2"}) == "aim-slack-3"
+
+
+def test_a_stored_record_reads_back_as_itself():
+    stored = {**record(p1={"state": "merged", "tasks": ["t1"], "merge_sha": "m" * 40}), "pr": None, "future_key": 1,
+              "held": {"reason": "origin's branch lacks p1", "since": NOW}}
+    assert lr.record_from_store(stored) is stored
+
+
+@pytest.mark.parametrize(("stored", "named"), [
+    ([], "expected an object"),
+    ({"initiative": "i", "phases": {"p1": {"tasks": "t1"}}}, r"landing record\.phases\.p1\.tasks: expected a list"),
+    ({"initiative": "i", "pr": {"url": 5}}, r"landing record\.pr"),
+    ({"initiative": "i", "adopted": "yes"}, r"landing record\.adopted: expected bool"),
+    ({"initiative": "i", "held": "the branch moved"}, r"landing record\.held"),
+    ({"initiative": "i", "held": {"reason": 3}}, r"landing record\.held"),
+])
+def test_a_malformed_stored_record_is_refused_naming_the_bad_key(stored, named):
+    with pytest.raises(ShapeError, match=named):
+        lr.record_from_store(stored)

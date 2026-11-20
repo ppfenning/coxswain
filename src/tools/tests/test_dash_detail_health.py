@@ -59,7 +59,7 @@ def _patch_all(monkeypatch):
 def test_build_assembles_the_five_monkeypatched_readers_into_one_dict(monkeypatch, tmp_path: Path):
     monkeypatch.delenv("AGENT_TOOLS_PROFILE", raising=False)
     _patch_all(monkeypatch)
-    result = dash_detail_health.build(tmp_path / "runs", tmp_path, "2026-09-28T00:00:00Z", provider={}, harness=None)
+    result = dash_detail_health.build(tmp_path / "runs", tmp_path, "2026-09-28T00:00:00Z", provider={})
     assert {k: result[k] for k in ("store_drift", "lake_doctor", "object_store", "last_backup")} == {
         "store_drift": LITERALS["_store_drift"],
         "lake_doctor": LITERALS["_lake_doctor"],
@@ -78,7 +78,7 @@ def test_build_confines_a_raising_reader_to_its_own_key(monkeypatch, tmp_path: P
         raise RuntimeError("boom")
 
     monkeypatch.setattr(dash_detail_health, "_last_backup", _boom)
-    result = dash_detail_health.build(tmp_path / "runs", tmp_path, "2026-09-28T00:00:00Z", provider={}, harness=None)
+    result = dash_detail_health.build(tmp_path / "runs", tmp_path, "2026-09-28T00:00:00Z", provider={})
     assert {k: result[k] for k in ("store_drift", "lake_doctor", "object_store", "last_backup", "housekeeping_panel")} == {
         "store_drift": LITERALS["_store_drift"],
         "lake_doctor": LITERALS["_lake_doctor"],
@@ -113,7 +113,7 @@ def test_a_lease_that_expired_before_the_snapshot_is_not_ok():
 
 
 def test_the_timed_store_read_reports_elapsed_milliseconds_from_the_clock_it_is_given(monkeypatch, tmp_path: Path):
-    monkeypatch.setattr(dash_detail_health.run_store, "_open", lambda runs_dir: None)
+    monkeypatch.setattr(dash_detail_health.run_store, "open_store", lambda runs_dir: None)
     ticks = iter([10.0, 10.25])
     result, elapsed_ms = REAL_TIMED_STORE_READ(tmp_path, lambda: next(ticks))
     assert (result["ok"], elapsed_ms) == (False, 250)
@@ -135,9 +135,9 @@ def test_cox_dash_detail_health_prints_json_whose_kind_is_health(monkeypatch, tm
         return {"machines": MACHINES}
 
     monkeypatch.setattr(dash_detail_health.dash_feed, "gather_feed", _gather_feed)
-    monkeypatch.setattr(dash_detail_health.run_store, "_open", lambda runs_dir: None)
+    monkeypatch.setattr(dash_detail_health.run_store, "open_store", lambda runs_dir: None)
     lease = {dash_detail_health.chair.LEASE_NAME: (LEASE_ROW["holder"], LEASE_ROW["expires_at"], "")}
-    monkeypatch.setattr(dash_detail_health.run_store, "_lease_table", lambda runs_dir, window: lease)
+    monkeypatch.setattr(dash_detail_health.run_store, "lease_table_for", lambda runs_dir, window: lease)
     assert cli.main(["dash", "--detail", "health", "--runs-dir", str(tmp_path), "--work-dir", str(tmp_path)]) == 0
     printed = json.loads(capsys.readouterr().out)
     assert (printed["kind"], printed["schema"], printed["errors"]) == ("health", 1, [])
@@ -156,8 +156,8 @@ def test_a_raising_feed_and_lease_read_are_named_in_errors_not_shown_as_an_empty
     monkeypatch.setattr(dash_detail_health, "_machines", REAL_MACHINES)
     monkeypatch.setattr(dash_detail_health, "_lease_row", REAL_LEASE_ROW)
     monkeypatch.setattr(dash_detail_health.dash_feed, "gather_feed", _boom)
-    monkeypatch.setattr(dash_detail_health.run_store, "_lease_table", _boom)
-    result = dash_detail_health.build(tmp_path / "runs", tmp_path, NOW, provider={}, harness=None)
+    monkeypatch.setattr(dash_detail_health.run_store, "lease_table_for", _boom)
+    result = dash_detail_health.build(tmp_path / "runs", tmp_path, NOW, provider={})
     assert result["errors"] == ["machines: RuntimeError: down", "chair_lease: RuntimeError: down"]
     assert (result["hosts"], result["chair_lease"]["ok"]) == ([], False)
 
@@ -183,53 +183,16 @@ def test_store_drift_reads_a_stateless_task_as_todo_and_reports_intake_drift(mon
 def test_lake_panels_without_a_provider_profile_report_an_error_not_defaults(tmp_path: Path):
     expected = {"ok": False, "error": dash_detail_health.NO_PROFILE}
     assert dash_detail_health._lake_doctor(tmp_path, None) == expected
-    assert dash_detail_health._object_store(tmp_path, None, None) == expected
+    assert dash_detail_health._object_store(tmp_path, None) == expected
 
 
 def test_object_store_reports_the_live_probe(monkeypatch, tmp_path: Path):
     class _Check:
         readable, reason = False, "root unreachable"
 
-    monkeypatch.setattr(dash_detail_health.run_store, "parquet_readable", lambda root, harness: _Check())
-    result = dash_detail_health._object_store(tmp_path, {}, Path("/harness/.venv/bin/python"))
+    monkeypatch.setattr(dash_detail_health.run_store, "parquet_readable", lambda root: _Check())
+    result = dash_detail_health._object_store(tmp_path, {})
     assert result == {"ok": False, "reachable": False, "reason": "root unreachable", "endpoint": None}
-
-
-def test_object_store_passes_the_routing_profile_harness_to_parquet_readable(monkeypatch, tmp_path: Path):
-    """The harness argument must reach `parquet_readable` unchanged: dropping it (passing `None`) turns
-    a pyarrow-less install that the harness venv could read into a false "pyarrow missing" failure,
-    disagreeing with `cox setup doctor`'s own `run_store.parquet_readable(root, run_store.harness_python(profile))` call."""
-    captured = {}
-    harness = Path("/harness/.venv/bin/python")
-
-    class _Check:
-        readable, reason = True, "through the harness"
-
-    def _fake_parquet_readable(root, given_harness):
-        captured["harness"] = given_harness
-        return _Check()
-
-    monkeypatch.setattr(dash_detail_health.run_store, "parquet_readable", _fake_parquet_readable)
-    result = dash_detail_health._object_store(tmp_path, {}, harness)
-    assert captured["harness"] is harness
-    assert result == {"ok": True, "reachable": True, "reason": "through the harness", "endpoint": None}
-
-
-def test_build_threads_the_harness_argument_into_the_object_store_panel(monkeypatch, tmp_path: Path):
-    captured = {}
-    harness = Path("/harness/.venv/bin/python")
-    monkeypatch.setattr(dash_detail_health, "_store_drift", lambda *a: LITERALS["_store_drift"])
-    monkeypatch.setattr(dash_detail_health, "_lake_doctor", lambda *a: LITERALS["_lake_doctor"])
-    monkeypatch.setattr(dash_detail_health, "_housekeeping", lambda runs_dir: LITERALS["_housekeeping"])
-    monkeypatch.setattr(dash_detail_health, "_last_backup", lambda: LITERALS["_last_backup"])
-
-    def _fake_object_store(runs_dir, provider, given_harness):
-        captured["harness"] = given_harness
-        return LITERALS["_object_store"]
-
-    monkeypatch.setattr(dash_detail_health, "_object_store", _fake_object_store)
-    dash_detail_health.build(tmp_path / "runs", tmp_path, "2026-09-28T00:00:00Z", provider={}, harness=harness)
-    assert captured["harness"] is harness
 
 
 def test_build_resolves_the_profile_itself_when_called_with_three_arguments(monkeypatch, tmp_path: Path):

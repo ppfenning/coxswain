@@ -23,8 +23,8 @@ def _run(repo, cart, tmp_path, monkeypatch, *, push):
         prs.append({"title": title, "body": body, "head": head, "base": base})
         return True, URL
 
-    monkeypatch.setattr(epic_module, "_push_review_branch", fake_push)
-    monkeypatch.setattr(epic_module, "_open_review_pr", fake_pr)
+    monkeypatch.setattr(epic_module, "push_review_branch", fake_push)
+    monkeypatch.setattr(epic_module, "open_review_pr", fake_pr)
     runner = base.Runner(
         {"t1-probe": base.new_file_patch("harness/x.py"), "t2-bench": base.new_file_patch("t2-bench.txt")}
     )

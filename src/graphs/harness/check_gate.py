@@ -10,11 +10,12 @@ runs against one repository never overlap. Task checks never take it.
 from __future__ import annotations
 
 import fcntl
-import subprocess
 import threading
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
+
+from harness import bounded_proc
 
 GATES: tuple[str, ...] = ("task", "level", "ticket")
 
@@ -27,7 +28,7 @@ _GATE_KEYS: Mapping[str, str] = {
 _LOCK_NAME = "coxswain-check-gate.lock"
 
 
-def gate_checks(landing_areas: Mapping[str, object], gate: str) -> list[dict]:
+def gate_checks(landing_areas: Mapping[str, object], gate: str) -> list[dict[str, str]]:
     """The `{name, cmd}` entries for `gate`; a missing, None or non-list value is empty."""
     if gate not in _GATE_KEYS:
         raise ValueError(f"unknown gate {gate!r}; expected one of {GATES}")
@@ -46,7 +47,7 @@ _registry_lock = threading.Lock()
 
 
 def _common_dir(repo: Path) -> Path:
-    out = subprocess.run(
+    out = bounded_proc.completed(
         ["git", "-C", str(repo), "rev-parse", "--git-common-dir"],
         capture_output=True,
         text=True,

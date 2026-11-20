@@ -16,7 +16,7 @@ _JSON = "JSON"
 Column = tuple[str, str]
 
 # Name, columns, key. The JSON token is resolved per dialect.
-_TABLES: tuple[tuple[str, tuple[Column, ...], tuple[str, ...]], ...] = (
+TABLES: tuple[tuple[str, tuple[Column, ...], tuple[str, ...]], ...] = (
     (
         "task_records",
         (
@@ -38,4 +38,4 @@ def _table(dialect: Dialect, name: str, columns: tuple[Column, ...], key: tuple[
 
 def statements(dialect: Dialect) -> tuple[str, ...]:
     """The one CREATE TABLE, with the JSON column typed per dialect."""
-    return tuple(_table(dialect, n, c, k) for n, c, k in _TABLES)
+    return tuple(_table(dialect, n, c, k) for n, c, k in TABLES)

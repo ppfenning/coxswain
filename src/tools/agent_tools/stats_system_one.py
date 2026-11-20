@@ -11,8 +11,8 @@ import itertools
 from dataclasses import dataclass
 from typing import Any
 
-# These three bars mirror graphs' MIN_ROWS and MIN_AGREEMENT plus the ticket's costly-direction cap.
-# The build cannot read graphs, so keep them in step by hand.
+# The bars a role's shadow decisions must clear before its fast path can go live: enough rows, enough agreement,
+# and few disagreements in the costly direction. stats_shadow_tier reads the same three.
 MIN_ROWS = 100
 MIN_AGREEMENT = 0.95
 MAX_COSTLY_RATE = 0.01

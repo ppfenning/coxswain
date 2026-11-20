@@ -22,11 +22,11 @@ from __future__ import annotations
 
 import json
 import socket
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
-from agent_tools import chair_login_watch, host_cmd
+from agent_tools import chair_login_watch, host_cmd, store_cli
 from agent_tools.remote_argv import env_check_argv, json_object_in, ssh_argv, token_status_argv
 
 BLOCK_AFTER_FAILURES = 2
@@ -45,7 +45,7 @@ class Reply(Protocol):
 
 
 SshRun = Callable[[list[str]], Reply]
-CliRun = Callable[[list[str]], dict]
+CliRun = Callable[[list[str]], dict[str, object]]
 
 
 @dataclass(frozen=True)
@@ -75,16 +75,16 @@ def _failure_reason(returncode: int, output: str) -> str:
     return f"exit {returncode}: {output.strip()[:REASON_OUTPUT_CHARS]}"
 
 
-def _failure_count(versions: dict, key: str = "login_failures") -> int:
+def _failure_count(versions: Mapping[str, object], key: str = "login_failures") -> int:
     """The stored count under `key` (`login_failures` by default); 0 when absent or not a positive int."""
     stored = versions.get(key)
     return stored if isinstance(stored, int) and not isinstance(stored, bool) and stored > 0 else 0
 
 
-def _unreachable_login(count: int, now: str, reason: str | None) -> dict:
+def _unreachable_login(count: int, now: str, reason: str | None) -> dict[str, object]:
     """The `--login-json` payload of an unreachable check. `unreachable_since` joins it once `count`
     reaches `UNREACHABLE_AFTER`. `login_ok`, `login_failures` and `beat_at` are never in it."""
-    base = {chair_login_watch.UNREACHABLE_FAILURES_KEY: count, "login_checked_at": now, "reason": reason}
+    base: dict[str, object] = {chair_login_watch.UNREACHABLE_FAILURES_KEY: count, "login_checked_at": now, "reason": reason}
     return base if count < chair_login_watch.UNREACHABLE_AFTER else {**base, chair_login_watch.UNREACHABLE_SINCE_KEY: now}
 
 
@@ -105,7 +105,7 @@ def _claude_check(host_name: str, ssh: str, ssh_run: SshRun) -> _Check:
     return _Check(False, status.get("tokenFile") is False, reason, reply.mixed)
 
 
-def _login_ok(host_name: str, ssh: str, ssh_run: Callable[[list[str]], tuple[int, str]]) -> bool | None:
+def probe_login(host_name: str, ssh: str, ssh_run: Callable[[list[str]], tuple[int, str]]) -> bool | None:
     """True when the token verb's output says logged in; False when it says explicitly it is not; None
     when the reply cannot be read at all. Takes a `(exit code, text)` runner and never renews. The verb runs
     without `--probe`, so it spends no turn: the dashboard calls this on every feed gather, and only
@@ -137,14 +137,14 @@ def _env_check(host_name: str, ssh: str, ssh_run: SshRun, env_names: tuple[str, 
 def check_login_on_host(
     host_name: str,
     ssh: str,
-    current_versions: dict,
+    current_versions: Mapping[str, object],
     now: str,
     ssh_run: SshRun,
     cli_run: CliRun,
     *,
     runner: str = "claude-code",
     env_names: tuple[str, ...] = (),
-) -> dict:
+) -> dict[str, object]:
     """Runs the readiness check, locally on the loop's own host and over ssh elsewhere, merges its
     `login_ok`, `check`, `reason` and `now` into `current_versions`, writes the merge through the reused
     `cox host beat` argv, and returns the row `cli_run` prints. `ssh_run` returns an `ArgvResult`.
@@ -170,7 +170,8 @@ def check_login_on_host(
         count = _failure_count(current_versions, chair_login_watch.UNREACHABLE_FAILURES_KEY) + 1
         payload = _unreachable_login(count, now, check.reason)
         row = cli_run(["host", "login", host_name, "--login-json", json.dumps(payload, sort_keys=True)])
-        if count < chair_login_watch.UNREACHABLE_AFTER:
+        # A login write the store refused is the answer: setting the host unreachable after it would hide the failure.
+        if count < chair_login_watch.UNREACHABLE_AFTER or store_cli.STORE_ERROR in row:
             return row
         return cli_run(host_cmd.set_state_argv(host_name, chair_login_watch.UNREACHABLE_STATE, "chair"))
     streak_cleared = {k: v for k, v in current_versions.items() if k != chair_login_watch.UNREACHABLE_FAILURES_KEY}

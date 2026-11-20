@@ -12,15 +12,12 @@ import subprocess
 from pathlib import Path
 
 from agent_tools.chair_types import HoldRecord, LandTrigger, SmokeCommandResult
-from agent_tools.land import pr_footer
 
 __all__ = [
     "clear_hold",
     "hold_path",
     "hold_record",
     "read_hold",
-    "revert_pr_argv",
-    "run_revert_pr",
     "run_smoke_commands",
     "smoke_result",
     "smoke_verdict",
@@ -29,7 +26,6 @@ __all__ = [
 
 _SMOKE_TIMEOUT_S = 120
 _TAIL_LINES = 20
-_REVERT_STEPS = ("checkout", "revert", "push", "pr_create")
 
 
 def smoke_verdict(results: list[SmokeCommandResult]) -> tuple[bool, SmokeCommandResult | None]:
@@ -47,7 +43,7 @@ def hold_record(land: LandTrigger, failing: SmokeCommandResult) -> HoldRecord:
     """The HoldRecord for a failing smoke result, tail cut to at most its last 20 lines."""
     lines = failing["tail"].splitlines()
     return {
-        "land": dict(land),
+        "land": land.copy(),
         "failing_command": failing["command"],
         "tail": "\n".join(lines[-_TAIL_LINES:]),
         "cause": "smoke_failed",
@@ -101,29 +97,3 @@ def read_hold(runs_dir: str) -> HoldRecord | None:
 def clear_hold(runs_dir: str) -> None:
     """Edge. No error when the file is already absent."""
     hold_path(runs_dir).unlink(missing_ok=True)
-
-
-def revert_pr_argv(land: LandTrigger, failing_tail: str, run: str | None = None) -> dict:
-    """Pure. The argv for the four commands the caller runs in order to open a revert PR, plus the
-    checkout `cwd` they run in: `land["repo"]` is a checkout path, which `gh --repo` cannot take."""
-    repo = land["repo"]
-    branch = f"revert/{land['pr']}"
-    return {
-        "checkout": ["git", "-C", repo, "checkout", "-b", branch, "origin/main"],
-        "revert": ["git", "-C", repo, "revert", "--no-edit", land["commit"]],
-        "push": ["git", "-C", repo, "push", "origin", branch],
-        "pr_create": [
-            "gh", "pr", "create",
-            "--title", f"Revert #{land['pr']}: post-land smoke failed",
-            "--body", f"{failing_tail}\n\n{pr_footer(run)}",
-            "--head", branch,
-        ],
-        "cwd": repo,
-    }
-
-
-def run_revert_pr(argv: dict) -> None:
-    """Edge. Runs the four commands in order and raises CalledProcessError at the first failure, so a
-    failed checkout never lets revert commit onto whatever branch is checked out. Never merges the PR."""
-    for key in _REVERT_STEPS:
-        subprocess.run(argv[key], check=True, cwd=argv.get("cwd"))

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import functools
 import json
 import textwrap
 from collections.abc import Iterable, Mapping
@@ -202,14 +204,22 @@ def render_chair(report: Mapping) -> str:
     return "\n".join(f"{name.ljust(width)}  {value}" for name, value in rows)
 
 
-def frontmatter_item(text: str, stem: str) -> dict:
+@functools.lru_cache(maxsize=8192)
+def _parsed_block(block: str) -> dict | None:
+    """Pure. The YAML mapping in one frontmatter block, None when it is not one. Memoised on the text: the chair parses
+    every ticket's frontmatter each tick, and a ticket that did not change parses the same. Callers get a copy."""
+    try:
+        parsed = yaml.safe_load(block)
+    except yaml.YAMLError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def frontmatter_item(text: str, stem: str) -> dict[str, object]:
     """A work item's `---` frontmatter as a mapping with `id` defaulting to `stem`; only `id` when it does not parse."""
     close = text.find("\n---", 4) if text.startswith("---\n") else -1
-    try:
-        parsed = yaml.safe_load(text[4:close]) if close != -1 else None
-    except yaml.YAMLError:
-        parsed = None
-    fields = parsed if isinstance(parsed, dict) else {}
+    parsed = _parsed_block(text[4:close]) if close != -1 else None
+    fields = copy.deepcopy(parsed) if parsed is not None else {}
     return {**fields, "id": fields.get("id", stem)}
 
 

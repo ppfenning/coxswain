@@ -115,7 +115,7 @@ def test_detach_in_store_mode_starts_the_graph_and_returns_without_waiting(tmp_p
 def test_store_mode_writes_the_plan_as_rows_and_no_ticket_file(tmp_path, monkeypatch, capsys):
     seen = []
 
-    def edge(argv, env, log_path, result_path, pid_path):
+    def edge(argv, env, log_path, result_path, pid_path, **_kwargs):
         seen.append((argv, result_path))
         return 0, RESULT
 
@@ -135,7 +135,7 @@ def test_store_mode_writes_the_plan_as_rows_and_no_ticket_file(tmp_path, monkeyp
 
 def test_store_mode_with_an_empty_plan_writes_no_rows_and_reports_why(tmp_path, monkeypatch, capsys):
     code, upserts, _harness_dir, ws = _launch(
-        tmp_path, monkeypatch, "store", [INTAKE], lambda *_a: (0, {"phases": [], "tasks": []}),
+        tmp_path, monkeypatch, "store", [INTAKE], lambda *_a, **_k: (0, {"phases": [], "tasks": []}),
     )
 
     assert (code, upserts) == (1, [])
@@ -144,14 +144,14 @@ def test_store_mode_with_an_empty_plan_writes_no_rows_and_reports_why(tmp_path, 
 
 
 def test_store_mode_with_no_readable_result_returns_1_and_writes_no_rows(tmp_path, monkeypatch, capsys):
-    code, upserts, _harness_dir, _ws = _launch(tmp_path, monkeypatch, "store", [INTAKE], lambda *_a: (0, None))
+    code, upserts, _harness_dir, _ws = _launch(tmp_path, monkeypatch, "store", [INTAKE], lambda *_a, **_k: (0, None))
 
     assert (code, upserts) == (1, [])
     assert "routing: decompose wrote no readable result at" in capsys.readouterr().out
 
 
 def test_store_mode_with_a_failed_run_and_a_valid_result_writes_no_rows(tmp_path, monkeypatch, capsys):
-    code, upserts, _harness_dir, _ws = _launch(tmp_path, monkeypatch, "store", [INTAKE], lambda *_a: (3, RESULT))
+    code, upserts, _harness_dir, _ws = _launch(tmp_path, monkeypatch, "store", [INTAKE], lambda *_a, **_k: (3, RESULT))
 
     assert (code, upserts) == (1, [])
     assert "routing: decompose exited 3; no rows written" in capsys.readouterr().out
@@ -206,3 +206,71 @@ def test_store_mode_dry_run_runs_nothing_and_writes_no_rows(tmp_path, monkeypatc
     assert (code, upserts) == (0, [])
     assert "dry-run: " in capsys.readouterr().out
     assert not (ws / "runs" / "fix-thing-1.pid").exists()
+
+
+# A decompose launched over ssh stands in the login directory. Its process cwd is the work root, set where the
+# process starts, so nothing in the run resolves a store-relative path against the home directory.
+
+
+def test_a_detached_decompose_starts_in_the_work_root(tmp_path, monkeypatch):
+    started = []
+
+    class _Proc:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(cli.subprocess, "Popen", lambda argv, **kwargs: started.append(kwargs) or _Proc())
+    monkeypatch.setattr(cli, "_wait_for_exit", lambda *_a, **_k: None)
+    monkeypatch.chdir(tmp_path)
+
+    code, _upserts, _harness_dir, ws = _launch(tmp_path, monkeypatch, "store", [INTAKE], _must_not_run, extra=("--detach",))
+
+    assert code == 0
+    assert started[0]["cwd"] == ws
+
+
+def test_a_decompose_run_to_completion_starts_in_the_work_root(tmp_path, monkeypatch):
+    seen = []
+
+    def edge(argv, env, log_path, result_path, pid_path, *, cwd=None):
+        seen.append(cwd)
+        return 0, RESULT
+
+    monkeypatch.chdir(tmp_path)
+    code, _upserts, _harness_dir, ws = _launch(tmp_path, monkeypatch, "store", [INTAKE], edge)
+
+    assert code == 0
+    assert seen == [ws]
+
+
+def test_a_files_mode_decompose_starts_its_harness_in_the_work_root(tmp_path, monkeypatch):
+    started = []
+    real_popen = cli.subprocess.Popen
+
+    def recording_popen(argv, **kwargs):
+        started.append(kwargs.get("cwd"))
+        return real_popen(argv, **kwargs)
+
+    monkeypatch.setattr(cli.subprocess, "Popen", recording_popen)
+    monkeypatch.chdir(tmp_path)
+
+    code, _upserts, harness_dir, ws = _launch(tmp_path, monkeypatch, "files", [INTAKE], _must_not_run)
+
+    assert code == 0
+    assert _wait_for(harness_dir / "recorded_argv.json")
+    assert started == [ws]
+
+
+def test_the_edge_runs_the_harness_in_the_directory_it_is_given(tmp_path):
+    where = tmp_path / "workspace"
+    where.mkdir()
+    result = tmp_path / "result.json"
+    script = "import os, json, sys, pathlib; pathlib.Path(sys.argv[1]).write_text(json.dumps({'cwd': os.getcwd()}))"
+
+    code, got = cli._run_decompose_for_result(
+        [sys.executable, "-c", script, str(result)], {}, tmp_path / "x.log", result, tmp_path / "x.pid", cwd=where,
+    )
+
+    assert (code, got) == (0, {"cwd": str(where)})

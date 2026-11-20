@@ -1,4 +1,12 @@
-from harness.stale_base import is_patch_empty, missing_paths, stale_base_reason, ticket_paths
+from harness.stale_base import (
+    WRONG_REPOSITORY_PREFIX,
+    is_patch_empty,
+    missing_paths,
+    stale_base_reason,
+    ticket_paths,
+    wrong_repository,
+    wrong_repository_reason,
+)
 
 
 def test_a_plain_surface_is_named():
@@ -54,3 +62,23 @@ def test_the_reason_names_every_missing_path_sorted():
     assert stale_base_reason("t1", ["src/z.py", "src/a.py"]) == (
         "t1: the build base predates files the ticket needs: src/a.py, src/z.py"
     )
+
+
+def test_paths_all_in_one_other_repository_name_it():
+    assert wrong_repository(("src/ui/regatta.rs", "themes/dark.toml"), "coxswain") == "coxswain-dash"
+
+
+def test_paths_split_unknown_or_own_name_no_repository():
+    assert wrong_repository(("src/ui/regatta.rs", "src/tools/x.py"), "coxswain") is None
+    assert wrong_repository(("src/ui/regatta.rs", "notes/plain.txt"), "coxswain") is None
+    assert wrong_repository(("src/tools/x.py",), "coxswain") is None
+    assert wrong_repository((), "coxswain") is None
+    assert wrong_repository(("src/ui/regatta.rs",), None) is None
+
+
+def test_the_wrong_repository_reason_names_the_paths_and_the_repository():
+    reason = wrong_repository_reason("t1", ("src/ui/b.rs", "src/ui/a.rs"), "coxswain-dash")
+    assert reason == (
+        "wrong repository: t1 names src/ui/a.rs, src/ui/b.rs, which belong to coxswain-dash, not this repository"
+    )
+    assert reason.startswith(WRONG_REPOSITORY_PREFIX)

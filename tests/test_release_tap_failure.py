@@ -49,6 +49,12 @@ def _execute(tmp_path, fail_on=None, fetch_index=lambda url: _INDEX, sleeps=None
     return rc, calls, state
 
 
+def _written(calls):
+    """The calls that change the tap clone, its origin or a pull request; reads (fetch, ls-remote, show) are not."""
+    return [c for c in calls if c[3:4] in (["checkout"], ["commit"], ["push"], ["branch"], ["add"])
+            or c[:3] == ["gh", "pr", "create"]]
+
+
 @pytest.mark.parametrize("error", [RuntimeError("boom"), KeyError("anchor"), ValueError("no anchor")])
 def test_a_write_exception_is_a_failed_step_and_restores_the_starting_branch(tmp_path, monkeypatch, capsys, error):
     def raising(*args, **kwargs):
@@ -109,4 +115,4 @@ def test_fetch_index_gives_up_after_the_last_attempt(tmp_path, capsys):
     assert len(attempts) == 5
     assert sleeps == [30.0] * 4
     assert "FAILED tap_formula_pr tap: https://x/index.json: HTTP Error 503" in capsys.readouterr().out
-    assert calls == []
+    assert _written(calls) == []

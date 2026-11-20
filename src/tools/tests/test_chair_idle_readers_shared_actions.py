@@ -59,7 +59,7 @@ class FakeConn:
 
 def _store(monkeypatch, tmp_path: Path) -> FakeConn:
     conn = FakeConn(STORE_ROWS)
-    monkeypatch.setattr(run_store, "_open", lambda runs_dir: (conn, "?"))
+    monkeypatch.setattr(run_store, "open_store", lambda runs_dir: (conn, "?"))
     monkeypatch.setattr(backlog_mod, "read_docket", lambda *_a, **_k: None)
     monkeypatch.setattr(backlog_mod, "read_live_initiatives", lambda *_a: [])
     monkeypatch.setattr(open_mod, "open_needs_chair_ids", lambda _entries: {"blocked:a"})

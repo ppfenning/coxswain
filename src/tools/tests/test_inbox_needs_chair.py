@@ -5,7 +5,7 @@ from agent_tools.chair_read_record import ACTION_LOG
 from agent_tools.inbox import InboxItem, item_id
 from agent_tools.inbox_needs_chair import load_needs_chair_records, needs_chair_to_items, open_needs_chair
 
-SET_STATE = ("python", "-m", "harness.store_cli", "set-state")
+EDIT = ("cox", "route", "edit")
 
 # Keys chair_exec logs: needs_chair has kind, initiative, task_id, phase, cause, reason, epoch; an executed action
 # adds status. A land has task_id and no phase; a land_phase has initiative and phase and no task_id.
@@ -17,7 +17,7 @@ FULL = {
     "cause": "code",
     "reason": "tests fail on main",
     "remedy": "re-ground",
-    "command": [*SET_STATE, "init", "t1", "ready", "--by", "chair"],
+    "command": [*EDIT, "t1", "--state", "ready"],
 }
 PHASE_ROW = {"kind": "needs_chair", "ts": "2026-10-05T12:00:00Z", "initiative": "init", "phase": "p1", "cause": "land"}
 
@@ -30,8 +30,8 @@ def test_full_record_gives_one_full_item():
             created_at=datetime(2026, 10, 5, 12, 0, tzinfo=UTC),
             what="t1: code",
             evidence="tests fail on main",
-            accept_cmd=(*SET_STATE, "init", "t1", "ready", "--by", "chair"),
-            deny_cmd=(*SET_STATE, "init", "t1", "dropped", "--by", "chair"),
+            accept_cmd=(*EDIT, "t1", "--state", "ready"),
+            deny_cmd=(*EDIT, "t1", "--initiative", "init", "--state", "dropped"),
         ),
     )
 
@@ -39,14 +39,14 @@ def test_full_record_gives_one_full_item():
 def test_record_without_command_falls_back_to_reground():
     record = {"kind": "needs_chair", "ts": "2026-10-05T12:00:00Z", "initiative": "init", "task_id": "t1", "cause": "stale"}
     (item,) = needs_chair_to_items([record])
-    assert (item.accept_cmd, item.evidence) == ((*SET_STATE, "init", "t1", "ready", "--by", "chair"), "")
+    assert (item.accept_cmd, item.evidence) == ((*EDIT, "t1", "--initiative", "init", "--state", "ready"), "")
 
 
 def test_initiative_grain_record_uses_empty_run_task_and_repo():
     record = {"kind": "needs_chair", "ts": "2026-10-05T12:00:00+00:00", "initiative": "init", "cause": "runaway"}
     (item,) = needs_chair_to_items([record])
     assert item.id == item_id("needs-chair", "init")
-    assert item.deny_cmd == (*SET_STATE, "", "", "dropped", "--by", "chair")
+    assert item.deny_cmd == (*EDIT, "", "--state", "dropped")
 
 
 def test_phase_record_is_keyed_by_initiative_and_phase():

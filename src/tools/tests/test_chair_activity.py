@@ -100,7 +100,7 @@ def test_the_top_level_and_window_keys_match_the_fixture():
     window_keys = {
         "chair_session_usd", "chair_agents_usd", "cox_seats_usd", "total_usd",
         "chair_session_share", "chair_agents_share", "cox_seats_share", "meter_fraction", "resets_at",
-        "by_node", "cost_per_landed_task",
+        "by_node", "cost_per_landed_task", "completions", "cost_per_completion",
     }  # fmt: skip
     assert all(set(window) == window_keys for window in out["spend_split"].values())
 
@@ -136,12 +136,22 @@ def test_three_rows_across_two_roles_and_two_models_group_by_node_in_cost_order(
 def test_an_empty_window_gives_an_empty_by_node_and_a_zero_cost_per_landed_task():
     out = gather_activity(_SESSION, [_AGENT], _PRICES, _NOW, _WINDOWS)
     assert all(w["by_node"] == [] and w["cost_per_landed_task"] == 0.0 for w in out["spend_split"].values())
+    assert all(w["completions"] == 0 and w["cost_per_completion"] == 0.0 for w in out["spend_split"].values())
 
 
 def test_two_done_tasks_divide_the_window_seat_cost():
     out = gather_activity(_SESSION, [_AGENT], _PRICES, _NOW, _WINDOWS, done_counts={"five_hour": 2})
     assert out["spend_split"]["five_hour"]["cost_per_landed_task"] == 1.5
     assert out["spend_split"]["weekly"]["cost_per_landed_task"] == 0.0
+    assert out["spend_split"]["five_hour"]["cost_per_completion"] == 1.5
+    assert out["spend_split"]["five_hour"]["completions"] == 2
+    assert out["spend_split"]["weekly"]["cost_per_completion"] == 0.0
+
+
+def test_the_deprecated_alias_equals_cost_per_completion():
+    out = gather_activity(_SESSION, [_AGENT], _PRICES, _NOW, _WINDOWS, done_counts={"five_hour": 3, "weekly": 7})
+    for window in out["spend_split"].values():
+        assert window["cost_per_landed_task"] == window["cost_per_completion"]
 
 
 def _full_usage(ts: str, message_id: str, stop_reason: str, parts: tuple[int, int, int, int]) -> str:
@@ -200,7 +210,7 @@ def test_the_output_built_from_the_fixture_inputs_equals_the_fixture():
         ],
     }  # fmt: skip
     now = datetime(2026, 10, 16, 18, 45, 0, tzinfo=UTC)
-    out = gather_activity(session, agents, _PRICES, now, windows, node_rows, {"five_hour": 2, "weekly": 6})
+    out = gather_activity(session, agents, _PRICES, now, windows, node_rows, {"five_hour": 3, "weekly": 3})
     assert out["spend_split"] == fixture["spend_split"]
     # The fixture lists the agents oldest first; `agent_rows` returns the newest first.
     assert out["chair_agents"] == list(reversed(fixture["chair_agents"]))

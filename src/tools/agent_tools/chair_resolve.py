@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from agent_tools import chair, leader_chat
 
@@ -54,14 +54,18 @@ def transcript_path(config_dir: Path, cwd: str, session_id: str) -> Path:
     return config_dir / "projects" / re.sub(r"[^A-Za-z0-9]", "-", cwd) / f"{session_id}.jsonl"
 
 
+def _text_or_none(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
 def resolve_bare(
-    record: dict[str, Any] | None, state: str, host: str, now: datetime.datetime, transcript_exists: Callable[[str, str | None], bool],
+    record: dict[str, object] | None, state: str, host: str, now: datetime.datetime, transcript_exists: Callable[[str, str | None], bool],
 ) -> Plan:
     """Pure. Resume or attach only a recorded session whose transcript `transcript_exists(session_id, cwd)` finds; a remote holder is never checked or attached."""
     if record is None or state in ("none", "stale") or (state == "live" and chair.expired(record, now)):
         return Plan("take")
     sid = chair.holder_session_id(record)
-    label, cwd, holder_host = record.get("session"), record.get("cwd"), record.get("host")
+    label, cwd, holder_host = _text_or_none(record.get("session")), _text_or_none(record.get("cwd")), _text_or_none(record.get("host"))
     if state == "crashed":
         if not sid:
             return Plan("take")
@@ -72,7 +76,7 @@ def resolve_bare(
     return Plan("offer", label, sid, cwd, holder_host, "attach" if attach else "observer")
 
 
-def holder_line(record: Mapping[str, Any]) -> str:
+def holder_line(record: Mapping[str, object]) -> str:
     where = f" in {record['cwd']}" if record.get("cwd") else ""
     return f"chair: held by {record.get('session', '?')} (pid {record.get('pid', '?')}) on {record.get('host', '?')}{where}, since {record.get('taken_at', '?')}"
 
@@ -132,7 +136,7 @@ def session_take_decision(policy: object, holder: SessionHolder, explicit_take: 
 
 
 def session_start_decision(
-    policy: object, record: Mapping[str, Any] | None, live: SessionHolder | None, caller_holds_record: bool, *, caller_label: str | None = None,
+    policy: object, record: Mapping[str, object] | None, live: SessionHolder | None, caller_holds_record: bool, *, caller_label: str | None = None,
 ) -> TakeDecision:
     """Pure. The SessionStart hook's decision. The hook source (startup, resume, compact, clear) cannot change the outcome, so it is not an argument.
 
@@ -180,11 +184,13 @@ def takeover(
     with chair.locked(runs_dir):
         current = chair.read(runs_dir)
         if current is not None:
-            chair.release_lease(runs_dir, current.get("session", ""), current.get("pid", 0), current.get("host", ""))
+            held_session, held_pid, held_host = current.get("session", ""), current.get("pid", 0), current.get("host", "")
+            if isinstance(held_session, str) and isinstance(held_pid, int) and isinstance(held_host, str):
+                chair.release_lease(runs_dir, held_session, held_pid, held_host)
             chair.write(runs_dir, None)
         refusal = chair.acquire_lease(runs_dir, label, pid, host, steal=True)
         if refusal:
             return False, refusal
         taken, _ = chair.take(None, label, pid, host, datetime.datetime.now(datetime.UTC), heartbeat_minutes, False, claude_session=claude_session, cwd=cwd)
-        chair.write(runs_dir, {**taken, **({"taken_over_from": old_label} if old_label else {})})
+        chair.write(runs_dir, {**(taken or {}), **({"taken_over_from": old_label} if old_label else {})})
     return True, f"chair taken over from {old_label}" if old_label else f"chair taken: {label} (pid {pid}) on {host}"

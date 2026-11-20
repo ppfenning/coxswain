@@ -15,13 +15,13 @@ import os
 import sys
 import urllib.parse
 import urllib.request
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from pathlib import Path
-from typing import TextIO
+from typing import TextIO, cast
 
 from core.catalog import load_catalog
 from core.refresh import RefreshReport, RowStub, refresh_report
-from core.vendor_models import FetchError, list_anthropic_models
+from core.vendor_models import FetchError, HttpGet, list_anthropic_models
 
 __all__ = ["main", "render_report", "run"]
 
@@ -68,12 +68,12 @@ def run(
     *,
     catalog_path: Path,
     api_key: str,
-    get: Callable[[str, dict, dict], object],
+    get: HttpGet,
     out: TextIO,
     err: TextIO,
 ) -> int:
     """Load the catalog, list vendor ids, print the report. Exit 2 on a bad catalog, 1 on a failed vendor list."""
-    parser = argparse.ArgumentParser(prog="cartridge providers refresh", description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(prog="cartridge providers refresh", description=cast("str", __doc__).splitlines()[0])
     parser.add_argument("--catalog", type=Path, default=catalog_path, help="catalog file to read (never written)")
     args = parser.parse_args(argv)
 
@@ -89,7 +89,7 @@ def run(
     return 0
 
 
-def _urllib_get(url: str, headers: dict, params: dict) -> object:
+def _urllib_get(url: str, headers: dict[str, str], params: dict[str, str | int]) -> object:
     """JSON body of a GET. A non-2xx status raises HTTPError, which the fetcher turns into a FetchError."""
     request = urllib.request.Request(f"{url}?{urllib.parse.urlencode(params)}", headers=headers)
     with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as response:

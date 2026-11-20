@@ -3,18 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from functools import reduce
 
-from agent_tools.chair_types import Action, CarryTask, StrandedPhase
+from agent_tools.chair_types import Action, ActionKind, CarryTask, StrandedPhase
 
 
 def _newest_per_task(rows: Sequence[CarryTask]) -> list[CarryTask]:
     """One row per task: the one with the highest run_seq, the newest run's newest commit."""
-    newest = reduce(
-        lambda acc, row: acc if row["task"] in acc and acc[row["task"]]["run_seq"] >= row["run_seq"] else {**acc, row["task"]: row},
-        rows,
-        {},
-    )
+    newest: dict[str, CarryTask] = {}
+    for row in rows:
+        if not (row["task"] in newest and newest[row["task"]]["run_seq"] >= row["run_seq"]):
+            newest[row["task"]] = row
     return [newest[task] for task in sorted(newest)]
 
 
@@ -45,7 +43,7 @@ def plan_carry(phases: Sequence[StrandedPhase]) -> list[Action]:
         if stuck:
             return [_stop(phase["initiative"], phase["phase"], "carry_cycle", f"needs cycle among tasks {', '.join(stuck)}; no carry planned")]
         return [{
-            "kind": "carry_phase", "initiative": phase["initiative"], "phase": phase["phase"],
+            "kind": ActionKind.CARRY_PHASE, "initiative": phase["initiative"], "phase": phase["phase"],
             "pr_branch": f"pr/carry-{phase['initiative']}-{phase['phase']}", "picks": picks,
         }]
 
@@ -54,7 +52,7 @@ def plan_carry(phases: Sequence[StrandedPhase]) -> list[Action]:
 
 def _stop(initiative: str, phase: str, cause: str, reason: str) -> Action:
     return {
-        "kind": "needs_chair", "initiative": initiative, "phase": phase, "cause": cause, "epoch": 0,
+        "kind": ActionKind.NEEDS_CHAIR, "initiative": initiative, "phase": phase, "cause": cause, "epoch": 0,
         "reason": f"initiative {initiative} phase {phase}: {reason}",
     }
 

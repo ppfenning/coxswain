@@ -56,10 +56,10 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from functools import reduce
 from pathlib import Path
-from typing import Any
+from typing import cast
 
 from harness import store_read, store_traces
-from harness.store_dialect import default_url, json_load
+from harness.store_dialect import JsonObject, default_url, json_load
 from harness.traces_url import TracesRoot, have_pyarrow, redact_url, resolve_traces_root
 
 TRACE_DIR_SUFFIX = "-trace"
@@ -106,7 +106,7 @@ class RunSources:
 
     run_id: str
     day: str
-    calls: dict[str, list[dict[str, Any]]]
+    calls: dict[str, list[JsonObject]]
     expected: dict[str, int]
     sources: tuple[Source, ...]
     conflicts: frozenset[str] = frozenset()
@@ -248,26 +248,29 @@ def parquet_days(root: Path, run_id: str) -> list[str]:
     return ["-".join(p.relative_to(root).parts[:3]) for p in _dated(root, f"{run_id}{store_traces.PARQUET_SUFFIX}")]
 
 
-def _json_lines(path: Path) -> list[dict[str, Any]]:
+def _json_lines(path: Path) -> list[JsonObject]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def read_events(path: Path) -> list[dict[str, Any]]:
+def read_events(path: Path) -> list[JsonObject]:
     return _json_lines(path)
 
 
-def loose_run(move: Move, path: Path, events: list[dict[str, Any]]) -> RunSources:
+def loose_run(move: Move, path: Path, events: list[JsonObject]) -> RunSources:
     """An empty file contributes no call but still expects zero events, so it archives with its run."""
     rel = store_traces.day_dir(Path(), move.day) / f"{move.run_id}{TRACE_DIR_SUFFIX}" / path.name
     calls = {move.call_id: events} if events else {}
     return RunSources(move.run_id, move.day, calls, {move.call_id: len(events)}, (Source(path, rel),))
 
 
-def legacy_run(path: Path, rows: Sequence[dict[str, Any]]) -> RunSources:
+def legacy_run(path: Path, rows: Sequence[JsonObject]) -> RunSources:
     """One legacy day file. Its date is the directory it sits in; each call's events come back in seq order."""
     calls = {
-        call_id: [r["event"] for r in sorted((r for r in rows if r["call_id"] == call_id), key=lambda r: r["seq"])]
-        for call_id in sorted({r["call_id"] for r in rows})
+        call_id: [
+            cast(JsonObject, r["event"])
+            for r in sorted((r for r in rows if r["call_id"] == call_id), key=lambda r: cast(int, r["seq"]))
+        ]
+        for call_id in sorted({cast(str, r["call_id"]) for r in rows})
     }
     rel = Path(*path.parts[-4:])
     return RunSources(
@@ -383,7 +386,7 @@ def _archived_file(
     """Run id and event count per call of one archived source, or None for a file that is not a source."""
     size = path.stat().st_size
     if path.name.endswith(store_traces.SUFFIX):
-        events = dict(Counter(r["call_id"] for r in store_traces.read_legacy_file(path)))
+        events = dict(Counter(cast(str, r["call_id"]) for r in store_traces.read_legacy_file(path)))
         return _ArchivedFile(path.name.removesuffix(store_traces.SUFFIX), day, path, size, events, sum(events.values()))
     parsed = parse_trace_name(path.name)
     if parsed is None or not path.parent.name.endswith(TRACE_DIR_SUFFIX):
@@ -396,7 +399,7 @@ def _archived_file(
 
 
 def _archived_run(files: Sequence[_ArchivedFile]) -> tuple[ArchivedRun, tuple[Path, ...]]:
-    call_ids = set().union(*(f.events for f in files))
+    call_ids = {c for f in files for c in f.events}
     return (
         ArchivedRun(
             files[0].run_id,
@@ -436,11 +439,11 @@ def scan_archive(
 
 def _parquet_counts(traces: TracesRoot, run_id: str) -> dict[str, int] | str | None:
     """Events per call in the run's Parquet files. None when there is none, an error string when one will not read."""
-    paths = store_traces._find_parquet(traces, run_id)
+    paths = store_traces.find_parquet(traces, run_id)
     if not paths:
         return None
     try:
-        return dict(Counter(r["call_id"] for path in paths for r in store_traces._parquet_rows(traces, path)))
+        return dict(Counter(cast(str, r["call_id"]) for path in paths for r in store_traces.parquet_rows(traces, path)))
     except Exception as exc:
         return str(exc) or type(exc).__name__
 
@@ -489,9 +492,7 @@ def group_by_run(runs: Sequence[RunSources]) -> dict[str, RunSources]:
 
 
 def _local_dir(root: TracesRoot) -> Path:
-    from pyarrow.fs import LocalFileSystem
-
-    if not isinstance(root.fs, LocalFileSystem):
+    if not store_traces.is_local_root(root):
         raise ValueError(f"backfill needs a local traces root, got {redact_url(root.path)}")
     return Path(root.path)
 
@@ -529,7 +530,7 @@ def _convert(traces: TracesRoot, base: Path, run: RunSources) -> RunResult:
     )
 
 
-def _read_legacy(paths: Sequence[Path]) -> list[tuple[Path, list[dict[str, Any]]]] | None:
+def _read_legacy(paths: Sequence[Path]) -> list[tuple[Path, list[JsonObject]]] | None:
     """Rows of every legacy file, or None when zstandard is missing and they cannot be read."""
     try:
         return [(p, list(store_traces.read_legacy_file(p))) for p in paths]
@@ -584,11 +585,11 @@ def relink_map(calls: Sequence[Call]) -> dict[str, str]:
     return {f"{c.run_id}-{Path(c.trace).stem}": c.id for c in calls if c.id.startswith(LEGACY_PREFIX) and c.trace}
 
 
-def relink_rows(rows: Sequence[dict[str, Any]], mapping: dict[str, str]) -> tuple[list[dict[str, Any]], int]:
+def relink_rows(rows: Sequence[JsonObject], mapping: dict[str, str]) -> tuple[list[JsonObject], int]:
     """Copies of `rows` with call_id mapped, and how many changed."""
     return (
-        [{**r, "call_id": mapping.get(r["call_id"], r["call_id"])} for r in rows],
-        sum(1 for r in rows if r["call_id"] in mapping),
+        [{**r, "call_id": mapping.get(cast(str, r["call_id"]), r["call_id"])} for r in rows],
+        sum(1 for r in rows if cast(str, r["call_id"]) in mapping),
     )
 
 
@@ -596,9 +597,12 @@ def load_legacy_calls(store_url: str) -> list[Call]:
     """Store calls with a `legacy:` id whose detail_json names a trace. Reads only; the store is never written."""
     conn = store_read.connect_readonly(store_url)
     try:
-        rows = conn.query_all(
-            "SELECT run_id, call_id, detail_json FROM node_calls"
-            f" WHERE substr(call_id, 1, {len(LEGACY_PREFIX)}) = '{LEGACY_PREFIX}' ORDER BY run_id, seq"
+        rows = cast(
+            "list[tuple[str, str, str | None]]",
+            conn.query_all(
+                "SELECT run_id, call_id, detail_json FROM node_calls"
+                f" WHERE substr(call_id, 1, {len(LEGACY_PREFIX)}) = '{LEGACY_PREFIX}' ORDER BY run_id, seq"
+            ),
         )
     finally:
         conn.close()
@@ -611,16 +615,17 @@ def load_legacy_calls(store_url: str) -> list[Call]:
 
 def _relink_run(traces: TracesRoot, run_id: str, mapping: dict[str, str], dry_run: bool) -> tuple[int, list[Mismatch]]:
     """Rows changed across the run's Parquet files. A file is rewritten only when its row count holds."""
-    rows_changed, bad = 0, []
-    for path in store_traces._find_parquet(traces, run_id):
-        rows = store_traces._parquet_rows(traces, path)
+    rows_changed = 0
+    bad: list[Mismatch] = []
+    for path in store_traces.find_parquet(traces, run_id):
+        rows = store_traces.parquet_rows(traces, path)
         new, n = relink_rows(rows, mapping)
         if n and len(new) != len(rows):
             bad.append(Mismatch(run_id, len(rows), len(new)))
         elif n:
             rows_changed += n
             if not dry_run:
-                store_traces._put(traces, path, store_traces._table(new))
+                store_traces.put_table(traces, path, store_traces.build_table(new))
     return rows_changed, bad
 
 
@@ -708,7 +713,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return relink_main(given[1:])
     if given[:1] == ["prune"]:
         return prune_main(given[1:])
-    ap = argparse.ArgumentParser(prog="python -m harness.store_backfill_traces", description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(prog="python -m harness.store_backfill_traces", description=cast(str, __doc__).splitlines()[0])
     ap.add_argument("traces_root", help="local trace store root; Parquet is written here and sources archived under it")
     ap.add_argument("--loose-root", type=Path, default=None, help="directory of <run_id>-trace directories")
     ap.add_argument("--calls-dir", type=Path, default=None, help="directory of <run_id>.calls.jsonl files")

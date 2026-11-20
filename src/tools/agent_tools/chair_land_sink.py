@@ -17,7 +17,6 @@ from agent_tools.chair_land import UNPAUSED
 from agent_tools.chair_land_proc import (
     LandOutcome,
     LandSpec,
-    _write_atomic,
     count_by_repo,
     dead_outcome,
     encode_spec,
@@ -25,10 +24,12 @@ from agent_tools.chair_land_proc import (
     parse_outcome,
     parse_spec,
     paths_for,
+    write_atomic,
 )
 
 if TYPE_CHECKING:
-    from agent_tools.chair_exec import Action, Result
+    from agent_tools.chair_exec import Result
+    from agent_tools.chair_types import Action
     from agent_tools.ci_gate import CiGate
 
 LAND_TIMEOUT_S = 45 * 60.0  # mirrors chair_exec.LAND_TIMEOUT_S: the bound the child puts on one `cox runs land`
@@ -108,7 +109,7 @@ class ProcessLands:
         self._dir.mkdir(parents=True, exist_ok=True)
         outcome_path.unlink(missing_ok=True)  # a leftover from a crashed collect must not answer for this land
         spec = LandSpec(key, action, argv, action.get("repo", ""), LAND_TIMEOUT_S, self._now(), self._host, 0)
-        _write_atomic(spec_path, encode_spec(spec))
+        write_atomic(spec_path, encode_spec(spec))
         try:
             pid = self._spawn([sys.executable, "-m", "agent_tools.chair_land_proc", str(spec_path)])
         except OSError as exc:
@@ -118,7 +119,7 @@ class ProcessLands:
                 "status": "failed",
                 "reason": f"land could not start: {type(exc).__name__}: {exc}",
             }
-        _write_atomic(spec_path, encode_spec(dataclasses.replace(spec, pid=pid)))
+        write_atomic(spec_path, encode_spec(dataclasses.replace(spec, pid=pid)))
         return _in_progress(action, f"landing in {spec.repo}")
 
     def _gone(self, spec: LandSpec) -> bool:

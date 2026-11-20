@@ -1,5 +1,6 @@
 import contextlib
 import datetime
+import io
 import json
 import os
 import socket
@@ -487,3 +488,38 @@ def test_leader_status_still_says_held_by_this_session_when_the_caller_is_the_re
     _live_loop(monkeypatch, "0::/user.slice/session-3.scope\n")
     out = _leader_line(tmp_path, monkeypatch, capsys, claude_pid=str(os.getpid()))
     assert "chair held by" not in out
+
+
+# -- a resumed session whose record matches a live service: observer, for every hook source ---------
+
+_SOURCES = ("startup", "resume", "compact", "clear")
+_SERVICE_CGROUP = "0::/user.slice/app.slice/coxswain-chair.service\n"
+
+
+def _resumed_status(tmp_path, monkeypatch, capsys, source, profile_text=""):
+    """The service holds the record by pid; the caller is another process sharing the record's session id."""
+    _hold(tmp_path, session="chair-svc", claude_session="sess-1")
+    _live_loop(monkeypatch, _SERVICE_CGROUP)
+    profile = _profile(tmp_path)
+    if profile_text:
+        profile.write_text(profile.read_text() + profile_text)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": "sess-1", "source": source})))
+    monkeypatch.setenv("CLAUDE_PID", "1")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-1")
+    before = (tmp_path / "runs" / "chair.json").read_bytes()
+    assert main(["route", "leader", "status", "--profile", str(profile)]) == 0
+    return capsys.readouterr().out, before, (tmp_path / "runs" / "chair.json").read_bytes()
+
+
+@pytest.mark.parametrize("source", _SOURCES)
+def test_leader_status_for_a_resumed_session_matching_a_live_service_names_holder_and_host_and_writes_nothing(tmp_path, monkeypatch, capsys, source):
+    out, before, after = _resumed_status(tmp_path, monkeypatch, capsys, source)
+    assert out == f"chair: held by chair-svc on {socket.gethostname()}; not the chair\n"
+    assert "held by this session" not in out
+    assert after == before
+
+
+@pytest.mark.parametrize("source", _SOURCES)
+def test_leader_status_under_session_takes_always_takes_as_before(tmp_path, monkeypatch, capsys, source):
+    out, _before, _after = _resumed_status(tmp_path, monkeypatch, capsys, source, "chair:\n  session_takes: always\n")
+    assert out == "chair: held by this session\n"

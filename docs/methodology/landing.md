@@ -40,6 +40,16 @@ starting with `#` are skipped. Each line runs through a shell from the
 repository root, so `cd <dir> && <cmd>` works. The check's name is the
 line's first word.
 
+A line may end `# fix: <command>`. The shell reads the whole line as a
+comment after the check, so the check itself is unchanged. The build runs
+the fix command first, before the checks, and keeps what it changed in the
+task's commit. A formatter is the usual case, so a style-only difference no
+longer quarantines a task:
+
+```text
+cargo fmt --check  # fix: cargo fmt
+```
+
 The coxswain repository uses this to run every component suite. Its
 `.agent-checks` is:
 
@@ -117,7 +127,18 @@ branch, and nothing is assembled from several parents. A wave is the set of phas
 initiative branch, not a branch.
 
 The landing record, one per initiative in the store, names the branch, the parent it was cut from, and each phase's
-state, tip and merge commit. The parent is resolved once, when the branch is cut, and no longer floats.
+state, tip and merge commit. The parent is resolved once, when the branch is cut.
+
+Before a run builds anything, it merges the parent's current tip into the initiative branch, so no phase builds on an
+old base. A reused phase branch then merges the new initiative tip in, and a new one is cut from it. When the parent
+merges cleanly, that is all. When it conflicts, the run files a rectify task in the `integrate` phase, on
+`epic/<id>/integrate`, which holds the conflicted merge, markers and all. Every other phase waits, blocked with the
+reason and not quarantined, until that task is built and its phase has merged into the initiative branch. The
+`integrate` phase needs no other phase, so it merges first, and `on_blocked: split` never moves it to a follow-up
+initiative. A merge that fails for another reason (origin has diverged, say) also holds every phase, with the reason,
+until a run can take the parent forward. A branch lease another worker holds is not such a failure: the run builds on
+the branch as it is and the next run takes the parent forward. A stacked initiative whose lower layer has landed takes
+forward that layer's own parent, since the lower branch is deleted; the lander moves the record itself at land time.
 
 ### What the words mean
 
@@ -140,13 +161,60 @@ The lander works a queue in the store with two kinds of item:
 
 | Item | What it does |
 | --- | --- |
-| `phase_merge` | Merges one built phase into the initiative branch, locally, after the level checks pass on the merged tree. A build run performs this merge itself the moment it finishes a phase; the lander performs whatever is left queued. |
-| `initiative_land` | Merges the parent into the initiative branch, runs the gate checks, pushes, opens the one pull request, waits for its checks, merges it at gate `full` (or leaves the merge to a person), then marks every task done and cleans the branches. |
+| `phase_merge` | Merges one built phase into the initiative branch, after the level checks pass on the merged tree, and pushes the branch to origin. The phase is recorded merged only once origin takes the push; a refused push undoes the merge here and the item is queued again. A build run performs this merge itself the moment it finishes a phase, under the same rule; the lander performs whatever is left queued. |
+| `initiative_land` | Merges the parent into the initiative branch, runs the gate checks, pushes, opens the one pull request, reads its checks once per pass until they finish, merges it at gate `full` (or leaves the merge to a person), then marks every task done and cleans the branches. |
 
-Every move of an initiative branch is made under one store lease per initiative, after a fetch, so two hosts never fork
-it. The two kinds have separate caps (`landing_areas.phase_cap`, default 2, and `landing_areas.land_cap`, default 1)
+Every move of an initiative branch is made under one store lease per initiative, after a fetch, and every phase merge
+is pushed before it is recorded, whatever `push_initiative` says, so two hosts never fork it: origin's copy is the one
+every host reads. A clone whose copy has diverged from origin's with the same tree (a second "merge phase" commit of
+work origin already holds) is reset to origin's, by the lander and by a build run's parent-phase check alike, but
+only when origin's tip holds every commit the landing record names: a record written before this rule may name the
+clone's own merge commit. A copy that diverged with a different tree, or whose record origin lacks, is left as it is:
+the lander holds the initiative, a build run's phase stops with "needs the chair", and either tells the chair once per
+pair of commits, naming both. The pushes go through the forge (Forgejo's push waits for the server to show the
+branch); when origin still lacks the tip afterwards, as with the local forge, which keeps the branch local, a plain
+fast-forward `git push` follows. The two kinds have separate caps (`landing_areas.phase_cap`, default 2, and `landing_areas.land_cap`, default 1)
 and neither counts against the launch cap. An item open for an hour is told to the chair once; a pull request waiting
 for a person never is. `cox lander status` shows every initiative in flight and every item with its age.
+
+The lander never waits inside a pass. A land reads its pull request's checks once: green merges, red goes back to
+build, and pending leaves the item `waiting` for the next pass to read again. A failure the forge can rerun is rerun
+once per commit, and that pass waits too. The bounds `wait_checks` keeps hold across passes, on the record as
+`checks_poll`: a rerun refused five times is final, and right after a rerun the old failures read as pending for at
+most five passes. Checks unreadable five passes in a row are not the change's fault but the reading's (a token, the
+forge's address), so the land keeps waiting and the chair is told once per commit and reason. A land item that fails
+and is queued again keeps its first `queued_at`, so the queue alarm still sees it after an hour. Each pass splits its work
+into one lane per repository, and each lane runs on a thread of its own. The caps count per repository. A repository
+whose gate checks are still running, or whose lane is still busy from an earlier pass, holds only itself: under
+`cox lander run` the other repositories keep landing, and the busy one rejoins the passes once its lane is done. All
+the per-initiative work of a pass (the sweep, the queue alarm, reconciliation, the items) runs in the lane that owns
+the initiative, so a busy lane's records are not written by anything else in that process.
+
+Each pass also checks every published landing record against origin. Published means assembled, or with a pull
+request URL on the record, whatever the state; before that the host that builds the initiative owns its branch, and
+a phase it has not pushed yet is not a phase lost. One check runs before publication too, once origin's branch holds
+the record: a phase recorded merged whose branch on origin has since moved to a tip the initiative branch does not
+hold (the phase was built again after its merge, with every task settled) is merged again at that tip and pushed, and
+its tip and merge commit are rewritten on the record once origin takes the push. If that merge conflicts, the
+initiative is held and the chair is told once. So an initiative sent back to build (`conflicted`) after its pull
+request opened is still judged: its open pull request must still hold every phase merged before, while the
+`integrate` work is built on top. Under the initiative's branch lease, the lander fetches origin's initiative branch and reads the
+record again. A phase the record calls merged must be on that branch, both its tip and its merge commit. When it is
+not and the phase tip is in the clone, or on origin's phase branch, the lander merges the phase into origin's branch
+again and pushes it. The push is a plain one, so origin takes it only as a fast-forward, and the open pull request
+gets the repair. The record's merge commit is rewritten only after origin takes the push. When the tip is gone, the
+initiative is held: `cox lander status` shows the reason, the chair is told once, and nothing merges into the
+initiative (a build run's phase merge included) or lands from it. A busy lease, a refused push, an unreadable origin or a
+clone that has diverged from origin waits for the next pass and changes nothing. A clone ahead of origin (a repair
+merged here whose push never happened) is built on, and the push publishes it. The hold lifts on the first pass that
+finds the record and origin agree. Whatever reconciliation decided, the land itself checks once more right before
+its merge: while the branch that would merge (origin's, or this clone's for a forge that merges locally) lacks a tip
+or merge commit the record names, the land waits.
+
+The record is what decides which phases an initiative carries, not the branch. So do not drop a phase by resetting
+`init/<id>` on origin by hand: the next pass reads that as a lost phase and merges it back in (or, when its tip is
+gone, holds the initiative). To take a phase out, move it to a follow-up initiative (`landing_areas.on_blocked:
+split`, which runs `split_initiative`), or edit the landing record so it no longer calls the phase merged.
 
 Lands on one parent are one at a time by default, since each needs an up-to-date parent. With
 `landing_areas.land_batch` above 1, the lander lands together up to that many initiatives that share a repo and a
@@ -338,11 +406,11 @@ To finish a task by hand, run the merged-branch check first, then the escape hat
 ```
 git fetch origin <base> <phase>
 git branch -r --merged origin/<base>
-cox route edit <task> --state done
+cox route edit <task> --initiative <initiative> --state done
 ```
 
 Look for the PR branch in that list, or for its squash commit in `git log origin/<base>`, before `cox route edit <task>
---state done` is run.
+--initiative <initiative> --state done` is run.
 
 ## runs clean
 

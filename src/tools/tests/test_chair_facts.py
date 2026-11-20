@@ -396,14 +396,17 @@ def test_a_harness_attempt_with_no_on_current_body_key_still_counts():
     assert harness_failures([HARNESS], ("i", "p1", "a")) == 1
 
 
+_NO_REASON = {"run": "", "reason": ""}  # an open quarantine whose reader row carries neither
+
+
 def test_the_cause_and_the_count_come_from_the_same_attempts():
     (q,) = gather_facts(_deps(attempts=({**HARNESS, "cause": "code"}, HARNESS), stranded=()), NOW)["quarantines"]
-    assert q == {**BARE, "cause": "harness", "harness_failures": 1}
+    assert q == {**BARE, "cause": "harness", "harness_failures": 1, **_NO_REASON, "causes": ["code", "harness"], "reasons": ["", ""], "failures": 1}
 
 
 def test_a_quarantined_task_with_no_live_run_gives_a_quarantine_and_an_initiative():
     facts = gather_facts(_deps(stranded=()), NOW)
-    assert facts["quarantines"] == [{**BARE, "cause": "harness", "harness_failures": 1}]
+    assert facts["quarantines"] == [{**BARE, "cause": "harness", "harness_failures": 1, **_NO_REASON, "causes": ["harness"], "reasons": [""], "failures": 0}]
     assert [i["id"] for i in facts["initiatives"]] == ["i"]
 
 
@@ -496,6 +499,39 @@ def test_an_open_quarantine_with_a_real_cause_survives_an_approved_list_that_lac
     attempts = [{"initiative": "i", "phase": "p1", "task": "a", "cause": "code"}]
     (q,) = quarantine_facts(opened, [], attempts, set(), lambda i, t: False, approved=[])
     assert q["cause"] == "code"
+
+
+def _open_with(*attempts, run="i-2", reason="the configured check failed"):
+    opened = [{"initiative": "i", "phase": "p1", "task": "a", "run": run, "reason": reason}]
+    rows = [{"initiative": "i", "phase": "p1", "task": "a", **a} for a in attempts]
+    (q,) = quarantine_facts(opened, [], rows, set(), lambda i, t: False, approved=[])
+    return q
+
+
+def test_a_quarantine_fact_carries_its_causes_reasons_run_and_newest_reason():
+    q = _open_with({"cause": "code", "reason": "first"}, {"cause": "code", "reason": "second"})
+    assert (q["causes"], q["reasons"]) == (["code", "code"], ["first", "second"])
+    assert (q["run"], q["reason"]) == ("i-2", "the configured check failed")
+
+
+def test_attempts_on_an_earlier_body_are_left_out_of_the_causes_and_reasons():
+    q = _open_with({"cause": "code", "reason": "old", "on_current_body": False}, {"cause": "code", "reason": "new"})
+    assert (q["causes"], q["reasons"]) == (["code"], ["new"])
+
+
+def test_a_review_or_code_quarantine_holds_its_reason_as_the_objection():
+    assert _open_with({"cause": "review"})["held_objection"] == "the configured check failed"
+    assert _open_with({"cause": "code"})["held_objection"] == "the configured check failed"
+
+
+def test_a_blank_reason_or_another_cause_holds_no_objection():
+    assert "held_objection" not in _open_with({"cause": "code"}, reason="  ")
+    assert "held_objection" not in _open_with({"cause": "ticket"})
+
+
+def test_a_harness_quarantine_names_its_state_by_its_newest_run():
+    assert _open_with({"cause": "harness"}, run="i-4")["task_state_key"] == "i-4"
+    assert "task_state_key" not in _open_with({"cause": "code"})
 
 
 def test_a_fake_has_patch_gives_that_value_as_has_patch():
@@ -663,16 +699,16 @@ def test_gather_facts_fills_every_key_from_the_fakes():
     queue = {"batch_size": 3, "wait_s": 90}
     deps = replace(_deps(), phase_records=lambda tasks: [], merge_queue=lambda: queue, host_load_ceiling=lambda: 0.8)
     facts = gather_facts(deps, NOW)
-    # login_hosts is not yet declared on Facts: a later task adds it there once the login watch reads it.
+    # land_freeze is gathered only while a freeze is set, and these fakes set none.
     # tuning, landed_main and land_outcomes are all filled in gather_facts now.
     # chat_epics is gathered only when the deps supply work_rows, and these fakes do not.
     # live_phases is gathered only when the deps supply it, and these fakes do not.
     # previous_schedule_feed is read by the planner; no task gathers it yet.
-    # merged_prs is read by plan_missed_closes and handled_keys by plan_recover; the facts edge gathers neither yet.
+    # merged_prs is read by plan_missed_closes; the facts edge does not gather it yet. handled_keys is gathered from the deps.
     declared = set(Facts.__annotations__) - {
-        "chat_epics", "live_phases", "schedule_inputs", "previous_schedule_feed", "merged_prs", "handled_keys",
+        "chat_epics", "live_phases", "schedule_inputs", "previous_schedule_feed", "merged_prs", "land_freeze",
     }
-    assert set(facts) == declared | {"login_hosts"}
+    assert set(facts) == declared
     assert facts["dispatch"] == {"max_in_flight": 2, "live_runs": 1, "hosts": []}
     assert facts["initiatives"][0]["landed"] == {"z"}
     assert facts["approved"][0]["phase_done"] is True
@@ -814,7 +850,8 @@ def test_rows_drive_ready_intake_quarantined_and_stranded_facts_with_files_ignor
     }
     assert facts["intake"] == ["intake/q1.md"]
     assert facts["quarantines"] == [
-        {"task_id": "b", "initiative": "j", "cause": "code", "harness_failures": 0, "has_patch": False, "rescue_failed": False},
+        {"task_id": "b", "initiative": "j", "cause": "code", "harness_failures": 0, "has_patch": False, "rescue_failed": False,
+         "causes": ["code"], "reasons": [""], "run": "j-9", "reason": "", "failures": 1},
         {"task_id": "c", "initiative": "i", "cause": "stranded", "harness_failures": 0, "has_patch": False, "rescue_failed": False,
          "tasks": [{"task": "c", "run": "i-5", "remedy": "cox runs land i-5 --task c --repo r"}]},
     ]
@@ -990,7 +1027,7 @@ def _store_with_recorder(tmp_path, monkeypatch, at: datetime):
         conn.row_factory = sqlite3.Row
         return conn, "?"
 
-    monkeypatch.setattr(run_store, "_open", open_store)
+    monkeypatch.setattr(run_store, "open_store", open_store)
     return recorder(tmp_path, lambda: 4, lambda: _stamp(at), store=store, holder="h")
 
 
@@ -1018,7 +1055,7 @@ def test_two_not_landed_rows_count_two_attempts_so_the_back_off_doubles():
 
 @pytest.mark.xfail(
     strict=True,
-    reason="root cause outside this task's surfaces: chair_read_stale.read_chair_actions returns [] when run_store._open "
+    reason="root cause outside this task's surfaces: chair_read_stale.read_chair_actions returns [] when run_store.open_store "
     "raises the missing-psycopg RuntimeError, while the recorder writes through the harness python, which has psycopg",
 )
 def test_a_reader_without_psycopg_still_holds_off_a_land_the_recorder_wrote(tmp_path, monkeypatch):
@@ -1028,7 +1065,7 @@ def test_a_reader_without_psycopg_still_holds_off_a_land_the_recorder_wrote(tmp_
     def no_driver(runs_dir):
         raise RuntimeError("a postgres store needs psycopg: pip install 'coxswain[postgres]'")
 
-    monkeypatch.setattr(run_store, "_open", no_driver)
+    monkeypatch.setattr(run_store, "open_store", no_driver)
     assert _planned_kinds(tmp_path, NOW + timedelta(minutes=5)) == []
 
 

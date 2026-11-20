@@ -472,7 +472,7 @@ def test_cli_upgrade_moves_the_checkout_then_syncs_reinstalls_cox_and_links_the_
         ["git", "-C", checkout, "fetch", "--tags"],
         ["git", "-C", checkout, "checkout", "v2.0.0"],
         ["uv", "sync", "--frozen", "--all-extras", "--inexact", "-q"],
-        ["uv", "tool", "install", "--force", "-q", "--editable", checkout],
+        ["uv", "tool", "install", "--force", "-q", "--editable", f"{checkout}[parquet,postgres]"],
         [f"{checkout}/crew/install.sh"],
     ]
     assert calls[2][1] == checkout and calls[-1][0] == ["cox", "setup", "doctor"]

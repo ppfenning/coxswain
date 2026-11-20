@@ -10,12 +10,12 @@ from pathlib import Path
 class ParsedLog:
     """`damaged` holds the raw lines that failed to parse, NUL bytes intact."""
 
-    rows: tuple[dict, ...]
+    rows: tuple[dict[str, object], ...]
     skipped: int
     damaged: tuple[str, ...]
 
 
-def _classify(raw: str) -> tuple[str, dict | None]:
+def _classify(raw: str) -> tuple[str, dict[str, object] | None]:
     """Returns ("row", dict), ("blank", None) or ("damaged", None) for one raw line."""
     cleaned = raw.replace("\x00", "")
     if cleaned == raw and not raw.strip():
@@ -49,7 +49,7 @@ def read_log(path: Path) -> ParsedLog:
     return parse_log(data.decode("utf-8", errors="replace"))
 
 
-def append_line(path: Path, entry: dict, *, sync: bool) -> None:
+def append_line(path: Path, entry: dict[str, object], *, sync: bool) -> None:
     """One os.write per call; a torn tail (last byte not a newline) is closed in that same write."""
     fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o644)
     try:

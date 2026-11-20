@@ -12,8 +12,6 @@ from agent_tools.usage_window import (
     WeeklyReset,
     _read_usage_files,
     _usage_started,
-    block_remaining,
-    ceiling_remaining,
     five_hour_start,
     gather,
     gather_weekly,
@@ -277,50 +275,6 @@ def _window(ceiling_usd=None, spent_usd=0.0, start=_NOW, end=_NOW):
     return Window(start=start, end=end, spent_usd=spent_usd, ceiling_usd=ceiling_usd, burn_usd_per_hour=0.0, runs_in_flight=0)
 
 
-def test_block_remaining_at_half_elapsed_is_half_the_fraction():
-    window = _window(start=_NOW, end=_NOW.replace(hour=_NOW.hour + 4))
-    _, fraction = block_remaining(window, _NOW.replace(hour=_NOW.hour + 2))
-    assert fraction == 0.5
-
-
-def test_block_remaining_with_now_past_end_is_zero_not_negative():
-    window = _window(start=_NOW.replace(hour=_NOW.hour - 2), end=_NOW.replace(hour=_NOW.hour - 1))
-    minutes, fraction = block_remaining(window, _NOW)
-    assert minutes == 0
-    assert fraction == 0.0
-
-
-def test_ceiling_remaining_clamps_a_spend_over_the_ceiling_to_zero():
-    window = _window(ceiling_usd=10.0, spent_usd=15.0)
-    assert ceiling_remaining(window) == 0.0
-
-
-def test_ceiling_remaining_is_none_with_no_ceiling_set():
-    window = _window(ceiling_usd=None, spent_usd=15.0)
-    assert ceiling_remaining(window) is None
-
-
-def _capturing_gather(captured):
-    def fake_gather(runs_dir, now, ceiling_usd=None, usage=None):
-        captured["ceiling_usd"] = ceiling_usd
-        return window_from({"blocks": []}, [], now, window_hours=5.0)
-    return fake_gather
-
-
-def test_cli_usage_assessment_threads_the_profile_ceiling_into_gather(tmp_path, monkeypatch):
-    captured = {}
-    monkeypatch.setattr(cli.usage_window, "gather", _capturing_gather(captured))
-    cli._usage_assessment(tmp_path, window_ceiling_usd=250.0)
-    assert captured["ceiling_usd"] == 250.0
-
-
-def test_cli_usage_assessment_passes_none_when_the_profile_has_no_ceiling(tmp_path, monkeypatch):
-    captured = {}
-    monkeypatch.setattr(cli.usage_window, "gather", _capturing_gather(captured))
-    cli._usage_assessment(tmp_path)
-    assert captured["ceiling_usd"] is None
-
-
 def test_weekly_window_from_includes_a_usage_file_three_days_old(tmp_path):
     inside = _NOW - timedelta(days=3)
     window = weekly_window_from([(inside, {"cost_usd": 9.0})], _NOW)
@@ -384,7 +338,6 @@ def test_gather_weekly_reports_nonzero_for_a_real_shaped_usage_file(tmp_path):
     os.utime(path, (mtime, mtime))
     window = gather_weekly(tmp_path, _NOW, weekly_ceiling_usd=1043.0)
     assert window.spent_usd == 770.0
-    assert ceiling_remaining(window) != 1.0
 
 
 def test_read_usage_files_starts_a_store_only_run_at_its_launched_at_and_skips_one_without(tmp_path):

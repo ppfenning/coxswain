@@ -1,11 +1,10 @@
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
 
 from agent_tools import run_store
 from agent_tools.chair_facts import run_initiative
 
-Row = Mapping[str, Any]
+Row = Mapping[str, object]
 
 
 def row_exited(row: Row) -> bool:
@@ -24,14 +23,14 @@ def run_exited(rows: Sequence[Row]) -> dict[str, bool]:
     return {i: row_exited(row) for i, row in newest.items()}
 
 
-def exit_rows(runs_dir: Path) -> list[dict[str, Any]]:
+def exit_rows(runs_dir: Path) -> list[dict[str, object]]:
     """Edge. run_id, launched_at, ended_at and status of every `runs` row; empty with no store or an unreadable one. A store with no `status` column reads it as None."""
-    opened = run_store._open(runs_dir)
+    opened = run_store.open_store(runs_dir)
     if opened is None:
         return []
     conn, token = opened
     try:
-        status = "status" if "status" in run_store._runs_columns(conn, token) else "NULL AS status"
+        status = "status" if "status" in run_store.runs_columns(conn, token) else "NULL AS status"
         return [dict(r) for r in conn.execute(f"SELECT run_id, launched_at, ended_at, {status} FROM runs").fetchall()]
     except run_store._DB_ERRORS:
         return []

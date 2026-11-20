@@ -87,7 +87,7 @@ def test_the_literal_secret_wording_is_the_lakes():
 
 def test_call_events_falls_back_to_the_loose_trace_past_an_unset_env_var(tmp_path, monkeypatch):
     pytest.importorskip("pyarrow")  # without pyarrow, call_events raises before it reads the block
-    monkeypatch.setattr(run_store, "_traces_root", lambda runs_dir: TracesRoot("s3://coxswain/traces", True, BLOCK))
+    monkeypatch.setattr(run_store, "traces_root_for", lambda runs_dir: TracesRoot("s3://coxswain/traces", True, BLOCK))
     monkeypatch.delenv("GARAGE_ACCESS_KEY_ID", raising=False)
     loose = tmp_path / "call.jsonl"
     loose.write_text('{"type": "result"}\n')

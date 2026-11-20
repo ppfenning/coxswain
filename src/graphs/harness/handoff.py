@@ -4,7 +4,6 @@ Pure: the patch, branch and commit arrive as arguments. Only the five HANDOFF_KE
 so a sibling's transcript or any other field of its build result cannot reach a plan.
 """
 
-import json
 import re
 from collections.abc import Mapping
 from typing import Any
@@ -48,16 +47,6 @@ def build_handoff(build_result: Mapping[str, Any], branch: str, commit: str) -> 
 def _clean(record: Mapping[str, Any]) -> dict[str, Any]:
     """The record cut down to the five keys, with absent ones defaulted."""
     return {k: _strings(record.get(k)) if k in _LIST_KEYS else str(record.get(k) or "") for k in HANDOFF_KEYS}
-
-
-def serialise_handoff(record: Mapping[str, Any]) -> str:
-    """The JSON stored in the handoff column."""
-    return json.dumps(_clean(record), sort_keys=True)
-
-
-def parse_handoff(text: str) -> dict[str, Any]:
-    loaded = json.loads(text)
-    return _clean(loaded if isinstance(loaded, dict) else {})
 
 
 def render_handoff(task: str, record: Mapping[str, Any]) -> str:

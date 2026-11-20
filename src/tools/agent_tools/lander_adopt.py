@@ -22,7 +22,6 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from agent_tools import lander
 from core import landing_record as lr
@@ -67,7 +66,7 @@ class Plan:
         return out
 
 
-def find_task(repo: Path, task: Mapping[str, Any], phase_branch: str, parent_ref: str) -> TaskFinding:
+def find_task(repo: Path, task: lander.Row, phase_branch: str, parent_ref: str) -> TaskFinding:
     """Edge (reads git). What adopt does with one task."""
     ident, phase, state = str(task["id"]), str(task.get("phase") or ""), str(task.get("state"))
     commit = str(task.get("merged_commit") or "")
@@ -86,7 +85,7 @@ def find_task(repo: Path, task: Mapping[str, Any], phase_branch: str, parent_ref
     return TaskFinding(ident, phase, "ready", f"{missing}; the approval cannot be found, so the task builds again")
 
 
-def _after(tasks: Sequence[Mapping[str, Any]], findings: Sequence[TaskFinding]) -> list[dict[str, Any]]:
+def _after(tasks: Sequence[lander.Row], findings: Sequence[TaskFinding]) -> list[dict[str, object]]:
     """The task rows as they will read once the findings are applied."""
     new_state = {f.task: {"done": "done", "ready": "ready"}.get(f.action) for f in findings}
     return [{**t, "state": new_state.get(str(t["id"])) or t.get("state")} for t in tasks]
@@ -94,12 +93,14 @@ def _after(tasks: Sequence[Mapping[str, Any]], findings: Sequence[TaskFinding]) 
 
 def plan(ports: lander.Ports, initiative: str) -> Plan:
     """Reads only. What adopting `initiative` would do on this machine."""
-    if ls.get_record(ports.conn, initiative) is not None:
-        return Plan(initiative, skip="it has a landing record already")
+    present = present_skip(ls.read_record(ports.conn, initiative))
+    if present is not None:
+        return Plan(initiative, skip=present)
     tasks, meta = ports.tasks(initiative), ports.meta(initiative)
     if not tasks:
         return Plan(initiative, skip="it has no tasks")
-    own, cartridge = meta.get("initiative") or {"id": initiative}, meta.get("cartridge") or {}
+    own: Mapping[str, object] = meta.get("initiative") or {"id": initiative}
+    cartridge: Mapping[str, object] = meta.get("cartridge") or {}
     try:
         land_at = resolve_land_at(cartridge, own.get("land_at"))
     except ValueError as exc:
@@ -107,13 +108,13 @@ def plan(ports: lander.Ports, initiative: str) -> Plan:
     if not is_initiative(land_at):
         return Plan(initiative, skip="it lands at task, which keeps no landing record")
     try:
-        repo = lander._repo(ports, {"initiative": initiative, "repo": own.get("repo") or ""})
+        repo = lander.ports_repo(ports, {"initiative": initiative, "repo": str(own.get("repo") or "")})
     except LookupError as exc:
         return Plan(initiative, skip=str(exc))
     if lg.rev(repo, "HEAD") is None:
         return Plan(initiative, skip=f"its repository is not at {repo}")
     parent = str(meta.get("target_branch") or own.get("target_branch") or _default_branch(repo))
-    parent_ref = lander._parent_ref(repo, parent)
+    parent_ref = lander.parent_ref_of(repo, parent)
     legacy = pr_branch_name(initiative)
     if lg.branch_ref(repo, legacy) is not None:
         branch = legacy
@@ -164,9 +165,11 @@ def apply(ports: lander.Ports, found: Plan, send_back: Callable[[str, str, str],
     initiative = found.initiative
     if found.skip:
         return found.lines()
-    if ls.get_record(ports.conn, initiative) is not None:
-        return [f"{initiative}: skipped: it has a landing record already"]
-    repo = lander._repo(ports, {"initiative": initiative, "repo": (ports.meta(initiative).get("initiative") or {}).get("repo") or ""})
+    present = present_skip(ls.read_record(ports.conn, initiative))
+    if present is not None:
+        return [f"{initiative}: skipped: {present}"]
+    repo = lander.ports_repo(ports, {"initiative": initiative,
+                                     "repo": str((ports.meta(initiative).get("initiative") or {}).get("repo") or "")})
     events: list[str] = []
     for finding in found.tasks:
         if finding.action == "done":
@@ -187,10 +190,10 @@ def apply(ports: lander.Ports, found: Plan, send_back: Callable[[str, str, str],
                 return [*events, f"{initiative}: stopped: {finding.task} could not be carried onto {branch}: {detail}"]
             events.append(f"{initiative}: {finding.task} carried onto {branch}")
     record, why = ops.start_record(ports.conn, repo, initiative=initiative, branch=found.branch, parent=found.parent,
-                                   parent_ref=lander._parent_ref(repo, found.parent), now=ports.now(), adopted=True)
+                                   parent_ref=lander.parent_ref_of(repo, found.parent), now=ports.now(), adopted=True)
     if record is None:
         return [*events, f"{initiative}: stopped: no record was made: {why}"]
-    events.append(f"{initiative}: record made on {record['branch']}")
+    events.append(f"{initiative}: record made on {lander.record_text(record, 'branch')}")
     if found.landed:
         ls.put_record(ports.conn, lr.with_state({**record, "state": "assembled"}, "landed", ports.now()))
         return [*events, f"{initiative}: recorded landed"]
@@ -202,7 +205,35 @@ def apply(ports: lander.Ports, found: Plan, send_back: Callable[[str, str, str],
     return events
 
 
+def present_skip(found: lr.LandingRecord | lr.Unreadable | None) -> str | None:
+    """Pure. Why adopt leaves an initiative alone because it has a landing-record row, or None when it has none. A row
+    that does not read is present too: adopting over it would write a fresh record over the history of its merged
+    phases, so it is left for a person to repair."""
+    if found is None:
+        return None
+    if isinstance(found, lr.Unreadable):
+        return f"its landing record cannot be read and is left as it is ({found.why})"
+    return "it has a landing record already"
+
+
+def unrecorded(initiatives: Sequence[str], table: lr.Listing) -> list[str]:
+    """Pure. The initiatives with no landing-record row, readable or not, in the order given (`present_skip`)."""
+    rows = _rows(table)
+    return [i for i in initiatives if present_skip(rows.get(i)) is None]
+
+
+def left_alone(initiatives: Sequence[str], table: lr.Listing) -> list[str]:
+    """Pure. What adopt says of each initiative named that it leaves alone because its row does not read: a person
+    who named it is told why nothing was adopted, and that the row was left as it is."""
+    rows = _rows(table)
+    found = [(i, rows.get(i)) for i in initiatives]
+    return [f"{i}: skipped: {present_skip(row)}" for i, row in found if isinstance(row, lr.Unreadable) and present_skip(row)]
+
+
+def _rows(table: lr.Listing) -> dict[str, lr.LandingRecord | lr.Unreadable]:
+    return {**{str(r.get("initiative")): r for r in table.records}, **{u.initiative: u for u in table.unreadable}}
+
+
 def candidates(ports: lander.Ports, initiatives: Sequence[str]) -> list[str]:
-    """The initiatives with no landing record, in the order given."""
-    have = {str(r["initiative"]) for r in ls.list_records(ports.conn)}
-    return [i for i in initiatives if i not in have]
+    """The initiatives with no landing record, in the order given (`unrecorded`)."""
+    return unrecorded(initiatives, ls.list_records(ports.conn))

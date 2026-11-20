@@ -46,16 +46,16 @@ def _lock(root: Path, text: str) -> None:
 
 
 def _spy_builds(monkeypatch) -> list[tuple[dict, Path]]:
-    """Every `_build_task` record with the worktree path the lane held when it returned."""
+    """Every `build_task` record with the worktree path the lane held when it returned."""
     seen: list[tuple[dict, Path]] = []
-    real = epic._build_task
+    real = epic.build_task
 
     def spy(ctx, **kw):
         record = real(ctx, **kw)
         seen.append((record, ctx.task_worktree(kw["phase"], kw["task"])))
         return record
 
-    monkeypatch.setattr(epic, "_build_task", spy)
+    monkeypatch.setattr(epic, "build_task", spy)
     return seen
 
 

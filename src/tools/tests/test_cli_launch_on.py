@@ -243,6 +243,19 @@ def test_on_a_host_not_logged_in_refuses_before_copying_and_writes_no_remote_rec
     assert _run_files(ws) == []
 
 
+def test_on_a_host_whose_auth_status_is_unreadable_the_refusal_keeps_the_claude_auth_wording(tmp_path, monkeypatch, capsys):
+    ws, _, argv = _setup(tmp_path)
+    calls = []
+    _fake_edge(monkeypatch, calls)
+    _no_local_process(monkeypatch)
+    monkeypatch.setattr(cli, "_host_auth_output", lambda a: "sh: claude: command not found")
+    rc = main([*argv, "--on", "box"])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "failed at auth: claude auth: status unreadable: sh: claude: command not found" in out
+    assert calls == []
+
+
 @pytest.mark.parametrize("failing", ["rsync", "ssh"])
 def test_on_a_failed_launch_step_exits_non_zero_and_writes_no_remote_record(tmp_path, monkeypatch, capsys, failing):
     ws, _, argv = _setup(tmp_path)

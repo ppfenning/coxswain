@@ -239,8 +239,10 @@ def set_state_argv(name: str, state: str, by: str) -> list[str]:
     return ["host", "set-state", name, state, "--by", by]
 
 
-def delete_argv(name: str, by: str) -> list[str]:
-    return ["host", "delete", name, "--by", by]
+def delete_argv(name: str) -> list[str]:
+    """The store CLI argv that deletes a draining host's row. It names no `--by`: the row goes, and the hosts table
+    keeps no record of who removed it. `cox host remove` prints the removed row and its restore line instead."""
+    return ["host", "delete", name]
 
 
 def remove_refusal(row: Row | None, live_runs: Sequence[str], name: str) -> str | None:
@@ -261,7 +263,7 @@ def removed_line(row: Row) -> str:
     return f"{row['name']}: {json.dumps(dict(row), sort_keys=True, default=str)}\n  restore: {restore}"
 
 
-def beat_argv(name: str, versions: dict) -> list[str]:
+def beat_argv(name: str, versions: Mapping[str, object]) -> list[str]:
     return ["host", "beat", name, "--versions", json.dumps(versions, sort_keys=True)]
 
 
