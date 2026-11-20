@@ -268,6 +268,17 @@ def _backup_before_migrate(conn: Connection, url: str, current: int, newest: int
         _pg_dump(url, dest, safe_url)
 
 
+def _newer_or_refused(conn: Connection, current: int, newest: int) -> int:
+    """Edge. `current`, for a store newer than `newest` whose newer migrations are all additive; reads only. Raises
+    `MigrationError`, naming the first newer migration that is not additive, otherwise."""
+    newer = newer_descriptions(conn, newest)
+    if accepts(current, newest, newer):
+        return current
+    raise MigrationError(
+        f"database is at schema version {current}, newest known migration is {newest}; {newer_refusal(newest, newer)}"
+    )
+
+
 def migrate(conn: Connection, applied_at: str, modules: Sequence[ModuleType | str] | None = None) -> int:
     """Apply each migration newer than the database, one transaction apiece. Returns the version read back.
 
@@ -281,12 +292,7 @@ def migrate(conn: Connection, applied_at: str, modules: Sequence[ModuleType | st
     newest = len(ordered)
     before = _current_version(conn)
     if before > newest:
-        newer = newer_descriptions(conn, newest)
-        if accepts(before, newest, newer):
-            return before
-        raise MigrationError(
-            f"database is at schema version {before}, newest known migration is {newest}; {newer_refusal(newest, newer)}"
-        )
+        return _newer_or_refused(conn, before, newest)
     conn.execute(_CREATE)
     p = conn.dialect.placeholder
     record = f"INSERT INTO schema_version (version, applied_at, description) VALUES ({p}, {p}, {p})"
@@ -299,6 +305,9 @@ def migrate(conn: Connection, applied_at: str, modules: Sequence[ModuleType | st
             for sql, params in _steps(m, conn.dialect, record, applied_at, _current_version(conn)):
                 conn.execute(sql, params)
     reached = _current_version(conn)
+    if reached > newest:
+        # A newer build migrated the store between this opener's reads: the same rule as a store found newer.
+        return _newer_or_refused(conn, reached, newest)
     if reached != newest:
         raise MigrationError(f"database is at schema version {reached} after migrating, expected {newest}")
     return reached

@@ -403,3 +403,20 @@ def test_every_default_module_statement_is_portable_and_has_no_foreign_key(modul
     sql = module.statements(dialect)
     assert [forbidden_constructs(s) for s in sql] == [()] * len(sql)
     assert not [s for s in sql if "REFERENCES" in s.upper() or "FOREIGN KEY" in s.upper()]
+
+
+def _and_a_newer_build_commits(description):
+    """Migration 2's statements, then the row a newer build's migration 3 would commit before this opener reads the
+    version back: the window between this opener's last migration and its final read."""
+    return (*TWO, f"INSERT INTO schema_version (version, applied_at, description) VALUES (3, '{NOW}', '{description}')")
+
+
+def test_a_newer_build_that_migrates_additively_while_this_one_migrates_is_accepted(conn):
+    migrate(conn, NOW, [fake(1, ONE)])
+    assert migrate(conn, NOW, [fake(1, ONE), fake(2, _and_a_newer_build_commits("additive: fake 3"))]) == 3
+
+
+def test_a_newer_build_that_migrates_non_additively_while_this_one_migrates_is_refused(conn):
+    migrate(conn, NOW, [fake(1, ONE)])
+    with pytest.raises(MigrationError, match=r"newest known migration is 2; migration 0003 \(fake 3\) is not additive"):
+        migrate(conn, NOW, [fake(1, ONE), fake(2, _and_a_newer_build_commits("fake 3"))])

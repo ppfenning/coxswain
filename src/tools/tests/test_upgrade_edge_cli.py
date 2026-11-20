@@ -28,6 +28,7 @@ class World:
         self.history = [A, B, C]
         self.green = {B, C}
         self.listings = {A: BASE_LISTING, B: BASE_LISTING, C: BASE_LISTING}
+        self.files: dict[tuple[str, str], str] = {}  # (sha, path) -> text, for `git show <sha>:<path>`
         self.doctor_fails_at: set[str] = set()  # a required row (the store) fails at these commits
         self.advisory_fails_at: set[str] = set()  # only an advisory row (the token file) fails at these commits
         self.down_after_restart: set[str] = set()  # units that are not active once restarted
@@ -48,6 +49,10 @@ class World:
             return 0, f"{self.head}\n"
         if argv[:3] == git and argv[3] == "ls-tree":
             return 0, self.listings[argv[5]]
+        if argv[:3] == git and argv[3] == "show":
+            sha, _, path = argv[4].partition(":")
+            text = self.files.get((sha, path))
+            return (0, text) if text is not None else (128, f"fatal: path '{path}' does not exist in '{sha}'")
         if argv[:3] == ["gh", "run", "list"]:
             runs = [{"headSha": sha, "status": "completed", "conclusion": "success" if sha in self.green else "failure"}
                     for sha in self.history]
@@ -174,6 +179,8 @@ def test_a_move_refused_before_the_checkout_moved_rolls_nothing_back_and_holds_n
 
 def test_a_failing_doctor_after_a_store_migration_is_not_rolled_back_past_it(world: World, tmp_path: Path, capsys):
     world.listings[B] = BASE_LISTING + "src/graphs/harness/store_ddl_0003.py\n"
+    world.files[(B, "src/graphs/harness/store_ddl_0003.py")] = 'VERSION = 3\nDESCRIPTION = "drops a column"\n'
+    world.files[(C, upgrade_edge.MIGRATE_MODULE)] = "def accepts(current, expected, newer):\n    return False\n"
     world.doctor_fails_at = {B}
     assert _upgrade(tmp_path) == 1
     out = capsys.readouterr().out
