@@ -29,6 +29,12 @@ def test_a_scrubbed_item_keeps_its_flag_and_its_line_says_so():
     assert [line.endswith("  scrubbed") for line in lines("demo-1", found)] == [True, False]
 
 
+def test_a_patch_that_holds_a_secret_is_listed_with_its_mark():
+    found = listing([{"step": "task/t1/build", "artifacts_json": [{**ITEM, "holds_secret": True}]}])
+    assert found[0]["holds_secret"] is True
+    assert lines("demo-1", found)[0].endswith("  HOLDS A SECRET (stored raw)")
+
+
 def test_lines_name_each_key_with_its_size_and_digest_or_say_there_are_none():
     assert lines("demo-1", [{"step": "s", **ITEM}]) == [f"{ITEM['key']}  42 B  {'ab' * 6}"]
     assert lines("demo-1", []) == ["demo-1: no artifacts recorded (no step rows list any; is artifacts_url set?)"]

@@ -52,7 +52,8 @@ def _keys(steps: list[dict]) -> dict[str, list[str]]:
     for s in steps:
         assert "artifacts_error" not in s["result_json"], s
         for a in s["artifacts_json"]:
-            assert {"key", "bytes", "sha256", "media"} <= set(a) <= {"key", "bytes", "sha256", "media", "scrubbed"}, a
+            assert {"key", "bytes", "sha256", "media"} <= set(a) <= {"key", "bytes", "sha256", "media", "scrubbed",
+                                                                      "holds_secret"}, a
             assert a["media"] != "text/x-diff" or "scrubbed" not in a, a  # the patch is stored as written
             assert a["key"].rpartition("@")[2] == a["sha256"][:12], a
     return {s["step"]: [a["key"].rpartition("@")[0] for a in s["artifacts_json"]] for s in steps}
@@ -248,6 +249,7 @@ def test_a_file_root_still_shows_the_transcript_and_the_check_log_once_the_run_f
     row = _doctor_row(sandbox)
     assert row.get("ok") is True and row["detail"].startswith("local folder: a probe object was written"), row
     assert sorted(p for p in root.rglob("*") if p.is_file()) == before  # the probe removed its object
+    assert not (root / "v1" / "probe").exists()  # and its emptied folder
 
 
 def test_an_s3_root_on_garage_still_shows_the_transcript_and_the_check_log_once_the_run_folder_is_gone(
@@ -261,4 +263,22 @@ def test_an_s3_root_on_garage_still_shows_the_transcript_and_the_check_log_once_
     row = _doctor_row(sandbox)
     assert row.get("ok") is True, row
     assert row["detail"] == f"s3 bucket {object_store.bucket}: a probe object was written, read back and removed", row
+    endpoint = object_store.endpoint.removeprefix("http://")
+    listed = subprocess.run(
+        [str(sandbox.install.python), "-c", _S3_LIST, plan.GARAGE_ACCESS_KEY_ENV, plan.GARAGE_SECRET_KEY_ENV, endpoint,
+         plan.GARAGE_REGION, f"{object_store.bucket}/{prefix}/v1/probe"],
+        env=sandbox.env, capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert listed.returncode == 0, listed.stderr
+    assert json.loads(listed.stdout) == [], listed.stdout  # the probe removed its key
+
+
+# Every object under a prefix, through the install's interpreter, as `_S3_READ` reads one.
+_S3_LIST = """import json, os, sys
+from pyarrow.fs import FileSelector, FileType, S3FileSystem
+key_env, secret_env, endpoint, region, path = sys.argv[1:6]
+fs = S3FileSystem(access_key=os.environ[key_env], secret_key=os.environ[secret_env], scheme="http", endpoint_override=endpoint, region=region)
+found = fs.get_file_info(FileSelector(path, recursive=True, allow_not_found=True))
+print(json.dumps([f.path for f in found if f.type == FileType.File]))
+"""
 

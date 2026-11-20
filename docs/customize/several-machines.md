@@ -216,10 +216,12 @@ well as in the run folder, set `artifacts_url` the same way, for example
 the keys a run wrote. Without the key nothing is uploaded.
 
 `cox runs show <run>` prints a run's transcripts and `cox runs log <run>`
-its check logs. Each reads the run folder first. When the folder holds no
-copy, because it was deleted or never fetched to this machine, each reads
-the objects the run's step rows name from `artifacts_url`, and checks each
-one against the size and sha256 its row recorded. `cox setup doctor` has an
+its check logs. Each copy is read from the run folder when the folder holds
+it, and otherwise from the object the run's step rows name in
+`artifacts_url`, checked against the size and sha256 its row recorded. So a
+deleted or never-fetched folder reads wholly from the bucket, and a folder
+missing some files reads the rest from there. When a local copy and its
+stored object differ, a note on stderr says so. `cox setup doctor` has an
 `artifacts root` row on a machine that sets the key: it writes a probe
 object there, reads it back and removes it.
 
@@ -232,6 +234,8 @@ private to your machines and give them credentials scoped to that bucket.
 An item the scrub changed is marked `scrubbed: true` in its step row. The
 patch is never scrubbed: it is the change headed for git, stored byte for
 byte, so a test URL such as `postgresql://cox:cox@localhost/db` in it is kept.
+A patch the scrub would have changed is marked `holds_secret: true` instead,
+and `cox runs artifacts` ends its line with `HOLDS A SECRET (stored raw)`.
 
 `file://` artifacts need a filesystem with hard links. On SMB or some FUSE
 mounts every upload fails, and each step row records the failure in its

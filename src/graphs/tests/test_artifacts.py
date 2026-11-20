@@ -13,6 +13,7 @@ from harness.artifacts import (
     ArtifactConflict,
     ArtifactCorrupt,
     ArtifactsRoot,
+    Prepared,
     Source,
     artifacts_root,
     attach,
@@ -21,13 +22,10 @@ from harness.artifacts import (
     key,
     locate,
     mark_missing,
-    name_of,
-    pick,
     prepared,
     probe,
     probe_key,
     put_object,
-    read_object,
     scrub,
     secret_values,
     sources,
@@ -313,20 +311,30 @@ def test_the_patch_is_stored_byte_for_byte_even_when_it_holds_a_url_with_a_passw
     item = by_step(rows)["task/t1/build"]["artifacts_json"][0]
     assert error is None and (tmp_path / "a" / item["key"]).read_bytes() == patch.encode()
     assert item["sha256"] == hashlib.sha256(patch.encode()).hexdigest() and "scrubbed" not in item
+    assert item["holds_secret"] is True  # stored raw, and marked: the scrub would have changed it
 
 
-def test_prepared_keeps_a_patch_as_written_and_says_when_the_scrub_changed_anything_else():
+def test_a_patch_the_scrub_would_leave_alone_carries_no_mark(root):
+    rows, _ = upload(root, "ship-1", rows_of(), (Source("task/t1/build", "patch.diff", "text/x-diff", text=PATCH),))
+    item = by_step(rows)["task/t1/build"]["artifacts_json"][0]
+    assert "holds_secret" not in item and "scrubbed" not in item
+
+
+def test_prepared_keeps_a_patch_as_written_marks_one_holding_a_secret_and_says_when_it_scrubbed_anything_else():
     data = PATCH_WITH_URL.encode()
-    assert prepared("text/x-diff", data, ("placeholder-secret",)) == (data, False)
-    stored, scrubbed = prepared("text/plain", data, ())
-    assert scrubbed is True and b"cox:cox@" not in stored and b"postgresql://***@localhost/cox_test" in stored
-    assert prepared("text/plain", b"passed\n", ("placeholder-secret",)) == (b"passed\n", False)
-    assert prepared("application/x-ndjson", b"placeholder-secret", ("placeholder-secret",)) == (b"***", True)
+    assert prepared("text/x-diff", data, ()) == Prepared(data, holds_secret=True)
+    assert prepared("text/x-diff", PATCH.encode(), ("placeholder-secret",)) == Prepared(PATCH.encode())
+    ready = prepared("text/plain", data, ())
+    assert ready.scrubbed and not ready.holds_secret
+    assert b"cox:cox@" not in ready.data and b"postgresql://***@localhost/cox_test" in ready.data
+    assert prepared("text/plain", b"passed\n", ("placeholder-secret",)) == Prepared(b"passed\n")
+    assert prepared("application/x-ndjson", b"placeholder-secret", ("placeholder-secret",)) == Prepared(b"***", scrubbed=True)
 
 
-def test_an_entry_says_scrubbed_only_when_it_was():
-    assert "scrubbed" not in entry("k", b"x", "text/plain")
+def test_an_entry_carries_each_mark_only_when_it_holds():
+    assert set(entry("k", b"x", "text/plain")) == {"key", "bytes", "sha256", "media"}
     assert entry("k", b"x", "text/plain", scrubbed=True)["scrubbed"] is True
+    assert entry("k", b"x", "text/x-diff", holds_secret=True)["holds_secret"] is True
 
 
 def test_a_broken_root_stops_the_uploads_and_marks_each_row_that_had_artifacts(tmp_path):
@@ -429,20 +437,6 @@ ITEM = {"key": f"v1/runs/ship-1/task__t1__build/patch.diff@{SHA[:12]}", "bytes":
         "media": "text/x-diff"}
 
 
-def test_name_of_is_the_last_segment_without_its_content_suffix():
-    assert name_of(ITEM["key"]) == "patch.diff"
-    assert name_of("v1/runs/r/s/transcript-build-1.jsonl@0c9e1d2a7b44") == "transcript-build-1.jsonl"
-
-
-def test_pick_finds_the_item_a_step_lists_under_a_name_and_the_last_when_it_lists_two():
-    later = {**ITEM, "key": "v1/runs/ship-1/task__t1__build/patch.diff@ffffffffffff"}
-    rows = [{"step": "task/t1/plan", "artifacts_json": [ITEM]}, {"step": "task/t1/build", "artifacts_json": [ITEM, later]}]
-    assert pick(rows, "task/t1/build", "patch.diff") == later
-    assert pick(rows, "task/t1/plan", "patch.diff") == ITEM
-    assert pick(rows, "task/t1/build", "01-unit-tests.log") is None
-    assert pick([{"step": "task/t1/build", "artifacts_json": None}], "task/t1/build", "patch.diff") is None
-
-
 def test_verified_passes_the_bytes_the_row_records_and_refuses_any_other():
     assert verified(ITEM, PATCH.encode()) == PATCH.encode()
     with pytest.raises(ArtifactCorrupt):
@@ -456,9 +450,18 @@ def test_locate_reads_back_what_upload_wrote_from_the_rows_alone(root, tmp_path)
     rows, _ = upload(root, "ship-1", rows_of(), (Source("task/t1/build", "patch.diff", "text/x-diff", text=PATCH),
                                                  Source("task/t1/checks", "01-unit-tests.log", "text/plain", path=log)))
     log.unlink()  # the local copy is gone: the rows and the root are all a reader has
-    assert locate(root, rows, "task/t1/build", "patch.diff") == PATCH.encode()
-    assert locate(root, rows, "task/t1/checks", "01-unit-tests.log") == b"passed\n"
-    assert locate(root, rows, "task/t1/checks", "02-lint.log") is None
+    patch, = by_step(rows)["task/t1/build"]["artifacts_json"]
+    check_log, = by_step(rows)["task/t1/checks"]["artifacts_json"]
+    assert locate(root, patch) == PATCH.encode()
+    assert locate(root, check_log) == b"passed\n"
+
+
+def test_an_object_gone_from_the_root_is_a_failed_read_never_empty_bytes(root, tmp_path):
+    rows, _ = upload(root, "ship-1", rows_of(), (Source("task/t1/build", "patch.diff", "text/x-diff", text=PATCH),))
+    item = by_step(rows)["task/t1/build"]["artifacts_json"][0]
+    (tmp_path / "artifacts" / item["key"]).unlink()
+    with pytest.raises(FileNotFoundError):
+        locate(root, item)
 
 
 def test_an_object_changed_after_its_row_was_written_is_refused_on_read(root, tmp_path):
@@ -468,7 +471,7 @@ def test_an_object_changed_after_its_row_was_written_is_refused_on_read(root, tm
     path.chmod(0o644)
     path.write_bytes(PATCH.upper().encode())
     with pytest.raises(ArtifactCorrupt):
-        read_object(root, item)
+        locate(root, item)
 
 
 def test_the_probe_key_sits_beside_the_runs_and_refuses_a_path():
@@ -477,10 +480,22 @@ def test_the_probe_key_sits_beside_the_runs_and_refuses_a_path():
         probe_key("../runs")
 
 
-def test_the_probe_writes_reads_back_and_removes_its_object(root, tmp_path):
+def test_the_probe_writes_reads_back_and_removes_its_object_and_its_emptied_folder(root, tmp_path):
     assert probe(root, "doctor-h-1") is None
-    assert not (tmp_path / "artifacts" / probe_key("doctor-h-1")).exists()
+    assert not (tmp_path / "artifacts" / "v1" / "probe").exists()
     assert probe(root, "doctor-h-1") is None  # repeatable: nothing is left to collide with
+
+
+def test_another_doctors_probe_object_keeps_the_folder(root, tmp_path):
+    other = tmp_path / "artifacts" / "v1" / "probe" / "doctor-other-1"
+    other.parent.mkdir(parents=True)
+    other.write_bytes(b"theirs")
+    assert probe(root, "doctor-h-1") is None
+    assert sorted(p.name for p in other.parent.iterdir()) == ["doctor-other-1"]
+
+
+def test_a_token_no_key_can_hold_is_a_failed_write_not_a_crash(root):
+    assert probe(root, "doctor-bad host/1") == ("write", "ValueError")
 
 
 def test_the_probe_says_the_write_failed_on_a_root_it_cannot_write_or_link_in(tmp_path):

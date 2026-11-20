@@ -460,59 +460,72 @@ def _runs_artifacts(a: argparse.Namespace) -> int:
     return 0
 
 
-def _local_copies(runs_dir: Path, run_id: str, which: str) -> list[str]:
-    """Edge. The run folder's own copies: the loose transcripts beside it, or the check logs under it."""
+def _local_copies(runs_dir: Path, run_id: str, which: str) -> list:
+    """Edge. The run folder's own copies, each with the sha256 of its bytes: the loose transcripts beside it, or the
+    check logs under it."""
+    import hashlib
+
+    from agent_tools import runs_show
+
     folder, pattern = ((runs_dir / f"{run_id}-trace", "*.jsonl") if which == "show"
                        else (runs_dir / run_id / "checks", "**/*.log"))
-    return [str(p.relative_to(runs_dir)) for p in folder.glob(pattern) if p.is_file()] if folder.is_dir() else []
+    paths = [p for p in folder.glob(pattern) if p.is_file()] if folder.is_dir() else []
+    return [runs_show.Local(str(p.relative_to(runs_dir)), hashlib.sha256(p.read_bytes()).hexdigest()) for p in paths]
 
 
 def _print_run_artifacts(a: argparse.Namespace, which: Literal["show", "log"]) -> int:
-    """Edge. `cox runs show` and `cox runs log`: the run folder's copies, else the bucket's (`runs_show.choose`).
-    Exits 0 having printed some, 2 when there are none, 1 when the store, the root or a read fails."""
+    """Edge. `cox runs show` and `cox runs log`: each copy from the run folder when it holds it, else from the bucket
+    (`runs_show.plan`). Exits 0 having printed some, 2 when there are none, 1 when the store (with no local copy), the
+    root or a read fails. Notes go to stderr, so stdout is only the copies and their headers."""
     from agent_tools import runs_show
 
     runs_dir = Path(a.runs_dir)
     run_id = _resolved_run_id(runs_dir, a.run_id)
     local = _local_copies(runs_dir, run_id, which)
+    api = run_store.harness_store_api()
+    found = api.step_rows(run_store.store_url_for(runs_dir), run_id)
     rows: list = []
-    if not local:
-        api = run_store.harness_store_api()
-        found = api.step_rows(run_store.store_url_for(runs_dir), run_id)
-        if isinstance(found, api.Failed | api.NotAvailable):
-            detail = found.detail if isinstance(found, api.Failed) else f"the store is not available: {found.reason}"
+    if isinstance(found, api.Failed | api.NotAvailable):
+        detail = found.detail if isinstance(found, api.Failed) else f"the store is not available: {found.reason}"
+        if not local:
             print(f"failed {run_id}: no local copies, and the step rows could not be read: {detail}", file=sys.stderr)
             return 1
+        print(f"note: the step rows could not be read ({detail}); printing the run folder's copies only", file=sys.stderr)
+    else:
         rows = list(found)
-    choice = runs_show.choose(run_id, which, local, runs_show.stored(rows, which), runs_show.marked(rows))
-    if choice.source == "none":
-        print(choice.note)
+    copies, why = runs_show.plan(run_id, which, local, runs_show.stored(rows, which), runs_show.marked(rows))
+    if not copies:
+        print(why)
         return 2
-    if choice.source == "local":
-        for rel in choice.local:
-            print(runs_show.header(rel, "run folder"))
-            print((runs_dir / rel).read_text(encoding="utf-8", errors="replace"), end="", flush=True)
-        return 0
+    root = None
+    if any(c.stored is not None for c in copies):
+        try:
+            root = run_store.artifacts_root_for(runs_dir)
+        except ValueError as exc:
+            print(f"failed {run_id}: artifacts_url: {exc}", file=sys.stderr)
+            return 1
+        if root is None:
+            print(f"failed {run_id}: the step rows list {sum(c.stored is not None for c in copies)} object(s) the run "
+                  "folder lacks, but the provider profile sets no artifacts_url to read them from", file=sys.stderr)
+            return 1
     from harness import artifacts
 
-    try:
-        root = run_store.artifacts_root_for(runs_dir)
-    except ValueError as exc:
-        print(f"failed {run_id}: artifacts_url: {exc}", file=sys.stderr)
-        return 1
-    if root is None:
-        print(f"failed {run_id}: the step rows list {len(choice.items)} object(s), but the provider profile sets no "
-              "artifacts_url to read them from", file=sys.stderr)
-        return 1
-    for one in choice.items:
+    for copy in copies:
+        if copy.note:
+            print(copy.note, file=sys.stderr)
+        if copy.stored is None:
+            print(runs_show.header(copy.label, runs_show.RUN_FOLDER))
+            print((runs_dir / copy.rel).read_text(encoding="utf-8", errors="replace"), end="", flush=True)
+            continue
+        assert root is not None
         try:
-            data = artifacts.locate(root, rows, one.step, one.name)
+            data = artifacts.locate(root, copy.stored.item)
         except Exception as exc:
-            print(f"failed {run_id}: {one.step} {one.name}: {type(exc).__name__}: "
+            print(f"failed {run_id}: {copy.label}: {type(exc).__name__}: "
                   f"{artifacts.scrub(str(exc), root.secrets)[:300]}", file=sys.stderr)
             return 1
-        print(runs_show.header(f"{one.step} {one.name}", f"from {root.shown}"))
-        print((data or b"").decode("utf-8", "replace"), end="", flush=True)
+        print(runs_show.header(copy.label, f"from {root.shown}"))
+        print(data.decode("utf-8", "replace"), end="", flush=True)
     return 0
 
 

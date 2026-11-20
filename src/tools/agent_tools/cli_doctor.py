@@ -15,6 +15,7 @@ import sqlite3
 import subprocess
 import sys
 import urllib.parse
+import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -458,7 +459,9 @@ def _doctor_artifacts_rows(profile: dict | None) -> list[dict]:
         return doctor.artifacts_rows(url, artifacts.scrub(str(exc), artifacts.secret_values(os.environ))[:200], None)
     except Exception as exc:  # pyarrow missing, or a plugin that would not load
         return doctor.artifacts_rows(url, type(exc).__name__, None)
-    failed = artifacts.probe(root, f"doctor-{socket.gethostname()}-{os.getpid()}") if root is not None else None
+    # Host, pid and a random part: two doctors at once, on one machine or several, never share a probe object.
+    token = f"doctor-{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    failed = artifacts.probe(root, token) if root is not None else None
     return doctor.artifacts_rows(url, None, failed)
 
 

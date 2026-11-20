@@ -49,23 +49,26 @@ reader knows the stored copy is not the bytes the step saw.
 
 **The patch is never scrubbed** (`UNSCRUBBED`, `text/x-diff`). It is repo content on its way into git, so the stored
 copy must be the change itself, byte for byte: a test fixture holding `postgresql://cox:cox@localhost/db` lands as
-written, and a scrubbed copy would be a different change. A secret in a patch is the patch's problem, and the review
-and the land see it there.
+written, and a scrubbed copy would be a different change. A patch the scrub *would* have changed is still stored raw,
+and its item carries `holds_secret: true`, which `cox runs artifacts` shows, so a secret in a change is visible without
+being rewritten. Scrubbing patches instead is one line: drop `text/x-diff` from `UNSCRUBBED`.
 
-**Reading back.** A step row is the index: `pick(rows, step, name)` finds the item a row lists under a name (the key
-without its `@<sha12>`), and `locate` reads that object from the root and holds it to the size and sha256 the row
-recorded (`verified`), so a reader never prints bytes the step did not store. `cox runs show` and `cox runs log` read
+**Reading back.** A step row is the index: a reader walks the items the run's rows list, and `locate(root, item)`
+reads the object an item names from the root and holds it to the size and sha256 the row recorded (`verified`), so a
+reader never prints bytes the step did not store. Each item is passed whole, so two items of one name on one step are
+each read, never the last one twice. `cox runs show` and `cox runs log` read
 the run's local copies first and these when there are none, so a run whose folder is gone still shows its transcripts
 and its check logs. Nothing is copied back into the run folder.
 
 **The doctor's probe.** `probe(root, token)` writes `v1/probe/<token>` through `put_object`, the save path's own write,
-reads it back, and removes it, and says which of the three failed. A root that refuses any of them (a read-only
+reads it back, and removes it (on a local root, its emptied `v1/probe` folder too), and says which of the three
+failed. A root that refuses any of them (a read-only
 mount, a filesystem with no hard links, a bucket the key cannot write) fails `cox setup doctor` before a run marks a
 row missing.
 
-`key`, `entry`, `decide`, `secret_values`, `scrub`, `prepared`, `sources`, `attach`, `mark_missing`, `name_of`, `pick`,
-`verified` and `probe_key` are pure. `artifacts_root`, `put_object`, `upload`, `step_artifacts`, `read_object`,
-`locate` and `probe` are the edges.
+`key`, `entry`, `decide`, `secret_values`, `scrub`, `prepared`, `sources`, `attach`, `mark_missing`, `verified` and
+`probe_key` are pure. `artifacts_root`, `put_object`, `upload`, `step_artifacts`, `locate` and `probe`
+are the edges.
 """
 
 from __future__ import annotations
@@ -89,6 +92,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ERROR_FIELD",
+    "HOLDS_SECRET_FIELD",
     "LAYOUT",
     "ROLE_KINDS",
     "S3_BOUNDS",
@@ -97,6 +101,7 @@ __all__ = [
     "ArtifactConflict",
     "ArtifactCorrupt",
     "ArtifactsRoot",
+    "Prepared",
     "Source",
     "artifacts_root",
     "attach",
@@ -105,13 +110,10 @@ __all__ = [
     "key",
     "locate",
     "mark_missing",
-    "name_of",
-    "pick",
     "prepared",
     "probe",
     "probe_key",
     "put_object",
-    "read_object",
     "scrub",
     "secret_values",
     "sources",
@@ -123,6 +125,7 @@ __all__ = [
 LAYOUT = "v1"
 ERROR_FIELD = "artifacts_error"  # the `result_json` key a row whose artifacts were not all written carries
 SCRUBBED_FIELD = "scrubbed"  # the `artifacts_json` item key, true on an item whose bytes the scrub changed
+HOLDS_SECRET_FIELD = "holds_secret"  # the item key, true on a raw-stored patch the scrub would have changed
 UNSCRUBBED = frozenset({"text/x-diff"})  # media stored as written: the patch is repo content headed for git
 SECRET_NAME_PARTS = ("TOKEN", "SECRET", "PASSWORD", "PASSWD", "KEY")
 # Seconds, and attempts: a save waits at most about connect + request per attempt per object, then gives up.
@@ -193,10 +196,12 @@ def key(run_id: str, step: str, name: str, sha256: str) -> str:
     return f"{LAYOUT}/runs/{_part(run_id, 'run id')}/{'__'.join(segments)}/{_part(name, 'name')}@{sha256[:12]}"
 
 
-def entry(object_key: str, data: bytes, media: str, *, scrubbed: bool = False) -> JsonObject:
-    """Pure. The `artifacts_json` item for one uploaded object; `scrubbed: true` only on one the scrub changed."""
+def entry(object_key: str, data: bytes, media: str, *, scrubbed: bool = False, holds_secret: bool = False) -> JsonObject:
+    """Pure. The `artifacts_json` item for one uploaded object; `scrubbed: true` only on one the scrub changed, and
+    `holds_secret: true` only on a raw-stored one the scrub would have changed."""
     item: JsonObject = {"key": object_key, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(), "media": media}
-    return {**item, SCRUBBED_FIELD: True} if scrubbed else item
+    marks: JsonObject = {**({SCRUBBED_FIELD: True} if scrubbed else {}), **({HOLDS_SECRET_FIELD: True} if holds_secret else {})}
+    return {**item, **marks}
 
 
 def decide(object_key: str, size: int, existing_size: int | None) -> Literal["write", "same"]:
@@ -237,13 +242,23 @@ def _scrub_bytes(data: bytes, secrets: Sequence[str]) -> bytes:
     return scrub(data.decode("utf-8", "surrogateescape"), secrets).encode("utf-8", "surrogateescape")
 
 
-def prepared(media: str, data: bytes, secrets: Sequence[str]) -> tuple[bytes, bool]:
-    """Pure. The bytes to store for a source of `media`, and whether the scrub changed them. A patch (`UNSCRUBBED`) is
-    stored as written."""
+@dataclass(frozen=True)
+class Prepared:
+    """What `prepared` decided: the bytes to store, whether the scrub changed them, and whether it would have changed
+    bytes that are stored raw."""
+
+    data: bytes
+    scrubbed: bool = False
+    holds_secret: bool = False
+
+
+def prepared(media: str, data: bytes, secrets: Sequence[str]) -> Prepared:
+    """Pure. The bytes to store for a source of `media`. A patch (`UNSCRUBBED`) is stored as written, marked
+    `holds_secret` when the scrub would have changed it; anything else is stored scrubbed, marked when that changed it."""
+    scrubbed = _scrub_bytes(data, secrets)
     if media in UNSCRUBBED:
-        return data, False
-    stored = _scrub_bytes(data, secrets)
-    return stored, stored != data
+        return Prepared(data, holds_secret=scrubbed != data)
+    return Prepared(scrubbed, scrubbed=scrubbed != data)
 
 
 def _mapping(value: object) -> Mapping[str, object]:
@@ -426,7 +441,8 @@ def upload(
         data = read(source)
         if not data:
             continue
-        data, scrubbed = prepared(source.media, data, root.secrets)
+        ready = prepared(source.media, data, root.secrets)
+        data = ready.data
         object_key = key(run_id, source.step, source.name, hashlib.sha256(data).hexdigest())
         try:
             put_object(root, object_key, data, link)
@@ -434,7 +450,8 @@ def upload(
             error = _shown(exc, root)
             short.add(source.step)
             continue
-        entries.setdefault(source.step, []).append(entry(object_key, data, source.media, scrubbed=scrubbed))
+        entries.setdefault(source.step, []).append(entry(object_key, data, source.media, scrubbed=ready.scrubbed,
+                                                         holds_secret=ready.holds_secret))
     listed = (attach(row, entries.get(row["step"], [])) for row in rows)
     return tuple(mark_missing(r, cast(str, error)) if r["step"] in short else r for r in listed), error
 
@@ -485,19 +502,6 @@ def step_artifacts(
 # --- reading back ---------------------------------------------------------------------------------------------------
 
 
-def name_of(object_key: str) -> str:
-    """Pure. The artifact name a key holds: its last segment without the `@<sha12>` suffix."""
-    return object_key.rpartition("/")[2].rpartition("@")[0]
-
-
-def pick(rows: Sequence[Mapping[str, object]], step: str, name: str) -> Mapping[str, object] | None:
-    """Pure. The item the row of `step` lists under `name`; the last one when a row lists the name twice; None when no
-    row of that step lists it."""
-    found = [item for row in rows if row.get("step") == step for item in _rows(row.get("artifacts_json"))
-             if name_of(str(item.get("key") or "")) == name]
-    return found[-1] if found else None
-
-
 def verified(item: Mapping[str, object], data: bytes) -> bytes:
     """Pure. `data` when it is the size and the sha256 `item` records; ArtifactCorrupt otherwise."""
     digest = hashlib.sha256(data).hexdigest()
@@ -507,17 +511,11 @@ def verified(item: Mapping[str, object], data: bytes) -> bytes:
     return data
 
 
-def read_object(root: ArtifactsRoot, item: Mapping[str, object]) -> bytes:
-    """Edge. The object `item` names, read from the root and `verified` against it."""
+def locate(root: ArtifactsRoot, item: Mapping[str, object]) -> bytes:
+    """Edge. The object a step row's `item` names, read from `artifacts_url` and
+    `verified` against the row: ArtifactCorrupt when it is not those bytes, FileNotFoundError when it is gone."""
     with root.fs.open_input_stream(f"{root.path}/{item['key']}") as stream:
         return verified(item, stream.read())
-
-
-def locate(root: ArtifactsRoot, rows: Sequence[Mapping[str, object]], step: str, name: str) -> bytes | None:
-    """Edge. The bytes of the artifact the run's step `rows` list as `name` on `step`, read from `artifacts_url`; None
-    when no row lists it. A stored object that does not match its row raises ArtifactCorrupt."""
-    item = pick(rows, step, name)
-    return None if item is None else read_object(root, item)
 
 
 def probe_key(token: str) -> str:
@@ -530,9 +528,9 @@ def probe(root: ArtifactsRoot, token: str, link: Callable[[str, str], None] = os
     worked; else `(stage, what)`, the stage that failed (`write`, `read` or `remove`) and the exception's type name, or
     why the bytes read back differ. Exception text is never returned: it can carry an endpoint or a key. The remove is
     tried even after a failed read."""
-    object_key = probe_key(token)
-    path, data = f"{root.path}/{object_key}", f"coxswain doctor probe {token}\n".encode()
     try:
+        object_key = probe_key(token)  # a token a hostname made unusable is a failed write, not a crash
+        path, data = f"{root.path}/{object_key}", f"coxswain doctor probe {token}\n".encode()
         put_object(root, object_key, data, link)
     except Exception as exc:
         return "write", type(exc).__name__
@@ -547,4 +545,15 @@ def probe(root: ArtifactsRoot, token: str, link: Callable[[str, str], None] = os
         root.fs.delete_file(path)
     except Exception as exc:
         return failed or ("remove", type(exc).__name__)
+    _drop_empty_folder(root, path.rpartition("/")[0])
     return failed
+
+
+def _drop_empty_folder(root: ArtifactsRoot, folder: str) -> None:
+    """On a local root, remove `v1/probe` once it is empty; another doctor's probe still in it keeps it. S3 has no
+    folders to leave behind."""
+    from pyarrow.fs import LocalFileSystem
+
+    if isinstance(root.fs, LocalFileSystem):
+        with contextlib.suppress(OSError):
+            os.rmdir(folder)
