@@ -406,26 +406,45 @@ def test_every_default_module_statement_is_portable_and_has_no_foreign_key(modul
     assert not [s for s in sql if "REFERENCES" in s.upper() or "FOREIGN KEY" in s.upper()]
 
 
+# Every ADDITIVE_EXEMPT a default module declares, by version, with its reason. A module that adds one must add it here
+# too, so a reviewer reads the exemption and its reason in the diff.
+KNOWN_EXEMPTIONS: dict[int, dict[str, str]] = {}
+
+
+def test_every_additive_exemption_is_listed_here():
+    found = {m.VERSION: dict(m.ADDITIVE_EXEMPT) for m in default_modules() if hasattr(m, "ADDITIVE_EXEMPT")}
+    assert found == KNOWN_EXEMPTIONS
+
+
 @pytest.mark.parametrize("module", default_modules(), ids=lambda m: f"{m.VERSION:04d}")
 @pytest.mark.parametrize("dialect", [SQLITE, POSTGRES], ids=["sqlite", "postgres"])
 def test_every_default_module_that_declares_additive_holds_only_additive_ddl(module, dialect):
     declared = getattr(module, "ADDITIVE", False) is True
-    assert (additive_violations(module.statements(dialect)) if declared else ()) == ()
+    exempt = getattr(module, "ADDITIVE_EXEMPT", {})
+    assert (additive_violations(module.statements(dialect), exempt) if declared else ()) == ()
 
 
 ADDITIVE_DDL = (
     "CREATE TABLE IF NOT EXISTS notes (key TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (key))",
+    'CREATE TABLE IF NOT EXISTS public."marks" (key TEXT NOT NULL, PRIMARY KEY (key))',
     "CREATE UNIQUE INDEX IF NOT EXISTS ux_notes_body ON notes (body)",
+    'CREATE UNIQUE INDEX ux_marks ON public."marks" (key)',
     "CREATE INDEX IF NOT EXISTS ix_runs_host ON runs (host)",
     "ALTER TABLE hosts ADD COLUMN lanes INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE hosts ADD COLUMN IF NOT EXISTS labels TEXT NOT NULL DEFAULT '', ADD COLUMN note TEXT",
+    'ALTER TABLE public."hosts" ADD COLUMN "zone" TEXT NOT NULL DEFAULT \'\'',
     "-- DROP is only named in this comment\nINSERT INTO notes (key, body) VALUES ('drop', 'RENAME me')",
-    "CREATE TRIGGER IF NOT EXISTS tr_runs AFTER INSERT ON runs BEGIN INSERT INTO notes VALUES (NEW.run_id, ''); END",
+    "INSERT INTO notes (key, body) VALUES ('--', 'UPDATE runs SET x = 1')",
 )
+NOTES = "CREATE TABLE IF NOT EXISTS notes (key TEXT NOT NULL, PRIMARY KEY (key))"
+TRIGGER = "CREATE TRIGGER IF NOT EXISTS tr_runs AFTER INSERT ON runs BEGIN INSERT INTO notes VALUES (NEW.run_id); END"
+FUNCTION = ("CREATE OR REPLACE FUNCTION note_run() RETURNS trigger AS $$ BEGIN INSERT INTO notes VALUES (NEW.run_id); "
+            "RETURN NEW; END $$ LANGUAGE plpgsql")
+WHY = "AFTER INSERT, inserts into notes only: never drops or rewrites the row an older writer inserted"
 
 
 def test_additive_ddl_has_no_violation():
-    assert additive_violations(ADDITIVE_DDL) == ()
+    assert additive_violations(ADDITIVE_DDL, {}) == ()
 
 
 @pytest.mark.parametrize(("sql", "reason"), [
@@ -446,10 +465,61 @@ def test_additive_ddl_has_no_violation():
     pytest.param("TRUNCATE runs", "has TRUNCATE", id="truncate"),
     pytest.param("CREATE TRIGGER t BEFORE INSERT ON runs BEGIN SELECT RAISE(ABORT, 'no'); END", "has RAISE",
                  id="raising-trigger"),
+    # Quoted and schema-qualified names are read, not skipped.
+    pytest.param('ALTER TABLE "hosts" ADD COLUMN x TEXT NOT NULL', "NOT NULL column to hosts with no DEFAULT",
+                 id="quoted-alter"),
+    pytest.param("ALTER TABLE public.hosts ADD COLUMN x TEXT NOT NULL", "NOT NULL column to hosts with no DEFAULT",
+                 id="qualified-alter"),
+    pytest.param('CREATE UNIQUE INDEX u ON "hosts" (name)', "unique index to hosts", id="quoted-unique-index"),
+    pytest.param('CREATE UNIQUE INDEX u ON public."hosts" (name)', "unique index to hosts", id="qualified-unique-index"),
+    # What the check cannot read fails closed.
+    pytest.param('ALTER TABLE "odd name" ADD COLUMN x TEXT', "ALTER TABLE this check cannot read", id="unreadable-alter"),
+    pytest.param('CREATE UNIQUE INDEX u ON "odd name" (x)', "CREATE UNIQUE INDEX this check cannot read",
+                 id="unreadable-unique-index"),
+    pytest.param("CREATE UNIQUE INDEX u ON hosts USING btree (name)", "CREATE UNIQUE INDEX this check cannot read",
+                 id="unique-index-using"),
+    pytest.param("CREATE VIEW v AS SELECT 1", "not a kind of statement this check reads", id="unknown-kind"),
+    pytest.param("ALTER TABLE hosts ADD COLUMN", "by more than adding a column, or in a way", id="truncated-alter"),
+    # Data rewrites, triggers and functions need a stated exemption.
+    pytest.param("UPDATE hosts SET state = 'gone'", "has an UPDATE", id="update"),
+    pytest.param('UPDATE "odd name" SET x = 1', "UPDATE this check cannot read", id="unreadable-update"),
+    pytest.param("INSERT INTO notes SELECT key FROM hosts; UPDATE OR IGNORE hosts SET state = ''", "has an UPDATE",
+                 id="update-or-ignore"),
+    pytest.param(TRIGGER, "creates a trigger, which ADDITIVE_EXEMPT does not exempt", id="trigger"),
+    pytest.param("CREATE TRIGGER t BEFORE INSERT ON hosts FOR EACH ROW EXECUTE FUNCTION f()", "creates a trigger",
+                 id="before-trigger"),
+    pytest.param(FUNCTION, "creates a function, which ADDITIVE_EXEMPT does not exempt", id="or-replace-function"),
+    # A quote inside a comment opens no literal, so it cannot hide what follows it.
+    pytest.param("ALTER TABLE hosts ADD COLUMN a TEXT DEFAULT 'x' -- isn't\n, ADD COLUMN b TEXT NOT NULL, "
+                 "ADD COLUMN c TEXT DEFAULT 'y'", "NOT NULL column to hosts with no DEFAULT", id="quote-in-comment"),
+    pytest.param("ALTER TABLE hosts ADD COLUMN a TEXT NOT NULL DEFAULT '--', ADD COLUMN b TEXT NOT NULL",
+                 "NOT NULL column to hosts with no DEFAULT", id="dashes-in-literal"),
 ])
 def test_a_non_additive_statement_is_named(sql, reason):
-    found = additive_violations(("CREATE TABLE IF NOT EXISTS notes (key TEXT NOT NULL, PRIMARY KEY (key))", sql))
+    found = additive_violations((NOTES, sql), {})
     assert found and all(r.startswith("statement 2 ") for r in found) and any(reason in r for r in found), found
+
+
+def test_a_trigger_function_and_update_pass_only_when_exempted_with_a_reason():
+    statements = (NOTES, TRIGGER, FUNCTION, "UPDATE hosts SET labels = '' WHERE labels IS NULL")
+    assert additive_violations(statements, {"trigger": WHY, "function": WHY, "update": "backfills labels only"}) == ()
+    assert additive_violations(statements, {"trigger": WHY, "function": WHY}) == (
+        "statement 4 has an UPDATE, which ADDITIVE_EXEMPT does not exempt",
+    )
+    # An exemption never lifts the bans that hold everywhere.
+    assert additive_violations((NOTES, "CREATE TRIGGER t AFTER INSERT ON runs BEGIN DELETE FROM notes; END"),
+                               {"trigger": WHY}) == ("statement 2 has DELETE",)
+
+
+@pytest.mark.parametrize(("exempt", "reason"), [
+    pytest.param({"trigger": ""}, "exempts trigger with no reason", id="empty-reason"),
+    pytest.param({"trigger": "   "}, "exempts trigger with no reason", id="blank-reason"),
+    pytest.param({"trigger": True}, "exempts trigger with no reason", id="not-text"),
+    pytest.param({"drop": WHY}, "exempts 'drop', which is not one of trigger, function, update", id="unknown-kind"),
+])
+def test_an_exemption_without_a_reason_or_of_an_unknown_kind_is_a_violation(exempt, reason):
+    found = additive_violations((NOTES, TRIGGER), exempt)
+    assert reason in found, found
 
 
 def test_a_module_declaring_additive_with_non_additive_ddl_is_refused_before_any_write(conn):
@@ -458,6 +528,20 @@ def test_a_module_declaring_additive_with_non_additive_ddl_is_refused_before_any
     with pytest.raises(MigrationError, match=r"migration 0002 declares ADDITIVE but is not: statement 1 has DROP"):
         migrate(conn, NOW, [fake(1, ONE), fake(2, ("DROP TABLE t1",), additive=True)])
     assert rows(conn) == before and "t1" in tables(conn)
+
+
+def test_a_trigger_migration_applies_only_with_its_exemption(conn):
+    trigger = "CREATE TRIGGER IF NOT EXISTS tr_t1 AFTER INSERT ON t1 BEGIN INSERT INTO t2 (id) VALUES (NEW.id); END"
+    plain = fake(2, ("CREATE TABLE t2 (id INTEGER PRIMARY KEY)", trigger), additive=True)
+    migrate(conn, NOW, [fake(1, ONE)])
+    if conn.dialect is POSTGRES:
+        pytest.skip("the trigger statement is sqlite's; the exemption rule itself is dialect-free")
+    with pytest.raises(MigrationError, match="statement 2 creates a trigger, which ADDITIVE_EXEMPT does not exempt"):
+        migrate(conn, NOW, [fake(1, ONE), plain])
+    plain.ADDITIVE_EXEMPT = {"trigger": "AFTER INSERT into a new table only: the t1 row is kept as written"}
+    assert migrate(conn, NOW, [fake(1, ONE), plain]) == 2
+    conn.execute("INSERT INTO t1 (id) VALUES (7)")
+    assert conn.query_all("SELECT id FROM t2") == [(7,)]
 
 
 def _and_a_newer_build_commits(description):

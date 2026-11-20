@@ -24,7 +24,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from types import ModuleType
 from typing import cast
@@ -35,6 +35,7 @@ from harness.store_dialect import Connection, Dialect, connect
 
 __all__ = [
     "ADDITIVE_PREFIX",
+    "EXEMPTABLE",
     "MigrationError",
     "NotExactVersion",
     "accepts",
@@ -131,11 +132,28 @@ def _declares_additive(m: ModuleType) -> bool:
     return getattr(m, "ADDITIVE", False) is True
 
 
-_LITERAL = re.compile(r"'(?:[^']|'')*'")
-_COMMENT = re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL)
-_ALTER = re.compile(r"^\s*ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?(\w+)\s+(.*)$", re.DOTALL)
-_CREATED = re.compile(r"^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)")
-_UNIQUE_INDEX = re.compile(r"^\s*CREATE\s+UNIQUE\s+INDEX\b.*?\bON\s+(?:ONLY\s+)?(\w+)", re.DOTALL)
+# One left-to-right pass, so whichever opens first wins: a quote inside a comment (`-- isn't`) is comment, and `--`
+# inside a string literal is literal. Literals become '', comments a space, quoted identifiers their bare name.
+_TOKEN = re.compile(r"""'(?:[^']|'')*'|"((?:[^"]|"")*)"|--[^\n]*|/\*.*?\*/""", re.DOTALL)
+_UNREADABLE = "?"  # what a quoted identifier that is not a plain word becomes: no pattern below reads it
+_TABLE = r"(?:\w+\.)?(\w+)"  # an optionally schema-qualified table name; group: the table
+_ALTER = re.compile(rf"^\s*ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?{_TABLE}\s+(\S.*)$", re.DOTALL)
+_CREATED = re.compile(rf"^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?{_TABLE}\s*\(")
+_UNIQUE_INDEX = re.compile(
+    rf"^\s*CREATE\s+UNIQUE\s+INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?(?:{_TABLE}\s+)?ON\s+(?:ONLY\s+)?{_TABLE}\s*\(",
+    re.DOTALL,
+)
+# The statement kinds the check reads, by how each begins. Anything else is not additive until this check reads it.
+_KINDS = (
+    ("table", re.compile(r"^\s*CREATE\s+TABLE\b")),
+    ("unique index", re.compile(r"^\s*CREATE\s+UNIQUE\s+INDEX\b")),
+    ("index", re.compile(r"^\s*CREATE\s+INDEX\b")),
+    ("alter", re.compile(r"^\s*ALTER\s+TABLE\b")),
+    ("insert", re.compile(r"^\s*INSERT\s+INTO\b")),
+    ("update", re.compile(r"^\s*UPDATE\b")),
+    ("trigger", re.compile(r"^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:TEMP(?:ORARY)?\s+)?TRIGGER\b")),
+    ("function", re.compile(r"^\s*CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\b")),
+)
 # Anywhere in a statement: each removes, renames or rewrites what older code reads and writes, or makes its write fail.
 _NEVER_ADDITIVE = (
     ("DROP", re.compile(r"\bDROP\b")),
@@ -145,10 +163,28 @@ _NEVER_ADDITIVE = (
     ("TRUNCATE", re.compile(r"\bTRUNCATE\b")),
     ("RAISE", re.compile(r"\bRAISE\b")),
 )
+_UPDATE = re.compile(rf"\bUPDATE\s+(?:OR\s+\w+\s+)?{_TABLE}\s+SET\b")
+# What a module may exempt, with `ADDITIVE_EXEMPT = {kind: why}`: a trigger (a BEFORE trigger returning NULL drops an
+# older writer's row), a function (a trigger's body on Postgres) and an UPDATE (rewrites rows older code wrote).
+EXEMPTABLE = ("trigger", "function", "update")
 _ADD_COLUMN = re.compile(
-    r"^ADD\s+(?:COLUMN\s+)?(?:IF\s+NOT\s+EXISTS\s+)?(?!(?:CONSTRAINT|PRIMARY|UNIQUE|CHECK|FOREIGN|EXCLUDE)\b)\w+\b"
+    r"^ADD\s+(?:COLUMN\s+)?(?:IF\s+NOT\s+EXISTS\s+)?(?!(?:CONSTRAINT|PRIMARY|UNIQUE|CHECK|FOREIGN|EXCLUDE)\b)\w+\s+\w+"
 )
 _CONSTRAINT = re.compile(r"\b(?:PRIMARY\s+KEY|UNIQUE|CHECK|REFERENCES)\b")
+
+
+def _code(sql: str) -> str:
+    """`sql` upper-cased with literals emptied, comments blanked and quoted identifiers unquoted, in one pass."""
+    def one(m: re.Match[str]) -> str:
+        text = m.group(0)
+        if text.startswith("'"):
+            return "''"
+        if text.startswith('"'):
+            name = m.group(1).replace('""', '"')
+            return name if re.fullmatch(r"\w+", name) else _UNREADABLE
+        return " "
+
+    return _TOKEN.sub(one, sql).upper()
 
 
 def _actions(clauses: str) -> list[str]:
@@ -163,29 +199,75 @@ def _actions(clauses: str) -> list[str]:
     return [p.strip().rstrip(";").strip() for p in (*parts, clauses[start:])]
 
 
-def additive_violations(statements: Sequence[str]) -> tuple[str, ...]:
-    """Pure. Why `statements`, one migration's, are not additive, one reason per offence; () when they only add.
-    Additive means code older than the migration still reads and writes the store as before: no DROP, RENAME, ALTER
-    COLUMN, DELETE, TRUNCATE or RAISE; an ALTER TABLE only adds columns, each without a constraint and, when NOT NULL,
-    with a DEFAULT, or an older insert that omits it fails; a unique index only on a table this migration creates.
-    String literals and comments are not read."""
-    codes = [_COMMENT.sub(" ", _LITERAL.sub("''", sql)).upper() for sql in statements]
-    created = {m.group(1) for code in codes if (m := _CREATED.match(code))}
+def _exemption_violations(exempt: Mapping[str, object]) -> list[str]:
+    """Why an `ADDITIVE_EXEMPT` mapping is not one this check takes: a kind it does not know, or no reason given."""
+    unknown = [f"exempts {k!r}, which is not one of {', '.join(EXEMPTABLE)}" for k in exempt if k not in EXEMPTABLE]
+    bare = [f"exempts {k} with no reason" for k, why in exempt.items()
+            if k in EXEMPTABLE and not (isinstance(why, str) and why.strip())]
+    return unknown + bare
+
+
+def _alter_violations(i: int, code: str) -> list[str]:
+    alter = _ALTER.match(code)
+    if alter is None:
+        return [f"statement {i} is an ALTER TABLE this check cannot read"]
+    table = alter.group(1).lower()
     reasons: list[str] = []
+    for action in _actions(alter.group(2)):
+        if not _ADD_COLUMN.match(action):
+            reasons.append(f"statement {i} alters {table} by more than adding a column, or in a way this check cannot read")
+        elif _CONSTRAINT.search(action):
+            reasons.append(f"statement {i} adds a column to {table} with a constraint")
+        elif re.search(r"\bNOT\s+NULL\b", action) and not re.search(r"\bDEFAULT\b", action):
+            reasons.append(f"statement {i} adds a NOT NULL column to {table} with no DEFAULT")
+    return reasons
+
+
+def additive_violations(statements: Sequence[str], exempt: Mapping[str, object]) -> tuple[str, ...]:
+    """Pure. Why `statements`, one migration's, are not additive, one reason per offence; () when they only add.
+    Additive means code older than the migration still reads and writes the store as before:
+    - every statement is a CREATE TABLE, CREATE INDEX, ALTER TABLE, INSERT, UPDATE, CREATE TRIGGER or CREATE
+      FUNCTION this check can read; anything else, or a name it cannot read, is a violation (it fails closed);
+    - no DROP, RENAME, ALTER COLUMN, DELETE, TRUNCATE or RAISE anywhere;
+    - an ALTER TABLE only adds columns, each without a constraint and, when NOT NULL, with a DEFAULT, or an older
+      insert that omits it fails; a unique index only on a table this migration creates;
+    - a trigger, a function or an UPDATE only when `exempt` (the module's `ADDITIVE_EXEMPT`) names its kind with a
+      reason, since each can drop or rewrite a row older code writes.
+    String literals and comments are not read; quoted and schema-qualified table names are."""
+    codes = [_code(sql) for sql in statements]
+    created = {m.group(1) for code in codes if (m := _CREATED.match(code))}
+    allowed = {k for k in EXEMPTABLE if isinstance(exempt.get(k), str) and str(exempt.get(k)).strip()}
+    reasons = _exemption_violations(exempt)
     for i, code in enumerate(codes, start=1):
+        kind = next((k for k, rx in _KINDS if rx.match(code)), None)
         reasons += [f"statement {i} has {word}" for word, rx in _NEVER_ADDITIVE if rx.search(code)]
-        if (index := _UNIQUE_INDEX.match(code)) and index.group(1) not in created:
-            reasons.append(f"statement {i} adds a unique index to {index.group(1).lower()}, a table it did not create")
-        if (alter := _ALTER.match(code)) is None:
-            continue
-        for action in _actions(alter.group(2)):
-            if not _ADD_COLUMN.match(action):
-                reasons.append(f"statement {i} alters {alter.group(1).lower()} by more than adding a column")
-            elif _CONSTRAINT.search(action):
-                reasons.append(f"statement {i} adds a column to {alter.group(1).lower()} with a constraint")
-            elif re.search(r"\bNOT\s+NULL\b", action) and not re.search(r"\bDEFAULT\b", action):
-                reasons.append(f"statement {i} adds a NOT NULL column to {alter.group(1).lower()} with no DEFAULT")
+        if _UPDATE.search(code) and "update" not in allowed:
+            reasons.append(f"statement {i} has an UPDATE, which ADDITIVE_EXEMPT does not exempt")
+        if kind is None:
+            reasons.append(f"statement {i} is not a kind of statement this check reads")
+        elif kind in ("trigger", "function") and kind not in allowed:
+            reasons.append(f"statement {i} creates a {kind}, which ADDITIVE_EXEMPT does not exempt")
+        elif kind == "unique index":
+            index = _UNIQUE_INDEX.match(code)
+            if index is None:
+                reasons.append(f"statement {i} is a CREATE UNIQUE INDEX this check cannot read")
+            elif index.group(2) not in created:
+                reasons.append(f"statement {i} adds a unique index to {index.group(2).lower()}, a table it did not create")
+        elif kind == "table" and _CREATED.match(code) is None:
+            reasons.append(f"statement {i} is a CREATE TABLE this check cannot read")
+        elif kind == "alter":
+            reasons += _alter_violations(i, code)
+        elif kind == "update" and _UPDATE.search(code) is None:
+            reasons.append(f"statement {i} is an UPDATE this check cannot read")
     return tuple(reasons)
+
+
+def _exemptions(m: ModuleType) -> Mapping[str, object]:
+    """The module's `ADDITIVE_EXEMPT`, {} when it has none; a value that is not a mapping exempts an unknown kind."""
+    exempt: object = getattr(m, "ADDITIVE_EXEMPT", {})
+    if not isinstance(exempt, Mapping):
+        return {"<not a mapping>": ""}
+    return {str(k): v for k, v in cast(Mapping[object, object], exempt).items()}
 
 
 def accepts(current: int, expected: int, newer_descriptions: Sequence[str]) -> bool:
@@ -360,7 +442,7 @@ def migrate(conn: Connection, applied_at: str, modules: Sequence[ModuleType | st
     if before > newest:
         return _newer_or_refused(conn, before, newest)
     for m in ordered[before:]:
-        broken = additive_violations(m.statements(conn.dialect)) if _declares_additive(m) else ()
+        broken = additive_violations(m.statements(conn.dialect), _exemptions(m)) if _declares_additive(m) else ()
         if broken:
             raise MigrationError(f"migration {m.VERSION:04d} declares ADDITIVE but is not: {'; '.join(broken)}")
     conn.execute(_CREATE)
