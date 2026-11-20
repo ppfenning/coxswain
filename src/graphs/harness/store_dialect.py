@@ -291,7 +291,8 @@ def double_allowed(environ: Mapping[str, str] | None = None) -> bool:
 
 def connect(url: str) -> Connection:
     """Open a connection for a postgresql: URL (postgresql+psycopg:// too). A sqlite: URL opens only as the test
-    double (`double_allowed`); anywhere else it raises ValueError, the same error an unknown scheme gives."""
+    double (`double_allowed`), with no disk sync per commit (`PRAGMA synchronous=OFF`: nothing in it must survive a
+    crash); anywhere else it raises ValueError, the same error an unknown scheme gives."""
     pg_url = _driver_free_url(url)
     if url.startswith("sqlite://"):
         if not double_allowed():
@@ -301,6 +302,9 @@ def connect(url: str) -> Connection:
         raw = sqlite3.connect(
             _sqlite_target(url), timeout=SQLITE_BUSY_TIMEOUT_MS / 1000, isolation_level=None, check_same_thread=False
         )
+        # The double never holds data that must outlive the test, so no commit waits for a disk sync. Set before WAL, so
+        # the switch to WAL is not synced either: a fresh store's migrations went from seconds to milliseconds.
+        raw.execute("PRAGMA synchronous=OFF")
         raw.execute("PRAGMA journal_mode=WAL")
         raw.execute("PRAGMA foreign_keys=ON")
         raw.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")

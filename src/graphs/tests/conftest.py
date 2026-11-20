@@ -144,7 +144,7 @@ def store_conn(store_url):
 
 @pytest.fixture(autouse=True)
 def _store_backups_stay_out_of_home(tmp_path_factory, monkeypatch):
-    """Every test that opens a fresh store through `store_conn`/`open_store` now backs it up first.
+    """A store opened with a migration pending is backed up first (a fresh one, holding no table, is not).
 
     Route that backup at a tmp directory of its own instead of the real $HOME the code defaults
     to, so the other ~30 test files that never meant to test backup behaviour do not write there.

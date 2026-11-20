@@ -43,6 +43,7 @@ __all__ = [
     "check_version",
     "default_modules",
     "exact_refusal",
+    "holds_tables",
     "migrate",
     "newer_descriptions",
     "newer_refusal",
@@ -50,6 +51,7 @@ __all__ = [
     "open_store_exact",
     "pending",
     "recorded_description",
+    "should_back_up",
 ]
 
 _WITHOUT_BACKUP = "COX_STORE_MIGRATE_WITHOUT_BACKUP"
@@ -105,6 +107,15 @@ def _has_version_table(conn: Connection) -> bool:
         sql = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'"
     else:
         sql = "SELECT 1 FROM information_schema.tables WHERE table_name = 'schema_version' AND table_schema = current_schema()"
+    return conn.query_one(sql) is not None
+
+
+def holds_tables(conn: Connection) -> bool:
+    """Edge, reads only. Whether the store's schema holds any table at all; a store just created holds none."""
+    if conn.dialect.name == "sqlite":
+        sql = "SELECT 1 FROM sqlite_master WHERE type = 'table' LIMIT 1"
+    else:
+        sql = "SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() LIMIT 1"
     return conn.query_one(sql) is not None
 
 
@@ -450,6 +461,12 @@ def _pg_dump(url: str, dest: Path, safe_url: str) -> None:
         )
 
 
+def should_back_up(current: int, newest: int, has_tables: bool) -> bool:
+    """Pure. Whether opening a store at `current` backs it up before migrating to `newest`: only when a migration is
+    pending and the store holds something. A fresh store, at version 0 with no table, has nothing to back up."""
+    return current < newest and (current > 0 or has_tables)
+
+
 def _backup_before_migrate(conn: Connection, url: str, current: int, newest: int, now: str) -> None:
     """Write a backup of `url` unless the override skips it. Never calls `migrate`; the caller does that next."""
     if os.environ.get(_WITHOUT_BACKUP) == "1":
@@ -517,14 +534,14 @@ def migrate(conn: Connection, applied_at: str, modules: Sequence[ModuleType | st
 def open_store(url: str, now: str) -> Connection:
     """Connect, back up first when a migration is pending, bring the schema up to date, and return the connection.
 
-    `now` is the applied-at text. When the database is already at the newest known migration,
-    neither a backup file nor a subprocess is written or spawned.
+    `now` is the applied-at text. When the database is already at the newest known migration, or is fresh (version 0,
+    no table: `should_back_up`), neither a backup file nor a subprocess is written or spawned.
     """
     conn = connect(url)
     try:
         current = _current_version(conn)
         newest = len(_ordered(default_modules()))
-        if current < newest:
+        if should_back_up(current, newest, holds_tables(conn)):
             _backup_before_migrate(conn, url, current, newest, now)
         migrate(conn, now)
     except BaseException:

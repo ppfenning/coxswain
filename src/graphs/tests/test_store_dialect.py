@@ -175,10 +175,11 @@ def test_a_contended_transaction_waits_for_the_lock_instead_of_failing(tmp_path)
     assert holder.query_all("SELECT id FROM r ORDER BY id") == [(1,), (2,)]
 
 
-def test_file_sqlite_opens_with_wal_foreign_keys_and_busy_timeout(tmp_path):
+def test_file_sqlite_opens_with_wal_foreign_keys_busy_timeout_and_no_disk_sync(tmp_path):
     conn = connect(default_url(tmp_path))
     assert (tmp_path / "cox.db").exists()
     assert conn.query_one("PRAGMA journal_mode")[0] == "wal"
+    assert conn.query_one("PRAGMA synchronous")[0] == 0  # OFF: the test double is never durable
     assert conn.query_one("PRAGMA foreign_keys")[0] == 1
     assert conn.query_one("PRAGMA busy_timeout")[0] > 0
 
