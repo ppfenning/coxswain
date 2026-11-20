@@ -55,6 +55,35 @@ The row shows the kind of store and the number of runs in it, for example `postg
 When the store does not answer, the row fails and gives the reason. An unreachable host fails after at most five seconds.
 The row never shows the URL or its credentials.
 
+## A worker's scoped store role
+
+```bash
+cox setup store worker-role build-box-1
+```
+
+Run this with the store owner's URL in the provider profile. It creates the group role `cox_worker` if it is missing, and a login role `cox_w_build_box_1` that is a member of it.
+The login role holds nothing of its own, so removing a machine means dropping one role.
+
+The group role may update only the claim columns of `phase_queue`. It may insert into `step_results` and `review_rounds`, and insert and update its own run's records (`runs`, `phases`, `tasks`, `task_records`, `attempts`, `node_calls`, `gate_decisions`, `ledger` and the graph tables) and `workers`.
+It may read `work_items`, `hosts`, `cartridge_snapshots`, `landing_records` and `schema_version`, and never write them.
+It gets nothing on the land queue, the leases, the chair's tables or any table added later, and no right to create, alter or drop anything.
+
+The login role and its password go into the units' environment file, mode 600, under `COX_WORKER_STORE_ROLE` and `COX_WORKER_STORE_PASSWORD`.
+They never go into the provider profile, because every run's folder gets a copy of it. The password is never printed.
+
+The password reaches Postgres only as its SCRAM-SHA-256 verifier, so the server's statement log never holds it.
+
+Running the command again is safe. It keeps the password the file holds and leaves the grants exactly as listed: a grant added by hand is taken away, and a changed list is applied.
+It also resets both roles: superuser, createrole, createdb, bypassrls and replication off, every direct grant revoked, and every membership but `cox_worker` revoked.
+Run it again after a migration that adds a table a worker writes.
+
+On Postgres before 15, everyone may create tables in the `public` schema, and no grant to the worker takes that away. The doctor row then fails and says so. Run `REVOKE CREATE ON SCHEMA public FROM PUBLIC` as the owner, or pass `--revoke-public-create` to this command.
+
+A worker opens the store without migrating it. It refuses a store older than its code, or newer by a migration that is not additive.
+
+On a machine whose environment file names a worker role, `cox setup doctor` adds a `worker store role` row.
+The row connects as the role, checks that its allowed writes work and its forbidden ones are refused, and rolls every probe back.
+
 ## What brew and the installer do not do
 
 Brew and the installer never start Postgres or Garage.

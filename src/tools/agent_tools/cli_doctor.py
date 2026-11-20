@@ -51,6 +51,7 @@ from agent_tools.cli_lazy import (
     setup_token,
     store_dialect,
     store_url,
+    unit_env,
 )
 from agent_tools.cli_runs_fetch import _lane_host_candidates, _profile_lane_hosts
 from agent_tools.cli_setup_store import _doctor_profile, _probe_store, _unit_env_loaded
@@ -439,6 +440,35 @@ def _doctor_store_rows(profile: dict | None) -> list[dict]:
     return doctor.store_rows(mode, store_url.profile_store_url(data, runs_dir), traces, _probe_store(data, {}) if probed else [])
 
 
+def _doctor_worker_role_rows(profile: dict | None) -> list[dict]:
+    """Edge. The worker store role row: when the units' env (loaded under any variable the process lacks) names a
+    worker role, connect as it through `store_scoped.open_scoped`, which never migrates, and run the probes, each in
+    a transaction rolled back. `doctor.worker_role_rows` judges; no row on a machine with no worker role."""
+    role, password = os.environ.get(unit_env.WORKER_ROLE_ENV, ""), os.environ.get(unit_env.WORKER_PASSWORD_ENV, "")
+    if not role and not password:
+        return []
+    provider = (profile or {}).get("provider_profile")
+    data = store_url.read_provider_profile(provider) if isinstance(provider, str) else {}
+    owner = data.get("storage_url")
+    try:
+        postgres = isinstance(owner, str) and store_dialect.is_postgres(owner)
+    except ValueError:
+        postgres = False
+    verdict, error = None, None
+    if role and password and postgres:
+        from harness import store_roles, store_scoped
+        from harness.store_read import StoreVersionError
+
+        try:
+            outcomes, public_create = store_scoped.probe_url(store_roles.worker_url(str(owner), role, password))
+            verdict = store_roles.probe_verdict(outcomes, public_create)
+        except StoreVersionError as exc:
+            error = str(exc)
+        except Exception as exc:  # the row reports why the role is unusable; the doctor never raises
+            error = _store_error(exc)
+    return doctor.worker_role_rows(bool(role), bool(password), postgres, verdict, error)
+
+
 _DOCTOR_HOME_CHECKS = (
     "home root", "marketplace registered", "marketplace location", "old layout", "home paths", "home recorded",
     "cartridge links", "lane host paths",
@@ -584,6 +614,7 @@ def _setup_doctor_here(a: argparse.Namespace) -> int:
         *rows,
         *_doctor_home_rows(profile),
         *_doctor_store_rows(profile),
+        *_doctor_worker_role_rows(profile),
         *_doctor_dash_build_rows(profile),
         *_doctor_running_install_rows(profile),
         *_doctor_extras_rows(),

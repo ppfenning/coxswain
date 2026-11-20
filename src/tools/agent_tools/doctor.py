@@ -16,7 +16,7 @@ from agent_tools.setup_migrate import cartridge_link_target
 from agent_tools.setup_migrate_hosts import ObservedHost, is_migrated
 from agent_tools.store_probe import OBJECT_STORE, POSTGRES, ProbeResult
 
-__all__ = ["checks", "editable_source", "exit_code", "extras_row", "freshness_rows", "home_rows", "lane_host_paths_row", "parquet_line", "render", "running_install_row", "store_rows", "unit_path_entries"]
+__all__ = ["checks", "editable_source", "exit_code", "extras_row", "freshness_rows", "home_rows", "lane_host_paths_row", "parquet_line", "render", "running_install_row", "store_rows", "unit_path_entries", "worker_role_rows"]
 
 _MISSING = object()
 _SKIPPED = "skipped: no profile"
@@ -776,6 +776,27 @@ def store_rows(mode: str, store_url: str, traces_url: str, probe_results: list[P
         host = _host_of(store_url) or "unnamed"
         return [_shared_row(True, f"shared store reachable: postgres host {host}, {_traces_phrase(traces_url)}")]
     return [_shared_row(False, "the store setting is neither files nor shared; set it to one of those")]
+
+
+WORKER_ROLE_CHECK = "worker store role"
+
+
+def worker_role_rows(role_set: bool, password_set: bool, postgres: bool, verdict: tuple[bool, str] | None,
+                     error: str | None) -> list[dict]:
+    """The "worker store role" row, on a machine whose units' env file names a worker role (`cox setup store
+    worker-role`); none on any other. `verdict` is `store_roles.probe_verdict` of the probes run as that role, or
+    `error` why they could not run. A row never holds the role's password or the store's URL."""
+    if not role_set and not password_set:
+        return []
+    if not (role_set and password_set):
+        return [_shared_row(False, "the units' env file names a worker role or its password, not both; run cox setup "
+                                   "store worker-role again", check=WORKER_ROLE_CHECK)]
+    if not postgres:
+        return [_shared_row(False, "a worker role needs the shared Postgres store, and the profile names none",
+                            check=WORKER_ROLE_CHECK)]
+    if error is not None or verdict is None:
+        return [_shared_row(False, f"cannot use the role: {error or 'no probe ran'}", check=WORKER_ROLE_CHECK)]
+    return [_shared_row(verdict[0], verdict[1], check=WORKER_ROLE_CHECK)]
 
 
 def exit_code(rows: list[dict]) -> int:
