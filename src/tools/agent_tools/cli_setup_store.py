@@ -7,6 +7,7 @@ import contextlib
 import os
 import sys
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 
 from agent_tools.cli_common import _profile_path, _read_text_or_none
@@ -273,6 +274,58 @@ def _setup_unit_env(a: argparse.Namespace) -> int:
     print(f"names: {', '.join(unit_env.parse_env(text)) or 'none'}")
     if not token:
         print(f"note: no token found; run `cox setup token`, then this again, so the units get {claude_token.TOKEN_ENV}")
+    return 0
+
+
+def _write_env_file(path: Path, text: str) -> None:
+    """Edge. Write a units' env file mode 600, creating it so before any byte lands."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch(mode=0o600, exist_ok=True)
+    path.chmod(0o600)
+    path.write_text(text, encoding="utf-8")
+
+
+def _setup_worker_role(a: argparse.Namespace) -> int:
+    """Edge. `cox setup store worker-role <name>`, run with the store owner's URL (the provider profile's
+    storage_url): create the `cox_worker` group and this worker's login role when absent, and bring both to the one
+    grant set (`harness.store_roles`). The login role and its password go into the units' env file, mode 600, never
+    the provider profile, which every run's folder gets a copy of; the password is never printed. A repeat run keeps
+    the password the file holds and changes nothing; a changed grant set is applied by running it again."""
+    import secrets
+
+    from harness import store_roles, store_scoped
+    from harness.store_read import StoreVersionError
+
+    try:
+        login = store_roles.role_name(a.name)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    profile = _doctor_profile(_read_text_or_none(_profile_path(a))) or {}
+    provider = profile.get("provider_profile")
+    data = store_url.read_provider_profile(provider) if isinstance(provider, str) else {}
+    owner_url = data.get("storage_url")
+    if not isinstance(owner_url, str) or not owner_url:
+        print("error: the provider profile names no storage_url, the owner's store to create the role in", file=sys.stderr)
+        return 2
+    home = str(Path.home())
+    path = Path(a.environment_file).expanduser() if a.environment_file else Path(unit_env.env_file_path(home))
+    existing = _read_text_or_none(path)
+    held = unit_env.parse_env(existing or "")
+    kept = held.get(store_roles.PASSWORD_ENV) if held.get(store_roles.ROLE_ENV) == login else None
+    try:
+        unit_env.with_values(existing, {})  # refuse a file this would rewrite differently before touching the store
+        plan = store_scoped.apply_role(owner_url, login, kept, secrets.token_urlsafe(32),
+                                       datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        text = unit_env.with_values(existing, {store_roles.ROLE_ENV: login, store_roles.PASSWORD_ENV: plan.password})
+    except (ValueError, StoreVersionError) as exc:
+        print(f"refusing: {exc}", file=sys.stderr)
+        return 2
+    if text != existing:
+        _write_env_file(path, text)
+    print(f"role: {login} (member of {store_roles.GROUP_ROLE})")
+    print(f"grants: {sum(1 for s in plan.statements if s.startswith('GRANT') and ' ON ' in s)} statements applied")
+    print(f"password: {'set and written to' if plan.sets_password else 'unchanged in'} {path}")
     return 0
 
 

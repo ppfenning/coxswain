@@ -10,6 +10,11 @@ from xml.sax.saxutils import unescape
 from agent_tools import forgejo_env
 from agent_tools.claude_token import TOKEN_ENV
 
+# The names `harness.store_roles` reads (ROLE_ENV, PASSWORD_ENV); a test holds the two equal, as this module does not
+# import the harness.
+WORKER_ROLE_ENV = "COX_WORKER_STORE_ROLE"
+WORKER_PASSWORD_ENV = "COX_WORKER_STORE_PASSWORD"
+
 # Only variables some module already reads, imported from the module that defines each name.
 # TOKEN_ENV is read by claude_token.claude_env. The store and traces URLs are not environment variables:
 # store_url.py takes `storage_url` and `traces_url` from the provider profile, so they are not keys here.
@@ -486,13 +491,17 @@ def load_notes(load: EnvLoad, files: list[str], absent: list[str], unreadable: l
     ]
 
 
-def file_text(existing: str | None, token: str | None) -> str:
-    """The env file's new text: every NAME=value line the file already has, with the token set when one is given.
-    Raises ValueError for `export` lines (parse_env would drop them, losing a setting) and for anything `render_env`
+def with_values(existing: str | None, values: Mapping[str, str]) -> str:
+    """The env file's new text: every NAME=value line the file already has, with `values` set over them. Raises
+    ValueError for `export` lines (parse_env would drop them, losing a setting) and for anything `render_env`
     refuses, so nothing is written that a unit would read differently."""
     exports = export_lines(existing or "")
     if exports:
         numbers = ", ".join(str(n) for n in exports)
         raise ValueError(f"export lines ({numbers}) that EnvironmentFile= may skip; rewrite them as NAME=value")
-    values = parse_env(existing or "")
-    return render_env({**values, TOKEN_ENV: token} if token else values)
+    return render_env({**parse_env(existing or ""), **values})
+
+
+def file_text(existing: str | None, token: str | None) -> str:
+    """`with_values`, setting the token when one is given."""
+    return with_values(existing, {TOKEN_ENV: token} if token else {})
