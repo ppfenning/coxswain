@@ -72,6 +72,7 @@ from agent_tools.chair_phase_quarantine import Quarantined, release_commands
 from agent_tools.chair_rebase_exec import perform_rebase
 from agent_tools.chair_revert_exec import MERGED, RevertResult, perform_revert
 from agent_tools.chair_schedule import SCHEDULE_FILE
+from agent_tools.chair_stall_alarm import notice_word, stall_message_id
 from agent_tools.chair_types import Action, ActionKind, action_text, is_fenced
 from agent_tools.land import LAND_CONFLICT_KEY, conflict_note
 from agent_tools.pytest_tmp_sweep import sweep_pytest_tmp
@@ -271,18 +272,25 @@ def _stall_alarm(action: Action, deps: Deps) -> Result:
     """Edge. One courier entry for a stall the chair raised (`stall_raised`) or saw clear (`stall_cleared`), H7.1.
 
     The recorded row of this action is what marks the stall raised or cleared: the next tick's facts read it back
-    (`chair_stall_alarm.open_alarms`), so a stall is raised once and cleared once. A `quiet` clear writes no entry. A
+    (`chair_stall_alarm.open_alarms`), so a stall is raised once and cleared once. The row is recorded only after this
+    entry is written, and the entry's id is this raise's or clear's own (`stall_message_id`, with the action's `seq`), so
+    a tick re-run after a write whose row was lost appends the same message again, which the inbox folds into one, and
+    a stall raised again after it cleared is a new message. A `quiet` clear writes no entry. A
     failed write records `failed`, and the next tick plans it again."""
     raised = action["kind"] == "stall_alarm"
-    stall, subject = action.get("stall", ""), action.get("subject", "")
+    stall, subject, since = action.get("stall", ""), action.get("subject", ""), action.get("since", "")
     detail = action.get("detail", "")
-    if action.get("quiet"):  # a streak that went quiet: its recorded row closes the stall, and no one is told
+    if action.get("quiet"):  # a streak that went quiet or an idle spell that ended: its row closes the stall, unsaid
         return make_result(action, "done", f"expired: {stall}")
-    note = f"{'stall' if raised else 'all clear'}: {detail}"
+    note = f"{notice_word(stall, raised)}: {detail}"
+    fields: dict[str, object] = {"stall": stall, "since": since, "subject": subject, "detail": detail}
+    held = action.get("held")
+    if held:
+        fields["held"] = held
     entry = courier.send(
-        courier.Reference("initiative", subject or stall), deps.label or "chair", deps.note_to, note, uuid.uuid4().hex,
-        event="stall_raised" if raised else "stall_cleared",
-        fields={"stall": stall, "since": action.get("since", ""), "subject": subject, "detail": detail}, topic=subject or None,
+        courier.Reference("initiative", subject or stall), deps.label or "chair", deps.note_to, note,
+        stall_message_id(action["kind"], stall, since, action.get("seq", 0)),
+        event="stall_raised" if raised else "stall_cleared", fields=fields, topic=subject or None,
     )
     try:
         courier.append_file(deps.work_dir / "courier.jsonl", entry)
