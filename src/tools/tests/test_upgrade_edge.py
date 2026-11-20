@@ -4,6 +4,7 @@ the record `cox versions` shows, and the timer unit text."""
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -81,9 +82,45 @@ def test_added_migrations_are_the_store_ddl_modules_only_the_newer_listing_has()
 
 
 def test_a_rollback_is_refused_only_when_restarted_units_may_have_migrated_the_store():
-    assert upgrade_edge.may_roll_back((), restarted=True)
-    assert upgrade_edge.may_roll_back(("0003",), restarted=False)
-    assert not upgrade_edge.may_roll_back(("0003",), restarted=True)
+    assert upgrade_edge.may_roll_back((), restarted=True, additive=(), tolerant=True)
+    assert upgrade_edge.may_roll_back(("0003",), restarted=False, additive=(), tolerant=True)
+    assert not upgrade_edge.may_roll_back(("0003",), restarted=True, additive=(), tolerant=True)
+
+
+def test_a_rollback_past_additive_migrations_is_allowed_when_the_previous_commit_carries_the_rule():
+    assert upgrade_edge.may_roll_back(("0003", "0004"), restarted=True, additive={"0003", "0004"}, tolerant=True)
+    assert not upgrade_edge.may_roll_back(("0003", "0004"), restarted=True, additive={"0003"}, tolerant=True)
+    # A previous commit without the rule refuses every newer store, additive or not.
+    assert not upgrade_edge.may_roll_back(("0003",), restarted=True, additive={"0003"}, tolerant=False)
+
+
+def test_the_blocking_migrations_are_the_non_additive_ones_or_all_of_them_without_the_rule():
+    assert upgrade_edge.blocking_migrations(("0003", "0004", "0005"), {"0004"}, tolerant=True) == ("0003", "0005")
+    assert upgrade_edge.blocking_migrations(("0003", "0004"), {"0003", "0004"}, tolerant=False) == ("0003", "0004")
+    assert upgrade_edge.blocking_migrations((), (), tolerant=False) == ()
+
+
+def test_a_migration_is_additive_only_when_it_sets_additive_to_the_literal_true_at_module_level():
+    assert upgrade_edge.declares_additive('VERSION = 20\nDESCRIPTION = "x"\nADDITIVE = True\n')
+    assert upgrade_edge.declares_additive("ADDITIVE: bool = True\n")
+    assert not upgrade_edge.declares_additive("VERSION = 20\n")
+    assert not upgrade_edge.declares_additive("ADDITIVE = 1\n")
+    assert not upgrade_edge.declares_additive('ADDITIVE = "True"\n')
+    assert not upgrade_edge.declares_additive("def f():\n    ADDITIVE = True\n")
+    assert not upgrade_edge.declares_additive("ADDITIVE = (\n")
+
+
+def test_the_rule_is_carried_by_a_store_migrate_source_that_defines_accepts():
+    assert upgrade_edge.tolerates_additive("def accepts(current, expected, newer):\n    return True\n")
+    assert not upgrade_edge.tolerates_additive("def check_version(conn):\n    pass\n")
+    assert not upgrade_edge.tolerates_additive("def (\n")
+
+
+def test_this_trees_store_migrate_carries_the_rule_the_edge_upgrade_looks_for():
+    source = (Path(__file__).resolve().parents[2] / "graphs" / "harness" / "store_migrate.py").read_text()
+    assert upgrade_edge.tolerates_additive(source)
+    assert upgrade_edge.MIGRATE_MODULE == "src/graphs/harness/store_migrate.py"
+    assert upgrade_edge.migration_path("0020") == "src/graphs/harness/store_ddl_0020.py"
 
 
 def test_the_record_line_names_the_outcome_the_previous_and_the_chosen_commit():

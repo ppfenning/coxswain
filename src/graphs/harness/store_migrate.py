@@ -5,6 +5,12 @@ digits, contiguous from 0001) exposing `VERSION`, `DESCRIPTION` and
 `statements(dialect)`. Adding one never edits this file: `default_modules`
 finds them with pkgutil. Only `open_store` applies migrations. Read paths call
 `check_version`, which never writes.
+
+A migration that only adds (tables, columns, indexes, triggers) may declare `ADDITIVE = True`. `migrate` records its
+`schema_version` description as `additive: <DESCRIPTION>`, and code older than it then still opens the store: a store
+newer than the code is accepted when every `schema_version` row above the code's newest migration carries that prefix
+(`accepts`), and refused, naming the first row that does not, otherwise. That lets an additive migration apply while
+processes on the previous build (a lane's heartbeat, say) keep running.
 """
 
 from __future__ import annotations
@@ -28,12 +34,17 @@ import harness
 from harness.store_dialect import Connection, Dialect, connect
 
 __all__ = [
+    "ADDITIVE_PREFIX",
     "MigrationError",
+    "accepts",
     "check_version",
     "default_modules",
     "migrate",
+    "newer_descriptions",
+    "newer_refusal",
     "open_store",
     "pending",
+    "recorded_description",
 ]
 
 _WITHOUT_BACKUP = "COX_STORE_MIGRATE_WITHOUT_BACKUP"
@@ -43,6 +54,8 @@ _NAME = re.compile(r"(?:^|\.)store_ddl_(\d{4})$")
 _CREATE = "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, applied_at TEXT, description TEXT)"
 
 Migration = tuple[int, Callable[[Dialect], tuple[str, ...]]]
+
+ADDITIVE_PREFIX = "additive: "
 
 
 class MigrationError(RuntimeError):
@@ -98,20 +111,66 @@ def _lock_versions(dialect: Dialect) -> tuple[str, ...]:
     return ("LOCK TABLE schema_version IN SHARE ROW EXCLUSIVE MODE",) if dialect.name == "postgres" else ()
 
 
+def recorded_description(description: str, additive: bool) -> str:
+    """Pure. The `schema_version` description a migration is recorded with: `additive: <description>` when it declares
+    `ADDITIVE = True`, else the description as given. A description that already carries the prefix keeps one."""
+    return ADDITIVE_PREFIX + description if additive and not description.startswith(ADDITIVE_PREFIX) else description
+
+
+def _declares_additive(m: ModuleType) -> bool:
+    """Whether the module sets `ADDITIVE = True`; anything else, absence included, is not additive."""
+    return getattr(m, "ADDITIVE", False) is True
+
+
+def accepts(current: int, expected: int, newer_descriptions: Sequence[str]) -> bool:
+    """Pure. Whether code whose newest migration is `expected` may use a store at `current`. Equal versions are
+    accepted and an older store is not. A newer store is accepted only when `newer_descriptions`, the store's
+    `schema_version` descriptions above `expected`, are one per newer version and every one carries
+    `ADDITIVE_PREFIX`."""
+    if current <= expected:
+        return current == expected
+    return len(newer_descriptions) == current - expected and all(
+        d.startswith(ADDITIVE_PREFIX) for d in newer_descriptions
+    )
+
+
+def newer_refusal(expected: int, newer_descriptions: Sequence[str]) -> str:
+    """Pure. Why a store newer than `expected` is refused, for a caller that `accepts` said no to: the first row above
+    `expected` that is not additive, by number and description, or that the rows above it are not one per version."""
+    blocking = next(
+        ((expected + 1 + i, d) for i, d in enumerate(newer_descriptions) if not d.startswith(ADDITIVE_PREFIX)), None
+    )
+    if blocking is None:
+        return f"its schema_version rows above {expected} are not one per version, so they cannot be read as additive"
+    version, description = blocking
+    return f"migration {version:04d} ({description}) is not additive"
+
+
 def _steps(
     m: ModuleType, dialect: Dialect, record: str, applied_at: str, current: int
 ) -> tuple[tuple[str, tuple[object, ...]], ...]:
     """The migration's statements then its schema_version row; none when `current` already covers it."""
+    description = recorded_description(m.DESCRIPTION, _declares_additive(m))
     return (
         ()
         if current >= m.VERSION
-        else (*((sql, ()) for sql in m.statements(dialect)), (record, (m.VERSION, applied_at, m.DESCRIPTION)))
+        else (*((sql, ()) for sql in m.statements(dialect)), (record, (m.VERSION, applied_at, description)))
     )
 
 
 def check_version(conn: Connection, modules: Sequence[ModuleType | str] | None = None) -> tuple[int, int]:
     """(current, expected) versions. Reads only; applies nothing. `modules` defaults to the harness package's."""
     return _current_version(conn), len(_ordered(default_modules() if modules is None else modules))
+
+
+def newer_descriptions(conn: Connection, expected: int) -> tuple[str, ...]:
+    """Edge. The `schema_version` descriptions above `expected`, in version order; a NULL one reads as ''. Reads
+    only; applies nothing."""
+    if not _has_version_table(conn):
+        return ()
+    p = conn.dialect.placeholder
+    rows = conn.query_all(f"SELECT description FROM schema_version WHERE version > {p} ORDER BY version", (expected,))
+    return tuple("" if r[0] is None else str(r[0]) for r in rows)
 
 
 def pending(conn: Connection, modules: Sequence[ModuleType | str] | None = None) -> list[tuple[int, str]]:
@@ -214,12 +273,20 @@ def migrate(conn: Connection, applied_at: str, modules: Sequence[ModuleType | st
 
     The version read before the loop only skips work. Each transaction reads it again under
     the write lock, so a migration another opener committed meanwhile is not run twice.
+
+    A database newer than `modules` is left as it is and its version returned when every newer migration it records
+    is additive (`accepts`); otherwise it is refused before any write, naming the first one that is not.
     """
     ordered = _ordered(default_modules() if modules is None else modules)
     newest = len(ordered)
     before = _current_version(conn)
     if before > newest:
-        raise MigrationError(f"database is at schema version {before}, newest known migration is {newest}")
+        newer = newer_descriptions(conn, newest)
+        if accepts(before, newest, newer):
+            return before
+        raise MigrationError(
+            f"database is at schema version {before}, newest known migration is {newest}; {newer_refusal(newest, newer)}"
+        )
     conn.execute(_CREATE)
     p = conn.dialect.placeholder
     record = f"INSERT INTO schema_version (version, applied_at, description) VALUES ({p}, {p}, {p})"
@@ -264,8 +331,13 @@ def main(argv: Sequence[str]) -> int:
     try:
         current, newest = check_version(conn)
         if current > newest:
-            print(f"database is at schema version {current}, newest known migration is {newest}", file=sys.stderr)
-            return 2
+            newer = newer_descriptions(conn, newest)
+            if not accepts(current, newest, newer):
+                print(f"database is at schema version {current}, newest known migration is {newest}; "
+                      f"{newer_refusal(newest, newer)}", file=sys.stderr)
+                return 2
+            print(f"up to date (v{current}, newer than this code's v{newest} by additive migrations only)")
+            return 0
         items = pending(conn)
         if not items:
             print(f"up to date (v{current})")
