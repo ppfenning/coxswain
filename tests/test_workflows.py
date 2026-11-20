@@ -28,8 +28,11 @@ def _pytest_steps(workflow: dict) -> list[tuple[str, str]]:
     ]
 
 
-# The extras job runs the Postgres store tests, which back the test database up with pg_dump and fail under xdist.
-_SERIAL_JOBS = {"extras"}
+# The Postgres store tests back the test database up with pg_dump and fail under xdist, so they run in serial steps:
+# the extras job's marked postgres step on a pull request, and its whole-suite step on a push to main.
+_EXTRAS = 'uv run pytest -q -rs -n auto -m "extras and not postgres" || { test $? -eq 5 && test "${{ matrix.selects }}" = none; }'
+_POSTGRES = 'uv run pytest -q -rs -m postgres || { test $? -eq 5 && test "${{ matrix.selects }}" != both; }'
+_WHOLE = "uv run pytest -q -rs"
 # The smoke suite installs cox once and opens one Postgres per run, so it runs serial (docs/smoke.md).
 _SMOKE = 'uv run pytest -q -rs -m "not forge" smoke'
 _SMOKE_FORGE = "uv run pytest -q -rs -m forge smoke"
@@ -37,7 +40,8 @@ _SMOKES = (_SMOKE, _SMOKE_FORGE)  # serial: one install, one Postgres and one fo
 
 
 def _missing_xdist(steps: list[tuple[str, str]]) -> list[str]:
-    return [f"{job}: {run}" for job, run in steps if job not in _SERIAL_JOBS and run not in _SMOKES and "-n auto" not in run]
+    serial = (_POSTGRES, _WHOLE, *_SMOKES)
+    return [f"{job}: {run}" for job, run in steps if run not in serial and "-n auto" not in run]
 
 
 def _runs() -> list[str]:
@@ -59,7 +63,7 @@ def test_the_pull_runs_before_the_cli_reference_and_the_deploy():
 
 def test_every_ci_pytest_step_runs_in_parallel():
     steps = _pytest_steps(yaml.safe_load(CI.read_text()))
-    assert len(steps) == 8  # unit (one step per suite, through the matrix), smoke x2, py315 x4, extras
+    assert len(steps) == 10  # unit (one step per suite, through the matrix), smoke x2, py315 x4, extras x3
     missing = _missing_xdist(steps)
     assert not missing, "pytest steps without -n auto:\n" + "\n".join(missing)
 
@@ -69,6 +73,7 @@ def test_every_unit_pytest_step_is_named_after_its_suite():
     job = yaml.safe_load(CI.read_text())["jobs"]["unit"]
     (step,) = [step for step in job["steps"] if step.get("run", "").startswith("uv run pytest")]
     assert step["name"] == "pytest ${{ matrix.suite }}" and step["working-directory"] == "${{ matrix.dir }}"
+    assert step["env"] == {"COX_EXTRAS_GUARD": "unit"}  # a skip neither marked for extras nor allowed fails the suite
     suites = {entry["suite"]: entry["dir"] for entry in job["strategy"]["matrix"]["include"]}
     assert suites == {"root": ".", "tools": "src/tools", "graphs": "src/graphs", "cartridges": "src/cartridges"}
     assert all(re.fullmatch(r"pytest (root|tools|graphs|cartridges)", f"pytest {suite}") for suite in suites)
@@ -93,14 +98,30 @@ def test_the_smoke_jobs_run_against_their_own_postgres_behind_the_required_check
     assert "@sha256:" in plan.POSTGRES_IMAGE
 
 
-def test_the_extras_job_runs_each_suite_as_its_own_serial_job():
-    """Split per suite so they run side by side; each stays serial for the Postgres store tests (2026-10-23)."""
+def test_the_extras_job_runs_the_marked_tests_on_a_pull_request_and_every_test_on_main():
+    """One job per suite, side by side. On a pull request: the `extras` tests (harness/extras_tests.py) under xdist,
+    then the `postgres` ones serially for the store tests' pg_dump (2026-10-23). On a push to main: the whole suite,
+    serially, since product code branches on whether an extra is present. Every suite keeps a job, so a marked test
+    added to any suite runs, and the guard runs in `extras` mode: a test the job selects must not skip."""
     job = yaml.safe_load(CI.read_text())["jobs"]["extras"]
-    suites = {entry["suite"]: entry["dir"] for entry in job["strategy"]["matrix"]["include"]}
-    assert suites == {"root": ".", "tools": "src/tools", "graphs": "src/graphs", "cartridges": "src/cartridges"}
-    assert job["strategy"]["fail-fast"] is False
-    (pytest,) = [step for step in job["steps"] if step.get("run", "").startswith("uv run pytest")]
-    assert "-n auto" not in pytest["run"] and pytest["working-directory"] == "${{ matrix.dir }}"
+    matrix = {entry["suite"]: entry for entry in job["strategy"]["matrix"]["include"]}
+    assert {suite: entry["dir"] for suite, entry in matrix.items()} == {
+        "root": ".", "tools": "src/tools", "graphs": "src/graphs", "cartridges": "src/cartridges"
+    }
+    # an empty selection fails except where none is expected: cartridges' two steps and root's postgres step
+    assert {suite: entry["selects"] for suite, entry in matrix.items()} == {
+        "root": "extras", "tools": "both", "graphs": "both", "cartridges": "none"
+    }
+    assert job["strategy"]["fail-fast"] is False and job["env"] == {"COX_EXTRAS_GUARD": "extras"}
+    steps = [step for step in job["steps"] if step.get("run", "").startswith("uv run pytest")]
+    assert [(step["run"], step["if"]) for step in steps] == [
+        (_EXTRAS, "github.event_name != 'push'"),
+        (_POSTGRES, "github.event_name != 'push'"),
+        (_WHOLE, "github.event_name == 'push'"),
+    ]
+    assert all(step["working-directory"] == "${{ matrix.dir }}" for step in steps)
+    # not `pytest <suite>`: the land's rerun rule attributes a failed suite only from the unit steps
+    assert all(not step["name"].startswith("pytest ") for step in steps)
     assert "postgres" in job["services"]
 
 
