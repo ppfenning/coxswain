@@ -45,6 +45,24 @@ command line.
 The chair's login check reports a host with no token file as a named failure.
 So does `cox setup doctor` when you give it a host name.
 
+The same check, and `cox setup doctor`, also look at what the smoke gate needs
+on the host:
+
+- the docker daemon answers;
+- the pinned smoke images are present, or `docker pull` can fetch them without
+  a prompt (its credential helper answers in an unattended session);
+- `pg_dump` and `psql` are on the PATH the lane's login shell sets;
+- `gh` is a real binary, not a version-manager shim with no version set;
+- the host answers over ssh;
+- `/tmp` (and `$TMPDIR` when the lane sets one) has at least 2 GiB free, and
+  at least 2 GiB of memory is available.
+
+The chair places no lane on a host that fails one of these. Its status line
+names the host and the failing checks, for example
+`needs chair: <host>:lane_prereqs docker daemon: ...`. The check only reads,
+so running the doctor again changes nothing. A host that passes every docker
+check reports the `docker` capability (`lane capabilities: docker`).
+
 ## What you'll see
 
 <img alt="cox install --dry-run printing the install plan without writing anything" src="../assets/shots/install-dry-run.svg">

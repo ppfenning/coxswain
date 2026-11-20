@@ -17,6 +17,7 @@ from agent_tools import (
     chair_plan_prune,
     chair_stall,
     chair_steer_cycle,
+    lane_prereqs,
 )
 from agent_tools.chair_carry import plan_carry
 from agent_tools.chair_decompose_miss import DecomposeMiss, escalation_reason, is_skipped, needs_escalation
@@ -166,10 +167,16 @@ def _unreachable_hosts(login_hosts: Sequence[Mapping[str, object]]) -> frozenset
 
 
 def _stuck_homes(actions: list[Action], launch_at: list[int], home: Mapping[str, str], facts: Facts) -> set[int]:
-    """Indices whose home host is drained, unreachable, login-lapsed, or whose lane is lost: these relocate instead
-    of routing home. While local lanes are decompose-only, a relaunch or retry homed on "" is stuck too."""
+    """Indices whose home host is drained, unreachable, login-lapsed, failing its lane prerequisites, or whose lane is
+    lost: these relocate instead of routing home. While local lanes are decompose-only, a relaunch or retry homed on
+    "" is stuck too."""
     login_hosts: Sequence[Mapping[str, object]] = facts.get("login_hosts", [])
-    stuck_hosts = chair_login_watch.login_blocked(login_hosts) | _drained_hosts(login_hosts) | _unreachable_hosts(login_hosts)
+    stuck_hosts = (
+        chair_login_watch.login_blocked(login_hosts)
+        | _drained_hosts(login_hosts)
+        | _unreachable_hosts(login_hosts)
+        | lane_prereqs.lane_blocked(login_hosts).keys()
+    )
     lost = frozenset(facts.get("lost_runs", {}))
     decompose_only = facts.get("dispatch", {}).get("local_lanes") == "decompose"
     return {
@@ -576,10 +583,16 @@ def _unstarted_waiting_chair(initiatives: list[InitiativeFacts]) -> list[Action]
 
 
 def _login_needs_chair_actions(facts: Facts, now: datetime | None) -> list[Action]:
-    """Login-lapsed and host-unreachable notices; host_back needs the tick's clock and is absent without it."""
+    """Login-lapsed, host-unreachable and lane-prerequisite notices; host_back needs the tick's clock and is absent
+    without it."""
     login_hosts = facts.get("login_hosts", [])
     back = chair_login_watch.host_back_needs_chair(login_hosts, now.isoformat()) if now is not None else []
-    return [*chair_login_watch.login_needs_chair(login_hosts), *chair_login_watch.host_unreachable_needs_chair(login_hosts), *back]
+    return [
+        *chair_login_watch.login_needs_chair(login_hosts),
+        *chair_login_watch.host_unreachable_needs_chair(login_hosts),
+        *lane_prereqs.lane_needs_chair(login_hosts),
+        *back,
+    ]
 
 
 def _held_reason(held: HeldFile) -> str:

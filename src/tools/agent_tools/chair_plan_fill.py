@@ -6,7 +6,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import datetime
 from typing import NamedTuple
 
-from agent_tools import chair_login_watch, host_load
+from agent_tools import chair_login_watch, host_load, lane_prereqs
 from agent_tools.chair_plan_recover import budget_verdict
 from agent_tools.chair_schedule import Schedule
 from agent_tools.chair_steer import steer_check
@@ -376,9 +376,14 @@ def _scaled_lanes(capacity: int, lane_fraction: float) -> int:
 
 
 def host_free_slots(facts: Facts) -> list[HostSlot]:
+    """One slot per dispatch host; a login-blocked, overloaded or lane-prerequisite-failing host has no free lane."""
     dispatch = facts["dispatch"]
     rows = facts.get("login_hosts", [])
-    blocked = chair_login_watch.login_blocked(rows) | host_load.overloaded(rows, facts.get("host_load_ceiling")).keys()
+    blocked = (
+        chair_login_watch.login_blocked(rows)
+        | host_load.overloaded(rows, facts.get("host_load_ceiling")).keys()
+        | lane_prereqs.lane_blocked(rows).keys()
+    )
     fraction = facts.get("limits", {}).get("lane_fraction", 1.0)
     return [
         (

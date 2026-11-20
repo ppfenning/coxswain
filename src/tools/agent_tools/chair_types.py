@@ -800,6 +800,7 @@ class Action(TypedDict, total=False):
     connect and may write the hosts row. needs_chair carries either
     initiative and cause, or host and cause when the entry names a lane host rather than an
     initiative; when host is present cause is "login_lapsed" or "stale_checkout" and there is no initiative key.
+    A "lane_prereqs" needs_chair carries host and reason: the smoke-gate checks that host failed (`lane_prereqs`).
     A stale_checkout needs_chair also carries repo, the repo directory name keyed in the host's checkout_env record.
     review_landed carries initiative, phase, task_id, repo, url and merged_at. steer_clear carries
     initiative, other and paths: the launch of initiative is deferred because it shares paths with other.

@@ -67,6 +67,17 @@ def _make_store(workspace_dir):
     conn.close()
 
 
+def _lane_ready(bin_dir):
+    """What the smoke gate needs (`lane_prereqs`), as fake binaries: docker up with every image present, the
+    PostgreSQL client tools, a real-looking gh, and room on /tmp. Memory is this machine's own."""
+    _write_executable(bin_dir / "docker", '#!/bin/sh\n[ "$1" = info ] && echo 27.3.1\nexit 0\n')
+    for name in ("pg_dump", "psql"):
+        _write_executable(bin_dir / name, "#!/bin/sh\n")
+    _write_executable(bin_dir / "gh", '#!/bin/sh\necho "gh version 2.60.1 (2026-10-01)"\n')
+    _write_executable(bin_dir / "df", '#!/bin/sh\necho "tmpfs 16000000 1000 8000000 1% $2"\n')
+    _write_executable(bin_dir / "vm_stat", '#!/bin/sh\necho "(page size of 16384 bytes)"\necho "Pages free: 262144."\n')
+
+
 def _good_setup(tmp_path, monkeypatch):
     cartridges_dir = tmp_path / "cartridges"; cartridges_dir.mkdir()
     skills_a = tmp_path / "skills_a"; skills_a.mkdir()
@@ -84,6 +95,7 @@ def _good_setup(tmp_path, monkeypatch):
     bin_dir = tmp_path / "bin"
     _write_executable(bin_dir / "fakeprovider", _PROVIDER.format(python=sys.executable))
     _write_executable(bin_dir / "git", _GIT)
+    _lane_ready(bin_dir)
     monkeypatch.setenv("PATH", str(bin_dir))
 
     _make_store(workspace_dir)
@@ -499,6 +511,7 @@ def test_schema_row_reads_cartridges_from_the_checkout_above_provider_profile(tm
     bin_dir = tmp_path / "bin"
     _write_executable(bin_dir / "fakeprovider", _PROVIDER.format(python=sys.executable))
     _write_executable(bin_dir / "git", _GIT)
+    _lane_ready(bin_dir)
     monkeypatch.setenv("PATH", str(bin_dir))
     _ready_home(monkeypatch, tmp_path)
 

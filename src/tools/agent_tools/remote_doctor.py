@@ -2,7 +2,7 @@
 
 from collections.abc import Callable, Sequence
 
-from agent_tools import lane_toolchain
+from agent_tools import lane_prereqs, lane_toolchain
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.lane_toolchain import CheckTools
 from agent_tools.remote_argv import doctor_argv, env_check_argv, json_object_in, ssh_argv, token_status_argv
@@ -57,7 +57,9 @@ def doctor_on_host(
 ) -> tuple[int, list[str]]:
     """`run` takes an argv and returns (exit code, combined output); `argv_for` wraps each command, ssh by default.
     `checks` are the tools the repo's checks run: each one the lane PATH lacks adds the refusal line a launch would give.
-    `repo_checks` pairs each repo's tools with its repo_dir; a tool in that repo's venv counts as found. Rows are de-duplicated."""
+    `repo_checks` pairs each repo's tools with its repo_dir; a tool in that repo's venv counts as found. Rows are de-duplicated.
+    The last rows are the smoke gate's prerequisites (`lane_prereqs`) and the capabilities they leave the host; a
+    failing one fails the doctor."""
     wrap = argv_for if argv_for is not None else (lambda argv: ssh_argv(host.ssh, argv))
     code, output = run(wrap(doctor_argv()))
     if runner == "claude-code":
@@ -80,5 +82,8 @@ def doctor_on_host(
     missing = list(dict.fromkeys([*lane_missing, *repo_missing]))
     unparsed_lines = dict.fromkeys([*wanted.unparsed, *(u for tools, _ in repo_checks for u in tools.unparsed)])
     unparsed = [f"checks: could not read tools from: {line}" for line in unparsed_lines]
-    failed = verdict is not None or bool(missing)
-    return (1 if failed and code == 0 else code), [*output.splitlines(), row, *missing, *unparsed]
+    lane_rows = lane_prereqs.reply_rows(*run(wrap(lane_prereqs.probe_argv())), remote=True)
+    tokens = ", ".join(sorted(lane_prereqs.capabilities(lane_rows))) or "none"
+    lane = [*(lane_prereqs.row_line(r) for r in lane_rows), f"lane capabilities: {tokens}"]
+    failed = verdict is not None or bool(missing) or lane_prereqs.blocking_reason(lane_rows) is not None
+    return (1 if failed and code == 0 else code), [*output.splitlines(), row, *missing, *unparsed, *lane]

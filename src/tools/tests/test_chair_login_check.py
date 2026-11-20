@@ -1,6 +1,8 @@
 import json
 
-from agent_tools import chair_login_check, host_cmd
+from lane_probe_replies import PASSING, PASSING_VERSIONS, is_lane_probe
+
+from agent_tools import chair_login_check, host_cmd, lane_prereqs
 from agent_tools.chair_exec import ArgvResult
 from agent_tools.chair_login_check import check_login_on_host
 from agent_tools.remote_argv import ssh_argv, token_status_argv
@@ -8,6 +10,7 @@ from agent_tools.remote_argv import ssh_argv, token_status_argv
 NOW = "2026-09-28T00:00:00+00:00"
 SSH_BOUND = ["ssh", "-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3"]
 VERB = token_status_argv(probe=True)
+LANE = lane_prereqs.probe_argv()
 TOKEN_PATH = "/home/user/.config/coxswain/claude-token"
 NO_FILE_REASON = f"claude token: no token file at {TOKEN_PATH}"
 REJECTED_REASON = "claude token: the probe was rejected"
@@ -41,14 +44,16 @@ def _recording_cli(captured: list, argvs: list | None = None) -> object:
 
 
 def _fake(statuses: list[ArgvResult]):
-    """A runner that answers the token verb argv from `statuses` in order, and records every argv. Any
-    other argv raises."""
+    """A runner that answers the token verb argv from `statuses` in order and the lane probe with a passing
+    reply, and records every argv. Any other argv raises."""
     calls: list = []
     queue = list(statuses)
 
     def run(argv: list[str]) -> ArgvResult:
         calls.append(argv)
         text = argv[-1] if argv[0] == "ssh" else " ".join(argv)
+        if is_lane_probe(argv):
+            return _reply(0, PASSING)
         if "cox setup token status --probe" in text:
             return queue.pop(0)
         raise AssertionError(f"unexpected argv {argv}")
@@ -76,7 +81,7 @@ def test_a_logged_in_host_merges_login_ok_true_and_now_and_keeps_existing_keys()
     assert versions["login_checked_at"] == NOW
     assert versions["login_failures"] == 0
     assert versions["cox"] == "1.2.3"
-    assert calls == [ssh_argv("user@shed", VERB)]
+    assert calls == [ssh_argv("user@shed", VERB), ssh_argv("user@shed", LANE)]
 
 
 def test_a_missing_token_file_blocks_the_host_on_the_first_check_with_the_reply_reason() -> None:
@@ -85,7 +90,7 @@ def test_a_missing_token_file_blocks_the_host_on_the_first_check_with_the_reply_
     assert versions["login_ok"] is False
     assert versions["login_failures"] == 1
     assert versions["reason"] == f"claude token: no token file at {TOKEN_PATH}"
-    assert len(calls) == 1
+    assert len(calls) == 2  # the token verb, then the lane probe
 
 
 def test_a_rejected_token_counts_a_failure_and_blocks_on_the_second() -> None:
@@ -98,7 +103,7 @@ def test_a_rejected_token_counts_a_failure_and_blocks_on_the_second() -> None:
 
     assert [(v["login_ok"], v["login_failures"]) for v in captured] == [(None, 1), (False, 2)]
     assert captured[1]["reason"] == REJECTED_REASON
-    assert len(calls) == 2
+    assert len(calls) == 4
 
 
 def test_a_failing_reply_without_a_reason_falls_back_to_the_exit_code_and_output() -> None:
@@ -123,8 +128,8 @@ def test_the_loop_s_own_host_runs_the_verb_argv_directly_with_no_ssh(monkeypatch
 
     check_login_on_host("host-b", "user@host-b", {}, NOW, run, _recording_cli(captured))
 
-    assert calls == [["cox", "setup", "token", "status", "--probe"]]
-    assert captured[0] == {"login_ok": True, "login_checked_at": NOW, "check": "claude_auth", "login_failures": 0}
+    assert calls == [["cox", "setup", "token", "status", "--probe"], LANE]
+    assert captured[0] == {"login_ok": True, "login_checked_at": NOW, "check": "claude_auth", "login_failures": 0, **PASSING_VERSIONS}
 
 
 def test_a_different_host_than_the_loop_s_own_gets_the_ssh_wrapped_verb_argv(monkeypatch) -> None:
@@ -133,7 +138,7 @@ def test_a_different_host_than_the_loop_s_own_gets_the_ssh_wrapped_verb_argv(mon
 
     check_login_on_host("shed", "user@shed", {}, NOW, run, _recording_cli([]))
 
-    assert calls == [ssh_argv("user@shed", VERB)]
+    assert calls == [ssh_argv("user@shed", VERB), ssh_argv("user@shed", LANE)]
     assert calls[0][: len(SSH_BOUND)] == SSH_BOUND
 
 
@@ -160,8 +165,8 @@ def test_a_claude_code_runner_call_builds_the_same_argv_and_never_calls_env_chec
 
     check_login_on_host("shed", "user@shed", {}, NOW, run, _recording_cli(captured), runner="claude-code")
 
-    assert calls == [ssh_argv("user@shed", VERB)]
-    assert captured[0] == {"login_ok": True, "login_checked_at": NOW, "check": "claude_auth", "login_failures": 0}
+    assert calls == [ssh_argv("user@shed", VERB), ssh_argv("user@shed", LANE)]
+    assert captured[0] == {"login_ok": True, "login_checked_at": NOW, "check": "claude_auth", "login_failures": 0, **PASSING_VERSIONS}
 
 
 def test_one_unreadable_reply_stores_none_with_a_reason_and_does_not_block() -> None:
@@ -170,7 +175,7 @@ def test_one_unreadable_reply_stores_none_with_a_reason_and_does_not_block() -> 
     assert versions["login_ok"] is None
     assert versions["login_failures"] == 1
     assert versions["reason"] == "exit 1: connection refused"
-    assert len(calls) == 1
+    assert len(calls) == 2
 
 
 def test_a_second_unreadable_reply_blocks_the_host() -> None:
@@ -260,12 +265,12 @@ def test_an_env_vars_runner_whose_printenv_exits_1_is_missing_not_unreachable() 
     assert captured[0]["reason"] == "missing MY_API_KEY"
 
 
-def test_an_env_vars_runner_with_no_env_names_is_not_logged_in_and_runs_nothing() -> None:
+def test_an_env_vars_runner_with_no_env_names_is_not_logged_in_and_runs_only_the_lane_probe() -> None:
     calls: list = []
 
     def ssh_run(argv: list[str]) -> ArgvResult:
         calls.append(argv)
-        return _reply(0, "unused")
+        return _reply(0, PASSING)
 
     row = check_login_on_host(
         "shed", "user@shed", {}, NOW, ssh_run, lambda argv: {"versions_json": _versions_arg(argv)}, runner="litellm"
@@ -276,8 +281,9 @@ def test_an_env_vars_runner_with_no_env_names_is_not_logged_in_and_runs_nothing(
         "login_checked_at": NOW,
         "check": "env_vars",
         "reason": "no auth_env or endpoint_env configured",
+        **PASSING_VERSIONS,
     }
-    assert calls == []
+    assert calls == [ssh_argv("user@shed", LANE)]  # no printenv, only the lane probe
 
 
 def test_a_failed_check_stores_the_login_url_from_the_ssh_output() -> None:
@@ -298,7 +304,7 @@ def test_a_passing_check_clears_a_stored_login_url() -> None:
     stored = {"login_ok": False, "login_url": "https://login.tailscale.com/a/abc123"}
     versions, _ = _check([_reply(0, LOGGED_IN)], stored)
 
-    assert versions == {"login_ok": True, "login_checked_at": NOW, "check": "claude_auth", "login_failures": 0}
+    assert versions == {"login_ok": True, "login_checked_at": NOW, "check": "claude_auth", "login_failures": 0, **PASSING_VERSIONS}
 
 
 TIMED_OUT = "ssh: timed out after 30s"
@@ -370,7 +376,7 @@ def test_a_pass_after_one_unreachable_check_clears_the_streak() -> None:
     check_login_on_host("shed", "user@shed", {}, NOW, run, cli_run)
     check_login_on_host("shed", "user@shed", captured[0], NOW, run, cli_run)
 
-    assert captured[1] == {"login_ok": True, "login_checked_at": NOW, "check": "claude_auth", "login_failures": 0}
+    assert captured[1] == {"login_ok": True, "login_checked_at": NOW, "check": "claude_auth", "login_failures": 0, **PASSING_VERSIONS}
 
 
 def test_a_refused_unreachable_login_write_is_the_answer_and_no_state_is_set_over_it() -> None:
