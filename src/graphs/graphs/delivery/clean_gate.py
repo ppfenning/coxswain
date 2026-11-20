@@ -2,7 +2,8 @@
 
 The clean script is `.github/check_clean.py`, run with `--require-names` in `.agent-checks`.
 A hit on it is a build fault the builder can fix; an unset names pattern is a gate that did not run.
-`lifecycle_propose` runs it on every build's patch before the handoff and review.
+`lifecycle_propose` runs it on every build's patch before the handoff and review, and `harness.checks.check_feedback`
+gives the same refusal when the lane gate's own clean line fails after approval.
 """
 
 from __future__ import annotations
@@ -18,7 +19,20 @@ from uuid import uuid4
 _CLEAN_SCRIPT = ".github/check_clean.py"
 _REQUIRE_NAMES = "--require-names"
 # `path:line: rule: 'text'`; a build-artifact hit has no line number.
-_HIT_LINE = re.compile(r"^\S+?:(?:\d+:)? [\w-]+: '.*'$")
+_HIT_LINE = re.compile(r"^\S+?:(?:\d+:)? (?P<rule>[\w-]+): '.*'$")
+# What each rule of the clean script accepts in place of what it refused; every one passes the script itself.
+_PLACEHOLDERS: Mapping[str, str] = {
+    "names": "a placeholder machine name, `lane-host` or `lander-host`",
+    "home-path": "a path built from pytest's `tmp_path`, or the one neutral home `/home/user`",
+    "lan-host": "a host with no `.lan` suffix, such as `lane-host`",
+    "address": "a documentation address such as `192.0.2.10`",
+    "vendor": "a neutral word such as `tracker`",
+    "build-artifact": "nothing: remove the file under `build/`",
+}
+_RETRY_RULE = (
+    "Replace each matched text with its placeholder, and use it nowhere else: not in code, a comment, a fixture or "
+    "another spelling. The names rule reads a pattern you cannot see, so any other real name fails the same way."
+)
 # `ran`: the clean entry ran; `skipped`: it exited 2, names pattern not exported; `none`: nothing to gate.
 GateStatus = Literal["ran", "skipped", "none"]
 
@@ -32,15 +46,26 @@ def clean_checks(checks: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], .
     )
 
 
+def clean_refusal(output: str) -> str | None:
+    """The refusal a builder reads for clean-script output: each hit as `file:line: rule: 'matched'`, the placeholder
+    its rule accepts instead, and the rule for a retry; None when the output holds no hit line."""
+    hits = tuple(
+        (line.strip(), match.group("rule"))
+        for line in (output or "").splitlines()
+        if (match := _HIT_LINE.match(line.strip()))
+    )
+    if not hits:
+        return None
+    quoted = "\n".join(f"  {hit}\n    use instead: {_PLACEHOLDERS.get(rule, 'a neutral stand-in')}" for hit, rule in hits)
+    return f"The clean check ({_CLEAN_SCRIPT} {_REQUIRE_NAMES}) refused a personal reference:\n{quoted}\n{_RETRY_RULE}"
+
+
 def clean_finding(exit_code: int | None, output: str) -> str | None:
     """A finding for a clean-script hit (exit 1); exit 2 means the names pattern was not exported, so the gate did not run."""
     if exit_code != 1:
         return None
-    lines = tuple(line for line in (output or "").splitlines() if _HIT_LINE.match(line.strip()))
-    quoted = "\n".join(f"  {line.strip()}" for line in lines) if lines else f"  {(output or '').strip()}"
-    return (
-        f"The clean check found a personal reference in the patch:\n{quoted}\n"
-        "Fix: build the path from tmp_path or a neutral constant, not a literal."
+    return clean_refusal(output) or (
+        f"The clean check found a personal reference in the patch:\n  {(output or '').strip()}\n{_RETRY_RULE}"
     )
 
 
