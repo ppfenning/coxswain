@@ -1,34 +1,66 @@
-"""The chair's side of the phase queue, pure: one `phase_queue` row per ready phase of a `lane_model: phase` initiative.
+"""The chair's side of the phase queue, pure: one `phase_queue` row per ready phase of a `lane_model: phase` initiative,
+and the one rule that keeps every old-model action off those initiatives.
 
-The tick reads the stored rows (`Facts.phase_queue`), computes the rows it wants from the initiatives it already
-gathered, and plans one `queue_phases` action carrying only the differences (`changes`). Nothing is planned when the
-store already holds what the chair wants, so a repeat tick plans nothing and a repeat write changes nothing.
+The tick reads the stored rows (`Facts.phase_queue`), works out the rows it wants from the initiatives it already
+gathered (`rows`), and plans one `queue_phases` action carrying only the differences (`changes`). Nothing is planned
+when the store already holds what the chair wants, so a repeat tick plans nothing and a repeat write changes nothing.
 
-A phase is ready when it can start a lane now (`InitiativeFacts.phases`, the rule the tick launches by). Its
-requirements are the union of its ready tasks' `requires:`, `repo:<name>` for the initiative's repository, and
-`docker` while the lane-prerequisite gate is on (`policy.dispatch.lane_prereqs`, on by default), since every phase
-runs the smoke suite; a worker advertises `docker` only when the doctor's lane checks pass. Order is the docket's:
-`band` 1 for every phase today, `seq` the initiative's place in the docket, then the phase's place in it.
+A phase is wanted when it can start a lane now (`InitiativeFacts.phases`, the rule the tick launches by) and nothing
+withholds it: its initiative held, deferred or stopped by its own failures, one of its tasks held for a person, the
+initiative closed, or the hard stop on spend. Its requirements are the union of its ready tasks' `requires:`,
+`repo:<name>` for the initiative's repository, and `docker` while the lane-prerequisite gate is on
+(`policy.dispatch.lane_prereqs`, on by default), since every phase runs the smoke suite; a worker advertises `docker`
+only when the doctor's lane checks pass. Order is the docket's: `band` 1 today, `seq` the initiative's place in the
+docket, then the phase's place in it.
 
-A claimed row is the worker's and is never changed here. A finished row is reopened only when its phase is ready
-again and it finished approved or quarantined: work came back to it (a revision, a rebuilt quarantine). A phase that
-ran out of attempts (`failed`) stays finished for the operator.
+A claimed row is the worker's and is never changed here. A withheld phase's ready row is withdrawn (`cancelled`) and
+comes back when it is wanted again. A finished row is reopened when its phase is ready again and it finished approved
+or quarantined: work came back to it. A row whose claims ran out while nobody held it is finished as failed
+(`exhaust`), and so is any phase that ran out of attempts: it stays finished for the operator.
+
+An initiative on the phase model is the worker's for its whole life: `withhold_old_model` drops every action of the
+old model (a launch, a relaunch, a branch clear, a fetch, a land, a signal to a run) that names one, so the two models
+never build, wipe or land the same phase.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from typing import cast
 
 from agent_tools.chair_types import Action, ActionKind, Facts, InitiativeFacts
 from agent_tools.lane_prereqs import DOCKER_CAPABILITY
 from agent_tools.queue_rows import launchable_by_tick
+from harness import phase_pick
 
 BAND = 1  # every phase today; band 0 is kept for hotfixes and bugs
 _SEQ_STRIDE = 1000  # phases per initiative the order leaves room for
 _REOPENED = frozenset({"approved", "quarantined"})
 
+# The old model's actions on an initiative: each starts, signals, fetches, rewrites or lands a run or its branches.
+# None may touch a phase initiative, whose phases a worker builds on branches it owns.
+OLD_MODEL_KINDS = frozenset({
+    ActionKind.LAUNCH_EPIC, ActionKind.RELAUNCH, ActionKind.RETRY, ActionKind.RESCUE, ActionKind.CLEAR_BRANCHES,
+    ActionKind.REBUILD_QUARANTINED, ActionKind.FETCH, ActionKind.FETCH_EXIT, ActionKind.CARRY_PHASE,
+    ActionKind.REBASE_PHASE, ActionKind.STALLED_USR1, ActionKind.STALLED_STOP, ActionKind.MARK_LOST, ActionKind.LAND,
+    ActionKind.LAND_PHASE, ActionKind.PARTIAL_LAND,
+})
+
 type Row = Mapping[str, object]
+type Key = tuple[str, str]
+
+
+def phase_model_ids(facts: Facts) -> frozenset[str]:
+    """Every initiative on the phase model the tick knows of: stamped so on its docket entry, or on its store row
+    (`Facts.phase_queue.phase_initiatives`, which covers initiatives with no ready task in the docket)."""
+    queue = facts.get("phase_queue")
+    stored = frozenset(queue["phase_initiatives"]) if queue is not None else frozenset[str]()
+    return stored | frozenset(i["id"] for i in facts.get("initiatives") or [] if not launchable_by_tick(i))
+
+
+def withhold_old_model(actions: Sequence[Action], phase_ids: Collection[str]) -> list[Action]:
+    """`actions` without the old model's actions on a phase initiative (`OLD_MODEL_KINDS`)."""
+    return [a for a in actions if not (a.get("kind") in OLD_MODEL_KINDS and a.get("initiative", "") in phase_ids)]
 
 
 def _repo_dir(initiative: InitiativeFacts) -> str:
@@ -42,18 +74,33 @@ def requirements(task_requires: Sequence[str], repo_dir: str, lane_prereqs: bool
     })
 
 
-def wanted(initiatives: Sequence[InitiativeFacts], lane_prereqs: bool) -> list[dict[str, object]]:
-    """The row the chair wants for each ready phase of each phase initiative, in docket order."""
-    rows: list[dict[str, object]] = []
+def withheld(key: Key, holds: Collection[str], held_phases: Collection[Key], closed: Collection[str], stopped: bool) -> str:
+    """Why the phase `key` must not be queued now, or "" when nothing withholds it."""
+    initiative, _ = key
+    if initiative in closed:
+        return "its initiative is closed"
+    if initiative in holds:
+        return "its initiative is held"
+    if key in held_phases:
+        return "a task of the phase is held for a person"
+    return "the hard stop on spend holds every phase" if stopped else ""
+
+
+def rows(initiatives: Sequence[InitiativeFacts], lane_prereqs: bool, holds: Collection[str] = (),
+         held_phases: Collection[Key] = (), closed: Collection[str] = (), stopped: bool = False) -> list[dict[str, object]]:
+    """The row the chair wants for each ready phase of each phase initiative that nothing withholds, in docket order."""
+    out: list[dict[str, object]] = []
     for place, initiative in enumerate(i for i in initiatives if not launchable_by_tick(i)):
         for index, phase in enumerate(initiative.get("phases") or []):
+            if withheld((initiative["id"], phase["phase"]), holds, held_phases, closed, stopped):
+                continue
             requires = [r for t in phase["ready_tasks"] for r in t["requires"]]
-            rows.append({
+            out.append({
                 "initiative": initiative["id"], "phase": phase["phase"], "kind": "build",
                 "repo": str(initiative.get("repo") or ""), "requires": requirements(requires, _repo_dir(initiative), lane_prereqs),
                 "band": BAND, "seq": place * _SEQ_STRIDE + index,
             })
-    return rows
+    return out
 
 
 def _requires_of(row: Row) -> list[str]:
@@ -68,31 +115,54 @@ def _same(want: Row, stored: Row) -> bool:
     )
 
 
-def changes(wanted_rows: Sequence[Row], stored: Sequence[Row]) -> list[dict[str, object]]:
-    """What the store needs so it holds `wanted_rows`: an `insert` for a phase with no row, an `update` for a waiting
-    or ready row whose requirements or order moved, and a `reopen` for a finished row whose phase is ready again."""
-    by_key = {(str(r.get("initiative")), str(r.get("phase"))): r for r in stored}
+def _key(row: Row) -> Key:
+    return (str(row.get("initiative")), str(row.get("phase")))
+
+
+def changes(wanted_rows: Sequence[Row], stored: Sequence[Row], now: str, holds: Collection[str] = (),
+            held_phases: Collection[Key] = (), closed: Collection[str] = (), stopped: bool = False) -> list[dict[str, object]]:
+    """What the store needs so it holds `wanted_rows`, at the tick's `now`:
+    - `insert` for a phase with no row; `update` for a waiting or ready row whose requirements or order moved;
+    - `reopen` for a finished (approved or quarantined) or withdrawn row whose phase is wanted again;
+    - `withdraw` for a waiting or ready row whose phase is withheld (`withheld`);
+    - `exhaust` for a row whose claims ran out while nobody holds it (`phase_pick.exhausted`).
+    The store re-checks each against the state it moves from, so a row a worker claimed meanwhile is left alone."""
+    by_key = {_key(r): r for r in stored}
     out: list[dict[str, object]] = []
     for want in wanted_rows:
-        found = by_key.get((str(want["initiative"]), str(want["phase"])))
+        found = by_key.get(_key(want))
         state = None if found is None else found.get("state")
         if found is None:
             out.append({"op": "insert", **want, "reason": "ready to build"})
+        elif phase_pick.exhausted(found, now):
+            continue  # the pass over stored rows below finishes it
         elif state in ("waiting", "ready") and not _same(want, found):
             out.append({"op": "update", **want})
-        elif state == "finished" and found.get("outcome") in _REOPENED:
-            out.append({"op": "reopen", **want, "epoch": found.get("claim_epoch", 0),
-                        "reason": f"ready again after it finished {found.get('outcome')}"})
+        elif state == "cancelled" or (state == "finished" and found.get("outcome") in _REOPENED):
+            was = "withdrawn" if state == "cancelled" else f"finished {found.get('outcome')}"
+            out.append({"op": "reopen", **want, "epoch": found.get("claim_epoch", 0), "reason": f"ready again after it was {was}"})
+    for row in stored:
+        key = _key(row)
+        if phase_pick.exhausted(row, now):
+            out.append({"op": "exhaust", "initiative": key[0], "phase": key[1],
+                        "reason": f"{row.get('attempts')} claims and none finished it; the operator decides"})
+        elif row.get("state") in ("waiting", "ready") and (why := withheld(key, holds, held_phases, closed, stopped)):
+            out.append({"op": "withdraw", "initiative": key[0], "phase": key[1], "reason": why})
     return out
 
 
-def plan(facts: Facts) -> list[Action]:
+def plan(facts: Facts, now: str, holds: Collection[str] = ()) -> list[Action]:
     """One `queue_phases` action with the tick's changes, or nothing: no phase initiative is ready, or the store
-    already holds every row. Without the stored rows (`phase_queue` unread) nothing is planned."""
+    already holds every row. Without the stored rows (`phase_queue` unread) nothing is planned. `holds` is the tick's
+    held and deferred initiatives; the facts add those stopped by their own failures and the tasks held for a person."""
     queue = facts.get("phase_queue")
     if queue is None:
         return []
-    found = changes(wanted(facts.get("initiatives") or [], queue["lane_prereqs"]), queue["rows"])
+    held = frozenset(holds) | frozenset(facts.get("held_initiatives") or []) | frozenset(facts.get("no_progress") or {})
+    held_phases = frozenset((t["initiative"], t["phase"]) for t in facts.get("held_tasks") or [])
+    closed, stopped = frozenset(queue["closed"]), bool(facts["limits"]["hard_stop"])
+    wanted = rows(facts.get("initiatives") or [], queue["lane_prereqs"], held, held_phases, closed, stopped)
+    found = changes(wanted, queue["rows"], now, held, held_phases, closed, stopped)
     if not found:
         return []
     names = ", ".join(f"{c['initiative']}/{c['phase']} {c['op']}" for c in found)

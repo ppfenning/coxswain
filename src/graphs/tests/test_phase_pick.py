@@ -8,6 +8,11 @@ from harness.phase_pick import Verdict
 NOW = "2026-11-20T10:00:00Z"
 
 
+def _pick(rows, capabilities, free, now):
+    """The row a claim tries first: the first of `choices`."""
+    return next(iter(phase_pick.choices(rows, capabilities, free, now)), None)
+
+
 def _row(phase: str, *, requires=(), state="ready", band=1, seq=0, ready_at="", lease_until="", initiative="i"):
     return {"initiative": initiative, "phase": phase, "requires_json": list(requires), "state": state, "band": band,
             "seq": seq, "ready_at": ready_at, "lease_until": lease_until}
@@ -63,19 +68,19 @@ def test_pick_takes_the_first_in_band_and_seq_order_that_the_worker_meets():
         _row("late", seq=5), _row("mac", band=0, seq=0, requires=["os:macos"]), _row("first", band=0, seq=1),
         _row("held", band=0, seq=0, state="claimed", lease_until="2026-11-20T10:00:30Z"),
     ]
-    assert phase_pick.pick(rows, ["os:linux"], 1, NOW)["phase"] == "first"
-    assert phase_pick.pick(rows, ["os:macos"], 1, NOW)["phase"] == "mac"
+    assert _pick(rows, ["os:linux"], 1, NOW)["phase"] == "first"
+    assert _pick(rows, ["os:macos"], 1, NOW)["phase"] == "mac"
 
 
 def test_pick_takes_nothing_without_a_free_lane_or_a_qualifying_row():
     rows = [_row("mac", requires=["os:macos"])]
-    assert phase_pick.pick(rows, ["os:macos"], 0, NOW) is None
-    assert phase_pick.pick(rows, ["os:linux"], 2, NOW) is None
+    assert _pick(rows, ["os:macos"], 0, NOW) is None
+    assert _pick(rows, ["os:linux"], 2, NOW) is None
 
 
 def test_a_lapsed_claim_is_picked_like_a_ready_row():
     lapsed = _row("p", state="claimed", lease_until="2026-11-20T09:00:00Z")
-    assert phase_pick.pick([lapsed], [], 1, NOW) is lapsed
+    assert _pick([lapsed], [], 1, NOW) is lapsed
 
 
 @pytest.mark.parametrize(
@@ -108,6 +113,34 @@ def test_a_phase_with_work_left_is_retried_with_backoff_until_its_attempts_run_o
     spent = phase_pick.verdict(["ready"], 3)
     assert (spent.kind, spent.outcome) == ("quarantine", "failed")
     assert spent.reason == "3 attempt(s), the last: tasks left ready"
+
+
+def test_a_phase_whose_tasks_were_all_dropped_is_acked_not_failed():
+    assert phase_pick.verdict(["dropped", "dropped"], 3) == Verdict("ack", "approved", "every task of the phase was dropped")
+
+
+def test_a_refused_launch_gives_its_attempt_back_and_waits_its_backoff():
+    assert phase_pick.refusal("the launch was refused: usage stop", 1) == Verdict("retry", "", "the launch was refused: usage stop", 60, refund=True)
+    assert phase_pick.refusal("x", 3).wait_s == 120
+
+
+def test_a_phase_with_its_attempts_used_is_never_claimable_and_is_exhausted_once_nobody_holds_it():
+    spent = _row("p", ready_at=NOW)
+    spent["attempts"] = 3
+    assert not phase_pick.claimable(spent, NOW)
+    assert phase_pick.exhausted(spent, NOW)
+    lapsed = {**_row("p", state="claimed", lease_until="2026-11-20T09:00:00Z"), "attempts": 3}
+    assert not phase_pick.claimable(lapsed, NOW) and phase_pick.exhausted(lapsed, NOW)
+    held = {**_row("p", state="claimed", lease_until="2026-11-20T10:00:30Z"), "attempts": 3}
+    assert not phase_pick.exhausted(held, NOW)
+    assert not phase_pick.exhausted({**_row("p"), "attempts": 2}, NOW)
+
+
+def test_choices_keep_every_row_the_worker_meets_in_order_past_those_it_cannot():
+    rows = [_row(f"mac{n}", seq=n, requires=["os:macos"]) for n in range(20)] + [_row("any", seq=99)]
+    assert [r["phase"] for r in phase_pick.choices(rows, ["os:linux"], 1, NOW)] == ["any"]
+    assert len(phase_pick.choices(rows, ["os:macos"], 1, NOW)) == 21
+    assert phase_pick.choices(rows, ["os:macos"], 0, NOW) == []
 
 
 def test_a_run_that_never_started_is_retried_even_when_its_tasks_look_done():

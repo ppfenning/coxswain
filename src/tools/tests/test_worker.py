@@ -67,3 +67,88 @@ def test_status_says_who_holds_a_claim_and_when_one_has_lapsed():
         f"worker w1: up, 1 lane(s), [docker], beat {NOW}",
     ]
     assert worker_cli.status_lines([], [], NOW) == ["the phase queue is empty", "", "no worker has registered"]
+
+
+def test_a_worker_s_store_url_bounds_every_call_inside_the_heartbeat_window():
+    bounded = worker.bounded_url("postgresql://u:p@db:5432/cox?options=-csearch_path%3Ds")
+    assert "connect_timeout=5" in bounded
+    assert "options=-csearch_path%3Ds+-c+statement_timeout%3D5000+-c+lock_timeout%3D3000" in bounded, bounded
+    assert "connect_timeout=2" in worker.bounded_url("postgresql://db/cox?connect_timeout=2")
+    assert worker.bounded_url("sqlite:///x.db") == "sqlite:///x.db"
+
+
+def test_a_gate_s_refusal_is_told_apart_from_a_failed_launch():
+    assert worker.refused(2, "routing: ship.p1-1 is already running (pid 9) on host-a\n")
+    assert worker.refused(2, "refusing: the landing loop is held by chair-x (live); pass --force to override")
+    assert worker.refused(2, "routing: usage stop: weekly ceiling")
+    assert not worker.refused(2, "routing: ship has no phase p9; phases: p1")
+    assert not worker.refused(1, "routing: launch failed: is already running")
+
+
+# The heartbeat pass, driven by an injected clock: no sleep, no thread. A store that does not answer is a heartbeat
+# that raises, as a bounded statement that timed out does.
+
+def _claim(phase: str = "p1", epoch: int = 1):
+    from harness.store_phases import Claim
+
+    return Claim("ship", phase, epoch, "2026-11-20T10:01:00Z", {"attempts": 1})
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.t = 100.0
+
+    def __call__(self) -> float:
+        return self.t
+
+
+def _pass(leases, clock, heartbeat):
+    stopped: list = []
+    worker.beat(leases, heartbeat, lambda run: stopped.append(run) or True, clock, lambda line: None)
+    return stopped
+
+
+def _timed_out(claim):
+    raise TimeoutError("statement timeout")
+
+
+def test_a_claim_with_no_good_heartbeat_for_45_seconds_stops_its_run_before_its_lease_can_lapse():
+    clock, leases = _Clock(), worker.Leases()
+    run = worker.Running("ship.p1-1", 4242)
+    leases.add(_claim(), clock())  # the clock starts when the worker set out to claim
+    leases.set_run(_claim(), run)
+    clock.t = 110.0
+    assert _pass(leases, clock, _timed_out) == []
+    clock.t = 144.9
+    assert _pass(leases, clock, _timed_out) == []
+    clock.t = 145.0  # 45 s after the claim began, 15 s before the 60 s lease the store gave it
+    assert _pass(leases, clock, _timed_out) == [run]
+    (held,) = leases.snapshot()
+    assert (held.state, held.stopped) == ("expired", True)
+    assert leases.take(_claim()) is None  # the main loop writes nothing for it
+
+
+def test_a_good_heartbeat_moves_the_clock_and_a_refused_one_stops_the_run_at_once():
+    clock, leases = _Clock(), worker.Leases()
+    run = worker.Running("ship.p1-1", 4242)
+    leases.add(_claim(), clock())
+    leases.set_run(_claim(), run)
+    for t in (110.0, 120.0, 130.0, 140.0, 150.0, 160.0):
+        clock.t = t
+        assert _pass(leases, clock, lambda claim: True) == []
+    assert leases.snapshot()[0].last_ok == 160.0
+    clock.t = 170.0
+    assert _pass(leases, clock, lambda claim: False) == [run]
+    assert leases.snapshot()[0].state == "lost"
+
+
+def test_a_claim_not_yet_due_is_left_alone_and_one_the_main_loop_settled_is_not_stopped():
+    clock, leases = _Clock(), worker.Leases()
+    leases.add(_claim(), clock())
+    calls: list = []
+    clock.t = 105.0
+    assert _pass(leases, clock, lambda claim: calls.append(claim) or True) == []
+    assert calls == []
+    assert leases.take(_claim()) is not None  # settled by the main loop while it was still held
+    clock.t = 200.0
+    assert _pass(leases, clock, _timed_out) == []

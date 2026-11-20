@@ -6,8 +6,10 @@ compares in order as text), read once by `store_phases` inside the transaction t
 only ever compared with itself (`must_stop` takes two readings of one monotonic clock).
 
 The timings are the operator's: a heartbeat every 10 s, a lease of 60 s, and a worker that has gone 45 s without a
-successful heartbeat stops itself, so its claim is never run by two workers at once (its lease outlives its last
-chance to act by 15 s). A lapsed claim is simply claimable again; there is no sweeper.
+successful heartbeat stops what it runs for that claim. Its clock starts before the claim is taken, so it always
+stops before the lease it was given can lapse: no phase is run by two workers at once. A lapsed claim is simply
+claimable again; there is no sweeper. A phase that has had `MAX_ATTEMPTS` claims is never claimed again: the chair
+finishes it as failed (`exhausted`).
 """
 
 from __future__ import annotations
@@ -27,12 +29,14 @@ __all__ = [
     "Verdict",
     "backoff_s",
     "bad_tokens",
+    "choices",
     "claimable",
+    "exhausted",
     "fenced",
     "lease",
     "meets",
     "must_stop",
-    "pick",
+    "refusal",
     "stamp_of",
     "verdict",
 ]
@@ -40,7 +44,7 @@ __all__ = [
 HEARTBEAT_S = 10
 LEASE_S = 60
 STOP_AFTER_S = 45
-CANDIDATES = 16  # rows one claim locks and chooses among, in (band, seq) order
+CANDIDATES = 16  # rows one page of a claim reads, in (band, seq) order; it pages on past rows this worker cannot meet
 MAX_ATTEMPTS = 3  # claims of one phase before a failure is permanent
 _BACKOFF_BASE_S = 60
 _BACKOFF_CAP_S = 900
@@ -72,8 +76,8 @@ def backoff_s(attempts: int) -> int:
 
 
 def must_stop(last_ok: float, now: float, stop_after_s: float = STOP_AFTER_S) -> bool:
-    """Whether a worker whose last successful heartbeat was at `last_ok` must stop at `now`, both on its own monotonic
-    clock: it stops before its lease can lapse, so a successor never overlaps it."""
+    """Whether a worker whose last successful heartbeat (or, before the first, the moment it set out to claim) was at
+    `last_ok` must stop at `now`, both on its own monotonic clock: it stops before its lease can lapse."""
     return now - last_ok >= stop_after_s
 
 
@@ -92,13 +96,29 @@ def _requires(row: Row) -> list[str]:
     return [str(t) for t in raw] if isinstance(raw, list) else []
 
 
-def claimable(row: Row, now: str) -> bool:
+def _attempts(row: Row) -> int:
+    raw = row.get("attempts")
+    return raw if isinstance(raw, int) else 0
+
+
+def _lapsed(row: Row, now: str) -> bool:
+    return row.get("state") == "claimed" and str(row.get("lease_until") or "") < now
+
+
+def claimable(row: Row, now: str, max_attempts: int = MAX_ATTEMPTS) -> bool:
     """A `ready` row whose `ready_at` has come (a retried phase waits out its backoff), or a `claimed` one whose lease
-    lapsed before `now`: its worker stopped heartbeating."""
-    state = row.get("state")
-    if state == "ready":
+    lapsed before `now`: its worker stopped heartbeating. Never one that has had `max_attempts` claims."""
+    if _attempts(row) >= max_attempts:
+        return False
+    if row.get("state") == "ready":
         return str(row.get("ready_at") or "") <= now
-    return state == "claimed" and str(row.get("lease_until") or "") < now
+    return _lapsed(row, now)
+
+
+def exhausted(row: Row, now: str, max_attempts: int = MAX_ATTEMPTS) -> bool:
+    """A row whose claims ran out while nobody holds it: `max_attempts` claims, and it is ready or its last claim
+    lapsed. Its worker kept losing the lease, so no verdict was written; the chair finishes it as failed."""
+    return _attempts(row) >= max_attempts and (row.get("state") == "ready" or _lapsed(row, now))
 
 
 def _order(row: Row) -> tuple[int, int, str, str]:
@@ -109,12 +129,13 @@ def _order(row: Row) -> tuple[int, int, str, str]:
     )
 
 
-def pick(rows: Sequence[Row], capabilities: Collection[str], free: int, now: str) -> Row | None:
-    """The first claimable row, in (band, seq) order, whose requirements the worker meets; None when it has no free
-    lane or none qualifies. The candidates arrive already locked; the ones not picked unlock at commit."""
+def choices(rows: Sequence[Row], capabilities: Collection[str], free: int, now: str) -> list[Row]:
+    """The rows this worker may claim, in (band, seq) order: claimable, with every requirement met; none without a
+    free lane. The claimer tries them in order and locks one at a time, so a row another worker holds is skipped, not
+    waited on, and rows no one here can meet never stand in front of one it can."""
     if free <= 0:
-        return None
-    return next((r for r in sorted(rows, key=_order) if claimable(r, now) and meets(_requires(r), capabilities)), None)
+        return []
+    return [r for r in sorted(rows, key=_order) if claimable(r, now) and meets(_requires(r), capabilities)]
 
 
 def fenced(row: Row | None, worker: str, epoch: int, now: str) -> bool:
@@ -137,24 +158,33 @@ _STOPPED = frozenset({"quarantined", "blocked"})
 @dataclass(frozen=True)
 class Verdict:
     """What a finished run means for its phase. `ack` finishes it approved; `retry` releases the claim to be claimed
-    again after `wait_s`; `quarantine` finishes it with `outcome` quarantined (its tasks stopped) or failed (it ran
-    out of attempts)."""
+    again after `wait_s`, and with `refund` gives its attempt back (the run never started through no fault of the
+    phase); `quarantine` finishes it with `outcome` quarantined (its tasks stopped) or failed (out of attempts)."""
 
     kind: Kind
     outcome: str
     reason: str
     wait_s: int = 0
+    refund: bool = False
+
+
+def refusal(reason: str, attempts: int) -> Verdict:
+    """A launch the gates refused (the budget, the label guard, a live run of the phase), or a worker told to stop:
+    the claim goes back without costing an attempt, after the backoff the attempts before it earned."""
+    return Verdict("retry", "", reason, backoff_s(max(attempts - 1, 1)), refund=True)
 
 
 def verdict(task_states: Sequence[str], attempts: int, launch_error: str = "", max_attempts: int = MAX_ATTEMPTS) -> Verdict:
     """The ack or nack for a phase whose run ended, from its tasks' states after the run and the claims it has had.
 
-    Ack: every task is settled and at least one was approved, which the store records only once its review verdict is
-    approve. A permanent nack: no task is left to build and one stopped (quarantined or held), or the phase has had
-    `max_attempts` claims. Anything else is retryable, with backoff; so is a run that never started (`launch_error`)."""
+    Ack: every task is settled: approved or done (the store records approved only once the review verdict is
+    approve), or dropped, so a phase whose tasks were all dropped has nothing left to build. A permanent nack: no
+    task is left to build and one stopped (quarantined or held), or the phase has had `max_attempts` claims. Anything
+    else is retryable, with backoff; so is a run that failed to start (`launch_error`)."""
     states = set(task_states)
-    if not launch_error and states and states <= _SETTLED_OK and states & {"approved", "done"}:
-        return Verdict("ack", "approved", "every task of the phase is approved")
+    if not launch_error and states and states <= _SETTLED_OK:
+        built = bool(states & {"approved", "done"})
+        return Verdict("ack", "approved", "every task of the phase is approved" if built else "every task of the phase was dropped")
     if not launch_error and states & _STOPPED and not states & _OPEN:
         stopped = sorted(states & _STOPPED)
         return Verdict("quarantine", "quarantined", f"no task is left to build and some are {' and '.join(stopped)}")

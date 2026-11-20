@@ -46,6 +46,7 @@ WORKER_COLUMNS: tuple[str, ...] = (
     "name", "capabilities_json", "lanes", "threads", "state", "version", "doctor_json", "doctor_at", "started_at", "beat_at",
 )
 _JSON_COLUMNS = frozenset({"requires_json", "capabilities_json", "doctor_json"})
+_MAX_PAGES = 64  # pages of candidates one claim reads before it gives up: 1024 claimable rows ahead of the first it meets
 
 type Row = dict[str, object]
 
@@ -105,11 +106,15 @@ def _new_row(change: Mapping[str, object], by: str, now: str) -> tuple[object, .
 
 def _apply(conn: Connection, change: Mapping[str, object], by: str, now: str) -> bool:
     """`insert` adds a ready row and leaves an existing one alone. `update` rewrites a waiting or ready row's
-    requirements and order, never a claimed one's. `reopen` makes a finished row ready again, only while it is still
-    the finish the chair saw (same epoch). Each is conditional on the state it moves from, so a repeat changes nothing."""
+    requirements and order, never a claimed one's. `reopen` makes a finished or withdrawn row ready again, only while
+    it is still the row the chair saw (same epoch). `withdraw` takes a waiting or ready row out of the queue (state
+    `cancelled`: its phase is held, closed or over budget), never a claimed one. `exhaust` finishes as failed a row
+    whose claims ran out while nobody holds it (`phase_pick.exhausted`, in SQL). Each is conditional on the state it
+    moves from, so a repeat changes nothing."""
     p = conn.dialect.placeholder
     op, initiative, phase = change["op"], change["initiative"], change["phase"]
     requires = json_text(list(cast("Sequence[str]", change.get("requires") or [])))
+    reason = change.get("reason") or ""
     if op == "insert":
         sql = insert_ignore(conn.dialect, "phase_queue", PHASE_COLUMNS, ("initiative", "phase"))
         return conn.execute(sql, _new_row(change, by, now)) == 1
@@ -123,9 +128,22 @@ def _apply(conn: Connection, change: Mapping[str, object], by: str, now: str) ->
         return conn.execute(
             f"UPDATE phase_queue SET state = 'ready', outcome = '', reason = {p}, requires_json = {p}, band = {p}, "
             f"seq = {p}, ready_at = {p}, updated_at = {p}, updated_by = {p} "
-            f"WHERE initiative = {p} AND phase = {p} AND state = 'finished' AND claim_epoch = {p}",
-            (change.get("reason") or "", requires, change.get("band", 1), change.get("seq", 0), now, now, by,
+            f"WHERE initiative = {p} AND phase = {p} AND state IN ('finished', 'cancelled') AND claim_epoch = {p}",
+            (reason, requires, change.get("band", 1), change.get("seq", 0), now, now, by,
              initiative, phase, change.get("epoch", 0)),
+        ) == 1
+    if op == "withdraw":
+        return conn.execute(
+            f"UPDATE phase_queue SET state = 'cancelled', reason = {p}, updated_at = {p}, updated_by = {p} "
+            f"WHERE initiative = {p} AND phase = {p} AND state IN ('waiting', 'ready')",
+            (reason, now, by, initiative, phase),
+        ) == 1
+    if op == "exhaust":
+        return conn.execute(
+            f"UPDATE phase_queue SET state = 'finished', outcome = 'failed', reason = {p}, lease_until = '', "
+            f"updated_at = {p}, updated_by = {p} WHERE initiative = {p} AND phase = {p} AND attempts >= {p} "
+            f"AND (state = 'ready' OR (state = 'claimed' AND lease_until < {p}))",
+            (reason, now, by, initiative, phase, phase_pick.MAX_ATTEMPTS, now),
         ) == 1
     raise ValueError(f"unknown phase queue change {op!r}")
 
@@ -142,40 +160,50 @@ def apply_changes(conn: Connection, changes: Sequence[Mapping[str, object]], by:
 def claim_next(conn: Connection, worker: str, capabilities: Sequence[str], free: int) -> Claim | None:
     """Edge. Claim the next phase `worker` qualifies for, in one transaction; None when it has no free lane or none.
 
-    Up to `phase_pick.CANDIDATES` claimable rows are locked in (band, seq) order, skipping rows another worker holds
-    locked (`FOR UPDATE SKIP LOCKED` on Postgres; sqlite's BEGIN IMMEDIATE serialises instead). `phase_pick.pick`
-    chooses, and one conditional UPDATE takes it: the claim epoch goes up by one and the attempt is counted, so a
-    retried nack's attempt is the claim that ran it."""
+    Claimable rows are read a page of `phase_pick.CANDIDATES` at a time in (band, seq) order, without a lock, and
+    `phase_pick.choices` keeps those the worker meets; a page with none it meets is paged past, so phases nobody here
+    can run never starve the rest. Each choice is then locked alone, `FOR UPDATE SKIP LOCKED` on Postgres (sqlite's
+    BEGIN IMMEDIATE serialises instead), re-checked as claimable, and taken by one conditional UPDATE: the epoch goes
+    up by one and the attempt is counted. A row another worker holds locked, or claimed since the read, is skipped
+    for the next, so two claimers never wait on each other and never take the same row."""
     if free <= 0:
         return None
     p = conn.dialect.placeholder
+    claimable_sql = (
+        f"((state = 'ready' AND ready_at <= {p}) OR (state = 'claimed' AND lease_until < {p})) AND attempts < {p}"
+    )
     with conn.transaction():
         now = store_now(conn)
-        rows = conn.query_all(
-            f"SELECT {', '.join(PHASE_COLUMNS)} FROM phase_queue "
-            f"WHERE (state = 'ready' AND ready_at <= {p}) OR (state = 'claimed' AND lease_until < {p}) "
-            f"ORDER BY band, seq, initiative, phase LIMIT {phase_pick.CANDIDATES}{conn.dialect.skip_locked}",
-            (now, now),
-        )
-        chosen = phase_pick.pick([_decode(PHASE_COLUMNS, r) for r in rows], capabilities, free, now)
-        if chosen is None:
-            return None
-        initiative, phase = str(chosen["initiative"]), str(chosen["phase"])
-        until = phase_pick.lease(now)
-        taken = conn.execute(
-            f"UPDATE phase_queue SET state = 'claimed', claimed_by = {p}, claim_epoch = claim_epoch + 1, run_id = '', "
-            f"claimed_at = {p}, heartbeat_at = {p}, lease_until = {p}, attempts = attempts + 1, updated_at = {p}, "
-            f"updated_by = {p} WHERE initiative = {p} AND phase = {p} "
-            f"AND ((state = 'ready' AND ready_at <= {p}) OR (state = 'claimed' AND lease_until < {p}))",
-            (worker, now, now, until, now, worker, initiative, phase, now, now),
-        )
-        if taken != 1:
-            return None
-        row = get_row(conn, initiative, phase)
-    if row is None:
-        return None
-    epoch = row.get("claim_epoch")
-    return Claim(initiative, phase, epoch if isinstance(epoch, int) else 0, until, row)
+        page_args = (now, now, phase_pick.MAX_ATTEMPTS)
+        for offset in range(0, _MAX_PAGES * phase_pick.CANDIDATES, phase_pick.CANDIDATES):
+            page = conn.query_all(
+                f"SELECT {', '.join(PHASE_COLUMNS)} FROM phase_queue WHERE {claimable_sql} "
+                f"ORDER BY band, seq, initiative, phase LIMIT {phase_pick.CANDIDATES} OFFSET {offset}",
+                page_args,
+            )
+            for chosen in phase_pick.choices([_decode(PHASE_COLUMNS, r) for r in page], capabilities, free, now):
+                initiative, phase = str(chosen["initiative"]), str(chosen["phase"])
+                locked = conn.query_one(
+                    f"SELECT initiative FROM phase_queue WHERE initiative = {p} AND phase = {p} AND {claimable_sql}"
+                    f"{conn.dialect.skip_locked}",
+                    (initiative, phase, *page_args),
+                )
+                if locked is None:
+                    continue
+                until = phase_pick.lease(now)
+                taken = conn.execute(
+                    f"UPDATE phase_queue SET state = 'claimed', claimed_by = {p}, claim_epoch = claim_epoch + 1, "
+                    f"run_id = '', claimed_at = {p}, heartbeat_at = {p}, lease_until = {p}, attempts = attempts + 1, "
+                    f"updated_at = {p}, updated_by = {p} WHERE initiative = {p} AND phase = {p} AND {claimable_sql}",
+                    (worker, now, now, until, now, worker, initiative, phase, *page_args),
+                )
+                row = get_row(conn, initiative, phase) if taken == 1 else None
+                if row is not None:
+                    epoch = row.get("claim_epoch")
+                    return Claim(initiative, phase, epoch if isinstance(epoch, int) else 0, until, row)
+            if len(page) < phase_pick.CANDIDATES:
+                return None
+    return None
 
 
 def _fence(p: str) -> str:
@@ -221,15 +249,17 @@ def finish(conn: Connection, claim: Claim, worker: str, outcome: str, reason: st
         ) == 1
 
 
-def release(conn: Connection, claim: Claim, worker: str, reason: str, wait_s: int) -> bool:
+def release(conn: Connection, claim: Claim, worker: str, reason: str, wait_s: int, *, refund: bool = False) -> bool:
     """Edge. The retryable nack: give the claim back as `ready`, claimable again `wait_s` seconds from now. The
-    attempt stays counted (the claim counted it) and the epoch stays, so the next claim is a new epoch."""
+    attempt stays counted (the claim counted it) unless `refund`: a refused launch, or a worker told to stop, costs
+    the phase nothing. The epoch stays, so the next claim is a new epoch."""
     p = conn.dialect.placeholder
+    back = ", attempts = attempts - 1" if refund else ""
     with conn.transaction():
         now = store_now(conn)
         return conn.execute(
             f"UPDATE phase_queue SET state = 'ready', claimed_by = '', lease_until = '', reason = {p}, ready_at = {p}, "
-            f"updated_at = {p}, updated_by = {p} {_fence(p)}",
+            f"updated_at = {p}, updated_by = {p}{back} {_fence(p)}",
             (reason, phase_pick.lease(now, wait_s), now, worker, claim.initiative, claim.phase, worker, claim.epoch, now),
         ) == 1
 

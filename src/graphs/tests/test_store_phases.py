@@ -142,10 +142,76 @@ def test_the_registry_row_is_the_worker_s_own_and_a_repeat_keeps_its_start(conn)
     assert first["capabilities_json"] == ["docker", "os:linux"]
 
 
+def test_a_refused_launch_s_release_gives_the_attempt_back(conn):
+    store_phases.apply_changes(conn, [_change()], "chair-loop")
+    claim = store_phases.claim_next(conn, "w1", [], 1)
+    assert store_phases.release(conn, claim, "w1", "the launch was refused", 0, refund=True)
+    assert store_phases.get_row(conn, "ship", "p1")["attempts"] == 0
+    assert store_phases.claim_next(conn, "w1", [], 1).epoch == 2
+
+
+def test_a_phase_out_of_attempts_is_never_claimed_and_the_chair_finishes_it_failed(conn):
+    store_phases.apply_changes(conn, [_change()], "chair-loop")
+    for epoch in (1, 2, 3):
+        claim = store_phases.claim_next(conn, f"w{epoch}", [], 1)
+        assert claim is not None and claim.epoch == epoch
+        _set(conn, "p1", lease_until=PAST)  # each holder lost its lease without a verdict
+    assert store_phases.claim_next(conn, "w4", [], 1) is None
+    assert store_phases.apply_changes(conn, [_change(op="exhaust", reason="3 claims")], "chair-loop") == 1
+    assert store_phases.apply_changes(conn, [_change(op="exhaust", reason="3 claims")], "chair-loop") == 0
+    row = store_phases.get_row(conn, "ship", "p1")
+    assert (row["state"], row["outcome"], row["attempts"]) == ("finished", "failed", 3)
+
+
+def test_an_exhaust_never_takes_a_claim_its_holder_still_has(conn):
+    store_phases.apply_changes(conn, [_change()], "chair-loop")
+    store_phases.claim_next(conn, "w1", [], 1)
+    _set(conn, "p1", attempts=3)
+    assert store_phases.apply_changes(conn, [_change(op="exhaust", reason="x")], "chair-loop") == 0
+    assert store_phases.get_row(conn, "ship", "p1")["state"] == "claimed"
+
+
+def test_a_withdrawn_phase_is_not_claimed_and_comes_back_on_reopen(conn):
+    store_phases.apply_changes(conn, [_change()], "chair-loop")
+    assert store_phases.apply_changes(conn, [_change(op="withdraw", reason="its initiative is held")], "chair-loop") == 1
+    assert store_phases.get_row(conn, "ship", "p1")["state"] == "cancelled"
+    assert store_phases.claim_next(conn, "w1", [], 1) is None
+    assert store_phases.apply_changes(conn, [_change(op="reopen", epoch=0)], "chair-loop") == 1
+    assert store_phases.claim_next(conn, "w1", [], 1) is not None
+    assert store_phases.apply_changes(conn, [_change(op="withdraw", reason="held")], "chair-loop") == 0  # claimed now
+
+
+def test_phases_no_one_here_can_meet_never_stand_in_front_of_one_it_can(conn):
+    """Forty macOS phases ahead of one any worker can run: a Linux worker pages past them to it."""
+    blocked = [_change(f"mac{n:02d}", seq=n, requires=["os:macos"]) for n in range(40)]
+    store_phases.apply_changes(conn, [*blocked, _change("any", seq=99)], "chair-loop")
+    claim = store_phases.claim_next(conn, "w1", ["os:linux"], 1)
+    assert claim is not None and claim.phase == "any"
+
+
+@pytest.mark.parametrize("store_url", ["postgres"], indirect=True)
+def test_a_claimer_skips_a_row_another_holds_locked_instead_of_waiting(store_url):
+    """One transaction holds the first phase locked; a claim taken meanwhile gets the second, at once."""
+    setup = open_store(store_url, AT)
+    store_phases.apply_changes(setup, [_change("p0", seq=0), _change("p1", seq=1)], "chair-loop")
+    holder = open_store(store_url, AT)
+    other = open_store(store_url, AT)
+    try:
+        with holder.transaction():
+            holder.query_one("SELECT phase FROM phase_queue WHERE phase = 'p0' FOR UPDATE")
+            claim = store_phases.claim_next(other, "w2", [], 1)
+            assert claim is not None and claim.phase == "p1"
+    finally:
+        holder.close()
+        other.close()
+        setup.close()
+
+
 @pytest.mark.parametrize("store_url", ["postgres"], indirect=True)
 def test_two_workers_claiming_at_once_never_take_the_same_phase(store_url):
-    """Two connections, eight phases, eight claims each racing: every phase is taken once (Postgres only, where the
-    claims run concurrently; sqlite's in-memory store is one connection)."""
+    """Two connections, eight phases, each claiming until no ready row is left: every phase is taken exactly once
+    (Postgres only, where the claims run concurrently; sqlite's in-memory store is one connection). A claim that finds
+    nothing while rows are left (the other holds the last one locked) just tries again, as a worker's poll does."""
     setup = open_store(store_url, AT)
     store_phases.apply_changes(setup, [_change(f"p{n}", seq=n) for n in range(8)], "chair-loop")
     taken: dict[str, list[str]] = {"w1": [], "w2": []}
@@ -154,10 +220,12 @@ def test_two_workers_claiming_at_once_never_take_the_same_phase(store_url):
     def claim_all(name: str) -> None:
         own = open_store(store_url, AT)
         start.wait()
-        for _ in range(8):
+        for _ in range(200):
             found = store_phases.claim_next(own, name, [], 8)
             if found is not None:
                 taken[name].append(found.phase)
+            elif not [r for r in store_phases.list_rows(own) if r["state"] == "ready"]:
+                break
         own.close()
 
     threads = [threading.Thread(target=claim_all, args=(name,)) for name in taken]

@@ -614,6 +614,8 @@ class PhaseQueueFacts(TypedDict):
 
     rows: list[dict[str, object]]
     lane_prereqs: bool
+    phase_initiatives: list[str]  # every initiative whose store row is stamped `lane_model: phase`, ready work or not
+    closed: list[str]  # the initiatives whose store row is done or dropped
 
 
 class Facts(TypedDict):

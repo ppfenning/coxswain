@@ -1,7 +1,10 @@
-"""The phase worker's effects: its store connection, the lane checks, the harness launch, and its own process clock.
+"""The phase worker's effects: its store connections, the lane checks, the spawned launch, the heartbeat thread, and
+stopping a run by process group.
 
 Every time the queue compares is the store's (`store_phases`). This process's monotonic clock is compared only with
 itself (`phase_pick.must_stop`); its wall clock stamps only a migration's bookkeeping when the worker opens the store.
+Every store call is bounded well inside the heartbeat window (`worker.bounded_url`), and the heartbeat thread has a
+connection of its own, so no call on the main loop can hold up a heartbeat.
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import threading
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -23,8 +27,8 @@ from harness import store_phases
 from harness.store_dialect import Connection, Json
 from harness.store_phases import Claim
 
-LAUNCH_TIMEOUT_S = 600.0  # `cox route launch` returns once the detached harness has started
-_PROBE_TIMEOUT_S = 60.0
+_PROBE_TIMEOUT_S = 20.0  # the lane checks run on the main loop; the heartbeat thread never waits on them
+_STOP_WAIT_S = 10.0  # how long a stopped launch or harness gets after TERM, and again after KILL
 _STAMP = "%Y-%m-%dT%H:%M:%SZ"
 _ARCH = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}
 _OS = {"linux": "linux", "darwin": "macos"}
@@ -55,7 +59,8 @@ def _checkouts(repos: Sequence[str], home: str) -> list[str]:
 
 
 class Store:
-    """One connection, opened on first use and opened again after a failure, so a store restart costs one call."""
+    """One connection, opened on first use and opened again after a failure, so a store restart costs one call. Every
+    statement, lock wait and connect on it is bounded well inside the heartbeat window (`worker.bounded_url`)."""
 
     def __init__(self, runs_dir: Path) -> None:
         self._runs_dir = runs_dir
@@ -65,7 +70,8 @@ class Store:
         if self._conn is None:
             from harness.store_migrate import open_store
 
-            self._conn = open_store(run_store.store_url_for(self._runs_dir), time.strftime(_STAMP, time.gmtime()))
+            url = worker.bounded_url(run_store.store_url_for(self._runs_dir))
+            self._conn = open_store(url, time.strftime(_STAMP, time.gmtime()))
         return self._conn
 
     def call[T](self, act: Callable[[Connection], T]) -> T:
@@ -83,16 +89,42 @@ class Store:
                 self._conn = None
 
 
+def _signal_group(pid: int, sig: int) -> None:
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(pid, sig)
+
+
+def _gone(alive: Callable[[], bool], wait_s: float) -> bool:
+    """Edge. Whether `alive` turns false within `wait_s`, polled on this process's monotonic clock."""
+    deadline = time.monotonic() + wait_s
+    while alive():
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.2)
+    return True
+
+
+def _pid_in(pidfile: Path) -> int | None:
+    try:
+        text = pidfile.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return int(text) if text.isdigit() else None
+
+
 def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, version: str,
-          log: Callable[[str], None] = print) -> tuple[worker.Ports, Store]:
+          log: Callable[[str], None] = lambda line: print(line, flush=True)) -> tuple[worker.Ports, Store]:
     """Edge. The ports of a worker named `name` on the workspace `ws`, and the store it holds open."""
     runs_dir = ws / "runs"
+    launches_dir = ws / "worker-launches"  # each launch's own output, beside the workspace's runs, not among them
     store = Store(runs_dir)
     home = os.path.expanduser("~")
     host = socket.gethostname()
     registered: list[str] = []
     probed: list[list[dict[str, object]]] = []  # the last lane check's rows, one entry once it has run
     probed_at = [0.0]
+    launchers: dict[int, subprocess.Popen[bytes]] = {}
+    launchers_lock = threading.Lock()  # the main loop polls a launch while the heartbeat thread may stop it
 
     def caps() -> list[str]:
         now = time.monotonic()
@@ -127,33 +159,96 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
     def task_states(initiative: str, phase: str) -> list[str]:
         from harness.store_queue import read
 
-        return [str(r["state"]) for r in store.call(lambda c: read(c, initiative)) if r.get("kind") == "task" and r.get("phase") == phase]
+        rows = store.call(lambda c: read(c, initiative))
+        return [str(r["state"]) for r in rows if r.get("kind") == "task" and r.get("phase") == phase]
 
-    def launch(claim: Claim, record: Callable[[str], bool]) -> worker.Launched | str:
+    def launch(claim: Claim, record: Callable[[str], bool]) -> worker.Started | str:
         names = [p.name for p in runs_dir.iterdir()] if runs_dir.is_dir() else []
         run_id = next_run_id(route.phase_run_prefix(claim.initiative, claim.phase), taken_names(names, run_store.run_ids(runs_dir)))
         if not record(run_id):
             return "the claim was lost before its run started"
         argv = worker.launch_argv(claim.initiative, claim.phase, run_id, worker.launch_label(chair.read(runs_dir), f"worker:{name}"))
         argv[0] = shutil.which("cox") or argv[0]
+        launches_dir.mkdir(parents=True, exist_ok=True)
         try:
-            done = bounded_run.completed(argv, cwd=ws, timeout=LAUNCH_TIMEOUT_S, stdout=subprocess.PIPE,
-                                         stderr=subprocess.STDOUT, text=True)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            return f"the launch did not run: {type(exc).__name__}: {exc}"
-        pidfile = runs_dir / f"{run_id}.pid"
-        if done.returncode != 0 or not pidfile.exists():
-            last = next((line for line in reversed((done.stdout or "").splitlines()) if line.strip()), "")
-            return f"the launch exited {done.returncode}: {last}"
-        log(f"worker: started {run_id} for {claim.initiative}/{claim.phase}")
-        return worker.Launched(run_id, int(pidfile.read_text(encoding="utf-8").strip()))
+            with open(launches_dir / f"{run_id}.out", "wb") as out:
+                proc = subprocess.Popen(argv, cwd=ws, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                                        start_new_session=True)
+        except OSError as exc:
+            return f"the launch did not spawn: {type(exc).__name__}: {exc}"
+        with launchers_lock:
+            launchers[proc.pid] = proc
+        log(f"worker: launching {run_id} for {claim.initiative}/{claim.phase}")
+        return worker.Started(run_id, proc.pid)
 
-    def alive(run: worker.Launched) -> bool:
+    def launched(started: worker.Started) -> worker.Running | tuple[int, str] | None:
+        with launchers_lock:
+            proc = launchers.get(started.launcher)
+            code = proc.poll() if proc is not None else -1
+            if code is None:
+                return None
+            launchers.pop(started.launcher, None)
+        pid = _pid_in(runs_dir / f"{started.run_id}.pid")
+        if code == 0 and pid is not None:
+            log(f"worker: started {started.run_id} (pid {pid})")
+            return worker.Running(started.run_id, pid)
+        try:
+            output = (launches_dir / f"{started.run_id}.out").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            output = ""
+        return code, output or ("no pidfile after the launch" if code == 0 else "")
+
+    def alive(run: worker.Running) -> bool:
         return epic.process_alive(run.pid, runs_dir / f"{run.run_id}.pid")
 
-    def stop(run: worker.Launched) -> None:
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(run.pid, signal.SIGTERM)  # the harness starts its own session, so its group is its pid
+    def stop(run: worker.Started | worker.Running) -> bool:
+        """The launch first (its group), then the harness it started (its own session's group), each TERM then KILL;
+        True once both are gone."""
+        if isinstance(run, worker.Started):
+            with launchers_lock:
+                proc = launchers.pop(run.launcher, None)
+            if proc is not None:
+                _signal_group(proc.pid, signal.SIGTERM)
+                try:
+                    proc.wait(timeout=_STOP_WAIT_S)
+                except subprocess.TimeoutExpired:
+                    _signal_group(proc.pid, signal.SIGKILL)
+                    proc.wait(timeout=_STOP_WAIT_S)
+            pid = _pid_in(runs_dir / f"{run.run_id}.pid")
+            if pid is None:
+                return True
+            run = worker.Running(run.run_id, pid)
+        harness = run
+        _signal_group(harness.pid, signal.SIGTERM)
+        if _gone(lambda: alive(harness), _STOP_WAIT_S):
+            return True
+        _signal_group(harness.pid, signal.SIGKILL)
+        return _gone(lambda: alive(harness), _STOP_WAIT_S)
+
+    def heartbeats(leases: worker.Leases) -> Callable[[], None]:
+        """A thread of its own, on a store connection of its own, renewing each lease when it is due."""
+        own = Store(runs_dir)
+        halt = threading.Event()
+
+        def renew(claim: Claim) -> bool:
+            return own.call(lambda c: store_phases.heartbeat(c, claim, name)) is not None
+
+        def loop() -> None:
+            try:
+                while not halt.wait(1.0):
+                    worker.beat(leases, renew, stop, time.monotonic, log)
+            finally:
+                own.close()
+
+        thread = threading.Thread(target=loop, name=f"worker-heartbeat-{name}", daemon=True)
+        thread.start()
+
+        def halt_and_join() -> None:
+            halt.set()
+            if thread.is_alive():
+                thread.join(timeout=_STOP_WAIT_S * 3)
+
+        return halt_and_join
 
     def unregister() -> None:
         try:
@@ -167,14 +262,17 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
         capacity=capacity,
         old_runs=old_runs,
         claim=lambda capabilities, free: store.call(lambda c: store_phases.claim_next(c, name, capabilities, free)),
-        heartbeat=lambda claim: store.call(lambda c: store_phases.heartbeat(c, claim, name)) is not None,
         set_run=lambda claim, run_id: store.call(lambda c: store_phases.set_run(c, claim, name, run_id)),
         finish=lambda claim, outcome, reason: store.call(lambda c: store_phases.finish(c, claim, name, outcome, reason)),
-        release=lambda claim, reason, wait_s: store.call(lambda c: store_phases.release(c, claim, name, reason, wait_s)),
+        release=lambda claim, reason, wait_s, refund: store.call(
+            lambda c: store_phases.release(c, claim, name, reason, wait_s, refund=refund)
+        ),
         task_states=task_states,
         launch=launch,
+        launched=launched,
         alive=alive,
         stop=stop,
+        heartbeats=heartbeats,
         unregister=unregister,
         monotonic=time.monotonic,
         sleep=time.sleep,

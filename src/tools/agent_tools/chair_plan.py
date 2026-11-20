@@ -24,6 +24,7 @@ from agent_tools.chair_decompose_miss import DecomposeMiss, escalation_reason, i
 from agent_tools.chair_idle_ready import plan_idle_ready
 from agent_tools.chair_idle_stall import diagnose, is_stalled
 from agent_tools.chair_no_progress import plan_no_progress
+from agent_tools.chair_phase_queue import phase_model_ids, withhold_old_model
 from agent_tools.chair_phase_queue import plan as plan_phase_queue
 from agent_tools.chair_plan_fill import (
     HostSlot,
@@ -1485,7 +1486,8 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         *land.deadlock_chair,
         *land.carries,
         *launch.launches,
-        *plan_phase_queue(basis.facts),  # phase-model initiatives: the queue a worker claims from, never a launch
+        # phase-model initiatives: the queue a worker claims from, never a launch
+        *plan_phase_queue(basis.facts, now.strftime("%Y-%m-%dT%H:%M:%SZ") if now is not None else "", basis.gated),
         *quarantine.widen,
         *housekeeping.login_needs_chair,
         *decompose.empty_needs_chair,
@@ -1505,6 +1507,8 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     # H7.1: one alarm per stall the tick sees and one all-clear per raised stall that no longer stands; a launch planned
     # this tick means the lanes are not idle. The hard stop means no launch on purpose, so only the land and
     # repeated-failure checks stand.
+    # A phase initiative is the worker's for its whole life: no old-model action of any planner may name it.
+    planned = withhold_old_model(planned, phase_model_ids(basis.facts))
     alarms = plan_stall_alarm(basis.facts, planned, now, launch_paused=launch.launch_paused) if now is not None else []
     return [*planned, *alarms]
 

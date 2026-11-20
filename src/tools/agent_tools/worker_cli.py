@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import socket
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -81,7 +82,9 @@ def _run(a: argparse.Namespace, *, once: bool) -> int:
     name = a.name or socket.gethostname()
     ports, store = worker_ports.build(ws, name=name, declared=list(a.capability or []), lanes=a.lanes, version=_version())
     if not once:
-        print(f"worker: {name} on {ws}; heartbeat every {phase_pick.HEARTBEAT_S}s, lease {phase_pick.LEASE_S}s")
+        print(f"worker: {name} on {ws}; heartbeat every {phase_pick.HEARTBEAT_S}s, lease {phase_pick.LEASE_S}s", flush=True)
+    # SIGTERM (a service manager's stop) is handled as SIGINT is: stop every run, confirm it is gone, give claims back.
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
     try:
         return worker.run(ports, once=once)
     finally:
