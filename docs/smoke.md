@@ -33,9 +33,14 @@ without mocks in `tests/test_smoke_plan.py`.
   loopback host (`localhost`, `127.0.0.1` or `::1`). It refuses a URL that lists several hosts (`a:5432,b:5432`), and
   one whose query sets `host`, `hostaddr` or `service`, since libpq would connect wherever those say. A URL it
   refuses fails the run, whether or not the run is required.
-- **`store_url`** (per test): a fresh database on that server. It is created, and opened once by `harness.store_cli`
-  so the schema migrations apply, under the install's own sandboxed environment. The caller's `PYTHONPATH`, `PG*`
-  variables and HOME do not reach it. It is dropped after the test.
+- **`store_url`** (per test): a fresh database on that server. It is named `smoke_<session>_<started>_<stem>_<hash>`,
+  the session's id and start time (epoch seconds) ahead of the test's name, so two sessions sharing one server never
+  pick the same name. It is created, and opened once by `harness.store_cli` so the schema migrations apply, under the
+  install's own sandboxed environment. The caller's `PYTHONPATH`, `PG*` variables and HOME do not reach it. It is
+  dropped after the test, and the `session_databases` fixture drops any still carrying the session's prefix at the
+  end of the session. When a session starts, that fixture also drops every `smoke_` database whose start time is more
+  than 2 hours old (`plan.STALE_AFTER_S`), which is how a killed session's databases go. A name not shaped
+  `smoke_<12 hex>_<epoch>_` is left alone.
 - **`sandbox`** (per test): a temporary home with a routing profile at `~/.config/agent-tools/profile.yaml`, a
   provider profile naming the test's store, a workspace with `work/` and `runs/`, and a git config. Every `cox` runs
   with HOME, the XDG roots and git's global config inside the sandbox, and with the install's `bin` first on PATH.
