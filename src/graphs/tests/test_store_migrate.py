@@ -435,6 +435,9 @@ ADDITIVE_DDL = (
     'ALTER TABLE public."hosts" ADD COLUMN "zone" TEXT NOT NULL DEFAULT \'\'',
     "-- DROP is only named in this comment\nINSERT INTO notes (key, body) VALUES ('drop', 'RENAME me')",
     "INSERT INTO notes (key, body) VALUES ('--', 'UPDATE runs SET x = 1')",
+    "CREATE INDEX IF NOT EXISTS ix_notes_key ON notes (key);",
+    "INSERT INTO notes (key, body) VALUES ('a;b', $$c; d$$), ('e', $q$f;$q$)",
+    "INSERT INTO notes (key, body) VALUES ('type', 'E')",
 )
 NOTES = "CREATE TABLE IF NOT EXISTS notes (key TEXT NOT NULL, PRIMARY KEY (key))"
 TRIGGER = "CREATE TRIGGER IF NOT EXISTS tr_runs AFTER INSERT ON runs BEGIN INSERT INTO notes VALUES (NEW.run_id); END"
@@ -494,10 +497,35 @@ def test_additive_ddl_has_no_violation():
                  "ADD COLUMN c TEXT DEFAULT 'y'", "NOT NULL column to hosts with no DEFAULT", id="quote-in-comment"),
     pytest.param("ALTER TABLE hosts ADD COLUMN a TEXT NOT NULL DEFAULT '--', ADD COLUMN b TEXT NOT NULL",
                  "NOT NULL column to hosts with no DEFAULT", id="dashes-in-literal"),
+    # One string, one statement: a `;` cannot hide a second one, which Postgres would run.
+    pytest.param("CREATE INDEX IF NOT EXISTS ix ON hosts (a); "
+                 "CREATE TRIGGER t BEFORE INSERT ON hosts FOR EACH ROW EXECUTE FUNCTION f()",
+                 "several statements in one string; split them", id="index-then-trigger"),
+    pytest.param("CREATE INDEX IF NOT EXISTS ix ON hosts (a); CREATE UNIQUE INDEX u ON hosts (name)",
+                 "several statements in one string", id="index-then-unique-index"),
+    pytest.param("CREATE INDEX ix ON hosts (a);;", "several statements in one string", id="two-trailing"),
+    pytest.param("INSERT INTO notes VALUES ($$x$$); DROP TABLE hosts", "several statements in one string",
+                 id="after-a-dollar-literal"),
+    pytest.param(TRIGGER + "; CREATE UNIQUE INDEX u ON hosts (name)", "several statements in one string",
+                 id="after-a-trigger-body"),
+    pytest.param(FUNCTION + "; ALTER TABLE hosts ADD COLUMN b TEXT NOT NULL", "several statements in one string",
+                 id="after-a-function-body"),
+    pytest.param("INSERT INTO notes VALUES ($tag$ $$; $tag$); CREATE UNIQUE INDEX u ON hosts (name)",
+                 "several statements in one string", id="tagged-dollar-holding-dollars"),
+    # A Postgres escape string's backslashes are not read, so it is refused rather than misread.
+    pytest.param("ALTER TABLE hosts ADD COLUMN a TEXT DEFAULT E'\\'', ADD COLUMN b TEXT NOT NULL",
+                 "escape-string literal", id="escape-string"),
+    pytest.param("INSERT INTO notes VALUES (e'x')", "escape-string literal", id="lower-escape-string"),
 ])
 def test_a_non_additive_statement_is_named(sql, reason):
     found = additive_violations((NOTES, sql), {})
     assert found and all(r.startswith("statement 2 ") for r in found) and any(reason in r for r in found), found
+
+
+def test_a_trigger_or_function_body_may_hold_semicolons_and_is_still_scanned():
+    assert additive_violations((NOTES, TRIGGER, FUNCTION + ";"), {"trigger": WHY, "function": WHY}) == ()
+    hidden = FUNCTION.replace("RETURN NEW;", "DELETE FROM notes; RETURN NEW;")
+    assert additive_violations((NOTES, hidden), {"function": WHY}) == ("statement 2 has DELETE",)
 
 
 def test_a_trigger_function_and_update_pass_only_when_exempted_with_a_reason():

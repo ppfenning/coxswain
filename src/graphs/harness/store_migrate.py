@@ -133,9 +133,22 @@ def _declares_additive(m: ModuleType) -> bool:
 
 
 # One left-to-right pass, so whichever opens first wins: a quote inside a comment (`-- isn't`) is comment, and `--`
-# inside a string literal is literal. Literals become '', comments a space, quoted identifiers their bare name.
-_TOKEN = re.compile(r"""'(?:[^']|'')*'|"((?:[^"]|"")*)"|--[^\n]*|/\*.*?\*/""", re.DOTALL)
+# inside a string literal is literal. Literals become '', comments a space, quoted identifiers their bare name, a
+# dollar-quoted body ($$...$$ or $tag$...$tag$) its own tokenized text between two markers, and a Postgres escape
+# string (E'...'), whose backslash escapes this pass does not read, a marker that is always a violation.
+_TOKEN = re.compile(
+    r"""(?P<escape>(?<!\w)[Ee]')"""
+    r"""|'(?:[^']|'')*'"""
+    r'|"(?P<quoted>(?:[^"]|"")*)"'
+    r"""|\$(?P<tag>(?:[A-Za-z_]\w*)?)\$(?P<body>.*?)\$(?P=tag)\$"""
+    r"""|--[^\n]*|/\*.*?\*/""",
+    re.DOTALL,
+)
 _UNREADABLE = "?"  # what a quoted identifier that is not a plain word becomes: no pattern below reads it
+_ESCAPE = "\x02"  # what an E'...' literal's opening becomes
+_OPEN, _CLOSE = "\x00", "\x01"  # around a dollar-quoted body
+_BODY = re.compile(f"{_OPEN}.*?{_CLOSE}", re.DOTALL)
+_BEGIN_END = re.compile(r"\bBEGIN\b.*\bEND\b", re.DOTALL)  # a trigger's (or a SQL-standard function's) body
 _TABLE = r"(?:\w+\.)?(\w+)"  # an optionally schema-qualified table name; group: the table
 _ALTER = re.compile(rf"^\s*ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?{_TABLE}\s+(\S.*)$", re.DOTALL)
 _CREATED = re.compile(rf"^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?{_TABLE}\s*\(")
@@ -166,6 +179,8 @@ _NEVER_ADDITIVE = (
 _UPDATE = re.compile(rf"\bUPDATE\s+(?:OR\s+\w+\s+)?{_TABLE}\s+SET\b")
 # What a module may exempt, with `ADDITIVE_EXEMPT = {kind: why}`: a trigger (a BEFORE trigger returning NULL drops an
 # older writer's row), a function (a trigger's body on Postgres) and an UPDATE (rewrites rows older code wrote).
+# No scanner sees SQL a function body builds at run time: for a trigger or a function, the stated reason and the
+# reviewer who reads the body are the real gate; this check only makes sure both are asked for.
 EXEMPTABLE = ("trigger", "function", "update")
 _ADD_COLUMN = re.compile(
     r"^ADD\s+(?:COLUMN\s+)?(?:IF\s+NOT\s+EXISTS\s+)?(?!(?:CONSTRAINT|PRIMARY|UNIQUE|CHECK|FOREIGN|EXCLUDE)\b)\w+\s+\w+"
@@ -174,17 +189,31 @@ _CONSTRAINT = re.compile(r"\b(?:PRIMARY\s+KEY|UNIQUE|CHECK|REFERENCES)\b")
 
 
 def _code(sql: str) -> str:
-    """`sql` upper-cased with literals emptied, comments blanked and quoted identifiers unquoted, in one pass."""
+    """`sql` upper-cased with literals emptied, comments blanked, quoted identifiers unquoted and dollar-quoted bodies
+    tokenized in turn and marked, in one pass."""
     def one(m: re.Match[str]) -> str:
         text = m.group(0)
+        if m.group("escape") is not None:
+            return _ESCAPE
         if text.startswith("'"):
             return "''"
-        if text.startswith('"'):
-            name = m.group(1).replace('""', '"')
+        if m.group("quoted") is not None:
+            name = m.group("quoted").replace('""', '"')
             return name if re.fullmatch(r"\w+", name) else _UNREADABLE
+        if m.group("body") is not None:
+            return f" {_OPEN}{_code(m.group('body'))}{_CLOSE} "
         return " "
 
     return _TOKEN.sub(one, sql).upper()
+
+
+def _several(code: str, kind: str | None) -> bool:
+    """Whether a tokenized statement holds more than one statement: a `;` outside its dollar-quoted bodies, outside a
+    trigger's or function's BEGIN ... END, other than one trailing. Postgres runs every statement in such a string."""
+    top = _BODY.sub(" ", code)
+    if kind in ("trigger", "function"):
+        top = _BEGIN_END.sub(" ", top)
+    return ";" in top.rstrip().removesuffix(";")
 
 
 def _actions(clauses: str) -> list[str]:
@@ -240,6 +269,10 @@ def additive_violations(statements: Sequence[str], exempt: Mapping[str, object])
     reasons = _exemption_violations(exempt)
     for i, code in enumerate(codes, start=1):
         kind = next((k for k, rx in _KINDS if rx.match(code)), None)
+        if _ESCAPE in code:
+            reasons.append(f"statement {i} has an escape-string literal (E'...'), which additive DDL does not support")
+        if _several(code, kind):
+            reasons.append(f"statement {i} holds several statements in one string; split them")
         reasons += [f"statement {i} has {word}" for word, rx in _NEVER_ADDITIVE if rx.search(code)]
         if _UPDATE.search(code) and "update" not in allowed:
             reasons.append(f"statement {i} has an UPDATE, which ADDITIVE_EXEMPT does not exempt")
