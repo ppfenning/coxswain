@@ -7055,8 +7055,12 @@ unit environment file.</p>
 <li><strong>CI.</strong> The <code>smoke</code> and <code>smoke (forge)</code> jobs each have a Postgres service (the pinned image). <code>smoke</code> runs
   <code>-m "not forge"</code> and <code>smoke (forge)</code> runs <code>-m forge</code>, which starts the Forgejo container with the runner's docker.
   Both set <code>COX_SMOKE_POSTGRES_URL</code> to the service and <code>COX_SMOKE_REQUIRED=1</code>, so a missing <code>uv</code>, Postgres or docker
-  fails the job instead of skipping it. They run in parallel with the unit suites and the checks job; the required
-  <code>test</code> check passes only when every one of those jobs succeeded.</li>
+  fails the job instead of skipping it. <code>smoke</code> is three parallel jobs, <code>smoke (1/3)</code> to <code>smoke (3/3)</code>, each with
+  <code>COX_SMOKE_SHARD=&lt;k&gt;/3</code>. The conftest keeps the files <code>plan.shard_files</code> puts in shard k: whole files, heaviest
+  first onto the lightest shard by selected-test count, so each file lands in exactly one shard and each shard installs
+  <code>cox</code> once. <code>tests/test_workflows.py</code> checks that the matrix names every shard from 1 to n. Without the variable, the
+  suite runs whole. They run in parallel with the unit suites and the checks job; the required <code>test</code> check passes
+  only when every one of those jobs succeeded.</li>
 <li><strong>Lane checks.</strong> <code>.agent-checks</code> runs <code>pytest -q -rs smoke</code> after the component suites. A lane host with docker
   runs it against its own container. A host with no docker on PATH skips it and prints the reason. A host whose
   <code>docker</code> is on PATH but whose daemon does not answer fails, because that is a host fault a skip would hide. Set
