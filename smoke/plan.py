@@ -71,8 +71,16 @@ PostgresSource = UseUrl | StartContainer | Skip | Fail
 
 
 # CI splits the non-forge suite across parallel jobs, one shard each (`COX_SMOKE_SHARD=<k>/<n>`). Shards are by file,
-# so a module's fixtures stay in one session, and every collected file lands in exactly one shard (`shard_files`).
+# so a module's fixtures stay in one session, and every file lands in exactly one shard (`shard_files`). The split is
+# made from the folder's files, not from what one run collected, so a nested pytest that a smoke test starts on its own
+# file (it inherits the variable) keeps that file in the same shard as its parent.
 SHARD_ENV = "COX_SMOKE_SHARD"
+_TEST_DEF = re.compile(r"^\s*(?:async\s+)?def test_", re.MULTILINE)
+
+
+def file_weights(sources: Mapping[str, str]) -> dict[str, int]:
+    """Each test file's weight for `shard_files`: the test functions its source defines (file -> source)."""
+    return {name: len(_TEST_DEF.findall(source)) for name, source in sources.items()}
 
 
 def parse_shard(value: str) -> tuple[int, int]:
@@ -84,7 +92,7 @@ def parse_shard(value: str) -> tuple[int, int]:
 
 
 def shard_files(weights: Mapping[str, int], count: int) -> tuple[tuple[str, ...], ...]:
-    """`count` shards of the files in `weights` (file -> its selected tests), heaviest file first onto the lightest
+    """`count` shards of the files in `weights` (file -> its weight), heaviest file first onto the lightest
     shard, ties broken by name and by shard number. A partition: each file is in exactly one shard, and the same
     files always split the same way."""
     shards: list[list[str]] = [[] for _ in range(count)]

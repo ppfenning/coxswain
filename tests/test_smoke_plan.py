@@ -509,6 +509,11 @@ def test_a_shard_reads_k_of_n():
             plan.parse_shard(value)
 
 
+def test_a_file_weighs_the_test_functions_it_defines():
+    source = "def test_a():\n    pass\n\n\nasync def test_b():\n    pass\n\n\nclass TestC:\n    def test_c(self):\n        pass\n\n\ndef helper_test_d():\n    pass\n"
+    assert plan.file_weights({"smoke/test_x.py": source, "smoke/test_y.py": ""}) == {"smoke/test_x.py": 3, "smoke/test_y.py": 0}
+
+
 def test_the_shards_partition_every_file_heaviest_first():
     weights = {"smoke/test_a.py": 12, "smoke/test_b.py": 7, "smoke/test_c.py": 5, "smoke/test_d.py": 1, "smoke/test_e.py": 1}
     shards = plan.shard_files(weights, 3)
