@@ -202,6 +202,16 @@ def database_name(test_id: str) -> str:
     return f"smoke_{stem}_{digest}"
 
 
+def system_path_with(system_path: str, tool_dir: str | None) -> str:
+    """`system_path`, then `tool_dir` (the folder a host tool such as `pg_dump` was found in) when it is not already
+    one of its entries. Only that one folder is added, after the system's, so nothing else from the caller's PATH
+    reaches a sandboxed command. `None` (the tool was not found) leaves `system_path` as it is."""
+    entries = [entry for entry in system_path.split(":") if entry]
+    if tool_dir is None or tool_dir in entries:
+        return system_path
+    return ":".join([*entries, tool_dir])
+
+
 def sandbox_env(
     inherited: Mapping[str, str], *, home: str, bin_dirs: Sequence[str], system_path: str, extra: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
@@ -391,6 +401,20 @@ def docker_inspect_argv(image: str) -> list[str]:
     """`docker image inspect`, which resolves a ref against the local image store only: no registry and no credential
     helper, so it answers in a session that cannot reach the macOS keychain. Exits 0 iff the image is present."""
     return ["docker", "image", "inspect", "--format", "{{.Id}}", image]
+
+
+DOCKER_CONTEXT_HOST_ARGV = ["docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"]
+
+
+def docker_endpoint(docker_host: str | None, context_host: str | None) -> str | None:
+    """The daemon endpoint the docker CLI talks to under the operator's own config: `DOCKER_HOST` when it is set, else
+    what the active context names (`DOCKER_CONTEXT_HOST_ARGV`). A test that swaps `DOCKER_CONFIG` also drops that
+    context; on macOS Docker Desktop's `desktop-linux` points at `~/.docker/run/docker.sock`, and without it the CLI
+    falls back to `/var/run/docker.sock`, which a Mac does not have. None when neither names one."""
+    for host in (docker_host, context_host):
+        if host and host.strip():
+            return host.strip()
+    return None
 
 
 def pull_needed(image: str, present_locally: bool) -> bool:
@@ -588,6 +612,9 @@ SMOKE_SKILLS = {
 SMOKE_NOTE = "notes/t1.txt"
 LANE_PROBE = "smoke-lane-probe"
 LANE_PROBE_TEXT = "#!/bin/sh\nexit 0\n"
+# Not `printenv A B`: BSD printenv (macOS) prints only its first argument, so the file held the trace dir alone.
+# `${..:?}` keeps the check failing when the trace dir is unset or empty.
+LANE_ENV_CMD = """printf '%s\\n%s\\n' "${{AGENT_GRAPHS_TRACE_DIR:?}}" "$PATH" > {out}"""
 
 
 def smoke_checks(env_out: str) -> tuple[dict[str, str], ...]:
@@ -600,7 +627,7 @@ def smoke_checks(env_out: str) -> tuple[dict[str, str], ...]:
     return (
         {"name": "note", "cmd": f"grep -qx ok {SMOKE_NOTE}"},
         {"name": "lane-probe", "cmd": f"command -v {LANE_PROBE}"},
-        {"name": "lane-env", "cmd": f"printenv AGENT_GRAPHS_TRACE_DIR PATH > {env_out}"},
+        {"name": "lane-env", "cmd": LANE_ENV_CMD.format(out=env_out)},
     )
 
 

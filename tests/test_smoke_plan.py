@@ -137,6 +137,24 @@ def test_the_sandbox_env_keeps_only_what_it_names():
     assert not {"PYTHONPATH", "AGENT_TOOLS_PROFILE", "VIRTUAL_ENV"} & env.keys()
 
 
+def test_a_host_tool_folder_follows_the_system_dirs():
+    assert plan.system_path_with("/usr/local/bin:/usr/bin:/bin", "/opt/homebrew/bin") == "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"
+
+
+def test_a_host_tool_folder_already_on_the_system_path_is_not_repeated():
+    assert plan.system_path_with("/usr/local/bin:/usr/bin:/bin", "/usr/bin") == "/usr/local/bin:/usr/bin:/bin"
+
+
+def test_no_host_tool_folder_leaves_the_system_path_alone():
+    assert plan.system_path_with("/usr/local/bin:/usr/bin:/bin", None) == "/usr/local/bin:/usr/bin:/bin"
+
+
+def test_the_sandbox_path_carries_the_host_tool_folder_after_the_install_bin():
+    path = plan.system_path_with("/usr/bin:/bin", "/opt/homebrew/opt/postgresql@16/bin")
+    env = plan.sandbox_env({}, home="/h", bin_dirs=["/i/bin"], system_path=path)
+    assert env["PATH"] == "/i/bin:/usr/bin:/bin:/opt/homebrew/opt/postgresql@16/bin"
+
+
 def test_profiles_name_the_sandbox():
     text = plan.routing_profile_text(team="t", workspace="/w", harness_dir="/h", provider_profile="/p.yaml")
     assert text == "team: t\nworkspace_dir: /w\nharness_dir: /h\nprovider_profile: /p.yaml\n"
@@ -355,7 +373,17 @@ def test_the_team_cartridge_extends_base_binds_every_smoke_skill_and_carries_its
     assert cart["landing_areas"] == {"worktree_root": "/w", "checks": [
         {"name": "note", "cmd": "grep -qx ok notes/t1.txt"},
         {"name": "lane-probe", "cmd": "command -v smoke-lane-probe"},
-        {"name": "lane-env", "cmd": "printenv AGENT_GRAPHS_TRACE_DIR PATH > /h/lane-env.txt"}]}
+        {"name": "lane-env", "cmd": """printf '%s\\n%s\\n' "${AGENT_GRAPHS_TRACE_DIR:?}" "$PATH" > /h/lane-env.txt"""}]}
+
+
+def test_the_docker_endpoint_is_docker_host_when_set_else_the_active_context():
+    desktop = "unix:///tmp/desktop-context/docker.sock"
+    assert plan.docker_endpoint(None, desktop + "\n") == desktop
+    assert plan.docker_endpoint("tcp://127.0.0.1:2375", desktop) == "tcp://127.0.0.1:2375"
+    assert plan.docker_endpoint("", desktop) == desktop
+    assert plan.docker_endpoint(None, "") is None
+    assert plan.docker_endpoint(None, None) is None
+    assert plan.DOCKER_CONTEXT_HOST_ARGV == ["docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"]
 
 
 def test_a_hand_started_harness_gets_the_repo_venv_first_and_the_trace_dir():
