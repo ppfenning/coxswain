@@ -52,6 +52,37 @@ def test_intake_differing_states_give_a_state_kind():
     ]
 
 
+def test_a_decomposed_intake_file_agrees_with_a_done_store_row():
+    path = "intake/2026-11-11-remote-run-record-survives-a-crash-during-its.md"
+    row = _intake_row("2026-11-11-remote-run-record-survives-a-crash-during-its", "done")
+    assert route_drift.drift([], [], [(path, "decomposed")], [row]) == []
+
+
+def test_a_queued_intake_file_with_a_done_store_row_is_still_a_state_row():
+    assert route_drift.drift([], [], [("intake/foo.md", "queued")], [_intake_row("foo", "done")]) == [
+        {
+            "initiative": "intake", "task_id": "intake/foo.md", "kind": "state",
+            "file_state": "queued", "store_state": "done",
+        }
+    ]
+
+
+def test_a_landed_intake_file_agrees_with_done_but_not_with_queued():
+    assert route_drift.drift([], [], [("intake/foo.md", "landed")], [_intake_row("foo", "done")]) == []
+    assert route_drift.drift([], [], [("intake/foo.md", "landed")], [_intake_row("foo", "queued")]) == [
+        {
+            "initiative": "intake", "task_id": "intake/foo.md", "kind": "state",
+            "file_state": "landed", "store_state": "queued",
+        }
+    ]
+
+
+def test_a_done_task_row_is_not_normalised():
+    assert route_drift.drift([("demo", "t1", "decomposed")], [_row("demo", "t1", "done")]) == [
+        {"initiative": "demo", "task_id": "t1", "kind": "state", "file_state": "decomposed", "store_state": "done"}
+    ]
+
+
 def test_output_is_sorted_by_initiative_then_task():
     out = route_drift.drift([("b", "t1", "todo"), ("a", "t2", "todo")], [_row("a", "t1", "done")])
     assert [(d["initiative"], d["task_id"]) for d in out] == [("a", "t1"), ("a", "t2"), ("b", "t1")]
