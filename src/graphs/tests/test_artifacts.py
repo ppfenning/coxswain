@@ -1,35 +1,45 @@
-"""harness.artifacts: the key layout, the write-once rule and what each step carries are pure; the uploads run against
-a real local filesystem root and a real sqlite store, with no stand-ins."""
+"""harness.artifacts: the key layout, the write-once rule, the scrub and what each step carries are pure; the uploads
+run against a real local filesystem root and a real store (sqlite, and Postgres when COXSWAIN_TEST_PG_URL is set),
+through the epic driver's own `record_steps`, with no stand-ins."""
 
 import hashlib
-import json
+import os
+from pathlib import Path
 
 import pytest
 
 from harness.artifacts import (
+    MISSING_NOTICE_KEY,
     ArtifactConflict,
+    ArtifactsRoot,
     Source,
     artifacts_root,
     attach,
     decide,
     entry,
     key,
+    mark_missing,
     put_object,
+    scrub,
     sources,
     step_artifacts,
     upload,
 )
-from harness.store_migrate import open_store
-from harness.store_steps import put_step, step_row, steps_for, steps_of_result
+from harness.epic import Ctx
+from harness.epic_records import record_steps
+from harness.store_steps import step_row, steps_for, steps_of_result
+from harness.store_write import Store
 
 AT = "2026-11-20T00:00:00Z"
 PATCH = "--- a/NOTE.md\n+++ b/NOTE.md\n@@ -0,0 +1 @@\n+ok\n"
+SHA = hashlib.sha256(PATCH.encode()).hexdigest()
 RESULT = {
     "run_id": "ship-1:p1:t1",
     "plan": {"steps": ["write the note"], "files_expected": ["NOTE.md"]},
     "build": {"patch": PATCH, "files_touched": ["NOTE.md"]},
     "review": {"verdict": "approve", "findings": []},
     "change_facts": {
+        "checks_run": "ship-1",
         "checks": [
             {"name": "unit tests", "passed": True, "exit_code": 0, "log": "checks/p1/t1/1.log"},
             {"name": "lint", "passed": True, "exit_code": 0},
@@ -46,12 +56,16 @@ def by_step(rows):
     return {r["step"]: r for r in rows}
 
 
+def keys_of(row):
+    return [e.get("key") for e in row["artifacts_json"]]
+
+
 # --- key ------------------------------------------------------------------------------------------------------------
 
 
-def test_a_key_puts_the_step_under_the_run_with_its_slashes_as_double_underscores():
-    assert key("ship-7", "task/t1/build", "patch.diff") == "v1/runs/ship-7/task__t1__build/patch.diff"
-    assert key("ship-7", "phase/review/1", "transcript.jsonl") == "v1/runs/ship-7/phase__review__1/transcript.jsonl"
+def test_a_key_puts_the_step_under_the_run_and_names_the_content():
+    assert key("ship-7", "task/t1/build", "patch.diff", SHA) == f"v1/runs/ship-7/task__t1__build/patch.diff@{SHA[:12]}"
+    assert key("ship-7", "phase/review/1", "t.jsonl", SHA).startswith("v1/runs/ship-7/phase__review__1/t.jsonl@")
 
 
 @pytest.mark.parametrize(("run_id", "step", "name"), [
@@ -61,13 +75,20 @@ def test_a_key_puts_the_step_under_the_run_with_its_slashes_as_double_underscore
     ("ship-7", "task/t1/build", "a/b"),
     ("ship/7", "task/t1/build", "patch.diff"),
     ("ship-7", "task/t1/build", ".."),
+    ("ship-7", "task/t1__x/build", "patch.diff"),
+    ("ship-7", "task/t1/build", "a__b.log"),
 ])
 def test_a_key_refuses_a_part_that_could_name_another_place(run_id, step, name):
     with pytest.raises(ValueError, match="not a plain name"):
-        key(run_id, step, name)
+        key(run_id, step, name, SHA)
 
 
-# --- entry and decide -----------------------------------------------------------------------------------------------
+def test_a_key_refuses_a_digest_that_is_not_a_sha256():
+    with pytest.raises(ValueError, match="not a sha256"):
+        key("ship-7", "task/t1/build", "patch.diff", "abc")
+
+
+# --- entry, decide and scrub ----------------------------------------------------------------------------------------
 
 
 def test_an_entry_records_the_size_and_the_sha256_of_the_bytes():
@@ -76,14 +97,19 @@ def test_an_entry_records_the_size_and_the_sha256_of_the_bytes():
         "key": "v1/runs/r/s/n", "bytes": 6, "sha256": hashlib.sha256(data).hexdigest(), "media": "text/plain"}
 
 
-def test_a_key_is_written_when_empty_left_when_it_holds_the_same_bytes_and_refused_when_it_holds_others():
-    assert decide("k", b"a", None) == "write"
-    assert decide("k", b"a", b"a") == "same"
-    with pytest.raises(ArtifactConflict, match="k already holds different content"):
-        decide("k", b"a", b"b")
+def test_a_key_is_written_when_empty_left_at_the_same_size_and_refused_at_another():
+    assert decide("k", 3, None) == "write"
+    assert decide("k", 3, 3) == "same"
+    with pytest.raises(ArtifactConflict, match="k already holds 4 bytes, not 3"):
+        decide("k", 3, 4)
 
 
-# --- sources and attach ---------------------------------------------------------------------------------------------
+def test_scrub_replaces_each_long_enough_secret_and_leaves_short_ones():
+    assert scrub(b"key=GKabcdef123 secret=s3cr3tvalue x=abc", ["GKabcdef123", "s3cr3tvalue", "abc"]) == (
+        b"key=[redacted] secret=[redacted] x=abc")
+
+
+# --- sources, attach and mark_missing -------------------------------------------------------------------------------
 
 
 def test_the_build_carries_its_patch_the_checks_each_logged_check_and_each_role_its_transcripts(tmp_path):
@@ -97,127 +123,241 @@ def test_the_build_carries_its_patch_the_checks_each_logged_check_and_each_role_
         ("task/t1/review", "transcript-review_charter-3.jsonl"),
         ("task/t1/checks", "01-unit-tests.log"),
     ]
-    patch = next(s for s in found if s.name == "patch.diff")
-    assert (patch.text, patch.path, patch.media) == (PATCH, None, "text/x-diff")
     log = next(s for s in found if s.name.endswith(".log"))
     assert log.path == tmp_path / "ship-1" / "checks" / "p1" / "t1" / "1.log"
 
 
+def test_a_name_with_a_double_underscore_is_folded_so_its_key_holds():
+    rows = rows_of()
+    weird = {**RESULT, "change_facts": {**RESULT["change_facts"], "checks": [{"name": "a__b", "log": "x.log"}]}}
+    names = [s.name for s in sources(rows, weird, run_dir=Path("/r"), calls=[("build", Path("/t/b__1.jsonl"))])]
+    assert names == ["patch.diff", "transcript-b_1.jsonl", "01-a_b.log"]
+    assert all(key("ship-1", "task/t1/x", n, SHA) for n in names)
+
+
 def test_a_build_with_no_patch_and_checks_with_no_log_carry_nothing(tmp_path):
-    bare = {**RESULT, "build": {"patch": "  \n", "quarantine": "no patch"}, "change_facts": {"checks": [{"name": "x"}]}}
+    bare = {**RESULT, "build": {"patch": "  \n", "quarantine": "no patch"},
+            "change_facts": {"checks_run": "ship-1", "checks": [{"name": "x"}]}}
     assert sources(rows_of(bare), bare, run_dir=tmp_path) == ()
 
 
-def test_attach_appends_the_entries_and_leaves_the_rest_of_the_row():
+def test_attach_and_mark_missing_append_and_leave_the_rest_of_the_row():
     row = step_row(run_id="r", step="task/t1/build", initiative="i", phase="p", task_id="t1", kind="build", round_=1,
                    ok=True, verdict="", result={}, finished_at=AT)
-    listed = attach(row, [{"key": "k"}])
-    assert listed["artifacts_json"] == [{"key": "k"}]
+    listed = mark_missing(attach(row, [{"key": "k"}]), "boom")
+    assert listed["artifacts_json"] == [{"key": "k"}, {"artifacts_missing": True, "error": "boom"}]
     assert {**listed, "artifacts_json": []} == row
     assert row["artifacts_json"] == []
 
 
-# --- the edges, on a real root --------------------------------------------------------------------------------------
+# --- the root -------------------------------------------------------------------------------------------------------
 
 
 @pytest.fixture
 def root(tmp_path):
     pytest.importorskip("pyarrow")
-    found = artifacts_root({"artifacts_url": f"file://{tmp_path / 'artifacts'}"}, {})
+    found = artifacts_root({"artifacts_url": f"file://{tmp_path / 'artifacts'}"}, {}, tmp_path / "runs")
     assert found is not None
     return found
 
 
-def test_no_artifacts_url_is_no_root():
-    assert artifacts_root({}, {}) is None
-    assert artifacts_root({"artifacts_url": ""}, {}) is None
+def test_no_artifacts_url_is_no_root(tmp_path):
+    assert artifacts_root({}, {}, tmp_path) is None
+    assert artifacts_root({"artifacts_url": ""}, {}, tmp_path) is None
 
 
-def test_a_bad_artifacts_url_is_refused_under_its_own_name():
+def test_a_bad_artifacts_url_is_refused_under_its_own_name(tmp_path):
     with pytest.raises(ValueError, match="artifacts url must not carry credentials"):
-        artifacts_root({"artifacts_url": "s3://user:pw@bucket/a"}, {})
+        artifacts_root({"artifacts_url": "s3://user:pw@bucket/a"}, {}, tmp_path)
 
 
-def test_a_plain_path_is_a_local_root(tmp_path):
+def test_a_relative_path_is_under_the_runs_directory_and_an_absolute_one_stays(tmp_path):
     pytest.importorskip("pyarrow")
-    found = artifacts_root({"artifacts_url": str(tmp_path)}, {})
-    assert found is not None and found.path == str(tmp_path)
+    relative = artifacts_root({"artifacts_url": "artifacts"}, {}, tmp_path / "runs")
+    absolute = artifacts_root({"artifacts_url": str(tmp_path / "elsewhere")}, {}, tmp_path / "runs")
+    assert relative is not None and relative.path == str(tmp_path / "runs" / "artifacts")
+    assert absolute is not None and absolute.path == str(tmp_path / "elsewhere")
 
 
-def test_put_object_writes_once_repeats_as_a_no_op_and_refuses_new_bytes(root, tmp_path):
-    assert put_object(root, "v1/runs/r/s/n.log", b"one") is True
-    assert put_object(root, "v1/runs/r/s/n.log", b"one") is False
+def test_the_root_scrubs_the_values_of_the_variables_the_object_store_block_names(tmp_path):
+    pytest.importorskip("pyarrow")
+    block = {"endpoint": "http://127.0.0.1:1", "access_key_env": "K_ENV", "secret_key_env": "S_ENV"}
+    found = artifacts_root({"artifacts_url": "s3://bucket/a", "object_store": block},
+                           {"K_ENV": "GKplaceholder1", "S_ENV": "placeholder-secret"}, tmp_path)
+    assert found is not None and found.secrets == ("GKplaceholder1", "placeholder-secret")
+
+
+# --- put_object, on a real local root -------------------------------------------------------------------------------
+
+
+def test_put_object_writes_once_repeats_as_a_no_op_and_refuses_another_size(root, tmp_path):
+    assert put_object(root, "v1/runs/r/s/n.log@0", b"one") is True
+    assert put_object(root, "v1/runs/r/s/n.log@0", b"one") is False
     with pytest.raises(ArtifactConflict):
-        put_object(root, "v1/runs/r/s/n.log", b"two")
-    assert (tmp_path / "artifacts" / "v1" / "runs" / "r" / "s" / "n.log").read_bytes() == b"one"
+        put_object(root, "v1/runs/r/s/n.log@0", b"three")
+    folder = tmp_path / "artifacts" / "v1" / "runs" / "r" / "s"
+    assert (folder / "n.log@0").read_bytes() == b"one"
+    assert sorted(p.name for p in folder.iterdir()) == ["n.log@0"]  # no temporary file is left behind
+
+
+def test_a_write_cut_off_part_way_leaves_no_key_and_the_retry_writes_it(root, tmp_path):
+    folder = tmp_path / "artifacts" / "v1" / "runs" / "r" / "s"
+    folder.mkdir(parents=True)
+    (folder / ".n.log@0.abc.part").write_bytes(b"on")  # what a process killed mid-write leaves
+    assert put_object(root, "v1/runs/r/s/n.log@0", b"one") is True
+    assert (folder / "n.log@0").read_bytes() == b"one"
+
+
+def test_a_key_another_writer_made_meanwhile_is_the_same_content_or_a_conflict(root, tmp_path):
+    folder = tmp_path / "artifacts" / "v1" / "runs" / "r" / "s"
+    folder.mkdir(parents=True)
+    os.link(_write(tmp_path / "other", b"one"), folder / "n.log@0")
+    assert put_object(root, "v1/runs/r/s/n.log@0", b"one") is False
+
+
+def _write(path: Path, data: bytes) -> Path:
+    path.write_bytes(data)
+    return path
+
+
+# --- upload ---------------------------------------------------------------------------------------------------------
 
 
 def test_upload_writes_each_source_then_lists_it_on_its_row_and_skips_one_gone_or_empty(root, tmp_path):
-    rows = rows_of()
-    log = tmp_path / "1.log"
-    log.write_text("passed\n", encoding="utf-8")
+    log = _write(tmp_path / "1.log", b"passed\n")
     found = (Source("task/t1/build", "patch.diff", "text/x-diff", text=PATCH),
              Source("task/t1/checks", "01-unit-tests.log", "text/plain", path=log),
              Source("task/t1/checks", "02-gone.log", "text/plain", path=tmp_path / "gone.log"),
              Source("task/t1/checks", "03-empty.log", "text/plain", text=""))
-    listed = by_step(upload(root, "ship-1", rows, found))
-    assert [e["key"] for e in listed["task/t1/build"]["artifacts_json"]] == ["v1/runs/ship-1/task__t1__build/patch.diff"]
-    assert [e["key"] for e in listed["task/t1/checks"]["artifacts_json"]] == ["v1/runs/ship-1/task__t1__checks/01-unit-tests.log"]
+    rows, error = upload(root, "ship-1", rows_of(), found)
+    listed = by_step(rows)
+    assert error is None
+    assert keys_of(listed["task/t1/build"]) == [f"v1/runs/ship-1/task__t1__build/patch.diff@{SHA[:12]}"]
+    log_key = keys_of(listed["task/t1/checks"])[0]
+    assert log_key.startswith("v1/runs/ship-1/task__t1__checks/01-unit-tests.log@")
     assert listed["task/t1/plan"]["artifacts_json"] == []
-    base = tmp_path / "artifacts" / "v1" / "runs" / "ship-1"
-    assert (base / "task__t1__build" / "patch.diff").read_text(encoding="utf-8") == PATCH
-    assert (base / "task__t1__checks" / "01-unit-tests.log").read_text(encoding="utf-8") == "passed\n"
+    assert (tmp_path / "artifacts" / log_key).read_bytes() == b"passed\n"
 
 
-def test_an_upload_conflict_raises_before_any_row_comes_back(root):
-    put_object(root, "v1/runs/ship-1/task__t1__build/patch.diff", b"another patch")
-    with pytest.raises(ArtifactConflict):
-        upload(root, "ship-1", rows_of(), (Source("task/t1/build", "patch.diff", "text/x-diff", text=PATCH),))
+def test_a_rebuild_with_another_patch_writes_another_key_and_is_never_locked_out(root):
+    first, _ = upload(root, "ship-1", rows_of(), (Source("task/t1/build", "patch.diff", "text/x-diff", text=PATCH),))
+    other = PATCH + "+more\n"
+    second, error = upload(root, "ship-1", rows_of(), (Source("task/t1/build", "patch.diff", "text/x-diff", text=other),))
+    assert error is None
+    assert keys_of(by_step(first)["task/t1/build"]) != keys_of(by_step(second)["task/t1/build"])
 
 
-def _store(tmp_path):
-    return open_store(f"sqlite:///{tmp_path / 'store.db'}", AT)
+def test_uploads_are_scrubbed_and_listed_by_what_was_written(tmp_path):
+    pytest.importorskip("pyarrow")
+    from pyarrow.fs import LocalFileSystem
+
+    secret_root = ArtifactsRoot(LocalFileSystem(), str(tmp_path / "a"), "file://a", ("placeholder-secret",))
+    rows, _ = upload(secret_root, "ship-1", rows_of(),
+                     (Source("task/t1/build", "patch.diff", "text/x-diff", text="token placeholder-secret\n"),))
+    item = by_step(rows)["task/t1/build"]["artifacts_json"][0]
+    data = (tmp_path / "a" / item["key"]).read_bytes()
+    assert data == b"token [redacted]\n" and item["sha256"] == hashlib.sha256(data).hexdigest()
 
 
-def test_without_a_root_the_save_path_gets_its_rows_back_unchanged(tmp_path):
-    conn = _store(tmp_path)
-    rows = rows_of()
-    assert step_artifacts(None, conn, rows, RESULT, runs_dir=tmp_path, run_id="ship-1", phase="p1", task="t1") == rows
-    conn.close()
+def test_a_broken_root_stops_the_uploads_and_marks_each_row_that_had_artifacts(tmp_path):
+    pytest.importorskip("pyarrow")
+    from pyarrow.fs import LocalFileSystem
+
+    blocker = _write(tmp_path / "blocker", b"a file where the root's folder should be")
+    broken = ArtifactsRoot(LocalFileSystem(), str(blocker / "root"), "file://blocker/root")
+    found = (Source("task/t1/build", "patch.diff", "text/x-diff", text=PATCH),
+             Source("task/t1/checks", "01-unit-tests.log", "text/plain", text="passed\n"))
+    rows, error = upload(broken, "ship-1", rows_of(), found)
+    listed = by_step(rows)
+    assert error
+    for step in ("task/t1/build", "task/t1/checks"):
+        assert listed[step]["artifacts_json"] == [{"artifacts_missing": True, "error": error}]
+    assert listed["task/t1/plan"]["artifacts_json"] == []
 
 
-def test_the_save_path_uploads_each_new_steps_artifacts_and_its_stored_rows_list_them(root, tmp_path):
-    conn = _store(tmp_path)
+# --- the save path: record_steps on a real store --------------------------------------------------------------------
+
+
+def _ctx(tmp_path, conn, artifacts):
+    return Ctx(repo=tmp_path, cartridge={}, runner=None, specs={}, run_id="ship-1", date="2026-11-20", max_parallel=1,
+               ledger_path=tmp_path / "ledger", provider_profile="p", runs_dir=tmp_path / "runs",
+               worktree_root=tmp_path / "wt", assume=None, fix_attempts=None, initiative_id="ship",
+               default_ref="main", store=Store(conn), artifacts=artifacts)
+
+
+def _lane_files(tmp_path, store):
+    """The check log the lane wrote, and a build transcript recorded as the runner records one: a trace file, named in
+    the node call's detail."""
     log = tmp_path / "runs" / "ship-1" / "checks" / "p1" / "t1" / "1.log"
     log.parent.mkdir(parents=True)
     log.write_text("1 passed\n", encoding="utf-8")
     trace = tmp_path / "runs" / "ship-1-trace" / "build-1.jsonl"
     trace.parent.mkdir(parents=True)
     trace.write_text('{"type": "result"}\n', encoding="utf-8")
-    conn.execute(
-        "INSERT INTO node_calls (call_id, run_id, seq, phase_id, task_id, role, detail_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ("c1", "ship-1", 1, "p1", "t1", "build", json.dumps({"trace": str(trace)})),
-    )
+    store.record_call({"id": "c1", "task_id": "t1", "role": "build", "ok": True, "trace": str(trace)},
+                      run_id="ship-1", seq=1, phase_id="p1")
+    return log, trace
 
-    def save():
-        for row in step_artifacts(root, conn, rows_of(), RESULT, runs_dir=tmp_path / "runs", run_id="ship-1",
-                                  phase="p1", task="t1"):
-            put_step(conn, row)
 
-    save()
-    stored = by_step(steps_for(conn, "ship-1"))
-    assert [e["key"] for e in stored["task/t1/build"]["artifacts_json"]] == [
+def test_without_a_root_the_save_path_gets_its_rows_back_unchanged(tmp_path, store_conn):
+    rows = rows_of()
+    assert step_artifacts(None, store_conn, rows, RESULT, runs_dir=tmp_path, run_id="ship-1", phase="p1", task="t1",
+                          now=AT) == rows
+
+
+def test_record_steps_uploads_the_patch_the_log_and_the_transcript_and_the_rows_list_them(tmp_path, store_conn, root):
+    c = _ctx(tmp_path, store_conn, root)
+    log, _ = _lane_files(tmp_path, c.store)
+    record_steps(c, RESULT, phase="p1", task="t1")
+    stored = by_step(steps_for(store_conn, "ship-1"))
+    build = keys_of(stored["task/t1/build"])
+    assert [k.rpartition("@")[0] for k in build] == [
         "v1/runs/ship-1/task__t1__build/patch.diff", "v1/runs/ship-1/task__t1__build/transcript-build-1.jsonl"]
-    assert [e["key"] for e in stored["task/t1/checks"]["artifacts_json"]] == [
+    assert [k.rpartition("@")[0] for k in keys_of(stored["task/t1/checks"])] == [
         "v1/runs/ship-1/task__t1__checks/01-unit-tests.log"]
     for row in stored.values():
         for item in row["artifacts_json"]:
             data = (tmp_path / "artifacts" / str(item["key"])).read_bytes()
             assert (item["bytes"], item["sha256"]) == (len(data), hashlib.sha256(data).hexdigest())
 
-    # A second save, after the local log changed, leaves the stored rows and the written objects as they were.
+    # A second save, after the local log changed, leaves the stored rows as they were.
     log.write_text("rewritten\n", encoding="utf-8")
-    save()
-    assert by_step(steps_for(conn, "ship-1")) == stored
-    assert (tmp_path / "artifacts" / "v1/runs/ship-1/task__t1__checks/01-unit-tests.log").read_text() == "1 passed\n"
-    conn.close()
+    record_steps(c, RESULT, phase="p1", task="t1")
+    assert by_step(steps_for(store_conn, "ship-1")) == stored
+
+
+def _courier_on_path(tmp_path, monkeypatch) -> Path:
+    """A `cox` on PATH that records each `courier send` it is given, as the real one takes the note."""
+    record = tmp_path / "courier.txt"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    cox = bin_dir / "cox"
+    cox.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> {record}\n', encoding="utf-8")
+    cox.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    return record
+
+
+@pytest.mark.real_courier
+def test_a_broken_bucket_still_writes_every_row_marked_and_the_chair_is_told_once(tmp_path, store_conn, monkeypatch):
+    pytest.importorskip("pyarrow")
+    from pyarrow.fs import LocalFileSystem
+
+    record = _courier_on_path(tmp_path, monkeypatch)
+    blocker = _write(tmp_path / "blocker", b"x")
+    c = _ctx(tmp_path, store_conn, ArtifactsRoot(LocalFileSystem(), str(blocker / "root"), "file://blocker/root"))
+    _lane_files(tmp_path, c.store)
+    record_steps(c, RESULT, phase="p1", task="t1")
+    stored = by_step(steps_for(store_conn, "ship-1"))
+    assert sorted(stored) == ["task/t1/build", "task/t1/checks", "task/t1/plan", "task/t1/review"]
+    for step in ("task/t1/build", "task/t1/checks"):
+        assert [e["artifacts_missing"] for e in stored[step]["artifacts_json"]] == [True], stored[step]
+    assert stored["task/t1/plan"]["artifacts_json"] == stored["task/t1/review"]["artifacts_json"] == []
+
+    # one alarm per run: a re-entry's failing save in the same run tells nobody again
+    record_steps(c, {**RESULT, "run_id": "ship-1:p1:refix1:t1"}, phase="p1", task="t1")
+    assert "task/t1-refix-1/build" in by_step(steps_for(store_conn, "ship-1"))
+    sent = record.read_text(encoding="utf-8").splitlines()
+    assert len(sent) == 1 and "ship-1 could not upload step artifacts" in sent[0], sent
+    notices = store_conn.query_all("SELECT key FROM lander_notices")
+    assert [r[0] for r in notices] == [f"{MISSING_NOTICE_KEY}ship-1"]

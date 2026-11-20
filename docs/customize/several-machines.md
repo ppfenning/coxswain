@@ -215,6 +215,11 @@ well as in the run folder, set `artifacts_url` the same way, for example
 `artifacts_url: file:///<folder>` instead. `cox runs artifacts <run>` lists
 the keys a run wrote. Without the key nothing is uploaded.
 
+Check logs and transcripts may contain secrets that a check printed or an
+agent read. Before upload, only the values of the `object_store` key
+variables are scrubbed. Keep the artifacts bucket private to your
+machines, and give them credentials scoped to that bucket.
+
 ### A Garage server
 
 A single-node Garage on the tailnet needs one profile block. Replace `<host>`

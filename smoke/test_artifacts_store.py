@@ -1,6 +1,6 @@
 """Step artifacts in object storage (F3): with `artifacts_url` in the provider profile, the scripted one-task epic,
 started by `cox route launch epic` as a person starts it, writes each step's patch and check logs under
-`v1/runs/<run>/<step>/<name>` before the step's row, and the row lists each key with its size and sha256.
+`v1/runs/<run>/<step>/<name>@<sha12>` before the step's row, and the row lists each key with its size and sha256.
 
 Once against a `file://` folder, which is the single-machine case with no Garage, and once against `s3://` on the
 session's Garage container with the `object_store` block naming the key variables. `cox runs artifacts` lists what the
@@ -40,7 +40,12 @@ def _ran(launchable) -> list[dict]:
 
 
 def _keys(steps: list[dict]) -> dict[str, list[str]]:
-    return {s["step"]: [a["key"] for a in s["artifacts_json"]] for s in steps}
+    """Each step's keys without their `@<sha12>` suffix; each suffix is first held to the sha256 its entry records."""
+    for s in steps:
+        for a in s["artifacts_json"]:
+            assert "artifacts_missing" not in a, a
+            assert a["key"].rpartition("@")[2] == a["sha256"][:12], a
+    return {s["step"]: [a["key"].rpartition("@")[0] for a in s["artifacts_json"]] for s in steps}
 
 
 def _expected(sandbox) -> dict[str, list[str]]:
@@ -70,7 +75,7 @@ def _check_rows(sandbox, steps: list[dict], read) -> None:
             assert (item["bytes"], item["sha256"]) == (len(data), hashlib.sha256(data).hexdigest()), item
     build = next(s for s in steps if s["step"] == "task/t1/build")
     assert plan.SMOKE_NOTE in read(build["artifacts_json"][0]["key"]).decode("utf-8")
-    assert [e["key"] for e in _listed(sandbox)] == [k for s in steps for k in keys[s["step"]]]
+    assert [e["key"] for e in _listed(sandbox)] == [a["key"] for s in steps for a in s["artifacts_json"]]
 
 
 def test_a_file_artifacts_url_holds_each_steps_patch_and_logs_under_its_key(launchable, repo, tmp_path):
@@ -127,3 +132,17 @@ def test_an_s3_artifacts_url_on_garage_holds_each_steps_patch_and_logs(launchabl
         return base64.b64decode(json.loads(done.stdout))
 
     _check_rows(sandbox, steps, read)
+
+
+def test_a_broken_artifacts_root_still_finishes_the_run_and_writes_every_row_marked(launchable, repo, tmp_path):
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a file where the root's folder should be", encoding="utf-8")
+    _with_profile_lines(launchable.sandbox, f"artifacts_url: file://{blocker}/root\n")
+    steps = _ran(launchable)
+    by_step = {s["step"]: s["artifacts_json"] for s in steps}
+    for step in ("task/t1/build", "task/t1/checks"):
+        assert [a.get("artifacts_missing") for a in by_step[step]] == [True], by_step
+        assert by_step[step][0]["error"], by_step
+    assert all(by_step[s] == [] for s in by_step if s not in ("task/t1/build", "task/t1/checks")), by_step
+    assert launchable.sandbox.store_row(INITIATIVE, "t1")["state"] == "approved"
+    assert {e["step"] for e in _listed(launchable.sandbox) if e.get("missing")} == {"task/t1/build", "task/t1/checks"}

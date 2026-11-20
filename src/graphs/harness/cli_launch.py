@@ -717,7 +717,7 @@ def _run_rescue(
         return 1, "failed"
     try:
         work_state = work_state_of(read_provider_profile(args.provider_profile))
-        artifacts = artifacts_root(read_provider_profile(args.provider_profile), os.environ)
+        artifacts = artifacts_root(read_provider_profile(args.provider_profile), os.environ, Path(args.runs_dir))
     except (ValueError, ImportError) as exc:
         print(str(exc), file=sys.stderr)
         return 1, "failed"

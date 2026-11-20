@@ -15,6 +15,13 @@ def test_listing_gives_one_entry_per_artifact_in_step_order_and_skips_rows_with_
     assert listing(rows) == [{"step": "task/t1/build", **ITEM}]
 
 
+def test_a_missing_mark_is_listed_with_its_error():
+    rows = [{"step": "task/t1/build", "artifacts_json": [ITEM, {"artifacts_missing": True, "error": "OSError: down"}]}]
+    found = listing(rows)
+    assert found[1] == {"step": "task/t1/build", "missing": True, "error": "OSError: down"}
+    assert lines("demo-1", found)[1] == "task/t1/build: MISSING artifacts: OSError: down"
+
+
 def test_lines_name_each_key_with_its_size_and_digest_or_say_there_are_none():
     assert lines("demo-1", [{"step": "s", **ITEM}]) == [f"{ITEM['key']}  42 B  {'ab' * 6}"]
     assert lines("demo-1", []) == ["demo-1: no artifacts recorded (no step rows list any; is artifacts_url set?)"]

@@ -809,7 +809,7 @@ def _run_graph(
             print(str(exc), file=sys.stderr)
             return 1
         try:
-            artifacts = artifacts_root(read_provider_profile(args.provider_profile), os.environ)
+            artifacts = artifacts_root(read_provider_profile(args.provider_profile), os.environ, Path(args.runs_dir))
         except (ValueError, ImportError) as exc:
             print(f"artifacts: {exc}", file=sys.stderr)
             return 1
