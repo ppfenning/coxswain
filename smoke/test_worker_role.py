@@ -201,6 +201,37 @@ def test_the_role_writes_its_results_and_claims_and_is_refused_everything_else(w
     assert rows == [[[1]], [["smoke-w1", 1, 1]]]
 
 
+CURSOR_SQL = "SELECT name, seq FROM store_cursor ORDER BY name"
+
+
+def test_a_worker_write_still_commits_and_bumps_the_cursor_it_may_not_write_itself(worker_machine):
+    # The cursor's trigger function is SECURITY DEFINER (store_ddl_0021): it bumps store_cursor as the owner, so a
+    # role that may only read store_cursor still has its claim and its step result commit, each bumping its table.
+    _setup(worker_machine)
+    url = worker_machine.store_url
+    _owner(worker_machine, url, CLAIM_ROW)
+    before = dict(_owner(worker_machine, url, CURSOR_SQL)[0])
+    values = _env_values(worker_machine)
+    statements = [
+        ("claim", "UPDATE phase_queue SET claimed_by = 'smoke-w1', claim_epoch = claim_epoch + 1, state = 'claimed' "
+                  "WHERE initiative = 'ship' AND phase = 'p1'"),
+        ("heartbeat", "UPDATE phase_queue SET heartbeat_at = 'now', lease_until = 'later' "
+                      "WHERE initiative = 'ship' AND phase = 'p1' AND claimed_by = 'smoke-w1'"),
+        ("insert step", STEP_ROW),
+        ("write cursor", "UPDATE store_cursor SET seq = seq + 100"),
+    ]
+    done = subprocess.run([str(worker_machine.install.python), "-c", WORKER_SQL, json.dumps(statements)],
+                          env={**worker_machine.env, "SMOKE_WORKER_URL": _worker_url(url, _login(worker_machine), values[PASSWORD_ENV])},
+                          cwd=worker_machine.home, capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == {"claim": "ok", "heartbeat": "ok", "insert step": "ok", "write cursor": "42501"}
+    after = dict(_owner(worker_machine, url, CURSOR_SQL)[0])
+    moved = {k: after[k] - before[k] for k in before if after[k] != before[k]}
+    # The claim and the step each stamp once; the heartbeat stamps nothing; the direct write was refused.
+    assert moved == {"*": 2, "phase_queue": 1, "step_results": 1}, (before, after)
+    assert _owner(worker_machine, url, "SELECT heartbeat_at, lease_until FROM phase_queue")[0] == [["now", "later"]]
+
+
 def test_a_role_widened_by_hand_is_put_back_by_the_next_run(worker_machine):
     _setup(worker_machine)
     url, login = worker_machine.store_url, _login(worker_machine)

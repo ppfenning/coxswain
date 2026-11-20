@@ -1,14 +1,17 @@
 """Cross-tick cache of the chair's store readers, keyed by the store's change counters (H6).
 
-Each tick reads one row per table from `pg_stat_user_tables` (`run_store.table_counters`): the rows inserted, updated
-and deleted since statistics began. A reader names the tables it reads; while their counters stand, the tick reuses the
-rows the reader returned last time and sends no query for them. One write to one table re-reads exactly the readers
-that name it.
+Each tick reads one counter per table (`run_store.table_counters`). A reader names the tables it reads; while their
+counters stand, the tick reuses the rows the reader returned last time and sends no query for them. One write to one
+table re-reads exactly the readers that name it.
 
-The counters are cumulative statistics, flushed by the writing backend when it goes idle or exits, so they can trail a
-committed write by about a second, and up to about a minute on a busy server (see `run_store.store_change_stamp`). Every
-entry is also re-read after `MAX_AGE_S` whatever the counters say, which bounds what a missed count (TRUNCATE, a read
-replica, `track_counts = off`) can hide. Unknown counters (no Postgres store, or the read failed) cache nothing.
+On a store at schema 21 or later a watched table's counter is its `seq` in the store's change cursor
+(`agent_tools.store_cursor`), which a statement trigger bumps inside the writer's own transaction: the next tick after
+a commit sees it, and a heartbeat does not move it. Every other table's counter, and every table's on an older store,
+comes from the cumulative statistics (`pg_stat_user_tables`: rows inserted, updated and deleted), flushed by the
+writing backend when it goes idle or exits, so it can trail a committed write by about a second, and up to about a
+minute on a busy server (see `run_store.store_change_stamp`). Every entry is also re-read after `MAX_AGE_S` whatever
+the counters say, which bounds what a missed count (TRUNCATE, a read replica, `track_counts = off`) can hide. Unknown
+counters (no Postgres store, or the read failed) cache nothing.
 
 The decisions are pure functions; `ReaderCache` is the caller-owned state, with the clock passed in.
 """

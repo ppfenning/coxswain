@@ -453,7 +453,26 @@ def test_every_default_module_statement_is_portable_and_has_no_foreign_key(modul
 
 # Every ADDITIVE_EXEMPT a default module declares, by version, with its reason. A module that adds one must add it here
 # too, so a reviewer reads the exemption and its reason in the diff.
-KNOWN_EXEMPTIONS: dict[int, dict[str, str]] = {}
+KNOWN_EXEMPTIONS: dict[int, dict[str, str]] = {
+    21: {
+        "trigger": (
+            "Each CREATE TRIGGER is a FOR EACH STATEMENT trigger. Postgres ignores the value a statement-level "
+            "trigger returns, BEFORE or AFTER, so it cannot skip, drop or rewrite any row the statement writes; "
+            "the function only updates store_cursor, a table this migration creates and no older build writes. "
+            "Its one way to touch the write is to fail it: store_cursor missing, which this same migration rules "
+            "out, or a wait on the gate row longer than the store's lock bound, which is the old write's own "
+            "bound on any row it locks."
+        ),
+        "function": (
+            "cox_stamp has no arguments and returns NULL, which a statement-level trigger's caller ignores. Its "
+            "body runs one UPDATE twice, on store_cursor's gate row '*' and then on its row named TG_TABLE_NAME, "
+            "setting seq + 1 and at to the statement's time, in the firing table's own schema "
+            "(quote_ident(TG_TABLE_SCHEMA)). It reads and writes no other table. SECURITY DEFINER lets a worker's"
+            " scoped role, which may only read store_cursor, still bump it; search_path is pinned to pg_catalog, "
+            "pg_temp so that grant reaches nothing else."
+        ),
+    },
+}
 
 
 def test_every_additive_exemption_is_listed_here():
