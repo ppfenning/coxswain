@@ -6945,6 +6945,20 @@ profile:</p>
 <p>The profile names the environment variables that hold the key and secret.
 It never holds the values. A literal key in the profile is refused.
 <code>cox lake doctor</code> shows the endpoint and whether each variable is set.</p>
+<p>To keep each step's patch, check logs and transcripts in object storage as
+well as in the run folder, set <code>artifacts_url</code> the same way, for example
+<code>artifacts_url: s3://&lt;bucket&gt;/artifacts</code>. One machine can use
+<code>artifacts_url: file:///&lt;folder&gt;</code> instead. <code>cox runs artifacts &lt;run&gt;</code> lists
+the keys a run wrote. Without the key nothing is uploaded.</p>
+<p>Check logs and transcripts may contain secrets that a check printed or an
+agent read. Before upload, coxswain replaces two things with <code>***</code>. The
+first is the value of every environment variable whose name holds TOKEN,
+SECRET, PASSWORD, PASSWD or KEY. The second is the user and password part of
+every URL. Other secrets can still get through, so keep the artifacts bucket
+private to your machines and give them credentials scoped to that bucket.</p>
+<p><code>file://</code> artifacts need a filesystem with hard links. On SMB or some FUSE
+mounts every upload fails, and each step row records the failure in its
+<code>artifacts_error</code> field instead.</p>
 <h3 id="a-garage-server">A Garage server</h3>
 <p>A single-node Garage on the tailnet needs one profile block. Replace <code>&lt;host&gt;</code>
 and <code>&lt;bucket&gt;</code> with your own:</p>
@@ -6956,6 +6970,7 @@ and <code>&lt;bucket&gt;</code> with your own:</p>
 <span class="w">  </span><span class="nt">path_style</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
 <span class="nt">traces_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">s3://&lt;bucket&gt;/traces</span>
 <span class="nt">lake_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">s3://&lt;bucket&gt;/lake</span>
+<span class="nt">artifacts_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">s3://&lt;bucket&gt;/artifacts</span>
 </code></pre></div>
 <p>Garage 1.1 also needs two SDK settings. Without them the pyarrow S3 client
 fails every upload with <code>invalid checksum algorithm</code>. Set both to

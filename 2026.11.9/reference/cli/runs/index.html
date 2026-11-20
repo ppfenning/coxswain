@@ -4287,6 +4287,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#artifacts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        artifacts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#pause" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6986,6 +6997,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#artifacts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        artifacts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#pause" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -7057,12 +7079,12 @@ Coxswain is in beta — versions may change between releases
 
 <h1 id="runs">runs</h1>
 <div class="highlight"><pre><span></span><code>usage: cox runs [-h]
-                {usage,trace,clean,land,land-batch,fetch,review,recover,series,wait,events,top,bar,herdr,notify,detail,stranded,cause,stop,pause,resume,move,triage} ...
+                {usage,trace,clean,land,land-batch,fetch,review,recover,series,wait,events,top,bar,herdr,notify,detail,stranded,cause,stop,artifacts,pause,resume,move,triage} ...
 
 What a harness run recorded, and cleaning up after it.
 
 positional arguments:
-  {usage,trace,clean,land,land-batch,fetch,review,recover,series,wait,events,top,bar,herdr,notify,detail,stranded,cause,stop,pause,resume,move,triage}
+  {usage,trace,clean,land,land-batch,fetch,review,recover,series,wait,events,top,bar,herdr,notify,detail,stranded,cause,stop,artifacts,pause,resume,move,triage}
     usage               usage stats and cost for one run
     trace               the tool-call trace for one run
     clean               delete a run's worktree and branches locally
@@ -7093,6 +7115,8 @@ positional arguments:
     cause               record why one run's attempt at a task was quarantined
     stop                stop a run's process, local or remote, and wait for it
                         to exit
+    artifacts           list the object-storage keys a run's step rows name
+                        (artifacts_url)
     pause               mark a run paused in the store
     resume              mark a paused run resumed in the store
     move                stop a run at its node boundary and relaunch it on
@@ -7387,6 +7411,17 @@ options:
   -h, --help           show this help message and exit
   --runs-dir RUNS_DIR
   --profile PROFILE
+  --json
+</code></pre></div>
+<h2 id="artifacts">artifacts</h2>
+<div class="highlight"><pre><span></span><code>usage: cox runs artifacts [-h] [--runs-dir RUNS_DIR] [--json] run_id
+
+positional arguments:
+  run_id
+
+options:
+  -h, --help           show this help message and exit
+  --runs-dir RUNS_DIR
   --json
 </code></pre></div>
 <h2 id="pause">pause</h2>
