@@ -53,6 +53,12 @@ ADDITIVE_EXEMPT = {
     ),
 }
 
+WRITES_DATA = (
+    "It seeds store_cursor, a table it creates, with the gate row and one row per watched table at seq 0, and skips "
+    "any that exist. The trigger function's UPDATE writes only store_cursor, when a watched table is written. No row "
+    "of a table an older build reads or writes is inserted, changed or removed."
+)
+
 Column = tuple[str, str]
 
 # Name, columns, key: the tables `store_copy` copies. store_cursor is not one: each store's triggers keep its own, and

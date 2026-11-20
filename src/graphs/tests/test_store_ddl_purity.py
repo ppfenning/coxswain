@@ -3,7 +3,8 @@
 A migration that writes rows (INSERT, UPDATE, DELETE, MERGE, TRUNCATE, COPY, CREATE TABLE ... AS SELECT) changes data
 on every store it opens, and one that reads the environment or the clock migrates two stores differently. Either may be right for a migration, but only on
 purpose: it then declares `WRITES_DATA = "<why>"` or `READS_ENV_OR_TIME = "<why>"`, a non-empty reason, and this guard
-lets it through. No migration declares either today.
+lets it through. 0021 declares WRITES_DATA (the cursor's seed rows and its trigger function); none declares
+READS_ENV_OR_TIME.
 """
 
 import ast
