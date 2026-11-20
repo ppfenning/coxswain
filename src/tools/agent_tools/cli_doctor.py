@@ -534,44 +534,67 @@ def _doctor_steward_rows(profile: dict | None) -> list[dict]:
     return [doctor.steward_row(chair_facts.steward_asked_for(raw))]
 
 
-def _smoke_postgres_facts() -> tuple[smoke_warm.Inspected | None, bool]:
-    """Edge. The warm container as docker reports it, and whether a docker daemon answered."""
+def _smoke_postgres_facts(target: smoke_warm.Target) -> tuple[smoke_warm.Inspected | None, bool]:
+    """Edge. The container as docker reports it, and whether a docker daemon answered."""
     if shutil.which("docker") is None:
         return None, False
     try:
-        r = bounded_run.completed(smoke_warm.inspect_argv(), capture_output=True, text=True)
+        r = bounded_run.completed(smoke_warm.inspect_argv(target), capture_output=True, text=True)
     except OSError:
         return None, False
     return smoke_warm.parse_inspect(r.stdout), smoke_warm.docker_answered(r.returncode, r.stderr)
 
 
-def _smoke_postgres_wait_ready(attempts: int = 30) -> None:
+def _port_free(port: int) -> bool:
+    """Edge. Whether this process could bind the warm server's loopback port, which is what `docker run` will try."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind((smoke_warm.HOST, port))
+        except OSError:
+            return False
+    return True
+
+
+def _smoke_postgres_wait_ready(target: smoke_warm.Target, attempts: int = 30) -> None:
     """Edge. Polls `pg_isready` once a second; gives up quietly, the row then reports what docker shows."""
     for _ in range(attempts):
-        if bounded_run.completed(smoke_warm.ready_argv(), capture_output=True, text=True).returncode == 0:
+        if bounded_run.completed(smoke_warm.ready_argv(target), capture_output=True, text=True).returncode == 0:
             return
         time.sleep(1)
 
 
+def _smoke_postgres_step(argv: list[str], out) -> int:
+    """Edge. One docker command, its exit and docker's first error line printed to `out`."""
+    done = bounded_run.completed(argv, capture_output=True, text=True)
+    reason = (done.stderr or "").strip().splitlines()[:1]
+    print(f"{smoke_warm.ROW}: {' '.join(argv[:2])}: exit {done.returncode} {' '.join(reason)}".rstrip(), file=out)
+    return done.returncode
+
+
 def _doctor_smoke_postgres_rows(*, fix: bool, out) -> list[dict]:
     """Edge. The `smoke postgres` row. Without `fix` it only reports. With `fix` it runs the docker commands the
-    pure core names (start, create, unpause or replace), waits for readiness when they all succeeded, and reports the
-    container as it then stands. Skipped, with no docker command, where `smoke_warm.SKIP_ENV` is set."""
+    pure core names (start, create, unpause or replace) and stops at the first that fails. After a failed
+    `docker run` it removes the container that run left in `created`; when every command succeeded it waits for
+    readiness. Then it reports the container as it stands. Skipped, with no docker command, where
+    `smoke_warm.SKIP_ENV` is set."""
     if os.environ.get(smoke_warm.SKIP_ENV):
         return [smoke_warm.skipped_row()]
-    found, docker_ok = _smoke_postgres_facts()
-    steps = smoke_warm.fix_argvs(found) if fix and docker_ok else []
-    codes = []
-    for argv in steps:
-        done = bounded_run.completed(argv, capture_output=True, text=True)
-        codes.append(done.returncode)
-        reason = (done.stderr or "").strip().splitlines()[:1]
-        print(f"{smoke_warm.ROW}: {' '.join(argv[:2])}: exit {done.returncode} {' '.join(reason)}".rstrip(), file=out)
+    target = smoke_warm.target_from(os.environ)
+    if isinstance(target, str):
+        return [smoke_warm.refused_row(target)]
+    found, docker_ok = _smoke_postgres_facts(target)
+    port_free = _port_free(target.port)
+    steps = smoke_warm.fix_argvs(found, target, port_free=port_free) if fix and docker_ok else []
+    failed = next((argv for argv in steps if _smoke_postgres_step(argv, out) != 0), None)
+    if failed is not None and failed[:2] == ["docker", "run"]:
+        for argv in smoke_warm.cleanup_argvs(_smoke_postgres_facts(target)[0], target):
+            _smoke_postgres_step(argv, out)
     if steps:
-        if not any(codes):
-            _smoke_postgres_wait_ready()
-        found, docker_ok = _smoke_postgres_facts()
-    return [smoke_warm.build_row(found, docker_ok)]
+        if failed is None:
+            _smoke_postgres_wait_ready(target)
+        found, docker_ok = _smoke_postgres_facts(target)
+        port_free = _port_free(target.port)
+    return [smoke_warm.build_row(found, docker_ok, target, port_free=port_free)]
 
 
 _LANE_PROBE_TIMEOUT_S = 60.0

@@ -52,9 +52,6 @@ COMMAND_TIMEOUT_S = 600
 # This session's id, on the label of the container it starts: `docker ps --filter label=coxswain-smoke.session=<id>`
 # finds it. Printed in the report header. The suite runs serial, so a run is one session.
 SESSION = uuid.uuid4().hex[:12]
-# When this session started (epoch seconds): in every database name it creates, so a later session on the same server
-# reaps by age the databases a killed session left behind.
-SESSION_STARTED = int(time.time())
 
 
 def pytest_report_header() -> str:
@@ -177,15 +174,27 @@ def _ready_port(container: str) -> int:
     return plan.parse_published_port(_must(plan.docker_port_argv(container)).stdout)
 
 
+def _answers(url: str) -> bool:
+    """Whether something accepts a TCP connection at the URL's host and port. Who answers is the doctor's check."""
+    try:
+        with socket.create_connection(plan.url_address(url), timeout=2):
+            return True
+    except OSError:
+        return False
+
+
 @pytest.fixture(scope="session")
 def postgres() -> Iterator[str]:
     """The URL of the session's Postgres server: the one `COX_SMOKE_POSTGRES_URL` names, else a container started here
-    and removed at the end of the session."""
+    and removed at the end of the session. The warm server's URL (`plan.WARM_URL`) falling silent falls back to a
+    container; any other URL that does not answer fails the run (`plan.postgres_source`)."""
     docker = shutil.which("docker")
     url = os.environ.get(plan.URL_ENV)
     broken_ok = plan.is_required(os.environ.get(plan.BROKEN_DOCKER_OK_ENV))
-    docker_ok = url is None and _docker_ok(docker)
-    decision = plan.postgres_source(url, docker, docker_ok, required=_required(), broken_docker_ok=broken_ok)
+    reachable = bool(url) and plan.loopback_refusal(url) is None and _answers(url)
+    docker_ok = plan.needs_container(url, reachable) and _docker_ok(docker)
+    decision = plan.postgres_source(url, docker, docker_ok, required=_required(), broken_docker_ok=broken_ok,
+                                    reachable=reachable)
     if isinstance(decision, plan.Skip | plan.Fail):
         _unavailable(decision)
     if isinstance(decision, plan.UseUrl):
@@ -201,15 +210,24 @@ def postgres() -> Iterator[str]:
 
 
 _ADMIN = """import sys, psycopg
-url, verb, name = sys.argv[1:4]
+from psycopg import errors, sql
+url, verb, *names = sys.argv[1:]
 with psycopg.connect(url, autocommit=True) as conn:
-    if verb == "list":  # `name` is a LIKE pattern here
-        for (datname,) in conn.execute("SELECT datname FROM pg_database WHERE datname LIKE %s", (name,)):
+    if verb == "list":  # `names` is one LIKE pattern here
+        for (datname,) in conn.execute("SELECT datname FROM pg_database WHERE datname LIKE %s", (names[0],)):
             print(datname)
+    elif verb == "reap":  # no FORCE: Postgres refuses to drop a database someone is connected to, so a live one stays
+        for name in names:
+            try:
+                conn.execute(sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(name)))
+            except errors.ObjectInUse:
+                continue
+            print(name)
     else:
-        conn.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
-        if verb == "create":
-            conn.execute(f'CREATE DATABASE "{name}"')
+        for name in names:
+            conn.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(name)))
+            if verb == "create":
+                conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
 """
 
 
@@ -221,31 +239,29 @@ class SessionDatabases:
     server: str
     install: Install
 
-    def _admin(self, verb: str, name: str, *, must: bool) -> subprocess.CompletedProcess[str]:
-        argv = [str(self.install.python), "-c", _ADMIN, self.server, verb, name]
+    def _admin(self, verb: str, *names: str, must: bool) -> subprocess.CompletedProcess[str]:
+        argv = [str(self.install.python), "-c", _ADMIN, self.server, verb, *names]
         return (_must if must else _run)(argv, env=self.install.env, cwd=self.install.root)
 
     def create(self, name: str) -> None:
         self._admin("create", name, must=True)
 
-    def drop(self, name: str) -> None:
-        self._admin("drop", name, must=False)
+    def drop(self, *names: str) -> None:
+        if names:
+            self._admin("drop", *names, must=False)
 
     def names(self) -> list[str]:
         """Every `smoke_` database on the server."""
         return self._admin("list", r"smoke\_%", must=True).stdout.split()
 
     def reap(self) -> list[str]:
-        """Drop the databases whose session started more than `plan.STALE_AFTER_S` ago; return their names."""
+        """Drop the databases created more than `plan.STALE_AFTER_S` ago that nobody is connected to; return the names
+        it dropped. A killed session's connections are gone with it, so its databases go; a live one's stay."""
         stale = plan.stale_databases(self.names(), int(time.time()))
-        for name in stale:
-            self.drop(name)
-        return stale
+        return self._admin("reap", *stale, must=True).stdout.split() if stale else []
 
     def drop_prefix(self, prefix: str) -> None:
-        for name in self.names():
-            if name.startswith(prefix):
-                self.drop(name)
+        self.drop(*(name for name in self.names() if name.startswith(prefix)))
 
 
 @pytest.fixture(scope="session")
@@ -258,20 +274,20 @@ def session_databases(postgres: str, install: Install) -> Iterator[SessionDataba
     try:
         yield databases
     finally:
-        databases.drop_prefix(plan.session_prefix(SESSION, SESSION_STARTED))
+        databases.drop_prefix(plan.session_prefix(SESSION))
 
 
 @pytest.fixture
 def store_url(postgres: str, session_databases: SessionDatabases, request: pytest.FixtureRequest) -> Iterator[str]:
     """A fresh database for one test, at the newest schema. The harness's own store CLI opens it first, which is
-    what applies the migrations (`harness.store_migrate.open_store`). Its name starts with this session's id and start
-    time, so another session sharing the server never drops it."""
+    what applies the migrations (`harness.store_migrate.open_store`). Its name starts with this session's id and its own
+    creation time, so another session sharing the server never drops it while it is young or in use."""
     if PG_DUMP is None:
         pytest.fail("pg_dump is not on PATH: the harness backs up every store it migrates with pg_dump, and each smoke "
                     "database is migrated when it opens. Install the PostgreSQL client tools and put pg_dump on PATH.",
                     pytrace=False)
     install = session_databases.install
-    name = plan.database_name(request.node.nodeid, SESSION, SESSION_STARTED)
+    name = plan.database_name(request.node.nodeid, SESSION, int(time.time()))
     session_databases.create(name)
     url = plan.with_database(postgres, name)
     try:

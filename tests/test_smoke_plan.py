@@ -32,6 +32,31 @@ def test_an_environment_url_off_loopback_or_not_postgres_fails_even_when_not_req
     assert plan.URL_ENV in decision.reason
 
 
+def test_the_warm_url_falls_back_to_a_container_when_it_does_not_answer():
+    assert plan.postgres_source(plan.WARM_URL, "/usr/bin/docker", True, required=True, reachable=False) == plan.StartContainer()
+    no_docker = plan.postgres_source(plan.WARM_URL, None, False, required=False, reachable=False)
+    assert isinstance(no_docker, plan.Skip) and "warm server" in no_docker.reason
+    assert plan.postgres_source(plan.WARM_URL, None, False, required=True, reachable=True) == plan.UseUrl(plan.WARM_URL)
+
+
+def test_an_explicit_url_that_does_not_answer_fails():
+    url = "postgresql://postgres:pw@127.0.0.1:5432/postgres"
+    decision = plan.postgres_source(url, "/usr/bin/docker", True, required=False, reachable=False)
+    assert isinstance(decision, plan.Fail) and plan.URL_ENV in decision.reason
+
+
+def test_only_no_url_or_a_silent_warm_url_needs_a_container():
+    assert plan.needs_container(None, False)
+    assert plan.needs_container(plan.WARM_URL, False)
+    assert not plan.needs_container(plan.WARM_URL, True)
+    assert not plan.needs_container("postgresql://u@localhost/db", False)
+
+
+def test_url_address():
+    assert plan.url_address(plan.WARM_URL) == ("127.0.0.1", 55432)
+    assert plan.url_address("postgresql://u@localhost/db") == ("localhost", 5432)
+
+
 def test_without_a_url_docker_decides():
     assert plan.postgres_source(None, "/usr/bin/docker", True, required=False) == plan.StartContainer()
     assert isinstance(plan.postgres_source(None, None, False, required=False), plan.Skip)
@@ -121,40 +146,41 @@ def test_urls():
 
 
 SESSION_ID = "0123456789ab"
-STARTED = 1_700_000_000
+CREATED = 1_700_000_000
 
 
 def test_database_names_are_valid_and_distinct():
     long_id = "smoke/test_contract_route_edit.py::test_" + "x" * 200
     same_stem = ("smoke/test_a_long_shared_prefix.py::test_one", "smoke/test_a_long_shared_prefix.py::test_two")
-    names = {plan.database_name(i, SESSION_ID, STARTED) for i in ("a::b", "a::c", "A::B[x-y]", long_id, *same_stem)}
+    names = {plan.database_name(i, SESSION_ID, CREATED) for i in ("a::b", "a::c", "A::B[x-y]", long_id, *same_stem)}
     assert len(names) == 6
     for name in names:
         assert len(name) <= 63
-        assert name.startswith(plan.session_prefix(SESSION_ID, STARTED))
+        assert name.startswith(plan.session_prefix(SESSION_ID))
         assert name.replace("_", "").isalnum() and name == name.lower()
 
 
 def test_database_names_differ_by_session():
-    assert plan.database_name("a::b", SESSION_ID, STARTED) != plan.database_name("a::b", "ba9876543210", STARTED)
-    assert plan.database_name("a::b", SESSION_ID, STARTED) != plan.database_name("a::b", SESSION_ID, STARTED + 1)
+    assert plan.database_name("a::b", SESSION_ID, CREATED) != plan.database_name("a::b", "ba9876543210", CREATED)
+    assert plan.database_name("a::b", SESSION_ID, CREATED) != plan.database_name("a::b", SESSION_ID, CREATED + 1)
 
 
-def test_session_prefix():
-    assert plan.session_prefix(SESSION_ID, STARTED) == "smoke_0123456789ab_1700000000_"
+def test_a_database_name_carries_the_session_then_its_own_creation_time():
+    assert plan.session_prefix(SESSION_ID) == "smoke_0123456789ab_"
+    assert plan.database_name("a::b", SESSION_ID, CREATED).startswith("smoke_0123456789ab_1700000000_")
 
 
 def test_stale_databases_returns_only_names_older_than_the_limit():
-    now = STARTED + 3 * 60 * 60
-    old = plan.database_name("a::b", SESSION_ID, STARTED)
+    now = CREATED + 3 * 60 * 60
+    old = plan.database_name("a::b", SESSION_ID, CREATED)
     fresh = plan.database_name("a::b", "ba9876543210", now - 60)
     assert plan.stale_databases([old, fresh], now) == [old]
     assert plan.stale_databases([old, fresh], now, stale_after=30) == [old, fresh]
-    assert plan.stale_databases([old], STARTED + plan.STALE_AFTER_S) == []
+    assert plan.stale_databases([old], CREATED + plan.STALE_AFTER_S) == []
 
 
 def test_stale_databases_leaves_names_it_cannot_read_alone():
-    now = STARTED + 10 * 60 * 60
+    now = CREATED + 10 * 60 * 60
     unreadable = ["postgres", "smoke_x", "smoke_0123_1_a", "smoke_0123456789ab_soon_a", "smoke_0123456789AB_1_a", "other_0123456789ab_1_a"]
     assert plan.stale_databases(unreadable, now) == []
 
@@ -279,6 +305,14 @@ def _warm_literal(name: str) -> str:
 
 def test_the_warm_postgres_image_is_the_suites_image():
     assert _warm_literal("IMAGE") == plan.POSTGRES_IMAGE
+
+
+def test_the_warm_url_is_the_one_the_doctor_gives():
+    source = (Path(__file__).resolve().parent.parent / "src/tools/agent_tools/smoke_warm.py").read_text()
+    port = re.search(r"^PORT = (\d+)$", source, re.MULTILINE)
+    assert port is not None
+    doctors = f"postgresql://{_warm_literal('USER')}:{_warm_literal('PASSWORD')}@{_warm_literal('HOST')}:{port.group(1)}/postgres"
+    assert doctors == plan.WARM_URL
 
 
 def test_the_warm_postgres_label_is_not_one_the_reaper_lists_by():

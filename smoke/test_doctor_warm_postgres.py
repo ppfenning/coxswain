@@ -1,31 +1,47 @@
 """`smoke postgres`: the doctor's advisory row for the warm smoke Postgres (its judgement has unit tests in
-src/tools/tests/test_smoke_warm.py). The report-only test runs wherever the suite runs. The `--fix` test runs the real
-docker commands, so it needs a docker that answers and skips with that reason where it does not."""
+src/tools/tests/test_smoke_warm.py).
+
+Every test here aims the doctor at a throwaway container name and a port the test picked itself
+(`COX_SMOKE_WARM_CONTAINER`, `COX_SMOKE_WARM_PORT`). The real warm container lives on tmpfs, and stopping it would drop
+every database on it, including ones other lanes and this session's own workers are using, so no test here reads,
+stops or removes it. The `--fix` test runs the real docker commands, so it needs a docker that answers and skips with
+that reason where it does not."""
 
 import json
 import shutil
+import socket
 import subprocess
+import uuid
 
 import pytest
 
-CONTAINER = "coxswain-smoke-warm-postgres"
 PINNED = "server up on the pinned image"
+WARM_LABEL = "coxswain-smoke-warm=1"
 
 
 def _docker(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["docker", *args], capture_output=True, text=True, timeout=300, check=False)
 
 
-def _state() -> tuple[str, str] | None:
-    """The warm container's (status, image ref) on the host's docker, or None when there is none."""
-    done = _docker("inspect", "--format", "{{.State.Status}} {{.Config.Image}}", CONTAINER)
-    return tuple(done.stdout.split(maxsplit=1)) if done.returncode == 0 else None
+def _free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
 
 
-def _row(sandbox, *flags: str, env=None) -> dict:
+@pytest.fixture
+def throwaway():
+    """A container name no one else uses and a free loopback port; whatever the doctor made under that name goes."""
+    name = f"coxswain-smoke-warm-test-{uuid.uuid4().hex[:12]}"
+    yield name, _free_port()
+    if shutil.which("docker"):
+        _docker("rm", "--force", name)
+
+
+def _row(sandbox, env, *flags: str) -> dict:
     done = subprocess.run(
         [str(sandbox.install.cox), "setup", "doctor", *flags, "--json"],
-        env=env or sandbox.env, cwd=sandbox.home, capture_output=True, text=True, timeout=600, check=False,
+        env=env, cwd=sandbox.home, capture_output=True, text=True, timeout=600, check=False,
     )
     # The doctor's exit code follows its other rows, which a sandbox may fail; stdout is the JSON alone either way.
     row = {row["check"]: row for row in json.loads(done.stdout)["rows"]}["smoke postgres"]
@@ -33,39 +49,43 @@ def _row(sandbox, *flags: str, env=None) -> dict:
     return {**row, "stderr": done.stderr}
 
 
-def test_the_doctor_reports_the_warm_smoke_postgres(sandbox):
-    row = _row(sandbox)
+def _env(sandbox, name: str, port: int, docker_host: str | None = None) -> dict:
+    env = {**sandbox.env, "COX_SMOKE_WARM_CONTAINER": name, "COX_SMOKE_WARM_PORT": str(port)}
+    return {**env, "DOCKER_HOST": docker_host} if docker_host else env
+
+
+def test_the_doctor_reports_an_absent_container_without_starting_it(sandbox, throwaway):
+    name, port = throwaway
+    row = _row(sandbox, _env(sandbox, name, port))
     assert row["ok"] is True
-    # Which state it is depends on the host's docker; each one names its next step or the fallback.
-    assert any(
-        row["detail"].startswith(start)
-        for start in ("server up on the pinned image", "present", "absent", "docker is not available", "docker's answer")
-    ), row["detail"]
+    assert row["detail"].startswith(("absent", "docker is not available")), row["detail"]
 
 
-def test_fix_brings_the_warm_container_up_on_the_pinned_image_and_puts_it_back(sandbox):
+def test_fix_waits_for_a_held_port_then_brings_the_container_up(sandbox, throwaway):
     if shutil.which("docker") is None or _docker("info").returncode != 0:
-        pytest.skip("docker does not answer on this host, so the warm container cannot be started")
+        pytest.skip("docker does not answer on this host, so the throwaway container cannot be started")
+    name, port = throwaway
     # The sandbox drops DOCKER_HOST, and a desktop docker's socket is named by its context, not /var/run/docker.sock.
     endpoint = _docker("context", "inspect", "--format", "{{.Endpoints.docker.Host}}").stdout.strip()
-    env = {**sandbox.env, "DOCKER_HOST": endpoint} if endpoint else sandbox.env
-    before = _state()
-    if before is not None and before[0] == "running":
-        assert _docker("stop", CONTAINER).returncode == 0
-    elif before is not None and not before[1].startswith("postgres:16@sha256:"):
-        pytest.skip(f"the host's {CONTAINER} runs {before[1]}, not the pinned image; the test will not replace it")
-    try:
-        report = _row(sandbox, env=env)
-        assert "`cox setup doctor --fix`" in report["detail"], (report["detail"], report["stderr"])
-        fixed = _row(sandbox, "--fix", env=env)
-        assert fixed["ok"] is True
-        assert fixed["detail"].startswith(PINNED), (fixed["detail"], fixed["stderr"])
-        assert _state()[0] == "running"
-    finally:
-        # Leave the host as found: a container that was running runs again, a stopped one is stopped, an absent one is gone.
-        if before is None:
-            _docker("rm", "--force", CONTAINER)
-        elif before[0] == "running":
-            _docker("start", CONTAINER)
-        else:
-            _docker("stop", CONTAINER)
+    env = _env(sandbox, name, port, endpoint or None)
+
+    with socket.socket() as squatter:
+        squatter.bind(("127.0.0.1", port))
+        squatter.listen()
+        held = _row(sandbox, env, "--fix")
+    assert held["detail"].startswith(f"port 127.0.0.1:{port} is held by something else"), (held["detail"], held["stderr"])
+    assert _docker("inspect", name).returncode != 0, "the doctor created a container while the port was held"
+
+    fixed = _row(sandbox, env, "--fix")
+    assert fixed["ok"] is True
+    assert fixed["detail"] == (
+        f"{PINNED}; set COX_SMOKE_POSTGRES_URL=postgresql://postgres:smoke@127.0.0.1:{port}/postgres "
+        "in the worker's unit environment"
+    ), (fixed["detail"], fixed["stderr"])
+    state = _docker("inspect", "--format", '{{.State.Status}} {{index .Config.Labels "coxswain-smoke-warm"}}', name)
+    assert state.stdout.split() == ["running", WARM_LABEL.partition("=")[2]]
+
+    # Idempotent: a second --fix runs no docker command and reads the same.
+    again = _row(sandbox, env, "--fix")
+    assert again["detail"] == fixed["detail"]
+    assert "smoke postgres: docker" not in again["stderr"]

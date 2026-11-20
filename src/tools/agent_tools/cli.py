@@ -1402,7 +1402,7 @@ SETUP_COMMANDS = [
             commands.Arg(("--repo",), {"help": "target repo to check for a .agent/cartridge.yaml overlay (default: cwd)"}),
             commands.Arg(("--json",), {"action": "store_true"}),
             commands.Arg(("--host",), {"help": "run the doctor on this lane host from lane_hosts; --json is ignored"}),
-            commands.Arg(("--fix",), {"action": "store_true", "help": "move damaged log lines to a .damaged file beside the log, then check again"}),
+            commands.Arg(("--fix",), {"action": "store_true", "help": "move damaged log lines to a .damaged file beside the log, start or create the warm smoke Postgres container where docker answers, then check again"}),
         ),
         "agent_tools.cli:_setup_doctor_row", False, (),
     ),
