@@ -71,8 +71,13 @@ It gets nothing on the land queue, the leases, the chair's tables or any table a
 The login role and its password go into the units' environment file, mode 600, under `COX_WORKER_STORE_ROLE` and `COX_WORKER_STORE_PASSWORD`.
 They never go into the provider profile, because every run's folder gets a copy of it. The password is never printed.
 
+The password reaches Postgres only as its SCRAM-SHA-256 verifier, so the server's statement log never holds it.
+
 Running the command again is safe. It keeps the password the file holds and leaves the grants exactly as listed: a grant added by hand is taken away, and a changed list is applied.
+It also resets both roles: superuser, createrole, createdb, bypassrls and replication off, every direct grant revoked, and every membership but `cox_worker` revoked.
 Run it again after a migration that adds a table a worker writes.
+
+On Postgres before 15, everyone may create tables in the `public` schema, and no grant to the worker takes that away. The doctor row then fails and says so. Run `REVOKE CREATE ON SCHEMA public FROM PUBLIC` as the owner, or pass `--revoke-public-create` to this command.
 
 A worker opens the store without migrating it. It refuses a store older than its code, or newer by a migration that is not additive.
 
