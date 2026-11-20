@@ -56,32 +56,35 @@ def test_the_pull_runs_before_the_cli_reference_and_the_deploy():
 
 def test_every_ci_pytest_step_runs_in_parallel():
     steps = _pytest_steps(yaml.safe_load(CI.read_text()))
-    assert len(steps) == 11
+    assert len(steps) == 8  # unit (one step per suite, through the matrix), smoke x2, py315 x4, extras
     missing = _missing_xdist(steps)
     assert not missing, "pytest steps without -n auto:\n" + "\n".join(missing)
 
 
-def test_every_pytest_step_in_the_test_job_is_named_after_its_suite():
-    """The land's rerun rule parses `pytest <suite>` from the check run name."""
-    steps = yaml.safe_load(CI.read_text())["jobs"]["test"]["steps"]
-    pytest_steps = [step for step in steps if step.get("run", "").startswith("uv run pytest") and step["run"] not in _SMOKES]
-    matches = [re.fullmatch(r"pytest (root|tools|graphs|cartridges)", step.get("name", "")) for step in pytest_steps]
-    assert len(pytest_steps) == 4 and all(matches)
-    assert {match.group(1) for match in matches} == {"root", "tools", "graphs", "cartridges"}
+def test_every_unit_pytest_step_is_named_after_its_suite():
+    """The land's rerun rule parses `pytest <suite>` from the failed step's name (land._suite_of)."""
+    job = yaml.safe_load(CI.read_text())["jobs"]["unit"]
+    (step,) = [step for step in job["steps"] if step.get("run", "").startswith("uv run pytest")]
+    assert step["name"] == "pytest ${{ matrix.suite }}" and step["working-directory"] == "${{ matrix.dir }}"
+    suites = {entry["suite"]: entry["dir"] for entry in job["strategy"]["matrix"]["include"]}
+    assert suites == {"root": ".", "tools": "src/tools", "graphs": "src/graphs", "cartridges": "src/cartridges"}
+    assert all(re.fullmatch(r"pytest (root|tools|graphs|cartridges)", f"pytest {suite}") for suite in suites)
 
 
-def test_the_required_test_job_runs_the_smoke_suite_against_its_own_postgres():
-    """`test` is the one required check, so the smoke suite runs there, required to run rather than skip (H10)."""
-    job = yaml.safe_load(CI.read_text())["jobs"]["test"]
-    (smoke,) = [step for step in job["steps"] if step.get("run") == _SMOKE]
+def test_the_smoke_jobs_run_against_their_own_postgres_behind_the_required_check():
+    """`test` is the one required check and needs both smoke jobs, each required to run rather than skip (H10)."""
+    ci = yaml.safe_load(CI.read_text())
+    assert {"smoke", "smoke-forge"} <= set(ci["jobs"]["test"]["needs"])
+    (smoke,) = [step for step in ci["jobs"]["smoke"]["steps"] if step.get("run") == _SMOKE]
     assert smoke["name"] == "smoke"
     assert smoke["env"]["COX_SMOKE_REQUIRED"] == "1"
     assert "job.services.postgres.ports['5432']" in smoke["env"]["COX_SMOKE_POSTGRES_URL"]
-    # the forge tests, in a required step of their own, with the same Postgres and the same refusal to skip
-    (forge,) = [step for step in job["steps"] if step.get("run") == _SMOKE_FORGE]
+    # the forge tests, in a job of their own, with the same Postgres settings and the same refusal to skip
+    (forge,) = [step for step in ci["jobs"]["smoke-forge"]["steps"] if step.get("run") == _SMOKE_FORGE]
     assert forge["name"] == "smoke (forge)" and forge["env"] == smoke["env"]
     # pinned by digest, the same image the suite's own container fixture runs
-    assert job["services"]["postgres"]["image"] == plan.POSTGRES_IMAGE
+    for name in ("smoke", "smoke-forge"):
+        assert ci["jobs"][name]["services"]["postgres"]["image"] == plan.POSTGRES_IMAGE
     assert "@sha256:" in plan.POSTGRES_IMAGE
 
 

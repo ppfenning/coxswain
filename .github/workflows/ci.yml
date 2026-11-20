@@ -52,7 +52,9 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with: { python-version: "3.14", enable-cache: true }
       - run: uv sync --group dev
-      - run: uv run pytest -q -n auto
+      # Named `pytest <suite>`: the land's rerun rule reads the failed suite from the step name (land._suite_of).
+      - name: pytest ${{ matrix.suite }}
+        run: uv run pytest -q -n auto
         working-directory: ${{ matrix.dir }}
 
   smoke:
