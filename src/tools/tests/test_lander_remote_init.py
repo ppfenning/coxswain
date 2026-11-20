@@ -369,6 +369,14 @@ def lander_merges(hosts: Hosts, phase: str) -> lander.Outcome:
     return lander.perform(hosts.ports, queue(hosts, phase))
 
 
+def lane_merged_empty(hosts: Hosts, phase: str) -> None:
+    """A phase with nothing on its branch recorded merged, as a build run on the lane merged it and pushed it. The
+    lander itself refuses such a phase (`lander_empty`); a record made before that, or by a run, still carries one."""
+    assert hosts.lane_merges(phase).status == "merged"
+    run(hosts.lane, "push", "-q", "origin", "init/i")
+    run(hosts.home, "fetch", "-q", "origin", "init/i:init/i")  # the lander's copy, as its adopt would have made it
+
+
 def origin_tip(hosts: Hosts) -> str:
     return run(hosts.origin, "rev-parse", "refs/heads/init/i")
 
@@ -419,7 +427,7 @@ def test_a_phase_recorded_merged_while_empty_and_rebuilt_on_origin_is_merged_aga
     run(hosts.lane, "branch", p1, "init/i")
     run(hosts.lane, "push", "-q", "origin", p1)
     hosts.rows[0]["state"] = "approved"
-    assert lander_merges(hosts, "p1").status == "done"
+    lane_merged_empty(hosts, "p1")
     assert run(hosts.home, "diff", "--stat", "origin/main", "refs/heads/init/i") == "", "recorded merged, and empty"
     rebuilt = commit(hosts.lane, p1, "p1.txt", "the real change\n")
     run(hosts.lane, "push", "-q", "origin", p1)
@@ -442,7 +450,7 @@ def test_a_rebuilt_phase_whose_merge_conflicts_holds_the_initiative_and_tells_th
     run(hosts.lane, "branch", p1, "init/i")
     run(hosts.lane, "push", "-q", "origin", p1)
     hosts.rows[0]["state"] = "approved"
-    assert lander_merges(hosts, "p1").status == "done"
+    lane_merged_empty(hosts, "p1")
     hosts.lane_builds("p2")
     assert lander_merges(hosts, "p2").status == "done"
     commit(hosts.lane, p1, "p2.txt", "p1's own idea of p2.txt\n")  # the rebuild writes the file p2 wrote
