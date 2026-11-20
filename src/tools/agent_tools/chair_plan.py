@@ -175,7 +175,7 @@ def _stuck_homes(actions: list[Action], launch_at: list[int], home: Mapping[str,
         chair_login_watch.login_blocked(login_hosts)
         | _drained_hosts(login_hosts)
         | _unreachable_hosts(login_hosts)
-        | lane_prereqs.lane_blocked(login_hosts).keys()
+        | lane_prereqs.gated(lane_prereqs.lane_stuck(login_hosts), _lane_gate(facts)).keys()
     )
     lost = frozenset(facts.get("lost_runs", {}))
     decompose_only = facts.get("dispatch", {}).get("local_lanes") == "decompose"
@@ -582,6 +582,11 @@ def _unstarted_waiting_chair(initiatives: list[InitiativeFacts]) -> list[Action]
     ]
 
 
+def _lane_gate(facts: Facts) -> bool:
+    """Whether the lane-host prerequisite gate is on: the dispatch's `lane_prereqs`, on when absent."""
+    return facts.get("dispatch", {}).get("lane_prereqs", True) is not False
+
+
 def _login_needs_chair_actions(facts: Facts, now: datetime | None) -> list[Action]:
     """Login-lapsed, host-unreachable and lane-prerequisite notices; host_back needs the tick's clock and is absent
     without it."""
@@ -590,7 +595,7 @@ def _login_needs_chair_actions(facts: Facts, now: datetime | None) -> list[Actio
     return [
         *chair_login_watch.login_needs_chair(login_hosts),
         *chair_login_watch.host_unreachable_needs_chair(login_hosts),
-        *lane_prereqs.lane_needs_chair(login_hosts),
+        *(lane_prereqs.lane_needs_chair(login_hosts) if _lane_gate(facts) else []),
         *back,
     ]
 

@@ -6,12 +6,15 @@ keychain credential helper failing in an unattended session, `pg_dump` off the P
 and a stale checkout (the last is `checkout_env`'s). Each cost a build and a review before the smoke gate failed in
 fixture setup. The checks here name those gaps before the chair places a lane, so the host is skipped instead.
 
-The probe is one POSIX sh script of shell builtins and `command -v`, so it needs no cox of any version on the host and
-reads the PATH the lane would. It never pulls and never writes: an absent image is judged pullable by asking the
-credential helper `docker pull` would ask, so running it twice changes nothing.
+The probe is one POSIX sh script, so it needs no cox of any version on the host and reads the PATH the lane would. It
+never pulls and never writes: an absent image is judged pullable by asking the credential helper `docker pull` would
+ask, so running it twice changes nothing. Every command it runs has its own time limit (`LIMITS_S`), well inside the
+lane-host ssh bound, so a hung Docker Desktop is a failing row naming the wait, never a probe the ssh call cut off.
 
-Room to work is checked too: free space on /tmp (and on $TMPDIR when the lane sets one) and available memory. A
-host short on either gets no lane, but keeps its capabilities: they say what it can run, not whether it has room now.
+Two kinds of check. Prerequisites (docker, the images, pg_dump, gh, a readable probe) are lasting: one failure blocks
+placement and moves homed work. Room (temp headroom, available memory) dips and recovers: it blocks placement only
+after `ROOM_BLOCK_AFTER` failing checks in a row and never moves homed work. A host short on room keeps its
+capabilities: they say what it can run, not whether it has room now.
 
 `capabilities` turns the rows into the tokens a host may advertise; `docker` only when every check it needs passes.
 """
@@ -23,40 +26,64 @@ from dataclasses import dataclass
 
 from agent_tools.chair_login_watch import is_unreachable_reply, versions_of
 from agent_tools.chair_types import Action, ActionKind
-from agent_tools.remote_argv import login_shell_argv
+from agent_tools.remote_argv import LANE_HOST_TIMEOUT_S, login_shell_argv
 
 # The smoke suite's pinned images (smoke/plan.py, which the package cannot import); a test keeps the two equal.
 POSTGRES_IMAGE = "postgres:16@sha256:dd2bf3ce2dc83a81674cf7f217fcfd8a5009a4b325dda5b843bfee82a06cff6f"
 FORGEJO_IMAGE = "data.forgejo.org/forgejo/forgejo:11@sha256:946243edbab116d5bb78b73ea68af6f3d69229ba1b1ed958dd82c3481167f3e0"
 GARAGE_IMAGE = "dxflrs/garage:v2.1.0@sha256:4c9b34c113e61358466e83fd6e7d66e6d18657ede14b776eb78a93ee8da7cf6a"
 SMOKE_IMAGES = (POSTGRES_IMAGE, FORGEJO_IMAGE, GARAGE_IMAGE)
-# The store fixtures back a database up with pg_dump and the suite reads it with psql.
-CLIENT_TOOLS = ("pg_dump", "psql")
+# The store fixtures back a database up with pg_dump on the host (smoke/conftest.py); psql runs inside the container.
+CLIENT_TOOLS = ("pg_dump",)
 
 DOCKER_CAPABILITY = "docker"
 CAUSE = "lane_prereqs"
 OK_KEY, REASON_KEY, CAPABILITIES_KEY = "lane_ok", "lane_reason", "lane_capabilities"
+ROOM_OK_KEY, ROOM_REASON_KEY, ROOM_FAILURES_KEY = "room_ok", "room_reason", "room_failures"
+ROOM_BLOCK_AFTER = 2
 
 DOCKER_CHECK = "docker daemon"
 GH_CHECK = "gh"
 REACHABLE_CHECK = "host reachable"
 MEMORY_CHECK = "free memory"
+TMP_CHECK_PREFIX = "tmp headroom"
+PROBE_CHECK = "lane probe"
 # A lane's builds, test runs and containers need room. On 2026-11-20 a RAM-backed /tmp filled with several builds at
 # once and the machine rebooted; a host below either floor gets no lane until a later check finds room again.
 TMP_MIN_FREE_MB = 2048
 MEMORY_MIN_FREE_MB = 2048
-PROBE_CHECK = "lane probe"
+# Seconds each probed command may take: docker info; one image inspect; one credential helper get; anything else (gh,
+# df, the memory reading). A command that runs over is killed and reads as exit 124. One slow docker or helper call
+# stops the calls of its kind after it, so the worst case stays well inside the lane-host ssh bound.
+LIMITS_S = (6, 3, 3, 3)
+TIMED_OUT = 124
+assert LIMITS_S[0] + LIMITS_S[1] + LIMITS_S[2] + 3 * LIMITS_S[3] < LANE_HOST_TIMEOUT_S
 _MARK = "cox-lane-prereq"
 # One doctor row: `check`, `ok` and `detail`, the shape `doctor.checks` gives.
 Row = dict[str, object]
 _OUTPUT_CHARS = 160
 
-# Positional args: the client tools, `--`, then the images. Every line it prints starts with the marker, so a login
-# shell's startup noise around them is ignored. Only builtins and `command -v` run, apart from the probed tools.
+# Positional args: the four limits, the client tools, `--`, then the images. Every line it prints starts with the
+# marker, so a login shell's startup noise around them is ignored.
 _SCRIPT = r"""m=cox-lane-prereq
 nl='
 '
 first() { printf '%s' "${1%%"$nl"*}"; }
+# limited SECONDS CMD...: CMD under a watchdog; exit 124 when the watchdog had to kill it. A job started in the
+# background reads /dev/null unless stdin is redirected, so stdin goes over on fd 3 (a credential helper reads it).
+limited() {
+  _l_secs=$1; shift
+  exec 3<&0
+  "$@" <&3 3<&- &
+  _l_pid=$!
+  ( /bin/sleep "$_l_secs"; kill -9 "$_l_pid" ) >/dev/null 2>&1 3<&- &
+  _l_dog=$!
+  wait "$_l_pid"; _l_rc=$?
+  kill "$_l_dog" 2>/dev/null || return 124
+  return "$_l_rc"
+}
+docker_s=$1 image_s=$2 helper_s=$3 other_s=$4
+shift 4
 while [ "$#" -gt 0 ] && [ "$1" != -- ]; do
   printf '%s\ttool\t%s\t%s\n' "$m" "$1" "$(command -v "$1" 2>/dev/null)"
   shift
@@ -66,7 +93,7 @@ docker_path=$(command -v docker 2>/dev/null)
 docker_code=127
 docker_out=
 if [ -n "$docker_path" ]; then
-  docker_out=$("$docker_path" info --format '{{.ServerVersion}}' 2>&1)
+  docker_out=$(limited "$docker_s" "$docker_path" info --format '{{.ServerVersion}}' 2>&1)
   docker_code=$?
 fi
 printf '%s\tdocker\t%s\t%s\t%s\n' "$m" "$docker_code" "$docker_path" "$(first "$docker_out")"
@@ -82,17 +109,30 @@ fi
 helper=
 [ -n "$store" ] && helper=$(command -v "docker-credential-$store" 2>/dev/null)
 printf '%s\tcreds\t%s\t%s\n' "$m" "$store" "$helper"
+inspect_hung=
+helper_hung=
 for image in "$@"; do
-  if [ "$docker_code" -ne 0 ]; then
+  if [ "$docker_code" -ne 0 ] || [ -n "$inspect_hung" ]; then
     printf '%s\timage\tunchecked\t-\t%s\t\n' "$m" "$image"
     continue
   fi
-  if "$docker_path" image inspect --format '{{.Id}}' "$image" >/dev/null 2>&1; then
+  limited "$image_s" "$docker_path" image inspect --format '{{.Id}}' "$image" >/dev/null 2>&1
+  inspect_code=$?
+  if [ "$inspect_code" -eq 0 ]; then
     printf '%s\timage\tpresent\t-\t%s\t\n' "$m" "$image"
+    continue
+  fi
+  if [ "$inspect_code" -eq 124 ]; then
+    inspect_hung=1
+    printf '%s\timage\thung\t-\t%s\t\n' "$m" "$image"
     continue
   fi
   if [ -z "$store" ] || [ -z "$helper" ]; then
     printf '%s\timage\tabsent\t-\t%s\t\n' "$m" "$image"
+    continue
+  fi
+  if [ -n "$helper_hung" ]; then
+    printf '%s\timage\tabsent\t124\t%s\t\n' "$m" "$image"
     continue
   fi
   server=${image%%/*}
@@ -100,35 +140,33 @@ for image in "$@"; do
     */*) case "$server" in *.*|*:*|localhost) ;; *) server=https://index.docker.io/v1/ ;; esac ;;
     *) server=https://index.docker.io/v1/ ;;
   esac
-  helper_out=$(printf '%s' "$server" | "$helper" get 2>&1)
+  helper_out=$(printf '%s' "$server" | limited "$helper_s" "$helper" get 2>&1)
   helper_code=$?
+  [ "$helper_code" -eq 124 ] && helper_hung=1
   printf '%s\timage\tabsent\t%s\t%s\t%s\n' "$m" "$helper_code" "$image" "$(first "$helper_out")"
 done
 gh_path=$(command -v gh 2>/dev/null)
 gh_code=127
 gh_out=
 if [ -n "$gh_path" ]; then
-  gh_out=$("$gh_path" --version 2>&1)
+  gh_out=$(limited "$other_s" "$gh_path" --version 2>&1)
   gh_code=$?
 fi
 printf '%s\tgh\t%s\t%s\t%s\n' "$m" "$gh_code" "$gh_path" "$(first "$gh_out")"
-seen_tmp=
-for dir in /tmp ${TMPDIR:+"$TMPDIR"}; do
-  [ "$dir" = /tmp ] && [ -n "$seen_tmp" ] && continue
-  [ "$dir" = /tmp ] && seen_tmp=1
-  df_out=$(df -Pk "$dir" 2>/dev/null)
-  printf '%s\tspace\t%s\t%s\n' "$m" "$dir" "${df_out##*"$nl"}"
-done
-if [ -r /proc/meminfo ]; then
+dir=${TMPDIR:-/tmp}
+df_out=$(limited "$other_s" df -Pk "$dir" 2>/dev/null)
+printf '%s\tspace\t%s\t%s\n' "$m" "$dir" "${df_out##*"$nl"}"
+emit_mem() {
   while IFS= read -r line; do
-    case "$line" in MemAvailable:*) printf '%s\tmemline\t%s\n' "$m" "$line" ;; esac
-  done < /proc/meminfo
-elif vm_out=$(vm_stat 2>/dev/null); then
-  printf '%s\n' "$vm_out" | while IFS= read -r line; do
-    case "$line" in
-      *"page size of"*|"Pages free:"*|"Pages inactive:"*|"Pages speculative:"*) printf '%s\tmemline\t%s\n' "$m" "$line" ;;
-    esac
+    case "$line" in *"$1"*|*"$2"*) printf '%s\tmemline\t%s\n' "$m" "$line" ;; esac
   done
+}
+if command -v memory_pressure >/dev/null 2>&1; then
+  limited "$other_s" memory_pressure 2>/dev/null | emit_mem "The system has" "memory free percentage"
+elif command -v free >/dev/null 2>&1; then
+  limited "$other_s" free -k 2>/dev/null | emit_mem "available" "Mem:"
+elif [ -r /proc/meminfo ]; then
+  emit_mem "MemAvailable:" "MemAvailable:" < /proc/meminfo
 fi
 printf '%s\tend\n' "$m"
 """
@@ -145,8 +183,9 @@ class Ran:
 
 @dataclass(frozen=True)
 class Image:
-    """`state` is present, absent or unchecked (docker did not answer). An absent image carries the credential
-    helper's `get` exit code and first line, `helper_code` None when no helper was asked."""
+    """`state` is present, absent, hung (its inspect ran over its limit) or unchecked (docker did not answer, or an
+    earlier inspect hung). An absent image carries the credential helper's `get` exit code and first line,
+    `helper_code` None when no helper was asked."""
 
     image: str
     state: str
@@ -162,13 +201,13 @@ class Probe:
     helper_path: str
     images: tuple[Image, ...]
     gh: Ran
-    space: tuple[tuple[str, str], ...] = ()  # (directory, the last line `df -Pk` printed for it)
-    memory: tuple[str, ...] = ()  # the MemAvailable line of /proc/meminfo, or vm_stat's page lines on macOS
+    space: tuple[tuple[str, str], ...] = ()  # (the temp directory, the last line `df -Pk` printed for it)
+    memory: tuple[str, ...] = ()  # memory_pressure's, free's or /proc/meminfo's lines that carry the reading
 
 
 def script_argv(images: Sequence[str] = SMOKE_IMAGES, tools: Sequence[str] = CLIENT_TOOLS) -> list[str]:
     """The probe for this machine, under this process's PATH."""
-    return ["/bin/sh", "-c", _SCRIPT, "lane-prereqs", *tools, "--", *images]
+    return ["/bin/sh", "-c", _SCRIPT, "lane-prereqs", *(str(s) for s in LIMITS_S), *tools, "--", *images]
 
 
 def probe_argv(images: Sequence[str] = SMOKE_IMAGES, tools: Sequence[str] = CLIENT_TOOLS) -> list[str]:
@@ -229,6 +268,8 @@ def _cut(text: str) -> str:
 def docker_row(docker: Ran) -> Row:
     if not docker.path:
         return _row(DOCKER_CHECK, False, "no docker on the lane PATH: the smoke gate starts its fixtures with docker")
+    if docker.code == TIMED_OUT:
+        return _row(DOCKER_CHECK, False, f"docker did not answer within {LIMITS_S[0]}s; restart it")
     if docker.code != 0:
         return _row(DOCKER_CHECK, False, f"the docker daemon did not answer (exit {docker.code}): {_cut(docker.line)}; start it")
     return _row(DOCKER_CHECK, True, f"server {docker.line.strip()} via {docker.path}")
@@ -248,11 +289,16 @@ def image_row(image: Image, creds_store: str, helper_path: str) -> Row:
     check = image_check(image.image)
     if image.state == "present":
         return _row(check, True, "present in the local store")
+    if image.state == "hung":
+        return _row(check, False, f"docker did not answer within {LIMITS_S[1]}s (docker image inspect); restart it")
     if image.state == "unchecked":
-        return _row(check, False, "not checked: the docker daemon did not answer")
+        return _row(check, False, "not checked: docker did not answer")
     helper = f"docker-credential-{creds_store}"
     if creds_store and not helper_path:
         return _row(check, False, f"absent, and docker pull would fail: {helper} (credsStore) is not on the lane PATH")
+    if creds_store and image.helper_code == TIMED_OUT:
+        return _row(check, False, f"absent, and {helper} did not answer within {LIMITS_S[2]}s, as docker pull would "
+                                  "need it to; pull it once in a session that can reach the credential store")
     if creds_store and _helper_failed(image):
         return _row(check, False, f"absent, and docker pull would fail in {helper} (exit {image.helper_code}): "
                                   f"{_cut(image.line)}; pull it once in a session that can reach the credential store")
@@ -270,6 +316,8 @@ def gh_row(gh: Ran) -> Row:
     """A real gh answers `gh --version` with `gh version ...`; a version-manager shim with no version set does not."""
     if not gh.path:
         return _row(GH_CHECK, False, "not on the lane PATH")
+    if gh.code == TIMED_OUT:
+        return _row(GH_CHECK, False, f"{gh.path} did not answer `gh --version` within {LIMITS_S[3]}s")
     if gh.code != 0 or not gh.line.startswith("gh version"):
         return _row(GH_CHECK, False, f"{gh.path} is not a usable gh (exit {gh.code}): {_cut(gh.line)}")
     return _row(GH_CHECK, True, f"{gh.line.strip()} at {gh.path}")
@@ -282,7 +330,8 @@ def df_available_kb(line: str) -> int | None:
 
 
 def tmp_row(directory: str, df_line: str) -> Row:
-    check = f"tmp headroom {directory}"
+    """Headroom on the directory the lane's temp files go to: `$TMPDIR` when set, else /tmp."""
+    check = f"{TMP_CHECK_PREFIX} {directory}"
     free_kb = df_available_kb(df_line)
     if free_kb is None:
         return _row(check, False, f"not measured: df -Pk {directory} gave {_cut(df_line) or 'nothing'}")
@@ -293,23 +342,36 @@ def tmp_row(directory: str, df_line: str) -> Row:
     return _row(check, True, f"at least {TMP_MIN_FREE_MB} MiB free")
 
 
+def _first_int(text: str) -> int | None:
+    word = next((w for w in text.replace("%", " ").split() if w.isdigit()), None)
+    return int(word) if word is not None else None
+
+
 def available_memory_kb(lines: Sequence[str]) -> int | None:
-    """KiB available: `MemAvailable` from /proc/meminfo, else free, inactive and speculative pages from vm_stat."""
-    for line in lines:
-        if line.startswith("MemAvailable:"):
-            value = line.split()[1:2]
-            return int(value[0]) if value and value[0].isdigit() else None
-    page = next((line.split("page size of", 1)[1].split()[0] for line in lines if "page size of" in line), "")
-    pages = [line.split(":", 1)[1].strip().rstrip(".") for line in lines if line.startswith("Pages ")]
-    if not page.isdigit() or not pages or not all(p.isdigit() for p in pages):
-        return None
-    return sum(int(p) for p in pages) * int(page) // 1024
+    """KiB available, from whichever reading the probe found.
+
+    macOS: `memory_pressure`'s total (`The system has <bytes> (...)`) times its `System-wide memory free percentage`.
+    That percentage is the kernel's own (`kern.memorystatus_level`), the figure its pressure levels act on; it counts
+    free, purgeable, file-backed and compressible memory once each. Summing vm_stat's counters instead double counts:
+    file-backed pages are also inside its active and inactive counts.
+    Linux: the `available` column of `free -k` (found by its header), else `MemAvailable` from /proc/meminfo."""
+    total = next((_first_int(line.split("The system has", 1)[1]) for line in lines if "The system has" in line), None)
+    percent = next((_first_int(line.split(":", 1)[1]) for line in lines if "memory free percentage" in line), None)
+    if total is not None and percent is not None:
+        return total * percent // 100 // 1024
+    header = next((line.split() for line in lines if "available" in line.split()), None)
+    row = next((line.split() for line in lines if line.startswith("Mem:")), None)
+    if header is not None and row is not None and len(row) > header.index("available") + 1:
+        value = row[header.index("available") + 1]
+        return int(value) if value.isdigit() else None
+    meminfo = next((line.split()[1:2] for line in lines if line.startswith("MemAvailable:")), None)
+    return int(meminfo[0]) if meminfo and meminfo[0].isdigit() else None
 
 
 def memory_row(lines: Sequence[str]) -> Row:
     free_kb = available_memory_kb(lines)
     if free_kb is None:
-        return _row(MEMORY_CHECK, False, "not measured: no MemAvailable in /proc/meminfo and no vm_stat")
+        return _row(MEMORY_CHECK, False, "not measured: memory_pressure, free and /proc/meminfo gave no reading")
     free_mb = free_kb // 1024
     if free_mb < MEMORY_MIN_FREE_MB:
         return _row(MEMORY_CHECK, False, f"{free_mb} MiB available, under the {MEMORY_MIN_FREE_MB} MiB a lane needs")
@@ -319,13 +381,15 @@ def memory_row(lines: Sequence[str]) -> Row:
 def probe_rows(probe: Probe) -> list[Row]:
     images = [image_row(image, probe.creds_store, probe.helper_path) for image in probe.images]
     tools = [tool_row(name, path) for name, path in probe.tools.items()]
-    space = [tmp_row(directory, line) for directory, line in probe.space] or [tmp_row("/tmp", "")]
+    space = [tmp_row(directory, line) for directory, line in probe.space[:1]] or [tmp_row("/tmp", "")]
     return [docker_row(probe.docker), *images, *tools, gh_row(probe.gh), *space, memory_row(probe.memory)]
 
 
 def reply_rows(returncode: int, output: str, *, remote: bool) -> list[Row]:
-    """The rows for one run of the probe: one `host reachable` row first when `remote`, then the checks. An
-    unreachable reply has only the failing reachability row; an unreadable one fails as `lane probe`."""
+    """The rows for one run of the probe. With `remote`, a `host reachable` row comes first, and an unreachable reply
+    has only that failing row: the doctor's view. Without it (this machine, and the chair's login check, whose
+    readiness check already judged reachability) an unreachable, timed-out or unreadable reply is one failing
+    `lane probe` row: the host is blocked, and its reachability is left to the readiness check."""
     unreachable = remote and is_unreachable_reply(returncode, output)
     reach = [_row(REACHABLE_CHECK, not unreachable, _cut(output) if unreachable else "answered")] if remote else []
     if unreachable:
@@ -334,6 +398,20 @@ def reply_rows(returncode: int, output: str, *, remote: bool) -> list[Row]:
     if probe is None:
         return [*reach, _row(PROBE_CHECK, False, f"unreadable (exit {returncode}): {_cut(output)}")]
     return [*reach, *probe_rows(probe)]
+
+
+def is_room_row(row: Mapping[str, object]) -> bool:
+    """Temp headroom and available memory: conditions that dip and recover, judged apart from the prerequisites."""
+    check = str(row["check"])
+    return check == MEMORY_CHECK or check.startswith(TMP_CHECK_PREFIX)
+
+
+def is_lane_line(line: str) -> bool:
+    """Whether a printed doctor line is one of these rows (a table row or `row_line`) or the capabilities line."""
+    names = (DOCKER_CHECK, "smoke image", *CLIENT_TOOLS, GH_CHECK, TMP_CHECK_PREFIX, MEMORY_CHECK, PROBE_CHECK)
+    return line.startswith("lane capabilities:") or any(
+        line.startswith(name) and line[len(name):len(name) + 1] in (" ", ":") for name in names
+    )
 
 
 def capabilities(rows: Sequence[Mapping[str, object]]) -> frozenset[str]:
@@ -355,24 +433,60 @@ def row_line(row: Mapping[str, object]) -> str:
     return f"{row['check']:<16} ok ({row['detail']})" if row["ok"] is True else f"{row['check']}: {row['detail']}"
 
 
+def _count(versions: Mapping[str, object], key: str) -> int:
+    stored = versions.get(key)
+    return stored if isinstance(stored, int) and not isinstance(stored, bool) and stored > 0 else 0
+
+
 def merge_versions(versions: Mapping[str, object], rows: Sequence[Mapping[str, object]]) -> dict[str, object]:
-    """`versions` with `lane_ok`, `lane_capabilities` and, on a failure, `lane_reason` set; a pass drops the reason.
-    The same rows give the same record, so a second check rewrites nothing."""
-    reason = blocking_reason(rows)
-    kept = {key: value for key, value in versions.items() if key != REASON_KEY}
-    merged = {**kept, OK_KEY: reason is None, CAPABILITIES_KEY: sorted(capabilities(rows))}
-    return merged if reason is None else {**merged, REASON_KEY: reason}
+    """`versions` with the check's record: `lane_ok` and `lane_reason` for the prerequisites, `room_ok`,
+    `room_reason` and the consecutive `room_failures` for room, and `lane_capabilities`. A passing half drops its
+    reason. The same rows on the same record give the same prerequisites; only the room streak counts on."""
+    prereq = blocking_reason([row for row in rows if not is_room_row(row)])
+    room = blocking_reason([row for row in rows if is_room_row(row)])
+    kept = {key: value for key, value in versions.items() if key not in (REASON_KEY, ROOM_REASON_KEY)}
+    merged: dict[str, object] = {
+        **kept,
+        OK_KEY: prereq is None,
+        ROOM_OK_KEY: room is None,
+        ROOM_FAILURES_KEY: 0 if room is None else _count(versions, ROOM_FAILURES_KEY) + 1,
+        CAPABILITIES_KEY: sorted(capabilities(rows)),
+    }
+    reasons = {REASON_KEY: prereq, ROOM_REASON_KEY: room}
+    return {**merged, **{key: reason for key, reason in reasons.items() if reason is not None}}
+
+
+def _active(hosts: Sequence[Mapping[str, object]]) -> list[tuple[str, dict[str, object]]]:
+    return [(str(row.get("name") or ""), versions_of(row)) for row in hosts if row.get("state") == "active"]
+
+
+def lane_stuck(hosts: Sequence[Mapping[str, object]]) -> dict[str, str]:
+    """`active` host name to its stored reason, for each whose prerequisites failed (`lane_ok` False exactly): a
+    lasting condition, so work homed there moves. A host never checked is not stuck, and neither is one whose own
+    beat replaced its versions since."""
+    return {
+        name: str(versions.get(REASON_KEY) or "lane prerequisites failed")
+        for name, versions in _active(hosts)
+        if versions.get(OK_KEY) is False
+    }
 
 
 def lane_blocked(hosts: Sequence[Mapping[str, object]]) -> dict[str, str]:
-    """`active` host name to its stored reason, for each whose `lane_ok` is False exactly. A host never checked is
-    not blocked, and neither is one whose own beat replaced its versions since."""
-    active = [(str(row.get("name") or ""), versions_of(row)) for row in hosts if row.get("state") == "active"]
-    return {
-        name: str(versions.get(REASON_KEY) or "lane prerequisites failed")
-        for name, versions in active
-        if versions.get(OK_KEY) is False
+    """`lane_stuck`, plus each `active` host short on room `ROOM_BLOCK_AFTER` checks in a row: no new lane goes to
+    either. A single short reading blocks nothing."""
+    short = {
+        name: str(versions.get(ROOM_REASON_KEY) or "short on room")
+        for name, versions in _active(hosts)
+        if _count(versions, ROOM_FAILURES_KEY) >= ROOM_BLOCK_AFTER
     }
+    stuck = lane_stuck(hosts)
+    return {name: "; ".join(r for r in (stuck.get(name), short.get(name)) if r) for name in {**stuck, **short}}
+
+
+def gated(blocked: Mapping[str, str], gate: bool) -> Mapping[str, str]:
+    """`blocked` with the gate on; nothing with it off (`policy.dispatch.lane_prereqs: off`), the switch that keeps
+    an unreadable probe from grounding every host."""
+    return blocked if gate else {}
 
 
 def lane_needs_chair(hosts: Sequence[Mapping[str, object]]) -> list[Action]:

@@ -127,12 +127,14 @@ class HostLanes(TypedDict):
 
 class DispatchFacts(TypedDict):
     """live_runs counts the local machine's live lanes; hosts holds each lane host in order, a capacity replacing max_in_flight for that host.
-    local_lanes "decompose" reserves the local lanes for intake decomposes; absent means "any"."""
+    local_lanes "decompose" reserves the local lanes for intake decomposes; absent means "any".
+    lane_prereqs False turns off the lane-host prerequisite gate (`lane_prereqs`); absent means on."""
 
     max_in_flight: int
     live_runs: int
     hosts: list[HostLanes]
     local_lanes: NotRequired[str]
+    lane_prereqs: NotRequired[bool]
 
 
 class ApprovedTask(TypedDict):

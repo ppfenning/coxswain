@@ -34,7 +34,7 @@ def probe_output(
 
 
 PASSING = probe_output()
-PASSING_VERSIONS = {"lane_ok": True, "lane_capabilities": ["docker"]}
+PASSING_VERSIONS = {"lane_ok": True, "room_ok": True, "room_failures": 0, "lane_capabilities": ["docker"]}
 # The lines `remote_doctor.doctor_on_host` prints for PASSING, after its other rows.
 PASSING_LINES = [
     *(lane_prereqs.row_line(row) for row in lane_prereqs.reply_rows(0, PASSING, remote=True)),

@@ -937,6 +937,7 @@ def _chair_run_deps(
         # a host with no workspace_dir is refused by `route launch --on`, so the loop must not plan launches onto it
         host_names = [] if isinstance(candidates, lane_hosts.LaneHostError) else host_cmd.dispatchable(candidates)[0]
         configured = chair_capacity.chair_local_lanes(profile)
+        lane_gate = chair_capacity.chair_lane_prereqs(profile)
         effective = chair_orchestrate.effective_local_lanes(configured, host_names)  # no usable host: build locally this tick
         if configured == "decompose" and effective == "any" and not fallback_noticed:
             fallback_noticed.append(True)
@@ -944,7 +945,7 @@ def _chair_run_deps(
         return chair_facts.dispatch_facts(
             row, host_names, _dispatch_counts(lanes, host, host_names, pidfile_live), host_cmd.row_capacities(host_rows),
             weight=host_cmd.row_weights(host_rows), capabilities=host_cmd.row_capabilities(host_rows), local=host,
-            local_lanes=effective,
+            local_lanes=effective, lane_prereqs=lane_gate,
         )
 
     weekly_reset = usage_window.parse_weekly_reset(profile.get("weekly_reset"))

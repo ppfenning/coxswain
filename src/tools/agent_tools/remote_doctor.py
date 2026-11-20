@@ -58,8 +58,9 @@ def doctor_on_host(
     """`run` takes an argv and returns (exit code, combined output); `argv_for` wraps each command, ssh by default.
     `checks` are the tools the repo's checks run: each one the lane PATH lacks adds the refusal line a launch would give.
     `repo_checks` pairs each repo's tools with its repo_dir; a tool in that repo's venv counts as found. Rows are de-duplicated.
-    The last rows are the smoke gate's prerequisites (`lane_prereqs`) and the capabilities they leave the host; a
-    failing one fails the doctor."""
+    The last rows are the smoke gate's prerequisites (`lane_prereqs`), probed in the lane's login shell, and the
+    capabilities they leave the host; a failing one fails the doctor. The host doctor's own copies of those rows are
+    left out. Its exit code still counts them."""
     wrap = argv_for if argv_for is not None else (lambda argv: ssh_argv(host.ssh, argv))
     code, output = run(wrap(doctor_argv()))
     if runner == "claude-code":
@@ -86,4 +87,7 @@ def doctor_on_host(
     tokens = ", ".join(sorted(lane_prereqs.capabilities(lane_rows))) or "none"
     lane = [*(lane_prereqs.row_line(r) for r in lane_rows), f"lane capabilities: {tokens}"]
     failed = verdict is not None or bool(missing) or lane_prereqs.blocking_reason(lane_rows) is not None
-    return (1 if failed and code == 0 else code), [*output.splitlines(), row, *missing, *unparsed, *lane]
+    # The host's own doctor prints these rows too, from the ssh session's PATH; they are dropped so the rows printed
+    # are the ones from the lane's login shell, once.
+    own = [line for line in output.splitlines() if not lane_prereqs.is_lane_line(line)]
+    return (1 if failed and code == 0 else code), [*own, row, *missing, *unparsed, *lane]

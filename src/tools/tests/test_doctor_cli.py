@@ -68,14 +68,14 @@ def _make_store(workspace_dir):
 
 
 def _lane_ready(bin_dir):
-    """What the smoke gate needs (`lane_prereqs`), as fake binaries: docker up with every image present, the
-    PostgreSQL client tools, a real-looking gh, and room on /tmp. Memory is this machine's own."""
+    """What the smoke gate needs (`lane_prereqs`), as fake binaries: docker up with every image present, pg_dump, a
+    real-looking gh, and room: df and free report plenty. Nothing reads this machine's own memory or disk."""
     _write_executable(bin_dir / "docker", '#!/bin/sh\n[ "$1" = info ] && echo 27.3.1\nexit 0\n')
-    for name in ("pg_dump", "psql"):
-        _write_executable(bin_dir / name, "#!/bin/sh\n")
+    _write_executable(bin_dir / "pg_dump", "#!/bin/sh\n")
     _write_executable(bin_dir / "gh", '#!/bin/sh\necho "gh version 2.60.1 (2026-10-01)"\n')
     _write_executable(bin_dir / "df", '#!/bin/sh\necho "tmpfs 16000000 1000 8000000 1% $2"\n')
-    _write_executable(bin_dir / "vm_stat", '#!/bin/sh\necho "(page size of 16384 bytes)"\necho "Pages free: 262144."\n')
+    _write_executable(bin_dir / "free", '#!/bin/sh\necho "  total used free shared buff/cache available"\n'
+                                        'echo "Mem: 32000000 1 1 1 1 8000000"\n')
 
 
 def _good_setup(tmp_path, monkeypatch):

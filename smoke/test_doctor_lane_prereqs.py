@@ -9,7 +9,7 @@ import json
 import stat
 from dataclasses import replace
 
-LANE_CHECKS = ("docker daemon", "smoke image postgres", "smoke image forgejo", "smoke image garage", "pg_dump", "psql", "gh")
+LANE_CHECKS = ("docker daemon", "smoke image postgres", "smoke image forgejo", "smoke image garage", "pg_dump", "gh")
 DOCKER_DOWN = "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?"
 
 
@@ -34,6 +34,6 @@ def test_the_doctor_names_a_stopped_docker_daemon_and_advertises_no_capability(s
         "check": "docker daemon", "ok": False,
         "detail": f"the docker daemon did not answer (exit 1): {DOCKER_DOWN}; start it",
     }
-    assert rows["smoke image postgres"]["detail"] == "not checked: the docker daemon did not answer"
+    assert rows["smoke image postgres"]["detail"] == "not checked: docker did not answer"
     assert report["lane_capabilities"] == []
     assert _lane_rows(second.stdout) == _lane_rows(first.stdout)

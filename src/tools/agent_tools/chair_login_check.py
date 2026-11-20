@@ -163,16 +163,18 @@ def check_login_on_host(
     `unreachable_failures`.
 
     A reachable readiness check is followed by one `lane_prereqs` probe over the same local/ssh split, whose result
-    the beat carries as `lane_ok`, `lane_capabilities` and, on a failure, `lane_reason`; placement skips a host whose
-    `lane_ok` is False. A probe the host does not answer counts as an unreachable check."""
+    the beat carries (`lane_prereqs.merge_versions`); placement skips a host that fails it.
+
+    The wrong belief was "a probe the host did not answer means the host is unreachable": a hung Docker Desktop held
+    the probe past the ssh bound, and the passing readiness check was thrown away for an unreachable streak. The
+    readiness check alone judges reachability. A probe that times out, or that cannot be read, is one failing
+    `lane probe` row: the host is blocked with that reason, and its login state is kept."""
     check = (
         _claude_check(host_name, ssh, ssh_run)
         if runner == "claude-code"
         else _env_check(host_name, ssh, ssh_run, env_names)
     )
     lane_rows = [] if check.unreachable else _lane_rows(host_name, ssh, ssh_run)
-    if lane_rows and lane_rows[0]["check"] == lane_prereqs.REACHABLE_CHECK and not lane_rows[0]["ok"]:
-        check = _Check(False, False, f"lane probe: {lane_rows[0]['detail']}", str(lane_rows[0]["detail"]), True)
     if check.unreachable:
         count = _failure_count(current_versions, chair_login_watch.UNREACHABLE_FAILURES_KEY) + 1
         payload = _unreachable_login(count, now, check.reason)
@@ -203,4 +205,4 @@ def check_login_on_host(
 def _lane_rows(host_name: str, ssh: str, ssh_run: SshRun) -> list[lane_prereqs.Row]:
     """The smoke gate's prerequisites on the host, one probe in the lane's login shell (`lane_prereqs`)."""
     reply = ssh_run(_remote_argv(host_name, ssh, lane_prereqs.probe_argv()))
-    return lane_prereqs.reply_rows(reply.returncode, reply.mixed, remote=True)
+    return lane_prereqs.reply_rows(reply.returncode, reply.mixed, remote=False)

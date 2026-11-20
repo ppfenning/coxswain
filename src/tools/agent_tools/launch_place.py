@@ -17,7 +17,7 @@ from agent_tools.chair_read_lost import stale_hosts
 from agent_tools.chair_types import Facts
 from agent_tools.host_load import overloaded
 from agent_tools.lane_hosts import LaneHost
-from agent_tools.lane_prereqs import lane_blocked
+from agent_tools.lane_prereqs import gated, lane_blocked
 
 Row = Mapping[str, Any]
 
@@ -68,16 +68,17 @@ def format_refusal(refusal: Refusal) -> list[str]:
 def place(
     rows: Sequence[Row], live_by_host: Mapping[str, int], now: datetime, local: str = "", default_capacity: int = 1,
     profile_hosts: Sequence[LaneHost] = (), barred: Mapping[str, str] | None = None,
-    local_excluded: bool = False, load_ceiling: float | None = None,
+    local_excluded: bool = False, load_ceiling: float | None = None, lane_gate: bool = True,
 ) -> Placement | Refusal:
     """The host the chair tick would give one more lane, else a refusal naming every row's in-use/cap.
 
     live_by_host is keyed by row name, this machine under `local`. default_capacity is the cap of a row without one.
     `barred` maps a host to the reason it may not be chosen; the chooser skips it and the refusal quotes the reason.
     `local_excluded` drops this machine from the candidates and reports it as 'decompose only'.
-    `load_ceiling` skips a host whose recorded cpu or mem is above it; None skips none."""
+    `load_ceiling` skips a host whose recorded cpu or mem is above it; None skips none.
+    `lane_gate` False ignores the hosts' lane prerequisites (`policy.dispatch.lane_prereqs`)."""
     # A host failing its lane prerequisites is skipped like a barred one, and the refusal quotes the failing checks.
-    bars = {**lane_blocked(rows), **(barred or {})}
+    bars = {**gated(lane_blocked(rows), lane_gate), **(barred or {})}
     active = [r for r in rows if r.get("state") == "active"]
     stale = stale_hosts(active, now.isoformat(), threshold_s=PLACEMENT_STALE_S)
     reachable = set(host_cmd.dispatchable(host_cmd.host_rows_to_lane_hosts(active, profile_hosts, local))[0])

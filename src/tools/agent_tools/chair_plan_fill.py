@@ -382,7 +382,7 @@ def host_free_slots(facts: Facts) -> list[HostSlot]:
     blocked = (
         chair_login_watch.login_blocked(rows)
         | host_load.overloaded(rows, facts.get("host_load_ceiling")).keys()
-        | lane_prereqs.lane_blocked(rows).keys()
+        | lane_prereqs.gated(lane_prereqs.lane_blocked(rows), dispatch.get("lane_prereqs", True)).keys()
     )
     fraction = facts.get("limits", {}).get("lane_fraction", 1.0)
     return [
