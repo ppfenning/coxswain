@@ -5,7 +5,6 @@ from datetime import UTC, datetime
 _NEVER_COUNTS_STATES = frozenset({"done", "dropped", "draft"})
 _STALE_COUNTS_STATES = frozenset({"blocked", "ready", "approved"})
 _QUARANTINE_REASON = "quarantined twice for a non-harness cause"
-_NO_SIGNAL_REASON = "no activity recorded"
 
 
 def _parse_utc(value: str) -> datetime:
@@ -32,6 +31,8 @@ def stale_reason(
         return None
     signals = [_parse_utc(value) for value in (last_file_change, last_run, last_chair_action) if value is not None]
     if not signals:
-        return _NO_SIGNAL_REASON
+        # No signal means new, not idle: a task whose file is not yet at the workspace path (chair_read_stale.changed_at
+        # gives None) has no history to be old by, so it must not be planned stale at its first tick.
+        return None
     gap_days = (_parse_utc(now) - max(signals)).days
     return f"no file change, run, or chair action in {gap_days} days" if gap_days >= stale_days else None
