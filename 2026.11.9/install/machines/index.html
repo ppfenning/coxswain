@@ -6731,6 +6731,33 @@ from its own host's file. The token is never sent over ssh or placed in a
 command line.</p>
 <p>The chair's login check reports a host with no token file as a named failure.
 So does <code>cox setup doctor</code> when you give it a host name.</p>
+<p>The same check, and <code>cox setup doctor</code>, also look at what the smoke gate needs
+on the host:</p>
+<ul>
+<li>the docker daemon answers;</li>
+<li>the pinned smoke images are present, or <code>docker pull</code> can fetch them without
+  a prompt (its credential helper answers in an unattended session);</li>
+<li><code>pg_dump</code> is on the PATH the lane's login shell sets;</li>
+<li><code>gh</code> is a real binary, not a version-manager shim with no version set;</li>
+<li>the host answers over ssh;</li>
+<li>the lane's temp directory (<code>$TMPDIR</code>, else <code>/tmp</code>) has at least 2 GiB free,
+  and at least 2 GiB of memory is available.</li>
+</ul>
+<p>Each probed command has its own time limit, so a hung Docker Desktop shows as
+<code>docker did not answer within 6s</code> rather than as an unreachable host.</p>
+<p>The chair places no lane on a host that fails a prerequisite, and work homed
+there moves elsewhere. A host short on room or memory gets no new lane only
+after two checks in a row find it short, and its homed work stays. The status
+line names the host and the failing checks, for example
+<code>needs chair: &lt;host&gt;:lane_prereqs docker daemon: ...</code>. The check only reads,
+so running the doctor again changes nothing. A host that passes every docker
+check reports the <code>docker</code> capability (<code>lane capabilities: docker</code>).</p>
+<p>To turn the gate off, for example while a probe misreads every host, set it in
+the team cartridge:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">policy</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">dispatch</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">lane_prereqs</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">off</span>
+</code></pre></div>
 <h2 id="what-youll-see">What you'll see</h2>
 <p><img alt="cox install --dry-run printing the install plan without writing anything" src="../assets/shots/install-dry-run.svg"></p>
 <p><code>cox install --dry-run</code> prints the plan <code>cox install</code> would run, before it writes anything.</p>
