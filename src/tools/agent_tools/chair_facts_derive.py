@@ -914,6 +914,34 @@ def stranded_facts(
     return out
 
 
+def stranded_alarm_facts(
+    stranded: Sequence[Row], rows: Sequence[Row], live: Collection[str], landing: Collection[tuple[str, str]]
+) -> dict[str, str]:
+    """Each stranded approved task with no live run to the time its row was first seen, for the stall alarm.
+
+    Read from the stranded rows themselves, not from `quarantine_facts`: a row for a task absent from its phase branch
+    carries no run and no initiative, so `quarantine_facts` cannot place it and drops it in store mode. The initiative
+    comes from the store row of the same phase and task id. `rows` are the store's queue rows; a task that is not
+    approved there is left out, as are an `expected` row, a task of an initiative in `live`, and a task in `landing`
+    (an (initiative, task id) pair its phase land handles this tick). The time is the store row's `updated_at`, the
+    last change to a task that has sat approved since; "" when it has none, which the alarm reads as the chair's
+    first recorded action. Store mode only: file mode has no queue rows and no stranded task alarms."""
+    approved = {
+        (str(r.get("phase") or ""), str(r.get("task_id"))): (str(r.get("initiative")), str(r.get("updated_at") or ""))
+        for r in rows
+        if r.get("kind") == "task" and r.get("state") == "approved"
+    }
+    found = {
+        str(s["task"]): approved[(str(s.get("phase") or ""), str(s["task"]))]
+        for s in stranded
+        if not s.get("expected") and (str(s.get("phase") or ""), str(s["task"])) in approved
+    }
+    return {
+        task: seen for task, (initiative, seen) in found.items()
+        if initiative not in live and (initiative, task) not in landing
+    }
+
+
 def new_missing_repos(missing: Collection[str], reported: Collection[str]) -> list[str]:
     """The paths in `missing` not in `reported`, de-duplicated and sorted."""
     return sorted({p for p in missing if p not in reported})
@@ -1307,6 +1335,7 @@ def gather_facts(
         "stall_alarm": stall_facts(
             resolve_settings(deps.stall_alarm() if deps.stall_alarm is not None else None),
             landing_records, [action_doc(row) for row in action_rows],
+            stranded_alarm_facts(stranded, rows, live, {(t["initiative"], t["id"]) for t in planned_tasks(approved, initiatives) if t["run"]}),
         ),
         "tuning": tuning_facts(
             *deps.tuning(now),

@@ -1,6 +1,6 @@
 """Pure stall alarm for the landing model (docs/hardening.md H7.1): tell the operator when the loop has stopped moving.
 
-Three checks, each a fact the chair already has:
+Four checks, each a fact the chair already has:
 
 - **no land**: initiatives are open (a landing record not `landed` and not `draft`, and the initiative not held for a
   person) and nothing has landed, no phase merged into its initiative branch and no initiative landed on its parent,
@@ -12,6 +12,9 @@ Three checks, each a fact the chair already has:
   idle-lanes line (`idle_stall`, `idle_ready`) is raised for the same condition.
 - **same failure**: one action (its kind and target) failed or was refused with the same reason on each of its last
   `repeat_ticks` attempts, and the newest of them is recent (`STREAK_LIVE`).
+- **stranded**: a stranded approved task with no live run has stood for at least `stranded_minutes`, counted from the
+  time its row was first seen (the task's last change, else the chair's first recorded action). It clears when the row
+  is gone. Nothing launches and nothing fails for such a task, so the other three stay quiet.
 
 A stall raises one `stall_alarm` and, once its check no longer holds, one `stall_clear`, the all-clear. A same-failure
 stall is cleared only when its streak breaks: the action succeeds or fails another way. A streak that goes quiet
@@ -19,7 +22,7 @@ instead (no attempt within `STREAK_LIVE`, as under a hard stop, or its rows gone
 `quiet` closes it with no message. Under the hard stop, nothing launches or is meant to land, so only the same-failure
 check stands. Which stalls are raised is read back from the chair's own action rows (`open_alarms`), so the alarm needs
 no state of its own. Settings live in the profile under `chair.stall_alarm` (`land_hours`, `launch_minutes`,
-`repeat_ticks`); 0 turns one check off. No I/O, no clock: `now` is an argument.
+`repeat_ticks`, `stranded_minutes`); 0 turns one check off. No I/O, no clock: `now` is an argument.
 """
 
 from __future__ import annotations
@@ -38,6 +41,7 @@ if TYPE_CHECKING:  # chair_types imports this module for StallFacts, so the impo
 DEFAULT_LAND_HOURS = 6.0
 DEFAULT_LAUNCH_MINUTES = 60.0
 DEFAULT_REPEAT_TICKS = 3
+DEFAULT_STRANDED_MINUTES = 30.0
 STREAK_LIVE = timedelta(hours=1)  # a failure streak whose newest attempt is older than this has stopped being attempted
 RAISE, CLEAR = "stall_alarm", "stall_clear"
 ALARM_KINDS = frozenset({RAISE, CLEAR})
@@ -55,6 +59,7 @@ class Settings(TypedDict):
     land_hours: float
     launch_minutes: float
     repeat_ticks: int
+    stranded_minutes: float
 
 
 class Head(TypedDict):
@@ -96,10 +101,11 @@ class StallFacts(TypedDict):
     heads: dict[str, Head]  # `repeat:<kind>:<target>` -> that action's newest attempt
     streaks: list[Streak]
     open: dict[str, OpenAlarm]
+    stranded: dict[str, str]  # stranded task with no live run -> when its row was first seen ("" when unknown)
 
 
 class Stall(TypedDict):
-    key: str  # what stalled, stable while it stands: `no_land`, `no_launch`, `repeat:<kind>:<target>:<digest>`
+    key: str  # what stalled, stable while it stands: `no_land`, `no_launch`, `stranded:<task>`, `repeat:<kind>:<target>:<digest>`
     since: str
     subject: str  # the initiative (or task) the courier entry points at
     detail: str
@@ -134,6 +140,7 @@ def resolve_settings(value: object) -> Settings:
         "land_hours": _number(raw.get("land_hours"), DEFAULT_LAND_HOURS),
         "launch_minutes": _number(raw.get("launch_minutes"), DEFAULT_LAUNCH_MINUTES),
         "repeat_ticks": repeat_ticks,
+        "stranded_minutes": _number(raw.get("stranded_minutes"), DEFAULT_STRANDED_MINUTES),
     }
 
 
@@ -269,10 +276,13 @@ def open_alarms(docs: Sequence[Mapping[str, object]]) -> dict[str, OpenAlarm]:
 
 
 def stall_facts(
-    settings: Settings, records: Sequence[Mapping[str, object]], docs: Sequence[Mapping[str, object]]
+    settings: Settings,
+    records: Sequence[Mapping[str, object]],
+    docs: Sequence[Mapping[str, object]],
+    stranded: Mapping[str, str] | None = None,
 ) -> StallFacts:
-    """Everything the three checks read: the landing records' land facts, and the action rows' launches, first row,
-    attempt heads, failure streaks and open alarms."""
+    """Everything the four checks read: the landing records' land facts, the action rows' launches, first row,
+    attempt heads, failure streaks and open alarms, and `stranded`, each stranded task's first-seen time."""
     last_land, initiatives = land_facts(records)
     return {
         "settings": settings,
@@ -283,6 +293,7 @@ def stall_facts(
         "heads": attempt_heads(docs),
         "streaks": failure_streaks(docs, settings["repeat_ticks"]),
         "open": open_alarms(docs),
+        "stranded": dict(stranded or {}),
     }
 
 
@@ -321,6 +332,24 @@ def no_launch(facts: StallFacts, free_lanes: int, ready: int, subject: str, now:
                       f"{ready} ready; {last}"}
 
 
+def stranded(facts: StallFacts, now: datetime) -> list[Stall]:
+    """One stall per stranded task whose row was first seen at least `stranded_minutes` ago, in task order. A task whose
+    first-seen time is unknown counts from the chair's first recorded action."""
+    minutes = facts["settings"]["stranded_minutes"]
+    if minutes <= 0:
+        return []
+    found: list[Stall] = []
+    for task, seen in sorted(facts["stranded"].items()):
+        since = seen if parse_ts(seen) is not None else facts["watch_since"]
+        start = parse_ts(since)
+        if start is None or now - start < timedelta(minutes=minutes):
+            continue
+        found.append({"key": f"stranded:{task}", "since": str(since), "subject": task,
+                      "detail": f"approved task {task} has been stranded with no live run for "
+                                f"{round((now - start).total_seconds() / 60)}m"})
+    return found
+
+
 def repeat_key(streak: Streak) -> str:
     digest = hashlib.sha1(streak["reason"].encode("utf-8")).hexdigest()[:12]
     return f"{action_key(streak['kind'], streak['target'])}:{digest}"
@@ -343,13 +372,14 @@ def repeats(facts: StallFacts, now: datetime) -> list[Stall]:
 
 
 def observe(facts: StallFacts, gate: Gate, now: datetime) -> list[Stall]:
-    """The stalls standing now, in a fixed order: no land, no launch, then each repeated failure. Under the hard stop
-    only the repeated failures stand; while the chair's idle-lanes line is raised, no launch does not."""
+    """The stalls standing now, in a fixed order: no land, no launch, each stranded task, then each repeated failure.
+    Under the hard stop only the repeated failures stand; while the chair's idle-lanes line is raised, no launch does not."""
     found = [] if gate["paused"] else [
         no_land(facts, gate["held"], now),
         None if gate["idle_raised"] else no_launch(facts, gate["free_lanes"], gate["ready"], gate["subject"], now),
     ]
-    return [*(s for s in found if s is not None), *repeats(facts, now)]
+    held = [] if gate["paused"] else stranded(facts, now)
+    return [*(s for s in found if s is not None), *held, *repeats(facts, now)]
 
 
 def repeat_ending(key: str, heads: Mapping[str, Head], now: datetime) -> str:
