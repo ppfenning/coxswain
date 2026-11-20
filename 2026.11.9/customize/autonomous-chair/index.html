@@ -7974,7 +7974,7 @@ beaten its lease for too long. <code>cox chair watchdog --install</code> writes 
 timer files for this platform and prints the lines that activate them;
 <code>--uninstall</code> removes them.</p>
 <h3 id="the-stall-alarm">The stall alarm</h3>
-<p>Each tick, the chair checks three things that mean the loop has stopped moving:</p>
+<p>Each tick, the chair checks these things, each a sign that the loop has stopped moving:</p>
 <ul>
 <li><strong>No land.</strong> Initiatives are open, and nothing has landed for
   <code>land_hours</code>. An initiative is open when its landing record is neither
@@ -7989,11 +7989,30 @@ timer files for this platform and prints the lines that activate them;
   count, so a launch that is refused every tick does not hide the stall.
   This check stays quiet while the chair's own idle-lanes line
   (<code>idle_stall</code>, <code>idle_ready</code>) is raised for the same condition.</li>
-<li><strong>The same failure.</strong> One action on one target failed or was refused for
+<li>
+<p><strong>The same failure.</strong> One action on one target failed or was refused for
   the same reason <code>repeat_ticks</code> times in a row, and the last attempt was
   less than an hour ago. Numbers in the reason are ignored, so a changing
   PR number or count does not hide a repeat. The alarm shows the newest
-  attempt's own reason.</li>
+  attempt's own reason.</p>
+</li>
+<li>
+<p><strong>Idle with work held.</strong> No lane is live and no land is in progress, and
+  the chair has made no progress for <code>idle_minutes</code>, 60 by default.
+  Progress is a launch or land that went out, or a model call. The clock
+  starts at the last progress, or at the chair's first recorded action if
+  that is later. After a restart, if the last progress is older than the
+  setting, the alarm is raised on the first tick. If work is held for you,
+  the alarm lists each held task and initiative, its hold reason, and the
+  command that releases it. If nothing is held and no host can take epics,
+  the chair writes one <code>no worker capacity</code> notice instead. That happens
+  when every host is draining or none is configured. Being idle on purpose
+  is not a stall. Ready work with free lanes is left to the no-launch
+  check. You hear about each idle spell once, however long it lasts and
+  however its holds change. A live lane pauses the spell but does not end
+  it, so a run that dies before its first model call does not start a new
+  one. Only progress ends a spell. Its alarm then closes without a message.</p>
+</li>
 </ul>
 <p>Under a hard stop, nothing launches or lands on purpose, so only the
 same-failure check runs. A no-land or no-launch alarm that is already
@@ -8013,7 +8032,11 @@ long it lasts.</p>
 <span class="w">    </span><span class="nt">land_hours</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">6</span><span class="w">       </span><span class="c1"># 0 turns the check off</span>
 <span class="w">    </span><span class="nt">launch_minutes</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">60</span><span class="w">  </span><span class="c1"># 0 turns the check off</span>
 <span class="w">    </span><span class="nt">repeat_ticks</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span><span class="w">     </span><span class="c1"># at least 2; 0 turns the check off</span>
+<span class="w">    </span><span class="nt">stranded_minutes</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30</span><span class="w">  </span><span class="c1"># 0 turns the check off</span>
+<span class="w">    </span><span class="nt">idle_minutes</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">60</span><span class="w">    </span><span class="c1"># 0 turns the check off</span>
 </code></pre></div>
+<p><code>chair: idle_alarm_minutes: 60</code> sets the idle check on its own, as a flat
+key. If both are set, the flat key wins.</p>
 <h2 id="what-it-records">What it records</h2>
 <p>Some actions the loop only records, such as a "needs the chair" report.
 Each one is appended to <code>chair.actions.jsonl</code> in the runs directory. The
