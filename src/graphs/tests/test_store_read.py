@@ -398,7 +398,31 @@ def test_connect_readonly_refuses_a_newer_database(tmp_path):
     c.close()
     with pytest.raises(read.StoreVersionError) as err:
         read.connect_readonly(url)
-    assert str(err.value) == f"store is at schema version {LATEST + 1}, newer than the {LATEST} this code expects"
+    assert str(err.value) == (f"store is at schema version {LATEST + 1}, newer than the {LATEST} this code expects; "
+                              f"migration {LATEST + 1:04d} (future) is not additive")
+
+
+def test_connect_readonly_reads_a_store_newer_only_by_additive_migrations(tmp_path):
+    url = f"sqlite:///{tmp_path / 'cox.db'}"
+    c = open_store(url, NOW)
+    put(c, "runs", run_id="r1", status="running", started_at=NOW)
+    put(c, "schema_version", version=LATEST + 1, applied_at=NOW, description="additive: future table")
+    c.close()
+    conn = read.connect_readonly(url)
+    try:
+        assert [r["run_id"] for r in read.list_runs(conn, "", 5)] == ["r1"]
+    finally:
+        conn.close()
+
+
+def test_connect_readonly_refuses_a_newer_store_at_its_first_non_additive_migration(tmp_path):
+    url = f"sqlite:///{tmp_path / 'cox.db'}"
+    c = open_store(url, NOW)
+    put(c, "schema_version", version=LATEST + 1, applied_at=NOW, description="additive: future table")
+    put(c, "schema_version", version=LATEST + 2, applied_at=NOW, description="drops a column")
+    c.close()
+    with pytest.raises(read.StoreVersionError, match=f"migration {LATEST + 2:04d} \\(drops a column\\) is not additive"):
+        read.connect_readonly(url)
 
 
 READERS = (
@@ -496,7 +520,7 @@ def _offending_imports(source: str) -> list[str]:
     allowed = lambda module, name: (  # noqa: E731
         module.split(".")[0] in sys.stdlib_module_names
         or module == "harness.store_dialect"
-        or (module == "harness.store_migrate" and name == "check_version")
+        or (module == "harness.store_migrate" and name in {"accepts", "check_version", "newer_descriptions", "newer_refusal"})
         or (module == "harness" and name == "store_traces")
     )
     dynamic = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} | {
@@ -505,7 +529,7 @@ def _offending_imports(source: str) -> list[str]:
     return [f"{m}.{n}".strip(".") for m, n in pairs if not allowed(m, n)] + sorted(dynamic & {"__import__", "import_module"})
 
 
-def test_store_read_imports_the_stdlib_store_dialect_store_traces_and_check_version_only():
+def test_store_read_imports_the_stdlib_store_dialect_store_traces_and_the_version_check_only():
     assert _offending_imports(Path(read.__file__).read_text()) == []
 
 

@@ -60,8 +60,9 @@ TRACKER_SCOPES = ("all", "epics", "initiatives")
 _SPEND_KEYS = {"window_ceiling_usd", "weekly_ceiling_usd", "node_cap_usd", "monthly_budget_usd"}
 _SPEND_TEXT_KEYS = {"weekly_reset", "budget_timezone"}  # `Sun 04:00 America/New_York`, parsed by usage_window.parse_weekly_reset; an IANA zone name
 
-_CHAIR_KEYS = {"housekeeping_hours", "stale_days", "idle_stall_minutes", "launch_stagger_s", "max_launches_per_hour", "max_shared_file_initiatives", "approval_hold_ticks", "quarantine_hold_after", "no_progress_after"}  # every key `cli._chair_run_deps` reads off `profile["chair"]`
+_CHAIR_KEYS = {"housekeeping_hours", "stale_days", "idle_stall_minutes", "launch_stagger_s", "max_launches_per_hour", "max_shared_file_initiatives", "approval_hold_ticks", "quarantine_hold_after", "no_progress_after", "idle_alarm_minutes"}  # every key `cli._chair_run_deps` reads off `profile["chair"]`
 
+_STALL_ALARM_KEYS = {"land_hours", "launch_minutes", "repeat_ticks", "stranded_minutes", "idle_minutes"}  # `chair: stall_alarm:` keys, as floats (chair_stall_alarm.resolve_settings)
 _CHAIR_BOOL_WORDS = {"true": True, "yes": True, "false": False, "no": False}  # the spellings a boolean `chair:` key accepts, any case
 _CHAIR_STEWARD_SCOPES = {"all", "epics"}  # the values `chair: steward_scope:` accepts, stored lower case
 _CHAIR_SESSION_TAKES = {"never", "when_free", "always"}  # the values `chair: session_takes:` accepts, stored lower case
@@ -108,10 +109,12 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
     floats onto the flat result, and `weekly_reset:`/`budget_timezone:` lines kept as text, quotes stripped.
     `monthly_budget_usd` must be above zero and `budget_timezone` must be an IANA zone name, else ProfileError
     names the line; neither key appears in the result when absent, and the readers apply any default;
-    and a bare `chair:` line followed by indented `housekeeping_hours:`/`stale_days:`/`idle_stall_minutes:`/`launch_stagger_s:`/`max_launches_per_hour:`/`max_shared_file_initiatives:`/`approval_hold_ticks:`/`quarantine_hold_after:`/`no_progress_after:` lines,
+    and a bare `chair:` line followed by indented `housekeeping_hours:`/`stale_days:`/`idle_stall_minutes:`/`launch_stagger_s:`/`max_launches_per_hour:`/`max_shared_file_initiatives:`/`approval_hold_ticks:`/`quarantine_hold_after:`/`no_progress_after:`/`idle_alarm_minutes:` lines,
     all optional, parsed as floats into `result["chair"]` (every key `cli._chair_run_deps`
     reads off `profile["chair"]`; `log_retention_days` stays a flat top-level key, not one of
-    these). The same block also takes `steward:`, a boolean (true, false, yes or no, any case)
+    these). A `stall_alarm:` line in the block with no value opens a deeper block of `land_hours:`/`launch_minutes:`/
+    `repeat_ticks:`/`stranded_minutes:`/`idle_minutes:` lines, parsed as floats into `result["chair"]["stall_alarm"]`; any other
+    key there raises ProfileError. The same block also takes `steward:`, a boolean (true, false, yes or no, any case)
     kept as a Python bool in `result["chair"]["steward"]`; any other value raises ProfileError.
     It also takes `steward_scope:`, text with quotes stripped, `all` or `epics` in any case, kept lower case as a str in
     `result["chair"]["steward_scope"]`; any other value raises ProfileError. The key is absent when not written and the reader applies the default `all`.
@@ -131,6 +134,7 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
     unknown: list[tuple[str, int]] = []
     in_spend = False
     in_chair = False
+    alarm_indent: int | None = None  # the indent of a `stall_alarm:` line under `chair:`; deeper lines are its keys
     in_store = False
     in_aliases = False  # `repo_aliases:` block: indented `<retired repo>: <owner/name>` lines, kept as text
     in_hosts = False  # `lane_hosts:` is a list of mappings that cli reads from the YAML text; its lines are skipped here
@@ -167,6 +171,20 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
                     raise ProfileError(f"line {lineno}: {raw_line}")
                 key, _, value = content.partition(":")
                 key, value = key.strip(), value.strip()
+                indent = len(line) - len(line.lstrip())
+                if alarm_indent is not None and indent > alarm_indent:
+                    if key not in _STALL_ALARM_KEYS:
+                        raise ProfileError(f"line {lineno}: {raw_line}")
+                    try:
+                        result["chair"]["stall_alarm"][key] = float(value)
+                    except ValueError:
+                        raise ProfileError(f"line {lineno}: {raw_line}") from None
+                    continue
+                alarm_indent = None
+                if key == "stall_alarm" and not value:
+                    result.setdefault("chair", {})["stall_alarm"] = {}
+                    alarm_indent = indent
+                    continue
                 if key in ("steward", "workspace_git"):
                     flag = _CHAIR_BOOL_WORDS.get(value.lower())
                     if flag is None:
@@ -219,6 +237,7 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
             continue
         in_spend = False
         in_chair = False
+        alarm_indent = None
         in_store = False
         in_aliases = False
         in_hosts = False

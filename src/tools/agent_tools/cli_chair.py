@@ -68,6 +68,7 @@ from agent_tools.cli_lazy import (
     chair_revert_watch,
     chair_run,
     chair_smoke,
+    chair_stall_alarm,
     chair_tick_cache,
     chair_wake,
     checkout_sync,
@@ -1121,7 +1122,7 @@ def _chair_run_deps(
         max_launches_per_hour=lambda: (profile.get("chair") or {}).get("max_launches_per_hour"),
         quarantine_hold_after=lambda: (profile.get("chair") or {}).get("quarantine_hold_after"),
         no_progress_after=lambda: (profile.get("chair") or {}).get("no_progress_after"),
-        stall_alarm=lambda: (profile.get("chair") or {}).get("stall_alarm"),
+        stall_alarm=lambda: chair_stall_alarm.profile_settings(profile.get("chair")),
         # The runs, phases and task records live in the store; with no store the reader finds no runs and holds nothing.
         run_outcomes=lambda ids, last: chair_read_run_outcomes.read_run_outcomes(runs_dir, ids, last),
         merge_queue=lambda: profile.get("merge_queue"),
