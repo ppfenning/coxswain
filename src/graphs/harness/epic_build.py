@@ -612,7 +612,10 @@ def refix_task(
         route = refix_route(build["checks"], ctx.checks, attempts_left=left, style_bound=style_open)
         if route == "quarantine":
             break
+        before = list(build["checks"])
         if route == "style_pass" and _style_fix(ctx, phase=phase, task=task, result=result, build=build):
+            # The checks re-run on the edit take this attempt's `checks` key; the ones that sent it to the edit are kept.
+            record_steps(ctx, with_checks(result, before, ctx.run_id, stage="prestyle"), phase=phase, task=task)
             spent += 1
             routes.append("style_pass")
             continue
@@ -648,6 +651,9 @@ def refix_task(
             why = unapproved(retried[0])
         if why is not None:
             build["evidence"].append({"check": "fix loop re-entry", "output": f"not approved: {why}"})
+            if retried and is_mapping(retried[0]):
+                # Not saved as the task's result, but its plan, build and reviews ran: they are this run's steps.
+                record_steps(ctx, retried[0], phase=phase, task=task)
             break
         result = retried[0]
         result.setdefault("initiative", ctx.initiative_id)

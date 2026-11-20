@@ -205,3 +205,9 @@ def test_checks_with_no_stamp_are_no_runs_and_a_reused_build_is_no_build():
 def test_with_checks_stamps_the_run_and_keeps_the_other_facts():
     stamped = with_checks({"change_facts": {"patch_ok": True}}, [{"name": "n", "passed": True}], "r9")
     assert stamped == {"change_facts": {"patch_ok": True, "checks": [{"name": "n", "passed": True}], "checks_run": "r9"}}
+
+
+def test_a_staged_check_is_its_own_kind_and_a_later_stamp_drops_the_stage():
+    staged = with_checks(RESULT, [{"name": "note", "passed": False}], "ship-1", stage="prestyle")
+    assert rows_of(staged)[-1]["step"] == "task/t1/checks-prestyle"
+    assert "checks_stage" not in with_checks(staged, [], "ship-1")["change_facts"]

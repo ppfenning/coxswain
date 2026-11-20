@@ -171,3 +171,32 @@ def test_a_refix_keeps_the_checks_that_sent_the_attempt_back_and_the_re_entrys_o
         ("task/t1/plan", 1, "", None),
         ("task/t1/review", 1, "approve", None),
     ]
+
+
+def test_a_refix_re_entry_that_is_not_approved_still_writes_the_steps_it_ran(tmp_path, store_conn):
+    # `refix_task` breaks on an unapproved re-entry without saving it; `record_steps` writes what it ran.
+    c = ctx(tmp_path, Store(store_conn))
+    refused = {**LIFECYCLE, "run_id": "r1:p1:refix1:t1", "plan": {}, "review": {"verdict": "revise", "findings": ["f"]}}
+    record_steps(c, refused, phase="p1", task="t1")
+    assert performed(store_conn, "r1") == [("task/t1-refix-1/build", 1, "", None), ("task/t1-refix-1/review", 0, "revise", None)]
+
+
+def test_a_rescue_whose_review_revises_writes_that_review(tmp_path, store_conn):
+    # `rescue_task` records the rescue graph's steps before it returns `rescue_failed` on a revise.
+    c = replace(ctx(tmp_path, Store(store_conn)), run_id="rescue-1")
+    revised = {"run_id": "rescue-1:p1:t1", "build": {"patch": "x", "reused": True},
+               "review": {"verdict": "revise", "findings": ["f", "g"]}, "fix_loop": {"attempts": 1}}
+    record_steps(c, revised, phase="p1", task="t1")
+    assert performed(store_conn, "rescue-1") == [("task/t1/review", 0, "revise", None)]
+
+
+def test_the_checks_before_a_style_pass_keep_a_row_of_their_own(tmp_path, store_conn):
+    # `refix_task`: the checks fail, a style-pass edit fixes them, the re-run checks are saved as the attempt's.
+    c = ctx(tmp_path, Store(store_conn))
+    record_steps(c, with_checks(LIFECYCLE, FAILING, "r1", stage="prestyle"), phase="p1", task="t1")
+    save_task_result(c, with_checks(LIFECYCLE, PASSING, "r1"), phase="p1", task="t1")
+    checks = [p for p in performed(store_conn, "r1") if "/checks" in p[0]]
+    assert checks == [
+        ("task/t1/checks", 1, "", [{**PASSING[0], "outcome": ""}]),
+        ("task/t1/checks-prestyle", 0, "", [{**FAILING[0], "outcome": ""}]),
+    ]

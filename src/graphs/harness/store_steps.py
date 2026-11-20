@@ -19,6 +19,17 @@ result, the quarantined attempt a rescue starts from) names its origin: its grap
 plan, build and reviews, and `change_facts.checks_run` the run that ran the checks stored with it (`with_checks`). A
 graph step is this run's when that run id is the run or one of its graphs (`<run>:...`, `belongs`); checks are when
 `checks_run` is. A build the result did not make (`build.reused`, the patch a rescue reviews) has no row.
+
+Where today's lanes write them (`epic_records.record_steps`, which `save_task_result` calls):
+- a task's graph steps and its checks, when its result is saved (`epic_phase`);
+- a fix-loop re-entry's graph steps, approved or not, and the checks that sent the attempt before it back
+  (`epic_build.refix_task`);
+- the checks that failed before a successful style-pass edit, as `checks-prestyle` (`checks_stage`), since the checks
+  re-run on the edit take the attempt's `checks` key;
+- a rescue's review, adversary and arbitration, whatever their verdict (`epic_execute.rescue_task`).
+
+Steps that run but get no row yet: a rescue's harness checks (`rescue_checks.verify_patch` returns evidence rows, not
+check results), the style-pass edit itself, and every phase-level step (smoke, suite, the phase validators).
 """
 
 from __future__ import annotations
@@ -48,7 +59,9 @@ Scope = Literal["task", "phase"]
 
 # A task's own steps, and a phase's. review, adversary and arbitration are a task's on today's model, where each
 # task is reviewed in its own lane, and a phase's on the phase model.
-TASK_KINDS: tuple[str, ...] = ("plan", "build", "checks", "rollup", "collision", "review", "adversary", "arbitration")
+TASK_KINDS: tuple[str, ...] = (
+    "plan", "build", "checks", "checks-prestyle", "rollup", "collision", "review", "adversary", "arbitration",
+)
 PHASE_KINDS: tuple[str, ...] = ("smoke", "review", "adversary", "arbitration", "suite", "triage")
 
 STEP_COLUMNS: tuple[str, ...] = (
@@ -88,10 +101,14 @@ def belongs(origin: str, run_id: str) -> bool:
     return bool(run_id) and (origin == run_id or origin.startswith(f"{run_id}:"))
 
 
-def with_checks(result: Mapping[str, object], checks: Sequence[Mapping[str, object]], run_id: str) -> dict[str, object]:
-    """Pure. `result` with `checks` under `change_facts`, stamped with `run_id`, the run that ran them."""
-    facts = _mapping(result.get("change_facts"))
-    return {**result, "change_facts": {**facts, "checks": [dict(c) for c in checks], "checks_run": run_id}}
+def with_checks(
+    result: Mapping[str, object], checks: Sequence[Mapping[str, object]], run_id: str, *, stage: str = ""
+) -> dict[str, object]:
+    """Pure. `result` with `checks` under `change_facts`, stamped with `run_id`, the run that ran them, and `stage`
+    when the checks are not the attempt's last (`prestyle`: before a style-pass edit); no stage is the last."""
+    facts = {k: v for k, v in _mapping(result.get("change_facts")).items() if k != "checks_stage"}
+    staged = {"checks_stage": stage} if stage else {}
+    return {**result, "change_facts": {**facts, "checks": [dict(c) for c in checks], "checks_run": run_id, **staged}}
 
 
 def step_row(
@@ -261,7 +278,8 @@ def steps_of_result(
         ("adversary", round_, _judge(result, "adversary", "objections")),
         ("arbitration", round_, _arbitration(result)),
     )
-    found = (*(graph if ours else ()), ("checks", round_, _checks(result, run_id)))
+    stage = str(_mapping(result.get("change_facts")).get("checks_stage") or "")
+    found = (*(graph if ours else ()), (f"checks-{stage}" if stage else "checks", round_, _checks(result, run_id)))
     return tuple(
         step_row(
             run_id=run_id, step=step_key("task", ident, kind, n), initiative=initiative, phase=phase, task_id=task,

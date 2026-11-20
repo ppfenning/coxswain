@@ -47,7 +47,7 @@ def test_every_new_table_column_is_not_null_and_each_create_and_index_repeats_sa
 @pytest.mark.parametrize("dialect", [SQLITE, POSTGRES], ids=["sqlite", "postgres"])
 def test_the_ddl_is_additive_with_plain_names_no_trigger_no_update_and_indexes_only_on_its_own_tables(dialect):
     sql = statements(dialect)
-    assert additive_violations(sql) == ()
+    assert additive_violations(sql, {}) == ()
     assert not [s for s in sql if re.search(r"[\"`\[]|\b\w+\.\w+\b|\bUPDATE\b|\bTRIGGER\b|\bFUNCTION\b|\bUNIQUE\b", s)]
     indexed = [re.match(r"CREATE INDEX IF NOT EXISTS \w+ ON (\w+) ", s) for s in sql if s.startswith("CREATE INDEX")]
     assert [m.group(1) for m in indexed if m] == ["phase_queue", "phase_queue", "step_results"]
