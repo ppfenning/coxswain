@@ -209,6 +209,12 @@ The profile names the environment variables that hold the key and secret.
 It never holds the values. A literal key in the profile is refused.
 `cox lake doctor` shows the endpoint and whether each variable is set.
 
+To keep each step's patch, check logs and transcripts in object storage as
+well as in the run folder, set `artifacts_url` the same way, for example
+`artifacts_url: s3://<bucket>/artifacts`. One machine can use
+`artifacts_url: file:///<folder>` instead. `cox runs artifacts <run>` lists
+the keys a run wrote. Without the key nothing is uploaded.
+
 ### A Garage server
 
 A single-node Garage on the tailnet needs one profile block. Replace `<host>`
@@ -223,6 +229,7 @@ object_store:
   path_style: true
 traces_url: s3://<bucket>/traces
 lake_url: s3://<bucket>/lake
+artifacts_url: s3://<bucket>/artifacts
 ```
 
 Garage 1.1 also needs two SDK settings. Without them the pyarrow S3 client

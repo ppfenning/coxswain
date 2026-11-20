@@ -12,6 +12,8 @@ Run records live in the database. That covers runs, phases, tasks, task records,
 
 Traces live outside git, under a trace root. The layout is `YYYY/MM/DD/<run_id>.parquet`, one zstd-compressed Parquet file per run, as the docstring of `harness/store_traces.py` states. Older day files, `YYYY/MM/DD/<run_id>.jsonl.zst`, still read when a run has no Parquet file. The root is the profile's `traces_url` (a path, `file://`, `s3://`, or a scheme a plugin serves; see `harness/traces_url.py`), else `<runs_dir>/traces`.
 
+Step artifacts (each task step's patch, check logs and transcripts) go to object storage only when the provider profile sets `artifacts_url`, resolved as `traces_url` is. Keys are write-once, `v1/runs/<run_id>/<step with '/' as '__'>/<name>`, and are uploaded before the step's `step_results` row, whose `artifacts_json` lists each key with its size and sha256; see `harness/artifacts.py`. `cox runs artifacts <run>` lists them from the rows. Without the key nothing is uploaded, and the run folder under `runs/` is the only copy, as before. One machine can set `artifacts_url: file:///<folder>` and needs no object store.
+
 ## Who owns what
 
 The `src/graphs` folder owns the DDL, the numbered migrations, the `schema_version` table, the graphs registry and the dialect shim. The shim is `harness/store_dialect.py`. The migrations and their runner are in `harness/store_migrate.py` and the `harness/store_ddl_NNNN.py` modules.

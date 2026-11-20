@@ -35,6 +35,7 @@ from graphs.delivery.initiative_decompose import (
     unexecuted_item_create_reason,
     withdrawal,
 )
+from harness.artifacts import artifacts_root
 from harness.autonomy import split_by_policy
 from harness.checks import all_passed, checks_evidence, run_checks
 from harness.escalate import escalate_self_modification
@@ -807,6 +808,11 @@ def _run_graph(
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 1
+        try:
+            artifacts = artifacts_root(read_provider_profile(args.provider_profile), os.environ)
+        except (ValueError, ImportError) as exc:
+            print(f"artifacts: {exc}", file=sys.stderr)
+            return 1
         headroom_usd, est_task_usd = _usage_bound(parser, args, runner)
 
         # Wired to stdout because that's the stream this branch's own status
@@ -840,6 +846,7 @@ def _run_graph(
             fix_attempts=args.fix_attempts,
             resume_from=args.resume_from,
             pool=pool,
+            artifacts=artifacts,
             store=store,
             epoch=epoch,
             lease_name=lease_name,

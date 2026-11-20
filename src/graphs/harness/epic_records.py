@@ -18,6 +18,7 @@ import yaml
 
 from core.jsontypes import is_list, is_mapping
 from harness import work_mirror
+from harness.artifacts import step_artifacts
 from harness.courier_adapter import publish_run_exited
 from harness.epic_context import Ctx, StoreRetry
 from harness.epic_types import EpicItem, ItemRef, Quarantine, as_list, as_mapping, phase_record
@@ -711,20 +712,23 @@ def _task_record_mirror(
 
 def record_steps(ctx: Ctx, result: Mapping[str, object], *, phase: str, task: str) -> None:
     """Edge. One `step_results` row per step of `result` that this run performed (`store_steps.steps_of_result`),
-    each written once. Nothing without a store or under a stale epoch; a store failure is a warning, never a failed
+    each written once. With `ctx.artifacts`, each new row's artifacts are uploaded first and listed on it
+    (`artifacts.step_artifacts`, which never raises: a failed upload marks the row and the row is still written). Nothing without a store or under a stale epoch; a store failure is a warning, never a failed
     run. `result` is read as its JSON round trip, the shape the result file holds."""
     store = ctx.store
     if store is None:
         return
     try:
+        data, at = json.loads(json.dumps(dict(result), default=str)), utc_now()
         rows = steps_of_result(
-            json.loads(json.dumps(dict(result), default=str)), run_id=ctx.run_id, initiative=ctx.initiative_id,
-            phase=phase, task=task, at=utc_now(), claim_epoch=ctx.epoch or 0,
+            data, run_id=ctx.run_id, initiative=ctx.initiative_id, phase=phase, task=task, at=at,
+            claim_epoch=ctx.epoch or 0,
         )
 
         def write() -> None:
             if fence_reason(ctx) is None:
-                for row in rows:
+                for row in step_artifacts(ctx.artifacts, store.conn, rows, data, runs_dir=ctx.runs_dir,
+                                          run_id=ctx.run_id, phase=phase, task=task, now=at):
                     put_step(store.conn, row)
 
         if rows:

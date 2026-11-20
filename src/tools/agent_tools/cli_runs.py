@@ -439,6 +439,26 @@ def _runs_resume(a: argparse.Namespace) -> int:
     return _runs_pause_resume_outcome("resumed", run_id, store_cli.resume(store_url, run_id), a.json)
 
 
+def _runs_artifacts(a: argparse.Namespace) -> int:
+    """Edge. `cox runs artifacts <run>`: the keys the run's step rows list, read from the store, never the bucket."""
+    from agent_tools import runs_artifacts
+
+    runs_dir = Path(a.runs_dir)
+    run_id = _resolved_run_id(runs_dir, a.run_id)
+    api = run_store.harness_store_api()
+    rows = api.step_rows(run_store.store_url_for(runs_dir), run_id)
+    if isinstance(rows, api.Failed | api.NotAvailable):
+        detail = rows.detail if isinstance(rows, api.Failed) else f"the store is not available: {rows.reason}"
+        print(f"failed {run_id}: {detail}", file=sys.stderr)
+        return 1
+    entries = runs_artifacts.listing(rows)
+    if a.json:
+        print(json.dumps({"run": run_id, "artifacts": entries}, indent=2))
+        return 0
+    print("\n".join(runs_artifacts.lines(run_id, entries)))
+    return 0
+
+
 def _runs_move_pause(store_url: str, run_id: str, reason: str | None) -> tuple[bool, str]:
     """Edge: `cox runs move`'s pause step, over the same `store_cli.pause` result types
     `_runs_pause_resume_outcome` already maps."""
