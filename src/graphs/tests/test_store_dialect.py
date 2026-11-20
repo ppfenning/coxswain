@@ -150,6 +150,8 @@ def test_file_sqlite_opens_with_wal_foreign_keys_and_busy_timeout(tmp_path):
     assert conn.query_one("PRAGMA journal_mode")[0] == "wal"
     assert conn.query_one("PRAGMA foreign_keys")[0] == 1
     assert conn.query_one("PRAGMA busy_timeout")[0] > 0
+    assert conn.raw.isolation_level is None  # no implicit BEGIN, so a failed statement holds no lock
+    assert conn._begin == "BEGIN IMMEDIATE"  # the write lock is taken at BEGIN, where the busy timeout applies
 
 
 def test_postgres_url_without_the_driver_names_the_extra(monkeypatch):

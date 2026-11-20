@@ -97,6 +97,8 @@ def test_a_conflict_in_a_file_that_is_not_generated_still_stops_the_land(tmp_pat
     wt, ok, detail, out = _land_second(repo, "a", b)
     assert not ok
     assert f"cherry-pick of {b[:8]} conflicts in: notes.txt, src/tools/README.md" in detail
+    named, _, git_text = detail.partition("\n")  # git's own stderr trails the conflicts line, for `land_refusal`
+    assert named.startswith("cherry-pick of ") and "could not apply" in git_text
     assert not any("regenerated" in line for line in out)
     assert _git(wt, "rev-parse", "HEAD") == _git(repo, "rev-parse", a)
     assert _git(wt, "status", "--porcelain") == ""
