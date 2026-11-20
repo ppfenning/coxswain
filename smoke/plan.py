@@ -194,12 +194,31 @@ def with_database(url: str, database: str) -> str:
     return parts._replace(path=f"/{database}").geturl()
 
 
-def database_name(test_id: str) -> str:
-    """A Postgres database name for one test: lower case letters, digits and underscores, at most 63 characters, and
-    distinct for distinct test ids (a hash of the id closes it)."""
-    stem = re.sub(r"[^a-z0-9]+", "_", test_id.lower()).strip("_")[:40]
+def session_prefix(session: str, started: int) -> str:
+    """The front of every database name one session creates: `smoke_<session>_<started>_`."""
+    return f"smoke_{session}_{started}_"
+
+
+def database_name(test_id: str, session: str, started: int) -> str:
+    """A Postgres database name for one test of one session: lower case letters, digits and underscores, at most 63
+    characters, and distinct for distinct test ids (a hash of the id closes it)."""
+    stem = re.sub(r"[^a-z0-9]+", "_", test_id.lower()).strip("_")[:20]
     digest = hashlib.sha256(test_id.encode()).hexdigest()[:12]
-    return f"smoke_{stem}_{digest}"
+    return f"{session_prefix(session, started)}{stem}_{digest}"
+
+
+_SESSION_DATABASE = re.compile(r"smoke_[0-9a-f]{12}_(\d+)_")
+
+
+def stale_databases(names: Iterable[str], now: int, stale_after: int = STALE_AFTER_S) -> list[str]:
+    """The names whose embedded session start is more than `stale_after` seconds before `now`. A name not shaped
+    `smoke_<12 hex>_<epoch>_...` is left alone: nothing says it is not some live session's."""
+    stale = []
+    for name in names:
+        match = _SESSION_DATABASE.match(name)
+        if match and now - int(match.group(1)) > stale_after:
+            stale.append(name)
+    return stale
 
 
 def system_path_with(system_path: str, tool_dir: str | None) -> str:

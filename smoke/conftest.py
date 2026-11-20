@@ -51,6 +51,9 @@ COMMAND_TIMEOUT_S = 600
 # This session's id, on the label of the container it starts: `docker ps --filter label=coxswain-smoke.session=<id>`
 # finds it. Printed in the report header. The suite runs serial, so a run is one session.
 SESSION = uuid.uuid4().hex[:12]
+# When this session started (epoch seconds): in every database name it creates, so a later session on the same server
+# reaps by age the databases a killed session left behind.
+SESSION_STARTED = int(time.time())
 
 
 def pytest_report_header() -> str:
@@ -199,30 +202,82 @@ def postgres() -> Iterator[str]:
 _ADMIN = """import sys, psycopg
 url, verb, name = sys.argv[1:4]
 with psycopg.connect(url, autocommit=True) as conn:
-    conn.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
-    if verb == "create":
-        conn.execute(f'CREATE DATABASE "{name}"')
+    if verb == "list":  # `name` is a LIKE pattern here
+        for (datname,) in conn.execute("SELECT datname FROM pg_database WHERE datname LIKE %s", (name,)):
+            print(datname)
+    else:
+        conn.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+        if verb == "create":
+            conn.execute(f'CREATE DATABASE "{name}"')
 """
 
 
+@dataclass(frozen=True)
+class SessionDatabases:
+    """The smoke databases on the session's Postgres server. Every call runs the admin script under the install's own
+    sandboxed environment: no PYTHONPATH, no PG* variables and no real HOME reach it."""
+
+    server: str
+    install: Install
+
+    def _admin(self, verb: str, name: str, *, must: bool) -> subprocess.CompletedProcess[str]:
+        argv = [str(self.install.python), "-c", _ADMIN, self.server, verb, name]
+        return (_must if must else _run)(argv, env=self.install.env, cwd=self.install.root)
+
+    def create(self, name: str) -> None:
+        self._admin("create", name, must=True)
+
+    def drop(self, name: str) -> None:
+        self._admin("drop", name, must=False)
+
+    def names(self) -> list[str]:
+        """Every `smoke_` database on the server."""
+        return self._admin("list", r"smoke\_%", must=True).stdout.split()
+
+    def reap(self) -> list[str]:
+        """Drop the databases whose session started more than `plan.STALE_AFTER_S` ago; return their names."""
+        stale = plan.stale_databases(self.names(), int(time.time()))
+        for name in stale:
+            self.drop(name)
+        return stale
+
+    def drop_prefix(self, prefix: str) -> None:
+        for name in self.names():
+            if name.startswith(prefix):
+                self.drop(name)
+
+
+@pytest.fixture(scope="session")
+def session_databases(postgres: str, install: Install) -> Iterator[SessionDatabases]:
+    """The session's handle on its server's databases. At the start it reaps the ones a killed session left behind; at
+    the end it drops every one still carrying this session's prefix. On a container the server goes away whole, so the
+    reap finds nothing there."""
+    databases = SessionDatabases(postgres, install)
+    databases.reap()
+    try:
+        yield databases
+    finally:
+        databases.drop_prefix(plan.session_prefix(SESSION, SESSION_STARTED))
+
+
 @pytest.fixture
-def store_url(postgres: str, install: Install, request: pytest.FixtureRequest) -> Iterator[str]:
+def store_url(postgres: str, session_databases: SessionDatabases, request: pytest.FixtureRequest) -> Iterator[str]:
     """A fresh database for one test, at the newest schema. The harness's own store CLI opens it first, which is
-    what applies the migrations (`harness.store_migrate.open_store`)."""
+    what applies the migrations (`harness.store_migrate.open_store`). Its name starts with this session's id and start
+    time, so another session sharing the server never drops it."""
     if PG_DUMP is None:
         pytest.fail("pg_dump is not on PATH: the harness backs up every store it migrates with pg_dump, and each smoke "
                     "database is migrated when it opens. Install the PostgreSQL client tools and put pg_dump on PATH.",
                     pytrace=False)
-    name = plan.database_name(request.node.nodeid)
-    # install.env, not the caller's: no PYTHONPATH, no PG* variables and no real HOME reach these calls
-    admin = [str(install.python), "-c", _ADMIN, postgres]
-    _must([*admin, "create", name], env=install.env, cwd=install.root)
+    install = session_databases.install
+    name = plan.database_name(request.node.nodeid, SESSION, SESSION_STARTED)
+    session_databases.create(name)
     url = plan.with_database(postgres, name)
-    _must([str(install.python), "-m", "harness.store_cli", "--store-url", url, "host", "list"], env=install.env, cwd=install.root)
     try:
+        _must([str(install.python), "-m", "harness.store_cli", "--store-url", url, "host", "list"], env=install.env, cwd=install.root)
         yield url
     finally:
-        _run([*admin, "drop", name], env=install.env, cwd=install.root)
+        session_databases.drop(name)
 
 
 # --- the sandbox ---------------------------------------------------------------------------------------------------

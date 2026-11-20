@@ -117,13 +117,43 @@ def test_urls():
     assert plan.with_database("postgresql://u:p@localhost:5/postgres?sslmode=disable", "other") == "postgresql://u:p@localhost:5/other?sslmode=disable"
 
 
+SESSION_ID = "0123456789ab"
+STARTED = 1_700_000_000
+
+
 def test_database_names_are_valid_and_distinct():
     long_id = "smoke/test_contract_route_edit.py::test_" + "x" * 200
-    names = {plan.database_name(i) for i in ("a::b", "a::c", "A::B[x-y]", long_id)}
-    assert len(names) == 4
+    same_stem = ("smoke/test_a_long_shared_prefix.py::test_one", "smoke/test_a_long_shared_prefix.py::test_two")
+    names = {plan.database_name(i, SESSION_ID, STARTED) for i in ("a::b", "a::c", "A::B[x-y]", long_id, *same_stem)}
+    assert len(names) == 6
     for name in names:
         assert len(name) <= 63
+        assert name.startswith(plan.session_prefix(SESSION_ID, STARTED))
         assert name.replace("_", "").isalnum() and name == name.lower()
+
+
+def test_database_names_differ_by_session():
+    assert plan.database_name("a::b", SESSION_ID, STARTED) != plan.database_name("a::b", "ba9876543210", STARTED)
+    assert plan.database_name("a::b", SESSION_ID, STARTED) != plan.database_name("a::b", SESSION_ID, STARTED + 1)
+
+
+def test_session_prefix():
+    assert plan.session_prefix(SESSION_ID, STARTED) == "smoke_0123456789ab_1700000000_"
+
+
+def test_stale_databases_returns_only_names_older_than_the_limit():
+    now = STARTED + 3 * 60 * 60
+    old = plan.database_name("a::b", SESSION_ID, STARTED)
+    fresh = plan.database_name("a::b", "ba9876543210", now - 60)
+    assert plan.stale_databases([old, fresh], now) == [old]
+    assert plan.stale_databases([old, fresh], now, stale_after=30) == [old, fresh]
+    assert plan.stale_databases([old], STARTED + plan.STALE_AFTER_S) == []
+
+
+def test_stale_databases_leaves_names_it_cannot_read_alone():
+    now = STARTED + 10 * 60 * 60
+    unreadable = ["postgres", "smoke_x", "smoke_0123_1_a", "smoke_0123456789ab_soon_a", "smoke_0123456789AB_1_a", "other_0123456789ab_1_a"]
+    assert plan.stale_databases(unreadable, now) == []
 
 
 def test_the_sandbox_env_keeps_only_what_it_names():
