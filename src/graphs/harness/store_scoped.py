@@ -9,6 +9,7 @@ whose extra migrations are all additive) and writes no DDL.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 
 from harness import store_roles
@@ -44,30 +45,42 @@ def open_scoped(url: str) -> Connection:
     return conn
 
 
+def _memberships(conn: Connection, role: str) -> tuple[str, ...]:
+    """Edge. The roles `role` is a direct member of."""
+    p = conn.dialect.placeholder
+    return tuple(str(r[0]) for r in conn.query_all(
+        "SELECT g.rolname FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid "
+        f"JOIN pg_roles u ON u.oid = m.member WHERE u.rolname = {p}", (role,)))
+
+
 def _observe(conn: Connection, login: str) -> RoleState:
-    """Edge. Which of the two roles exist, and the tables of the connection's schema."""
+    """Edge. Which of the two roles exist and what each is a member of, the connection's database and schema, and
+    the schema's tables."""
     p = conn.dialect.placeholder
     roles = {str(r[0]) for r in conn.query_all(
         f"SELECT rolname FROM pg_roles WHERE rolname IN ({p}, {p})", (store_roles.GROUP_ROLE, login))}
-    schema_row = conn.query_one("SELECT current_schema()")
-    schema = str(schema_row[0]) if schema_row else "public"
+    where = conn.query_one("SELECT current_database(), current_schema()")
+    database, schema = (str(where[0]), str(where[1])) if where else ("postgres", "public")
     tables = tuple(str(r[0]) for r in conn.query_all(
         f"SELECT table_name FROM information_schema.tables WHERE table_schema = {p} AND table_type = 'BASE TABLE'",
         (schema,)))
     return RoleState(group_exists=store_roles.GROUP_ROLE in roles, login_exists=login in roles, tables=tables,
-                     schema=schema)
+                     schema=schema, database=database, group_memberships=_memberships(conn, store_roles.GROUP_ROLE),
+                     login_memberships=_memberships(conn, login))
 
 
-def apply_role(owner_url: str, login: str, kept_password: str | None, new_password: str, now: str) -> RolePlan:
+def apply_role(owner_url: str, login: str, kept_password: str | None, new_password: str, now: str,
+               revoke_public_create: bool = False) -> RolePlan:
     """Edge. As the store's owner: bring the store to this code's schema (`open_store`, the owner's one path), then
-    apply `store_roles.role_plan` in one transaction, so a failure leaves the roles and grants as they were. Returns
-    the plan; its statements carry the password, so never print them. Raises ValueError for a store that is not
-    Postgres, which has no roles, before opening it."""
+    apply `store_roles.role_plan`, with a fresh salt, in one transaction, so a failure leaves the roles and grants as
+    they were. Returns the plan; its statements carry only the password's SCRAM verifier. Raises ValueError for a
+    store that is not Postgres, which has no roles, before opening it."""
     if not owner_url.startswith(_POSTGRES_SCHEMES):
         raise ValueError("a scoped worker role needs the Postgres store; this store has no roles")
     conn = open_store(owner_url, now)
     try:
-        plan = store_roles.role_plan(_observe(conn, login), login, kept_password, new_password)
+        plan = store_roles.role_plan(_observe(conn, login), login, kept_password, new_password,
+                                     os.urandom(store_roles.SALT_BYTES), revoke_public_create)
         with conn.transaction():
             for sql in plan.statements:
                 conn.execute(sql)
@@ -104,10 +117,18 @@ def probe(conn: Connection, probes: Sequence[Probe] = store_roles.PROBES) -> tup
     return tuple((p, one(p)) for p in probes)
 
 
-def probe_url(url: str) -> tuple[tuple[Probe, str], ...]:
-    """Edge. Open `url` through `open_scoped` and run the probes. Raises what the connection raises."""
+def public_create_schema(conn: Connection) -> str | None:
+    """Edge. The connection's schema when PUBLIC may create in it (Postgres before 15 grants that by default), else
+    None. Postgres only."""
+    row = conn.query_one("SELECT current_schema(), has_schema_privilege('public', current_schema(), 'CREATE')")
+    return str(row[0]) if row and row[1] else None
+
+
+def probe_url(url: str) -> tuple[tuple[tuple[Probe, str], ...], str | None]:
+    """Edge. Open `url` through `open_scoped`, run the probes, and say whether PUBLIC may create in its schema.
+    Raises what the connection raises."""
     conn = open_scoped(url)
     try:
-        return probe(conn)
+        return probe(conn), public_create_schema(conn)
     finally:
         conn.close()

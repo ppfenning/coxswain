@@ -1,3 +1,5 @@
+import base64
+
 import pytest
 
 from harness import store_ddl_0020, store_roles
@@ -13,6 +15,7 @@ from harness.store_roles import (
     probe_verdict,
     role_name,
     role_plan,
+    scram_verifier,
     worker_url,
 )
 
@@ -105,40 +108,91 @@ def test_role_name_refuses_an_empty_or_too_long_name(worker):
         role_name(worker)
 
 
-def test_a_new_store_gets_both_roles_and_the_new_password():
-    plan = role_plan(RoleState(False, False, ("runs",)), "cox_w_a", None, "new-pass")
-    assert plan.statements[:4] == (
-        f"CREATE ROLE {GROUP_ROLE} NOLOGIN",
-        "CREATE ROLE cox_w_a LOGIN PASSWORD 'new-pass'",
-        f"GRANT {GROUP_ROLE} TO cox_w_a",
-        "ALTER ROLE cox_w_a SET idle_in_transaction_session_timeout = '15s'",
-    )
-    assert plan.statements[4:] == grant_statements(("runs",))
+SALT = bytes(range(16))
+# Postgres 16 made this verifier for 'pencil' (CREATE ROLE ... PASSWORD 'pencil', then pg_authid.rolpassword).
+PG_SALT = base64.b64decode("i7aP06P6QYE2A5L5DR6nGA==")
+PG_VERIFIER = ("SCRAM-SHA-256$4096:i7aP06P6QYE2A5L5DR6nGA==$f2C38IbwGuhZanfkiZZeZURI+9mWvJWmCauiUvVwNr4=:"
+               "Cv0IWktLG01tomCr9VhJEMputAj3XQyxWxF/yMSsNGE=")
+
+
+def test_the_verifier_is_the_one_postgres_computes_for_the_same_password_and_salt():
+    assert scram_verifier("pencil", PG_SALT) == PG_VERIFIER
+
+
+@pytest.mark.parametrize("password", ["", "has space", "caf\u00e9"])
+def test_a_password_sasl_prep_could_change_is_refused(password):
+    with pytest.raises(ValueError):
+        scram_verifier(password, SALT)
+
+
+def _plan(state=None, kept=None, new="new-pass", **kw):
+    return role_plan(state or RoleState(False, False, ("runs",)), "cox_w_a", kept, new, SALT, **kw)
+
+
+def test_no_statement_ever_carries_the_password_itself():
+    for state in (RoleState(False, False, ()), RoleState(True, True, ()), RoleState(True, False, ())):
+        for kept in (None, "kept-pass"):
+            plan = _plan(state, kept)
+            assert not any(plan.password in s for s in plan.statements)
+            setting = [s for s in plan.statements if "PASSWORD" in s]
+            assert setting == ([f"ALTER ROLE cox_w_a {store_roles._SAFE_ATTRIBUTES} LOGIN VALID UNTIL 'infinity' "
+                                f"PASSWORD '{scram_verifier(plan.password, SALT)}'"] if plan.sets_password else [])
+
+
+def test_a_new_store_gets_both_roles_reset_and_the_new_password():
+    plan = _plan()
+    assert plan.statements[:2] == (f"CREATE ROLE {GROUP_ROLE} NOLOGIN", "CREATE ROLE cox_w_a LOGIN")
+    reset = (f"ALTER ROLE {GROUP_ROLE} NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION INHERIT "
+             "CONNECTION LIMIT -1 NOLOGIN")
+    assert reset in plan.statements
+    assert f"GRANT {GROUP_ROLE} TO cox_w_a" in plan.statements
+    assert "ALTER ROLE cox_w_a SET idle_in_transaction_session_timeout = '15s'" in plan.statements
+    assert plan.statements[-len(grant_statements(("runs",))):] == grant_statements(("runs",))
     assert (plan.password, plan.sets_password) == ("new-pass", True)
 
 
+def test_every_run_takes_away_what_was_added_to_either_role_by_hand():
+    state = RoleState(True, True, ("runs",), database="cox", group_memberships=("pg_read_all_data",),
+                      login_memberships=(GROUP_ROLE, "pg_write_all_data", "Odd\"Name"))
+    stmts = _plan(state, "kept").statements
+    assert any(s.startswith("ALTER ROLE cox_w_a NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION "
+                            "INHERIT") for s in stmts)
+    assert 'REVOKE "pg_read_all_data" FROM cox_worker' in stmts
+    assert 'REVOKE "pg_write_all_data" FROM cox_w_a' in stmts
+    assert 'REVOKE "Odd""Name" FROM cox_w_a' in stmts
+    assert not any(s == f'REVOKE "{GROUP_ROLE}" FROM cox_w_a' for s in stmts)
+    for role in ("cox_w_a", GROUP_ROLE):
+        assert f'REVOKE ALL ON DATABASE "cox" FROM {role}' in stmts
+        for what in ("SCHEMA public", "ALL TABLES IN SCHEMA public", "ALL SEQUENCES IN SCHEMA public",
+                     "ALL FUNCTIONS IN SCHEMA public"):
+            assert f"REVOKE ALL ON {what} FROM {role}" in stmts
+    assert "ALTER ROLE cox_w_a RESET ALL" in stmts
+    revokes = max(i for i, s in enumerate(stmts) if s.startswith("REVOKE ALL ON ALL TABLES"))
+    assert revokes < stmts.index(f"GRANT {GROUP_ROLE} TO cox_w_a") < stmts.index(grant_statements(("runs",))[0])
+
+
 def test_a_repeat_with_the_password_kept_sets_no_password_and_creates_nothing():
-    plan = role_plan(RoleState(True, True, ("runs",)), "cox_w_a", "kept", "unused")
+    plan = _plan(RoleState(True, True, ("runs",)), "kept", "unused")
     assert not any("CREATE ROLE" in s or "PASSWORD" in s for s in plan.statements)
-    assert plan.statements[0] == "ALTER ROLE cox_w_a LOGIN"
     assert (plan.password, plan.sets_password) == ("kept", False)
-    assert role_plan(RoleState(True, True, ("runs",)), "cox_w_a", "kept", "other") == plan
+    assert _plan(RoleState(True, True, ("runs",)), "kept", "other") == plan
 
 
 def test_a_role_whose_password_the_file_lost_gets_the_new_one():
-    plan = role_plan(RoleState(True, True, ()), "cox_w_a", None, "fresh")
-    assert plan.statements[0] == "ALTER ROLE cox_w_a LOGIN PASSWORD 'fresh'"
+    plan = _plan(RoleState(True, True, ()), None, "fresh")
     assert (plan.password, plan.sets_password) == ("fresh", True)
+    assert any(scram_verifier("fresh", SALT) in s for s in plan.statements)
 
 
 def test_a_dropped_role_is_recreated_with_the_password_the_file_still_holds():
-    plan = role_plan(RoleState(True, False, ()), "cox_w_a", "kept", "unused")
-    assert plan.statements[0] == "CREATE ROLE cox_w_a LOGIN PASSWORD 'kept'"
-    assert plan.password == "kept"
+    plan = _plan(RoleState(True, False, ()), "kept", "unused")
+    assert "CREATE ROLE cox_w_a LOGIN" in plan.statements
+    assert (plan.password, plan.sets_password) == ("kept", True)
 
 
-def test_a_quote_in_a_password_is_doubled():
-    assert "PASSWORD 'it''s'" in role_plan(RoleState(True, False, ()), "cox_w_a", None, "it's").statements[0]
+def test_public_create_is_revoked_only_when_asked():
+    assert "REVOKE CREATE ON SCHEMA public FROM PUBLIC" not in _plan().statements
+    assert "REVOKE CREATE ON SCHEMA public FROM PUBLIC" in _plan(revoke_public_create=True).statements
 
 
 def test_worker_url_swaps_only_the_user_and_password():
@@ -169,6 +223,10 @@ def test_the_verdict_passes_only_when_allowed_writes_work_and_forbidden_ones_are
     assert probe_verdict([(forbidden, "UndefinedTable: x")]) == (False, f"{forbidden.label}: UndefinedTable: x")
     assert probe_verdict([(allowed, "UndefinedTable: x")]) == (False, f"{allowed.label}: UndefinedTable: x")
     assert probe_verdict([]) == (False, "no probe ran")
+    create = next(p for p in PROBES if p.label == "create table")
+    ok, detail = probe_verdict([(create, OK)], "public")
+    assert not ok and "PUBLIC can create in schema public" in detail
+    assert "REVOKE CREATE ON SCHEMA public FROM PUBLIC" in detail and "--revoke-public-create" in detail
 
 
 def test_the_env_names_match_the_tools_copy():

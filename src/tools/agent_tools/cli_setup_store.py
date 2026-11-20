@@ -6,6 +6,7 @@ import argparse
 import contextlib
 import os
 import sys
+import tempfile
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -266,10 +267,7 @@ def _setup_unit_env(a: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"refusing: {path}: {exc}")
         return 2
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.touch(mode=0o600, exist_ok=True)
-    path.chmod(0o600)
-    path.write_text(text, encoding="utf-8")
+    _write_env_file(path, text)
     print(path)
     print(f"names: {', '.join(unit_env.parse_env(text)) or 'none'}")
     if not token:
@@ -278,11 +276,26 @@ def _setup_unit_env(a: argparse.Namespace) -> int:
 
 
 def _write_env_file(path: Path, text: str) -> None:
-    """Edge. Write a units' env file mode 600, creating it so before any byte lands."""
+    """Edge. Replace a units' env file atomically: a temporary file in the same folder, mode 600 from its creation,
+    written and fsynced, then renamed over `path`, and the folder fsynced. A crash leaves the old file or the new
+    one, never a torn one, and no byte is ever readable by anyone but the owner."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.touch(mode=0o600, exist_ok=True)
-    path.chmod(0o600)
-    path.write_text(text, encoding="utf-8")
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")  # mkstemp creates it 0600
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            os.fchmod(f.fileno(), 0o600)
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    folder = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(folder)
+    finally:
+        os.close(folder)
 
 
 def _setup_worker_role(a: argparse.Namespace) -> int:
@@ -290,7 +303,8 @@ def _setup_worker_role(a: argparse.Namespace) -> int:
     storage_url): create the `cox_worker` group and this worker's login role when absent, and bring both to the one
     grant set (`harness.store_roles`). The login role and its password go into the units' env file, mode 600, never
     the provider profile, which every run's folder gets a copy of; the password is never printed. A repeat run keeps
-    the password the file holds and changes nothing; a changed grant set is applied by running it again."""
+    the password the file holds and changes nothing; a changed grant set, or a role widened by hand, is put back by
+    running it again. `--revoke-public-create` also takes CREATE on the schema from PUBLIC (Postgres before 15)."""
     import secrets
 
     from harness import store_roles, store_scoped
@@ -316,7 +330,8 @@ def _setup_worker_role(a: argparse.Namespace) -> int:
     try:
         unit_env.with_values(existing, {})  # refuse a file this would rewrite differently before touching the store
         plan = store_scoped.apply_role(owner_url, login, kept, secrets.token_urlsafe(32),
-                                       datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
+                                       datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                       revoke_public_create=bool(getattr(a, "revoke_public_create", False)))
         text = unit_env.with_values(existing, {store_roles.ROLE_ENV: login, store_roles.PASSWORD_ENV: plan.password})
     except (ValueError, StoreVersionError) as exc:
         print(f"refusing: {exc}", file=sys.stderr)

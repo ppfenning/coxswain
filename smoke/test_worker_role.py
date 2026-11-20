@@ -121,7 +121,9 @@ def worker_machine(sandbox) -> Iterator:
     try:
         yield sandbox
     finally:
-        _owner(sandbox, sandbox.store_url, f"DROP ROLE IF EXISTS {_login(sandbox)}")
+        login = _login(sandbox)
+        _owner(sandbox, sandbox.store_url, f"DO $$BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{login}') "
+                                           f"THEN EXECUTE 'DROP OWNED BY {login}'; EXECUTE 'DROP ROLE {login}'; END IF; END$$")
 
 
 def _worker(machine) -> str:
@@ -197,6 +199,65 @@ def test_the_role_writes_its_results_and_claims_and_is_refused_everything_else(w
     rows = _owner(worker_machine, url, "SELECT COUNT(*) FROM step_results",
                   "SELECT claimed_by, claim_epoch, band FROM phase_queue")
     assert rows == [[[1]], [["smoke-w1", 1, 1]]]
+
+
+def test_a_role_widened_by_hand_is_put_back_by_the_next_run(worker_machine):
+    _setup(worker_machine)
+    url, login = worker_machine.store_url, _login(worker_machine)
+    _owner(worker_machine, url, f"ALTER ROLE {login} CREATEROLE BYPASSRLS", f"GRANT DELETE ON work_items TO {login}",
+           f"GRANT pg_write_all_data TO {login}", "GRANT pg_read_all_data TO cox_worker",
+           f"ALTER ROLE {login} SET statement_timeout = 0")
+    state = (f"SELECT rolcreaterole, rolbypassrls, rolsuper, rolinherit, has_table_privilege('{login}', 'work_items', "
+             f"'DELETE'), pg_has_role('{login}', 'pg_write_all_data', 'MEMBER'), "
+             f"pg_has_role('{login}', 'pg_read_all_data', 'MEMBER'), pg_has_role('{login}', 'cox_worker', 'MEMBER') "
+             f"FROM pg_roles WHERE rolname = '{login}'")
+    settings = (f"SELECT setconfig FROM pg_db_role_setting s JOIN pg_roles r ON r.oid = s.setrole "
+                f"WHERE r.rolname = '{login}'")
+    assert _owner(worker_machine, url, state)[0] == [[True, True, False, True, True, True, True, True]]
+    _setup(worker_machine)
+    assert _owner(worker_machine, url, state, settings) == [
+        [[False, False, False, True, False, False, False, True]],
+        [[["idle_in_transaction_session_timeout=15s"]]],
+    ]
+    values = _env_values(worker_machine)
+    done = subprocess.run([str(worker_machine.install.python), "-c", WORKER_SQL,
+                           json.dumps([["delete work_items", "DELETE FROM work_items"]])],
+                          env={**worker_machine.env, "SMOKE_WORKER_URL": _worker_url(url, login, values[PASSWORD_ENV])},
+                          cwd=worker_machine.home, capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == {"delete work_items": "42501"}
+
+
+def test_the_password_reaches_the_server_only_as_a_scram_verifier(worker_machine):
+    _setup(worker_machine)
+    url, login = worker_machine.store_url, _login(worker_machine)
+    password = _env_values(worker_machine)[PASSWORD_ENV]
+    ((stored,),) = _owner(worker_machine, url, f"SELECT rolpassword FROM pg_authid WHERE rolname = '{login}'")[0]
+    assert stored.startswith("SCRAM-SHA-256$4096:") and password not in stored
+    # Postgres's own verifier for the same password and salt is the one stored: the worker logs in with it.
+    salt = stored.split("$")[1].split(":")[1]
+    check = ("import base64, json, sys; from harness.store_roles import scram_verifier; "
+             "print(json.dumps(scram_verifier(sys.argv[1], base64.b64decode(sys.argv[2]))))")
+    done = subprocess.run([str(worker_machine.install.python), "-c", check, password, salt], env=worker_machine.env,
+                          cwd=worker_machine.home, capture_output=True, text=True, timeout=60)
+    assert json.loads(done.stdout) == stored
+
+
+def _doctor_row(machine) -> dict:
+    done = subprocess.run([str(machine.install.cox), "setup", "doctor", "--json"], env=machine.env, cwd=machine.home,
+                          capture_output=True, text=True, timeout=DOCTOR_TIMEOUT_S)
+    return next(r for r in json.loads(done.stdout)["rows"] if r["check"] == CHECK)
+
+
+def test_public_create_as_before_postgres_15_fails_the_row_with_the_fix_and_setup_can_apply_it(worker_machine):
+    _setup(worker_machine)
+    _owner(worker_machine, worker_machine.store_url, "GRANT CREATE ON SCHEMA public TO PUBLIC")
+    row = _doctor_row(worker_machine)
+    assert row["ok"] is False and "create table: allowed" in row["detail"]
+    assert "REVOKE CREATE ON SCHEMA public FROM PUBLIC" in row["detail"]
+    done = worker_machine.cox("setup", "store", "worker-role", _worker(worker_machine), "--revoke-public-create")
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert _doctor_row(worker_machine)["ok"] is True
 
 
 def test_the_doctor_row_passes_for_the_role_and_rolls_its_probes_back(worker_machine):

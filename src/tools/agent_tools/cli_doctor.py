@@ -460,7 +460,8 @@ def _doctor_worker_role_rows(profile: dict | None) -> list[dict]:
         from harness.store_read import StoreVersionError
 
         try:
-            verdict = store_roles.probe_verdict(store_scoped.probe_url(store_roles.worker_url(str(owner), role, password)))
+            outcomes, public_create = store_scoped.probe_url(store_roles.worker_url(str(owner), role, password))
+            verdict = store_roles.probe_verdict(outcomes, public_create)
         except StoreVersionError as exc:
             error = str(exc)
         except Exception as exc:  # the row reports why the role is unusable; the doctor never raises

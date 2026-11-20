@@ -84,3 +84,30 @@ def test_setup_refuses_an_env_file_it_would_rewrite_differently_before_touching_
     assert _setup_worker_role(_args(tmp_path, "w1", _profiles(tmp_path, "postgresql://u:p@127.0.0.1:1/none"))) == 2
     assert "export lines" in capsys.readouterr().err
     assert env_file.read_text(encoding="utf-8") == "export A=1\n"
+
+
+def test_the_env_file_is_replaced_atomically_and_private(tmp_path):
+    from agent_tools.cli_setup_store import _write_env_file
+
+    path = tmp_path / "units.env"
+    path.write_text("OLD=1\n", encoding="utf-8")
+    path.chmod(0o644)
+    _write_env_file(path, "NEW=2\n")
+    assert path.read_text(encoding="utf-8") == "NEW=2\n"
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["units.env"]
+    _write_env_file(tmp_path / "fresh" / "units.env", "A=1\n")
+    assert (tmp_path / "fresh" / "units.env").stat().st_mode & 0o777 == 0o600
+
+
+def test_a_failed_write_leaves_the_old_file_and_no_temporary(tmp_path):
+    from agent_tools.cli_setup_store import _write_env_file
+
+    path = tmp_path / "units.env"
+    path.write_text("OLD=1\n", encoding="utf-8")
+    try:
+        _write_env_file(path, "BAD=\udcff\n")  # a lone surrogate cannot be encoded, so the write fails midway
+    except UnicodeEncodeError:
+        pass
+    assert path.read_text(encoding="utf-8") == "OLD=1\n"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["units.env"]

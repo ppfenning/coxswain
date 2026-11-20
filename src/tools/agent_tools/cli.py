@@ -1459,6 +1459,7 @@ SETUP_COMMANDS = [
                 (
                     commands.Arg(("name",), {"help": "the worker's name, as `cox host add` knows it; the role is cox_w_<name>"}),
                     commands.Arg(("--environment-file",), {"help": "the units' env file that gets the role and its password (default: ~/.config/agent-tools/garage.env)"}),
+                    commands.Arg(("--revoke-public-create",), {"action": "store_true", "help": "also revoke CREATE on the store's schema from PUBLIC, which Postgres before 15 grants by default"}),
                 ),
                 "agent_tools.cli:_setup_worker_role", False, (),
             ),

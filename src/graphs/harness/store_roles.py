@@ -8,11 +8,19 @@ for the tables a store has: every present table is first stripped of whatever th
 what `GRANTS` lists, so applying the list again changes nothing and applying a changed list leaves exactly the new
 grants. A table `GRANTS` does not name (the land queue, the leases, a table a later migration adds) gets nothing.
 
-No I/O here: `store_scoped` observes the store, applies the statements and runs the probes.
+Every run also resets both roles themselves: their attributes, every direct grant they hold, and every membership but
+the one the plan gives, so a superuser flag, a direct `GRANT DELETE` or a `pg_write_all_data` membership added by hand
+is gone after the next run. A password reaches the server only as a SCRAM-SHA-256 verifier computed here
+(`scram_verifier`), never as plain text, so a statement log or `pg_stat_statements` never holds it.
+
+No I/O here: `store_scoped` observes the store, applies the statements and runs the probes; the edge supplies the salt.
 """
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -128,41 +136,102 @@ def grant_statements(tables: Iterable[str], schema: str = "public") -> tuple[str
 
 @dataclass(frozen=True)
 class RoleState:
-    """What the store already has: whether the group and the login role exist, and its tables in its schema."""
+    """What the store already has: whether the group and the login role exist, the roles each is a member of, the
+    database and schema the connection is in, and the schema's tables."""
 
     group_exists: bool
     login_exists: bool
     tables: tuple[str, ...]
     schema: str = "public"
+    database: str = "postgres"
+    group_memberships: tuple[str, ...] = ()
+    login_memberships: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class RolePlan:
-    """The statements to apply, the password the env file holds after them, and whether they set it on the role."""
+    """The statements to apply, the password the env file holds after them, and whether they set it on the role.
+    The statements carry only the password's SCRAM verifier."""
 
     statements: tuple[str, ...]
     password: str
     sets_password: bool
 
 
-def role_plan(state: RoleState, login: str, kept_password: str | None, new_password: str) -> RolePlan:
-    """Pure. What `cox setup store worker-role` applies for `login`. The group role is created when absent, the login
-    role when absent, and both are always brought to the same shape: login, member of the group, the
-    idle-in-transaction timeout, and the grant set. The password is the one the env file already holds
-    (`kept_password`) when there is one, else `new_password`; it is set on the role only when the role is new or the
-    file had none (no one can read a role's password back), so a repeat run changes nothing."""
-    role = _ident(login)
+SCRAM_ITERATIONS = 4096
+SALT_BYTES = 16
+_PRINTABLE_ASCII = re.compile(r"[!-~]+")
+
+
+def scram_verifier(password: str, salt: bytes, iterations: int = SCRAM_ITERATIONS) -> str:
+    """Pure. The SCRAM-SHA-256 verifier Postgres stores for `password` (RFC 5802 and 7677, Postgres's own format),
+    which `CREATE ROLE ... PASSWORD` accepts as is and never sees the password behind. The password must be printable
+    ASCII, where SASLprep changes nothing; ValueError otherwise, rather than a verifier Postgres would not match."""
+    if not _PRINTABLE_ASCII.fullmatch(password):
+        raise ValueError("a worker password must be printable ASCII with no spaces")
+    salted = hashlib.pbkdf2_hmac("sha256", password.encode("ascii"), salt, iterations)
+    stored = hashlib.sha256(hmac.new(salted, b"Client Key", "sha256").digest()).digest()
+    server = hmac.new(salted, b"Server Key", "sha256").digest()
+
+    def b64(raw: bytes) -> str:
+        return base64.b64encode(raw).decode("ascii")
+
+    return f"SCRAM-SHA-256${iterations}:{b64(salt)}${b64(stored)}:{b64(server)}"
+
+
+def _quoted(name: str) -> str:
+    """A name read back from the catalog, as a quoted identifier."""
+    return '"' + name.replace('"', '""') + '"'
+
+
+# Every attribute a role can carry that widens it, turned off; INHERIT on, so a login uses its group's grants.
+_SAFE_ATTRIBUTES = "NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION INHERIT CONNECTION LIMIT -1"
+
+
+def _direct_grant_revokes(role: str, schema: str, database: str) -> tuple[str, ...]:
+    """Revoke whatever `role` holds directly on the database, the schema and everything in it."""
+    return (
+        f"REVOKE ALL ON DATABASE {_quoted(database)} FROM {role}",
+        f"REVOKE ALL ON SCHEMA {schema} FROM {role}",
+        f"REVOKE ALL ON ALL TABLES IN SCHEMA {schema} FROM {role}",
+        f"REVOKE ALL ON ALL SEQUENCES IN SCHEMA {schema} FROM {role}",
+        f"REVOKE ALL ON ALL FUNCTIONS IN SCHEMA {schema} FROM {role}",
+    )
+
+
+def role_plan(state: RoleState, login: str, kept_password: str | None, new_password: str, salt: bytes,
+              revoke_public_create: bool = False) -> RolePlan:
+    """Pure. What `cox setup store worker-role` applies for `login`, the same on every run.
+
+    The group role is created when absent and the login role when absent. Then both are reset: every widening
+    attribute off, every direct grant on the database, the schema and its objects revoked, and every membership
+    revoked but the login's in the group. The login gets the idle-in-transaction timeout (after a RESET ALL of any
+    other setting), and the group the grant set. The password is the one the env file already holds
+    (`kept_password`) when there is one, else `new_password`. It is set, as its verifier with `salt`, only when the
+    role is new or the file had none (no one can read a role's password back), so a repeat run changes nothing.
+    `revoke_public_create` also takes CREATE on the schema from PUBLIC, which Postgres before 15 grants by default."""
+    role, schema = _ident(login), _ident(state.schema)
     password = kept_password or new_password
     sets_password = not (state.login_exists and kept_password)
+    secret = f" PASSWORD {_literal(scram_verifier(password, salt))}" if sets_password else ""
     create_group = () if state.group_exists else (f"CREATE ROLE {GROUP_ROLE} NOLOGIN",)
-    secret = f" PASSWORD {_literal(password)}" if sets_password else ""
-    login_sql = f"ALTER ROLE {role} LOGIN{secret}" if state.login_exists else f"CREATE ROLE {role} LOGIN{secret}"
+    create_login = () if state.login_exists else (f"CREATE ROLE {role} LOGIN",)
+    stray_group = sorted(set(state.group_memberships))
+    stray_login = sorted(set(state.login_memberships) - {GROUP_ROLE})
     return RolePlan(
         statements=(
             *create_group,
-            login_sql,
+            *create_login,
+            f"ALTER ROLE {GROUP_ROLE} {_SAFE_ATTRIBUTES} NOLOGIN",
+            f"ALTER ROLE {role} {_SAFE_ATTRIBUTES} LOGIN VALID UNTIL 'infinity'{secret}",
+            *(f"REVOKE {_quoted(m)} FROM {GROUP_ROLE}" for m in stray_group),
+            *(f"REVOKE {_quoted(m)} FROM {role}" for m in stray_login),
+            *_direct_grant_revokes(GROUP_ROLE, schema, state.database),
+            *_direct_grant_revokes(role, schema, state.database),
             f"GRANT {GROUP_ROLE} TO {role}",
+            f"ALTER ROLE {role} RESET ALL",
             f"ALTER ROLE {role} SET idle_in_transaction_session_timeout = {_literal(IDLE_IN_TRANSACTION_TIMEOUT)}",
+            *((f"REVOKE CREATE ON SCHEMA {schema} FROM PUBLIC",) if revoke_public_create else ()),
             *grant_statements(state.tables, state.schema),
         ),
         password=password,
@@ -220,9 +289,17 @@ OK = "ok"
 REFUSED = "refused"
 
 
-def probe_verdict(outcomes: Sequence[tuple[Probe, str]]) -> tuple[bool, str]:
+def public_create_advice(schema: str) -> str:
+    """What to do when PUBLIC may create in the schema, as Postgres before 15 allows by default: no grant to the
+    worker can take that away, so the owner revokes it from PUBLIC."""
+    return (f"PUBLIC can create in schema {schema}; run `REVOKE CREATE ON SCHEMA {schema} FROM PUBLIC` as the owner, or "
+            "`cox setup store worker-role <name> --revoke-public-create`")
+
+
+def probe_verdict(outcomes: Sequence[tuple[Probe, str]], public_create_schema: str | None = None) -> tuple[bool, str]:
     """Pure. (ok, detail) for the doctor row from each probe and what happened: `OK`, `REFUSED` (a permission
-    error), or another error's one-line text. Ok when every allowed probe ran and every forbidden one was refused."""
+    error), or another error's one-line text. Ok when every allowed probe ran and every forbidden one was refused.
+    `public_create_schema` names the schema when PUBLIC may create in it, and the detail then says how to fix that."""
     wrong = [
         f"{p.label}: {'allowed' if outcome == OK else outcome}"
         for p, outcome in outcomes
@@ -231,6 +308,7 @@ def probe_verdict(outcomes: Sequence[tuple[Probe, str]]) -> tuple[bool, str]:
     if not outcomes:
         return False, "no probe ran"
     if wrong:
-        return False, "; ".join(wrong)
+        advice = [public_create_advice(public_create_schema)] if public_create_schema else []
+        return False, "; ".join([*wrong, *advice])
     allowed = sum(1 for p, _ in outcomes if p.allowed)
     return True, f"connects; {allowed} allowed writes work and {len(outcomes) - allowed} forbidden ones are refused"
