@@ -56,7 +56,7 @@ def test_every_host_full_refuses_with_each_in_use_and_cap():
     rows = [_row("here", 2), _row("a", 1), _row("off", 5, state="draining")]
     refusal = place(rows, {"here": 2, "a": 1}, NOW, local="here")
     assert isinstance(refusal, Refusal)
-    assert format_refusal(refusal) == ["here 2/2", "a 1/1", "off 0/5  (draining)"]
+    assert format_refusal(refusal) == ["here 2/2  (full)", "a 1/1  (full)", "off 0/5  (draining)"]
 
 
 def test_local_excluded_places_on_the_lane_host_though_local_has_free_lanes():
@@ -67,8 +67,8 @@ def test_local_excluded_places_on_the_lane_host_though_local_has_free_lanes():
 def test_local_excluded_with_the_lane_host_full_refuses_naming_the_local_reason():
     rows = [_row("here", 2, weight=3), _row("a", 2)]
     refusal = place(rows, {"a": 2}, NOW, local="here", local_excluded=True)
-    assert refusal == Refusal((("here", 0, 2, "decompose only"), ("a", 2, 2, "")))
-    assert format_refusal(refusal) == ["here 0/2  (decompose only)", "a 2/2"]
+    assert refusal == Refusal((("here", 0, 2, "decompose only"), ("a", 2, 2, "full")))
+    assert format_refusal(refusal) == ["here 0/2  (decompose only)", "a 2/2  (full)"]
 
 
 def test_local_not_excluded_is_still_chosen():
@@ -170,3 +170,23 @@ def test_the_remote_route_launch_never_places_again(tmp_path, monkeypatch, capsy
     code = main([*remote, "--profile", argv[argv.index("--profile") + 1], "--repo", argv[argv.index("--repo") + 1], "--dry-run"])
     assert code == 0
     assert f"placed on {socket.gethostname()} (0/5)" in capsys.readouterr().out
+
+
+def _lane_failed(name):
+    return _row(name, 2, versions=json.dumps({**json.loads(WORKSPACE), "lane_ok": False, "lane_reason": "docker daemon: down"}))
+
+
+def test_a_host_failing_its_lane_prerequisites_is_refused_with_the_reason():
+    refusal = place([_lane_failed("boxa")], {}, NOW, local="boxa")
+    assert refusal == Refusal((("boxa", 0, 2, "docker daemon: down"),))
+
+
+def test_with_the_lane_gate_off_a_host_failing_its_lane_prerequisites_is_placed():
+    assert place([_lane_failed("boxa")], {}, NOW, local="boxa", lane_gate=False) == Placement("boxa", 0, 2)
+
+
+def test_every_refused_host_carries_a_reason():
+    rows = [_row("here", 2), _row("a", 1), _lane_failed("b"), _row("off", 5, state="draining")]
+    refusal = place(rows, {"here": 2, "a": 1}, NOW, local="here")
+    assert isinstance(refusal, Refusal)
+    assert all(why for *_, why in refusal.hosts), refusal

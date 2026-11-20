@@ -17,6 +17,7 @@ from agent_tools.chair_read_lost import stale_hosts
 from agent_tools.chair_types import Facts
 from agent_tools.host_load import overloaded
 from agent_tools.lane_hosts import LaneHost
+from agent_tools.lane_prereqs import gated, lane_blocked
 
 Row = Mapping[str, Any]
 
@@ -42,7 +43,9 @@ def _capacity(row: Row | None, default: int) -> int:
 def _why_not(
     row: Row, local: str, stale: Collection[str], reachable: Collection[str], blocked: Collection[str],
     barred: Mapping[str, str] | None = None, local_excluded: bool = False, loaded: Mapping[str, str] | None = None,
+    used: int = 0, cap: int = 0,
 ) -> str:
+    """Why `row` took no lane; never blank. A host none of the named reasons covers is full, or has no free lane."""
     name = str(row["name"])
     if barred and name in barred:
         return barred[name]
@@ -56,7 +59,7 @@ def _why_not(
         return "no workspace_dir"
     if name in blocked:
         return "login lapsed"
-    return (loaded or {}).get(name, "")
+    return (loaded or {}).get(name) or ("full" if used >= cap else "no free lane")
 
 
 def format_refusal(refusal: Refusal) -> list[str]:
@@ -67,15 +70,17 @@ def format_refusal(refusal: Refusal) -> list[str]:
 def place(
     rows: Sequence[Row], live_by_host: Mapping[str, int], now: datetime, local: str = "", default_capacity: int = 1,
     profile_hosts: Sequence[LaneHost] = (), barred: Mapping[str, str] | None = None,
-    local_excluded: bool = False, load_ceiling: float | None = None,
+    local_excluded: bool = False, load_ceiling: float | None = None, lane_gate: bool = True,
 ) -> Placement | Refusal:
     """The host the chair tick would give one more lane, else a refusal naming every row's in-use/cap.
 
     live_by_host is keyed by row name, this machine under `local`. default_capacity is the cap of a row without one.
     `barred` maps a host to the reason it may not be chosen; the chooser skips it and the refusal quotes the reason.
     `local_excluded` drops this machine from the candidates and reports it as 'decompose only'.
-    `load_ceiling` skips a host whose recorded cpu or mem is above it; None skips none."""
-    bars = barred or {}
+    `load_ceiling` skips a host whose recorded cpu or mem is above it; None skips none.
+    `lane_gate` False ignores the hosts' lane prerequisites (`policy.dispatch.lane_prereqs`)."""
+    # A host failing its lane prerequisites is skipped like a barred one, and the refusal quotes the failing checks.
+    bars = {**gated(lane_blocked(rows), lane_gate), **(barred or {})}
     active = [r for r in rows if r.get("state") == "active"]
     stale = stale_hosts(active, now.isoformat(), threshold_s=PLACEMENT_STALE_S)
     reachable = set(host_cmd.dispatchable(host_cmd.host_rows_to_lane_hosts(active, profile_hosts, local))[0])
@@ -86,6 +91,7 @@ def place(
         "dispatch": dispatch_facts(
             {"max_in_flight": default_capacity}, names, live_by_host,
             host_cmd.row_capacities(rows), host_cmd.row_weights(rows), host_cmd.row_capabilities(rows),
+            lane_prereqs=lane_gate,
         ),
         "login_hosts": list(rows),
         "host_load_ceiling": load_ceiling,
@@ -95,11 +101,11 @@ def place(
         name = chosen[0]
         row = next(r for r in rows if str(r["name"]) == name)
         return Placement(name, live_by_host.get(name, 0), _capacity(row, default_capacity))
-    return Refusal(tuple(
-        (str(r["name"]), live_by_host.get(str(r["name"]), 0), _capacity(r, default_capacity),
-         _why_not(r, local, stale, reachable, blocked, bars, local_excluded, loaded))
-        for r in rows
-    ))
+    def refusal_row(r: Row) -> tuple[str, int, int, str]:
+        used, cap = live_by_host.get(str(r["name"]), 0), _capacity(r, default_capacity)
+        return str(r["name"]), used, cap, _why_not(r, local, stale, reachable, blocked, bars, local_excluded, loaded, used, cap)
+
+    return Refusal(tuple(refusal_row(r) for r in rows))
 
 
 def place_checked(

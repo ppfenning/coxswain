@@ -32,7 +32,7 @@ from harness import landing_store
 from harness.store_migrate import open_store
 
 _NOW = datetime(2026, 11, 17, 12, 0, tzinfo=UTC)
-_SETTINGS = {"land_hours": 6.0, "launch_minutes": 60.0, "repeat_ticks": 3, "stranded_minutes": 30.0}
+_SETTINGS = {"land_hours": 6.0, "launch_minutes": 60.0, "repeat_ticks": 3, "stranded_minutes": 30.0, "idle_minutes": 0.0}
 
 
 def _ts(hours_ago: float = 0.0, now: datetime = _NOW) -> str:
@@ -51,12 +51,12 @@ def _row(kind, status, hours_ago, reason="", target="demo-t1", **extra):
 # --- settings ---
 
 _DEFAULTS = {"land_hours": DEFAULT_LAND_HOURS, "launch_minutes": DEFAULT_LAUNCH_MINUTES, "repeat_ticks": DEFAULT_REPEAT_TICKS,
-             "stranded_minutes": 30.0}
+             "stranded_minutes": 30.0, "idle_minutes": 60.0}
 
 
 @pytest.mark.parametrize("value, expected", [
     (None, _DEFAULTS),
-    ({"land_hours": 2, "launch_minutes": 0, "repeat_ticks": 5}, {"land_hours": 2.0, "launch_minutes": 0.0, "repeat_ticks": 5, "stranded_minutes": 30.0}),
+    ({"land_hours": 2, "launch_minutes": 0, "repeat_ticks": 5}, {"land_hours": 2.0, "launch_minutes": 0.0, "repeat_ticks": 5, "stranded_minutes": 30.0, "idle_minutes": 60.0}),
     ({"land_hours": -1, "launch_minutes": "x", "repeat_ticks": 1}, _DEFAULTS),
     ({"land_hours": True, "repeat_ticks": 0}, {**_DEFAULTS, "repeat_ticks": 0}),
     ({"repeat_ticks": 2.5}, _DEFAULTS),
@@ -138,12 +138,13 @@ def test_an_alarm_is_open_from_its_raise_until_its_clear_and_only_done_rows_coun
 
 def _facts(**over):
     base = {"settings": dict(_SETTINGS), "last_land_at": None, "open_initiatives": {}, "last_launch_at": None,
-            "watch_since": _ts(48), "heads": {}, "streaks": [], "open": {}, "stranded": {}}
+            "watch_since": _ts(48), "heads": {}, "streaks": [], "open": {}, "stranded": {}, "holds": []}
     return {**base, **over}
 
 
 def _gate(**over):
-    base = {"free_lanes": 0, "ready": 0, "subject": "", "held": frozenset(), "idle_raised": False, "paused": False}
+    base = {"free_lanes": 0, "ready": 0, "subject": "", "held": frozenset(), "idle_raised": False, "paused": False,
+            "busy": True, "capacity": 1, "held_items": [], "progress_at": None}
     return {**base, **over}
 
 
@@ -215,11 +216,11 @@ _OPEN = {"no_land": {"since": _ts(7), "detail": "no land for 7.0h", "subject": "
 
 def test_a_standing_stall_is_raised_once_and_cleared_once():
     assert plan_alarms([_STALL], _facts(), _NOW) == [
-        {"kind": "stall_alarm", "stall": "no_land", "since": _ts(7), "subject": "alpha", "detail": "no land for 7.0h"}
+        {"kind": "stall_alarm", "stall": "no_land", "since": _ts(7), "subject": "alpha", "detail": "no land for 7.0h", "seq": 0}
     ]
     assert plan_alarms([_STALL], _facts(open=_OPEN), _NOW) == []
     assert plan_alarms([], _facts(open=_OPEN), _NOW) == [
-        {"kind": "stall_clear", "stall": "no_land", "since": _ts(7), "subject": "alpha", "detail": "cleared: no land for 7.0h"}
+        {"kind": "stall_clear", "stall": "no_land", "since": _ts(7), "subject": "alpha", "detail": "cleared: no land for 7.0h", "seq": 0}
     ]
     assert plan_alarms([], _facts(open=_OPEN), _NOW, paused=True) == []  # the hard stop judges no land at all
     assert plan_alarms([], _facts(), _NOW) == []
@@ -245,12 +246,12 @@ def test_a_broken_streak_is_cleared_aloud_and_a_quiet_one_expires_unsaid():
     opened = {_KEY: {"since": _ts(1), "detail": "land demo-t1 failed", "subject": "demo"}}
     broken = _facts(open=opened, heads={"repeat:land:demo-t1": {"failed": False, "reason": "", "ts": _ts(0.1)}})
     assert plan_alarms([], broken, _NOW) == [
-        {"kind": "stall_clear", "stall": _KEY, "since": _ts(1), "subject": "demo", "detail": "cleared: land demo-t1 failed"}
+        {"kind": "stall_clear", "stall": _KEY, "since": _ts(1), "subject": "demo", "detail": "cleared: land demo-t1 failed", "seq": 0}
     ]
     quiet = _facts(open=opened, heads={"repeat:land:demo-t1": {**_DIGEST_HEAD, "ts": _ts(3)}})
     assert plan_alarms([], quiet, _NOW) == [
         {"kind": "stall_clear", "stall": _KEY, "since": _ts(1), "subject": "demo", "detail": "expired: land demo-t1 failed",
-         "quiet": True}
+         "quiet": True, "seq": 0}
     ]
     standing = _facts(open=opened, heads={"repeat:land:demo-t1": _DIGEST_HEAD})
     assert plan_alarms([], standing, _NOW) == []  # the count dropped below the setting, but the streak is not broken

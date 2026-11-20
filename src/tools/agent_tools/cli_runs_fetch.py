@@ -257,8 +257,12 @@ def _landed_elsewhere(
     return remote_lane.landed_elsewhere(states, listed, ended)
 
 
-def _fetch_one(runs_dir: Path, hosts, run_id: str, mode: str = "files", by: str = _UNLABELED) -> tuple[str, list[str], str]:
+def _fetch_one(
+    runs_dir: Path, hosts, run_id: str, mode: str = "files", by: str = _UNLABELED, lane_model: str = "task",
+) -> tuple[str, list[str], str]:
     """Edge. (outcome, lines, host name) for one remote run; outcome is fetched, live or failed.
+
+    `lane_model` is `policy.dispatch.lane_model`, stamped on the initiative row a fetched decompose inserts.
 
     The task records are always copied, their host paths rewritten to this machine's, and the marker lists them.
     Under `mode` "store", when the store already holds every one of them, the
@@ -281,7 +285,7 @@ def _fetch_one(runs_dir: Path, hosts, run_id: str, mode: str = "files", by: str 
     if remote_lane.is_decompose_record(record):
         # parse_remote_record keeps only the fields remote_record knows, so the initiative is read from the raw text.
         initiative = json.loads(text).get("initiative")
-        return _fetch_decompose(runs_dir, host, initiative, run_id, lease_released, ended_at, run)
+        return _fetch_decompose(runs_dir, host, initiative, run_id, lease_released, ended_at, run, lane_model)
     ended = remote_fetch.refuse_unended(lease_released, ended_at) is None
     if mode == "store" and _landed_elsewhere(runs_dir, host, locate, run_id, ended):
         remote_lane.fetched_record_path(runs_dir, run_id).write_text(json.dumps(remote_lane.landed_elsewhere_marker(_now_iso())))
@@ -347,9 +351,11 @@ def _store_initiative_repo(runs_dir: Path, initiative: str, repo: str) -> str:
 
 def _fetch_decompose(
     runs_dir: Path, host, initiative: object, run_id: str, lease_released: bool, ended_at: str | None,
-    run: Callable[[list[str]], int],
+    run: Callable[[list[str]], int], lane_model: str = "task",
 ) -> tuple[str, list[str], str]:
     """Edge. Fetch an ended remote decompose: its `work/<initiative>` files and log, rows first, files after.
+
+    The initiative row it inserts carries `lane_model` (`store_fill.plan_fill`); a row the store already holds keeps its own.
 
     A decompose leaves files and a log, never a branch, so no git runs and no task path is rewritten. The files are
     staged under `runs/.fetch-staging/<run>/`, their rows are written to the store and read back, and only then are
@@ -381,7 +387,7 @@ def _fetch_decompose(
     existing = store_fill._read_store(runs_dir)
     if existing is None:
         return "failed", [f"fetch: store: {store_fill._UNREADABLE}"], host.name
-    for row in store_fill.plan_fill(parsed, existing).writes:
+    for row in store_fill.plan_fill(parsed, existing, lane_model).writes:
         detail = run_store.upsert_row_detail(runs_dir, row)
         if detail:
             return "failed", [f"fetch: store: store refused {row['initiative']}/{row['task_id']}: {detail}"], host.name
@@ -420,7 +426,7 @@ def _land_refetch_phase_branch(a: argparse.Namespace, runs_dir: Path, run_id: st
     return None if _branch_exists(repo, f"refs/heads/{branch}") else record["host"]
 
 
-def _runs_fetch_all(runs_dir: Path, hosts, mode: str = "files", by: str = _UNLABELED) -> int:
+def _runs_fetch_all(runs_dir: Path, hosts, mode: str = "files", by: str = _UNLABELED, lane_model: str = "task") -> int:
     """Fetches every remote run with no `.fetched.json` marker; a live run is skipped, a failed fetch makes the exit 2."""
     suffix = ".remote.json"
     remote_runs = [p.name[: -len(suffix)] for p in sorted(runs_dir.glob(f"*{suffix}"))]
@@ -431,7 +437,7 @@ def _runs_fetch_all(runs_dir: Path, hosts, mode: str = "files", by: str = _UNLAB
         return 0
     failed = False
     for run_id in todo:
-        outcome, lines, host = _fetch_one(runs_dir, hosts, run_id, mode, by)
+        outcome, lines, host = _fetch_one(runs_dir, hosts, run_id, mode, by, lane_model)
         if outcome == "live":
             print(f"{run_id}: still live on {host}")
         elif outcome == "fetched":
@@ -462,9 +468,12 @@ def _runs_fetch(a: argparse.Namespace) -> int:
     hosts = _fetch_hosts(_read_text_or_none(_profile_path(a)) or "", run_store.hosts(runs_dir))
     mode = work_state.work_state_mode(_lake_provider(a)[0])
     by = _holder_label(a)
+    from agent_tools.cli_route_sync import _lane_model_for  # lazy: cli_route_sync imports this module
+
+    lane_model = _lane_model_for(a)
     if a.all:
-        return _runs_fetch_all(runs_dir, hosts, mode, by)
-    outcome, lines, _ = _fetch_one(runs_dir, hosts, a.run_id, mode, by)
+        return _runs_fetch_all(runs_dir, hosts, mode, by, lane_model)
+    outcome, lines, _ = _fetch_one(runs_dir, hosts, a.run_id, mode, by, lane_model)
     print("\n".join(lines))
     return 0 if outcome == "fetched" else 2
 

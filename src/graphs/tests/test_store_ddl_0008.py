@@ -1,5 +1,5 @@
 from harness.store_dialect import connect
-from harness.store_migrate import default_modules, migrate, open_store
+from harness.store_migrate import default_modules, migrate
 
 NOW1 = "2026-09-25T00:00:00Z"
 NOW2 = "2026-09-26T00:00:00Z"
@@ -9,9 +9,10 @@ COLUMNS = ["name", "ssh", "capacity", "state", "beat_at", "versions_json", "upda
 
 
 # SQLite only: PRAGMA table_info has no Postgres counterpart.
-def test_a_fresh_store_has_hosts_with_the_eight_columns():
-    c = open_store("sqlite:///:memory:", NOW1)
+def test_a_store_at_version_eight_has_hosts_with_the_eight_columns():
+    c = connect("sqlite:///:memory:")
     try:
+        assert migrate(c, NOW1, default_modules()[:8]) == 8
         rows = c.query_all("PRAGMA table_info(hosts)")
         assert [(r[1], r[2]) for r in rows] == [
             ("name", "TEXT"),
@@ -38,7 +39,8 @@ def test_a_database_at_version_seven_gains_hosts_and_keeps_chair_actions():
         assert c.query_all("SELECT version, applied_at FROM schema_version ORDER BY version")[7:] == [
             (v, NOW2) for v in range(8, LATEST + 1)
         ]
-        assert [r[1] for r in c.query_all("PRAGMA table_info(hosts)")] == COLUMNS
+        # 0008's own columns lead the table; later migrations only append (0020: threads, capabilities_json)
+        assert [r[1] for r in c.query_all("PRAGMA table_info(hosts)")][: len(COLUMNS)] == COLUMNS
         assert c.query_all("SELECT COUNT(*) FROM hosts") == [(0,)]
         assert c.query_all("PRAGMA table_info(chair_actions)") == before
     finally:

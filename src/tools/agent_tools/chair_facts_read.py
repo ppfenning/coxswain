@@ -144,8 +144,8 @@ class FactsDeps:
     stall_candidates: `stall_candidates(now) -> list[dict]`, bound in production to
         `chair_read_stall.read_stall_candidates`. Optional, and absent means no candidates.
     idle_stall: `idle_stall(now) -> IdleStallInputs`, bound in production to the four `chair_read_idle_*` readers
-        (hosts, lands, backlog, open item) plus the configured `stall_minutes`. Stored unchanged under the
-        `idle_stall` fact. Required, so an unwired detector fails at construction instead of planning nothing.
+        (hosts, lands, backlog, open item) plus the configured `stall_minutes`. Stored under the `idle_stall`
+        fact with the ready tasks of a phase initiative taken off its `ready` count (`less_phase_ready`). Required, so an unwired detector fails at construction instead of planning nothing.
         `idle_stall_inputs` assembles the readers' outputs and `resolve_idle_stall_minutes` the threshold.
     queue: `run_store.read_queue`'s rows for this tick, read once and fed to `chair_read_docket.docket_from_rows`,
         `chair_read_intake.intake_from_rows`, `chair_read_quarantined.quarantined_from_rows` and
@@ -222,7 +222,7 @@ class FactsDeps:
     session: str
     pid: int
     host: str
-    idle_stall: Callable[[datetime], IdleStallInputs]  # now -> the idle-lanes stall inputs, stored unchanged
+    idle_stall: Callable[[datetime], IdleStallInputs]  # now -> the idle-lanes stall inputs, before `less_phase_ready`
     dispatch: Callable[[Docket], DispatchFacts] | None = None  # docket -> lane facts; absent counts every busy lane as local
     queue: Callable[[], Sequence[Row]] | None = None  # run_store.read_queue rows; absent or empty falls back to docket, intake, quarantined and stranded
     stranded_records: Callable[[], Sequence[Row]] | None = None  # paired with queue's task rows to build stranded; absent leaves stranded on the file reader

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping, Sequence
 
+from agent_tools.chair_stall_alarm import NO_CAPACITY
 from agent_tools.chair_types import HELD_FILE_CAUSE
 from agent_tools.notify_core import Event
 
@@ -147,9 +148,14 @@ ALARM_KINDS = frozenset({"stall_alarm", "stall_clear"})
 
 def alarm_event(action: Mapping) -> Event:
     """A stall alarm's push (chair_stall_alarm): keyed on the stall and when it began, so one stall pushes once when it
-    is raised and once when it clears, and a later stall of the same kind pushes again."""
+    is raised and once when it clears, and a later stall of the same kind pushes again. A no-capacity notice is titled
+    as what it is, not as a stall."""
     stall, since = str(action.get("stall") or ""), str(action.get("since") or "")
     detail = str(action.get("detail") or "")
+    seq = action.get("seq") or 0
+    since = f"{since}:{seq}" if seq else since  # a stall raised again after it cleared pushes again
+    if action.get("kind") == "stall_alarm" and stall.partition(":")[0] == NO_CAPACITY:
+        return Event("stall", f"stall_alarm:{stall}:{since}", "No worker capacity", detail)
     if action.get("kind") == "stall_alarm":
         return Event("stall", f"stall_alarm:{stall}:{since}", f"Stalled: {stall.partition(':')[0]}", detail)
     return Event("all_clear", f"stall_clear:{stall}:{since}", f"All clear: {stall.partition(':')[0]}", detail)

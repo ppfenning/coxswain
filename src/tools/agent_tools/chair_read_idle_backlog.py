@@ -19,8 +19,9 @@ from core.landing import DEFAULT_LAND_AT, need_met
 
 Item = Mapping[str, object]
 
-LAUNCH_KINDS = frozenset({"launch_epic", "launch_decompose"})
+LAUNCH_KINDS = frozenset({"launch_epic", "launch_decompose", "relaunch", "retry", "rescue"})
 LAND_KINDS = frozenset({"land", "land_phase"})
+PROGRESS_STATUSES = frozenset({"done", "landed"})  # a launch or land that went out; a refused or failed one is not progress
 # A task in one of these states is launched, landed or unapproved, so it waits on no need.
 _NOT_WAITING = route.TERMINAL | {"approved", "in_progress", "draft"}
 
@@ -160,9 +161,12 @@ def idle_backlog(plain: BacklogInputs) -> IdleBacklog:
     }
 
 
-def _newest_action(actions: Sequence[Item], kinds: Collection[str]) -> str | None:
+def newest_progress(actions: Sequence[Item], kinds: Collection[str]) -> str | None:
+    """The time of the newest row of `kinds` that went out (`PROGRESS_STATUSES`); a refused or failed one is skipped."""
     stamps = [
-        t for a in actions if a.get("kind") in kinds and a.get("ts") and (t := _iso_utc(str(a["ts"]))) is not None
+        t for a in actions
+        if a.get("kind") in kinds and a.get("status") in PROGRESS_STATUSES and a.get("ts")
+        and (t := _iso_utc(str(a["ts"]))) is not None
     ]
     return max(stamps).isoformat() if stamps else None
 
@@ -232,8 +236,8 @@ def read_idle_backlog(
                 queued if queued is not None
                 else _safe(lambda: read_intake(ws, initiative_files(ws, files) if files is not None else None), [])
             ),
-            "last_launch": _newest_action(rows, LAUNCH_KINDS),
-            "last_land": _newest_action(rows, LAND_KINDS),
+            "last_launch": newest_progress(rows, LAUNCH_KINDS),
+            "last_land": newest_progress(rows, LAND_KINDS),
             "node_calls": [str(c) for c in calls],
             "with_file": with_file,
             "stored": stored,

@@ -27,11 +27,11 @@ def _row(days_ago: int, kind: str, **rest: str) -> dict:
 
 
 IN_WINDOW = [
-    _row(2, "launch_epic"),
-    _row(1, "land"),
+    _row(2, "launch_epic", status="done"),
+    _row(1, "land", status="landed"),  # only a launch or land that went out is progress
     _row(1, "needs_chair", cause="idle_stall", signature="blocked:a", reason="a waits on b"),
 ]
-STORE_ROWS = [*IN_WINDOW, _row(30, "land")]  # the 30 day old land is outside the 7 day window
+STORE_ROWS = [*IN_WINDOW, _row(30, "land", status="landed")]  # the 30 day old land is outside the 7 day window
 LAST_LAND = "2026-10-06T12:00:00Z"
 
 

@@ -1,6 +1,7 @@
 import pytest
+from lane_probe_replies import PASSING, PASSING_LINES, is_lane_probe
 
-from agent_tools import cli
+from agent_tools import cli, lane_prereqs
 from agent_tools.cli import main
 from agent_tools.remote_argv import ssh_argv, token_status_argv
 
@@ -27,6 +28,8 @@ def _fake_run(monkeypatch, code=0, output="ok  profile\nok  git\n"):
 
     def run(argv):
         calls.append(argv)
+        if is_lane_probe(argv):
+            return 0, PASSING
         if "cox setup token status --probe" in argv[-1]:
             return 0, '{"loggedIn": true}'
         return code, output
@@ -39,10 +42,12 @@ def test_a_known_host_prints_its_rows_under_a_header_and_exits_zero(tmp_path, mo
     calls = _fake_run(monkeypatch)
     rc = main(["setup", "doctor", "--profile", _profile(tmp_path), "--host", "box"])
     assert rc == 0
-    assert capsys.readouterr().out == "doctor on box (me@box.example)\nok  profile\nok  git\nclaude token     ok\n"
+    lane = "".join(f"{line}\n" for line in PASSING_LINES)
+    assert capsys.readouterr().out == f"doctor on box (me@box.example)\nok  profile\nok  git\nclaude token     ok\n{lane}"
     assert calls == [
         [*SSH_BOUND, "me@box.example", "cox setup doctor"],
         ssh_argv("me@box.example", token_status_argv(probe=True)),
+        ssh_argv("me@box.example", lane_prereqs.probe_argv()),
     ]
 
 
@@ -50,7 +55,8 @@ def test_a_failing_remote_doctor_prints_its_rows_and_exits_non_zero(tmp_path, mo
     _fake_run(monkeypatch, code=1, output="FAIL  git\n")
     rc = main(["setup", "doctor", "--profile", _profile(tmp_path), "--host", "gpu"])
     assert rc == 1
-    assert capsys.readouterr().out == "doctor on gpu (me@gpu.example)\nFAIL  git\nclaude token     ok\n"
+    lane = "".join(f"{line}\n" for line in PASSING_LINES)
+    assert capsys.readouterr().out == f"doctor on gpu (me@gpu.example)\nFAIL  git\nclaude token     ok\n{lane}"
 
 
 def test_an_unknown_host_names_the_configured_ones_and_runs_nothing(tmp_path, monkeypatch, capsys):
@@ -100,5 +106,9 @@ def test_doctor_on_host_returns_the_code_and_the_split_rows(output, rows):
 
     host = LaneHost("box", "me@box", "/srv")
     auth = '{"loggedIn": true}'
-    run = lambda argv: (0, auth) if "cox setup token status --probe" in argv[-1] else (3, output)  # noqa: E731
-    assert doctor_on_host(host, run) == (3, [*rows, "claude token     ok"])
+    def run(argv):
+        if is_lane_probe(argv):
+            return 0, PASSING
+        return (0, auth) if "cox setup token status --probe" in argv[-1] else (3, output)
+
+    assert doctor_on_host(host, run) == (3, [*rows, "claude token     ok", *PASSING_LINES])
