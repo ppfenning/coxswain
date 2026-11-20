@@ -6811,12 +6811,14 @@ options:
                        [--access-key-env ACCESS_KEY_ENV]
                        [--secret-key-env SECRET_KEY_ENV] [--dry-run]
                        [--allow-unreachable]
-                       {switch} ...
+                       {switch,worker-role} ...
 
 positional arguments:
-  {switch}
+  {switch,worker-role}
     switch              copy an old local run store and its traces into the
                         shared store, then record store.mode
+    worker-role         create or reshape one worker's scoped store role; run
+                        with the owner's store URL
 
 options:
   -h, --help            show this help message and exit
