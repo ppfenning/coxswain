@@ -25,9 +25,18 @@ def _task_id(record: Mapping[str, object]) -> str:
     return str(record.get("task") or record.get("ticket") or "")
 
 
+def _is_quarantined(record: Mapping[str, object]) -> bool:
+    """The record's own `status` is `quarantined`, the field `land.py` reads."""
+    return record.get("status") == "quarantined"
+
+
 def approved_task_ids(records: Iterable[Mapping[str, object]]) -> list[str]:
-    """The task id of every record whose review and arbitration verdicts approve it (`land.approved_reason` is None)."""
-    return [_task_id(record) for record in records if _task_id(record) and approved_reason(dict(record)) is None]
+    """The task id of every approved record, skipping any quarantined whatever its cause (`land.approved_reason` is None)."""
+    return [
+        _task_id(record)
+        for record in records
+        if _task_id(record) and not _is_quarantined(record) and approved_reason(dict(record)) is None
+    ]
 
 
 def apply_ready_to_approved(text: str) -> tuple[str | None, str | None]:
