@@ -1,4 +1,5 @@
-"""Compose one chair tick: the lease first, then lands, recovery, staleness and fill under the limits gate.
+"""Compose one chair tick: the lease first, then each kind of work (watch, land, decompose, quarantine, launch,
+housekeeping) planned on its own and laid out in the tick's order, under the limits gate.
 
 Pure. Takes the facts and the tick's clock, returns actions each stamped with the lease epoch. No I/O.
 """
@@ -1127,102 +1128,197 @@ def _schedule_update(facts: Facts, schedule: Schedule | None, now: datetime | No
     return [] if unchanged else [action_from_store(feed["action"])]
 
 
-def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str] = frozenset()) -> list[Action]:
+# C1 (event-driven chair): the holder's plan is split by kind of work, so each kind can later run as its own queue
+# worker. Each kind's planner is pure: the tick's basis (the facts and the gates more than one kind reads) and the
+# plans of the kinds it depends on, in; that kind's actions, in named slots, out. `_plan_as_holder` runs them in
+# dependency order and lays the slots out in the tick's order, which is the one the actions have always had.
+
+
+@dataclass(frozen=True)
+class TickBasis:
+    """The facts a holder's tick plans from, and the gates more than one kind reads."""
+
+    facts: Facts  # the raw facts with silent dead-pid runs lost and a steer cycle's non-live holders dropped
+    now: datetime | None
+    held: frozenset[str]  # started initiatives the paused CI gate holds from a relaunch
+    releases: list[Action]  # approval restores, read before the steer cycle is broken
+    schedule: Schedule | None
+    gated: frozenset[str]  # held, or deferred to a later release
+    lost: frozenset[str]
+    remote_unfetched: frozenset[str]
+    deadlock: tuple[str, ApprovedTask] | None
+    waiting: list[WaitingInitiative]
+    waiting_ids: frozenset[str]
+    lease_held: frozenset[str]
+
+
+def tick_basis(raw_facts: Facts, now: datetime | None, held: frozenset[str] = frozenset()) -> TickBasis:
     facts, releases = _unlocked(_with_dead_pid_lost(raw_facts, now))
-    schedule = _planned_schedule(facts, now)
-    schedule_update = _schedule_update(facts, schedule, now)
-    reverts = revert_check(facts.get("landed_main", []))
+    waiting = waiting_initiatives(facts)
+    return TickBasis(
+        facts=facts,
+        now=now,
+        held=held,
+        releases=releases,
+        schedule=_planned_schedule(facts, now),
+        gated=_gated_initiatives(facts),
+        lost=frozenset(facts.get("lost_runs", {})),
+        remote_unfetched=frozenset(facts.get("remote_unfetched", {})),
+        deadlock=deferred_land_deadlock(facts, now),
+        waiting=waiting,
+        waiting_ids=frozenset(w.initiative for w in waiting),
+        lease_held=_lease_held_ids(facts),
+    )
+
+
+@dataclass(frozen=True)
+class WatchPlan:
+    reverts: list[Action]  # a revert starts no run, so a red main is healed under the hard stop too
+
+
+def plan_watch_kind(basis: TickBasis) -> WatchPlan:
+    """A landed commit whose main CI went red is reverted."""
+    return WatchPlan(reverts=revert_check(basis.facts.get("landed_main", [])))
+
+
+@dataclass(frozen=True)
+class LandPlan:
+    lands: list[Action]
+    fetch_exits: list[Action]
+    deadlock_chair: list[Action]
+    carries: list[Action]
+    closes: list[Action]
+
+
+def plan_land_kind(basis: TickBasis) -> LandPlan:
+    """Phases to land, exited remote runs to fetch, stranded phases to carry, and initiatives to close."""
+    facts = basis.facts
     carries = plan_carry(facts.get("stranded", []))
-    gated = _gated_initiatives(facts)
-    planned_lands = _without_carried_lands(_without_gated_lands(plan_lands(facts, now), gated), carries)
-    fetch_exits = _fetch_exit_actions(facts)
-    login_needs_chair = _login_needs_chair_actions(facts, now)
-    empty_decompose_needs_chair = _empty_decompose_needs_chair_actions(facts)
-    held_needs_chair = plan_held_files(facts)
+    return LandPlan(
+        lands=_without_carried_lands(_without_gated_lands(plan_lands(facts, basis.now), basis.gated), carries),
+        fetch_exits=_fetch_exit_actions(facts),
+        deadlock_chair=plan_deferred_land_deadlock(facts, basis.now),
+        carries=carries,
+        closes=[*plan_close_initiatives(facts), *plan_finish(facts), *plan_missed_closes(facts)],
+    )
+
+
+@dataclass(frozen=True)
+class DecomposePlan:
+    empty_needs_chair: list[Action]
+    stalled_needs_chair: list[Action]
+    # A skipped intake stays in facts["intake"] (so no pull is planned), but plan_fill never launches it.
+    stalled_intake: frozenset[str]
+
+
+def plan_decompose_kind(basis: TickBasis) -> DecomposePlan:
+    """Empty decomposes and stalled or missed intakes are reported to the chair; the stalled ones launch nothing."""
+    streak_stalled, streak_needs_chair = _decompose_gate(basis.facts)
+    missed_intake, miss_needs_chair = _decompose_miss_gate(basis.facts, basis.now)
+    return DecomposePlan(
+        empty_needs_chair=_empty_decompose_needs_chair_actions(basis.facts),
+        stalled_needs_chair=[*streak_needs_chair, *miss_needs_chair],
+        stalled_intake=streak_stalled | missed_intake,
+    )
+
+
+@dataclass(frozen=True)
+class QuarantinePlan:
+    releases: list[Action]
+    widen: list[Action]
+    held_needs_chair: list[Action]
+    no_progress_holds: list[Action]
+    review: list[Action]
+    no_progress: frozenset[str]
+    recover_actions: list[Action]  # plan_recover's own plan, before any gate; fill reads what it claims
+    not_exited: frozenset[str]
+    recovered: list[Action]  # the relaunches, retries, rescues and needs_chair that pass every gate, before the cap
+
+
+def plan_quarantine_kind(basis: TickBasis) -> QuarantinePlan:
+    """What recovers a quarantined, lost or stopped initiative, under every gate that holds it, and the reports of held
+    files, repeated outcomes, widened tickets and review PRs."""
+    facts = basis.facts
     # H4.1: an initiative whose last runs ended the same way is held for a person, and not relaunched meanwhile.
     no_progress_holds = plan_no_progress(facts)
     # Only an initiative held this tick is withheld: once its hold is visible the held gate takes over, and a hold a
     # person cleared by any route lets it launch again.
     no_progress = frozenset(action_text(a, "initiative") for a in no_progress_holds)
-    streak_stalled, streak_needs_chair = _decompose_gate(facts)
-    missed_intake, miss_needs_chair = _decompose_miss_gate(facts, now)
-    # A skipped intake stays in facts["intake"] (so no pull is planned), but plan_fill never launches it.
-    stalled_intake = streak_stalled | missed_intake
-    decompose_stalled_needs_chair = [*streak_needs_chair, *miss_needs_chair]
-    review = plan_review(facts)
-    planned_unstarted_waiting_chair = _unstarted_waiting_chair(facts["initiatives"])
-    lost = frozenset(facts.get("lost_runs", {}))
-    stale = plan_stale(facts, now) if now is not None else []
-    tune = plan_tune(facts, now) if now is not None else []
-    stall = plan_stall(facts.get("stall_candidates", []), now) if now is not None else []
-    planned_idle_stall = plan_idle_stall(facts.get("idle_stall"), now) if now is not None else []
-    deadlock = deferred_land_deadlock(facts, now)
-    deadlock_chair = plan_deferred_land_deadlock(facts, now)
-    remote_unfetched = frozenset(facts.get("remote_unfetched", {}))
-    run_exited = facts.get("run_exited", {})
     widen = plan_widen(facts)
     widened = frozenset((action_text(a, "initiative"), action_text(a, "task_id")) for a in widen)
-    lands = planned_lands
-    recover_actions = plan_recover(facts, now)
-    lost_actions = plan_lost_runs(facts, now)
-    ordinary = _withhold_lost_runs(_without_widened(recover_actions, widened), lost)
-    pre_exit_gate = _withhold_remote_unfetched(ordinary, remote_unfetched)
+    recover_actions = plan_recover(facts, basis.now)
+    lost_actions = plan_lost_runs(facts, basis.now)
+    ordinary = _withhold_lost_runs(_without_widened(recover_actions, widened), basis.lost)
+    pre_exit_gate = _withhold_remote_unfetched(ordinary, basis.remote_unfetched)
+    run_exited = facts.get("run_exited", {})
     would_relaunch = frozenset(action_text(a, "initiative") for a in pre_exit_gate if a["kind"] == "relaunch")
     not_exited = frozenset(i for i in would_relaunch if not run_exited.get(i, False))
+    blocked = basis.gated | no_progress
     recoverable = _without_gated_launches(
-        _hold_for_ci([*_withhold_not_exited(pre_exit_gate, not_exited), *lost_actions], held | gated | no_progress), gated | no_progress
+        _hold_for_ci([*_withhold_not_exited(pre_exit_gate, not_exited), *lost_actions], basis.held | blocked), blocked
     )
-    lease_held = _lease_held_ids(facts)
-    lease_stuck = _lease_stuck_actions(facts, now)
-    waiting = waiting_initiatives(facts)
-    waiting_ids = frozenset(w.initiative for w in waiting)
-    # A deferred-land deadlock is one line for the whole stall: whichever blocked task `diagnose` names, its idle_stall line
-    # goes, and so do the waiting action and the `waiting on <need>` reports of the deadlocked initiative.
-    idle_stall = [] if deadlock is not None else planned_idle_stall
-    waiting_actions = _without_deadlocked(_waiting_actions(waiting, facts.get("waiting_reported", {})), deadlock)
-    unstarted_waiting_chair = _without_deadlocked(planned_unstarted_waiting_chair, deadlock)
-    closes = [*plan_close_initiatives(facts), *plan_finish(facts), *plan_missed_closes(facts)]
     # A blocked initiative's relaunch and its paired clear_branches go; the waiting action records why.
     recovered = _withhold_lease_held(
-        [a for a in _without_deadlocked(recoverable, deadlock) if not (a["kind"] in ("relaunch", "clear_branches") and action_text(a, "initiative") in waiting_ids)],
-        lease_held,
+        [
+            a
+            for a in _without_deadlocked(recoverable, basis.deadlock)
+            if not (a["kind"] in ("relaunch", "clear_branches") and action_text(a, "initiative") in basis.waiting_ids)
+        ],
+        basis.lease_held,
     )
+    return QuarantinePlan(
+        releases=basis.releases,
+        widen=widen,
+        held_needs_chair=plan_held_files(facts),
+        no_progress_holds=no_progress_holds,
+        review=plan_review(facts),
+        no_progress=no_progress,
+        recover_actions=recover_actions,
+        not_exited=not_exited,
+        recovered=recovered,
+    )
+
+
+@dataclass(frozen=True)
+class LaunchPlan:
+    launches: list[Action]  # the capped relaunches and fills with their rebases; at the hard stop, recovery's needs_chair
+    lease_stuck: list[Action]
+    unstarted_waiting_chair: list[Action]
+    waiting_actions: list[Action]
+    stuck_heads: list[Action]
+    unlaunched: list[Action]
+    stopped: list[Action]  # at the hard stop, every ready initiative left out with the stop as its reason
+    schedule_update: list[Action]
+    considered: list[Action]  # what the idle-with-ready-work rule reads as this tick's launch decisions
+    launch_paused: bool
+
+
+def plan_launch_kind(basis: TickBasis, land: LandPlan, decompose: DecomposePlan, quarantine: QuarantinePlan) -> LaunchPlan:
+    """Relaunches and new epics under the launch cap, the lanes and every withheld set, and why the rest wait."""
+    facts, now = basis.facts, basis.now
+    waiting_actions = _without_deadlocked(_waiting_actions(basis.waiting, facts.get("waiting_reported", {})), basis.deadlock)
+    unstarted_waiting_chair = _without_deadlocked(_unstarted_waiting_chair(facts["initiatives"]), basis.deadlock)
+    lease_stuck = _lease_stuck_actions(facts, now)
+    schedule_update = _schedule_update(facts, basis.schedule, now)
+    recovered = quarantine.recovered
     if facts["limits"]["hard_stop"]:
         # Nothing launches, so every ready initiative is left out; a pace cap of 0 names the first reason, which the stop replaces.
         stopped: list[Action] = [
             {**a, "reason": "hard stop: nothing launches until the stop lifts"}
             for a in _unlaunched_actions(facts, [], {}, {}, 0, False, 0, now, [])
         ]
-        idle_ready = plan_idle_ready(facts, recovered, now) if now is not None else []
-        stopped_plan = [
-            *reverts,  # a revert starts no run, so a red main is healed under the hard stop too
-            *lands,
-            *fetch_exits,
-            *stale,
-            *tune,
-            *stall,
-            *idle_stall,
-            *idle_ready,
-            *releases,  # a release starts no run
-            *deadlock_chair,
-            *carries,
-            *_needs_chair_only(recovered),
-            *widen,
-            *login_needs_chair,
-            *empty_decompose_needs_chair,
-            *lease_stuck,
-            *held_needs_chair,
-            *no_progress_holds,
-            *decompose_stalled_needs_chair,
-            *review,
-            *unstarted_waiting_chair,
-            *waiting_actions,
-            *closes,
-            *stopped,
-            *schedule_update,
-        ]
-        # H7.1: the hard stop means no launch on purpose, so only the land and repeated-failure checks stand.
-        return [*stopped_plan, *(plan_stall_alarm(facts, stopped_plan, now, launch_paused=True) if now is not None else [])]
+        return LaunchPlan(
+            launches=_needs_chair_only(recovered),
+            stuck_heads=[],
+            unlaunched=[],
+            stopped=stopped,
+            considered=recovered,
+            launch_paused=True,
+            lease_stuck=lease_stuck,
+            unstarted_waiting_chair=unstarted_waiting_chair,
+            waiting_actions=waiting_actions,
+            schedule_update=schedule_update,
+        )
     cap = _launch_cap(facts["limits"])
     host_free = host_free_slots(facts)
     capped_actions, consumed = _cap_launches(
@@ -1247,26 +1343,28 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         "quarantined": frozenset(q["initiative"] for q in facts["quarantines"] if q["cause"] != STRANDED_CAUSE),
         "stranded": frozenset(q["initiative"] for q in facts["quarantines"] if q["cause"] == STRANDED_CAUSE),
         # A decompose-only unfetched run holds no epic branches, so it does not keep the initiative from launching.
-        "its branches are not fetched": remote_unfetched - decompose_only,
-        "its last run has not exited": not_exited,
-        "its run is lost": lost,
+        "its branches are not fetched": basis.remote_unfetched - decompose_only,
+        "its last run has not exited": quarantine.not_exited,
+        "its run is lost": basis.lost,
         "schema version death": frozenset(facts.get("schema_deaths", {})),
         "an unmet need": _unmet_needs_ids(facts["initiatives"]),
-        "its repo is landing": _landing_initiatives(facts, planned_lands),
+        "its repo is landing": _landing_initiatives(facts, land.lands),
         # A relaunch the budget or the loop rule refused must not go out again as a launch_epic.
         "relaunch refused by the budget or the loop rule": refused_launches(facts, now),
         "land backoff": backoff_held(facts, now),
-        "waiting on a need": waiting_ids,
-        "its launch was refused on a held lease": lease_held,
-        "it is held or deferred to a later release": gated,
-        "its last runs ended the same way": no_progress,
+        "waiting on a need": basis.waiting_ids,
+        "its launch was refused on a held lease": basis.lease_held,
+        "it is held or deferred to a later release": basis.gated,
+        "its last runs ended the same way": quarantine.no_progress,
     }
     withheld = frozenset[str]().union(*withheld_by.values())
-    claimed = claimed_by(recover_actions, facts)
+    claimed = claimed_by(quarantine.recover_actions, facts)
     free_lanes = _free_lanes(cap, kept, facts["dispatch"], _cap_count(capped) - kept)
     # Fill plans with the withheld set, so an initiative recovery holds does not keep others behind its surfaces.
-    fill_schedule = _planned_schedule(facts, now, withheld) if withheld else schedule
-    planned_fill = plan_fill(facts, free_lanes, withheld, consumed, claimed, stalled=stalled_intake, now=now, schedule=fill_schedule)
+    fill_schedule = _planned_schedule(facts, now, withheld) if withheld else basis.schedule
+    planned_fill = plan_fill(
+        facts, free_lanes, withheld, consumed, claimed, stalled=decompose.stalled_intake, now=now, schedule=fill_schedule
+    )
     # Fill places epics on lane hosts past the local lanes; what the cap has no room left for is dropped here.
     filled = _within_cap(planned_fill, cap - _cap_count(capped))
     launches = [*capped, *filled]
@@ -1283,43 +1381,93 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     )
     cap_left = max(0, cap - _cap_count(launches))
     unlaunched = _unlaunched_actions(
-        facts, launches, withheld_by, skips, free_lanes, no_host, cap_left, now, stuck_heads, schedule
+        facts, launches, withheld_by, skips, free_lanes, no_host, cap_left, now, stuck_heads, basis.schedule
     )
     # Read before the cap: a rebase starts no run, so a relaunch the cap dropped still gets its branch rebased.
     relaunching = frozenset(action_text(a, "initiative") for a in [*recovered, *launches] if _is_launch(a))
     rebases = plan_rebase(facts.get("phase_branches", []), relaunching)
-    idle_ready = plan_idle_ready(facts, [*launches, *stuck_heads, *unlaunched], now) if now is not None else []
+    return LaunchPlan(
+        launches=_with_rebases(launches, rebases),
+        stuck_heads=stuck_heads,
+        unlaunched=unlaunched,
+        stopped=[],
+        considered=[*launches, *stuck_heads, *unlaunched],
+        launch_paused=False,
+        lease_stuck=lease_stuck,
+        unstarted_waiting_chair=unstarted_waiting_chair,
+        waiting_actions=waiting_actions,
+        schedule_update=schedule_update,
+    )
+
+
+@dataclass(frozen=True)
+class HousekeepingPlan:
+    stale: list[Action]
+    tune: list[Action]
+    stall: list[Action]
+    idle_stall: list[Action]
+    idle_ready: list[Action]
+    login_needs_chair: list[Action]
+
+
+def plan_housekeeping_kind(basis: TickBasis, launch: LaunchPlan) -> HousekeepingPlan:
+    """Facts that only age: stale tickets, lane tuning, stalled runs, idle lanes, and lapsed logins and hosts."""
+    facts, now = basis.facts, basis.now
+    # A deferred-land deadlock is one line for the whole stall: whichever blocked task `diagnose` names, its idle_stall
+    # line goes, and so do the waiting action and the `waiting on <need>` reports of the deadlocked initiative.
+    idle_stall = plan_idle_stall(facts.get("idle_stall"), now) if now is not None and basis.deadlock is None else []
+    return HousekeepingPlan(
+        stale=plan_stale(facts, now) if now is not None else [],
+        tune=plan_tune(facts, now) if now is not None else [],
+        stall=plan_stall(facts.get("stall_candidates", []), now) if now is not None else [],
+        idle_stall=idle_stall,
+        idle_ready=plan_idle_ready(facts, launch.considered, now) if now is not None else [],
+        login_needs_chair=_login_needs_chair_actions(facts, now),
+    )
+
+
+def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str] = frozenset()) -> list[Action]:
+    basis = tick_basis(raw_facts, now, held)
+    watch = plan_watch_kind(basis)
+    land = plan_land_kind(basis)
+    decompose = plan_decompose_kind(basis)
+    quarantine = plan_quarantine_kind(basis)
+    launch = plan_launch_kind(basis, land, decompose, quarantine)
+    housekeeping = plan_housekeeping_kind(basis, launch)
     planned = [
-        *reverts,
-        *lands,
-        *fetch_exits,
-        *stale,
-        *tune,
-        *stall,
-        *idle_stall,
-        *idle_ready,
-        *releases,  # a release starts no run
-        *deadlock_chair,
-        *carries,
-        *_with_rebases(launches, rebases),
-        *widen,
-        *login_needs_chair,
-        *empty_decompose_needs_chair,
-        *lease_stuck,
-        *held_needs_chair,
-        *no_progress_holds,
-        *decompose_stalled_needs_chair,
-        *review,
-        *unstarted_waiting_chair,
-        *waiting_actions,
-        *stuck_heads,
-        *unlaunched,
-        *closes,
-        *schedule_update,
+        *watch.reverts,
+        *land.lands,
+        *land.fetch_exits,
+        *housekeeping.stale,
+        *housekeeping.tune,
+        *housekeeping.stall,
+        *housekeeping.idle_stall,
+        *housekeeping.idle_ready,
+        *quarantine.releases,  # a release starts no run
+        *land.deadlock_chair,
+        *land.carries,
+        *launch.launches,
+        *quarantine.widen,
+        *housekeeping.login_needs_chair,
+        *decompose.empty_needs_chair,
+        *launch.lease_stuck,
+        *quarantine.held_needs_chair,
+        *quarantine.no_progress_holds,
+        *decompose.stalled_needs_chair,
+        *quarantine.review,
+        *launch.unstarted_waiting_chair,
+        *launch.waiting_actions,
+        *launch.stuck_heads,
+        *launch.unlaunched,
+        *land.closes,
+        *launch.stopped,
+        *launch.schedule_update,
     ]
     # H7.1: one alarm per stall the tick sees and one all-clear per raised stall that no longer stands; a launch planned
-    # this tick means the lanes are not idle.
-    return [*planned, *(plan_stall_alarm(facts, planned, now) if now is not None else [])]
+    # this tick means the lanes are not idle. The hard stop means no launch on purpose, so only the land and
+    # repeated-failure checks stand.
+    alarms = plan_stall_alarm(basis.facts, planned, now, launch_paused=launch.launch_paused) if now is not None else []
+    return [*planned, *alarms]
 
 
 def _parse_utc(ts: str | None) -> datetime | None:
