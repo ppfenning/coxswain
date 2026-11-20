@@ -58,7 +58,17 @@ jobs:
         working-directory: ${{ matrix.dir }}
 
   smoke:
+    # The non-forge suite in parallel shards, by file (smoke/plan.py shard_files): each shard installs cox once, and
+    # every collected file lands in exactly one shard. The shards are 1/n .. n/n, which tests/test_workflows.py pins.
+    name: smoke (${{ matrix.shard }})
     runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { shard: 1/3 }
+          - { shard: 2/3 }
+          - { shard: 3/3 }
     # The suite gives each test a database of its own on this Postgres (docs/smoke.md).
     services:
       postgres:
@@ -80,7 +90,9 @@ jobs:
       - run: uv sync --group dev
       # The smoke install carries the postgres and lake extras, so a dependency missing outside every extra would not
       # show there: this checkout installed bare, under a home of its own, runs `cox --help` and one real command.
+      # Once, in the first shard.
       - name: bare install (no extras)
+        if: matrix.shard == '1/3'
         run: |
           bare="$RUNNER_TEMP/bare"
           uv venv --quiet --python 3.14 "$bare/venv"
@@ -96,6 +108,7 @@ jobs:
         env:
           COX_SMOKE_POSTGRES_URL: postgresql://postgres:smoke@localhost:${{ job.services.postgres.ports['5432'] }}/postgres
           COX_SMOKE_REQUIRED: "1"
+          COX_SMOKE_SHARD: ${{ matrix.shard }}
 
   smoke-forge:
     name: smoke (forge)

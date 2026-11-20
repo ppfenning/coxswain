@@ -4,7 +4,10 @@ The CLI reference is generated from the `cox` the checkout installs into its own
 the in-repo folders from disk (only dash, a separate repository, is fetched at its manifest tag).
 """
 
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import yaml
@@ -79,9 +82,11 @@ def test_the_smoke_jobs_run_against_their_own_postgres_behind_the_required_check
     assert smoke["name"] == "smoke"
     assert smoke["env"]["COX_SMOKE_REQUIRED"] == "1"
     assert "job.services.postgres.ports['5432']" in smoke["env"]["COX_SMOKE_POSTGRES_URL"]
-    # the forge tests, in a job of their own, with the same Postgres settings and the same refusal to skip
+    assert smoke["env"][plan.SHARD_ENV] == "${{ matrix.shard }}"
+    # the forge tests, in a job of their own, unsharded, with the same Postgres settings and the same refusal to skip
     (forge,) = [step for step in ci["jobs"]["smoke-forge"]["steps"] if step.get("run") == _SMOKE_FORGE]
-    assert forge["name"] == "smoke (forge)" and forge["env"] == smoke["env"]
+    shared = {key: value for key, value in smoke["env"].items() if key != plan.SHARD_ENV}
+    assert forge["name"] == "smoke (forge)" and forge["env"] == shared
     # pinned by digest, the same image the suite's own container fixture runs
     for name in ("smoke", "smoke-forge"):
         assert ci["jobs"][name]["services"]["postgres"]["image"] == plan.POSTGRES_IMAGE
@@ -98,3 +103,36 @@ def test_the_extras_job_runs_each_suite_as_its_own_serial_job():
     assert "-n auto" not in pytest["run"] and pytest["working-directory"] == "${{ matrix.dir }}"
     assert "postgres" in job["services"]
 
+
+
+def _collected(markexpr: str, shard: str | None = None) -> list[str]:
+    """The smoke test ids a real `pytest --collect-only -m <markexpr> smoke` selects, under COX_SMOKE_SHARD=<shard>."""
+    env = {key: value for key, value in os.environ.items() if key != plan.SHARD_ENV}
+    if shard is not None:
+        env[plan.SHARD_ENV] = shard
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider", "-m", markexpr, "smoke"],
+        cwd=CI.parents[2], env=env, capture_output=True, text=True, timeout=120,
+    )
+    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-2000:]
+    return [line for line in proc.stdout.splitlines() if "::" in line]
+
+
+def test_every_smoke_test_runs_in_exactly_one_of_ci_s_shards():
+    """No smoke test can drop out of CI. The matrix names shards 1/n .. n/n, and the real collection under each
+    COX_SMOKE_SHARD, with the weights the conftest computes from it, splits the non-forge suite with no test missing
+    or doubled and no shard empty. The forge job takes the rest, so every smoke file runs somewhere."""
+    ci = yaml.safe_load(CI.read_text())
+    job = ci["jobs"]["smoke"]
+    shards = [entry["shard"] for entry in job["strategy"]["matrix"]["include"]]
+    count = plan.parse_shard(shards[0])[1]
+    assert 2 <= count <= 3 and sorted(map(plan.parse_shard, shards)) == [(k, count) for k in range(1, count + 1)]
+    assert job["strategy"]["fail-fast"] is False and "smoke" in ci["jobs"]["test"]["needs"]
+    whole = _collected("not forge")
+    split = [_collected("not forge", shard) for shard in shards]
+    assert all(split) and sorted(test for part in split for test in part) == sorted(whole)
+    files = {f"smoke/{path.name}" for path in (CI.parents[2] / "smoke").glob("test_*.py")}
+    assert {test.split("::")[0] for test in whole + _collected("forge")} == files
+    # the bare install runs once, in the first shard
+    (bare,) = [step for step in job["steps"] if step.get("name") == "bare install (no extras)"]
+    assert bare["if"] == f"matrix.shard == '1/{count}'"
