@@ -10,6 +10,7 @@ login role and drops it at the end; the `cox_worker` group is shared, as it is o
 import json
 import stat
 import subprocess
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -17,6 +18,7 @@ from urllib.parse import quote, urlsplit, urlunsplit
 import pytest
 
 from smoke import plan
+from smoke.conftest import SESSION
 
 ROLE_ENV, PASSWORD_ENV = "COX_WORKER_STORE_ROLE", "COX_WORKER_STORE_PASSWORD"
 CHECK = "worker store role"
@@ -284,7 +286,7 @@ def test_the_doctor_row_fails_when_the_password_is_wrong(worker_machine):
 
 
 def test_open_scoped_refuses_an_older_store_and_migrates_nothing(sandbox, postgres):
-    name = plan.database_name("worker-role-older-store")
+    name = plan.database_name("worker-role-older-store", SESSION, int(time.time()))
     url = plan.with_database(postgres, name)
     done = subprocess.run([str(sandbox.install.python), "-c", OLDER_STORE, postgres, name, url], env=sandbox.env,
                           cwd=sandbox.home, capture_output=True, text=True, timeout=120)
