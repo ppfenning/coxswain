@@ -286,8 +286,7 @@ def artifacts_root(profile: Mapping[str, Any], env: Mapping[str, str], runs_dir:
     raw = profile.get("object_store")
     block = cast("Mapping[str, Any]", raw) if isinstance(raw, Mapping) else None
     resolved = _resolved_url(url, runs_dir)
-    extra = _s3_extra() if resolved.startswith("s3://") else None
-    found = resolve_traces_root(resolved, runs_dir, env, block, label="artifacts", s3_extra=extra)
+    found = resolve_traces_root(resolved, runs_dir, env, block, label="artifacts", s3_extra=_s3_extra)
     return ArtifactsRoot(found.fs, found.path.rstrip("/"), redact_url(url), secret_values(env))
 
 

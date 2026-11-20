@@ -23,7 +23,7 @@ from __future__ import annotations
 import importlib.metadata
 import importlib.util
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -116,12 +116,13 @@ def resolve_traces_root(
     object_store: Mapping[str, Any] | None = None,
     *,
     label: str = "traces",
-    s3_extra: Mapping[str, Any] | None = None,
+    s3_extra: Callable[[], Mapping[str, Any]] | None = None,
 ) -> TracesRoot:
     """The filesystem and root path `url` names; `<runs_dir>/traces` when it is empty.
 
     `label` names the setting in a refusal, so the artifacts root (`harness.artifacts`) reads as its own key.
-    `s3_extra` adds `S3FileSystem` options for an `s3://` URL, such as the artifacts root's bounded timeouts.
+    `s3_extra` gives extra `S3FileSystem` options for an `s3://` URL, such as the artifacts root's bounded timeouts. It
+    is called only once the URL has passed every check, so a refused URL never needs pyarrow.
     """
     if not url:
         return _local(str(runs_dir / "traces"))
@@ -143,7 +144,7 @@ def resolve_traces_root(
 
         prefix = parts.path.strip("/")
         path = f"{parts.netloc}/{prefix}" if prefix else parts.netloc
-        return TracesRoot(S3FileSystem(**_s3_options(env, object_store), **(s3_extra or {})), path)
+        return TracesRoot(S3FileSystem(**_s3_options(env, object_store), **(s3_extra() if s3_extra else {})), path)
     fs, path = _plugin_for(parts.scheme, _storage_plugins(), label).load().filesystem(url, env, object_store)
     return TracesRoot(fs, path)
 
