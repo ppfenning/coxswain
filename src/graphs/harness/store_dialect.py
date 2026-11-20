@@ -27,6 +27,7 @@ _T = TypeVar("_T")
 __all__ = [
     "POSTGRES",
     "SQLITE",
+    "SQLITE_SYNC_OFF_ENV",
     "Cell",
     "Connection",
     "Dialect",
@@ -39,6 +40,7 @@ __all__ = [
     "insert_ignore",
     "json_load",
     "json_text",
+    "sqlite_sync_off",
     "upsert",
 ]
 
@@ -284,6 +286,16 @@ SQLITE_RETIRED = (
 )
 
 
+SQLITE_SYNC_OFF_ENV = "COX_SQLITE_SYNC_OFF"
+
+
+def sqlite_sync_off(value: str | None) -> bool:
+    """Pure. Whether a sqlite connection skips the disk sync per commit: only on the explicit opt-in, `"1"`, which the
+    test suites' conftests set for their throwaway stores. Unset, as on every other path (the legacy store that
+    `store_switch` copies from holds real rows), each commit syncs as sqlite's default does."""
+    return value == "1"
+
+
 def double_allowed(environ: Mapping[str, str] | None = None) -> bool:
     """Whether a sqlite store may open: only as the test double."""
     return (os.environ if environ is None else environ).get(STORE_DOUBLE_ENV) == "sqlite"
@@ -291,7 +303,8 @@ def double_allowed(environ: Mapping[str, str] | None = None) -> bool:
 
 def connect(url: str) -> Connection:
     """Open a connection for a postgresql: URL (postgresql+psycopg:// too). A sqlite: URL opens only as the test
-    double (`double_allowed`); anywhere else it raises ValueError, the same error an unknown scheme gives."""
+    double (`double_allowed`), syncing each commit unless `$COX_SQLITE_SYNC_OFF` opts out (`sqlite_sync_off`);
+    anywhere else it raises ValueError, the same error an unknown scheme gives."""
     pg_url = _driver_free_url(url)
     if url.startswith("sqlite://"):
         if not double_allowed():
@@ -301,6 +314,10 @@ def connect(url: str) -> Connection:
         raw = sqlite3.connect(
             _sqlite_target(url), timeout=SQLITE_BUSY_TIMEOUT_MS / 1000, isolation_level=None, check_same_thread=False
         )
+        # Opted in (the test suites only): no commit waits for a disk sync. Set before WAL, so the switch to WAL is not
+        # synced either; a fresh test store's migrations go from seconds to milliseconds.
+        if sqlite_sync_off(os.environ.get(SQLITE_SYNC_OFF_ENV)):
+            raw.execute("PRAGMA synchronous=OFF")
         raw.execute("PRAGMA journal_mode=WAL")
         raw.execute("PRAGMA foreign_keys=ON")
         raw.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
