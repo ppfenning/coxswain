@@ -256,6 +256,7 @@ class InitiativeFacts(TypedDict):
     dag_problem: NotRequired[str]  # the first work-store DAG problem, e.g. "b needs x"; absent means valid
     land_at: NotRequired[str]  # the land_at (ticket, level or task) resolved this tick; old fixtures omit it
     phases: NotRequired[list[PhaseFacts]]  # the phases that can start a lane now; absent means none can, or the initiative's rows were not read
+    lane_model: NotRequired[str]  # `phase` when its row was stamped so at decompose (the tick loop never launches it); absent means `task`
 
 
 class QuarantineFacts(TypedDict):

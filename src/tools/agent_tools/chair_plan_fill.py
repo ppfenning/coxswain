@@ -43,6 +43,12 @@ def required_capabilities(initiative: InitiativeFacts) -> frozenset[str]:
     return frozenset(cap for task in initiative["ready_tasks"] for cap in task.get("requires", []))
 
 
+def launchable_by_tick(initiative: InitiativeFacts) -> bool:
+    """False for an initiative stamped `lane_model: phase` at decompose: a phase worker claims it, so the tick's
+    launch_epic never does. Absent or any other value is the task model, which the tick launches as before."""
+    return initiative.get("lane_model", "task") != "phase"
+
+
 def _launchable(initiative: InitiativeFacts, held_phases: frozenset[tuple[str, str]]) -> InitiativeFacts:
     """The initiative with held-phase ready tasks dropped; ready_surfaces stays, so steer overlap still sees them."""
     if not held_phases:
@@ -220,6 +226,8 @@ def _epic_launches(
 
     An initiative with a `dag_problem` never launches either; `plan_recover` is the one place that reports it.
 
+    Nor does one `launchable_by_tick` refuses, stamped for the phase lane model; `chair_plan` names it withheld.
+
     With now, an initiative the launch budget refuses is left out like a withheld one; `budget_skips` names why.
 
     The first free_lanes launch locally. The rest fill host_free in proportion to weight, capped at each
@@ -229,7 +237,7 @@ def _epic_launches(
     candidates = [
         i
         for i in (_launchable(i, held_phases) for i in facts["initiatives"])
-        if i["ready_tasks"] and i["id"] not in withheld and not i.get("dag_problem")
+        if i["ready_tasks"] and i["id"] not in withheld and not i.get("dag_problem") and launchable_by_tick(i)
     ]
     skips = budget_skips(facts, candidates, now)
     open_ = [i for i in candidates if i["id"] not in skips]
@@ -312,7 +320,7 @@ def scheduled_launches(
     open_ = [
         i
         for i in (_launchable(i, held_phases) for i in facts["initiatives"])
-        if i["ready_tasks"] and i["id"] not in withheld and not i.get("dag_problem")
+        if i["ready_tasks"] and i["id"] not in withheld and not i.get("dag_problem") and launchable_by_tick(i)
     ]
     skips = budget_skips(facts, open_, now)
     by_id = {i["id"]: i for i in open_ if i["id"] not in skips}

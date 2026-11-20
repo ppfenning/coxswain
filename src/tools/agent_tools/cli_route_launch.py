@@ -53,7 +53,7 @@ from agent_tools.cli_lazy import (
     work_state,
 )
 from agent_tools.cli_route import _initiative_path, _refuse_if_already_running
-from agent_tools.cli_route_sync import _harness_ready_or_refuse, _local_max_in_flight
+from agent_tools.cli_route_sync import _harness_ready_or_refuse, _lane_model, _local_max_in_flight
 from agent_tools.cli_runs import _leader_heartbeat_minutes, _waiting_lines
 from agent_tools.cli_runs_fetch import _holder_label, _lane_host_candidates, _profile_lane_hosts, _remote_edge
 from agent_tools.cli_stats import _resolve_profile_or_refuse
@@ -484,7 +484,7 @@ def _route_launch(a: argparse.Namespace) -> int:
         plan = route.plan_from_result(
             result, a.initiative_id, idea_fields.get("title", ""), idea_body, repo=idea_fields["repo"],
         )
-        rows_code, rows_lines = route.decompose_into_rows(runs_dir, idea_path.stem, lambda _intake: plan)
+        rows_code, rows_lines = route.decompose_into_rows(runs_dir, idea_path.stem, lambda _intake: plan, _lane_model(profile))
         for line in rows_lines:
             print(line)
         return rows_code

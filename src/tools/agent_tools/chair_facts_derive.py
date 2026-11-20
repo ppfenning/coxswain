@@ -607,8 +607,8 @@ def initiative_facts(
 ) -> list[InitiativeFacts]:
     """The docket's initiatives with no live run, so a live run is never relaunched.
 
-    `repo`, `ready_surfaces`, `land_at` and `phases` ride along only when their source was read; `rows` is each initiative's
-    ticket rows. `phases` leaves out a phase in `live_phases` and a task in `claimed` (initiative, task id), and is absent
+    `repo`, `ready_surfaces`, `land_at` and `phases` ride along only when their source was read, `lane_model` only when
+    the docket entry holds one; `rows` is each initiative's ticket rows. `phases` leaves out a phase in `live_phases` and a task in `claimed` (initiative, task id), and is absent
     when no phase can start a lane, so an initiative with no phase rows reads as it did."""
     from core.landing import DEFAULT_LAND_AT  # lazy: core sits beside agent_tools in one venv
 
@@ -641,6 +641,8 @@ def initiative_facts(
             facts["repo_dir"] = repo_dir_name(repos[i["id"]])
         if land_at is not None and i["id"] in land_at:
             facts["land_at"] = land_at[i["id"]]
+        if "lane_model" in i:
+            facts["lane_model"] = i["lane_model"]
         shown = phases_entry(i["id"])
         if shown:
             facts["phases"] = shown
