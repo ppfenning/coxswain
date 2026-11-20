@@ -25,7 +25,8 @@ from harness.store_landed import mark_landed
 from harness.store_migrate import MigrationError, open_store
 from harness.store_pause import clear_paused, set_paused
 from harness.store_read import StoreVersionError, connect_readonly
-from harness.store_types import Claim, QueueRow, WorkItemRecord, WorkItemRow
+from harness.store_steps import steps_for
+from harness.store_types import Claim, QueueRow, StepRow, WorkItemRecord, WorkItemRow
 from harness.store_work_state import Mismatch, set_state
 from harness.store_write import record_merge
 
@@ -358,6 +359,11 @@ def task_record_phases_on(conn: Connection, run_id: str, task: str) -> list[str]
     p = conn.dialect.placeholder
     sql = f"SELECT DISTINCT phase_id FROM task_records WHERE run_id = {p} AND task_id = {p} ORDER BY phase_id"
     return [str(r[0]) for r in conn.query_all(sql, (run_id, task))]
+
+
+def step_rows_on(conn: Connection, run_id: str) -> list[StepRow]:
+    """Every `step_results` row of one run, by step key; none for a run with no steps or no such run."""
+    return steps_for(conn, run_id)
 
 
 def run_task_ids_on(conn: Connection, run_id: str) -> list[str]:

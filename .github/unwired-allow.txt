@@ -10,6 +10,7 @@ src/graphs/graphs/ops/retro_propose.py::retro_propose  # graph module, discovere
 # Migrations: harness/store_migrate.default_modules walks the harness package for store_ddl_NNNN and calls each one's
 # `statements(dialect)` through the module object.
 src/graphs/harness/store_ddl_0019.py::statements  # migration module, discovered by store_migrate.default_modules' package walk
+src/graphs/harness/store_ddl_0020.py::statements  # migration module, discovered by store_migrate.default_modules' package walk
 
 # Commands a person runs as `python -m <module>`, documented where they are used.
 src/graphs/harness/graphdoc.py::graphdoc  # `python -m harness.graphdoc`, docs/customize/write-a-graph.md
@@ -21,6 +22,7 @@ src/tools/agent_tools/store_restore_drill.py::store_restore_drill  # `-m agent_t
 # pytest calls its hooks by name; the suites' conftest.py files import them.
 src/graphs/harness/serial_tests.py::pytest_collection_modifyitems  # pytest hook
 src/graphs/harness/serial_tests.py::pytest_sessionfinish  # pytest hook
+src/graphs/harness/extras_tests.py::register  # called from each suite's conftest.py pytest_configure
 
 # sources.adapter_for imports `agent_tools.source_<name>` by a computed name.
 src/tools/agent_tools/source_folder.py::source_folder  # source adapter, imported by name in sources.adapter_for

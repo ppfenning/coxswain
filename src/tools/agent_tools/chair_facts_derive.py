@@ -733,13 +733,15 @@ def dispatch_facts(
     capabilities: Mapping[str, Sequence[str]] | None = None,
     local: str = "",
     local_lanes: str = "any",
+    lane_prereqs: bool = True,
 ) -> DispatchFacts:
     """live_by_host maps a host name to its live lanes; the local machine is under the empty name. A host in `capacity`
     carries its own cap. `weight` and `capabilities` come from the same hosts table row; a name missing from
     `capabilities` has none, and a name missing from `weight` carries no weight, so placement weights it by capacity.
     `local` names the machine running this loop: an entry in `lane_hosts` equal to it is never added to the
     returned `hosts`, since the loop's own machine is never a remote lane-host candidate for itself.
-    `local_lanes` is carried only when it is not "any", so the default facts stay as they were."""
+    `local_lanes` is carried only when it is not "any", and `lane_prereqs` only when the gate is off, so the default
+    facts stay as they were."""
     caps = capacity or {}
     weights = weight or {}
     abilities = capabilities or {}
@@ -759,6 +761,8 @@ def dispatch_facts(
     }
     if local_lanes != "any":
         facts["local_lanes"] = local_lanes
+    if not lane_prereqs:
+        facts["lane_prereqs"] = False
     return facts
 
 

@@ -647,10 +647,19 @@ def worker_capacity(
     machine's own hosts-table row is `active` (or it has none, as a chair with no hosts table runs on its profile's cap)
     and its lanes are not kept for decomposes (`local_lanes`). A lane host counts its own capacity, else the local cap,
     when its row is `active`, or when it has no row, as a host named only by the profile. 0 means every host is
-    drained or none is configured."""
+    drained or none is configured.
+
+    A lane host placement skips for its lane prerequisites (`lane_prereqs.lane_blocked`, while the dispatch's
+    `lane_prereqs` gate is on) is not capacity: the chair cannot fill it, and its `lane_prereqs` notice already says
+    why. This machine's own lanes are placed without that gate, so they still count."""
     if not dispatch:
         return 0
     states = {str(r.get("name") or ""): str(r.get("state") or "") for r in login_hosts}
+    # Imported here: chair_types imports this module, and lane_prereqs imports chair_types through chair_login_watch.
+    from agent_tools import lane_prereqs
+
+    gate = dispatch.get("lane_prereqs", True) is not False
+    blocked = lane_prereqs.gated(lane_prereqs.lane_blocked(list(login_hosts)), gate)
 
     def counts(name: str) -> bool:
         return states.get(name, "active") == "active"
@@ -659,7 +668,10 @@ def worker_capacity(
     local = cap if counts(local_host) and dispatch.get("local_lanes", "any") != "decompose" else 0
     hosts = dispatch.get("hosts")
     remote = [h for h in hosts if is_mapping(h)] if is_list(hosts) else []
-    return local + sum(_count(h.get("capacity", cap)) for h in remote if counts(str(h.get("name") or "")))
+    return local + sum(
+        _count(h.get("capacity", cap)) for h in remote
+        if counts(str(h.get("name") or "")) and str(h.get("name") or "") not in blocked
+    )
 
 
 def _count(value: object) -> int:

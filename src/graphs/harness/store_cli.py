@@ -1,4 +1,4 @@
-"""python -m harness.store_cli: mark-landed, set-state, lease, host, pause, resume, record-action and regenerate-states commands against the run-record store."""
+"""python -m harness.store_cli: mark-landed, set-state, lease, host, steps, pause, resume, record-action and regenerate-states commands against the run-record store."""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ EXIT_PRECONDITION = 3
 WORK_STATES = store_api.WORK_STATES
 EXPECT_STATES = store_api.WORK_STATES
 
-# What a command prints as its one JSON object: a mapping, or (for `host list`) an array of them.
+# What a command prints as its one JSON object: a mapping, or (for `host list` and `steps list`) an array of them.
 type Payload = Mapping[str, object] | Sequence[Mapping[str, object]]
 
 
@@ -179,6 +179,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     listing = host_actions.add_parser("list", help="print every host, by name")
     add_common_args(listing, top=False)
+
+    steps = commands.add_parser("steps", help="list the step_results rows of a run")
+    step_actions = steps.add_subparsers(dest="action", required=True)
+    step_list = step_actions.add_parser("list", help="print every step row of one run, by step key")
+    add_common_args(step_list, top=False)
+    step_list.add_argument("run_id", type=_non_empty)
 
     pause = commands.add_parser("pause", help="set a run's paused_at to now")
     add_common_args(pause, top=False)
@@ -396,6 +402,8 @@ def dispatch(conn: Connection, args: argparse.Namespace, now: str) -> tuple[Payl
         return _set_state(conn, args, now)
     if args.command == "host":
         return _host(conn, args, now)
+    if args.command == "steps":
+        return store_api.step_rows_on(conn, args.run_id), EXIT_OK
     if args.command == "pause":
         if isinstance(store_api.pause_on(conn, args.run_id, now, args.reason), store_api.PauseRefused):
             return {"ok": False, "run": args.run_id, "paused": None, "reason": None}, EXIT_PRECONDITION

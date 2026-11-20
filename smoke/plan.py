@@ -70,6 +70,40 @@ class Fail:
 PostgresSource = UseUrl | StartContainer | Skip | Fail
 
 
+# CI splits the non-forge suite across parallel jobs, one shard each (`COX_SMOKE_SHARD=<k>/<n>`). Shards are by file,
+# so a module's fixtures stay in one session, and every file lands in exactly one shard (`shard_files`). The split is
+# made from the folder's files, not from what one run collected, so a nested pytest that a smoke test starts on its own
+# file (it inherits the variable) keeps that file in the same shard as its parent.
+SHARD_ENV = "COX_SMOKE_SHARD"
+_TEST_DEF = re.compile(r"^\s*(?:async\s+)?def test_", re.MULTILINE)
+
+
+def file_weights(sources: Mapping[str, str]) -> dict[str, int]:
+    """Each test file's weight for `shard_files`: the test functions its source defines (file -> source)."""
+    return {name: len(_TEST_DEF.findall(source)) for name, source in sources.items()}
+
+
+def parse_shard(value: str) -> tuple[int, int]:
+    """`<k>/<n>` read as (k, n), with 1 <= k <= n; anything else is a ValueError."""
+    k, sep, n = value.strip().partition("/")
+    if not (sep and k.isdigit() and n.isdigit() and 1 <= int(k) <= int(n)):
+        raise ValueError(f"{SHARD_ENV} must read <k>/<n> with 1 <= k <= n, not {value!r}")
+    return int(k), int(n)
+
+
+def shard_files(weights: Mapping[str, int], count: int) -> tuple[tuple[str, ...], ...]:
+    """`count` shards of the files in `weights` (file -> its weight), heaviest file first onto the lightest
+    shard, ties broken by name and by shard number. A partition: each file is in exactly one shard, and the same
+    files always split the same way."""
+    shards: list[list[str]] = [[] for _ in range(count)]
+    loads = [0] * count
+    for name in sorted(weights, key=lambda name: (-weights[name], name)):
+        lightest = min(range(count), key=lambda index: (loads[index], index))
+        shards[lightest].append(name)
+        loads[lightest] += weights[name]
+    return tuple(tuple(sorted(shard)) for shard in shards)
+
+
 def is_required(value: str | None) -> bool:
     """`COX_SMOKE_REQUIRED` read as a flag: any non-empty value other than 0, false or no."""
     return bool(value) and value.strip().lower() not in {"0", "false", "no"}

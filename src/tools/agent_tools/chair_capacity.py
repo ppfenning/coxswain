@@ -64,6 +64,16 @@ def chair_local_lanes(profile: Mapping[str, object]) -> str:
     return found if found is not None else "any"
 
 
+def chair_lane_prereqs(profile: Mapping[str, object]) -> bool:
+    """Edge. `policy.dispatch.lane_prereqs` along the team cartridge and its `extends` chain, else True: placement
+    skips a host that fails its lane prerequisites unless a cartridge turns the gate off."""
+    cartridges_dir, team = profile.get("cartridges_dir"), profile.get("team")
+    if not (cartridges_dir and isinstance(cartridges_dir, str | Path) and isinstance(team, str) and team):
+        return True
+    found = _first_along_extends(Path(cartridges_dir).expanduser(), team, chair_cap.lane_prereqs_from_cartridge)
+    return found if found is not None else True
+
+
 def chair_max_in_flight(runs_dir: Path, profile: Mapping[str, object]) -> int:
     """The lane cap: the team cartridge's `policy.dispatch.max_in_flight`, else its `extends` chain's, else `<runs_dir>/policy.pacing.json`'s, else 3."""
     cartridges_dir, team = profile.get("cartridges_dir"), profile.get("team")

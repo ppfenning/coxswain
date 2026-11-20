@@ -34,6 +34,14 @@ The Postgres cases in `tests/test_run_store_backends.py` run only when
 `COX_TEST_POSTGRES_URL` names a database where the test may create a schema.
 Without it they are skipped.
 
+CI's `extras` jobs install every extra and start a Postgres. On a pull request they run only the tests that would skip
+without them: `-m "extras and not postgres"` under xdist, then `-m postgres` serially. On a push to main they run
+every suite whole. `harness/extras_tests.py` adds the marks to a whole file when its source names `importorskip(`,
+`find_spec(` or a test database variable. It also marks a test that uses a fixture whose source does, and a test
+whose `skipif` reason names a missing extra or database. `@pytest.mark.extras` marks one by hand. With
+`COX_EXTRAS_GUARD=unit`, as the `unit` jobs set it, a skip fails the run unless the test is marked or its reason is
+on `ALLOWED_SKIPS`. With `COX_EXTRAS_GUARD=extras`, as the extras jobs set it, only `ALLOWED_SKIPS` excuses a skip.
+
 ## Commands
 
 Bare `cox` on a terminal starts `cox session`: a Claude Code session with the

@@ -137,6 +137,8 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
         "summary": "a patch that already exists, reviewed with the harness's own check results",
         "files_touched": [path for path, _ in _file_chunks(patch)],
         "commands_run": rows,
+        # Not built here: the patch already existed. `store_steps` writes no build step for it.
+        "reused": True,
     }
     facts = _change_facts(build)
     context = list(cartridge.get("context") or [])
