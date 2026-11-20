@@ -192,8 +192,9 @@ macOS launchd stays an operator check: the suite runs on Linux and starts no lau
   Both set `COX_SMOKE_POSTGRES_URL` to the service and `COX_SMOKE_REQUIRED=1`, so a missing `uv`, Postgres or docker
   fails the job instead of skipping it. `smoke` is three parallel jobs, `smoke (1/3)` to `smoke (3/3)`, each with
   `COX_SMOKE_SHARD=<k>/3`. The conftest keeps the files `plan.shard_files` puts in shard k: whole files, heaviest
-  first onto the lightest shard by selected-test count, so each file lands in exactly one shard and each shard installs
-  `cox` once. `tests/test_workflows.py` checks that the matrix names every shard from 1 to n. Without the variable, the
+  first onto the lightest shard by the test functions each defines, so each file lands in exactly one shard and each
+  shard installs `cox` once. The split comes from the folder's files, not from one run's collection, so a nested pytest
+  a smoke test starts on its own file (`test_imports_this_tree.py`) keeps that file in its parent's shard. `tests/test_workflows.py` checks that the matrix names every shard from 1 to n. Without the variable, the
   suite runs whole. They run in parallel with the unit suites and the checks job; the required `test` check passes
   only when every one of those jobs succeeded.
 - **Lane checks.** `.agent-checks` runs `pytest -q -rs smoke` after the component suites. A lane host with docker
