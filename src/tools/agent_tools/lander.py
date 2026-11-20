@@ -681,6 +681,14 @@ def merge_phase(ports: Ports, initiative: str, phase: str) -> Outcome:
     return Outcome("done", ident, events[len(adopted)], tuple(events))
 
 
+def _phase_states(ports: Ports, initiative: str) -> dict[str, str] | None:
+    """Each phase's state, by its record and tasks; None when the initiative has no record or has landed."""
+    record = ls.get_record(ports.conn, initiative)
+    if record is None or record.get("state") == "landed":
+        return None
+    return lr.phase_states(record, ports.tasks(initiative))
+
+
 def _empty_phase(ports: Ports, repo: Path, initiative: str, phase: str, tasks: Sequence[Row]) -> str | None:
     """Edge. The refusal of a built phase whose branch carries nothing (`lander_empty`), told to the chair once; None
     when it carries a change, or is not waiting to merge. It is judged against the parent (main), as a branch of only
@@ -688,10 +696,13 @@ def _empty_phase(ports: Ports, repo: Path, initiative: str, phase: str, tasks: S
     record = ls.get_record(ports.conn, initiative)
     source = lg.branch_ref(repo, ops.phase_branch(initiative, phase))
     if record is None or source is None or lr.phase_state(record, phase, tasks) not in ("built", "queued"):
+        ls.forget(ports.conn, lander_empty.empty_key(initiative, phase))  # not waiting to merge: no refusal stands
         return None
     branch, parent = record_text(record, "branch"), record_text(record, "parent")
-    targets = [lander_empty.Target(parent_ref_of(repo, parent), parent, held_is_empty=True),
-               lander_empty.Target(f"refs/heads/{branch}", branch)]
+    # The parent as this clone last fetched it: the land fetches it again before anything is opened.
+    known_parent = f"refs/remotes/origin/{parent}" if lg.rev(repo, f"refs/remotes/origin/{parent}") else parent
+    targets = [lander_empty.Target(known_parent, parent, held="empty"),
+               lander_empty.Target(f"refs/heads/{branch}", branch, held="own")]
     return lander_empty.refuse_empty(ports.conn, ports.notify, ports.now(), repo, initiative=initiative, source=source,
                                      targets=targets, tasks=tasks, phase=phase)
 
@@ -838,7 +849,7 @@ def land_initiative(ports: Ports, initiative: str, *, merge: bool = True, refres
     parent_ref = parent_ref_of(repo, parent) if not merged else parent
     # A branch the parent already holds has nothing of its own while no pull request is open; once one is, it is a
     # merge that happened (the local forge fast-forwards) and the land finishes as it is.
-    target = lander_empty.Target(parent_ref, parent, held_is_empty=not (record.get("pr") or {}).get("url"))
+    target = lander_empty.Target(parent_ref, parent, held="merged" if (record.get("pr") or {}).get("url") else "empty")
     if not merged and (refused := lander_empty.refuse_empty(
             ports.conn, ports.notify, ports.now(), repo, initiative=initiative, targets=[target],
             source=lg.branch_ref(repo, branch) or f"refs/heads/{branch}", tasks=tasks)):
@@ -1637,6 +1648,8 @@ def run_lane(ports: Ports, lane: Lane, *, phase_cap: int = 2, land_cap: int = 1,
     for initiative in lane.initiatives:
         for line in reconcile(ports, initiative):
             ports.log(line)
+    # An empty refusal whose phase a build run has since merged, or whose initiative landed, is told again next time.
+    lander_empty.forget_stale_empty(ports.conn, {i: _phase_states(ports, i) for i in mine})
     outcomes: list[Outcome] = []
 
     def report(outcome: Outcome) -> Outcome:

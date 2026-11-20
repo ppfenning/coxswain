@@ -13,7 +13,7 @@ changes nothing and tells nobody, and a pass that finds the branch carries a cha
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -31,21 +31,28 @@ Notify = Callable[[str, Mapping[str, object]], None]
 class TreeFacts:
     """What git says of merging `source` into `target`. `target_tree`: the target's tree. `merged_tree`: the tree a
     clean merge of the two would have, None when it conflicts or cannot be computed. `held`: the target already holds
-    the source tip, so there is nothing to merge and nothing to judge."""
+    the source tip. `merged_in`: it holds it only through a merge, off its own first-parent line, so the source had
+    commits of its own that a merge carried in; a source tip on that line is one of the target's own commits, and a
+    branch cut there with nothing added has nothing of its own."""
 
     target_tree: str | None
     merged_tree: str | None
     held: bool
+    merged_in: bool = False
+
+
+Held = Literal["empty", "merged", "own"]
 
 
 @dataclass(frozen=True)
 class Target:
-    """One branch a change is judged against: the ref git reads, the name the refusal gives, and whether a source
-    it already holds counts as empty (`carries_nothing`)."""
+    """One branch a change is judged against: the ref git reads, the name the refusal gives, and what a source it
+    already holds means (`carries_nothing`): `empty` (it has nothing beyond the target), `merged` (a merge that
+    happened: never refused), or `own` (empty unless a merge carried its own commits in)."""
 
     ref: str
     name: str
-    held_is_empty: bool = False
+    held: Held = "merged"
 
 
 # -- the pure decisions -------------------------------------------------------------------------------------------
@@ -55,16 +62,17 @@ def approved_tasks(tasks: Sequence[Mapping[str, object]], phase: str | None = No
     return [str(t["id"]) for t in tasks if t.get("state") == "approved" and (phase is None or str(t.get("phase")) == phase)]
 
 
-def carries_nothing(facts: TreeFacts, approved: Sequence[str], held_is_empty: bool = False) -> bool:
+def carries_nothing(facts: TreeFacts, approved: Sequence[str], held: Held = "merged") -> bool:
     """Pure. Whether the branch is to be refused as empty: merging it would leave the target's tree as it is, and it
     has approved tasks that claim to have changed something. A conflict, an unknown tree, or a branch with no approved
-    task (all dropped or done) is never refused here. A branch the target already holds is refused only when
-    `held_is_empty`: held by main it has nothing of its own, while held by its initiative branch it is a merge that
-    was pushed and not yet recorded, which is recorded as it is."""
+    task (all dropped or done) is never refused here. A branch the target already holds is judged by `held`: held by
+    main (`empty`) it has nothing of its own; held by its initiative branch (`own`) it is a merge that was pushed and
+    not yet recorded when a merge carried it in, and a later phase cut from that branch with no commit when not; held
+    by the parent of an open pull request (`merged`) it is a land that merged and is finished as it is."""
     if not approved or facts.target_tree is None or facts.merged_tree is None:
         return False
     if facts.held:
-        return held_is_empty
+        return held == "empty" or (held == "own" and not facts.merged_in)
     return facts.merged_tree == facts.target_tree
 
 
@@ -72,7 +80,7 @@ def empty_against(facts: Sequence[tuple[Target, TreeFacts]], approved: Sequence[
     """Pure. The name of the first target the branch is refused against (`carries_nothing`), or None. A phase is
     judged against its parent (main) and its initiative branch: holding nothing beyond main, or adding nothing to the
     initiative branch, each means its approved tasks have no commits."""
-    return next((t.name for t, found in facts if carries_nothing(found, approved, t.held_is_empty)), None)
+    return next((t.name for t, found in facts if carries_nothing(found, approved, t.held)), None)
 
 
 def uncommitted(tasks: Sequence[Mapping[str, object]], remote: Mapping[str, bool], phase: str | None = None) -> list[str]:
@@ -88,10 +96,16 @@ def empty_reason(initiative: str, against: str, phase: str | None = None) -> str
     return f"{what}: no changes against {against}; the approved tasks have no commits"
 
 
+WAY_OUT = ("rebuild a task with `cox route edit <task> --state ready --rebuild --force`, or drop one whose work is "
+           "already on the branch with `cox route edit <task> --state dropped`")
+
+
 def empty_alarm(reason: str, missing: Sequence[str]) -> str:
-    """Pure. What the chair is told: the refusal, and the approved tasks with no commit on the remote."""
+    """Pure. What the chair is told: the refusal, the approved tasks with no commit on the remote, and the way out.
+    The refusal fails closed: a task approved after its work was already on the branch is refused too, until it is
+    rebuilt or dropped."""
     listed = ", ".join(missing) if missing else "none; their commits change nothing"
-    return f"{reason} (approved with no commit on the remote: {listed})"
+    return f"{reason} (approved with no commit on the remote: {listed}); {WAY_OUT}"
 
 
 def empty_news(told: str | None, alarm: str | None) -> Literal["tell", "forget", "quiet"]:
@@ -108,6 +122,22 @@ def empty_key(initiative: str, phase: str | None = None) -> str:
     return f"{EMPTY_KEY}{initiative}" + (f":{phase}" if phase else "")
 
 
+def stale_empty(told: Collection[str], states: Mapping[str, Mapping[str, str] | None]) -> list[str]:
+    """Pure. The empty-refusal notices to forget because what they refused is settled. `states` is initiative -> its
+    phases' states (`phase_state`), or None when it has no landing record or has landed; a notice of an initiative not
+    in it is left alone. An initiative's notice is stale once it has landed; a phase's, once the phase reads merged
+    (a build run may have merged it). A merged phase that gained work reads by its tasks again, so its notice stays."""
+    stale: list[str] = []
+    for key in told:
+        initiative, _, phase = key[len(EMPTY_KEY):].partition(":")
+        if not key.startswith(EMPTY_KEY) or initiative not in states:
+            continue
+        phases = states[initiative]
+        if phases is None or (phase and phases.get(phase) == "merged"):
+            stale.append(key)
+    return sorted(stale)
+
+
 # -- the edges ----------------------------------------------------------------------------------------------------
 
 def _tree(repo: Path, ref: str) -> str | None:
@@ -122,7 +152,9 @@ def tree_facts(repo: Path, target: str, source: str) -> TreeFacts:
     if target_tree is None or lg.rev(repo, source) is None:
         return TreeFacts(target_tree, None, False)
     if lg.is_ancestor(repo, source, target):
-        return TreeFacts(target_tree, target_tree, True)
+        tip = lg.rev(repo, source)
+        _, line = lg.git(repo, "rev-list", "--first-parent", target)
+        return TreeFacts(target_tree, target_tree, True, merged_in=tip not in line.split())
     ok, out = lg.git(repo, "merge-tree", "--write-tree", target, source)
     merged = out.splitlines()[0].strip() if ok and out else None
     return TreeFacts(target_tree, merged or None, False)
@@ -160,3 +192,12 @@ def refuse_empty(conn: Connection, notify: Notify, now: str, repo: Path, *, init
         notify("needs_chair", {"initiative": initiative, **({"phase": phase} if phase else {}), "reason": alarm})
         ls.remember(conn, key, alarm, now)
     return reason
+
+
+def forget_stale_empty(conn: Connection, states: Mapping[str, Mapping[str, str] | None]) -> list[str]:
+    """Edge. Forget the empty-refusal notices `stale_empty` names, so the next empty branch of the same initiative
+    or phase is told again. The keys forgotten."""
+    stale = stale_empty(ls.told(conn, EMPTY_KEY), states)
+    for key in stale:
+        ls.forget(conn, key)
+    return stale

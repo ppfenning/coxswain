@@ -32,13 +32,15 @@ def test_nothing_is_refused_without_an_approved_task_or_a_known_tree() -> None:
 
 
 def test_a_held_branch_is_empty_only_where_holding_it_means_it_has_nothing_of_its_own() -> None:
-    held = le.TreeFacts(TREE, TREE, True)
-    assert not le.carries_nothing(held, ["t1"]), "held by its initiative branch: pushed and not yet recorded"
-    assert le.carries_nothing(held, ["t1"], held_is_empty=True), "held by main: nothing beyond main"
+    on_line, merged_in = le.TreeFacts(TREE, TREE, True), le.TreeFacts(TREE, TREE, True, merged_in=True)
+    assert le.carries_nothing(on_line, ["t1"], "empty") and le.carries_nothing(merged_in, ["t1"], "empty"), "held by main"
+    assert not le.carries_nothing(merged_in, ["t1"], "own"), "merged into its initiative branch: pushed, not yet recorded"
+    assert le.carries_nothing(on_line, ["t1"], "own"), "cut from its initiative branch with no commit of its own"
+    assert not le.carries_nothing(on_line, ["t1"], "merged"), "held by the parent of an open pull request: it merged"
 
 
 def test_the_refusal_names_the_first_target_the_branch_carries_nothing_against() -> None:
-    main, init = le.Target("origin/main", "main", held_is_empty=True), le.Target("refs/heads/init/i", "init/i")
+    main, init = le.Target("origin/main", "main", "empty"), le.Target("refs/heads/init/i", "init/i", "own")
     change, nothing = le.TreeFacts(TREE, OTHER, False), le.TreeFacts(TREE, TREE, False)
     assert le.empty_against([(main, nothing), (init, nothing)], ["t1"]) == "main"
     assert le.empty_against([(main, change), (init, nothing)], ["t1"]) == "init/i"
@@ -63,7 +65,8 @@ def test_the_reason_and_the_alarm_say_what_was_compared_and_which_tasks_lack_com
     assert le.empty_reason("route-drift", "main") == "route-drift: no changes against main; the approved tasks have no commits"
     reason = le.empty_reason("i", "init/i", "p2")
     assert reason == "i: phase p2: no changes against init/i; the approved tasks have no commits"
-    assert le.empty_alarm(reason, ["a", "c"]).endswith("(approved with no commit on the remote: a, c)")
+    assert "(approved with no commit on the remote: a, c); " in le.empty_alarm(reason, ["a", "c"])
+    assert le.empty_alarm(reason, []).endswith(le.WAY_OUT), "the alarm names the way out"
     assert "none; their commits change nothing" in le.empty_alarm(reason, [])
 
 
@@ -74,6 +77,13 @@ def test_an_alarm_is_told_once_and_forgotten_when_the_branch_carries_a_change_ag
     assert le.empty_news("x", None) == "forget"
     assert le.empty_news(None, None) == "quiet"
     assert le.empty_key("i") == "empty:i" and le.empty_key("i", "p1") == "empty:i:p1"
+
+
+def test_a_notice_is_stale_once_its_initiative_landed_or_its_phase_reads_merged() -> None:
+    told = ["empty:i", "empty:i:p1", "empty:i:p2", "empty:j:p1", "empty:k", "unreadable:i"]
+    states = {"i": {"p1": "merged", "p2": "built"}, "j": None}
+    assert le.stale_empty(told, states) == ["empty:i:p1", "empty:j:p1"], "k is not in this lane: left alone"
+    assert le.stale_empty(["empty:j"], {"j": None}) == ["empty:j"]
 
 
 # -- the edges, on a real repository ------------------------------------------------------------------------------
@@ -103,7 +113,11 @@ def test_tree_facts_tell_a_branch_of_merges_from_one_with_a_change(tmp_path: Pat
     merges = le.tree_facts(repo, "main", "refs/heads/merges-only")
     assert le.carries_nothing(merges, ["t1"]) and not merges.held
     assert not le.carries_nothing(le.tree_facts(repo, "main", "refs/heads/change"), ["t1"])
-    assert le.tree_facts(repo, "main", "refs/heads/old").held, "main holds a branch with nothing of its own"
+    old = le.tree_facts(repo, "main", "refs/heads/old")
+    assert old.held and not old.merged_in, "a branch cut from main's own line with nothing added"
+    run(repo, "merge", "-q", "--no-ff", "-m", "merge change", "change")
+    pushed = le.tree_facts(repo, "main", "refs/heads/change")
+    assert pushed.held and pushed.merged_in, "a branch merged in with commits of its own"
     assert le.tree_facts(repo, "main", "refs/heads/no-such-branch").merged_tree is None
 
 
@@ -164,7 +178,7 @@ def test_a_phase_of_only_merges_is_refused_told_once_and_merges_once_it_carries_
     reason = "i: phase p1: no changes against main; the approved tasks have no commits"
     assert [(o.status, o.detail) for o in first] == [("waiting", reason)]
     assert [(o.status, o.detail) for o in second] == [("waiting", reason)], "a second pass refuses the same way"
-    assert _chair_notes(world) == [f"{reason} (approved with no commit on the remote: a)"], "told once, not once a pass"
+    assert _chair_notes(world) == [f"{reason} (approved with no commit on the remote: a); {le.WAY_OUT}"], "told once, not once a pass"
     assert run(world.repo, "rev-parse", "init/i") == tip, "nothing merged"
     assert world.record("i")["phases"]["p1"]["state"] != "merged"
     assert "pr_create" not in world.forge.kinds() and "push" not in world.forge.kinds()
@@ -193,6 +207,85 @@ def test_an_initiative_assembled_with_nothing_on_it_opens_no_pull_request_and_te
 
     reason = "i: no changes against main; the approved tasks have no commits"
     assert [(o.status, o.detail) for o in [*first, *second]] == [("waiting", reason), ("waiting", reason)]
-    assert _chair_notes(world) == [f"{reason} (approved with no commit on the remote: a)"]
+    assert _chair_notes(world) == [f"{reason} (approved with no commit on the remote: a); {le.WAY_OUT}"]
     assert "pr_create" not in world.forge.kinds() and "merge" not in world.forge.kinds()
     assert not (world.record("i").get("pr") or {}).get("url")
+
+
+def test_a_later_phase_cut_from_the_initiative_branch_with_no_commit_is_refused(world: World) -> None:
+    world.start("i", [task("a", "p1"), task("b", "p2", needs=("a",))])
+    world.build("i", "p1")
+    lander.run_once(world.ports)
+    assert world.record("i")["phases"]["p1"]["state"] == "merged"
+    run(world.repo, "branch", ops.phase_branch("i", "p2"), "init/i")  # held by init/i, and it carries p1 against main
+    world.rows["i"][1]["state"] = "approved"
+    ops.queue_phase(world.conn, world.record("i"), "p2", now=world.now(), reason="phase built")
+
+    first, second = lander.run_once(world.ports), lander.run_once(world.ports)
+
+    reason = "i: phase p2: no changes against init/i; the approved tasks have no commits"
+    assert [(o.status, o.detail) for o in [*first, *second]] == [("waiting", reason), ("waiting", reason)]
+    assert world.record("i")["phases"].get("p2", {}).get("state") != "merged"
+    assert len(_chair_notes(world)) == 1 and "pr_create" not in world.forge.kinds()
+
+
+def test_a_merged_phase_that_gains_an_approved_task_with_no_commit_fails_closed_and_names_the_way_out(world: World) -> None:
+    world.start("i", [task("a", "p1")])
+    world.rows["i"][0]["merged_commit"] = world.build("i", "p1")
+    world.gate = "ticket"  # the pull request opens and waits for a person, so the phase can gain work after its merge
+    lander.run_once(world.ports)
+    assert world.record("i")["phases"]["p1"]["state"] == "merged"
+    world.rows["i"].append({**task("b", "p1"), "state": "approved"})  # approved, with its work already on the branch
+    phase = ops.phase_branch("i", "p1")
+    wt = world.repo.parent / "wt-remerge"
+    run(world.repo, "worktree", "add", "-q", str(wt), phase)
+    run(wt, "-c", "user.email=t@invalid", "-c", "user.name=t", "merge", "-q", "--no-ff", "-m", "merge init/i", "init/i")
+    run(world.repo, "worktree", "remove", "--force", str(wt))
+    ops.queue_phase(world.conn, world.record("i"), "p1", now=world.now(), reason="phase built")
+
+    lander.run_once(world.ports)
+    lander.run_once(world.ports)
+
+    [alarm] = _chair_notes(world)
+    assert alarm.startswith("i: phase p1: no changes against init/i; the approved tasks have no commits")
+    assert "approved with no commit on the remote: b)" in alarm and le.WAY_OUT in alarm
+
+    world.rows["i"][-1]["state"] = "dropped"  # the way out: its work was already on the branch
+    lander.run_once(world.ports)
+
+    assert ls.told(world.conn, le.EMPTY_KEY) == {}, "the phase reads merged again, and the notice is gone"
+    assert len(_chair_notes(world)) == 1
+
+
+def test_commits_that_revert_each_other_are_refused_and_the_alarm_says_they_change_nothing(world: World) -> None:
+    world.start("i", [task("a", "p1")])
+    branch = ops.phase_branch("i", "p1")
+    run(world.repo, "branch", branch, "init/i")
+    commit(world.repo, branch, "feature.txt", "a change\n")
+    wt = world.repo.parent / "wt-revert"
+    run(world.repo, "worktree", "add", "-q", str(wt), branch)
+    run(wt, "-c", "user.email=t@invalid", "-c", "user.name=t", "revert", "--no-edit", "HEAD")
+    run(world.repo, "worktree", "remove", "--force", str(wt))
+    world.rows["i"][0].update(state="approved", merged_commit=run(world.repo, "rev-parse", branch))
+    ops.queue_phase(world.conn, world.record("i"), "p1", now=world.now(), reason="phase built")
+
+    lander.run_once(world.ports)
+
+    [alarm] = _chair_notes(world)
+    assert alarm.startswith("i: phase p1: no changes against main; the approved tasks have no commits")
+    assert "(approved with no commit on the remote: none; their commits change nothing)" in alarm
+
+
+def test_a_refused_phase_a_build_run_merges_later_leaves_no_notice_behind(world: World) -> None:
+    world.start("i", [task("a", "p1"), task("b", "p2", needs=("a",))])
+    _merges_only(world, "i", "p1")
+    ops.queue_phase(world.conn, world.record("i"), "p1", now=world.now(), reason="phase built")
+    lander.run_once(world.ports)
+    assert list(ls.told(world.conn, le.EMPTY_KEY)) == ["empty:i:p1"]
+    merged = ops.merge_phase(world.conn, world.repo, initiative="i", phase="p1", tasks=world.rows["i"],
+                             worker="run:lane-host", now=world.now())
+    assert merged.status == "merged"
+
+    lander.run_once(world.ports)
+
+    assert ls.told(world.conn, le.EMPTY_KEY) == {}, "the next empty refusal of p1 is told again"
