@@ -713,8 +713,9 @@ def _task_record_mirror(
 def record_steps(ctx: Ctx, result: Mapping[str, object], *, phase: str, task: str) -> None:
     """Edge. One `step_results` row per step of `result` that this run performed (`store_steps.steps_of_result`),
     each written once. With `ctx.artifacts`, each new row's artifacts are uploaded first and listed on it
-    (`artifacts.step_artifacts`, which never raises: a failed upload marks the row and the row is still written). Nothing without a store or under a stale epoch; a store failure is a warning, never a failed
-    run. `result` is read as its JSON round trip, the shape the result file holds."""
+    (`artifacts.step_artifacts`, which never raises: a failed upload marks the row and the row is still written).
+    Nothing without a store or under a stale epoch; a store failure is a warning, never a failed run. `result` is read
+    as its JSON round trip, the shape the result file holds."""
     store = ctx.store
     if store is None:
         return
