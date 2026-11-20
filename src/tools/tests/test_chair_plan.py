@@ -989,6 +989,16 @@ def test_a_remote_unfetched_initiative_gets_a_fetch_exit_action_before_its_relau
     assert plan_tick(facts) == [{"kind": "fetch_exit", "initiative": "i", "run": "i-run-1", "epoch": 7}]
 
 
+def test_a_remote_unfetched_run_with_a_recorded_host_carries_that_host_on_its_fetch_exit():
+    facts = _facts(initiatives=[_initiative("i")], remote_unfetched={"i": "i-run-1"}, run_hosts={"i-run-1": "lane-a"}, run_exited={"i": True})
+    assert plan_tick(facts) == [{"kind": "fetch_exit", "initiative": "i", "run": "i-run-1", "host": "lane-a", "epoch": 7}]
+
+
+def test_a_remote_unfetched_run_with_no_recorded_host_leaves_the_host_key_off_its_fetch_exit():
+    facts = _facts(initiatives=[_initiative("i")], remote_unfetched={"i": "i-run-1"}, run_hosts={}, run_exited={"i": True})
+    assert plan_tick(facts) == [{"kind": "fetch_exit", "initiative": "i", "run": "i-run-1", "epoch": 7}]
+
+
 def test_a_remote_unfetched_initiative_plans_no_relaunch_even_with_ready_tasks_and_met_needs():
     facts = _facts(initiatives=[_initiative("a")], remote_unfetched={"a": "a-run-1"}, run_exited={"a": True})
     assert "relaunch" not in _kinds(plan_tick(facts))
