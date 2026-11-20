@@ -107,7 +107,8 @@ def _new_row(change: Mapping[str, object], by: str, now: str) -> tuple[object, .
 def _apply(conn: Connection, change: Mapping[str, object], by: str, now: str) -> bool:
     """`insert` adds a ready row and leaves an existing one alone. `update` rewrites a waiting or ready row's
     requirements and order, never a claimed one's. `reopen` makes a finished or withdrawn row ready again, only while
-    it is still the row the chair saw (same epoch). `withdraw` takes a waiting or ready row out of the queue (state
+    it is still the row the chair saw (same epoch), claimable at once with its attempts back at 0: work that came back
+    is a new episode, and the last one's claims must not fail it before it runs. `withdraw` takes a waiting or ready row out of the queue (state
     `cancelled`: its phase is held, closed or over budget), never a claimed one. `exhaust` finishes as failed a row
     whose claims ran out while nobody holds it (`phase_pick.exhausted`, in SQL). Each is conditional on the state it
     moves from, so a repeat changes nothing."""
@@ -127,7 +128,7 @@ def _apply(conn: Connection, change: Mapping[str, object], by: str, now: str) ->
     if op == "reopen":
         return conn.execute(
             f"UPDATE phase_queue SET state = 'ready', outcome = '', reason = {p}, requires_json = {p}, band = {p}, "
-            f"seq = {p}, ready_at = {p}, updated_at = {p}, updated_by = {p} "
+            f"seq = {p}, ready_at = {p}, attempts = 0, updated_at = {p}, updated_by = {p} "
             f"WHERE initiative = {p} AND phase = {p} AND state IN ('finished', 'cancelled') AND claim_epoch = {p}",
             (reason, requires, change.get("band", 1), change.get("seq", 0), now, now, by,
              initiative, phase, change.get("epoch", 0)),

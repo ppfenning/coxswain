@@ -33,8 +33,9 @@ def _stored(phase: str, *, state="ready", requires=("docker", "repo:app"), seq=0
             "lease_until": lease_until}
 
 
-def _queue(rows=(), phase_initiatives=(), closed=()) -> dict:
-    return {"rows": list(rows), "lane_prereqs": True, "phase_initiatives": list(phase_initiatives), "closed": list(closed)}
+def _queue(rows=(), phase_initiatives=(), closed=(), readable=True) -> dict:
+    return {"rows": list(rows), "readable": readable, "lane_prereqs": True, "phase_initiatives": list(phase_initiatives),
+            "closed": list(closed)}
 
 
 def _ops(changes) -> list[tuple[str, str, str]]:
@@ -163,6 +164,26 @@ def test_initiative_rows_name_the_phase_ones_and_the_closed_ones():
         {"kind": "initiative", "initiative": "c", "state": "dropped", "extra": {"lane_model": "phase"}},
     ]
     assert initiative_sets(heads) == (["a", "c"], ["b", "c"])
+    assert initiative_sets([{"kind": "task", "initiative": "a", "state": "done", "extra": {"lane_model": "phase"}}]) == ([], [])
+
+
+def test_an_unreadable_queue_plans_no_write_and_still_keeps_the_old_model_off_its_initiatives():
+    """The queue table could not be read: no queue change. The phase model is known from the tick's own work-item
+    rows, so a phase initiative still gets no relaunch."""
+    phase = _phase_initiative("ship", ("p1", [_task("t1", "p1")]), started=True)
+    facts = {
+        **_tick_facts(initiatives=[phase], run_exited={"ship": True}),
+        "phase_queue": _queue(phase_initiatives=["ship"], readable=False),
+    }
+    actions = plan_tick(facts, NOW)
+    assert not [a for a in actions if a["kind"] == "queue_phases"]
+    assert not [a for a in actions if a["kind"] in chair_phase_queue.OLD_MODEL_KINDS]
+
+
+def test_a_reopened_phase_with_three_spent_claims_is_reopened_not_exhausted():
+    want = chair_phase_queue.rows([_phase_initiative("ship", ("p1", [_task("t1", "p1")]))], True)
+    done = _stored("p1", state="finished", outcome="approved", epoch=3, attempts=3)
+    assert _ops(chair_phase_queue.changes(want, [done], STAMP)) == [("reopen", "ship", "p1")]
 
 
 def test_the_idle_count_leaves_out_a_phase_initiative_a_worker_is_running():

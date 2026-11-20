@@ -103,8 +103,9 @@ class _Clock:
 
 
 def _pass(leases, clock, heartbeat):
+    """One heartbeat pass; the runs it asked to stop. The request only records, as `stopper`'s returns at once."""
     stopped: list = []
-    worker.beat(leases, heartbeat, lambda run: stopped.append(run) or True, clock, lambda line: None)
+    worker.beat(leases, heartbeat, lambda claim, run: stopped.append(run), clock, lambda line: None)
     return stopped
 
 
@@ -112,27 +113,37 @@ def _timed_out(claim):
     raise TimeoutError("statement timeout")
 
 
-def test_a_claim_with_no_good_heartbeat_for_45_seconds_stops_its_run_before_its_lease_can_lapse():
+def test_a_claim_whose_heartbeats_time_out_is_stopped_early_enough_to_be_gone_by_45_seconds():
     clock, leases = _Clock(), worker.Leases()
     run = worker.Running("ship.p1-1", 4242)
-    leases.add(_claim(), clock())  # the clock starts when the worker set out to claim
-    leases.set_run(_claim(), run)
-    clock.t = 110.0
-    assert _pass(leases, clock, _timed_out) == []
-    clock.t = 144.9
-    assert _pass(leases, clock, _timed_out) == []
-    clock.t = 145.0  # 45 s after the claim began, 15 s before the 60 s lease the store gave it
+    leases.add(_claim(), clock(), run)  # the clock starts when the worker set out to claim
+    for t in (110.0, 120.0):  # each due heartbeat fits before the stop time (137), and times out
+        clock.t = t
+        assert _pass(leases, clock, _timed_out) == []
+    clock.t = 130.0  # due again, but a 10 s call from here could end past 137: stop now instead
     assert _pass(leases, clock, _timed_out) == [run]
     (held,) = leases.snapshot()
-    assert (held.state, held.stopped) == ("expired", True)
+    assert (held.state, held.stopped) == ("expired", False)  # stopped is set by the stop thread once the run is gone
     assert leases.take(_claim()) is None  # the main loop writes nothing for it
+
+
+def test_a_heartbeat_that_runs_long_and_fails_is_stopped_on_its_return():
+    clock, leases = _Clock(), worker.Leases()
+    run = worker.Running("ship.p1-1", 4242)
+    leases.add(_claim(), clock(), run)
+    clock.t = 127.0  # due and fits: 127 + 10 = 137
+
+    def slow(claim):
+        clock.t = 137.5  # the call took its whole bound, and then some
+        raise TimeoutError("statement timeout")
+
+    assert _pass(leases, clock, slow) == [run]
 
 
 def test_a_good_heartbeat_moves_the_clock_and_a_refused_one_stops_the_run_at_once():
     clock, leases = _Clock(), worker.Leases()
     run = worker.Running("ship.p1-1", 4242)
-    leases.add(_claim(), clock())
-    leases.set_run(_claim(), run)
+    leases.add(_claim(), clock(), run)
     for t in (110.0, 120.0, 130.0, 140.0, 150.0, 160.0):
         clock.t = t
         assert _pass(leases, clock, lambda claim: True) == []
@@ -152,3 +163,41 @@ def test_a_claim_not_yet_due_is_left_alone_and_one_the_main_loop_settled_is_not_
     assert leases.take(_claim()) is not None  # settled by the main loop while it was still held
     clock.t = 200.0
     assert _pass(leases, clock, _timed_out) == []
+
+
+def test_a_slow_stop_of_one_lane_never_holds_up_the_other_lane_s_heartbeat():
+    """Two lanes: p1's heartbeat is refused and its stop blocks until released; p2 renews on the same pass and on
+    the next, while p1's stop is still running on its own thread."""
+    import threading
+
+    clock, leases = _Clock(), worker.Leases()
+    slow, fast = worker.Running("ship.p1-1", 4241), worker.Running("ship.p2-1", 4242)
+    leases.add(_claim("p1"), clock(), slow)
+    leases.add(_claim("p2"), clock(), fast)
+    release, entered = threading.Event(), threading.Event()
+
+    def stop(run):
+        entered.set()
+        return release.wait(30)
+
+    request = worker.stopper(stop, leases, lambda line: None)
+    renewed: list[str] = []
+
+    def heartbeat(claim):
+        renewed.append(claim.phase)
+        return claim.phase == "p2"
+
+    clock.t = 110.0
+    worker.beat(leases, heartbeat, request, clock, lambda line: None)
+    assert entered.wait(5)  # p1's stop is running, and blocked
+    clock.t = 120.0
+    worker.beat(leases, heartbeat, request, clock, lambda line: None)
+    assert renewed == ["p1", "p2", "p2"]
+    states = {h.claim.phase: (h.state, h.stopped, h.last_ok) for h in leases.snapshot()}
+    assert states == {"p1": ("lost", False, 100.0), "p2": ("held", False, 120.0)}
+    release.set()
+    for _ in range(100):
+        if {h.claim.phase: h.stopped for h in leases.snapshot()}["p1"]:
+            break
+        threading.Event().wait(0.05)
+    assert {h.claim.phase: h.stopped for h in leases.snapshot()} == {"p1": True, "p2": False}

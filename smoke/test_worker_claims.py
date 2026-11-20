@@ -252,8 +252,8 @@ def test_a_fleet_of_one_machine_takes_a_phase_initiative_from_queue_to_main(laun
 def test_a_hung_worker_loses_its_claim_and_two_harnesses_never_run_at_once(launchable, repo):
     """The worker hangs (SIGSTOP) with its harness running, so neither it nor its heartbeat thread can act. Its lease
     lapses by the store's clock and a second worker claims; the harness still holds its own run lease, so the second
-    launch is refused, which gives the claim back without costing an attempt. When the first worker wakes, its next
-    heartbeat finds the claim gone: it stops its harness, and writes nothing."""
+    launch is refused, which gives the claim back without costing an attempt. When the first worker wakes it is past
+    its stop time: it stops its harness, and writes nothing."""
     sandbox, calls = _ssh_trap(launchable.sandbox)
     _queued(launchable, sandbox, slow=True)
     watch = MostAtOnce(sandbox)
@@ -274,7 +274,8 @@ def test_a_hung_worker_loses_its_claim_and_two_harnesses_never_run_at_once(launc
         assert (given_back["state"], given_back["claim_epoch"], given_back["attempts"]) == ("ready", 2, 1), given_back
 
         stale.signal(signal.SIGCONT)
-        _until(lambda: f"lost {INITIATIVE}/p1 (epoch 1)" in stale.said(), 60, "the woken worker to find its claim gone")
+        # Woken long past its stop time, it gives the claim up without sending a heartbeat it could not finish in time.
+        _until(lambda: f"expired {INITIATIVE}/p1 (epoch 1)" in stale.said(), 60, "the woken worker to give its claim up")
         _until(lambda: not _harnesses(sandbox), 60, "the first harness to be stopped")
         stale.signal(signal.SIGINT)
         out = stale.finished(timeout=60)

@@ -1072,7 +1072,7 @@ def _chair_run_deps(
         approved=approved,
         phase_tasks=lambda: chair_read_approved.read_phase_tasks(ws, mode, work_files(), store_rows(), landed_ids()),
         phase_records=lambda tasks: chair_read_phase_records.read_phase_records(runs_dir, tasks),
-        phase_queue=lambda: chair_read_phase_queue.read_phase_queue(runs_dir, profile),
+        phase_queue=(lambda: chair_read_phase_queue.read_phase_queue(runs_dir, profile, work_rows())) if mode == "store" else None,
         quarantined=lambda: chair_read_quarantined.read_quarantined(ws, mode, work_files(), store_rows()),
         held_files=lambda: queue_export.read_held_record(ws),
         stranded=lambda: chair_read_stranded.read_stranded(*stranded_inputs()),

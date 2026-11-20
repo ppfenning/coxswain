@@ -156,9 +156,9 @@ class Leases:
     entries: dict[str, Held] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
-    def add(self, claim: Claim, started: float) -> None:
+    def add(self, claim: Claim, started: float, run: Run | None = None) -> None:
         with self.lock:
-            self.entries[key_of(claim)] = Held(claim, started, started + phase_pick.HEARTBEAT_S)
+            self.entries[key_of(claim)] = Held(claim, started, started + phase_pick.HEARTBEAT_S, run)
 
     def set_run(self, claim: Claim, run: Run) -> None:
         with self.lock:
@@ -186,34 +186,58 @@ class Leases:
             return len(self.entries)
 
 
-def beat(leases: Leases, heartbeat: Callable[[Claim], bool], stop: Callable[[Run], bool], now: Callable[[], float],
+type RequestStop = Callable[[Claim, Run | None], None]
+
+
+def beat(leases: Leases, heartbeat: Callable[[Claim], bool], request_stop: RequestStop, now: Callable[[], float],
          log: Callable[[str], None]) -> None:
-    """One pass of the heartbeat thread: renew each held claim that is due; mark `lost` one whose heartbeat is refused,
-    `expired` one with no good heartbeat in `phase_pick.STOP_AFTER_S`; and stop the run of each claim marked, until
-    it is gone. A heartbeat that raises (the store did not answer in time) leaves the claim held until it expires."""
+    """One pass of the heartbeat loop over every held claim, as `phase_pick.next_step` says: renew one that is due;
+    mark `lost` one whose heartbeat is refused, and `expired` one whose stop time has come or whose due heartbeat
+    could run past it. A marked claim's run is handed to `request_stop`, which returns at once (`stopper`), so a
+    slow stop never holds up another claim's heartbeat. A heartbeat that raises (the store did not answer within its
+    bound) leaves the claim held until its stop time."""
     for held in leases.snapshot():
         if held.state != "held":
             continue
-        at, ok_at, due = now(), None, held.beat_due
-        state: State = "held"
-        if at >= held.beat_due:
+        step = phase_pick.next_step(held.last_ok, now(), held.beat_due)
+        if step == "wait":
+            continue
+        ok_at, due = None, held.beat_due
+        state: State = "expired" if step == "stop" else "held"
+        if step == "beat":
+            at = now()
             due = at + phase_pick.HEARTBEAT_S
             try:
                 renewed = heartbeat(held.claim)
-            except Exception as exc:  # the store did not answer in time: must_stop below decides
+            except Exception as exc:  # the store did not answer within its bound: the stop time decides
                 log(f"worker: heartbeat for {key_of(held.claim)} failed: {type(exc).__name__}: {exc}")
                 renewed = None
             ok_at = at if renewed is True else None  # the time it was sent: the lease runs from no later than that
             state = "lost" if renewed is False else "held"
-        if state == "held" and phase_pick.must_stop(held.last_ok if ok_at is None else ok_at, now()):
-            state = "expired"
+            if state == "held" and ok_at is None and now() >= phase_pick.stop_at(held.last_ok):
+                state = "expired"
         run = _record_beat(leases, held.claim, ok_at, due, state)
         if state != "held" and run is not False:
-            why = "another worker holds it or its lease lapsed" if state == "lost" else f"no heartbeat in {phase_pick.STOP_AFTER_S}s"
+            why = "another worker holds it or its lease lapsed" if state == "lost" else "no good heartbeat in time"
             log(f"worker: {state} {key_of(held.claim)}: {why}; stopping its run")
-            if run is not None and not stop(run):
-                log(f"worker: the run of {key_of(held.claim)} did not stop")
-            leases.mark_stopped(held.claim)
+            request_stop(held.claim, run)
+
+
+def stopper(stop: Callable[[Run], bool], leases: Leases, log: Callable[[str], None]) -> RequestStop:
+    """The `request_stop` the heartbeat loop hands a claim it gave up on: each stop runs on a thread of its own, and
+    marks the claim stopped once its run is gone, so the main loop frees its lane only then."""
+
+    def request(claim: Claim, run: Run | None) -> None:
+        def work() -> None:
+            try:
+                if run is not None and not stop(run):
+                    log(f"worker: the run of {key_of(claim)} did not stop")
+            finally:
+                leases.mark_stopped(claim)
+
+        threading.Thread(target=work, name=f"worker-stop-{claim.phase}", daemon=True).start()
+
+    return request
 
 
 def _record_beat(leases: Leases, claim: Claim, ok_at: float | None, due: float, state: State) -> Run | Literal[False] | None:
@@ -300,13 +324,13 @@ def fill(ports: Ports, leases: Leases, caps: Sequence[str]) -> int:
         if claim is None:
             break
         made += 1
-        leases.add(claim, started)
         ports.log(f"worker: {ports.name} claimed {key_of(claim)}")
         spawned = ports.launch(claim, lambda run_id, c=claim: ports.set_run(c, run_id))
+        # The heartbeat loop first sees the claim with its launch already on it, so a stop always has a run to end;
+        # its clock still runs from `started`, before the claim.
+        leases.add(claim, started, None if isinstance(spawned, str) else spawned)
         if isinstance(spawned, str):
             settle(ports, leases, claim, phase_pick.verdict([], attempts_of(claim), launch_error=spawned))
-        else:
-            leases.set_run(claim, spawned)
     return made
 
 

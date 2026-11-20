@@ -3,11 +3,13 @@ a write still holds its claim, and what a finished run means for its phase.
 
 Nothing here reads a clock or a store. `now` is the store's own time as a stamp (`YYYY-MM-DDTHH:MM:SSZ`, which
 compares in order as text), read once by `store_phases` inside the transaction that uses it; a worker's own clock is
-only ever compared with itself (`must_stop` takes two readings of one monotonic clock).
+only ever compared with itself (`next_step` takes readings of one monotonic clock).
 
 The timings are the operator's: a heartbeat every 10 s, a lease of 60 s, and a worker that has gone 45 s without a
-successful heartbeat stops what it runs for that claim. Its clock starts before the claim is taken, so it always
-stops before the lease it was given can lapse: no phase is run by two workers at once. A lapsed claim is simply
+successful heartbeat has stopped what it runs for that claim: it starts stopping early enough (`stop_at`) that the
+TERM grace and the KILL wait end by then, and it never starts a heartbeat that could run past that point
+(`next_step`). Its clock starts before the claim is taken, so the run is gone 15 s before the lease it was given can
+lapse: no phase is run by two workers at once. A lapsed claim is simply
 claimable again; there is no sweeper. A phase that has had `MAX_ATTEMPTS` claims is never claimed again: the chair
 finishes it as failed (`exhausted`).
 """
@@ -21,11 +23,15 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 __all__ = [
+    "BEAT_LOOP_S",
     "CANDIDATES",
+    "HEARTBEAT_CALL_S",
     "HEARTBEAT_S",
+    "KILL_WAIT_S",
     "LEASE_S",
     "MAX_ATTEMPTS",
     "STOP_AFTER_S",
+    "STOP_GRACE_S",
     "Verdict",
     "backoff_s",
     "bad_tokens",
@@ -35,15 +41,20 @@ __all__ = [
     "fenced",
     "lease",
     "meets",
-    "must_stop",
+    "next_step",
     "refusal",
     "stamp_of",
+    "stop_at",
     "verdict",
 ]
 
 HEARTBEAT_S = 10
 LEASE_S = 60
 STOP_AFTER_S = 45
+HEARTBEAT_CALL_S = 10  # the longest one heartbeat call can take: a 5 s connect plus a 5 s statement (`worker.bounded_url`)
+STOP_GRACE_S = 5  # TERM to KILL, for the launch and the harness alike
+KILL_WAIT_S = 2  # KILL to gone
+BEAT_LOOP_S = 1  # how often the heartbeat loop looks at its claims
 CANDIDATES = 16  # rows one page of a claim reads, in (band, seq) order; it pages on past rows this worker cannot meet
 MAX_ATTEMPTS = 3  # claims of one phase before a failure is permanent
 _BACKOFF_BASE_S = 60
@@ -75,10 +86,26 @@ def backoff_s(attempts: int) -> int:
     return min(_BACKOFF_BASE_S * 2 ** max(attempts - 1, 0), _BACKOFF_CAP_S)
 
 
-def must_stop(last_ok: float, now: float, stop_after_s: float = STOP_AFTER_S) -> bool:
-    """Whether a worker whose last successful heartbeat (or, before the first, the moment it set out to claim) was at
-    `last_ok` must stop at `now`, both on its own monotonic clock: it stops before its lease can lapse."""
-    return now - last_ok >= stop_after_s
+def stop_at(last_ok: float) -> float:
+    """When, on the worker's own monotonic clock, it must start stopping a claim whose last good heartbeat (or, before
+    the first, the moment it set out to claim) was `last_ok`: early enough that the TERM grace, the KILL wait and one
+    pass of the heartbeat loop all fit before `STOP_AFTER_S`, so the run is gone by then, 15 s inside the lease."""
+    return last_ok + STOP_AFTER_S - STOP_GRACE_S - KILL_WAIT_S - BEAT_LOOP_S
+
+
+Step = Literal["wait", "beat", "stop"]
+
+
+def next_step(last_ok: float, now: float, due: float) -> Step:
+    """What the heartbeat loop does for one claim at `now`: `stop` once `stop_at` has come, or when the heartbeat that
+    is due could not finish before it (one call takes up to `HEARTBEAT_CALL_S`); `beat` when one is due and fits;
+    else `wait`. Pure: both clocks are the worker's own monotonic clock."""
+    deadline = stop_at(last_ok)
+    if now >= deadline:
+        return "stop"
+    if now < due:
+        return "wait"
+    return "stop" if now + HEARTBEAT_CALL_S > deadline else "beat"
 
 
 def bad_tokens(tokens: Iterable[str]) -> list[str]:

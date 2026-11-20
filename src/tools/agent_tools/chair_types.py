@@ -613,6 +613,7 @@ class PhaseQueueFacts(TypedDict):
     every queued phase require `docker` (`chair_phase_queue.requirements`)."""
 
     rows: list[dict[str, object]]
+    readable: bool  # False when `phase_queue` could not be read: `rows` is empty and nothing may be written to it
     lane_prereqs: bool
     phase_initiatives: list[str]  # every initiative whose store row is stamped `lane_model: phase`, ready work or not
     closed: list[str]  # the initiatives whose store row is done or dropped

@@ -34,9 +34,19 @@ def test_the_operator_timings_leave_the_lease_outliving_the_stop():
     assert phase_pick.STOP_AFTER_S < phase_pick.LEASE_S
 
 
-def test_a_worker_stops_once_45_seconds_pass_without_a_good_heartbeat():
-    assert not phase_pick.must_stop(100.0, 144.9)
-    assert phase_pick.must_stop(100.0, 145.0)
+def test_a_stop_starts_early_enough_that_the_run_is_gone_by_45_seconds():
+    grace = phase_pick.STOP_GRACE_S + phase_pick.KILL_WAIT_S + phase_pick.BEAT_LOOP_S
+    assert phase_pick.stop_at(100.0) == 100.0 + 45 - grace == 137.0
+    assert phase_pick.stop_at(100.0) + phase_pick.STOP_GRACE_S + phase_pick.KILL_WAIT_S + phase_pick.BEAT_LOOP_S <= 145.0
+    assert phase_pick.next_step(100.0, 137.0, 999.0) == "stop"
+    assert phase_pick.next_step(100.0, 136.9, 999.0) == "wait"
+
+
+def test_a_heartbeat_is_sent_only_when_it_is_due_and_cannot_run_past_the_stop():
+    assert phase_pick.next_step(100.0, 105.0, 110.0) == "wait"
+    assert phase_pick.next_step(100.0, 110.0, 110.0) == "beat"
+    assert phase_pick.next_step(100.0, 127.0, 120.0) == "beat"  # 127 + 10 = 137: it still ends in time
+    assert phase_pick.next_step(100.0, 127.1, 120.0) == "stop"  # a 10 s call from here would end past 137
 
 
 def test_backoff_doubles_from_a_minute_and_stops_at_fifteen():

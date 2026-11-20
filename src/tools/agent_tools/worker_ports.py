@@ -2,7 +2,7 @@
 stopping a run by process group.
 
 Every time the queue compares is the store's (`store_phases`). This process's monotonic clock is compared only with
-itself (`phase_pick.must_stop`); its wall clock stamps only a migration's bookkeeping when the worker opens the store.
+itself (`phase_pick.next_step`); its wall clock stamps only a migration's bookkeeping when the worker opens the store.
 Every store call is bounded well inside the heartbeat window (`worker.bounded_url`), and the heartbeat thread has a
 connection of its own, so no call on the main loop can hold up a heartbeat.
 """
@@ -23,12 +23,12 @@ from pathlib import Path
 
 from agent_tools import bounded_run, chair, epic, lane_prereqs, repo_path, route, run_store, worker
 from agent_tools.chair_read_run_id import next_run_id, taken_names
-from harness import store_phases
+from harness import phase_pick, store_phases
 from harness.store_dialect import Connection, Json
 from harness.store_phases import Claim
 
 _PROBE_TIMEOUT_S = 20.0  # the lane checks run on the main loop; the heartbeat thread never waits on them
-_STOP_WAIT_S = 10.0  # how long a stopped launch or harness gets after TERM, and again after KILL
+_JOIN_S = 30.0  # how long a stopping worker waits for its heartbeat thread to finish its pass
 _STAMP = "%Y-%m-%dT%H:%M:%SZ"
 _ARCH = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}
 _OS = {"linux": "linux", "darwin": "macos"}
@@ -102,6 +102,29 @@ def _gone(alive: Callable[[], bool], wait_s: float) -> bool:
             return False
         time.sleep(0.2)
     return True
+
+
+def _pid_alive(pid: int) -> bool:
+    """Edge. Whether `pid` is a live process (a zombie awaiting its reaper counts as gone where /proc says so)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().split()[2] != "Z"
+    except (OSError, IndexError):
+        return True
+
+
+def _children(pid: int) -> set[int]:
+    """Edge. The direct children of `pid`, by `pgrep -P` (Linux and macOS); none when it cannot tell."""
+    try:
+        done = bounded_run.completed(["pgrep", "-P", str(pid)], timeout=phase_pick.KILL_WAIT_S, capture_output=True, text=True)
+    except OSError:
+        return set()
+    return {int(line) for line in done.stdout.split() if line.isdigit()}
 
 
 def _pid_in(pidfile: Path) -> int | None:
@@ -202,28 +225,32 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
         return epic.process_alive(run.pid, runs_dir / f"{run.run_id}.pid")
 
     def stop(run: worker.Started | worker.Running) -> bool:
-        """The launch first (its group), then the harness it started (its own session's group), each TERM then KILL;
-        True once both are gone."""
+        """End the run within `STOP_GRACE_S + KILL_WAIT_S`; True once it is gone.
+
+        A launch still running is frozen first (SIGSTOP), so it cannot start the harness after its children are read;
+        each child it has (the harness, in a session of its own) and the harness its pidfile names are sent TERM, the
+        launch is killed, and the harnesses get KILL if they outlast the grace."""
+        pids: set[int] = set()
         if isinstance(run, worker.Started):
             with launchers_lock:
                 proc = launchers.pop(run.launcher, None)
-            if proc is not None:
-                _signal_group(proc.pid, signal.SIGTERM)
-                try:
-                    proc.wait(timeout=_STOP_WAIT_S)
-                except subprocess.TimeoutExpired:
-                    _signal_group(proc.pid, signal.SIGKILL)
-                    proc.wait(timeout=_STOP_WAIT_S)
-            pid = _pid_in(runs_dir / f"{run.run_id}.pid")
-            if pid is None:
-                return True
-            run = worker.Running(run.run_id, pid)
-        harness = run
-        _signal_group(harness.pid, signal.SIGTERM)
-        if _gone(lambda: alive(harness), _STOP_WAIT_S):
+            if proc is not None and proc.poll() is None:
+                _signal_group(proc.pid, signal.SIGSTOP)
+                pids |= _children(proc.pid)
+                _signal_group(proc.pid, signal.SIGKILL)
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    proc.wait(timeout=phase_pick.KILL_WAIT_S)
+            if (named := _pid_in(runs_dir / f"{run.run_id}.pid")) is not None:
+                pids.add(named)
+        else:
+            pids.add(run.pid)
+        for pid in pids:
+            _signal_group(pid, signal.SIGTERM)
+        if _gone(lambda: any(_pid_alive(p) for p in pids), phase_pick.STOP_GRACE_S):
             return True
-        _signal_group(harness.pid, signal.SIGKILL)
-        return _gone(lambda: alive(harness), _STOP_WAIT_S)
+        for pid in pids:
+            _signal_group(pid, signal.SIGKILL)
+        return _gone(lambda: any(_pid_alive(p) for p in pids), phase_pick.KILL_WAIT_S)
 
     def heartbeats(leases: worker.Leases) -> Callable[[], None]:
         """A thread of its own, on a store connection of its own, renewing each lease when it is due."""
@@ -233,10 +260,12 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
         def renew(claim: Claim) -> bool:
             return own.call(lambda c: store_phases.heartbeat(c, claim, name)) is not None
 
+        request_stop = worker.stopper(stop, leases, log)
+
         def loop() -> None:
             try:
-                while not halt.wait(1.0):
-                    worker.beat(leases, renew, stop, time.monotonic, log)
+                while not halt.wait(phase_pick.BEAT_LOOP_S):
+                    worker.beat(leases, renew, request_stop, time.monotonic, log)
             finally:
                 own.close()
 
@@ -246,7 +275,7 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
         def halt_and_join() -> None:
             halt.set()
             if thread.is_alive():
-                thread.join(timeout=_STOP_WAIT_S * 3)
+                thread.join(timeout=_JOIN_S)
 
         return halt_and_join
 

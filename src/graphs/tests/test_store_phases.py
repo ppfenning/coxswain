@@ -109,7 +109,22 @@ def test_a_reopen_needs_the_finish_the_chair_saw(conn):
     assert store_phases.apply_changes(conn, [_change(op="reopen", epoch=1)], "chair-loop") == 1
     assert store_phases.apply_changes(conn, [_change(op="reopen", epoch=1)], "chair-loop") == 0
     row = store_phases.get_row(conn, "ship", "p1")
-    assert (row["state"], row["outcome"], row["attempts"]) == ("ready", "", 1)
+    assert (row["state"], row["outcome"], row["attempts"]) == ("ready", "", 0)
+
+
+def test_a_reopened_phase_starts_a_new_episode_even_after_three_claims(conn):
+    """An approved phase that took three claims, then got new work: the reopen is claimable at once, not exhausted."""
+    store_phases.apply_changes(conn, [_change()], "chair-loop")
+    for epoch in (1, 2, 3):
+        claim = store_phases.claim_next(conn, "w1", [], 1)
+        if epoch < 3:
+            store_phases.release(conn, claim, "w1", "tasks left ready", 0)
+    store_phases.finish(conn, claim, "w1", "approved", "every task of the phase is approved")
+    _set(conn, "p1", ready_at="2999-01-01T00:00:00Z")  # a backoff left behind is cleared too
+    assert store_phases.apply_changes(conn, [_change(op="reopen", epoch=3)], "chair-loop") == 1
+    assert store_phases.get_row(conn, "ship", "p1")["attempts"] == 0
+    again = store_phases.claim_next(conn, "w2", [], 1)
+    assert again is not None and (again.epoch, again.row["attempts"]) == (4, 1)
 
 
 def test_a_release_waits_out_its_backoff_before_another_claim(conn):

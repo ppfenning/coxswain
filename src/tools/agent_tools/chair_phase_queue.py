@@ -156,7 +156,7 @@ def plan(facts: Facts, now: str, holds: Collection[str] = ()) -> list[Action]:
     already holds every row. Without the stored rows (`phase_queue` unread) nothing is planned. `holds` is the tick's
     held and deferred initiatives; the facts add those stopped by their own failures and the tasks held for a person."""
     queue = facts.get("phase_queue")
-    if queue is None:
+    if queue is None or not queue["readable"]:
         return []
     held = frozenset(holds) | frozenset(facts.get("held_initiatives") or []) | frozenset(facts.get("no_progress") or {})
     held_phases = frozenset((t["initiative"], t["phase"]) for t in facts.get("held_tasks") or [])
