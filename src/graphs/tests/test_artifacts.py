@@ -19,6 +19,7 @@ from harness.artifacts import (
     entry,
     key,
     mark_missing,
+    prepared,
     put_object,
     scrub,
     secret_values,
@@ -277,16 +278,47 @@ def test_a_rebuild_with_another_patch_writes_another_key_and_is_never_locked_out
     assert keys_of(by_step(first)["task/t1/build"]) != keys_of(by_step(second)["task/t1/build"])
 
 
-def test_uploads_are_scrubbed_and_listed_by_what_was_written(tmp_path):
+def test_uploads_are_scrubbed_flagged_and_listed_by_what_was_written(tmp_path):
     pytest.importorskip("pyarrow")
     from pyarrow.fs import LocalFileSystem
 
     secret_root = ArtifactsRoot(LocalFileSystem(), str(tmp_path / "a"), "file://a", ("placeholder-secret",))
     rows, _ = upload(secret_root, "ship-1", rows_of(),
-                     (Source("task/t1/build", "patch.diff", "text/x-diff", text="token placeholder-secret\n"),))
+                     (Source("task/t1/checks", "01-env.log", "text/plain", text="token placeholder-secret\n"),
+                      Source("task/t1/checks", "02-clean.log", "text/plain", text="passed\n")))
+    dirty, clean = by_step(rows)["task/t1/checks"]["artifacts_json"]
+    data = (tmp_path / "a" / dirty["key"]).read_bytes()
+    assert data == b"token ***\n" and dirty["sha256"] == hashlib.sha256(data).hexdigest()
+    assert dirty["scrubbed"] is True and "scrubbed" not in clean
+
+
+PATCH_WITH_URL = "--- a/conftest.py\n+++ b/conftest.py\n@@ -0,0 +1 @@\n+URL = 'postgresql://cox:cox@localhost/cox_test'\n"
+
+
+def test_the_patch_is_stored_byte_for_byte_even_when_it_holds_a_url_with_a_password_or_a_secret(tmp_path):
+    pytest.importorskip("pyarrow")
+    from pyarrow.fs import LocalFileSystem
+
+    patch = PATCH_WITH_URL + "+TOKEN = 'placeholder-secret'\n"
+    secret_root = ArtifactsRoot(LocalFileSystem(), str(tmp_path / "a"), "file://a", ("placeholder-secret",))
+    rows, error = upload(secret_root, "ship-1", rows_of(), (Source("task/t1/build", "patch.diff", "text/x-diff", text=patch),))
     item = by_step(rows)["task/t1/build"]["artifacts_json"][0]
-    data = (tmp_path / "a" / item["key"]).read_bytes()
-    assert data == b"token ***\n" and item["sha256"] == hashlib.sha256(data).hexdigest()
+    assert error is None and (tmp_path / "a" / item["key"]).read_bytes() == patch.encode()
+    assert item["sha256"] == hashlib.sha256(patch.encode()).hexdigest() and "scrubbed" not in item
+
+
+def test_prepared_keeps_a_patch_as_written_and_says_when_the_scrub_changed_anything_else():
+    data = PATCH_WITH_URL.encode()
+    assert prepared("text/x-diff", data, ("placeholder-secret",)) == (data, False)
+    stored, scrubbed = prepared("text/plain", data, ())
+    assert scrubbed is True and b"cox:cox@" not in stored and b"postgresql://***@localhost/cox_test" in stored
+    assert prepared("text/plain", b"passed\n", ("placeholder-secret",)) == (b"passed\n", False)
+    assert prepared("application/x-ndjson", b"placeholder-secret", ("placeholder-secret",)) == (b"***", True)
+
+
+def test_an_entry_says_scrubbed_only_when_it_was():
+    assert "scrubbed" not in entry("k", b"x", "text/plain")
+    assert entry("k", b"x", "text/plain", scrubbed=True)["scrubbed"] is True
 
 
 def test_a_broken_root_stops_the_uploads_and_marks_each_row_that_had_artifacts(tmp_path):

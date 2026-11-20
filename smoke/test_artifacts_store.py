@@ -44,7 +44,8 @@ def _keys(steps: list[dict]) -> dict[str, list[str]]:
     for s in steps:
         assert "artifacts_error" not in s["result_json"], s
         for a in s["artifacts_json"]:
-            assert set(a) == {"key", "bytes", "sha256", "media"}, a
+            assert {"key", "bytes", "sha256", "media"} <= set(a) <= {"key", "bytes", "sha256", "media", "scrubbed"}, a
+            assert a["media"] != "text/x-diff" or "scrubbed" not in a, a  # the patch is stored as written
             assert a["key"].rpartition("@")[2] == a["sha256"][:12], a
     return {s["step"]: [a["key"].rpartition("@")[0] for a in s["artifacts_json"]] for s in steps}
 

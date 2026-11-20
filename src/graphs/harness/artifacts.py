@@ -26,7 +26,7 @@ writing the same keys again. A rebuild with a different patch writes a different
 
 **A broken bucket never drops a step row.** `step_artifacts` does not raise. If an upload fails, it stops uploading
 for that save. Every row is still written. `artifacts_json` keeps only the items that were written, each
-`{key, bytes, sha256, media}`. A row that carried an artifact which was not written records the failure in its own
+`{key, bytes, sha256, media}`, plus `scrubbed: true` on one the scrub changed. A row that carried an artifact which was not written records the failure in its own
 field, `result_json.artifacts_error` (see `store_types.StepRow`). The worker only marks the row. The chair reads the
 marked rows and tells the operator once per run (`agent_tools.chair_stall_alarm`), because a worker's scoped store
 role can write nothing else.
@@ -40,13 +40,19 @@ follow from today's model:
   transcripts are therefore uploaded nowhere.
 
 **Secrets.** Checks inherit the lane's environment, so a check log or a transcript may print a token, a password or
-a store URL. Before upload, `scrub` replaces two things with `***`. The first is the value of every environment
+a store URL. Before upload, `scrub` replaces two things with `***` in every source but the patch. The first is the value of every environment
 variable whose name holds TOKEN, SECRET, PASSWORD, PASSWD or KEY (`secret_values`), in each of the forms
 `forgejo_api.redact` knows. The second is the userinfo, and any password in the query (`store_switch.display`), of
 every URL in the text. That is a floor, not a guarantee, so the bucket must be private to the fleet and reached with
-credentials scoped to it.
+credentials scoped to it. An item whose bytes the scrub changed carries `scrubbed: true` in `artifacts_json`, so a
+reader knows the stored copy is not the bytes the step saw.
 
-`key`, `entry`, `decide`, `secret_values`, `scrub`, `sources`, `attach` and `mark_missing` are pure.
+**The patch is never scrubbed** (`UNSCRUBBED`, `text/x-diff`). It is repo content on its way into git, so the stored
+copy must be the change itself, byte for byte: a test fixture holding `postgresql://cox:cox@localhost/db` lands as
+written, and a scrubbed copy would be a different change. A secret in a patch is the patch's problem, and the review
+and the land see it there.
+
+`key`, `entry`, `decide`, `secret_values`, `scrub`, `prepared`, `sources`, `attach` and `mark_missing` are pure.
 `artifacts_root`, `put_object`, `upload` and `step_artifacts` are the edges.
 """
 
@@ -74,6 +80,8 @@ __all__ = [
     "LAYOUT",
     "ROLE_KINDS",
     "S3_BOUNDS",
+    "SCRUBBED_FIELD",
+    "UNSCRUBBED",
     "ArtifactConflict",
     "ArtifactsRoot",
     "Source",
@@ -83,6 +91,7 @@ __all__ = [
     "entry",
     "key",
     "mark_missing",
+    "prepared",
     "put_object",
     "scrub",
     "secret_values",
@@ -93,6 +102,8 @@ __all__ = [
 
 LAYOUT = "v1"
 ERROR_FIELD = "artifacts_error"  # the `result_json` key a row whose artifacts were not all written carries
+SCRUBBED_FIELD = "scrubbed"  # the `artifacts_json` item key, true on an item whose bytes the scrub changed
+UNSCRUBBED = frozenset({"text/x-diff"})  # media stored as written: the patch is repo content headed for git
 SECRET_NAME_PARTS = ("TOKEN", "SECRET", "PASSWORD", "PASSWD", "KEY")
 # Seconds, and attempts: a save waits at most about connect + request per attempt per object, then gives up.
 S3_BOUNDS: Mapping[str, float] = {"connect_timeout": 5.0, "request_timeout": 30.0, "max_attempts": 2}
@@ -158,9 +169,10 @@ def key(run_id: str, step: str, name: str, sha256: str) -> str:
     return f"{LAYOUT}/runs/{_part(run_id, 'run id')}/{'__'.join(segments)}/{_part(name, 'name')}@{sha256[:12]}"
 
 
-def entry(object_key: str, data: bytes, media: str) -> JsonObject:
-    """Pure. The `artifacts_json` item for one uploaded object."""
-    return {"key": object_key, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(), "media": media}
+def entry(object_key: str, data: bytes, media: str, *, scrubbed: bool = False) -> JsonObject:
+    """Pure. The `artifacts_json` item for one uploaded object; `scrubbed: true` only on one the scrub changed."""
+    item: JsonObject = {"key": object_key, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(), "media": media}
+    return {**item, SCRUBBED_FIELD: True} if scrubbed else item
 
 
 def decide(object_key: str, size: int, existing_size: int | None) -> Literal["write", "same"]:
@@ -199,6 +211,15 @@ def scrub(text: str, secrets: Sequence[str]) -> str:
 def _scrub_bytes(data: bytes, secrets: Sequence[str]) -> bytes:
     """`scrub` over bytes that may not be UTF-8: bytes that do not decode pass through unchanged."""
     return scrub(data.decode("utf-8", "surrogateescape"), secrets).encode("utf-8", "surrogateescape")
+
+
+def prepared(media: str, data: bytes, secrets: Sequence[str]) -> tuple[bytes, bool]:
+    """Pure. The bytes to store for a source of `media`, and whether the scrub changed them. A patch (`UNSCRUBBED`) is
+    stored as written."""
+    if media in UNSCRUBBED:
+        return data, False
+    stored = _scrub_bytes(data, secrets)
+    return stored, stored != data
 
 
 def _mapping(value: object) -> Mapping[str, object]:
@@ -365,7 +386,7 @@ def upload(
     read: Callable[[Source], bytes | None] = _bytes_of,
     link: Callable[[str, str], None] = os.link,
 ) -> tuple[tuple[StepRow, ...], str | None]:
-    """Edge. Upload each source, scrubbed, then give back the rows listing what was written, and the error that stopped
+    """Edge. Upload each source, scrubbed unless it is the patch (`prepared`), then give back the rows listing what was written, and the error that stopped
     the uploads, or None.
 
     A source whose file is gone, or that is empty, is left out: an empty object carries nothing, and an S3 server may
@@ -381,7 +402,7 @@ def upload(
         data = read(source)
         if not data:
             continue
-        data = _scrub_bytes(data, root.secrets)
+        data, scrubbed = prepared(source.media, data, root.secrets)
         object_key = key(run_id, source.step, source.name, hashlib.sha256(data).hexdigest())
         try:
             put_object(root, object_key, data, link)
@@ -389,7 +410,7 @@ def upload(
             error = _shown(exc, root)
             short.add(source.step)
             continue
-        entries.setdefault(source.step, []).append(entry(object_key, data, source.media))
+        entries.setdefault(source.step, []).append(entry(object_key, data, source.media, scrubbed=scrubbed))
     listed = (attach(row, entries.get(row["step"], [])) for row in rows)
     return tuple(mark_missing(r, cast(str, error)) if r["step"] in short else r for r in listed), error
 

@@ -132,6 +132,7 @@ class StepRow(TypedDict):
     # The step's verdict, counts and check names. With artifacts on (`harness.artifacts`), a step whose artifacts were
     # not all written also carries `artifacts_error`: why, as one line. A row without the key is complete.
     result_json: JsonObject
-    # Every object in storage the step wrote, each `{key, bytes, sha256, media}`, and nothing else.
+    # Every object in storage the step wrote, each `{key, bytes, sha256, media}`, and `scrubbed: true` on one whose
+    # bytes the secret scrub changed (never the patch, which is stored as written); nothing else.
     artifacts_json: list[JsonObject]
 
