@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, cast
 from core import workstore
 from core.cartridge import test_database_setting
 from core.landing import is_initiative, resolve_land_at
+from harness.artifacts import ArtifactsRoot
 from harness.checks import repo_checks
 from harness.courier_adapter import send as send_to_courier
 from harness.epic_batch import audit_approved_kept
@@ -84,11 +85,15 @@ def run_epic(
     est_task_usd: float = 0.0,
     only_phases: Collection[str] | None = None,
     pool: PoolSetting | None = None,
+    artifacts: ArtifactsRoot | None = None,
 ) -> dict[str, object]:
     """Drive a whole initiative: every phase, in dependency order, landing nothing.
 
     With a `pool`, each task build leases its worktree from the host's warm pool instead of creating one,
     and the pool is trimmed to `pool.keep` idle entries at the end. Without it nothing changes.
+
+    With `artifacts`, each task step's patch, check logs and transcripts are uploaded under the step's key before its
+    `step_results` row is written (`harness.artifacts`). Without it nothing changes.
 
     With `only_phases`, just those phases run. An unknown name refuses the run before any write. A parent outside
     the set counts complete when every task of it is met under `land_at`; a named phase under any other outside
@@ -169,6 +174,7 @@ def run_epic(
             test_database=cast(Mapping[str, str] | None, test_database_setting(cartridge)),
             lane_workers=lane_workers_from(os.environ, os.cpu_count() or 1),
             pool=pool,
+            artifacts=artifacts,
             store=store,
             epoch=epoch,
             lease_name=lease_name,

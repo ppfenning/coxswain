@@ -23,6 +23,7 @@ import core
 from core import workstore
 from core.cartridge import CartridgeError
 from harness import CORE_SCHEMA, bounded_proc, node_progress, run_lease, store_traces
+from harness.artifacts import artifacts_root
 from harness.check_gate import gate_commands
 from harness.checks import repo_checks
 from harness.cli_run_graph import (
@@ -716,7 +717,8 @@ def _run_rescue(
         return 1, "failed"
     try:
         work_state = work_state_of(read_provider_profile(args.provider_profile))
-    except ValueError as exc:
+        artifacts = artifacts_root(read_provider_profile(args.provider_profile), os.environ, Path(args.runs_dir))
+    except (ValueError, ImportError) as exc:
         print(str(exc), file=sys.stderr)
         return 1, "failed"
 
@@ -748,6 +750,7 @@ def _run_rescue(
         epoch=epoch,
         lease_name=lease_name,
         work_state=work_state,
+        artifacts=artifacts,
         initiative_id=str(initiative.get("id")),
         default_ref=resolve_default_ref(repo, getattr(args, "base", None)),
     )

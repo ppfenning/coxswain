@@ -286,6 +286,11 @@ RUNS_COMMANDS = [
         "agent_tools.cli:_runs_stop", False, (),
     ),
     commands.Command(
+        "artifacts", "runs", "list the object-storage keys a run's step rows name (artifacts_url)",
+        (commands.Arg(("run_id",)), commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--json",), {"action": "store_true"})),
+        "agent_tools.cli:_runs_artifacts", False, (),
+    ),
+    commands.Command(
         "pause", "runs", "mark a run paused in the store",
         (
             commands.Arg(("run_id",)), commands.Arg(("--reason",)), commands.Arg(("--runs-dir",), {"default": "runs"}),

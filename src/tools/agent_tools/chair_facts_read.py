@@ -255,6 +255,7 @@ class FactsDeps:
     merge_queue: Callable[[], object] | None = None  # raw profile top-level merge_queue; absent means the queue is off
     stale_candidates: Callable[[datetime], Sequence[StaleCandidate]] | None = None  # chair_read_stale.read_stale_candidates; absent means no candidates
     stall_candidates: Callable[[datetime], Sequence[StallCandidate]] | None = None  # chair_read_stall.read_stall_candidates; absent means no candidates
+    artifacts_missing: Callable[[datetime], Sequence[Mapping[str, object]]] | None = None  # chair_read_artifacts.read_marked_steps; absent means none
     hosts: Callable[[], list[dict[str, object]]] = lambda: []  # run_store.hosts(runs_dir) rows, stored verbatim under login_hosts
     window_source: Callable[[], str] = lambda: "est"  # "meter" when `window` built from a fresh meter entry this tick
     weekly_source: Callable[[], str] = lambda: "est"  # "meter" when `weekly` built from a fresh meter entry this tick

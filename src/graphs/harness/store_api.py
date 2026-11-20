@@ -539,6 +539,11 @@ def run_task_ids(url: str, run_id: str) -> list[str] | Failed | NotAvailable:
     return _read(url, lambda c: run_task_ids_on(c, run_id))
 
 
+def step_rows(url: str, run_id: str) -> list[StepRow] | Failed | NotAvailable:
+    """Every `step_results` row of one run, read-only; `cox runs artifacts` lists the keys they name."""
+    return _read(url, lambda c: step_rows_on(c, run_id))
+
+
 def resolve_token(url: str, token: str) -> Resolved | Failed | NotAvailable | None:
     return _read(url, lambda c: resolve_on(c, token))
 

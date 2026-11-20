@@ -35,6 +35,7 @@ from agent_tools.cli_lazy import (
     chair_phase_quarantine,
     chair_pid_probe,
     chair_read_approved,
+    chair_read_artifacts,
     chair_read_attempts,
     chair_read_cache,
     chair_read_decompose_miss,
@@ -1135,6 +1136,7 @@ def _chair_run_deps(
             ws, n, work_files(), chair_read_run_records.stale_attempts(attempts()) if mode == "store" else attempts(), actions()
         ),
         stall_candidates=lambda n: chair_read_stall.read_stall_candidates(runs_dir, startup_hosts, n),
+        artifacts_missing=lambda n: chair_read_artifacts.read_marked_steps(runs_dir, n),
         idle_stall=idle_stall,
         hosts=lambda: stamped("hosts", ("hosts",), lambda: run_store.hosts(runs_dir)),
         pid_probe=lambda: chair_pid_probe.read_pid_probe(

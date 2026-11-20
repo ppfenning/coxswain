@@ -56,7 +56,7 @@ from agent_tools.chair_read_land_heads import read_land_heads
 from agent_tools.chair_read_quarantined import quarantined_from_rows
 from agent_tools.chair_read_stranded import stranded_from_rows
 from agent_tools.chair_read_tuning import current_lanes, tuning_facts
-from agent_tools.chair_stall_alarm import resolve_settings, stall_facts, work_holds
+from agent_tools.chair_stall_alarm import missing_runs, resolve_settings, stall_facts, work_holds
 from agent_tools.chair_types import (
     DEFAULT_QUARANTINE_HOLD_AFTER,
     HELD_FILE_CAUSE,
@@ -1344,6 +1344,7 @@ def gather_facts(
             landing_records, [action_doc(row) for row in action_rows],
             stranded_alarm_facts(stranded, rows, live, {(t["initiative"], t["id"]) for t in planned_tasks(approved, initiatives) if t["run"]}),
             work_holds(rows) if rows else [], deps.host,
+            missing_runs(deps.artifacts_missing(now), now) if deps.artifacts_missing is not None else None,
         ),
         "tuning": tuning_facts(
             *deps.tuning(now),
