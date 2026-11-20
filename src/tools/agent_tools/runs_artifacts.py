@@ -18,7 +18,7 @@ def _items(step: str, row: Mapping[str, object]) -> list[dict[str, object]]:
     items = row.get("artifacts_json")
     found: list[dict[str, object]] = [
         {"step": step, "key": str(i["key"]), "bytes": i.get("bytes"), "sha256": str(i.get("sha256") or ""),
-         "media": str(i.get("media") or "")}
+         "media": str(i.get("media") or ""), **({"scrubbed": True} if i.get("scrubbed") is True else {})}
         for i in (items if isinstance(items, list) else [])
         if isinstance(i, Mapping) and i.get("key")
     ]
@@ -36,9 +36,10 @@ def listing(rows: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
 
 
 def lines(run_id: str, entries: Sequence[Mapping[str, object]]) -> list[str]:
-    """Pure. The human form: one `<key>  <bytes> B  <sha256 prefix>` line per artifact, a `MISSING` line per mark, or
-    why there are none."""
+    """Pure. The human form: one `<key>  <bytes> B  <sha256 prefix>` line per artifact, ending `  scrubbed` when the
+    secret scrub changed it, a `MISSING` line per mark, or why there are none."""
     if not entries:
         return [f"{run_id}: no artifacts recorded (no step rows list any; is artifacts_url set?)"]
     return [f"{e['step']}: MISSING artifacts: {e['error']}" if e.get("missing")
-            else f"{e['key']}  {e['bytes']} B  {str(e['sha256'])[:12]}" for e in entries]
+            else f"{e['key']}  {e['bytes']} B  {str(e['sha256'])[:12]}" + ("  scrubbed" if e.get("scrubbed") else "")
+            for e in entries]

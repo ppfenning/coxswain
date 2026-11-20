@@ -440,6 +440,28 @@ def _doctor_store_rows(profile: dict | None) -> list[dict]:
     return doctor.store_rows(mode, store_url.profile_store_url(data, runs_dir), traces, _probe_store(data, {}) if probed else [])
 
 
+def _doctor_artifacts_rows(profile: dict | None) -> list[dict]:
+    """Edge. The artifacts root row: when the provider profile sets `artifacts_url`, write, read back and remove a probe
+    object there (`harness.artifacts.probe`), in any store mode, since a single machine may set a `file://` root."""
+    profile = profile or {}
+    provider = profile.get("provider_profile")
+    data = store_url.read_provider_profile(provider) if provider else {}
+    url = data.get("artifacts_url")
+    if not isinstance(url, str) or not url:
+        return []
+    from harness import artifacts  # the harness loads only on a machine that sets the key
+
+    runs_dir = Path(profile.get("workspace_dir") or "").expanduser() / "runs"
+    try:
+        root = artifacts.artifacts_root(data, os.environ, runs_dir)
+    except ValueError as exc:
+        return doctor.artifacts_rows(url, artifacts.scrub(str(exc), artifacts.secret_values(os.environ))[:200], None)
+    except Exception as exc:  # pyarrow missing, or a plugin that would not load
+        return doctor.artifacts_rows(url, type(exc).__name__, None)
+    failed = artifacts.probe(root, f"doctor-{socket.gethostname()}-{os.getpid()}") if root is not None else None
+    return doctor.artifacts_rows(url, None, failed)
+
+
 def _doctor_worker_role_rows(profile: dict | None) -> list[dict]:
     """Edge. The worker store role row: when the units' env (loaded under any variable the process lacks) names a
     worker role, connect as it through `store_scoped.open_scoped`, which never migrates, and run the probes, each in
@@ -614,6 +636,7 @@ def _setup_doctor_here(a: argparse.Namespace) -> int:
         *rows,
         *_doctor_home_rows(profile),
         *_doctor_store_rows(profile),
+        *_doctor_artifacts_rows(profile),
         *_doctor_worker_role_rows(profile),
         *_doctor_dash_build_rows(profile),
         *_doctor_running_install_rows(profile),

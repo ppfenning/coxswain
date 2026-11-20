@@ -28,7 +28,9 @@ Four checks, each a fact the chair already has:
 - **artifacts missing**: a run wrote step rows marked `result_json.artifacts_error` (`harness.artifacts`) in the last
   `MISSING_WINDOW`: its step artifacts were not all uploaded. It raises `artifacts_missing:<run>` once per run, naming
   the first error. A worker only marks its rows, since its scoped store role can write nothing else, so the chair raises
-  the alarm. It closes quietly once the run's rows are older than the window.
+  the alarm. It closes quietly once the run's rows are older than the window. The window is also a blind spot: a
+  run marked while the chair was down for longer than it is never alarmed, though `cox runs artifacts <run>` still
+  shows the run's `MISSING` lines.
 
 A stall raises one `stall_alarm` and, once its check no longer holds, one `stall_clear`, the all-clear. A same-failure
 stall is cleared only when its streak breaks: the action succeeds or fails another way. A streak that goes quiet

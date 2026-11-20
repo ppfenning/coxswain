@@ -291,6 +291,16 @@ RUNS_COMMANDS = [
         "agent_tools.cli:_runs_artifacts", False, (),
     ),
     commands.Command(
+        "show", "runs", "print a run's transcripts: the run folder's, else the ones its step rows name in artifacts_url",
+        (commands.Arg(("run_id",)), commands.Arg(("--runs-dir",), {"default": "runs"})),
+        "agent_tools.cli:_runs_show", False, (),
+    ),
+    commands.Command(
+        "log", "runs", "print a run's check logs: the run folder's, else the ones its step rows name in artifacts_url",
+        (commands.Arg(("run_id",)), commands.Arg(("--runs-dir",), {"default": "runs"})),
+        "agent_tools.cli:_runs_log", False, (),
+    ),
+    commands.Command(
         "pause", "runs", "mark a run paused in the store",
         (
             commands.Arg(("run_id",)), commands.Arg(("--reason",)), commands.Arg(("--runs-dir",), {"default": "runs"}),

@@ -52,8 +52,20 @@ copy must be the change itself, byte for byte: a test fixture holding `postgresq
 written, and a scrubbed copy would be a different change. A secret in a patch is the patch's problem, and the review
 and the land see it there.
 
-`key`, `entry`, `decide`, `secret_values`, `scrub`, `prepared`, `sources`, `attach` and `mark_missing` are pure.
-`artifacts_root`, `put_object`, `upload` and `step_artifacts` are the edges.
+**Reading back.** A step row is the index: `pick(rows, step, name)` finds the item a row lists under a name (the key
+without its `@<sha12>`), and `locate` reads that object from the root and holds it to the size and sha256 the row
+recorded (`verified`), so a reader never prints bytes the step did not store. `cox runs show` and `cox runs log` read
+the run's local copies first and these when there are none, so a run whose folder is gone still shows its transcripts
+and its check logs. Nothing is copied back into the run folder.
+
+**The doctor's probe.** `probe(root, token)` writes `v1/probe/<token>` through `put_object`, the save path's own write,
+reads it back, and removes it, and says which of the three failed. A root that refuses any of them (a read-only
+mount, a filesystem with no hard links, a bucket the key cannot write) fails `cox setup doctor` before a run marks a
+row missing.
+
+`key`, `entry`, `decide`, `secret_values`, `scrub`, `prepared`, `sources`, `attach`, `mark_missing`, `name_of`, `pick`,
+`verified` and `probe_key` are pure. `artifacts_root`, `put_object`, `upload`, `step_artifacts`, `read_object`,
+`locate` and `probe` are the edges.
 """
 
 from __future__ import annotations
@@ -83,6 +95,7 @@ __all__ = [
     "SCRUBBED_FIELD",
     "UNSCRUBBED",
     "ArtifactConflict",
+    "ArtifactCorrupt",
     "ArtifactsRoot",
     "Source",
     "artifacts_root",
@@ -90,14 +103,21 @@ __all__ = [
     "decide",
     "entry",
     "key",
+    "locate",
     "mark_missing",
+    "name_of",
+    "pick",
     "prepared",
+    "probe",
+    "probe_key",
     "put_object",
+    "read_object",
     "scrub",
     "secret_values",
     "sources",
     "step_artifacts",
     "upload",
+    "verified",
 ]
 
 LAYOUT = "v1"
@@ -130,6 +150,10 @@ _USERINFO = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*://)[^/?#@]+@")
 
 class ArtifactConflict(ValueError):
     """A key already holds an object of another size: two contents share a hash prefix."""
+
+
+class ArtifactCorrupt(ValueError):
+    """An object read back is not the size or the sha256 its step row recorded."""
 
 
 @dataclass(frozen=True)
@@ -456,3 +480,71 @@ def step_artifacts(
         done = tuple(mark_missing(row, error) for row in rows)
     by_step = {row["step"]: row for row in done}
     return tuple(by_step.get(row["step"], row) for row in rows)
+
+
+# --- reading back ---------------------------------------------------------------------------------------------------
+
+
+def name_of(object_key: str) -> str:
+    """Pure. The artifact name a key holds: its last segment without the `@<sha12>` suffix."""
+    return object_key.rpartition("/")[2].rpartition("@")[0]
+
+
+def pick(rows: Sequence[Mapping[str, object]], step: str, name: str) -> Mapping[str, object] | None:
+    """Pure. The item the row of `step` lists under `name`; the last one when a row lists the name twice; None when no
+    row of that step lists it."""
+    found = [item for row in rows if row.get("step") == step for item in _rows(row.get("artifacts_json"))
+             if name_of(str(item.get("key") or "")) == name]
+    return found[-1] if found else None
+
+
+def verified(item: Mapping[str, object], data: bytes) -> bytes:
+    """Pure. `data` when it is the size and the sha256 `item` records; ArtifactCorrupt otherwise."""
+    digest = hashlib.sha256(data).hexdigest()
+    if item.get("bytes") != len(data) or item.get("sha256") != digest:
+        raise ArtifactCorrupt(f"artifact {item.get('key')} read back {len(data)} bytes with sha256 {digest[:12]}, "
+                              f"not the {item.get('bytes')} bytes and {str(item.get('sha256'))[:12]} its row records")
+    return data
+
+
+def read_object(root: ArtifactsRoot, item: Mapping[str, object]) -> bytes:
+    """Edge. The object `item` names, read from the root and `verified` against it."""
+    with root.fs.open_input_stream(f"{root.path}/{item['key']}") as stream:
+        return verified(item, stream.read())
+
+
+def locate(root: ArtifactsRoot, rows: Sequence[Mapping[str, object]], step: str, name: str) -> bytes | None:
+    """Edge. The bytes of the artifact the run's step `rows` list as `name` on `step`, read from `artifacts_url`; None
+    when no row lists it. A stored object that does not match its row raises ArtifactCorrupt."""
+    item = pick(rows, step, name)
+    return None if item is None else read_object(root, item)
+
+
+def probe_key(token: str) -> str:
+    """Pure. The doctor's probe object, beside the runs and never among them: `v1/probe/<token>`."""
+    return f"{LAYOUT}/probe/{_part(token, 'probe token')}"
+
+
+def probe(root: ArtifactsRoot, token: str, link: Callable[[str, str], None] = os.link) -> tuple[str, str] | None:
+    """Edge. Write `probe_key(token)` as a save would (`put_object`), read it back, then remove it. None when all three
+    worked; else `(stage, what)`, the stage that failed (`write`, `read` or `remove`) and the exception's type name, or
+    why the bytes read back differ. Exception text is never returned: it can carry an endpoint or a key. The remove is
+    tried even after a failed read."""
+    object_key = probe_key(token)
+    path, data = f"{root.path}/{object_key}", f"coxswain doctor probe {token}\n".encode()
+    try:
+        put_object(root, object_key, data, link)
+    except Exception as exc:
+        return "write", type(exc).__name__
+    failed: tuple[str, str] | None = None
+    try:
+        with root.fs.open_input_stream(path) as stream:
+            if stream.read() != data:
+                failed = ("read", "the bytes read back differ from the bytes written")
+    except Exception as exc:
+        failed = ("read", type(exc).__name__)
+    try:
+        root.fs.delete_file(path)
+    except Exception as exc:
+        return failed or ("remove", type(exc).__name__)
+    return failed

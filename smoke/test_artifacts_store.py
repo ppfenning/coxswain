@@ -5,6 +5,12 @@ started by `cox route launch epic` as a person starts it, writes each step's pat
 Once against a `file://` folder, which is the single-machine case with no Garage, and once against `s3://` on the
 session's Garage container with the `object_store` block naming the key variables. `cox runs artifacts` lists what the
 rows name. Without the key, nothing is uploaded and the rows list nothing.
+
+The read side (F3b), on both roots: the run's folder and its trace folder are deleted, and `cox runs log` and
+`cox runs show` still print its check logs and its build transcript, read from the objects the step rows name, and
+`cox setup doctor`'s `artifacts root` row writes, reads back and removes a probe object there. The scripted runner makes
+no model call, so it writes no transcript; the test records the one node call a build makes (`SEED_CALL`), with its
+trace file, before the launch, and the run's own save uploads it as a real build would.
 """
 
 from __future__ import annotations
@@ -12,7 +18,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -107,9 +115,7 @@ with fs.open_input_stream(path) as stream:
 """
 
 
-def test_an_s3_artifacts_url_on_garage_holds_each_steps_patch_and_logs(launchable, repo, object_store, tmp_path):
-    sandbox = launchable.sandbox
-    prefix = f"artifacts-{tmp_path.name}"
+def _with_garage_profile(sandbox, object_store, prefix: str) -> None:
     _with_profile_lines(sandbox, "".join([
         f"artifacts_url: s3://{object_store.bucket}/{prefix}\n",
         "object_store:\n",
@@ -121,6 +127,12 @@ def test_an_s3_artifacts_url_on_garage_holds_each_steps_patch_and_logs(launchabl
     ]))
     sandbox.env[plan.GARAGE_ACCESS_KEY_ENV] = object_store.access_key
     sandbox.env[plan.GARAGE_SECRET_KEY_ENV] = object_store.secret_key
+
+
+def test_an_s3_artifacts_url_on_garage_holds_each_steps_patch_and_logs(launchable, repo, object_store, tmp_path):
+    sandbox = launchable.sandbox
+    prefix = f"artifacts-{tmp_path.name}"
+    _with_garage_profile(sandbox, object_store, prefix)
     steps = _ran(launchable)
     endpoint = object_store.endpoint.removeprefix("http://")
 
@@ -164,3 +176,89 @@ def test_a_broken_artifacts_root_finishes_the_run_marks_its_rows_and_the_chair_a
         assert tick.returncode == 0, tick.stdout + tick.stderr
     alarms = [r for r in sandbox.python_json(ALARMS.format(url=sandbox.store_url)) if r[2].startswith("artifacts_missing")]
     assert alarms == [["stall_alarm", "done", f"artifacts_missing:{RUN}", INITIATIVE]], alarms
+
+
+# --- the read side (F3b): delete the run folder, and the run still shows its transcript and its check log ---------
+
+# The node call a build makes, recorded before the launch: the scripted runner calls no model, so it records none.
+SEED_CALL = """import json
+from harness.store_migrate import open_store
+from harness.store_write import Store
+conn = open_store({url!r}, "2026-11-20T00:00:00Z")
+Store(conn).record_call({{"id": "smoke-build-1", "task_id": "t1", "role": "build", "ok": True, "trace": {trace!r}}},
+                        run_id={run!r}, seq=0)
+conn.close()
+print(json.dumps(True))
+"""
+TRANSCRIPT = '{"type":"assistant","message":{"content":[{"type":"text","text":"smoke build transcript"}]}}\n'
+
+
+def _seeded_transcript(sandbox, tmp_path: Path) -> Path:
+    trace = tmp_path / "model-trace" / "build-1.jsonl"
+    trace.parent.mkdir()
+    trace.write_text(TRANSCRIPT, encoding="utf-8")
+    assert sandbox.python_json(SEED_CALL.format(url=sandbox.store_url, trace=str(trace), run=RUN)) is True
+    return trace
+
+
+def _local_logs(sandbox) -> dict[str, str]:
+    """Each check's local log, by the number the bucket's name starts with, before the run folder goes."""
+    folder = sandbox.workspace / "runs" / RUN / "checks" / "p1" / "t1"
+    return {f"{int(p.stem):02d}": p.read_text(encoding="utf-8") for p in folder.glob("*.log") if p.stat().st_size}
+
+
+def _without_the_run_folder_it_still_reads(sandbox, steps: list[dict], trace: Path, shown: str) -> None:
+    runs = sandbox.workspace / "runs"
+    by_step = {s["step"]: s for s in steps}
+    assert [a["key"].rpartition("/")[2].rpartition("@")[0] for a in by_step["task/t1/build"]["artifacts_json"]] == [
+        "patch.diff", "transcript-build-1.jsonl"], by_step["task/t1/build"]
+    logs = _local_logs(sandbox)
+    shutil.rmtree(runs / RUN)
+    shutil.rmtree(runs / f"{RUN}-trace", ignore_errors=True)
+    trace.unlink(missing_ok=True)  # the run's end may already have compacted it away
+
+    log = sandbox.cox("runs", "log", RUN, "--runs-dir", str(runs))
+    assert log.returncode == 0, log.stdout + log.stderr
+    for item in by_step["task/t1/checks"]["artifacts_json"]:
+        name = item["key"].rpartition("/")[2].rpartition("@")[0]
+        assert f"== task/t1/checks {name} (from {shown})" in log.stdout, log.stdout
+        if not item.get("scrubbed"):
+            assert logs[name[:2]] in log.stdout, (name, log.stdout)
+
+    show = sandbox.cox("runs", "show", RUN, "--runs-dir", str(runs))
+    assert show.returncode == 0, show.stdout + show.stderr
+    assert show.stdout == f"== task/t1/build transcript-build-1.jsonl (from {shown})\n{TRANSCRIPT}", show.stdout
+
+
+def _doctor_row(sandbox) -> dict:
+    done = sandbox.cox("setup", "doctor", "--json", timeout=300)
+    rows = json.loads(done.stdout)["rows"]
+    [row] = [r for r in rows if r["check"] == "artifacts root"] or [{"missing": rows}]
+    return row
+
+
+def test_a_file_root_still_shows_the_transcript_and_the_check_log_once_the_run_folder_is_gone(launchable, repo, tmp_path):
+    sandbox = launchable.sandbox
+    root = tmp_path / "artifacts"
+    _with_profile_lines(sandbox, f"artifacts_url: file://{root}\n")
+    trace = _seeded_transcript(sandbox, tmp_path)
+    steps = _ran(launchable)
+    _without_the_run_folder_it_still_reads(sandbox, steps, trace, f"file://{root}")
+    before = sorted(p for p in root.rglob("*") if p.is_file())
+    row = _doctor_row(sandbox)
+    assert row.get("ok") is True and row["detail"].startswith("local folder: a probe object was written"), row
+    assert sorted(p for p in root.rglob("*") if p.is_file()) == before  # the probe removed its object
+
+
+def test_an_s3_root_on_garage_still_shows_the_transcript_and_the_check_log_once_the_run_folder_is_gone(
+        launchable, repo, object_store, tmp_path):
+    sandbox = launchable.sandbox
+    prefix = f"artifacts-{tmp_path.name}"
+    _with_garage_profile(sandbox, object_store, prefix)
+    trace = _seeded_transcript(sandbox, tmp_path)
+    steps = _ran(launchable)
+    _without_the_run_folder_it_still_reads(sandbox, steps, trace, f"s3://{object_store.bucket}/{prefix}")
+    row = _doctor_row(sandbox)
+    assert row.get("ok") is True, row
+    assert row["detail"] == f"s3 bucket {object_store.bucket}: a probe object was written, read back and removed", row
+

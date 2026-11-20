@@ -15,6 +15,7 @@ import tempfile
 import time
 from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
+from typing import Literal
 
 from agent_tools.cli_common import _initiative_texts, _profile_path, _read_text_or_none, _work_items
 from agent_tools.cli_lake import _lake_provider
@@ -457,6 +458,72 @@ def _runs_artifacts(a: argparse.Namespace) -> int:
         return 0
     print("\n".join(runs_artifacts.lines(run_id, entries)))
     return 0
+
+
+def _local_copies(runs_dir: Path, run_id: str, which: str) -> list[str]:
+    """Edge. The run folder's own copies: the loose transcripts beside it, or the check logs under it."""
+    folder, pattern = ((runs_dir / f"{run_id}-trace", "*.jsonl") if which == "show"
+                       else (runs_dir / run_id / "checks", "**/*.log"))
+    return [str(p.relative_to(runs_dir)) for p in folder.glob(pattern) if p.is_file()] if folder.is_dir() else []
+
+
+def _print_run_artifacts(a: argparse.Namespace, which: Literal["show", "log"]) -> int:
+    """Edge. `cox runs show` and `cox runs log`: the run folder's copies, else the bucket's (`runs_show.choose`).
+    Exits 0 having printed some, 2 when there are none, 1 when the store, the root or a read fails."""
+    from agent_tools import runs_show
+
+    runs_dir = Path(a.runs_dir)
+    run_id = _resolved_run_id(runs_dir, a.run_id)
+    local = _local_copies(runs_dir, run_id, which)
+    rows: list = []
+    if not local:
+        api = run_store.harness_store_api()
+        found = api.step_rows(run_store.store_url_for(runs_dir), run_id)
+        if isinstance(found, api.Failed | api.NotAvailable):
+            detail = found.detail if isinstance(found, api.Failed) else f"the store is not available: {found.reason}"
+            print(f"failed {run_id}: no local copies, and the step rows could not be read: {detail}", file=sys.stderr)
+            return 1
+        rows = list(found)
+    choice = runs_show.choose(run_id, which, local, runs_show.stored(rows, which), runs_show.marked(rows))
+    if choice.source == "none":
+        print(choice.note)
+        return 2
+    if choice.source == "local":
+        for rel in choice.local:
+            print(runs_show.header(rel, "run folder"))
+            print((runs_dir / rel).read_text(encoding="utf-8", errors="replace"), end="", flush=True)
+        return 0
+    from harness import artifacts
+
+    try:
+        root = run_store.artifacts_root_for(runs_dir)
+    except ValueError as exc:
+        print(f"failed {run_id}: artifacts_url: {exc}", file=sys.stderr)
+        return 1
+    if root is None:
+        print(f"failed {run_id}: the step rows list {len(choice.items)} object(s), but the provider profile sets no "
+              "artifacts_url to read them from", file=sys.stderr)
+        return 1
+    for one in choice.items:
+        try:
+            data = artifacts.locate(root, rows, one.step, one.name)
+        except Exception as exc:
+            print(f"failed {run_id}: {one.step} {one.name}: {type(exc).__name__}: "
+                  f"{artifacts.scrub(str(exc), root.secrets)[:300]}", file=sys.stderr)
+            return 1
+        print(runs_show.header(f"{one.step} {one.name}", f"from {root.shown}"))
+        print((data or b"").decode("utf-8", "replace"), end="", flush=True)
+    return 0
+
+
+def _runs_show(a: argparse.Namespace) -> int:
+    """Edge. `cox runs show <run>`: the run's transcripts."""
+    return _print_run_artifacts(a, "show")
+
+
+def _runs_log(a: argparse.Namespace) -> int:
+    """Edge. `cox runs log <run>`: the run's check logs."""
+    return _print_run_artifacts(a, "log")
 
 
 def _runs_move_pause(store_url: str, run_id: str, reason: str | None) -> tuple[bool, str]:
