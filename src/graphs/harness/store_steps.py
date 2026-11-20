@@ -13,6 +13,12 @@ On today's model a fix-loop re-entry (`epic_build.refix_task`) is a second lifec
 same epic run; its graph run id ends `:refix<n>`, and its steps are keyed as a task of their own,
 `task/<task>-refix-<n>/<kind>`, the way a revision task is (`task/<phase>-rev-<round>/build`). The `task_id` column
 still names the task.
+
+Only the steps this run performed get a row. A result a run carries but did not produce (a resumed run's reused
+result, the quarantined attempt a rescue starts from) names its origin: its graph `run_id` is the run that ran its
+plan, build and reviews, and `change_facts.checks_run` the run that ran the checks stored with it (`with_checks`). A
+graph step is this run's when that run id is the run or one of its graphs (`<run>:...`, `belongs`); checks are when
+`checks_run` is. A build the result did not make (`build.reused`, the patch a rescue reviews) has no row.
 """
 
 from __future__ import annotations
@@ -28,12 +34,14 @@ __all__ = [
     "PHASE_KINDS",
     "STEP_COLUMNS",
     "TASK_KINDS",
+    "belongs",
     "put_step",
     "refix_of",
     "step_key",
     "step_row",
     "steps_for",
     "steps_of_result",
+    "with_checks",
 ]
 
 Scope = Literal["task", "phase"]
@@ -73,6 +81,17 @@ def refix_of(graph_run_id: str) -> int:
     """Pure. The fix-loop re-entry a lifecycle graph run id names (`<run>:<phase>:refix<n>:<task>`); 0 for none."""
     found = _REFIX.search(graph_run_id)
     return 0 if found is None else int(found.group(1))
+
+
+def belongs(origin: str, run_id: str) -> bool:
+    """Pure. Whether `origin`, a run id a result names, is `run_id` itself or one of its graphs (`<run_id>:...`)."""
+    return bool(run_id) and (origin == run_id or origin.startswith(f"{run_id}:"))
+
+
+def with_checks(result: Mapping[str, object], checks: Sequence[Mapping[str, object]], run_id: str) -> dict[str, object]:
+    """Pure. `result` with `checks` under `change_facts`, stamped with `run_id`, the run that ran them."""
+    facts = _mapping(result.get("change_facts"))
+    return {**result, "change_facts": {**facts, "checks": [dict(c) for c in checks], "checks_run": run_id}}
 
 
 def step_row(
@@ -165,7 +184,7 @@ def _plan(result: Mapping[str, object]) -> tuple[bool, str, JsonObject] | None:
 
 def _build(result: Mapping[str, object]) -> tuple[bool, str, JsonObject] | None:
     build = _mapping(result.get("build"))
-    if not build:
+    if not build or build.get("reused") is True:
         return None
     facts = _mapping(result.get("change_facts"))
     ok = bool(str(build.get("patch") or "").strip()) and not build.get("quarantine") and result.get("failed_node") != "build"
@@ -194,9 +213,13 @@ def _arbitration(result: Mapping[str, object]) -> tuple[bool, str, JsonObject] |
     return verdict == "approve", verdict, {"verdict": verdict, "sided_with": str(answer.get("sided_with") or "")}
 
 
-def _checks(result: Mapping[str, object]) -> tuple[bool, str, JsonObject] | None:
-    """The configured checks as the lane ran them: under change_facts in an epic save, at the top from `lifecycle`."""
-    ran = _rows(_mapping(result.get("change_facts")).get("checks")) or _rows(result.get("checks"))
+def _checks(result: Mapping[str, object], run_id: str) -> tuple[bool, str, JsonObject] | None:
+    """The configured checks `run_id` ran: under change_facts, stamped `checks_run`, in an epic save; at the top of a
+    result the run's own `lifecycle` graph returned."""
+    facts = _mapping(result.get("change_facts"))
+    stamped = _rows(facts.get("checks")) if belongs(str(facts.get("checks_run") or ""), run_id) else []
+    top = _rows(result.get("checks")) if belongs(str(result.get("run_id") or ""), run_id) else []
+    ran = stamped or top
     if not ran:
         return None
     each: list[Json] = [
@@ -222,18 +245,23 @@ def steps_of_result(
 
     A step the result does not carry (no plan on a resumed task, no checks before they ran, no arbitration when the
     reviewers agreed) has no row. `result_json` holds only the step's verdict, counts and check names and exits:
-    never a patch or a log. Plan is round 0; every other step is the round of the result's fix loop."""
-    refix = refix_of(str(result.get("run_id") or ""))
+    never a patch or a log. Plan is round 0; every other step is the round of the result's fix loop.
+
+    Only the steps `run_id` performed: a result another run produced gives no plan, build or review rows, and checks
+    another run ran give no checks row (see the module docstring)."""
+    origin = str(result.get("run_id") or "")
+    ours = belongs(origin, run_id)
+    refix = refix_of(origin) if ours else 0
     ident = f"{task}-refix-{refix}" if refix else task
     round_ = _round_of(result)
-    found = (
+    graph = (
         ("plan", 0, _plan(result)),
         ("build", round_, _build(result)),
         ("review", round_, _judge(result, "review", "findings")),
         ("adversary", round_, _judge(result, "adversary", "objections")),
         ("arbitration", round_, _arbitration(result)),
-        ("checks", round_, _checks(result)),
     )
+    found = (*(graph if ours else ()), ("checks", round_, _checks(result, run_id)))
     return tuple(
         step_row(
             run_id=run_id, step=step_key("task", ident, kind, n), initiative=initiative, phase=phase, task_id=task,
@@ -253,9 +281,11 @@ def put_step(conn: Connection, row: StepRow) -> int:
 
 
 def steps_for(conn: Connection, run_id: str) -> list[StepRow]:
-    """Edge. Every step row of one run, by step key, the JSON columns decoded."""
-    sql = f"SELECT {', '.join(STEP_COLUMNS)} FROM step_results WHERE run_id = {conn.dialect.placeholder} ORDER BY step"
-    return [
+    """Edge. Every step row of one run, by step key in code-point order, the JSON columns decoded. Sorted here, not
+    by ORDER BY, so both engines list the same order whatever the server's collation."""
+    sql = f"SELECT {', '.join(STEP_COLUMNS)} FROM step_results WHERE run_id = {conn.dialect.placeholder}"
+    rows = [
         cast(StepRow, {c: json_load(v) if c.endswith("_json") else v for c, v in zip(STEP_COLUMNS, r, strict=True)})
         for r in conn.query_all(sql, (run_id,))
     ]
+    return sorted(rows, key=lambda row: row["step"])

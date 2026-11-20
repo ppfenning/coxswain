@@ -4,7 +4,16 @@ import pytest
 
 from harness.store_cli import main
 from harness.store_migrate import open_store
-from harness.store_steps import put_step, refix_of, step_key, step_row, steps_for, steps_of_result
+from harness.store_steps import (
+    belongs,
+    put_step,
+    refix_of,
+    step_key,
+    step_row,
+    steps_for,
+    steps_of_result,
+    with_checks,
+)
 
 AT = "2026-11-20T00:00:00Z"
 
@@ -22,6 +31,7 @@ RESULT = {
     "change_facts": {
         "patch_ok": True,
         "changed_lines": 3,
+        "checks_run": "ship-1",
         "checks": [
             {"name": "note", "cmd": "test -f NOTE.md", "passed": True, "exit_code": 0, "outcome": "passed",
              "output_tail": "a long log that never reaches the row"},
@@ -120,9 +130,10 @@ def test_an_arbitration_is_its_own_row_and_a_revise_is_not_ok():
 
 
 def test_a_failed_build_node_and_an_empty_patch_are_not_ok():
-    assert rows_of({"build": {"patch": "x"}, "failed_node": "build"})[0]["ok"] == 0
-    assert rows_of({"build": {"patch": "  "}})[0]["ok"] == 0
-    assert rows_of({"build": {"patch": "x", "quarantine": "outside surfaces"}})[0]["ok"] == 0
+    own = {"run_id": "ship-1:p1:t1"}
+    assert rows_of({**own, "build": {"patch": "x"}, "failed_node": "build"})[0]["ok"] == 0
+    assert rows_of({**own, "build": {"patch": "  "}})[0]["ok"] == 0
+    assert rows_of({**own, "build": {"patch": "x", "quarantine": "outside surfaces"}})[0]["ok"] == 0
 
 
 def test_a_record_with_no_steps_gives_no_rows():
@@ -164,3 +175,33 @@ def test_steps_list_prints_the_runs_rows_as_one_json_array(tmp_path, capsys):
     assert [r["kind"] for r in listed] == ["adversary", "build", "checks", "plan", "review"]
     assert main(["--store-url", url, "steps", "list", "no-such-run"]) == 0
     assert json.loads(capsys.readouterr().out) == []
+
+
+# --- only the steps this run performed -------------------------------------------------------------------------------
+
+
+def test_a_run_owns_its_own_id_and_its_graphs_and_nothing_else():
+    assert belongs("ship-1", "ship-1") and belongs("ship-1:p1:t1", "ship-1")
+    assert not belongs("ship-10:p1:t1", "ship-1") and not belongs("", "ship-1") and not belongs("ship-1", "")
+
+
+def test_a_result_another_run_produced_gives_this_run_no_row():
+    assert steps_of_result(RESULT, run_id="ship-2", initiative="ship", phase="p1", task="t1", at=AT) == ()
+
+
+def test_checks_this_run_ran_on_another_runs_result_are_its_only_row():
+    reused = with_checks(RESULT, [{"name": "note", "passed": True, "exit_code": 0}], "ship-2")
+    rows = steps_of_result(reused, run_id="ship-2", initiative="ship", phase="p1", task="t1", at=AT)
+    assert [(r["step"], r["ok"]) for r in rows] == [("task/t1/checks", 1)]
+
+
+def test_checks_with_no_stamp_are_no_runs_and_a_reused_build_is_no_build():
+    unstamped = {**RESULT, "change_facts": {"checks": [{"name": "note", "passed": True}]}}
+    assert "checks" not in [r["kind"] for r in rows_of(unstamped)]
+    kept = {**RESULT, "build": {**RESULT["build"], "reused": True}}
+    assert "build" not in [r["kind"] for r in rows_of(kept)]
+
+
+def test_with_checks_stamps_the_run_and_keeps_the_other_facts():
+    stamped = with_checks({"change_facts": {"patch_ok": True}}, [{"name": "n", "passed": True}], "r9")
+    assert stamped == {"change_facts": {"patch_ok": True, "checks": [{"name": "n", "passed": True}], "checks_run": "r9"}}

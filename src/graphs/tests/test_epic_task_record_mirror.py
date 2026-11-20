@@ -1,12 +1,14 @@
 import logging
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 import harness.store_read as read
 from harness.epic import Ctx, _task_record_mirror, save_task_result
+from harness.epic_records import record_steps
 from harness.resume import load_result, result_path
-from harness.store_steps import steps_for
+from harness.store_steps import steps_for, with_checks
 from harness.store_write import Store
 
 RESULT = {"ticket": "t1", "initiative": "i", "phase": "p1", "proposals": [{"kind": "draft_pr_create"}], "n": 1}
@@ -95,7 +97,7 @@ LIFECYCLE = {
     "review": {"verdict": "approve", "findings": []},
     "fix_loop": {"attempts": 1},
 }
-CHECKED = {**LIFECYCLE, "change_facts": {"checks": [{"name": "note", "passed": True, "exit_code": 0}]}}
+CHECKED = with_checks(LIFECYCLE, [{"name": "note", "passed": True, "exit_code": 0}], "r1")
 
 
 def test_each_save_writes_the_results_steps_once_and_the_checks_when_a_later_save_carries_them(tmp_path, store_conn):
@@ -116,3 +118,56 @@ def test_a_result_with_no_steps_writes_the_record_and_no_step(tmp_path, store_co
     save_task_result(ctx(tmp_path, Store(store_conn)), RESULT, phase="p1", task="t1")
     assert read.task_record(store_conn, "r1", "p1", "t1") == RESULT
     assert steps_for(store_conn, "r1") == []
+
+
+PASSING = [{"name": "note", "passed": True, "exit_code": 0}]
+FAILING = [{"name": "note", "passed": False, "exit_code": 1}]
+
+
+def performed(conn, run_id):
+    return [(s["step"], s["ok"], s["verdict"], s["result_json"].get("checks")) for s in steps_for(conn, run_id)]
+
+
+def test_a_resumed_run_writes_only_the_checks_it_ran_on_a_reused_result(tmp_path, store_conn):
+    # r1 built, reviewed and checked t1 (its checks failed); r2 resumes from r1, reuses the approved result as
+    # `epic_phase` does (`without_cause(saved)`), saves it, then runs the checks again and saves them.
+    reused = with_checks(LIFECYCLE, FAILING, "r1")
+    c = replace(ctx(tmp_path, Store(store_conn)), run_id="r2")
+    save_task_result(c, reused, phase="p1", task="t1")
+    assert performed(store_conn, "r2") == []
+    save_task_result(c, with_checks(reused, PASSING, "r2"), phase="p1", task="t1")
+    assert performed(store_conn, "r2") == [("task/t1/checks", 1, "", [{**PASSING[0], "outcome": ""}])]
+
+
+def test_a_rescue_writes_its_own_review_and_never_the_quarantined_attempts(tmp_path, store_conn):
+    # `epic_execute.rescue_task`: the quarantined attempt's result (r1, review revise) is saved under the rescue run
+    # with the rescue's check rows, then the rescue review's result (the kept patch, not built) is saved.
+    quarantined = {**LIFECYCLE, "review": {"verdict": "revise", "findings": ["f"]}, "evidence": [{"check": "c"}]}
+    c = replace(ctx(tmp_path, Store(store_conn)), run_id="rescue-1")
+    save_task_result(c, quarantined, phase="p1", task="t1")
+    assert performed(store_conn, "rescue-1") == []
+    rescue = {"run_id": "rescue-1:p1:t1", "plan": None, "build": {"patch": "--- a\n+++ b\n", "reused": True},
+              "review": {"verdict": "approve", "findings": []}, "adversary": None, "arbitration": None,
+              "fix_loop": {"attempts": 1}}
+    save_task_result(c, rescue, phase="p1", task="t1")
+    assert performed(store_conn, "rescue-1") == [("task/t1/review", 1, "approve", None)]
+
+
+def test_a_refix_keeps_the_checks_that_sent_the_attempt_back_and_the_re_entrys_own(tmp_path, store_conn):
+    # `epic_build.refix_task`: the first attempt's checks fail, they are recorded under it, a re-entry runs as
+    # `<run>:<phase>:refix1`, and its passing checks are saved with it (`epic_phase`).
+    c = ctx(tmp_path, Store(store_conn))
+    save_task_result(c, LIFECYCLE, phase="p1", task="t1")
+    record_steps(c, with_checks(LIFECYCLE, FAILING, "r1"), phase="p1", task="t1")
+    retried = {**LIFECYCLE, "run_id": "r1:p1:refix1:t1", "plan": {}, "review": {"verdict": "approve", "findings": []}}
+    save_task_result(c, retried, phase="p1", task="t1")
+    save_task_result(c, with_checks(retried, PASSING, "r1"), phase="p1", task="t1")
+    assert performed(store_conn, "r1") == [
+        ("task/t1-refix-1/build", 1, "", None),
+        ("task/t1-refix-1/checks", 1, "", [{**PASSING[0], "outcome": ""}]),
+        ("task/t1-refix-1/review", 1, "approve", None),
+        ("task/t1/build", 1, "", None),
+        ("task/t1/checks", 0, "", [{**FAILING[0], "outcome": ""}]),
+        ("task/t1/plan", 1, "", None),
+        ("task/t1/review", 1, "approve", None),
+    ]

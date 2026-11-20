@@ -149,6 +149,7 @@ from harness.handoff import plan_context
 from harness.invoke import Invocation, invoke_graphs
 from harness.resume import load_result, reusable
 from harness.stale_base import is_patch_empty, stale_base_reason, wrong_repository, wrong_repository_reason
+from harness.store_steps import with_checks
 from harness.surface_heal import malformed_surfaces, notes_out_of_surfaces
 from harness.ticket_check import check_ticket, ticket_lookups
 from harness.worktree import registry_lock
@@ -1001,8 +1002,8 @@ def run_phase_tasks(
             # The result file was saved before the checks ran. `runs detail` reads that file, so the
             # per-check results (excerpt and log name) go into it under `change_facts`, as the
             # task record below carries them.
-            facts = {**as_mapping(final.get("change_facts")), "checks": build["checks"]}
-            save_task_result(ctx, {**final, "change_facts": facts}, phase=phase, task=task)
+            # Stamped with this run: a later run that reuses the result did not run these checks (`store_steps`).
+            save_task_result(ctx, with_checks(final, build["checks"], ctx.run_id), phase=phase, task=task)
 
         # Evidence first, escalation second — the same order `cli.py` uses, and
         # for the same reason: the gate should see the tests' opinion of a
