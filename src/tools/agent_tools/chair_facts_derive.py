@@ -46,6 +46,7 @@ from agent_tools.chair_land_backoff import LandRefusal, aligned
 from agent_tools.chair_launch_budget import DEFAULT_MAX_LAUNCHES_PER_HOUR, WINDOW
 from agent_tools.chair_no_progress import NoProgress, RunOutcome, no_progress_facts, resolve_no_progress_after
 from agent_tools.chair_plan import initiative_homes
+from agent_tools.chair_plan_fill import less_phase_ready
 from agent_tools.chair_plan_land import planned_tasks
 from agent_tools.chair_read_dag import dag_problems
 from agent_tools.chair_read_docket import Docket, DocketInitiative, docket_from_rows, str_items
@@ -1333,7 +1334,7 @@ def gather_facts(
         "stranded": stranded_facts(approved, list(deps.run_commits()), list(deps.phase_state())),
         "phase_branches": phase_branch_facts(list(deps.branch_counts())),
         "landing": list(deps.landing()) if deps.landing is not None else [],
-        "idle_stall": deps.idle_stall(now),
+        "idle_stall": less_phase_ready(deps.idle_stall(now), initiatives),
         "stall_alarm": stall_facts(
             resolve_settings(deps.stall_alarm() if deps.stall_alarm is not None else None),
             landing_records, [action_doc(row) for row in action_rows],

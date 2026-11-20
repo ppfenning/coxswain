@@ -109,6 +109,13 @@ def cartridge_lane_model(cartridge: Mapping[str, Any]) -> LaneModel:
     return lane_model_of(dispatch.get("lane_model") if isinstance(dispatch, Mapping) else None)
 
 
+def launch_lane_model(stub: Mapping[str, Any] | None, configured: str) -> LaneModel:
+    """The model a decompose launch stamps: the `initiative.md` stub's when one exists, else `configured`, the
+    cartridge's. The chair writes the stub before a hosted or detached run and the run carries it along, so the chair's
+    cartridge decides even when the run's own machine names another model. A stub with no key was written under `task`."""
+    return lane_model_of(configured if stub is None else stub.get("lane_model"))
+
+
 def stamp_lane_model(row: Row, lane_model: str) -> Row:
     """`row` with `extra.lane_model: phase` when it is an initiative row, `lane_model` is `phase` and it holds no stamp yet.
 

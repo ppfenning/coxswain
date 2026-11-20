@@ -684,12 +684,14 @@ def _route_status(a: argparse.Namespace) -> int:
             *route.held_initiative_entries(queue, release_gate.held_initiatives(queue), held_intakes),
         ]
         deferred = route.deferred_by_target(queue, package_version())
+        phase_lane = route.phase_lane_initiatives(queue)
         if a.json:
             # The bare rows list is the shape older callers read; it stays when there
             # is nothing else to say. A problem is never dropped for lack of an intake dir.
             queue_facts = {
                 **({"waiting": waiting, "held": held} if waiting or held else {}),
                 **({"deferred": deferred} if deferred else {}),
+                **({"phase_lane": phase_lane} if phase_lane else {}),
             }
             if groups is None and not problems and not queue_facts:
                 doc = rows
@@ -705,7 +707,7 @@ def _route_status(a: argparse.Namespace) -> int:
                 short_ids=_run_short_ids([r["id"] for r in rows], short_ids),
                 waiting=_waiting_by_entry_id(queue, waiting), held=held, deferred=deferred,
                 chair_line=_chair_machine_line(profile, ws / "runs"),
-                events=_initiative_events(queue, [r["id"] for r in rows]),
+                events=_initiative_events(queue, [r["id"] for r in rows]), phase_lane=phase_lane,
             )
             drafts = route.render_drafts(
                 draft_list.read_drafts(ws / "work", datetime.datetime.now(datetime.UTC).isoformat()), draft_list.format_age

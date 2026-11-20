@@ -14,6 +14,7 @@ from agent_tools.chair_types import (
     Action,
     ActionKind,
     Facts,
+    IdleStallInputs,
     InitiativeFacts,
     RunningInitiative,
     SteerPolicy,
@@ -47,6 +48,13 @@ def launchable_by_tick(initiative: InitiativeFacts) -> bool:
     """False for an initiative stamped `lane_model: phase` at decompose: a phase worker claims it, so the tick's
     launch_epic never does. Absent or any other value is the task model, which the tick launches as before."""
     return initiative.get("lane_model", "task") != "phase"
+
+
+def less_phase_ready(inputs: IdleStallInputs, initiatives: Sequence[InitiativeFacts]) -> IdleStallInputs:
+    """`inputs` with the ready tasks of each initiative `launchable_by_tick` refuses taken off its `ready` count, never
+    below zero. Those tasks wait for a phase worker, not for the tick, so they must not make the lanes look idle."""
+    withheld = sum(len(i["ready_tasks"]) for i in initiatives if not launchable_by_tick(i))
+    return inputs if not withheld else {**inputs, "ready": max(0, inputs["ready"] - withheld)}
 
 
 def _launchable(initiative: InitiativeFacts, held_phases: frozenset[tuple[str, str]]) -> InitiativeFacts:

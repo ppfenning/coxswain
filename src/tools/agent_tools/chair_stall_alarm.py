@@ -674,6 +674,8 @@ def plan_stall_alarm(
     own idle line goes out this tick. `launch_paused` is the hard stop. The idle check reads the lanes and lands in
     progress (`is_busy`), the worker capacity (`worker_capacity`), the store's holds and this tick's no-progress holds
     (`held_items`), and the idle-stall inputs' last progress."""
+    from agent_tools.chair_plan_fill import launchable_by_tick  # lazy: chair_types imports this module
+
     alarm = facts.get("stall_alarm")
     if not alarm:
         return []
@@ -686,7 +688,7 @@ def plan_stall_alarm(
         "progress_at": str(progress) if progress else None,
         "free_lanes": _count(idle.get("free_lanes")),
         "ready": _count(idle.get("ready")) + _count(idle.get("queued")),
-        "subject": next((str(i["id"]) for i in facts.get("initiatives") or [] if i.get("ready_tasks")), ""),
+        "subject": next((str(i["id"]) for i in facts.get("initiatives") or [] if i.get("ready_tasks") and launchable_by_tick(i)), ""),
         "held": frozenset(facts.get("held_initiatives") or ()) | frozenset(facts.get("no_progress") or {}),
         "idle_raised": bool(idle.get("open_signature"))
         or any(a.get("kind") == "needs_chair" and a.get("cause") in IDLE_CAUSES for a in planned),

@@ -529,13 +529,15 @@ def initiative_files(
     }
 
 
-def initiative_text(id: str, title: str, repo: str, intake: str, body: str) -> str:
+def initiative_text(id: str, title: str, repo: str, intake: str, body: str, lane_model: str = "task") -> str:
     """`work/<id>/initiative.md` for `route launch decompose` (spec §3),
     written from data the launcher already has rather than proposed by a
     seat: the idea's `title`/`repo` and its path relative to the workspace
     as `intake`, with the idea's own body carried through unchanged.
+    A `phase` lane model adds `lane_model: phase`, the stamp the store fill copies onto the row; `task` adds nothing.
     """
-    return _frontmatter([("id", id), ("title", title), ("repo", repo), ("intake", intake)], body)
+    stamp = [("lane_model", "phase")] if lane_model == "phase" else []
+    return _frontmatter([("id", id), ("title", title), ("repo", repo), ("intake", intake), *stamp], body)
 
 
 class RepoRefused(NamedTuple):
