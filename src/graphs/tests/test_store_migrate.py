@@ -8,22 +8,30 @@ import pytest
 import harness.store_migrate as store_migrate
 from harness.store_dialect import POSTGRES, SQLITE, Connection, connect, forbidden_constructs
 from harness.store_migrate import (
+    ADDITIVE_PREFIX,
     MigrationError,
+    accepts,
+    additive_violations,
     check_version,
     default_modules,
     migrate,
+    newer_descriptions,
+    newer_refusal,
     open_store,
     pending,
+    recorded_description,
 )
 
 NOW = "2026-09-24T00:00:00Z"
 
 
-def fake(number, statements, name=None):
+def fake(number, statements, name=None, additive=None):
     m = ModuleType(name or f"harness.store_ddl_{number:04d}")
     m.VERSION = number
     m.DESCRIPTION = f"fake {number}"
     m.statements = lambda dialect: tuple(statements)
+    if additive is not None:
+        m.ADDITIVE = additive
     return m
 
 
@@ -167,8 +175,100 @@ def test_a_database_newer_than_the_code_is_refused_before_any_write(conn, monkey
         watch(name)
     with pytest.raises(MigrationError) as err:
         migrate(conn, NOW, [fake(1, ONE), fake(2, TWO)])
-    assert str(err.value) == "database is at schema version 3, newest known migration is 2"
+    assert str(err.value) == ("database is at schema version 3, newest known migration is 2; "
+                              "migration 0003 (fake 3) is not additive")
     assert executed == []
+
+
+THREE = ("CREATE TABLE t3 (id INTEGER PRIMARY KEY)",)
+
+
+def rows(c):
+    return c.query_all("SELECT version, applied_at, description FROM schema_version ORDER BY version")
+
+
+def test_accepts_equal_versions_and_refuses_an_older_store():
+    assert accepts(2, 2, ())
+    assert not accepts(1, 2, ())
+    assert not accepts(0, 2, ())
+
+
+def test_accepts_a_newer_store_only_when_every_newer_row_is_additive():
+    assert accepts(4, 2, ("additive: t3", "additive: t4"))
+    assert not accepts(4, 2, ("additive: t3", "t4"))
+    assert not accepts(3, 2, ("t3",))
+    assert not accepts(3, 2, ("Additive: t3",))  # the prefix is exact
+    assert not accepts(3, 2, ("",))
+
+
+def test_accepts_refuses_newer_rows_that_are_not_one_per_version():
+    assert not accepts(4, 2, ("additive: t4",))
+    assert not accepts(3, 2, ())
+
+
+def test_newer_refusal_names_the_first_non_additive_migration_by_number_and_description():
+    assert newer_refusal(2, ("additive: t3", "drops t1", "t5")) == "migration 0004 (drops t1) is not additive"
+    assert "not one per version" in newer_refusal(2, ())
+
+
+def test_recorded_description_prefixes_an_additive_migration_once():
+    assert recorded_description("t3 table", True) == f"{ADDITIVE_PREFIX}t3 table"
+    assert recorded_description("t3 table", False) == "t3 table"
+    once = recorded_description("t3 table", True)
+    assert recorded_description(once, True) == once
+
+
+def test_migrate_records_an_additive_migration_with_the_prefix_and_only_a_true_flag_counts(conn):
+    migrate(conn, NOW, [fake(1, ONE), fake(2, TWO, additive=True), fake(3, THREE, additive="yes")])
+    assert [d for _, _, d in rows(conn)] == ["fake 1", "additive: fake 2", "fake 3"]
+
+
+def test_a_store_newer_only_by_additive_migrations_is_accepted_and_left_as_it_is_every_time(conn):
+    migrate(conn, NOW, [fake(1, ONE), fake(2, TWO), fake(3, THREE, additive=True)])
+    before, tables_before = rows(conn), tables(conn)
+    older = [fake(1, ONE), fake(2, TWO)]
+    assert migrate(conn, "2026-09-25T00:00:00Z", older) == 3
+    assert migrate(conn, "2026-09-26T00:00:00Z", older) == 3
+    assert (rows(conn), tables(conn)) == (before, tables_before)
+    assert newer_descriptions(conn, 2) == ("additive: fake 3",)
+
+
+def test_a_store_newer_by_an_additive_then_a_non_additive_migration_is_refused_naming_the_second(conn):
+    migrate(conn, NOW, [fake(1, ONE), fake(2, TWO, additive=True), fake(3, THREE)])
+    before = rows(conn)
+    with pytest.raises(MigrationError) as err:
+        migrate(conn, NOW, [fake(1, ONE)])
+    assert str(err.value) == ("database is at schema version 3, newest known migration is 1; "
+                              "migration 0003 (fake 3) is not additive")
+    assert rows(conn) == before
+
+
+def test_newer_descriptions_is_empty_on_a_store_with_no_version_table(conn):
+    assert newer_descriptions(conn, 0) == ()
+
+
+def _store_one_newer(tmp_path, description):
+    url = f"sqlite:///{tmp_path / 'cox.db'}"
+    c = open_store(url, NOW)
+    newest = len(default_modules())
+    c.execute("INSERT INTO schema_version (version, applied_at, description) VALUES (?, ?, ?)",
+              (newest + 1, NOW, description))
+    c.close()
+    return url, newest
+
+
+def test_the_pending_command_reports_a_store_newer_by_additive_migrations_as_up_to_date(tmp_path, capsys):
+    url, newest = _store_one_newer(tmp_path, "additive: future table")
+    assert store_migrate.main(["--pending", url]) == 0
+    assert capsys.readouterr().out == (
+        f"up to date (v{newest + 1}, newer than this code's v{newest} by additive migrations only)\n"
+    )
+
+
+def test_the_pending_command_refuses_a_store_newer_by_a_non_additive_migration(tmp_path, capsys):
+    url, newest = _store_one_newer(tmp_path, "future table")
+    assert store_migrate.main(["--pending", url]) == 2
+    assert f"migration {newest + 1:04d} (future table) is not additive" in capsys.readouterr().err
 
 
 def test_check_version_applies_nothing(conn):
@@ -304,3 +404,74 @@ def test_every_default_module_statement_is_portable_and_has_no_foreign_key(modul
     sql = module.statements(dialect)
     assert [forbidden_constructs(s) for s in sql] == [()] * len(sql)
     assert not [s for s in sql if "REFERENCES" in s.upper() or "FOREIGN KEY" in s.upper()]
+
+
+@pytest.mark.parametrize("module", default_modules(), ids=lambda m: f"{m.VERSION:04d}")
+@pytest.mark.parametrize("dialect", [SQLITE, POSTGRES], ids=["sqlite", "postgres"])
+def test_every_default_module_that_declares_additive_holds_only_additive_ddl(module, dialect):
+    declared = getattr(module, "ADDITIVE", False) is True
+    assert (additive_violations(module.statements(dialect)) if declared else ()) == ()
+
+
+ADDITIVE_DDL = (
+    "CREATE TABLE IF NOT EXISTS notes (key TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (key))",
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_notes_body ON notes (body)",
+    "CREATE INDEX IF NOT EXISTS ix_runs_host ON runs (host)",
+    "ALTER TABLE hosts ADD COLUMN lanes INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE hosts ADD COLUMN IF NOT EXISTS labels TEXT NOT NULL DEFAULT '', ADD COLUMN note TEXT",
+    "-- DROP is only named in this comment\nINSERT INTO notes (key, body) VALUES ('drop', 'RENAME me')",
+    "CREATE TRIGGER IF NOT EXISTS tr_runs AFTER INSERT ON runs BEGIN INSERT INTO notes VALUES (NEW.run_id, ''); END",
+)
+
+
+def test_additive_ddl_has_no_violation():
+    assert additive_violations(ADDITIVE_DDL) == ()
+
+
+@pytest.mark.parametrize(("sql", "reason"), [
+    pytest.param("DROP TABLE notes", "has DROP", id="drop-table"),
+    pytest.param("ALTER TABLE runs DROP COLUMN host", "has DROP", id="drop-column"),
+    pytest.param("ALTER TABLE runs RENAME COLUMN host TO machine", "has RENAME", id="rename-column"),
+    pytest.param("ALTER TABLE runs RENAME TO old_runs", "has RENAME", id="rename-table"),
+    pytest.param("ALTER TABLE runs ALTER COLUMN host TYPE INTEGER", "has ALTER COLUMN", id="alter-column-type"),
+    pytest.param("ALTER TABLE runs ALTER host TYPE INTEGER", "by more than adding a column", id="alter-type-bare"),
+    pytest.param("ALTER TABLE runs ADD COLUMN lanes INTEGER NOT NULL", "NOT NULL column to runs with no DEFAULT",
+                 id="not-null-no-default"),
+    pytest.param("ALTER TABLE runs ADD COLUMN a TEXT, ADD COLUMN b TEXT NOT NULL", "with no DEFAULT", id="second-action"),
+    pytest.param("ALTER TABLE runs ADD CONSTRAINT one_host UNIQUE (host)", "by more than adding a column",
+                 id="add-constraint"),
+    pytest.param("ALTER TABLE runs ADD COLUMN code TEXT UNIQUE", "with a constraint", id="unique-column"),
+    pytest.param("CREATE UNIQUE INDEX ux_runs_host ON runs (host)", "unique index to runs", id="unique-index-old-table"),
+    pytest.param("DELETE FROM runs", "has DELETE", id="delete"),
+    pytest.param("TRUNCATE runs", "has TRUNCATE", id="truncate"),
+    pytest.param("CREATE TRIGGER t BEFORE INSERT ON runs BEGIN SELECT RAISE(ABORT, 'no'); END", "has RAISE",
+                 id="raising-trigger"),
+])
+def test_a_non_additive_statement_is_named(sql, reason):
+    found = additive_violations(("CREATE TABLE IF NOT EXISTS notes (key TEXT NOT NULL, PRIMARY KEY (key))", sql))
+    assert found and all(r.startswith("statement 2 ") for r in found) and any(reason in r for r in found), found
+
+
+def test_a_module_declaring_additive_with_non_additive_ddl_is_refused_before_any_write(conn):
+    migrate(conn, NOW, [fake(1, ONE)])
+    before = rows(conn)
+    with pytest.raises(MigrationError, match=r"migration 0002 declares ADDITIVE but is not: statement 1 has DROP"):
+        migrate(conn, NOW, [fake(1, ONE), fake(2, ("DROP TABLE t1",), additive=True)])
+    assert rows(conn) == before and "t1" in tables(conn)
+
+
+def _and_a_newer_build_commits(description):
+    """Migration 2's statements, then the row a newer build's migration 3 would commit before this opener reads the
+    version back: the window between this opener's last migration and its final read."""
+    return (*TWO, f"INSERT INTO schema_version (version, applied_at, description) VALUES (3, '{NOW}', '{description}')")
+
+
+def test_a_newer_build_that_migrates_additively_while_this_one_migrates_is_accepted(conn):
+    migrate(conn, NOW, [fake(1, ONE)])
+    assert migrate(conn, NOW, [fake(1, ONE), fake(2, _and_a_newer_build_commits("additive: fake 3"))]) == 3
+
+
+def test_a_newer_build_that_migrates_non_additively_while_this_one_migrates_is_refused(conn):
+    migrate(conn, NOW, [fake(1, ONE)])
+    with pytest.raises(MigrationError, match=r"newest known migration is 2; migration 0003 \(fake 3\) is not additive"):
+        migrate(conn, NOW, [fake(1, ONE), fake(2, _and_a_newer_build_commits("fake 3"))])
