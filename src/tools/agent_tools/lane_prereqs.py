@@ -8,8 +8,9 @@ fixture setup. The checks here name those gaps before the chair places a lane, s
 
 The probe is one POSIX sh script, so it needs no cox of any version on the host and reads the PATH the lane would. It
 never pulls and never writes: an absent image is judged pullable by asking the credential helper `docker pull` would
-ask, so running it twice changes nothing. Every command it runs has its own time limit (`LIMITS_S`), well inside the
-lane-host ssh bound, so a hung Docker Desktop is a failing row naming the wait, never a probe the ssh call cut off.
+ask, so running it twice changes nothing. Every command it runs has its own time limit (`LIMITS_S`) and runs in a
+process group of its own, which the watchdog kills whole; the probe as a whole keeps to `BUDGET_S`, inside the
+lane-host ssh bound. A hung Docker Desktop is a failing row naming the wait, never a probe the ssh call cut off.
 
 Two kinds of check. Prerequisites (docker, the images, pg_dump, gh, a readable probe) are lasting: one failure blocks
 placement and moves homed work. Room (temp headroom, available memory) dips and recovers: it blocks placement only
@@ -57,33 +58,69 @@ MEMORY_MIN_FREE_MB = 2048
 # stops the calls of its kind after it, so the worst case stays well inside the lane-host ssh bound.
 LIMITS_S = (6, 3, 3, 3)
 TIMED_OUT = 124
-assert LIMITS_S[0] + LIMITS_S[1] + LIMITS_S[2] + 3 * LIMITS_S[3] < LANE_HOST_TIMEOUT_S
+# The whole probe's budget, in seconds, under the lane-host ssh bound: a call that would end past it is skipped, so calls
+# slow enough to add up but each inside its limit cannot run the probe into the ssh cut-off.
+BUDGET_S = LANE_HOST_TIMEOUT_S - 5
+SKIPPED = 125
 _MARK = "cox-lane-prereq"
 # One doctor row: `check`, `ok` and `detail`, the shape `doctor.checks` gives.
 Row = dict[str, object]
 _OUTPUT_CHARS = 160
 
-# Positional args: the four limits, the client tools, `--`, then the images. Every line it prints starts with the
-# marker, so a login shell's startup noise around them is ignored.
+# Positional args: the four limits, the budget, the client tools, `--`, then the images. Every line it prints starts
+# with the marker, so a login shell's startup noise around them is ignored.
 _SCRIPT = r"""m=cox-lane-prereq
 nl='
 '
 first() { printf '%s' "${1%%"$nl"*}"; }
-# limited SECONDS CMD...: CMD under a watchdog; exit 124 when the watchdog had to kill it. A job started in the
-# background reads /dev/null unless stdin is redirected, so stdin goes over on fd 3 (a credential helper reads it).
-limited() {
-  _l_secs=$1; shift
-  exec 3<&0
-  "$@" <&3 3<&- &
-  _l_pid=$!
-  ( /bin/sleep "$_l_secs"; kill -9 "$_l_pid" ) >/dev/null 2>&1 3<&- &
-  _l_dog=$!
-  wait "$_l_pid"; _l_rc=$?
-  kill "$_l_dog" 2>/dev/null || return 124
-  return "$_l_rc"
+sleep_path=$(command -v sleep 2>/dev/null)
+setsid_path=$(command -v setsid 2>/dev/null)
+if [ -z "$sleep_path" ]; then
+  printf '%s\tnosleep\n%s\tend\n' "$m" "$m"
+  exit 0
+fi
+# limited SECONDS CMD...: CMD under a watchdog; exit 124 when the watchdog had to kill it. CMD runs in a process group
+# of its own (job control in this subshell, else setsid), and the watchdog kills the whole group, so a grandchild (a
+# wrapper's child, a docker plugin, a credential sub-helper) cannot hold the caller's pipe open. A background job
+# reads /dev/null unless stdin is redirected, so stdin goes over on fd 3; the shell's own job notices go to /dev/null.
+limited() (
+  secs=$1
+  shift
+  exec 3<&0 4>&2 2>/dev/null
+  set -m
+  case $- in *m*) group=1 ;; *) group= ;; esac
+  if [ -n "$group" ] || [ -z "$setsid_path" ]; then
+    "$@" <&3 2>&4 3<&- 4>&- &
+  else
+    "$setsid_path" "$@" <&3 2>&4 3<&- 4>&- &
+  fi
+  pid=$!
+  ( "$sleep_path" "$secs"; kill -9 -"$pid" || kill -9 "$pid" ) >/dev/null 3<&- 4>&- &
+  dog=$!
+  wait "$pid"
+  rc=$?
+  if kill -0 "$dog"; then
+    kill -9 -"$dog" || kill -9 "$dog"
+    exit "$rc"
+  fi
+  exit 124
+)
+docker_s=$1 image_s=$2 helper_s=$3 other_s=$4 budget_s=$5
+shift 5
+# fits SECONDS WHAT: whether a call bounded by SECONDS still ends inside the budget; it charges the call, or notes WHAT
+# as skipped. The clock decides; without `date` the limits charged so far stand in for the time spent.
+start=$(date +%s 2>/dev/null)
+spent=0
+skipped=
+fits() {
+  now=$(date +%s 2>/dev/null)
+  if [ -n "$start" ] && [ -n "$now" ]; then used=$((now - start)); else used=$spent; fi
+  if [ $((used + $1)) -gt "$budget_s" ]; then
+    skipped="$skipped $2"
+    return 1
+  fi
+  spent=$((spent + $1))
 }
-docker_s=$1 image_s=$2 helper_s=$3 other_s=$4
-shift 4
 while [ "$#" -gt 0 ] && [ "$1" != -- ]; do
   printf '%s\ttool\t%s\t%s\n' "$m" "$1" "$(command -v "$1" 2>/dev/null)"
   shift
@@ -93,8 +130,12 @@ docker_path=$(command -v docker 2>/dev/null)
 docker_code=127
 docker_out=
 if [ -n "$docker_path" ]; then
-  docker_out=$(limited "$docker_s" "$docker_path" info --format '{{.ServerVersion}}' 2>&1)
-  docker_code=$?
+  if fits "$docker_s" docker; then
+    docker_out=$(limited "$docker_s" "$docker_path" info --format '{{.ServerVersion}}' 2>&1)
+    docker_code=$?
+  else
+    docker_code=125
+  fi
 fi
 printf '%s\tdocker\t%s\t%s\t%s\n' "$m" "$docker_code" "$docker_path" "$(first "$docker_out")"
 config="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
@@ -116,6 +157,10 @@ for image in "$@"; do
     printf '%s\timage\tunchecked\t-\t%s\t\n' "$m" "$image"
     continue
   fi
+  if ! fits "$image_s" "inspect:$image"; then
+    printf '%s\timage\tskipped\t-\t%s\t\n' "$m" "$image"
+    continue
+  fi
   limited "$image_s" "$docker_path" image inspect --format '{{.Id}}' "$image" >/dev/null 2>&1
   inspect_code=$?
   if [ "$inspect_code" -eq 0 ]; then
@@ -135,6 +180,10 @@ for image in "$@"; do
     printf '%s\timage\tabsent\t124\t%s\t\n' "$m" "$image"
     continue
   fi
+  if ! fits "$helper_s" "helper:$image"; then
+    printf '%s\timage\tskipped\t-\t%s\t\n' "$m" "$image"
+    continue
+  fi
   server=${image%%/*}
   case "$image" in
     */*) case "$server" in *.*|*:*|localhost) ;; *) server=https://index.docker.io/v1/ ;; esac ;;
@@ -149,12 +198,17 @@ gh_path=$(command -v gh 2>/dev/null)
 gh_code=127
 gh_out=
 if [ -n "$gh_path" ]; then
-  gh_out=$(limited "$other_s" "$gh_path" --version 2>&1)
-  gh_code=$?
+  if fits "$other_s" gh; then
+    gh_out=$(limited "$other_s" "$gh_path" --version 2>&1)
+    gh_code=$?
+  else
+    gh_code=125
+  fi
 fi
 printf '%s\tgh\t%s\t%s\t%s\n' "$m" "$gh_code" "$gh_path" "$(first "$gh_out")"
 dir=${TMPDIR:-/tmp}
-df_out=$(limited "$other_s" df -Pk "$dir" 2>/dev/null)
+df_out=
+fits "$other_s" df && df_out=$(limited "$other_s" df -Pk "$dir" 2>/dev/null)
 printf '%s\tspace\t%s\t%s\n' "$m" "$dir" "${df_out##*"$nl"}"
 emit_mem() {
   while IFS= read -r line; do
@@ -162,12 +216,13 @@ emit_mem() {
   done
 }
 if command -v memory_pressure >/dev/null 2>&1; then
-  limited "$other_s" memory_pressure 2>/dev/null | emit_mem "The system has" "memory free percentage"
+  fits "$other_s" memory && limited "$other_s" memory_pressure 2>/dev/null | emit_mem "The system has" "memory free percentage"
 elif command -v free >/dev/null 2>&1; then
-  limited "$other_s" free -k 2>/dev/null | emit_mem "available" "Mem:"
+  fits "$other_s" memory && limited "$other_s" free -k 2>/dev/null | emit_mem "available" "Mem:"
 elif [ -r /proc/meminfo ]; then
   emit_mem "MemAvailable:" "MemAvailable:" < /proc/meminfo
 fi
+[ -n "$skipped" ] && printf '%s\tskipped\t%s\t%s\n' "$m" "$budget_s" "${skipped# }"
 printf '%s\tend\n' "$m"
 """
 
@@ -203,11 +258,15 @@ class Probe:
     gh: Ran
     space: tuple[tuple[str, str], ...] = ()  # (the temp directory, the last line `df -Pk` printed for it)
     memory: tuple[str, ...] = ()  # memory_pressure's, free's or /proc/meminfo's lines that carry the reading
+    skipped: tuple[str, str] | None = None  # (the budget in seconds, the calls left out once it ran out)
 
 
-def script_argv(images: Sequence[str] = SMOKE_IMAGES, tools: Sequence[str] = CLIENT_TOOLS) -> list[str]:
+def script_argv(
+    images: Sequence[str] = SMOKE_IMAGES, tools: Sequence[str] = CLIENT_TOOLS, budget_s: int = BUDGET_S,
+) -> list[str]:
     """The probe for this machine, under this process's PATH."""
-    return ["/bin/sh", "-c", _SCRIPT, "lane-prereqs", *(str(s) for s in LIMITS_S), *tools, "--", *images]
+    limits = [str(s) for s in (*LIMITS_S, budget_s)]
+    return ["/bin/sh", "-c", _SCRIPT, "lane-prereqs", *limits, *tools, "--", *images]
 
 
 def probe_argv(images: Sequence[str] = SMOKE_IMAGES, tools: Sequence[str] = CLIENT_TOOLS) -> list[str]:
@@ -223,7 +282,10 @@ def _code(text: str) -> int | None:
 
 
 # How many tab-separated fields follow each kind; the last one is free text and may hold tabs itself.
-_ARITY = {"tool": 2, "docker": 3, "creds": 2, "image": 4, "gh": 3, "space": 2, "memline": 1, "end": 0}
+_ARITY = {
+    "tool": 2, "docker": 3, "creds": 2, "image": 4, "gh": 3, "space": 2, "memline": 1, "skipped": 2, "nosleep": 0,
+    "end": 0,
+}
 
 
 def _fields(output: str) -> list[tuple[str, list[str]]]:
@@ -253,8 +315,9 @@ def parse_probe(output: str) -> Probe | None:
     images = tuple(Image(image, state, _code(code), line) for state, code, image, line in by_kind.get("image", []))
     space = tuple((directory, line) for directory, line in by_kind.get("space", []))
     memory = tuple(line for (line,) in by_kind.get("memline", []))
+    skipped = next(((budget, calls) for budget, calls in by_kind.get("skipped", [])), None)
     return Probe(tools, Ran(docker_path, docker_rc, docker_line), store, helper, images, Ran(gh_path, gh_rc, gh_line),
-                 space, memory)
+                 space, memory, skipped)
 
 
 def _row(check: str, ok: bool, detail: str) -> Row:
@@ -268,6 +331,8 @@ def _cut(text: str) -> str:
 def docker_row(docker: Ran) -> Row:
     if not docker.path:
         return _row(DOCKER_CHECK, False, "no docker on the lane PATH: the smoke gate starts its fixtures with docker")
+    if docker.code == SKIPPED:
+        return _row(DOCKER_CHECK, False, "not checked: the probe ran past its budget")
     if docker.code == TIMED_OUT:
         return _row(DOCKER_CHECK, False, f"docker did not answer within {LIMITS_S[0]}s; restart it")
     if docker.code != 0:
@@ -291,6 +356,8 @@ def image_row(image: Image, creds_store: str, helper_path: str) -> Row:
         return _row(check, True, "present in the local store")
     if image.state == "hung":
         return _row(check, False, f"docker did not answer within {LIMITS_S[1]}s (docker image inspect); restart it")
+    if image.state == "skipped":
+        return _row(check, False, "not checked: the probe ran past its budget")
     if image.state == "unchecked":
         return _row(check, False, "not checked: docker did not answer")
     helper = f"docker-credential-{creds_store}"
@@ -316,6 +383,8 @@ def gh_row(gh: Ran) -> Row:
     """A real gh answers `gh --version` with `gh version ...`; a version-manager shim with no version set does not."""
     if not gh.path:
         return _row(GH_CHECK, False, "not on the lane PATH")
+    if gh.code == SKIPPED:
+        return _row(GH_CHECK, False, "not checked: the probe ran past its budget")
     if gh.code == TIMED_OUT:
         return _row(GH_CHECK, False, f"{gh.path} did not answer `gh --version` within {LIMITS_S[3]}s")
     if gh.code != 0 or not gh.line.startswith("gh version"):
@@ -382,7 +451,9 @@ def probe_rows(probe: Probe) -> list[Row]:
     images = [image_row(image, probe.creds_store, probe.helper_path) for image in probe.images]
     tools = [tool_row(name, path) for name, path in probe.tools.items()]
     space = [tmp_row(directory, line) for directory, line in probe.space[:1]] or [tmp_row("/tmp", "")]
-    return [docker_row(probe.docker), *images, *tools, gh_row(probe.gh), *space, memory_row(probe.memory)]
+    budget = [] if probe.skipped is None else [
+        _row(PROBE_CHECK, False, f"ran past its {probe.skipped[0]}s budget; skipped {probe.skipped[1]}")]
+    return [docker_row(probe.docker), *images, *tools, gh_row(probe.gh), *space, memory_row(probe.memory), *budget]
 
 
 def reply_rows(returncode: int, output: str, *, remote: bool) -> list[Row]:
@@ -394,6 +465,9 @@ def reply_rows(returncode: int, output: str, *, remote: bool) -> list[Row]:
     reach = [_row(REACHABLE_CHECK, not unreachable, _cut(output) if unreachable else "answered")] if remote else []
     if unreachable:
         return reach
+    if any(kind == "nosleep" for kind, _ in _fields(output)):
+        return [*reach, _row(PROBE_CHECK, False, "no sleep on the lane PATH, so no command could be time-limited; "
+                                                 "nothing was probed")]
     probe = parse_probe(output)
     if probe is None:
         return [*reach, _row(PROBE_CHECK, False, f"unreadable (exit {returncode}): {_cut(output)}")]
@@ -441,18 +515,21 @@ def _count(versions: Mapping[str, object], key: str) -> int:
 def merge_versions(versions: Mapping[str, object], rows: Sequence[Mapping[str, object]]) -> dict[str, object]:
     """`versions` with the check's record: `lane_ok` and `lane_reason` for the prerequisites, `room_ok`,
     `room_reason` and the consecutive `room_failures` for room, and `lane_capabilities`. A passing half drops its
-    reason. The same rows on the same record give the same prerequisites; only the room streak counts on."""
+    reason. The same rows on the same record give the same prerequisites; only the room streak counts on.
+
+    Rows with no room reading at all (an unreadable probe) leave the stored room record as it was: a probe that
+    could not be read says nothing about room, so it neither resets a streak nor adds to one."""
+    room_rows = [row for row in rows if is_room_row(row)]
     prereq = blocking_reason([row for row in rows if not is_room_row(row)])
-    room = blocking_reason([row for row in rows if is_room_row(row)])
-    kept = {key: value for key, value in versions.items() if key not in (REASON_KEY, ROOM_REASON_KEY)}
-    merged: dict[str, object] = {
-        **kept,
-        OK_KEY: prereq is None,
+    room = blocking_reason(room_rows)
+    dropped = (REASON_KEY, ROOM_REASON_KEY) if room_rows else (REASON_KEY,)
+    kept = {key: value for key, value in versions.items() if key not in dropped}
+    room_record: dict[str, object] = {
         ROOM_OK_KEY: room is None,
         ROOM_FAILURES_KEY: 0 if room is None else _count(versions, ROOM_FAILURES_KEY) + 1,
-        CAPABILITIES_KEY: sorted(capabilities(rows)),
-    }
-    reasons = {REASON_KEY: prereq, ROOM_REASON_KEY: room}
+    } if room_rows else {}
+    merged: dict[str, object] = {**kept, OK_KEY: prereq is None, **room_record, CAPABILITIES_KEY: sorted(capabilities(rows))}
+    reasons = {REASON_KEY: prereq, ROOM_REASON_KEY: room if room_rows else None}
     return {**merged, **{key: reason for key, reason in reasons.items() if reason is not None}}
 
 

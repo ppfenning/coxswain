@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import sqlite3
 import stat
 import sys
@@ -74,6 +75,8 @@ def _lane_ready(bin_dir):
     _write_executable(bin_dir / "pg_dump", "#!/bin/sh\n")
     _write_executable(bin_dir / "gh", '#!/bin/sh\necho "gh version 2.60.1 (2026-10-01)"\n')
     _write_executable(bin_dir / "df", '#!/bin/sh\necho "tmpfs 16000000 1000 8000000 1% $2"\n')
+    for name in ("sleep", "date"):  # the probe's watchdog and clock: the real ones
+        (bin_dir / name).symlink_to(shutil.which(name) or f"/bin/{name}")
     _write_executable(bin_dir / "free", '#!/bin/sh\necho "  total used free shared buff/cache available"\n'
                                         'echo "Mem: 32000000 1 1 1 1 8000000"\n')
 

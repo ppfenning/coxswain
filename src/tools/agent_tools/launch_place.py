@@ -43,7 +43,9 @@ def _capacity(row: Row | None, default: int) -> int:
 def _why_not(
     row: Row, local: str, stale: Collection[str], reachable: Collection[str], blocked: Collection[str],
     barred: Mapping[str, str] | None = None, local_excluded: bool = False, loaded: Mapping[str, str] | None = None,
+    used: int = 0, cap: int = 0,
 ) -> str:
+    """Why `row` took no lane; never blank. A host none of the named reasons covers is full, or has no free lane."""
     name = str(row["name"])
     if barred and name in barred:
         return barred[name]
@@ -57,7 +59,7 @@ def _why_not(
         return "no workspace_dir"
     if name in blocked:
         return "login lapsed"
-    return (loaded or {}).get(name, "")
+    return (loaded or {}).get(name) or ("full" if used >= cap else "no free lane")
 
 
 def format_refusal(refusal: Refusal) -> list[str]:
@@ -89,6 +91,7 @@ def place(
         "dispatch": dispatch_facts(
             {"max_in_flight": default_capacity}, names, live_by_host,
             host_cmd.row_capacities(rows), host_cmd.row_weights(rows), host_cmd.row_capabilities(rows),
+            lane_prereqs=lane_gate,
         ),
         "login_hosts": list(rows),
         "host_load_ceiling": load_ceiling,
@@ -98,11 +101,11 @@ def place(
         name = chosen[0]
         row = next(r for r in rows if str(r["name"]) == name)
         return Placement(name, live_by_host.get(name, 0), _capacity(row, default_capacity))
-    return Refusal(tuple(
-        (str(r["name"]), live_by_host.get(str(r["name"]), 0), _capacity(r, default_capacity),
-         _why_not(r, local, stale, reachable, blocked, bars, local_excluded, loaded))
-        for r in rows
-    ))
+    def refusal_row(r: Row) -> tuple[str, int, int, str]:
+        used, cap = live_by_host.get(str(r["name"]), 0), _capacity(r, default_capacity)
+        return str(r["name"]), used, cap, _why_not(r, local, stale, reachable, blocked, bars, local_excluded, loaded, used, cap)
+
+    return Refusal(tuple(refusal_row(r) for r in rows))
 
 
 def place_checked(

@@ -5,6 +5,7 @@ machine's own docker, memory or disk: the fake host answers every probed command
 
 import ast
 import json
+import shutil
 import socket
 import stat
 import time
@@ -304,6 +305,16 @@ def test_a_prerequisite_failure_blocks_and_moves_homed_work_at_once():
         {"kind": "needs_chair", "host": "lane-a", "cause": "lane_prereqs", "reason": "pg_dump: missing"}]
 
 
+def test_an_unreadable_probe_keeps_the_room_streak_as_it_was():
+    short = lane_prereqs.merge_versions({}, lane_prereqs.reply_rows(0, probe_output(memory=LOW_MEMORY), remote=False))
+    unreadable = lane_prereqs.merge_versions(short, lane_prereqs.reply_rows(124, "timed out", remote=False))
+    assert (unreadable["room_ok"], unreadable["room_failures"]) == (False, 1)
+    assert unreadable["room_reason"] == short["room_reason"]
+    assert unreadable["lane_ok"] is False
+    again = lane_prereqs.merge_versions(unreadable, lane_prereqs.reply_rows(0, probe_output(memory=LOW_MEMORY), remote=False))
+    assert again["room_failures"] == 2
+
+
 def test_a_brief_room_dip_blocks_nothing_and_a_lasting_one_blocks_placement_only():
     dip = [_row("lane-a", lane_ok=True, room_ok=False, room_failures=1, room_reason="free memory: low")]
     lasting = [_row("lane-a", lane_ok=True, room_ok=False, room_failures=2, room_reason="free memory: low")]
@@ -405,14 +416,17 @@ def _host(tmp_path: Path, *, docker: str | None = _DOCKER_UP, tools=("pg_dump",)
                          'echo "tmpfs 16000000 1000 ${FREE_KB:-8000000} 1% $2"')
     _tool(bin_dir, "free", 'echo "               total        used        free      shared  buff/cache   available"; '
                            'echo "Mem:        32000000    12000000     2000000      500000    18000000    ${FREE_MEM_KB:-8000000}"')
+    # The probe's own clock and watchdog: the real sleep and date, and nothing else from this machine.
+    for name in ("sleep", "date"):
+        (bin_dir / name).symlink_to(shutil.which(name) or f"/bin/{name}")
     # The lane's login shell, minus startup files: a real one would read /etc/profile, which puts this machine's own
     # tools back on the PATH. It runs `-c <command>` under exactly the PATH given.
     _tool(bin_dir, "login-sh", 'while [ "$#" -gt 0 ] && [ "$1" != -c ]; do shift; done; exec /bin/sh -c "$2"')
     return {"PATH": str(bin_dir), "HOME": str(home), "PRESENT": "", "SHELL": str(bin_dir / "login-sh")}
 
 
-def _probe(env: dict[str, str]) -> list[dict]:
-    done = run_argv_split(lane_prereqs.script_argv(), env=env)
+def _probe(env: dict[str, str], **kwargs) -> list[dict]:
+    done = run_argv_split(lane_prereqs.script_argv(**kwargs), env=env)
     return lane_prereqs.reply_rows(done.returncode, done.mixed, remote=False)
 
 
@@ -433,6 +447,33 @@ def test_a_hung_docker_is_cut_off_at_its_own_limit_well_inside_the_ssh_bound(tmp
     assert rows["smoke image garage"]["detail"] == "not checked: docker did not answer"
     assert rows["gh"]["ok"] is True  # the probe went on past the hung docker
     assert elapsed < 15
+
+
+def test_a_hung_grandchild_is_killed_with_its_wrapper(tmp_path):
+    # A wrapper whose child hangs and holds the output pipe: killing the wrapper alone left the probe waiting on it.
+    env = _host(tmp_path, docker="sleep 30 &\nwait")
+    started = time.monotonic()
+    rows = _by_check(_probe(env))
+    assert rows["docker daemon"]["detail"] == "docker did not answer within 6s; restart it"
+    assert time.monotonic() - started < 12
+
+
+def test_without_sleep_nothing_is_probed_and_the_probe_row_says_why(tmp_path):
+    env = _host(tmp_path)
+    (tmp_path / "bin" / "sleep").unlink()
+    assert _probe(env) == [{"check": "lane probe", "ok": False, "detail":
+                            "no sleep on the lane PATH, so no command could be time-limited; nothing was probed"}]
+
+
+def test_calls_that_would_end_past_the_budget_are_skipped(tmp_path):
+    env = _host(tmp_path, docker='[ "$1" = info ] && { sleep 5; echo 27.3.1; exit 0; }; exit 1')
+    started = time.monotonic()
+    rows = _by_check(_probe(env, budget_s=7))  # docker info (6s) fits; nothing bounded at 3s fits after 5s spent
+    assert rows["docker daemon"]["ok"] is True
+    assert rows["smoke image postgres"]["detail"] == "not checked: the probe ran past its budget"
+    assert rows["gh"]["detail"] == "not checked: the probe ran past its budget"
+    assert rows["lane probe"]["detail"].startswith(f"ran past its 7s budget; skipped inspect:{lane_prereqs.POSTGRES_IMAGE}")
+    assert time.monotonic() - started < 9
 
 
 def test_a_hung_image_inspect_stops_the_inspects_after_it(tmp_path):
