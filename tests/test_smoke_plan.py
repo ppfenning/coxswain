@@ -1,5 +1,8 @@
 """The smoke suite's pure core (smoke/plan.py): example inputs in, outputs checked. No I/O, no mocks."""
 
+import re
+from pathlib import Path
+
 import pytest
 import yaml
 
@@ -264,6 +267,25 @@ def test_the_image_is_pulled_from_forgejos_registry_by_digest():
 def test_every_smoke_image_is_pinned_by_digest():
     for image in (plan.POSTGRES_IMAGE, plan.FORGEJO_IMAGE, plan.GARAGE_IMAGE):
         assert plan.is_digest_pinned(image), image
+
+
+def _warm_literal(name: str) -> str:
+    """`smoke_warm.py` is in another package, so its literals are read from the file text, not imported."""
+    source = (Path(__file__).resolve().parent.parent / "src/tools/agent_tools/smoke_warm.py").read_text()
+    match = re.search(rf'^{name} = "([^"]+)"$', source, re.MULTILINE)
+    assert match is not None
+    return match.group(1)
+
+
+def test_the_warm_postgres_image_is_the_suites_image():
+    assert _warm_literal("IMAGE") == plan.POSTGRES_IMAGE
+
+
+def test_the_warm_postgres_label_is_not_one_the_reaper_lists_by():
+    label = _warm_literal("LABEL")
+    assert label != plan.CONTAINER_LABEL
+    assert label.partition("=")[0] not in (plan.LABEL, plan.SESSION_LABEL, plan.STARTED_LABEL)
+    assert f"label={label}" not in plan.docker_list_argv()
 
 
 @pytest.mark.parametrize("image", [

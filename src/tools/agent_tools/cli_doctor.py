@@ -14,12 +14,14 @@ import socket
 import sqlite3
 import subprocess
 import sys
+import time
 import urllib.parse
 from collections.abc import Mapping
 from pathlib import Path
 
 import yaml
 
+from agent_tools import smoke_warm
 from agent_tools.cli_chair_service import _chair_default_environment_file, _write_private
 from agent_tools.cli_common import _profile_path, _read_text_or_none
 from agent_tools.cli_host import _run_ssh
@@ -531,6 +533,46 @@ def _doctor_steward_rows(profile: dict | None) -> list[dict]:
     return [doctor.steward_row(chair_facts.steward_asked_for(raw))]
 
 
+def _smoke_postgres_facts() -> tuple[smoke_warm.Inspected | None, bool]:
+    """Edge. The warm container as docker reports it, and whether a docker daemon answered."""
+    if shutil.which("docker") is None:
+        return None, False
+    try:
+        r = bounded_run.completed(smoke_warm.inspect_argv(), capture_output=True, text=True)
+    except OSError:
+        return None, False
+    return smoke_warm.parse_inspect(r.stdout), smoke_warm.docker_answered(r.returncode, r.stderr)
+
+
+def _smoke_postgres_wait_ready(attempts: int = 30) -> None:
+    """Edge. Polls `pg_isready` once a second; gives up quietly, the row then reports what docker shows."""
+    for _ in range(attempts):
+        if bounded_run.completed(smoke_warm.ready_argv(), capture_output=True, text=True).returncode == 0:
+            return
+        time.sleep(1)
+
+
+def _doctor_smoke_postgres_rows(*, fix: bool, out) -> list[dict]:
+    """Edge. The `smoke postgres` row. Without `fix` it only reports. With `fix` it runs the docker commands the
+    pure core names (start, create, unpause or replace), waits for readiness when they all succeeded, and reports the
+    container as it then stands. Skipped, with no docker command, where `smoke_warm.SKIP_ENV` is set."""
+    if os.environ.get(smoke_warm.SKIP_ENV):
+        return [smoke_warm.skipped_row()]
+    found, docker_ok = _smoke_postgres_facts()
+    steps = smoke_warm.fix_argvs(found) if fix and docker_ok else []
+    codes = []
+    for argv in steps:
+        done = bounded_run.completed(argv, capture_output=True, text=True)
+        codes.append(done.returncode)
+        reason = (done.stderr or "").strip().splitlines()[:1]
+        print(f"{smoke_warm.ROW}: {' '.join(argv[:2])}: exit {done.returncode} {' '.join(reason)}".rstrip(), file=out)
+    if steps:
+        if not any(codes):
+            _smoke_postgres_wait_ready()
+        found, docker_ok = _smoke_postgres_facts()
+    return [smoke_warm.build_row(found, docker_ok)]
+
+
 def _doctor_log_rows(profile: dict | None, *, fix: bool, out) -> list[dict]:
     """Edge. The append-only log rows, under the profile's workspace and its runs dir; none without a workspace.
     With `fix`, damaged lines move to `<log>.damaged` first, one line per log moved, and the rows show the repaired logs."""
@@ -563,6 +605,8 @@ def _setup_doctor_here(a: argparse.Namespace) -> int:
         fn = (lambda *_: lines) if isinstance(lines, list) else None
         rows = [*rows, *doctor.freshness_rows(None, None, None, fn)]
     profile = _doctor_profile(facts["profile_text"])
+    out = sys.stderr if a.json else sys.stdout
+    fix = getattr(a, "fix", False)
     rows = [
         *rows,
         *_doctor_home_rows(profile),
@@ -571,7 +615,8 @@ def _setup_doctor_here(a: argparse.Namespace) -> int:
         *_doctor_running_install_rows(profile),
         *_doctor_extras_rows(),
         *_doctor_steward_rows(profile),
-        *_doctor_log_rows(profile, fix=getattr(a, "fix", False), out=sys.stderr if a.json else sys.stdout),
+        *_doctor_smoke_postgres_rows(fix=fix, out=out),
+        *_doctor_log_rows(profile, fix=fix, out=out),
     ]
     rc = doctor.exit_code(rows)
     # Informational: outside rows, so outside rc. Reuses the text the facts already read.
