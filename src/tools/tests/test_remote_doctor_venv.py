@@ -1,3 +1,5 @@
+from lane_probe_replies import PASSING, is_lane_probe
+
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.lane_toolchain import CheckTools
 from agent_tools.remote_doctor import doctor_on_host
@@ -11,6 +13,8 @@ def _run(missing_when):
 
     def run(argv):
         command = " ".join(argv)
+        if is_lane_probe(argv):
+            return 0, PASSING
         if "cox setup token status --probe" in command:
             return 0, '{"loggedIn": true}'
         if "lane-toolchain" in command:

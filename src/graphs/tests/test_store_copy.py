@@ -3,7 +3,7 @@ import json
 import pytest
 
 import harness.store_copy as sc
-from harness.store_migrate import open_store
+from harness.store_migrate import NotExactVersion, default_modules, exact_refusal, open_store
 
 T0 = "2026-09-25T00:00:00Z"
 
@@ -29,6 +29,10 @@ EXPECTED_ORDER = (
     "courier_log",
     "cartridge_snapshots",
     "lander_notices",
+    "phase_queue",
+    "step_results",
+    "review_rounds",
+    "workers",
 )
 
 SEED = {
@@ -78,6 +82,26 @@ SEED = {
         {"sha": "a" * 64, "at": "2026-09-25T00:00:00Z", "by": "chair-host", "files_json": '{"team/cartridge.yaml": {"text": "k: v"}}'},
     ],
     "lander_notices": [{"key": "unreadable:i2", "reason": "not JSON", "since": "2026-09-25T00:00:00Z"}],
+    "phase_queue": [
+        {"initiative": "i1", "phase": "p1", "kind": "build", "repo": "r", "base_ref": "init/i1", "branch": "epic/i1/p1",
+         "requires_json": "[]", "state": "waiting", "outcome": "", "reason": "", "band": 1, "seq": 1, "budget_usd": 5.0,
+         "queued_at": T0, "ready_at": "", "claimed_by": "", "claim_epoch": 0, "run_id": "", "claimed_at": "",
+         "heartbeat_at": "", "lease_until": "", "attempts": 0, "updated_at": T0, "updated_by": "chair"},
+    ],
+    "step_results": [
+        {"run_id": "r1", "step": "task/t1/build", "initiative": "i1", "phase": "p1", "task_id": "t1", "kind": "build",
+         "round": 1, "ok": 1, "verdict": "", "subject_sha": "", "worker": "", "claim_epoch": 0, "started_at": T0,
+         "finished_at": T0, "cost_usd": 0.0, "result_json": "{}", "artifacts_json": "[]"},
+    ],
+    "review_rounds": [
+        {"initiative": "i1", "phase": "p1", "round": 1, "head_sha": "a" * 40, "verdict": "approve", "reason": "",
+         "revision_json": "{}", "evidence_step": "phase/smoke/1", "run_id": "r1", "worker": "lane-host",
+         "claim_epoch": 1, "cost_usd": 0.5, "decided_at": T0},
+    ],
+    "workers": [
+        {"name": "lane-host", "capabilities_json": "[]", "lanes": 2, "threads": 8, "state": "up", "version": "v",
+         "doctor_json": "{}", "doctor_at": T0, "started_at": T0, "beat_at": T0},
+    ],
 }
 
 
@@ -256,6 +280,38 @@ def test_a_second_copy_inserts_nothing_and_reports_every_row_present(src_url, ds
     assert counts(dst_url) == {n: len(SEED[n]) for n in EXPECTED_ORDER}
 
 
+def test_the_hosts_threads_and_capabilities_columns_are_copied_including_null(src_url, dst_url):
+    src = open_store(src_url, T0)
+    try:
+        put(src, "hosts", {"name": "lane-host", "ssh": "lane-host", "capacity": 2, "state": "active", "beat_at": "",
+                           "versions_json": "{}", "updated_at": T0, "updated_by": "chair", "threads": 6,
+                           "capabilities_json": '["gpu"]'})
+    finally:
+        src.close()
+    sc.copy(src_url, dst_url, T0)
+    dst = open_store(dst_url, T0)
+    try:
+        rows = dst.query_all("SELECT name, threads, capabilities_json FROM hosts ORDER BY name")
+        assert [(n, t, None if c is None else json.loads(c)) for n, t, c in rows] == [
+            ("host-a", 0, None),
+            ("lane-host", 6, ["gpu"]),
+        ]
+    finally:
+        dst.close()
+
+
+def test_a_changed_step_row_in_the_source_is_not_copied_over_the_first(src_url, dst_url):
+    sc.copy(src_url, dst_url, T0)
+    _update_source(src_url, "UPDATE step_results SET ok = 0")
+    again = sc.copy(src_url, dst_url, T0)
+    assert (again["step_results"]["copied"], again["step_results"]["refreshed"]) == (0, 0)
+    dst = open_store(dst_url, T0)
+    try:
+        assert dst.query_one("SELECT ok FROM step_results") == (1,)
+    finally:
+        dst.close()
+
+
 def _update_source(src_url, sql):
     src = open_store(src_url, T0)
     try:
@@ -335,3 +391,47 @@ def test_a_password_never_reaches_output_even_when_the_copy_fails(src_url, capsy
     assert sc.main([src_url, "postgresql://user:hunter2@127.0.0.1:1/store"]) == 2
     seen = capsys.readouterr()
     assert "hunter2" not in seen.out + seen.err
+
+
+NEWEST = len(default_modules())
+
+
+def _one_additive_migration_newer(url):
+    """The store at `url` as a build one additive migration newer leaves it: a new table holding a row, a new column
+    on runs, and the schema_version row that says additive."""
+    conn = open_store(url, T0)
+    try:
+        conn.execute("CREATE TABLE newer_notes (key TEXT NOT NULL, PRIMARY KEY (key))")
+        conn.execute("INSERT INTO newer_notes (key) VALUES ('kept')")
+        conn.execute("ALTER TABLE runs ADD COLUMN newer_note TEXT NOT NULL DEFAULT ''")
+        conn.execute("INSERT INTO schema_version (version, applied_at, description) VALUES (?, ?, ?)",
+                     (NEWEST + 1, T0, "additive: newer notes"))
+    finally:
+        conn.close()
+
+
+def test_exact_refusal_takes_only_this_codes_version():
+    assert exact_refusal("source", NEWEST, NEWEST) is None
+    assert "older than" in exact_refusal("source", NEWEST - 1, NEWEST)
+    newer = exact_refusal("source", NEWEST + 2, NEWEST)
+    assert newer.startswith(f"the source store is at schema version {NEWEST + 2}, newer than the {NEWEST}")
+    assert f"migration {NEWEST + 1:04d}-{NEWEST + 2:04d}" in newer
+
+
+def test_a_copy_from_a_store_one_additive_migration_newer_is_refused_not_truncated(src_url, tmp_path, capsys):
+    _one_additive_migration_newer(src_url)
+    dst = f"sqlite:///{tmp_path / 'fresh-dst.db'}"
+    with pytest.raises(NotExactVersion, match=f"the source store is at schema version {NEWEST + 1}, newer"):
+        sc.copy(src_url, dst, T0)
+    assert not (tmp_path / "fresh-dst.db").exists()  # refused before the destination was opened
+    assert sc.main([src_url, dst]) == 2
+    err = capsys.readouterr().err
+    assert f"would drop what migration {NEWEST + 1:04d} adds" in err
+
+
+def test_a_copy_into_a_store_one_additive_migration_newer_is_refused_and_writes_no_row(src_url, tmp_path):
+    dst = f"sqlite:///{tmp_path / 'newer-dst.db'}"
+    _one_additive_migration_newer(dst)
+    with pytest.raises(NotExactVersion, match="the destination store is at schema version"):
+        sc.copy(src_url, dst, T0)
+    assert counts(dst)["runs"] == 0

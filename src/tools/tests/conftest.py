@@ -7,10 +7,15 @@ from pathlib import Path
 
 import pytest
 
+from harness import extras_tests
 from harness.serial_tests import pytest_collection_modifyitems, pytest_sessionfinish  # noqa: F401  (hooks)
 
 # sqlite is the suites' stand-in for the one real store, Postgres. Outside the suites it does not open.
 os.environ.setdefault("COXSWAIN_STORE_DOUBLE", "sqlite")
+
+
+def pytest_configure(config) -> None:
+    extras_tests.register(config)  # the extras jobs' marks and the unit jobs' skip guard
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 

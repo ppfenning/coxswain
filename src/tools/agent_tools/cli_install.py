@@ -474,15 +474,45 @@ def _edge_green(checkout: Path, slug: str, branch: str, first_parent: list[str])
     return forge_github.parse_green_shas(runs)
 
 
-def _edge_added_migrations(checkout: Path, head: str, target: str) -> tuple[str, ...] | str:
-    """Edge. The store migrations `target` adds over `head`, read from git; why not when a listing fails."""
+@dataclasses.dataclass(frozen=True)
+class _AddedMigrations:
+    """The store migrations a target commit adds over head, which of them declare `ADDITIVE = True`, and whether head
+    carries the rule that opens a store newer only by additive migrations."""
+
+    added: tuple[str, ...]
+    additive: frozenset[str]
+    tolerant: bool
+
+    @property
+    def blocking(self) -> tuple[str, ...]:
+        return upgrade_edge.blocking_migrations(self.added, self.additive, self.tolerant)
+
+
+def _edge_show(checkout: Path, sha: str, path: str) -> tuple[bool, str]:
+    """Edge. `(True, text)` of `path` at `sha`, read from git; `(False, why)` when it cannot be read."""
+    code, out = _edge_git(checkout, "show", f"{sha}:{path}")
+    return (True, out) if code == 0 else (False, f"git show {sha}:{path} exited {code}: {out.strip()}")
+
+
+def _edge_added_migrations(checkout: Path, head: str, target: str) -> _AddedMigrations | str:
+    """Edge. The store migrations `target` adds over `head`, read from git, with which are additive and whether
+    `head` tolerates them; why not when a listing or a file cannot be read."""
     listings = []
     for sha in (head, target):
         code, out = _edge_git(checkout, "ls-tree", "--name-only", sha, upgrade_edge.MIGRATIONS_DIR)
         if code != 0:
             return f"git ls-tree {sha} {upgrade_edge.MIGRATIONS_DIR} exited {code}: {out.strip()}"
         listings.append(out.splitlines())
-    return upgrade_edge.added_migrations(*listings)
+    added = upgrade_edge.added_migrations(*listings)
+    if not added:
+        return _AddedMigrations(added, frozenset(), False)
+    sources = [_edge_show(checkout, target, upgrade_edge.migration_path(n)) for n in added]
+    rule = _edge_show(checkout, head, upgrade_edge.MIGRATE_MODULE)
+    failed = next((text for ok, text in (*sources, rule) if not ok), None)
+    if failed is not None:
+        return failed
+    additive = frozenset(n for n, (_, text) in zip(added, sources, strict=True) if upgrade_edge.declares_additive(text))
+    return _AddedMigrations(added, additive, upgrade_edge.tolerates_additive(rule[1]))
 
 
 def _edge_units() -> list[str]:
@@ -545,8 +575,8 @@ def _edge_record_write(path: Path, previous: str, chosen: str, outcome: str, det
 def _upgrade_edge(a: argparse.Namespace) -> int:
     """Move an edge machine to the newest green commit on main by `_upgrade_move`, the `--to` path. When the commit
     changed: restart the running chair and lander units, then run the doctor. A failed move, restart or doctor moves
-    back to the previous commit and restarts again, unless the units ran a commit that adds store migrations (see
-    `upgrade_edge.may_roll_back`). The outcome is recorded beside the checkout, where `cox versions` shows it."""
+    back to the previous commit and restarts again, unless the units ran a commit that adds store migrations the
+    previous commit cannot open a store past (see `upgrade_edge.may_roll_back`). The outcome is recorded beside the checkout, where `cox versions` shows it."""
     resolved = _install_root(a)
     if resolved is None:
         return 2
@@ -571,13 +601,17 @@ def _upgrade_edge(a: argparse.Namespace) -> int:
         if upgrade_edge.needs_resync(verdict, _edge_venv_check(checkout)):
             return _edge_resync(a, head)
         return 0
-    added = _edge_added_migrations(checkout, head, target)
-    if isinstance(added, str):
-        print(f"refusing: {added}")
+    change = _edge_added_migrations(checkout, head, target)
+    if isinstance(change, str):
+        print(f"refusing: {change}")
         return 2
-    if added:
+    added, blocking = change.added, change.blocking
+    if blocking:
         print(f"edge: {target[:12]} adds store migrations {', '.join(added)}; a restarted unit applies them to the "
-              "store, and a failed doctor then cannot roll back past them")
+              f"store, and a failed doctor then cannot roll back past {', '.join(blocking)}")
+    elif added:
+        print(f"edge: {target[:12]} adds additive store migrations {', '.join(added)}; {head[:12]} opens a store that "
+              "has them, so a failed doctor can still roll back past them")
     units = _edge_units()
     before = _edge_unit_states(units)
     unknown = doctor.unreadable_units(units, before)
@@ -602,8 +636,8 @@ def _upgrade_edge(a: argparse.Namespace) -> int:
         print(f"edge: upgraded {head[:12]} -> {target[:12]}")
         return 0
     print(f"edge: {failure}")
-    if not upgrade_edge.may_roll_back(added, restarted):
-        detail = (f"{failure}; not rolled back to {head[:12]}: {target[:12]} adds store migrations {', '.join(added)}, "
+    if not upgrade_edge.may_roll_back(added, restarted, change.additive, change.tolerant):
+        detail = (f"{failure}; not rolled back to {head[:12]}: {target[:12]} adds store migrations {', '.join(blocking)}, "
                   f"the restarted units may have applied them, and {head[:12]} cannot open a store that has them")
         _edge_record_write(record_path, head, target, upgrade_edge.NOT_ROLLED_BACK, detail)
         print(f"edge: {detail}")

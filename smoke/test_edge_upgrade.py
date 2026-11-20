@@ -1,5 +1,5 @@
 """H5, end to end: a real `cox upgrade` on an edge machine rolls back on a failing required doctor row and not on an
-advisory one.
+advisory one, and rolls back past a store migration the newer commit adds when that migration is additive (F0).
 
 The machine is installed as `cox setup install` lays a home out (`conftest.edge_machine`): its checkout is this tree,
 cloned from the sandbox forge at the older of two commits on main, its venv synced by uv and `cox` a uv tool editable
@@ -99,3 +99,30 @@ def test_a_hand_run_upgrade_reads_the_forge_settings_from_the_units_env_file(edg
     assert f"edge: upgraded {base[:12]} -> {newer[:12]}" in output
     assert env[plan.FORGEJO_TOKEN_ENV] not in output
     assert edge_machine.head() == newer
+
+
+def test_a_failed_upgrade_rolls_back_past_an_additive_store_migration(edge_machine_additive):
+    # The newer green commit adds one store migration that declares ADDITIVE = True, and the base commit (this tree)
+    # carries the rule that opens a store newer only by additive migrations. The upgrade reads both from git, says a
+    # rollback past the migration is allowed, and a required doctor failure then rolls it back.
+    machine = edge_machine_additive
+    provider = machine.sandbox.home / ".config" / "agent-tools" / "provider.yaml"
+    provider.write_text(plan.provider_profile_text(plan.closed_port_url(machine.sandbox.store_url, _closed_port())),
+                        encoding="utf-8")
+    base, newer = machine.origin.base, machine.origin.newer
+    added = machine.sandbox.git(machine.checkout, "diff", "--name-only", base, newer)
+    assert added.startswith("src/graphs/harness/store_ddl_"), added
+    number = added.removeprefix("src/graphs/harness/store_ddl_").removesuffix(".py")
+
+    done = machine.cox("upgrade", timeout=UPGRADE_TIMEOUT_S)
+
+    output = done.stdout + done.stderr
+    assert done.returncode == 1, output
+    assert (f"edge: {newer[:12]} adds additive store migrations {number}; {base[:12]} opens a store that has them, "
+            "so a failed doctor can still roll back past them") in output
+    assert "cannot roll back past" not in output
+    assert f"edge: rolled back {newer[:12]} -> {base[:12]}" in output
+    assert machine.head() == base
+    assert not (machine.checkout / added).exists()
+    record = _record(machine)
+    assert (record["previous"], record["chosen"], record["outcome"]) == (base, newer, "rolled_back")

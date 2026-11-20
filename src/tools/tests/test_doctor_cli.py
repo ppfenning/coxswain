@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import sqlite3
 import stat
 import sys
@@ -67,6 +68,19 @@ def _make_store(workspace_dir):
     conn.close()
 
 
+def _lane_ready(bin_dir):
+    """What the smoke gate needs (`lane_prereqs`), as fake binaries: docker up with every image present, pg_dump, a
+    real-looking gh, and room: df and free report plenty. Nothing reads this machine's own memory or disk."""
+    _write_executable(bin_dir / "docker", '#!/bin/sh\n[ "$1" = info ] && echo 27.3.1\nexit 0\n')
+    _write_executable(bin_dir / "pg_dump", "#!/bin/sh\n")
+    _write_executable(bin_dir / "gh", '#!/bin/sh\necho "gh version 2.60.1 (2026-10-01)"\n')
+    _write_executable(bin_dir / "df", '#!/bin/sh\necho "tmpfs 16000000 1000 8000000 1% $2"\n')
+    for name in ("sleep", "date"):  # the probe's watchdog and clock: the real ones
+        (bin_dir / name).symlink_to(shutil.which(name) or f"/bin/{name}")
+    _write_executable(bin_dir / "free", '#!/bin/sh\necho "  total used free shared buff/cache available"\n'
+                                        'echo "Mem: 32000000 1 1 1 1 8000000"\n')
+
+
 def _good_setup(tmp_path, monkeypatch):
     cartridges_dir = tmp_path / "cartridges"; cartridges_dir.mkdir()
     skills_a = tmp_path / "skills_a"; skills_a.mkdir()
@@ -84,6 +98,7 @@ def _good_setup(tmp_path, monkeypatch):
     bin_dir = tmp_path / "bin"
     _write_executable(bin_dir / "fakeprovider", _PROVIDER.format(python=sys.executable))
     _write_executable(bin_dir / "git", _GIT)
+    _lane_ready(bin_dir)
     monkeypatch.setenv("PATH", str(bin_dir))
 
     _make_store(workspace_dir)
@@ -499,6 +514,7 @@ def test_schema_row_reads_cartridges_from_the_checkout_above_provider_profile(tm
     bin_dir = tmp_path / "bin"
     _write_executable(bin_dir / "fakeprovider", _PROVIDER.format(python=sys.executable))
     _write_executable(bin_dir / "git", _GIT)
+    _lane_ready(bin_dir)
     monkeypatch.setenv("PATH", str(bin_dir))
     _ready_home(monkeypatch, tmp_path)
 

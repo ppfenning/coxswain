@@ -143,6 +143,7 @@ into a scratch copy of the tree and confirming that they fail.
 | `test_doctor_running_install.py` | `cox setup doctor` to the interpreter running it | The `running install` row missing, or a plain install read as editable. |
 | `test_contract_store_bounds.py` | an in-process store call to a locked row | A store call with no time bound: a held row lock must end the write as `Failed` within the lock bound. Also a storage URL with its own `options`, which once replaced the lock and statement bounds instead of adding to them. |
 | `test_lander_push.py` | `cox lander adopt --apply` and `cox lander once` to a real clone of a bare origin and a Postgres store | A phase merge recorded before (or without) its push of the initiative branch, a phase rebuilt after its merge that is never merged again, and a second "merge phase" commit in the lander's clone: reset to origin's when its tree is the same, held with both commits named when it is not. All four tests failed on the tree before the fix. |
+| `test_lander_empty.py` | `cox lander adopt --apply` and `cox lander once` to a real clone of a bare origin and a Postgres store | An approved phase whose branch holds only merge commits being merged, queued to land or given a pull request, or the chair told of it more than once; and a phase with a real change no longer landing. The first test failed on the tree before the fix. |
 | `test_lander_unreadable_record.py` | `cox lander once`, `status` and `adopt` to a Postgres store holding one malformed landing record | One bad row stopping every lander pass in the store, a stall nobody is told of (or told of twice), or any reader writing into the bad row. |
 | `test_chair_dry_run_read_only.py` | `cox chair run --once --dry-run` to a Postgres store, read-only for every session and then writable | A dry run that writes: its courier read once migrated the store (a `CREATE TABLE`, refused on a read-only store) and loaded `courier.jsonl` into the empty log. `schema_version` and every table's row count must not change. Both cases failed before the fix. |
 | `test_chair_tick_cache.py` | the chair's store readers to Postgres's change counters | A quiet tick that reads the store again, or a write that re-reads readers of other tables (H6). |
@@ -189,8 +190,13 @@ macOS launchd stays an operator check: the suite runs on Linux and starts no lau
 - **CI.** The `smoke` and `smoke (forge)` jobs each have a Postgres service (the pinned image). `smoke` runs
   `-m "not forge"` and `smoke (forge)` runs `-m forge`, which starts the Forgejo container with the runner's docker.
   Both set `COX_SMOKE_POSTGRES_URL` to the service and `COX_SMOKE_REQUIRED=1`, so a missing `uv`, Postgres or docker
-  fails the job instead of skipping it. They run in parallel with the unit suites and the checks job; the required
-  `test` check passes only when every one of those jobs succeeded.
+  fails the job instead of skipping it. `smoke` is three parallel jobs, `smoke (1/3)` to `smoke (3/3)`, each with
+  `COX_SMOKE_SHARD=<k>/3`. The conftest keeps the files `plan.shard_files` puts in shard k: whole files, heaviest
+  first onto the lightest shard by the test functions each defines, so each file lands in exactly one shard and each
+  shard installs `cox` once. The split comes from the folder's files, not from one run's collection, so a nested pytest
+  a smoke test starts on its own file (`test_imports_this_tree.py`) keeps that file in its parent's shard. `tests/test_workflows.py` checks that the matrix names every shard from 1 to n. Without the variable, the
+  suite runs whole. They run in parallel with the unit suites and the checks job; the required `test` check passes
+  only when every one of those jobs succeeded.
 - **Lane checks.** `.agent-checks` runs `pytest -q -rs smoke` after the component suites. A lane host with docker
   runs it against its own container. A host with no docker on PATH skips it and prints the reason. A host whose
   `docker` is on PATH but whose daemon does not answer fails, because that is a host fault a skip would hide. Set

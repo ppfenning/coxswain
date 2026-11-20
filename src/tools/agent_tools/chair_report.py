@@ -11,6 +11,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
+from agent_tools import lane_prereqs
 from agent_tools.chair_exec import LAUNCH_KINDS, Result
 from agent_tools.chair_land_freeze import LandFreeze, status_text
 from agent_tools.chair_read_quarantined import RUNAWAY_CAUSE
@@ -105,16 +106,19 @@ def _needs_scope(action: Action) -> str:
 
 def needs_chair_items(actions: Sequence[Action]) -> list[str]:
     """Runaway-ceiling entries first, each bare (`RUNAWAY <scope>`); then `needs chair: <scope>:<cause>`, a held file's
-    scope being its path; then one `needs chair: <scope>:deferred_land_deadlock <reason>` per deadlock; then a `partial-land:` per partial_land."""
+    scope being its path; then one `needs chair: <scope>:deferred_land_deadlock <reason>` per deadlock; then one
+    `needs chair: <host>:lane_prereqs <failing checks>` per host placement skips; then a `partial-land:` per partial_land."""
     chair_actions = [a for a in actions if a.get("kind") == "needs_chair"]
     runaway = [a for a in chair_actions if a.get("cause") == RUNAWAY_CAUSE]
-    rest = [a for a in chair_actions if a.get("cause") not in (RUNAWAY_CAUSE, DEADLOCK_CAUSE)]
+    rest = [a for a in chair_actions if a.get("cause") not in (RUNAWAY_CAUSE, DEADLOCK_CAUSE, lane_prereqs.CAUSE)]
     deadlock = [a for a in chair_actions if a.get("cause") == DEADLOCK_CAUSE]
+    lane = [a for a in chair_actions if a.get("cause") == lane_prereqs.CAUSE]
     partial = [a for a in actions if a.get("kind") == "partial_land"]
     return (
         [f"RUNAWAY {_scope(a)}" for a in runaway]
         + [f"needs chair: {_needs_scope(a)}:{a.get('cause', '?')}" for a in rest]
         + [f"needs chair: {_scope(a)}:{DEADLOCK_CAUSE} {a.get('reason', '')}" for a in deadlock]
+        + [f"needs chair: {a.get('host', '?')}:{lane_prereqs.CAUSE} {a.get('reason', '')}" for a in lane]
         + [partial_land_text(a) for a in partial]
     )
 
