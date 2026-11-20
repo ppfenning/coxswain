@@ -411,6 +411,17 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", f"{plan.FORGE_MARK}: needs the sandbox forge, a Forgejo container (docs/smoke.md)")
 
 
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Fail collection when a test's forge mark and its forge fixtures disagree; `fixturenames` is the full closure."""
+    lines = [
+        line
+        for item in items
+        if (line := plan.forge_mark_refusal(item.nodeid, item.fixturenames, item.get_closest_marker(plan.FORGE_MARK) is not None))
+    ]
+    if lines:
+        raise pytest.UsageError("\n".join(lines))
+
+
 def _free_port() -> int:
     """A loopback port nothing listens on now. Forgejo's ROOT_URL must name its published port, so the port is chosen
     before the container starts; a process that takes it in between fails the start, loudly."""
