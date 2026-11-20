@@ -148,7 +148,7 @@ _UNREADABLE = "?"  # what a quoted identifier that is not a plain word becomes: 
 _ESCAPE = "\x02"  # what an E'...' literal's opening becomes
 _OPEN, _CLOSE = "\x00", "\x01"  # around a dollar-quoted body
 _BODY = re.compile(f"{_OPEN}.*?{_CLOSE}", re.DOTALL)
-_BEGIN_END = re.compile(r"\bBEGIN\b.*\bEND\b", re.DOTALL)  # a trigger's (or a SQL-standard function's) body
+_BLOCK_WORD = re.compile(r"\b(BEGIN|CASE|END)\b")  # what opens and closes a trigger's or function's body
 _TABLE = r"(?:\w+\.)?(\w+)"  # an optionally schema-qualified table name; group: the table
 _ALTER = re.compile(rf"^\s*ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?{_TABLE}\s+(\S.*)$", re.DOTALL)
 _CREATED = re.compile(rf"^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?{_TABLE}\s*\(")
@@ -212,8 +212,24 @@ def _several(code: str, kind: str | None) -> bool:
     trigger's or function's BEGIN ... END, other than one trailing. Postgres runs every statement in such a string."""
     top = _BODY.sub(" ", code)
     if kind in ("trigger", "function"):
-        top = _BEGIN_END.sub(" ", top)
+        top = _without_first_block(top)
     return ";" in top.rstrip().removesuffix(";")
+
+
+def _without_first_block(code: str) -> str:
+    """`code` with its first BEGIN ... END body cut out, the END being the one that closes that BEGIN (each BEGIN or
+    CASE inside opens one more level, each END closes one). Unchanged when no BEGIN or no closing END is found, so
+    the body's own `;` then still count: an unbalanced body fails closed."""
+    depth, start = 0, -1
+    for m in _BLOCK_WORD.finditer(code):
+        if start < 0:
+            if m.group(1) == "BEGIN":
+                depth, start = 1, m.start()
+            continue
+        depth += -1 if m.group(1) == "END" else 1
+        if depth == 0:
+            return f"{code[:start]} {code[m.end():]}"
+    return code
 
 
 def _actions(clauses: str) -> list[str]:

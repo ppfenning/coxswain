@@ -512,6 +512,14 @@ def test_additive_ddl_has_no_violation():
                  id="after-a-function-body"),
     pytest.param("INSERT INTO notes VALUES ($tag$ $$; $tag$); CREATE UNIQUE INDEX u ON hosts (name)",
                  "several statements in one string", id="tagged-dollar-holding-dollars"),
+    pytest.param("CREATE FUNCTION g() RETURNS int LANGUAGE sql BEGIN ATOMIC SELECT 1; END; "
+                 "CREATE VIEW v AS SELECT CASE WHEN true THEN 1 END", "several statements in one string",
+                 id="after-an-atomic-body-ending-in-case-end"),
+    pytest.param("CREATE TRIGGER t AFTER INSERT ON runs BEGIN INSERT INTO notes VALUES (NEW.run_id); END; "
+                 "CREATE VIEW v AS SELECT CASE WHEN 1 THEN 1 END", "several statements in one string",
+                 id="after-a-sqlite-trigger-body-ending-in-case-end"),
+    pytest.param("CREATE TRIGGER t AFTER INSERT ON runs BEGIN INSERT INTO notes VALUES (NEW.run_id); "
+                 "INSERT INTO notes VALUES (NEW.host);", "several statements in one string", id="unclosed-trigger-body"),
     # A Postgres escape string's backslashes are not read, so it is refused rather than misread.
     pytest.param("ALTER TABLE hosts ADD COLUMN a TEXT DEFAULT E'\\'', ADD COLUMN b TEXT NOT NULL",
                  "escape-string literal", id="escape-string"),
@@ -524,6 +532,10 @@ def test_a_non_additive_statement_is_named(sql, reason):
 
 def test_a_trigger_or_function_body_may_hold_semicolons_and_is_still_scanned():
     assert additive_violations((NOTES, TRIGGER, FUNCTION + ";"), {"trigger": WHY, "function": WHY}) == ()
+    nested = ("CREATE TRIGGER t2 AFTER INSERT ON runs BEGIN INSERT INTO notes VALUES "
+              "(CASE WHEN NEW.run_id = '' THEN 'x' ELSE NEW.run_id END); END;")
+    atomic = "CREATE FUNCTION g() RETURNS int LANGUAGE sql BEGIN ATOMIC SELECT CASE WHEN true THEN 1 END; END"
+    assert additive_violations((NOTES, nested, atomic), {"trigger": WHY, "function": WHY}) == ()
     hidden = FUNCTION.replace("RETURN NEW;", "DELETE FROM notes; RETURN NEW;")
     assert additive_violations((NOTES, hidden), {"function": WHY}) == ("statement 2 has DELETE",)
 
