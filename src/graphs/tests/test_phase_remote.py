@@ -352,3 +352,27 @@ def test_a_checked_out_initiative_branch_is_not_reset_under_its_files(tmp_path: 
 
     assert settled.kind == Kind.DIVERGED and "checked out" in settled.detail
     assert git("rev-parse", f"refs/heads/{INIT}", cwd=lane) == local
+
+
+def test_the_same_tree_is_not_reset_when_origin_lacks_a_commit_the_record_names() -> None:
+    assert diverged_action("t1", "t1", origin_holds_record=False) == "alarm"
+
+
+def test_a_record_that_names_this_clones_own_merge_commit_keeps_it_even_with_the_same_tree(tmp_path: Path) -> None:
+    """A record written before every merge was pushed may name the lane's merge commit, not origin's."""
+    lane, local, origin_tip = _two_merges(tmp_path, same_work=True)
+    fetch_branch(lane, INIT)
+
+    settled = settle_diverged(lane, INIT, [git("rev-parse", f"{origin_tip}^1", cwd=lane), local])
+
+    assert settled.kind == Kind.DIVERGED_CONTENT and settled.detail.startswith("needs the chair:")
+    assert f"origin's lacks recorded commit(s) {local[:12]}" in settled.detail and origin_tip[:12] in settled.detail
+    assert git("rev-parse", f"refs/heads/{INIT}", cwd=lane) == local, "the recorded commit stays on this clone's branch"
+
+
+def test_a_record_origin_holds_still_resets_the_same_tree(tmp_path: Path) -> None:
+    lane, _, origin_tip = _two_merges(tmp_path, same_work=True)
+    fetch_branch(lane, INIT)
+
+    assert settle_diverged(lane, INIT, [origin_tip]).kind == Kind.RESET
+    assert git("rev-parse", f"refs/heads/{INIT}", cwd=lane) == origin_tip

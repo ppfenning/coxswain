@@ -217,7 +217,7 @@ def test_a_branch_only_origin_has_is_brought_here_at_its_tip_and_nothing_is_push
     # `fetch_branch` brings origin's copy here before `branch_source` is read, so it is used as the local copy.
     assert not any("made here" in e or "the one every host uses" in e for e in outcome.events), "never recreated"
     assert run(hosts.home, "rev-parse", "init/i^1") == published, "p2 merged onto origin's tip"
-    assert ("push", "init/i") not in hosts.forge.calls, "adopt does not push a copy that holds the record"
+    assert hosts.forge.calls.count(("push", "init/i")) == 1, "adopt pushes nothing; p2's merge is pushed once, by the forge"
     assert run(hosts.origin, "rev-parse", "refs/heads/init/i") == run(hosts.home, "rev-parse", "init/i"), "p2's merge is pushed"
     assert merge_sha(hosts, "p1") == published
 
@@ -509,3 +509,24 @@ def test_a_lander_copy_diverged_with_other_work_holds_and_names_both_commits(hos
     reason = str(hosts.notes[0][1]["reason"])
     assert "needs the chair" in reason and local[:12] in reason and published[:12] in reason
     assert lg.rev(hosts.home, "refs/heads/init/i") == local and origin_tip(hosts) == published, "neither copy is moved"
+
+
+def test_a_push_is_done_once_origin_holds_the_local_tip() -> None:
+    assert lander.origin_holds("abc", "abc")
+    assert not lander.origin_holds("abc", None), "origin has no such branch yet"
+    assert not lander.origin_holds("abc", "old"), "a forge that kept the branch local"
+    assert lander.origin_holds(None, None), "nothing here to push"
+
+
+def test_the_merge_push_goes_through_the_forge_and_a_forge_that_keeps_the_branch_local_is_followed_by_git(hosts: Hosts) -> None:
+    """The forge's push first (Forgejo waits there for the server to show the branch); the local forge, which keeps
+    an initiative branch local until it merges, is followed by a plain push, so failure 1 does not come back."""
+    hosts.lane_starts([task("a", "p1")])
+    hosts.lane_builds("p1")
+    hosts.ports.forge = local = Forge()  # pushes nothing, as forge_local
+
+    done = lander_merges(hosts, "p1")
+
+    assert done.status == "done", done.detail
+    assert ("push", "init/i") in local.calls, "the forge port was asked first"
+    assert merge_sha(hosts, "p1") == origin_tip(hosts), "origin holds the merge all the same"

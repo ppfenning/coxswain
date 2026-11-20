@@ -167,9 +167,13 @@ The lander works a queue in the store with two kinds of item:
 Every move of an initiative branch is made under one store lease per initiative, after a fetch, and every phase merge
 is pushed before it is recorded, whatever `push_initiative` says, so two hosts never fork it: origin's copy is the one
 every host reads. A clone whose copy has diverged from origin's with the same tree (a second "merge phase" commit of
-work origin already holds) is reset to origin's, by the lander and by a build run's parent-phase check alike. A copy
-that diverged with a different tree is left as it is: the lander holds the initiative and tells the chair once, and a
-build run's phase stops with "needs the chair", both naming the two commits. The two kinds have separate caps (`landing_areas.phase_cap`, default 2, and `landing_areas.land_cap`, default 1)
+work origin already holds) is reset to origin's, by the lander and by a build run's parent-phase check alike, but
+only when origin's tip holds every commit the landing record names: a record written before this rule may name the
+clone's own merge commit. A copy that diverged with a different tree, or whose record origin lacks, is left as it is:
+the lander holds the initiative, a build run's phase stops with "needs the chair", and either tells the chair once per
+pair of commits, naming both. The pushes go through the forge (Forgejo's push waits for the server to show the
+branch); when origin still lacks the tip afterwards, as with the local forge, which keeps the branch local, a plain
+fast-forward `git push` follows. The two kinds have separate caps (`landing_areas.phase_cap`, default 2, and `landing_areas.land_cap`, default 1)
 and neither counts against the launch cap. An item open for an hour is told to the chair once; a pull request waiting
 for a person never is. `cox lander status` shows every initiative in flight and every item with its age.
 

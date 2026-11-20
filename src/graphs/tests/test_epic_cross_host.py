@@ -14,6 +14,7 @@ from typing import NamedTuple
 import pytest
 
 import harness.epic as epic
+from harness import epic_branches
 from harness.phase_remote import FetchOutcome, Kind, missing_branch_cause
 from harness.store_migrate import open_store
 from harness.store_write import Store
@@ -116,7 +117,7 @@ def test_at_initiative_a_parent_check_that_finds_its_branch_diverged_with_the_sa
     assert is_ancestor(hosts.b, origin_tip, P2_BRANCH) and not is_ancestor(hosts.b, local, P2_BRANCH)
 
 
-def test_at_initiative_a_parent_check_that_finds_its_branch_diverged_with_other_work_stops_for_the_chair(hosts, cart, tmp_path) -> None:  # noqa: F811
+def test_at_initiative_a_parent_check_that_finds_its_branch_diverged_with_other_work_stops_for_the_chair(hosts, cart, tmp_path, _courier_sends_are_recorded) -> None:  # noqa: F811
     store = _shared_store()
     first, _ = drive(hosts.a, cart, tmp_path, work=initiative(two_phases=False), run_id="epic-a", store=store)
     origin_tip = git("rev-parse", INIT_BRANCH, cwd=hosts.origin)
@@ -129,6 +130,42 @@ def test_at_initiative_a_parent_check_that_finds_its_branch_diverged_with_other_
     assert local[:12] in record["reason"] and origin_tip[:12] in record["reason"]
     assert not any(c["role"] == "build" for c in runner.calls)
     assert git("rev-parse", INIT_BRANCH, cwd=hosts.b) == local, "neither copy is moved"
+    told = [c for c in _courier_sends_are_recorded if c[2].startswith("needs_chair:")]
+    assert told == [(f"coxswain://initiative/{INITIATIVE}", "chair", f"needs_chair: {INITIATIVE}: {record['reason']}")]
+
+    again, _ = drive(hosts.b, hosts.cart_b, hosts.home_b, work=staged(), only_phases=[P2], run_id="epic-b2", store=store)
+
+    assert again["phases"][0]["reason"] == record["reason"], "the phase still stops"
+    assert [c for c in _courier_sends_are_recorded if c[2].startswith("needs_chair:")] == told, "told once, not every run"
+
+
+def test_a_lane_divergence_is_news_only_with_a_reason_not_told_before() -> None:
+    assert epic_branches.diverged_news(None, "needs the chair: a")
+    assert not epic_branches.diverged_news("needs the chair: a", "needs the chair: a")
+    assert epic_branches.diverged_news("needs the chair: a", "needs the chair: b"), "another pair of commits"
+
+
+def test_at_initiative_a_lane_whose_record_names_its_own_merge_does_not_reset_it_and_tells_the_chair(hosts, cart, tmp_path, _courier_sends_are_recorded) -> None:  # noqa: F811
+    """Same tree as origin's, but the record (written before every merge was pushed) names this clone's merge commit.
+    The parent check finds the recorded merge here, so the phase builds; its merge then meets origin's copy."""
+    from harness import landing_store
+
+    store = _shared_store()
+    first, _ = drive(hosts.a, cart, tmp_path, work=initiative(two_phases=False), run_id="epic-a", store=store)
+    local = _second_merge_on_b(hosts, first, extra=None)
+    record = landing_store.get_record(store.conn, INITIATIVE)
+    entry = {**record["phases"][P1], "merge_sha": local}
+    landing_store.put_record(store.conn, {**record, "phases": {**record["phases"], P1: entry}})
+
+    result, runner = drive(hosts.b, hosts.cart_b, hosts.home_b, work=staged(), only_phases=[P2], run_id="epic-b", store=store)
+
+    (phase,) = result["phases"]
+    merge = phase["initiative_merge"]
+    assert phase["status"] == "awaiting_land" and merge["status"] == "error"
+    assert "needs the chair:" in merge["detail"] and f"lacks recorded commit(s) {local[:12]}" in merge["detail"]
+    assert git("rev-parse", INIT_BRANCH, cwd=hosts.b) == local, "the recorded merge commit is not dropped"
+    told = [c for c in _courier_sends_are_recorded if c[2].startswith("needs_chair:")]
+    assert len(told) == 1 and f"lacks recorded commit(s) {local[:12]}" in told[0][2]
 
 
 def test_at_initiative_a_parent_merged_nowhere_blocks_the_named_phase(hosts) -> None:

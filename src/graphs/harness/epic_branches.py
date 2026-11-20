@@ -15,7 +15,7 @@ from core import landing_record, workstore
 from core.jsontypes import is_mapping
 from core.landing import TemplateError, initiative_branch_name, pr_branch_name, resolve_push_initiative
 from core.landing_record import INTEGRATE_PHASE
-from harness import bounded_proc, landing_git, landing_ops, landing_store
+from harness import bounded_proc, courier_adapter, landing_git, landing_ops, landing_store
 from harness.check_gate import gate_commands, repo_gate_lock
 from harness.checks import outside_surface_files, run_checks
 from harness.digest import build_digest
@@ -515,14 +515,47 @@ def fetch_initiative_branch(ctx: Ctx, branch: str) -> FetchOutcome:
     """Edge. This clone's initiative branch, brought up to origin's copy. Every merge into it is pushed before it is
     recorded, so origin's copy is the one: a copy here that diverged from it with the same tree (a second merge commit
     of the same work) is reset to origin's, and one with a different tree comes back DIVERGED_CONTENT, naming both
-    commits, for the chair."""
+    commits, for the chair, who is told once (`tell_diverged`). A copy that is the same tree but whose origin copy
+    lacks a commit the landing record names counts as different: the record may name this clone's merge commit."""
     outcome = fetch_phase_branches(ctx, [branch])[branch]
     if outcome.kind != Kind.DIVERGED:
         return outcome
-    settled = settle_diverged(ctx.repo, branch)
+    try:
+        record = landing_store.get_record(ctx.store.conn, ctx.initiative_id) if ctx.store is not None else None
+    except Exception as exc:
+        return FetchOutcome(Kind.DIVERGED, f"{outcome.detail}; the landing record could not be read to settle it: {type(exc).__name__}: {exc}")
+    settled = settle_diverged(ctx.repo, branch, landing_record.recorded_shas(record) if record else ())
     if settled.kind == Kind.RESET:
         print(f"  {settled.detail}")
+    elif settled.kind == Kind.DIVERGED_CONTENT:
+        tell_diverged(ctx, branch, settled.detail)
     return settled
+
+
+LANE_DIVERGED_KEY = "lane_diverged:"  # the lander_notices key prefix of a lane's diverged initiative branch
+
+
+def diverged_news(told: str | None, detail: str) -> bool:
+    """Pure. Whether a lane's divergence is news for the chair: not told before with this same reason. The reason
+    names both commits, so a copy that diverged again, or another host's copy, is told once more."""
+    return told != detail
+
+
+def tell_diverged(ctx: Ctx, branch: str, detail: str) -> None:
+    """Edge. Raise needs_chair for this clone's diverged initiative branch, once per reason, as the lander does: the
+    memory is the store's `lander_notices`, written only once the courier took the note. Best effort: a store or
+    courier that fails leaves the phase's stop reason, which says the same, and the next run tries again."""
+    if ctx.store is None:
+        return
+    key = f"{LANE_DIVERGED_KEY}{ctx.initiative_id}:{branch}"
+    try:
+        conn = ctx.store.conn
+        if not diverged_news(landing_store.told(conn, key).get(key), detail):
+            return
+        if courier_adapter.send(f"coxswain://initiative/{ctx.initiative_id}", "chair", f"needs_chair: {ctx.initiative_id}: {detail}"):
+            landing_store.remember(conn, key, detail, utc_now())
+    except Exception as exc:
+        print(f"  the chair was not told of the divergence of {branch}: {type(exc).__name__}: {exc}")
 
 
 def parent_gap(ctx: Ctx, parent: str, items: Sequence[Mapping[str, object]]) -> tuple[str, str] | None:

@@ -340,7 +340,9 @@ def resolve_on_blocked(cartridge: Mapping[str, object], initiative_value: object
 
 
 def resolve_push_initiative(cartridge: Mapping[str, object]) -> str:
-    """`at_pr` (the initiative branch is first pushed when its pull request opens) or `early` (after every phase merge)."""
+    """`at_pr` or `early`: whether a newly cut initiative branch, before any phase merges into it, is pushed at once
+    (`early`) or left to its first merge (`at_pr`). Every merge into the branch (a phase, the parent taken forward) is
+    pushed before it is recorded whatever this says, so after the first merge the two values behave the same."""
     return _one_of(_landing(cartridge).get("push_initiative"), PUSH_INITIATIVE_VALUES, DEFAULT_PUSH_INITIATIVE,
                    "landing_areas.push_initiative")
 

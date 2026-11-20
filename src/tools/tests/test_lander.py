@@ -212,7 +212,7 @@ def test_four_phases_in_three_waves_give_exactly_one_pull_request_from_the_initi
     creates = [c for c in world.forge.calls if c[0] == "pr_create"]
     assert creates == [("pr_create", "init/i", "main", "Title of i")]
     assert all("p1" not in str(c) and "epic/" not in str(c) for c in world.forge.calls if c[0] in ("pr_create", "push", "merge"))
-    assert [c for c in world.forge.calls if c[0] == "push"] == [("push", "init/i")], "pushed once, when the pull request opens"
+    assert {c for c in world.forge.calls if c[0] == "push"} == {("push", "init/i")}, "only the initiative branch is pushed: at each phase merge, and at the pull request"
     assert {r["id"]: r["state"] for r in world.rows["i"]} == {"a": "done", "b": "done", "c": "done", "d": "done"}
     assert all(r["pr"] == "https://forge.example/pull/1" for r in world.rows["i"])
     record = world.record("i")
@@ -261,7 +261,7 @@ def test_behind_a_person_gate_the_pull_request_opens_and_waits_and_nothing_merge
     assert "merge" not in world.forge.kinds() and "poll_checks" not in world.forge.kinds()
     assert world.record("i")["state"] == "pr_open" and world.rows["i"][0]["state"] == "approved"
     lander.run_once(world.ports)
-    assert world.forge.kinds().count("pr_create") == 1 and world.forge.kinds().count("push") == 1
+    assert world.forge.kinds().count("pr_create") == 1 and world.forge.kinds().count("push") == 2, "the phase merge, then the pull request"
     world.forge.person_merges(world.repo, "init/i")
     lander.run_once(world.ports)
     assert world.rows["i"][0]["state"] == "done" and world.record("i")["state"] == "landed"
@@ -339,7 +339,7 @@ def test_a_conflict_with_the_parent_goes_back_to_build_in_an_integrate_phase_and
     commit(world.repo, "main", "shared.txt", "one\nTWO from main\nthree\n")
     out = lander.run_once(world.ports)[-1]
     assert out.status == "failed" and "conflicted in shared.txt" in out.detail
-    assert world.forge.calls == [], "nothing reached the forge"
+    assert [c for c in world.forge.calls if c != ("push", "init/i")] == [], "nothing but the phase merge's push reached the forge"
     [(_, phase, title, _body)] = world.rectified
     assert phase == "integrate" and title == "Integrate with main: resolve the conflicts"
     assert "<<<<<<<" in run(world.repo, "show", "epic/i/integrate:shared.txt")
@@ -378,7 +378,7 @@ def test_with_hold_the_built_phases_merge_and_free_their_files_and_the_operator_
     assert lr.merged_tasks(world.record("aim"), world.rows["aim"]) == ["a", "b", "c"], "merged work holds no files"
     assert [n[0] for n in world.notes] == ["blocked"], "told once, not every pass"
     assert world.notes[0][1]["choices"][0].startswith("split")
-    assert world.forge.calls == [] and world.splits == []
+    assert {c[0] for c in world.forge.calls} <= {"push"} and world.splits == [], "only the merged phases were pushed"
 
 
 def test_with_split_a_quarantined_integrate_task_is_held_and_never_moved_to_a_follow_up(tmp_path: Path) -> None:
@@ -440,7 +440,7 @@ def test_the_caps_are_separate_a_full_land_cap_does_not_delay_a_phase_merge(worl
     assert [(o.item, o.status) for o in outcomes] == [("phase_merge:i:p1", "done")]
     outcomes = lander.run_once(world.ports, phase_cap=2, land_cap=0)
     assert [(o.item, o.status) for o in outcomes] == [("phase_merge:i:p2", "done")]
-    assert world.forge.calls == [] and ls.get_item(world.conn, "initiative_land:i")["state"] == "queued"
+    assert {c[0] for c in world.forge.calls} <= {"push"} and ls.get_item(world.conn, "initiative_land:i")["state"] == "queued"
 
 
 def test_phase_merges_left_waiting_do_not_use_the_cap_so_later_ones_still_get_their_turn(world: World, monkeypatch) -> None:
@@ -492,7 +492,7 @@ def test_work_contract_one_pull_request_per_initiative_nothing_per_phase_and_no_
     for call in world.forge.calls:
         assert call[0] in ("pr_create", "push"), f"unexpected forge call {call}"
         assert not any(p in str(call[1:]) for p in ("epic/", *phases)), f"a phase reached the forge: {call}"
-    assert sorted(c[1] for c in world.forge.calls if c[0] == "push") == ["fix/412-export-csv", "fix/413-import-csv"]
+    assert sorted({c[1] for c in world.forge.calls if c[0] == "push"}) == ["fix/412-export-csv", "fix/413-import-csv"]
     assert "Closes #412" in world.forge.prs["fix/412-export-csv"]["body"]
     assert "merge" not in world.forge.kinds(), "the merge waits for a person"
     assert all(r["state"] == "approved" for name in ("export-csv", "import-csv") for r in world.rows[name])
@@ -615,6 +615,7 @@ def test_disjoint_initiatives_land_together_each_through_its_own_pull_request_wi
     gate_runs: list[str] = []
     real = world.ports.checks
     world.ports.checks = lambda repo, tree, gate: (gate_runs.append(gate), real(repo, tree, gate))[1]
+    world.forge.calls.clear()  # the phase merges' own pushes: what follows is the land's
 
     outcomes = lander.run_once(world.ports, land_cap=1, land_batch_size=4)
 

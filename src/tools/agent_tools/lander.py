@@ -516,7 +516,7 @@ def _rebuild(ports: Ports, repo: Path, record: lr.LandingRecord, branch: str) ->
     initiative = record_text(record, "initiative")
     events: list[str] = []
     if diverged := ports.fetch(repo, branch):
-        settled = settle_diverged(repo, branch)
+        settled = settle_diverged(repo, branch, lr.recorded_shas(record))
         if settled.kind != Kind.RESET:
             # Different work under one name: only a person can say which is right. Held, and the chair told once.
             alarm = settled.kind == Kind.DIVERGED_CONTENT
@@ -649,13 +649,14 @@ def merge_phase(ports: Ports, initiative: str, phase: str) -> Outcome:
     pushed_note: list[str] = []
 
     def publish(branch: str) -> str | None:
-        # Every merge is pushed, whatever `push_initiative` says, and before it is recorded (`ops.after_push`): the
-        # lander is the one host that merges into the branch, so origin's copy is the one every lane builds on.
-        pushed, why = push_branch(repo, branch)
-        if pushed and why != "no origin":
+        # Every merge is pushed, whatever `push_initiative` says, and before it is recorded (`ops.after_push`): origin's
+        # copy is the one every lane builds on. The forge pushes first (Forgejo's wait for the server to show the
+        # branch is kept); a forge that keeps the branch local (the local forge) is followed by a plain git push.
+        why = publish_initiative(ports, repo, branch)
+        if why is None and lg.git(repo, "remote", "get-url", "origin")[0]:
             tip = lg.rev(repo, f"refs/heads/{branch}") or ""
             pushed_note.append(f"{branch} pushed to origin at {tip[:12]} before phase {phase} was recorded merged")
-        return None if pushed else f"push of {branch} to origin failed: {why.splitlines()[0] if why else 'no detail from git'}"
+        return why
 
     done = ops.merge_phase(ports.conn, repo, initiative=initiative, phase=phase, tasks=tasks, worker=ports.worker,
                            now=ports.now(), checks=_level_checks(ports, repo, record, phase),
@@ -674,6 +675,29 @@ def merge_phase(ports: Ports, initiative: str, phase: str) -> Outcome:
                                      parent=str(record.get("parent") or ""), now=ports.now(), reason="last phase merged"):
         events.append(f"{initiative} is assembled: queued to land on {record.get('parent')}")
     return Outcome("done", ident, events[len(adopted)], tuple(events))
+
+
+def origin_holds(local_tip: str | None, origin_tip: str | None) -> bool:
+    """Pure. Whether origin's copy of a branch is the local tip, so a push is done. A branch with no local tip has
+    nothing to push."""
+    return local_tip is None or local_tip == origin_tip
+
+
+def publish_initiative(ports: Ports, repo: Path, branch: str) -> str | None:
+    """Edge. Push `branch` through the forge, then make sure origin holds its tip: a forge that keeps an initiative
+    branch local until it merges (the local forge) is followed by a plain fast-forward push. None once origin holds
+    it (or there is no origin), else why not."""
+    pushed, why = ports.forge.push(repo, branch)
+    if not pushed:
+        return f"push of {branch} to origin failed: {why.splitlines()[0] if why else 'no detail from the forge'}"
+    if not lg.git(repo, "remote", "get-url", "origin")[0]:
+        return None
+    local = lg.rev(repo, f"refs/heads/{branch}")
+    ok, out = lg.git(repo, "ls-remote", "origin", f"refs/heads/{branch}")
+    if ok and origin_holds(local, out.split()[0] if out.split() else None):
+        return None
+    pushed, why = push_branch(repo, branch)
+    return None if pushed else f"push of {branch} to origin failed: {why.splitlines()[0] if why else 'no detail from git'}"
 
 
 def _send_back(ports: Ports, record: lr.LandingRecord, phase: str, done: ops.PhaseMerge) -> list[str]:
@@ -1379,7 +1403,7 @@ def _repair(ports: Ports, repo: Path, record: lr.LandingRecord, repairs: Sequenc
     elif local != start:
         # Diverged. The same tree is a second merge commit of what origin holds: reset to origin's and repair there.
         lg.git(repo, "update-ref", fetched_ref(branch), start)
-        settled = settle_diverged(repo, branch)
+        settled = settle_diverged(repo, branch, lr.recorded_shas(record))
         if settled.kind == Kind.DIVERGED_CONTENT:
             return Judgement(reason=settled.detail)
         if settled.kind != Kind.RESET:
