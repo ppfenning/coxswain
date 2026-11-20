@@ -24,6 +24,7 @@ from agent_tools.chair_decompose_miss import DecomposeMiss, escalation_reason, i
 from agent_tools.chair_idle_ready import plan_idle_ready
 from agent_tools.chair_idle_stall import diagnose, is_stalled
 from agent_tools.chair_no_progress import plan_no_progress
+from agent_tools.chair_phase_queue import plan as plan_phase_queue
 from agent_tools.chair_plan_fill import (
     HostSlot,
     best_host,
@@ -1484,6 +1485,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         *land.deadlock_chair,
         *land.carries,
         *launch.launches,
+        *plan_phase_queue(basis.facts),  # phase-model initiatives: the queue a worker claims from, never a launch
         *quarantine.widen,
         *housekeeping.login_needs_chair,
         *decompose.empty_needs_chair,

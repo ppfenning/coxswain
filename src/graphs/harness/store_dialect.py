@@ -84,10 +84,18 @@ class Dialect:
     placeholder: str
     json_type: str
     bool_type: str  # booleans are stored as 0/1 in this column type on every engine
+    # The suffix that locks the rows a SELECT returns and skips the rows another transaction holds. Postgres only:
+    # sqlite's BEGIN IMMEDIATE already serialises every writer, so its suffix is empty.
+    skip_locked: str = ""
+    # The store's own clock as UTC text `YYYY-MM-DD HH:MM:SS[.ffffff]`; `store_phases.store_now` cuts it to a stamp.
+    now_sql: str = "SELECT CURRENT_TIMESTAMP"
 
 
 SQLITE = Dialect(name="sqlite", placeholder="?", json_type="TEXT", bool_type="SMALLINT")
-POSTGRES = Dialect(name="postgres", placeholder="%s", json_type="JSONB", bool_type="SMALLINT")
+POSTGRES = Dialect(
+    name="postgres", placeholder="%s", json_type="JSONB", bool_type="SMALLINT", skip_locked=" FOR UPDATE SKIP LOCKED",
+    now_sql="SELECT CAST(CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AS TEXT)",
+)
 
 # Token to report, pattern that finds it. Order is the report order.
 # REPLACE INTO is sqlite's alias for INSERT OR REPLACE, so it reports under that token.

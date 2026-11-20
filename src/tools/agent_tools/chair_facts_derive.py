@@ -1338,7 +1338,9 @@ def gather_facts(
         "stranded": stranded_facts(approved, list(deps.run_commits()), list(deps.phase_state())),
         "phase_branches": phase_branch_facts(list(deps.branch_counts())),
         "landing": list(deps.landing()) if deps.landing is not None else [],
-        "idle_stall": less_phase_ready(deps.idle_stall(now), initiatives),
+        # The whole docket, not `initiatives`: those leave out an initiative with a live run, and a phase initiative
+        # has one while a worker runs one of its phases, so its other ready tasks would read as idle work.
+        "idle_stall": less_phase_ready(deps.idle_stall(now), ready),
         "stall_alarm": stall_facts(
             resolve_settings(deps.stall_alarm() if deps.stall_alarm is not None else None),
             landing_records, [action_doc(row) for row in action_rows],
@@ -1373,6 +1375,8 @@ def gather_facts(
         facts["host_load_ceiling"] = ceiling
     if deps.phase_records is not None:
         facts["phase_records"] = list(deps.phase_records(approved))
+    if deps.phase_queue is not None and (stored_queue := deps.phase_queue()) is not None:
+        facts["phase_queue"] = stored_queue
     if deps.live_phases is not None:
         facts["live_phases"] = [LivePhase(initiative=i, phase=p) for i, p in live_phase_pairs]
     if deps.tickets is not None:

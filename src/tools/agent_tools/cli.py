@@ -797,6 +797,9 @@ def build_parser() -> argparse.ArgumentParser:
     group, rows = _table_entry("lander")
     commands.build_parser(rows, [group], sub)
 
+    group, rows = _table_entry("worker")
+    commands.build_parser(rows, [group], sub)
+
     group, rows = _table_entry("host")
     commands.build_parser(rows, [group], sub)
 
@@ -1568,6 +1571,38 @@ LANDER_COMMANDS = [
     ),
 ]
 
+_WORKER_ARGS = (
+    commands.Arg(("--name",), {"help": "the worker's name, its hosts row's (default: this machine's hostname)"}),
+    commands.Arg(("--capability",), {"action": "append", "metavar": "TOKEN",
+                                     "help": "a capability the operator declares, e.g. os:macos or toolchain:go; repeatable"}),
+    commands.Arg(("--lanes",), {"type": int, "help": "phases it runs at once (default: its hosts row's capacity, else 1)"}),
+    _PROFILE_ARG,
+)
+WORKER_GROUP = commands.Group(
+    name="worker", help="the phase worker: claims ready phases from the phase queue and runs them here",
+    description=(
+        "The phase worker. The chair queues each ready phase of a phase-model initiative; a worker claims the next one "
+        "it qualifies for, runs it through the harness on this machine, and keeps its claim alive while it runs.\n"
+        "Nothing reaches a worker over ssh: it pulls."
+    ),
+    epilog="examples:\n  cox worker status\n  cox worker once\n  cox worker run --capability os:macos",
+)
+WORKER_COMMANDS = [
+    commands.Command(
+        "run", "worker", "claim and run phases until interrupted", _WORKER_ARGS,
+        "agent_tools.cli:_worker_run", False, (), defaults={"profile": None},
+    ),
+    commands.Command(
+        "once", "worker", "one claim pass, then run what it claimed to its end",
+        _WORKER_ARGS, "agent_tools.cli:_worker_once", False, (), defaults={"profile": None},
+    ),
+    commands.Command(
+        "status", "worker", "every queued phase with its claim, and every registered worker",
+        (commands.Arg(("--json",), {"action": "store_true", "help": "print the status as JSON"}), _PROFILE_ARG),
+        "agent_tools.cli:_worker_status", False, (), defaults={"profile": None},
+    ),
+]
+
 CHAIR_GROUP = commands.Group(
     name="chair", help="the chair loop that runs the landing and launch ticks itself",
     description="The chair loop that runs the landing and launch ticks itself.",
@@ -1844,6 +1879,7 @@ COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = _dispatch_t
     (ROUTE_GROUP, ROUTE_COMMANDS),
     (CHAIR_GROUP, CHAIR_COMMANDS),
     (LANDER_GROUP, LANDER_COMMANDS),
+    (WORKER_GROUP, WORKER_COMMANDS),
     (HOST_GROUP, HOST_COMMANDS),
     (ROUTER_GROUP, ROUTER_COMMANDS),
     (STEWARD_GROUP, STEWARD_COMMANDS),

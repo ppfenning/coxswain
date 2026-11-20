@@ -1,0 +1,188 @@
+"""The phase worker's effects: its store connection, the lane checks, the harness launch, and its own process clock.
+
+Every time the queue compares is the store's (`store_phases`). This process's monotonic clock is compared only with
+itself (`phase_pick.must_stop`); its wall clock stamps only a migration's bookkeeping when the worker opens the store.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import os
+import platform
+import shutil
+import signal
+import socket
+import subprocess
+import time
+from collections.abc import Callable, Sequence
+from pathlib import Path
+
+from agent_tools import bounded_run, chair, epic, lane_prereqs, repo_path, route, run_store, worker
+from agent_tools.chair_read_run_id import next_run_id, taken_names
+from harness import store_phases
+from harness.store_dialect import Connection, Json
+from harness.store_phases import Claim
+
+LAUNCH_TIMEOUT_S = 600.0  # `cox route launch` returns once the detached harness has started
+_PROBE_TIMEOUT_S = 60.0
+_STAMP = "%Y-%m-%dT%H:%M:%SZ"
+_ARCH = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}
+_OS = {"linux": "linux", "darwin": "macos"}
+
+
+def detected() -> list[str]:
+    """Edge. What this machine is: `os:<linux|macos>` and `arch:<amd64|arm64>`, as far as they are known."""
+    system, machine = platform.system().lower(), platform.machine().lower()
+    return [
+        *([f"os:{_OS[system]}"] if system in _OS else []),
+        *([f"arch:{_ARCH[machine]}"] if machine in _ARCH else []),
+    ]
+
+
+def doctor_rows() -> list[dict[str, object]]:
+    """Edge. The doctor's lane checks on this machine (`lane_prereqs`), the rows `cox setup doctor` shows."""
+    try:
+        done = bounded_run.completed(lane_prereqs.script_argv(), timeout=_PROBE_TIMEOUT_S, stdout=subprocess.PIPE,
+                                     stderr=subprocess.STDOUT, text=True)
+    except OSError as exc:
+        return [dict(r) for r in lane_prereqs.reply_rows(127, str(exc), remote=False)]
+    return [dict(r) for r in lane_prereqs.reply_rows(done.returncode, done.stdout, remote=False)]
+
+
+def _checkouts(repos: Sequence[str], home: str) -> list[str]:
+    """Edge. The repositories, of those named, that have a git checkout on this machine."""
+    return [r for r in repos if (Path(repo_path.expand(r, home)) / ".git").exists()]
+
+
+class Store:
+    """One connection, opened on first use and opened again after a failure, so a store restart costs one call."""
+
+    def __init__(self, runs_dir: Path) -> None:
+        self._runs_dir = runs_dir
+        self._conn: Connection | None = None
+
+    def _open(self) -> Connection:
+        if self._conn is None:
+            from harness.store_migrate import open_store
+
+            self._conn = open_store(run_store.store_url_for(self._runs_dir), time.strftime(_STAMP, time.gmtime()))
+        return self._conn
+
+    def call[T](self, act: Callable[[Connection], T]) -> T:
+        try:
+            return act(self._open())
+        except Exception:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            finally:
+                self._conn = None
+
+
+def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, version: str,
+          log: Callable[[str], None] = print) -> tuple[worker.Ports, Store]:
+    """Edge. The ports of a worker named `name` on the workspace `ws`, and the store it holds open."""
+    runs_dir = ws / "runs"
+    store = Store(runs_dir)
+    home = os.path.expanduser("~")
+    host = socket.gethostname()
+    registered: list[str] = []
+    probed: list[list[dict[str, object]]] = []  # the last lane check's rows, one entry once it has run
+    probed_at = [0.0]
+
+    def caps() -> list[str]:
+        now = time.monotonic()
+        if not probed or now - probed_at[0] >= worker.DOCTOR_EVERY_S:
+            probed[:], probed_at[0] = [doctor_rows()], now
+        rows = probed[0]
+        queued = [str(r.get("repo") or "") for r in store.call(store_phases.list_rows) if r.get("state") != "finished"]
+        found = sorted({*worker.capabilities(detected(), declared, rows), *worker.repo_tokens(queued, _checkouts(queued, home))})
+        if found != registered:
+            doctor_json: Json = {"lane": [{"check": str(r.get("check")), "ok": r.get("ok") is True} for r in rows]}
+            store.call(lambda c: store_phases.register(c, name, found, capacity(), "up", version, doctor_json))
+            registered[:] = found
+            log(f"worker: {name} advertises {', '.join(found) or 'nothing'}")
+        return found
+
+    def capacity() -> int:
+        from harness.store_hosts import host_list
+
+        row = next((h for h in store.call(host_list) if h["name"] == name), None)
+        if row is not None and row["state"] == "draining":
+            return 0
+        if lanes is not None:
+            return lanes
+        return int(row["capacity"]) if row is not None and isinstance(row["capacity"], int) else 1
+
+    def old_runs() -> int:
+        claimed = {str(r.get("run_id") or "") for r in store.call(store_phases.live_claims)}
+        now = store.call(store_phases.store_now)
+        here = [lane.run for lane in run_store.live_lanes(runs_dir, now) if lane.host in (None, "", host, name)]
+        return worker.old_model_runs(here, claimed)
+
+    def task_states(initiative: str, phase: str) -> list[str]:
+        from harness.store_queue import read
+
+        return [str(r["state"]) for r in store.call(lambda c: read(c, initiative)) if r.get("kind") == "task" and r.get("phase") == phase]
+
+    def launch(claim: Claim, record: Callable[[str], bool]) -> worker.Launched | str:
+        names = [p.name for p in runs_dir.iterdir()] if runs_dir.is_dir() else []
+        run_id = next_run_id(route.phase_run_prefix(claim.initiative, claim.phase), taken_names(names, run_store.run_ids(runs_dir)))
+        if not record(run_id):
+            return "the claim was lost before its run started"
+        argv = worker.launch_argv(claim.initiative, claim.phase, run_id, worker.launch_label(chair.read(runs_dir), f"worker:{name}"))
+        argv[0] = shutil.which("cox") or argv[0]
+        try:
+            done = bounded_run.completed(argv, cwd=ws, timeout=LAUNCH_TIMEOUT_S, stdout=subprocess.PIPE,
+                                         stderr=subprocess.STDOUT, text=True)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return f"the launch did not run: {type(exc).__name__}: {exc}"
+        pidfile = runs_dir / f"{run_id}.pid"
+        if done.returncode != 0 or not pidfile.exists():
+            last = next((line for line in reversed((done.stdout or "").splitlines()) if line.strip()), "")
+            return f"the launch exited {done.returncode}: {last}"
+        log(f"worker: started {run_id} for {claim.initiative}/{claim.phase}")
+        return worker.Launched(run_id, int(pidfile.read_text(encoding="utf-8").strip()))
+
+    def alive(run: worker.Launched) -> bool:
+        return epic.process_alive(run.pid, runs_dir / f"{run.run_id}.pid")
+
+    def stop(run: worker.Launched) -> None:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(run.pid, signal.SIGTERM)  # the harness starts its own session, so its group is its pid
+
+    def unregister() -> None:
+        try:
+            store.call(lambda c: store_phases.register(c, name, registered, 0, "stopping", version, {}))
+        except Exception as exc:  # the store is gone: the row's beat ages, which says the same
+            log(f"worker: {name} could not mark itself stopping: {type(exc).__name__}: {exc}")
+
+    ports = worker.Ports(
+        name=name,
+        capabilities=caps,
+        capacity=capacity,
+        old_runs=old_runs,
+        claim=lambda capabilities, free: store.call(lambda c: store_phases.claim_next(c, name, capabilities, free)),
+        heartbeat=lambda claim: store.call(lambda c: store_phases.heartbeat(c, claim, name)) is not None,
+        set_run=lambda claim, run_id: store.call(lambda c: store_phases.set_run(c, claim, name, run_id)),
+        finish=lambda claim, outcome, reason: store.call(lambda c: store_phases.finish(c, claim, name, outcome, reason)),
+        release=lambda claim, reason, wait_s: store.call(lambda c: store_phases.release(c, claim, name, reason, wait_s)),
+        task_states=task_states,
+        launch=launch,
+        alive=alive,
+        stop=stop,
+        unregister=unregister,
+        monotonic=time.monotonic,
+        sleep=time.sleep,
+        log=log,
+    )
+    return ports, store
+
+
+def status(conn: Connection) -> tuple[list[dict[str, object]], list[dict[str, object]], str]:
+    """Edge. The queue, the registry and the store's time, as `cox worker status` shows them."""
+    return store_phases.list_rows(conn), store_phases.list_workers(conn), store_phases.store_now(conn)
