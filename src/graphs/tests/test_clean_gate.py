@@ -2,10 +2,11 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from uuid import uuid4
 
-from graphs.delivery.clean_gate import clean_checks, clean_finding, clean_refusal
+from graphs.delivery.clean_gate import _MAX_HITS, _PLACEHOLDERS, clean_checks, clean_finding, clean_refusal
 from harness.checks import check_feedback, repo_checks
 from harness.epic_build import _gate_checks, _lane_checks
 
@@ -61,6 +62,36 @@ def test_check_feedback_adds_the_refusal_only_to_a_failed_clean_line() -> None:
     pytest_line = {"name": PYTEST, "cmd": PYTEST, "passed": False, "exit_code": 1, "output_tail": hit}
     assert "lander-host" in check_feedback([clean])
     assert "lander-host" not in check_feedback([pytest_line])
+
+
+def test_an_unparsed_failure_says_no_hit_was_named_rather_than_replace_a_match() -> None:
+    finding = clean_finding(1, "something went wrong")
+    assert finding is not None
+    assert "something went wrong" in finding
+    assert "named no file and line" in finding
+    assert "Replace each matched text" not in finding
+
+
+def test_many_hits_give_a_bounded_refusal_and_no_repeat_of_the_tail() -> None:
+    hits = "\n".join(f"tests/test_x.py:{n}: names: '{MACHINE}'" for n in range(1, 501))
+    refusal = clean_refusal(hits)
+    assert refusal is not None
+    assert refusal.count(MACHINE) == _MAX_HITS
+    assert f"+{500 - _MAX_HITS} more" in refusal
+    assert len(refusal) < 3000
+    feedback = check_feedback([{"name": CLEAN, "cmd": CLEAN, "passed": False, "exit_code": 1, "output_tail": hits}])
+    assert feedback.count(MACHINE) == _MAX_HITS
+
+
+def test_every_suggested_placeholder_passes_the_real_script(tmp_path: Path) -> None:
+    literals = [p for _lead, placeholders in _PLACEHOLDERS.values() for p in placeholders]
+    (tmp_path / "fixture.txt").write_text("\n".join(f"value = {p}/data" for p in literals) + "\n", encoding="utf-8")
+    env = {**os.environ, "COXSWAIN_CLEAN_DENY": re.escape(MACHINE)}
+    ran = subprocess.run(
+        [sys.executable, str(ROOT / ".github" / "check_clean.py"), str(tmp_path), "--require-names"],
+        env=env, capture_output=True, text=True,
+    )
+    assert (ran.returncode, ran.stdout.strip()) == (0, "clean: no personal reference or vendor named")
 
 
 def _git(repo: Path, *args: str) -> None:

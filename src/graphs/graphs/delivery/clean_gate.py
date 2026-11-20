@@ -20,18 +20,26 @@ _CLEAN_SCRIPT = ".github/check_clean.py"
 _REQUIRE_NAMES = "--require-names"
 # `path:line: rule: 'text'`; a build-artifact hit has no line number.
 _HIT_LINE = re.compile(r"^\S+?:(?:\d+:)? (?P<rule>[\w-]+): '.*'$")
-# What each rule of the clean script accepts in place of what it refused; every one passes the script itself.
-_PLACEHOLDERS: Mapping[str, str] = {
-    "names": "a placeholder machine name, `lane-host` or `lander-host`",
-    "home-path": "a path built from pytest's `tmp_path`, or the one neutral home `/home/user`",
-    "lan-host": "a host with no `.lan` suffix, such as `lane-host`",
-    "address": "a documentation address such as `192.0.2.10`",
-    "vendor": "a neutral word such as `tracker`",
-    "build-artifact": "nothing: remove the file under `build/`",
+# Per rule of the clean script: the advice, and the literal placeholders it suggests; test_clean_gate runs each
+# placeholder through the script itself.
+_PLACEHOLDERS: Mapping[str, tuple[str, tuple[str, ...]]] = {
+    "names": ("a placeholder machine name", ("lane-host", "lander-host")),
+    "home-path": ("a path built from pytest's `tmp_path`, or the neutral home", ("/home/user",)),
+    "lan-host": ("a host with no `.lan` suffix", ("lane-host",)),
+    "address": ("a documentation address", ("192.0.2.10",)),
+    "vendor": ("a neutral word", ("tracker",)),
+    "build-artifact": ("nothing: remove the file under `build/`", ()),
 }
+# The most hits a refusal quotes; the rest are counted, so a tree full of hits cannot swamp a builder's prompt.
+_MAX_HITS = 20
 _RETRY_RULE = (
     "Replace each matched text with its placeholder, and use it nowhere else: not in code, a comment, a fixture or "
     "another spelling. The names rule reads a pattern you cannot see, so any other real name fails the same way."
+)
+_UNPARSED_RULE = (
+    "Its output named no file and line. Rerun `python .github/check_clean.py . --require-names` in the worktree to "
+    "see each hit, then replace what it quotes with a neutral stand-in: `lane-host` or `lander-host` for a machine, "
+    "a path from `tmp_path` for a home folder."
 )
 # `ran`: the clean entry ran; `skipped`: it exited 2, names pattern not exported; `none`: nothing to gate.
 GateStatus = Literal["ran", "skipped", "none"]
@@ -46,9 +54,14 @@ def clean_checks(checks: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], .
     )
 
 
+def _advice(rule: str) -> str:
+    lead, literals = _PLACEHOLDERS.get(rule, ("a neutral stand-in", ()))
+    return f"{lead} {' or '.join(f'`{p}`' for p in literals)}" if literals else lead
+
+
 def clean_refusal(output: str) -> str | None:
-    """The refusal a builder reads for clean-script output: each hit as `file:line: rule: 'matched'`, the placeholder
-    its rule accepts instead, and the rule for a retry; None when the output holds no hit line."""
+    """The refusal a builder reads for clean-script output: the first `_MAX_HITS` hits as `file:line: rule: 'matched'`
+    and a count of the rest, the placeholder each rule present accepts, and the rule for a retry; None with no hit line."""
     hits = tuple(
         (line.strip(), match.group("rule"))
         for line in (output or "").splitlines()
@@ -56,8 +69,13 @@ def clean_refusal(output: str) -> str | None:
     )
     if not hits:
         return None
-    quoted = "\n".join(f"  {hit}\n    use instead: {_PLACEHOLDERS.get(rule, 'a neutral stand-in')}" for hit, rule in hits)
-    return f"The clean check ({_CLEAN_SCRIPT} {_REQUIRE_NAMES}) refused a personal reference:\n{quoted}\n{_RETRY_RULE}"
+    shown = "\n".join(f"  {hit}" for hit, _rule in hits[:_MAX_HITS])
+    more = f"\n  +{len(hits) - _MAX_HITS} more" if len(hits) > _MAX_HITS else ""
+    rules = "\n".join(f"  {rule}: use {_advice(rule)}" for rule in dict.fromkeys(rule for _hit, rule in hits))
+    return (
+        f"The clean check ({_CLEAN_SCRIPT} {_REQUIRE_NAMES}) refused a personal reference:\n{shown}{more}\n"
+        f"Instead:\n{rules}\n{_RETRY_RULE}"
+    )
 
 
 def clean_finding(exit_code: int | None, output: str) -> str | None:
@@ -65,7 +83,7 @@ def clean_finding(exit_code: int | None, output: str) -> str | None:
     if exit_code != 1:
         return None
     return clean_refusal(output) or (
-        f"The clean check found a personal reference in the patch:\n  {(output or '').strip()}\n{_RETRY_RULE}"
+        f"The clean check failed:\n  {(output or '').strip()[-_MAX_HITS * 80:]}\n{_UNPARSED_RULE}"
     )
 
 

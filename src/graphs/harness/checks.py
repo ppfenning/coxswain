@@ -546,18 +546,12 @@ def _clean_refusal_of(result: Mapping[str, Any]) -> str | None:
 def check_feedback(results: Sequence[Mapping[str, Any]]) -> str:
     """The failing checks' name, command, exit code and output tail, for a builder to read.
 
-    A failed clean line also carries its refusal: each hit's file:line and matched text, and the placeholder to use.
+    A failed clean line carries its refusal in place of the tail: each hit's file:line and matched text, bounded, and
+    the placeholder to use.
     """
     return "\n\n".join(
-        "\n".join(
-            filter(
-                None,
-                (
-                    f"{r.get('name')}: {r.get('cmd')}\nexit {r.get('exit_code')}\n{tail_lines(str(r.get('output_tail') or ''))}",
-                    _clean_refusal_of(r),
-                ),
-            )
-        )
+        f"{r.get('name')}: {r.get('cmd')}\nexit {r.get('exit_code')}\n"
+        f"{_clean_refusal_of(r) or tail_lines(str(r.get('output_tail') or ''))}"
         for r in results
         if not r.get("passed")
     )
