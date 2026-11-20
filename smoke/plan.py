@@ -319,6 +319,8 @@ FORGEJO_BASE_URL_ENV = "FORGEJO_BASE_URL"
 FORGEJO_TOKEN_ENV = "FORGEJO_TOKEN"
 # The pytest marker on every test that needs the sandbox forge; CI runs those in a step of their own.
 FORGE_MARK = "forge"
+# The fixtures that start or use the sandbox forge. A test whose closure holds one of them needs the mark.
+FORGE_FIXTURES = frozenset({"forge", "forge_sandbox", "forge_repo", "edge_origin", "edge_machine"})
 COMMIT_STATES = frozenset({"pending", "success", "error", "failure", "warning"})
 _TOKEN = re.compile(r"^[0-9a-f]{40}$")
 
@@ -327,6 +329,16 @@ def forge_source(docker_path: str | None, docker_ok: bool, *, required: bool, br
     """Whether the session can start the Forgejo container. Docker decides, as it does for Postgres, and there is no
     URL to use instead: the suite creates users, tokens and repositories, which it does only on a server it owns."""
     return container_source("the sandbox forge", docker_path, docker_ok, required=required, broken_docker_ok=broken_docker_ok)
+
+
+def forge_mark_refusal(test_id: str, fixtures: Sequence[str], marked: bool) -> str | None:
+    """The refusal line for a test whose forge mark disagrees with its fixture closure, or None when they agree."""
+    used = sorted(FORGE_FIXTURES.intersection(fixtures))
+    if used and not marked:
+        return f"{test_id} uses the forge fixture {used[0]} but lacks the {FORGE_MARK} mark"
+    if marked and not used:
+        return f"{test_id} carries the {FORGE_MARK} mark but requests no forge fixture, so it has no forge reason"
+    return None
 
 
 def container_source(

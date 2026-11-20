@@ -500,3 +500,30 @@ def test_gh_sends_no_telemetry_and_checks_for_no_update():
     assert (env["GH_TELEMETRY"], env["DO_NOT_TRACK"]) == ("0", "1")
     assert env["GH_NO_UPDATE_NOTIFIER"] == env["GH_NO_EXTENSION_UPDATE_NOTIFIER"] == "1"
     assert plan.gh_recording_name("test_x[a/b]") == "test_x-a-b.json"
+
+
+TEST_ID = "smoke/test_x.py::test_a"
+
+
+def test_an_unmarked_test_with_a_forge_fixture_in_its_closure_is_refused_by_name():
+    line = plan.forge_mark_refusal(TEST_ID, ("sandbox", "forge_sandbox"), False)
+    assert TEST_ID in line and "forge_sandbox" in line and "lacks" in line
+
+
+@pytest.mark.parametrize("fixture", sorted(plan.FORGE_FIXTURES))
+def test_each_forge_fixture_alone_needs_the_mark(fixture):
+    assert plan.forge_mark_refusal(TEST_ID, (fixture,), False) is not None
+    assert plan.forge_mark_refusal(TEST_ID, (fixture,), True) is None
+
+
+def test_a_marked_test_with_no_forge_fixture_is_refused_as_having_no_forge_reason():
+    line = plan.forge_mark_refusal(TEST_ID, ("sandbox", "tmp_path"), True)
+    assert TEST_ID in line and "no forge" in line
+
+
+def test_an_unmarked_test_with_no_forge_fixture_passes():
+    assert plan.forge_mark_refusal(TEST_ID, ("sandbox",), False) is None
+
+
+def test_a_marked_test_with_several_forge_fixtures_passes():
+    assert plan.forge_mark_refusal(TEST_ID, ("forge", "edge_machine"), True) is None
