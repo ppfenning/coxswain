@@ -10,7 +10,7 @@ from agent_tools.chair_plan import plan_tick
 from agent_tools.chair_plan_fill import less_phase_ready, plan_fill
 from agent_tools.chair_read_docket import docket_from_rows
 from agent_tools.chair_schedule import Placement, Schedule
-from agent_tools.chair_stall_alarm import plan_stall_alarm
+from agent_tools.chair_stall_alarm import plan_stall_alarm, resolve_settings
 from agent_tools.settings_model import setting_for
 from agent_tools.settings_plan import Plan, PlanError, plan_set
 from agent_tools.settings_sections.defaults import default_rows
@@ -246,9 +246,10 @@ def test_the_idle_ready_count_drops_a_phase_initiative_s_tasks():
 
 
 _ALARM = {
-    "settings": {"land_hours": 6.0, "launch_minutes": 60.0, "repeat_ticks": 3, "stranded_minutes": 30.0},
+    "settings": resolve_settings({}),
     "last_land_at": None, "open_initiatives": {}, "last_launch_at": "2026-11-20T09:00:00Z",
-    "watch_since": "2026-11-18T12:00:00Z", "heads": {}, "streaks": [], "open": {}, "stranded": {},
+    "watch_since": "2026-11-18T12:00:00Z", "heads": {}, "streaks": [], "open": {}, "told": {}, "stranded": {},
+    "holds": [], "local_host": "chair",
 }
 
 
