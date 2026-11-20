@@ -4,6 +4,8 @@ refusing what it must before it writes. Against a real Postgres: smoke/test_work
 import argparse
 import os
 
+import pytest
+
 from agent_tools import doctor, unit_env
 from agent_tools.cli_doctor import _doctor_worker_role_rows
 from agent_tools.cli_setup_store import _setup_worker_role
@@ -105,9 +107,7 @@ def test_a_failed_write_leaves_the_old_file_and_no_temporary(tmp_path):
 
     path = tmp_path / "units.env"
     path.write_text("OLD=1\n", encoding="utf-8")
-    try:
+    with pytest.raises(UnicodeEncodeError):
         _write_env_file(path, "BAD=\udcff\n")  # a lone surrogate cannot be encoded, so the write fails midway
-    except UnicodeEncodeError:
-        pass
     assert path.read_text(encoding="utf-8") == "OLD=1\n"
     assert sorted(p.name for p in tmp_path.iterdir()) == ["units.env"]
