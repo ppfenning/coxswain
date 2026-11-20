@@ -6,6 +6,7 @@ import pytest
 import harness.store_read as read
 from harness.epic import Ctx, _task_record_mirror, save_task_result
 from harness.resume import load_result, result_path
+from harness.store_steps import steps_for
 from harness.store_write import Store
 
 RESULT = {"ticket": "t1", "initiative": "i", "phase": "p1", "proposals": [{"kind": "draft_pr_create"}], "n": 1}
@@ -84,3 +85,34 @@ def test_any_store_exception_type_is_caught(tmp_path, bad):
             raise bad
 
     save_task_result(ctx(tmp_path, Boom()), RESULT, phase="p1", task="t1")
+
+
+LIFECYCLE = {
+    **RESULT,
+    "run_id": "r1:p1:t1",
+    "plan": {"steps": ["s"], "files_expected": [], "out_of_scope": []},
+    "build": {"patch": "--- a\n+++ b\n", "files_touched": ["NOTE.md"]},
+    "review": {"verdict": "approve", "findings": []},
+    "fix_loop": {"attempts": 1},
+}
+CHECKED = {**LIFECYCLE, "change_facts": {"checks": [{"name": "note", "passed": True, "exit_code": 0}]}}
+
+
+def test_each_save_writes_the_results_steps_once_and_the_checks_when_a_later_save_carries_them(tmp_path, store_conn):
+    c = ctx(tmp_path, Store(store_conn))
+    save_task_result(c, LIFECYCLE, phase="p1", task="t1")
+    first = steps_for(store_conn, "r1")
+    assert [s["step"] for s in first] == ["task/t1/build", "task/t1/plan", "task/t1/review"]
+    save_task_result(c, LIFECYCLE, phase="p1", task="t1")
+    assert steps_for(store_conn, "r1") == first
+    save_task_result(c, CHECKED, phase="p1", task="t1")
+    save_task_result(c, CHECKED, phase="p1", task="t1")
+    steps = steps_for(store_conn, "r1")
+    assert [s["kind"] for s in steps] == ["build", "checks", "plan", "review"]
+    assert {(s["initiative"], s["phase"], s["task_id"]) for s in steps} == {("i", "p1", "t1")}
+
+
+def test_a_result_with_no_steps_writes_the_record_and_no_step(tmp_path, store_conn):
+    save_task_result(ctx(tmp_path, Store(store_conn)), RESULT, phase="p1", task="t1")
+    assert read.task_record(store_conn, "r1", "p1", "t1") == RESULT
+    assert steps_for(store_conn, "r1") == []

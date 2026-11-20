@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import time
 
 import pytest
@@ -49,6 +50,41 @@ def _run_row(sandbox, run_id: str) -> dict | None:
         return None
     record = row[3] if isinstance(row[3], dict) else json.loads(row[3] or "{}")
     return {"status": row[0], "ended_at": row[1], "team": row[2], "runner": record.get("runner")}
+
+
+def _steps(sandbox, run_id: str) -> list[dict]:
+    """The run's step_results rows, through `harness.store_cli steps list`."""
+    done = sandbox.harness("harness.store_cli", "--store-url", sandbox.store_url, "steps", "list", run_id)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+# The epic driver's own save (`epic_records.save_task_result`), against the run's store, of the result file the run
+# saved: what a resumed or retried save does.
+_SAVE_AGAIN = """import json, sys
+from pathlib import Path
+from harness.epic import Ctx, save_task_result
+from harness.resume import load_result
+from harness.store_migrate import open_store
+from harness.store_write import Store
+url, runs, run_id, initiative, phase, task = sys.argv[1:7]
+conn = open_store(url, "2026-11-20T00:00:00Z")
+ctx = Ctx(repo=Path(runs), cartridge={}, runner=None, specs={}, run_id=run_id, date="2026-11-20", max_parallel=1,
+          ledger_path=Path(runs) / "ledger", provider_profile="p", runs_dir=Path(runs), worktree_root=Path(runs),
+          assume=None, fix_attempts=None, initiative_id=initiative, default_ref="main", store=Store(conn))
+save_task_result(ctx, load_result(Path(runs), run_id, phase, task), phase=phase, task=task)
+conn.close()
+print(json.dumps(True))
+"""
+
+
+def _save_again(sandbox, run_id: str) -> None:
+    done = subprocess.run(
+        [str(sandbox.install.python), "-c", _SAVE_AGAIN, sandbox.store_url, str(sandbox.workspace / "runs"), run_id,
+         INITIATIVE, "p1", TASK],
+        env=sandbox.env, cwd=sandbox.home, capture_output=True, text=True, timeout=120, check=False,
+    )
+    assert done.returncode == 0, done.stderr
 
 
 def _registered_worktrees(sandbox, repo) -> list[str]:
@@ -106,6 +142,17 @@ def test_cox_route_launch_runs_an_epic_offline_and_its_phase_lands_on_main(launc
     run = _run_row(sandbox, "ship-1")
     assert run is not None and (run["status"], run["team"], run["runner"]) == ("ok", "smoke", "scripted"), run
     assert run["ended_at"], run
+
+    # the run wrote one step row per step its task finished, read through the store's own CLI; saving the task's
+    # result again, through the driver's own save, adds none
+    steps = _steps(sandbox, "ship-1")
+    kinds = [s["kind"] for s in steps]
+    assert all(kinds.count(k) == 1 for k in ("plan", "build", "review", "checks")), steps
+    assert {(s["initiative"], s["phase"], s["task_id"]) for s in steps} == {(INITIATIVE, "p1", TASK)}, steps
+    assert all(s["ok"] == 1 for s in steps if s["kind"] in ("build", "review", "checks")), steps
+    _save_again(sandbox, "ship-1")
+    _save_again(sandbox, "ship-1")
+    assert _steps(sandbox, "ship-1") == steps
 
     # the land the run's summary names, through the local forge the bare origin gets
     land = sandbox.cox("runs", "land", "ship-1", "--repo", "~/src/app", "--task", TASK, "--gate", "full", "--apply",

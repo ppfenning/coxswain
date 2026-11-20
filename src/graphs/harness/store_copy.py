@@ -39,6 +39,7 @@ import harness.store_ddl_0016 as ddl16
 import harness.store_ddl_0017 as ddl17
 import harness.store_ddl_0018 as ddl18
 import harness.store_ddl_0019 as ddl19
+import harness.store_ddl_0020 as ddl20
 from harness.store_dialect import Connection, insert_ignore, upsert
 from harness.store_migrate import NotExactVersion, open_store_exact
 
@@ -67,12 +68,16 @@ _ORDER = (
     "courier_log",
     "cartridge_snapshots",
     "lander_notices",
+    "phase_queue",
+    "step_results",
+    "review_rounds",
+    "workers",
 )
 
 # Tables whose rows change after they are first written. Every other table in _ORDER is append-only.
 _REFRESH = frozenset(
     {"runs", "phases", "tasks", "task_records", "work_items", "leases", "hosts", "id_sequence", "landing_records",
-     "land_queue", "lander_notices"}
+     "land_queue", "lander_notices", "phase_queue", "workers"}
 )
 
 
@@ -99,6 +104,7 @@ def tables() -> tuple[Table, ...]:
         *ddl13.ADDED,
         *ddl14.ADDED,
         *ddl15.ADDED,
+        *ddl20.ADDED,
     )
     added = {t: tuple(c for u, c in alters if u == t) for t, _ in alters}
     return tuple(
@@ -115,6 +121,7 @@ def tables() -> tuple[Table, ...]:
             *ddl17.TABLES,
             *ddl18.TABLES,
             *ddl19.TABLES,
+            *ddl20.TABLES,
         )
     )
 

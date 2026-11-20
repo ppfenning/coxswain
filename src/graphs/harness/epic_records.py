@@ -25,6 +25,7 @@ from harness.resume import save_result, write_atomic
 from harness.store_dialect import Connection, JsonObject
 from harness.store_lease import assert_epoch, renew
 from harness.store_pause import clear_paused, is_paused
+from harness.store_steps import put_step, steps_of_result
 from harness.store_write import Store, upsert_work_item
 from harness.surface_heal import heal_bare_filenames, heal_new_markers, notes_out_of_surfaces
 from harness.waves import widest_wave
@@ -709,18 +710,29 @@ def _task_record_mirror(
 
 
 def save_task_result(ctx: Ctx, result: Mapping[str, object], *, phase: str, task: str) -> None:
-    """Save the result file, then mirror it into the store. The file stays authoritative.
+    """Save the result file, then mirror it into the store: the task record, and one `step_results` row per step the
+    result carries (`store_steps.steps_of_result`). The file stays authoritative.
 
-    A mirror failure is a warning, never a failed run. The file write is outside the try.
+    A step row is written once: a second save of the same result adds none, and a later save that carries a step the
+    first did not (the checks, saved after they ran) adds that step's row only. A mirror failure is a warning, never a
+    failed run. The file write is outside the try.
     """
     save_result(result, runs_dir=ctx.runs_dir, run_id=ctx.run_id, phase=phase, task=task)
     try:
-        args = _task_record_mirror(ctx.store, result, ctx.run_id, phase, task, utc_now())
+        at = utc_now()
+        args = _task_record_mirror(ctx.store, result, ctx.run_id, phase, task, at)
         store = ctx.store
 
         def mirror() -> None:
             if fence_reason(ctx) is None:
-                cast(Store, store).record_task_record(*cast(tuple[str, str, str, dict[str, object], str], args))
+                record_args = cast(tuple[str, str, str, dict[str, object], str], args)
+                cast(Store, store).record_task_record(*record_args)
+                steps = steps_of_result(
+                    record_args[3], run_id=ctx.run_id, initiative=ctx.initiative_id, phase=phase, task=task, at=at,
+                    claim_epoch=ctx.epoch or 0,
+                )
+                for row in steps:
+                    put_step(cast(Store, store).conn, row)
 
         if args is not None and store is not None:
             ctx.retry.write(mirror, END_WRITE_WINDOW_S)
