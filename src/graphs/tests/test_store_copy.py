@@ -29,6 +29,10 @@ EXPECTED_ORDER = (
     "courier_log",
     "cartridge_snapshots",
     "lander_notices",
+    "phase_queue",
+    "step_results",
+    "review_rounds",
+    "workers",
 )
 
 SEED = {
@@ -78,6 +82,26 @@ SEED = {
         {"sha": "a" * 64, "at": "2026-09-25T00:00:00Z", "by": "chair-host", "files_json": '{"team/cartridge.yaml": {"text": "k: v"}}'},
     ],
     "lander_notices": [{"key": "unreadable:i2", "reason": "not JSON", "since": "2026-09-25T00:00:00Z"}],
+    "phase_queue": [
+        {"initiative": "i1", "phase": "p1", "kind": "build", "repo": "r", "base_ref": "init/i1", "branch": "epic/i1/p1",
+         "requires_json": "[]", "state": "waiting", "outcome": "", "reason": "", "band": 1, "seq": 1, "budget_usd": 5.0,
+         "queued_at": T0, "ready_at": "", "claimed_by": "", "claim_epoch": 0, "run_id": "", "claimed_at": "",
+         "heartbeat_at": "", "lease_until": "", "attempts": 0, "updated_at": T0, "updated_by": "chair"},
+    ],
+    "step_results": [
+        {"run_id": "r1", "step": "task/t1/build", "initiative": "i1", "phase": "p1", "task_id": "t1", "kind": "build",
+         "round": 1, "ok": 1, "verdict": "", "subject_sha": "", "worker": "", "claim_epoch": 0, "started_at": T0,
+         "finished_at": T0, "cost_usd": 0.0, "result_json": "{}", "artifacts_json": "[]"},
+    ],
+    "review_rounds": [
+        {"initiative": "i1", "phase": "p1", "round": 1, "head_sha": "a" * 40, "verdict": "approve", "reason": "",
+         "revision_json": "{}", "evidence_step": "phase/smoke/1", "run_id": "r1", "worker": "lane-host",
+         "claim_epoch": 1, "cost_usd": 0.5, "decided_at": T0},
+    ],
+    "workers": [
+        {"name": "lane-host", "capabilities_json": "[]", "lanes": 2, "threads": 8, "state": "up", "version": "v",
+         "doctor_json": "{}", "doctor_at": T0, "started_at": T0, "beat_at": T0},
+    ],
 }
 
 
@@ -254,6 +278,38 @@ def test_a_second_copy_inserts_nothing_and_reports_every_row_present(src_url, ds
     again = sc.copy(src_url, dst_url, T0)
     assert {n: (r["copied"], r["present"]) for n, r in again.items()} == {n: (0, len(SEED[n])) for n in EXPECTED_ORDER}
     assert counts(dst_url) == {n: len(SEED[n]) for n in EXPECTED_ORDER}
+
+
+def test_the_hosts_threads_and_capabilities_columns_are_copied_including_null(src_url, dst_url):
+    src = open_store(src_url, T0)
+    try:
+        put(src, "hosts", {"name": "lane-host", "ssh": "lane-host", "capacity": 2, "state": "active", "beat_at": "",
+                           "versions_json": "{}", "updated_at": T0, "updated_by": "chair", "threads": 6,
+                           "capabilities_json": '["gpu"]'})
+    finally:
+        src.close()
+    sc.copy(src_url, dst_url, T0)
+    dst = open_store(dst_url, T0)
+    try:
+        rows = dst.query_all("SELECT name, threads, capabilities_json FROM hosts ORDER BY name")
+        assert [(n, t, None if c is None else json.loads(c)) for n, t, c in rows] == [
+            ("host-a", 0, None),
+            ("lane-host", 6, ["gpu"]),
+        ]
+    finally:
+        dst.close()
+
+
+def test_a_changed_step_row_in_the_source_is_not_copied_over_the_first(src_url, dst_url):
+    sc.copy(src_url, dst_url, T0)
+    _update_source(src_url, "UPDATE step_results SET ok = 0")
+    again = sc.copy(src_url, dst_url, T0)
+    assert (again["step_results"]["copied"], again["step_results"]["refreshed"]) == (0, 0)
+    dst = open_store(dst_url, T0)
+    try:
+        assert dst.query_one("SELECT ok FROM step_results") == (1,)
+    finally:
+        dst.close()
 
 
 def _update_source(src_url, sql):
