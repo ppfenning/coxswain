@@ -129,11 +129,11 @@ def test_scrub_removes_the_userinfo_and_query_passwords_of_every_url():
 
 def test_a_check_that_prints_its_environment_uploads_no_secret_of_it():
     env = {"GH_TOKEN": "gho_placeholder0", "COX_STORE_URL": "postgresql://w:placeholder-pw9@h/db",
-           "PGPASSWORD": "placeholder-pw9", "HOME": "/home/someone"}
+           "PGPASSWORD": "placeholder-pw9", "HOME": "/var/empty/placeholder"}
     printed = "\n".join(f"{k}={v}" for k, v in env.items())
     out = scrub(printed, secret_values(env))
     assert all(secret not in out for secret in ("gho_placeholder0", "placeholder-pw9")), out
-    assert "HOME=/home/someone" in out
+    assert "HOME=/var/empty/placeholder" in out
 
 
 # --- sources, attach and mark_missing -------------------------------------------------------------------------------
@@ -211,10 +211,10 @@ def test_the_root_scrubs_the_secret_values_of_the_lanes_environment(tmp_path):
     pytest.importorskip("pyarrow")
     block = {"endpoint": "http://127.0.0.1:1", "access_key_env": "GARAGE_ACCESS_KEY_ID", "secret_key_env": "GARAGE_SECRET_ACCESS_KEY"}
     env = {"GARAGE_ACCESS_KEY_ID": "GKplaceholder1", "GARAGE_SECRET_ACCESS_KEY": "placeholder-secret",
-           "GH_TOKEN": "gho_placeholder0", "HOME": "/home/someone"}
+           "GH_TOKEN": "gho_placeholder0", "HOME": "/var/empty/placeholder"}
     found = artifacts_root({"artifacts_url": "s3://bucket/a", "object_store": block}, env, tmp_path)
     assert found is not None and found.secrets == secret_values(env)
-    assert "gho_placeholder0" in found.secrets and "/home/someone" not in found.secrets
+    assert "gho_placeholder0" in found.secrets and "/var/empty/placeholder" not in found.secrets
 
 
 # --- put_object, on a real local root -------------------------------------------------------------------------------
