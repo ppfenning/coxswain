@@ -1,9 +1,11 @@
+import re
+
 import pytest
 
 from harness import store_ddl_0020
 from harness.store_ddl_0020 import ADDED, ADDITIVE, TABLES, statements
 from harness.store_dialect import POSTGRES, SQLITE, connect
-from harness.store_migrate import ADDITIVE_PREFIX, check_version, default_modules, migrate
+from harness.store_migrate import ADDITIVE_PREFIX, additive_violations, check_version, default_modules, migrate
 
 NOW1 = "2026-11-19T00:00:00Z"
 NOW2 = "2026-11-20T00:00:00Z"
@@ -40,6 +42,16 @@ def test_every_new_table_column_is_not_null_and_each_create_and_index_repeats_sa
         columns = [line.strip().rstrip(",") for line in body.strip().splitlines()]
         assert columns and all(c.endswith("NOT NULL") for c in columns), sql
     assert all("IF NOT EXISTS" in s for s in statements(SQLITE)[:7])
+
+
+@pytest.mark.parametrize("dialect", [SQLITE, POSTGRES], ids=["sqlite", "postgres"])
+def test_the_ddl_is_additive_with_plain_names_no_trigger_no_update_and_indexes_only_on_its_own_tables(dialect):
+    sql = statements(dialect)
+    assert additive_violations(sql) == ()
+    assert not [s for s in sql if re.search(r"[\"`\[]|\b\w+\.\w+\b|\bUPDATE\b|\bTRIGGER\b|\bFUNCTION\b|\bUNIQUE\b", s)]
+    indexed = [re.match(r"CREATE INDEX IF NOT EXISTS \w+ ON (\w+) ", s) for s in sql if s.startswith("CREATE INDEX")]
+    assert [m.group(1) for m in indexed if m] == ["phase_queue", "phase_queue", "step_results"]
+    assert all(t in NEW_TABLES for t in (m.group(1) for m in indexed if m)) and len(indexed) == 3
 
 
 def test_a_store_at_nineteen_gains_the_tables_empty_and_a_host_keeps_its_row(store_url):
