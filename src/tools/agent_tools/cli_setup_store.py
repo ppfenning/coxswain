@@ -298,6 +298,25 @@ def _write_env_file(path: Path, text: str) -> None:
         os.close(folder)
 
 
+def _worker_role_refusal(exc: Exception, refusals: tuple[type[Exception], ...]) -> str | None:
+    """Edge. What `worker-role` prints after `refusing:` for `exc`, or None for an error that is a bug. One of
+    `refusals` is its message. A database error (psycopg's, when the store refused a statement: an owner without the
+    right to revoke a membership, say) is its SQLSTATE, first line and detail, never a traceback; Postgres puts
+    neither a statement nor a password in that text."""
+    if isinstance(exc, refusals):
+        return str(exc)
+    try:
+        import psycopg
+    except ImportError:
+        return None
+    if not isinstance(exc, psycopg.Error):
+        return None
+    first = (str(exc).strip().splitlines() or [type(exc).__name__])[0]
+    detail = getattr(getattr(exc, "diag", None), "message_detail", None)
+    code = f" ({exc.sqlstate})" if exc.sqlstate else ""
+    return f"the store refused the setup{code}: {first}" + (f" {detail}" if detail else "") + "; nothing was changed"
+
+
 def _setup_worker_role(a: argparse.Namespace) -> int:
     """Edge. `cox setup store worker-role <name>`, run with the store owner's URL (the provider profile's
     storage_url): create the `cox_worker` group and this worker's login role when absent, and bring both to the one
@@ -308,6 +327,7 @@ def _setup_worker_role(a: argparse.Namespace) -> int:
     import secrets
 
     from harness import store_roles, store_scoped
+    from harness.store_dialect import StoreDriverMissing
     from harness.store_read import StoreVersionError
 
     try:
@@ -333,8 +353,11 @@ def _setup_worker_role(a: argparse.Namespace) -> int:
                                        datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
                                        revoke_public_create=bool(getattr(a, "revoke_public_create", False)))
         text = unit_env.with_values(existing, {store_roles.ROLE_ENV: login, store_roles.PASSWORD_ENV: plan.password})
-    except (ValueError, StoreVersionError) as exc:
-        print(f"refusing: {exc}", file=sys.stderr)
+    except Exception as exc:
+        reason = _worker_role_refusal(exc, (ValueError, StoreVersionError, StoreDriverMissing))
+        if reason is None:
+            raise
+        print(f"refusing: {reason}", file=sys.stderr)
         return 2
     if text != existing:
         _write_env_file(path, text)

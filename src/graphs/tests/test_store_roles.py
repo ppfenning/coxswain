@@ -10,9 +10,13 @@ from harness.store_roles import (
     OK,
     PROBES,
     REFUSED,
+    WIDENING,
+    RoleAttrs,
     RoleState,
     grant_statements,
+    owner_refusal,
     probe_verdict,
+    residue,
     role_name,
     role_plan,
     scram_verifier,
@@ -125,38 +129,63 @@ def test_a_password_sasl_prep_could_change_is_refused(password):
         scram_verifier(password, SALT)
 
 
+SAFE_GROUP = RoleAttrs(login=False)
+SAFE_LOGIN = RoleAttrs(login=True)
+WIDE = RoleAttrs(widening=frozenset(WIDENING), inherit=False, login=False, connection_limit=3, expires=True)
+NEW = RoleState(None, None, ("runs",))
+SAFE = RoleState(SAFE_GROUP, SAFE_LOGIN, ("runs",))
+
+
 def _plan(state=None, kept=None, new="new-pass", **kw):
-    return role_plan(state or RoleState(False, False, ("runs",)), "cox_w_a", kept, new, SALT, **kw)
+    return role_plan(state or NEW, "cox_w_a", kept, new, SALT, **kw)
+
+
+def _alters(stmts, role):
+    return [s for s in stmts if s.startswith(f"ALTER ROLE {role} ") and " SET " not in s and "RESET" not in s]
 
 
 def test_no_statement_ever_carries_the_password_itself():
-    for state in (RoleState(False, False, ()), RoleState(True, True, ()), RoleState(True, False, ())):
+    for state in (NEW, SAFE, RoleState(SAFE_GROUP, None, ()), RoleState(WIDE, WIDE, ())):
         for kept in (None, "kept-pass"):
             plan = _plan(state, kept)
             assert not any(plan.password in s for s in plan.statements)
             setting = [s for s in plan.statements if "PASSWORD" in s]
-            assert setting == ([f"ALTER ROLE cox_w_a {store_roles._SAFE_ATTRIBUTES} LOGIN VALID UNTIL 'infinity' "
-                                f"PASSWORD '{scram_verifier(plan.password, SALT)}'"] if plan.sets_password else [])
+            assert len(setting) == (1 if plan.sets_password else 0)
+            assert all(s.endswith(f"PASSWORD '{scram_verifier(plan.password, SALT)}'") for s in setting)
 
 
-def test_a_new_store_gets_both_roles_reset_and_the_new_password():
+def test_a_new_store_creates_both_roles_and_sends_no_attribute_it_need_not():
     plan = _plan()
-    assert plan.statements[:2] == (f"CREATE ROLE {GROUP_ROLE} NOLOGIN", "CREATE ROLE cox_w_a LOGIN")
-    reset = (f"ALTER ROLE {GROUP_ROLE} NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION INHERIT "
-             "CONNECTION LIMIT -1 NOLOGIN")
-    assert reset in plan.statements
+    assert plan.statements[:2] == (f"CREATE ROLE {GROUP_ROLE} NOLOGIN",
+                                   f"CREATE ROLE cox_w_a LOGIN PASSWORD '{scram_verifier('new-pass', SALT)}'")
+    assert _alters(plan.statements, GROUP_ROLE) == [] and _alters(plan.statements, "cox_w_a") == []
     assert f"GRANT {GROUP_ROLE} TO cox_w_a" in plan.statements
     assert "ALTER ROLE cox_w_a SET idle_in_transaction_session_timeout = '15s'" in plan.statements
     assert plan.statements[-len(grant_statements(("runs",))):] == grant_statements(("runs",))
     assert (plan.password, plan.sets_password) == ("new-pass", True)
 
 
+def test_roles_already_safe_get_no_alter_at_all_so_an_owner_without_superuser_can_run_it():
+    stmts = _plan(SAFE, "kept").statements
+    assert _alters(stmts, GROUP_ROLE) == [] and _alters(stmts, "cox_w_a") == []
+    assert not any(a in s for s in stmts for a in ("SUPERUSER", "BYPASSRLS", "REPLICATION", "CREATEDB"))
+
+
+def test_only_what_is_on_is_turned_off():
+    state = RoleState(RoleAttrs(widening=frozenset({"BYPASSRLS"})), RoleAttrs(widening=frozenset({"CREATEROLE"}),
+                                                                           login=True), ())
+    stmts = _plan(state, "kept").statements
+    assert _alters(stmts, GROUP_ROLE) == [f"ALTER ROLE {GROUP_ROLE} NOBYPASSRLS"]
+    assert _alters(stmts, "cox_w_a") == ["ALTER ROLE cox_w_a NOCREATEROLE"]
+
+
 def test_every_run_takes_away_what_was_added_to_either_role_by_hand():
-    state = RoleState(True, True, ("runs",), database="cox", group_memberships=("pg_read_all_data",),
+    state = RoleState(WIDE, WIDE, ("runs",), database="cox", group_memberships=("pg_read_all_data",),
                       login_memberships=(GROUP_ROLE, "pg_write_all_data", "Odd\"Name"))
     stmts = _plan(state, "kept").statements
-    assert any(s.startswith("ALTER ROLE cox_w_a NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION "
-                            "INHERIT") for s in stmts)
+    off = "NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION INHERIT CONNECTION LIMIT -1 VALID UNTIL 'infinity'"
+    assert _alters(stmts, GROUP_ROLE) == [f"ALTER ROLE {GROUP_ROLE} {off}"]
+    assert _alters(stmts, "cox_w_a") == [f"ALTER ROLE cox_w_a {off} LOGIN"]
     assert 'REVOKE "pg_read_all_data" FROM cox_worker' in stmts
     assert 'REVOKE "pg_write_all_data" FROM cox_w_a' in stmts
     assert 'REVOKE "Odd""Name" FROM cox_w_a' in stmts
@@ -172,22 +201,41 @@ def test_every_run_takes_away_what_was_added_to_either_role_by_hand():
 
 
 def test_a_repeat_with_the_password_kept_sets_no_password_and_creates_nothing():
-    plan = _plan(RoleState(True, True, ("runs",)), "kept", "unused")
+    plan = _plan(SAFE, "kept", "unused")
     assert not any("CREATE ROLE" in s or "PASSWORD" in s for s in plan.statements)
     assert (plan.password, plan.sets_password) == ("kept", False)
-    assert _plan(RoleState(True, True, ("runs",)), "kept", "other") == plan
+    assert _plan(SAFE, "kept", "other") == plan
 
 
 def test_a_role_whose_password_the_file_lost_gets_the_new_one():
-    plan = _plan(RoleState(True, True, ()), None, "fresh")
+    plan = _plan(SAFE, None, "fresh")
     assert (plan.password, plan.sets_password) == ("fresh", True)
-    assert any(scram_verifier("fresh", SALT) in s for s in plan.statements)
+    assert _alters(plan.statements, "cox_w_a") == [f"ALTER ROLE cox_w_a PASSWORD '{scram_verifier('fresh', SALT)}'"]
 
 
 def test_a_dropped_role_is_recreated_with_the_password_the_file_still_holds():
-    plan = _plan(RoleState(True, False, ()), "kept", "unused")
-    assert "CREATE ROLE cox_w_a LOGIN" in plan.statements
+    plan = _plan(RoleState(SAFE_GROUP, None, ()), "kept", "unused")
+    assert f"CREATE ROLE cox_w_a LOGIN PASSWORD '{scram_verifier('kept', SALT)}'" in plan.statements
     assert (plan.password, plan.sets_password) == ("kept", True)
+
+
+def test_an_owner_that_lacks_an_attribute_that_is_on_is_refused_by_name():
+    createrole_only = frozenset({"CREATEROLE"})
+    assert owner_refusal(RoleState(WIDE, WIDE, (), owner=frozenset(WIDENING)), "cox_w_a") is None
+    assert owner_refusal(RoleState(SAFE_GROUP, SAFE_LOGIN, (), owner=createrole_only), "cox_w_a") is None
+    state = RoleState(SAFE_GROUP, RoleAttrs(widening=frozenset({"BYPASSRLS", "CREATEROLE"}), login=True), (),
+                      owner=createrole_only)
+    reason = owner_refusal(state, "cox_w_a")
+    assert reason is not None and reason.startswith("cox_w_a has BYPASSRLS, which only")
+    assert "`ALTER ROLE cox_w_a NOBYPASSRLS`" in reason and "CREATEROLE" not in reason
+
+
+def test_residue_names_what_a_reset_left():
+    assert residue(SAFE) == ()
+    assert residue(RoleState(SAFE_GROUP, SAFE_LOGIN, (), login_memberships=(GROUP_ROLE,))) == ()
+    left = residue(RoleState(RoleAttrs(widening=frozenset({"CREATEDB"})), SAFE_LOGIN, (),
+                             login_memberships=(GROUP_ROLE, "pg_write_all_data")))
+    assert left == ("cox_worker still has CREATEDB", "the login role is still a member of pg_write_all_data")
 
 
 def test_public_create_is_revoked_only_when_asked():

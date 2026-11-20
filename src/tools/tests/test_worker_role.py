@@ -111,3 +111,18 @@ def test_a_failed_write_leaves_the_old_file_and_no_temporary(tmp_path):
         _write_env_file(path, "BAD=\udcff\n")  # a lone surrogate cannot be encoded, so the write fails midway
     assert path.read_text(encoding="utf-8") == "OLD=1\n"
     assert sorted(p.name for p in tmp_path.iterdir()) == ["units.env"]
+
+
+def test_a_refusal_is_its_message_and_any_other_error_is_left_to_raise():
+    from agent_tools.cli_setup_store import _worker_role_refusal
+
+    assert _worker_role_refusal(ValueError("no roles here"), (ValueError,)) == "no roles here"
+    assert _worker_role_refusal(RuntimeError("a bug"), (ValueError,)) is None
+
+
+def test_a_database_error_is_a_refusal_with_its_sqlstate_not_a_traceback():
+    errors = pytest.importorskip("psycopg.errors")
+    from agent_tools.cli_setup_store import _worker_role_refusal
+
+    reason = _worker_role_refusal(errors.InsufficientPrivilege("permission denied to alter role"), (ValueError,))
+    assert reason == "the store refused the setup (42501): permission denied to alter role; nothing was changed"
