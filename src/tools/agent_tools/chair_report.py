@@ -244,9 +244,9 @@ def landing_fragment(landing: Sequence[LandingFact]) -> str:
 
 
 def fetched_items(results: Sequence[Result]) -> list[str]:
-    """`<run> from <host>` for every fetch_exit that landed; a host of None reads `on another machine`."""
+    """`<run> from <host>` for every fetch_exit that landed; a missing, None or empty host reads `an unknown machine`."""
     return [
-        f"{r['action'].get('run', '?')} from {'on another machine' if r['action'].get('host') is None else r['action'].get('host')}"
+        f"{r['action'].get('run', '?')} from {r['action'].get('host') or 'an unknown machine'}"
         for r in results
         if r["status"] == "done" and r["action"].get("kind") == "fetch_exit"
     ]

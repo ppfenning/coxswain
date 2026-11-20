@@ -8,6 +8,7 @@ from agent_tools.chair_report import (
     _five_hour,
     echo_line,
     failed_items,
+    fetched_items,
     format_status,
     housekeeping_fragment,
     lands_this_tick,
@@ -267,8 +268,12 @@ def test_failed_items_for_a_stale_to_draft_starts_with_the_reasons_first_words()
 def test_fetched_names_the_run_and_host():
     with_host = format_status(_facts(), [], [_result("fetch_exit", "done", run="epic-a-1", host="host-a")], NOW)
     no_host = format_status(_facts(), [], [_result("fetch_exit", "done", run="epic-a-1", host=None)], NOW)
+    missing_host = format_status(_facts(), [], [_result("fetch_exit", "done", run="epic-a-1")], NOW)
     assert "fetched: epic-a-1 from host-a" in with_host
-    assert "fetched: epic-a-1 from on another machine" in no_host
+    assert "fetched: epic-a-1 from an unknown machine" in no_host
+    assert "fetched: epic-a-1 from an unknown machine" in missing_host
+    assert "from on another machine" not in no_host + missing_host
+    assert fetched_items([_result("fetch_exit", "done", run="epic-a-1", host="")]) == ["epic-a-1 from an unknown machine"]
 
 
 def test_dry_run_names_what_it_would_do():
