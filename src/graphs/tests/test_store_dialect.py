@@ -15,6 +15,7 @@ from harness.store_dialect import (
     POSTGRES,
     SQLITE,
     SQLITE_BUSY_TIMEOUT_MS,
+    SQLITE_SYNC_OFF_ENV,
     STATEMENT_TIMEOUT_MS,
     TCP_USER_TIMEOUT_MS,
     StoreDriverMissing,
@@ -26,6 +27,7 @@ from harness.store_dialect import (
     json_load,
     json_text,
     merged_options,
+    sqlite_sync_off,
     upsert,
 )
 
@@ -175,11 +177,28 @@ def test_a_contended_transaction_waits_for_the_lock_instead_of_failing(tmp_path)
     assert holder.query_all("SELECT id FROM r ORDER BY id") == [(1,), (2,)]
 
 
-def test_file_sqlite_opens_with_wal_foreign_keys_busy_timeout_and_no_disk_sync(tmp_path):
+@pytest.mark.parametrize(("value", "off"), [(None, False), ("", False), ("0", False), ("yes", False), ("1", True)])
+def test_sqlite_sync_off_only_on_the_explicit_opt_in(value, off):
+    assert sqlite_sync_off(value) is off
+
+
+def test_file_sqlite_syncs_each_commit_by_default(tmp_path, monkeypatch):
+    monkeypatch.delenv(SQLITE_SYNC_OFF_ENV, raising=False)  # the suite's conftest opts its own stores in
+    conn = connect(default_url(tmp_path))
+    assert conn.query_one("PRAGMA synchronous")[0] > 0  # NORMAL or FULL, never OFF
+
+
+def test_file_sqlite_skips_the_disk_sync_when_opted_in(tmp_path, monkeypatch):
+    monkeypatch.setenv(SQLITE_SYNC_OFF_ENV, "1")
+    conn = connect(default_url(tmp_path))
+    assert conn.query_one("PRAGMA synchronous")[0] == 0
+    assert conn.query_one("PRAGMA journal_mode")[0] == "wal"
+
+
+def test_file_sqlite_opens_with_wal_foreign_keys_and_busy_timeout(tmp_path):
     conn = connect(default_url(tmp_path))
     assert (tmp_path / "cox.db").exists()
     assert conn.query_one("PRAGMA journal_mode")[0] == "wal"
-    assert conn.query_one("PRAGMA synchronous")[0] == 0  # OFF: the test double is never durable
     assert conn.query_one("PRAGMA foreign_keys")[0] == 1
     assert conn.query_one("PRAGMA busy_timeout")[0] > 0
 

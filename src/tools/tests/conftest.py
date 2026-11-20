@@ -44,10 +44,16 @@ def _store_backups_stay_out_of_home(tmp_path_factory, monkeypatch):
     """`harness.store_migrate.open_store` backs a store with a migration pending up first (`should_back_up`; a fresh
     one, holding no table, is not) to `$COX_STORE_BACKUP_DIR`, else to `~/.local/state/coxswain/backups` under the
     real home. In this suite that was once about 290 tests a run, each leaving an empty `store-v0-to-v<N>` file in
-    the operator's home. Point it at a tmp directory of its
-    own, as the graphs suite does; the variable reaches every `cox` and harness subprocess a test starts too. A
-    directory from `tmp_path_factory`, not `tmp_path`, so tests that inventory their own `tmp_path` see no extra."""
+    the operator's home. Point it at a tmp directory of its own, as the graphs suite does; the variable reaches every
+    `cox` and harness subprocess a test starts too. A directory from `tmp_path_factory`, not `tmp_path`, so tests that
+    inventory their own `tmp_path` see no extra."""
     monkeypatch.setenv("COX_STORE_BACKUP_DIR", str(tmp_path_factory.mktemp("store-backups")))
+
+
+@pytest.fixture(autouse=True)
+def _sqlite_double_skips_disk_syncs(monkeypatch):
+    """A test's sqlite store is thrown away, so its commits need no disk sync (`store_dialect.sqlite_sync_off`)."""
+    monkeypatch.setenv("COX_SQLITE_SYNC_OFF", "1")
 
 
 @pytest.fixture(autouse=True)

@@ -21,6 +21,12 @@ def _store_backups_stay_out_of_home(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _sqlite_double_skips_disk_syncs(monkeypatch):
+    """A test's sqlite store is thrown away, so its commits need no disk sync (`store_dialect.sqlite_sync_off`)."""
+    monkeypatch.setenv("COX_SQLITE_SYNC_OFF", "1")
+
+
+@pytest.fixture(autouse=True)
 def _clean_trees(monkeypatch):
     """Release tests run against fake checkouts whose fake git records every call,
     so the clean gate stands aside there; its own tests

@@ -1,7 +1,7 @@
 """Every `store_ddl_NNNN` migration is schema only and a pure function of the dialect, unless it says otherwise.
 
-A migration that writes rows (INSERT, UPDATE, DELETE, MERGE) changes data on every store it opens, and one that reads
-the environment or the clock migrates two stores differently. Either may be right for a migration, but only on
+A migration that writes rows (INSERT, UPDATE, DELETE, MERGE, TRUNCATE, COPY, CREATE TABLE ... AS SELECT) changes data
+on every store it opens, and one that reads the environment or the clock migrates two stores differently. Either may be right for a migration, but only on
 purpose: it then declares `WRITES_DATA = "<why>"` or `READS_ENV_OR_TIME = "<why>"`, a non-empty reason, and this guard
 lets it through. No migration declares either today.
 """
@@ -16,7 +16,11 @@ from harness.store_dialect import POSTGRES, SQLITE
 from harness.store_migrate import default_modules
 
 MODULES = default_modules()
-WRITE = re.compile(r"\b(INSERT|UPDATE|DELETE|MERGE)\b", re.IGNORECASE)
+WRITE = re.compile(
+    r"\b(INSERT|UPDATE|DELETE|MERGE|TRUNCATE|COPY)\b"
+    r"|\bCREATE\s+(?:\w+\s+)*?TABLE\b[^;]*?\bAS\s*\(?\s*(?:SELECT|WITH|VALUES|TABLE)\b",  # CREATE TABLE ... AS SELECT
+    re.IGNORECASE,
+)
 # What reads the environment or the clock: the modules that do it, and the names they are reached by.
 IMPURE_MODULES = frozenset({"os", "sys", "time", "datetime", "calendar", "zoneinfo", "random", "uuid", "secrets"})
 IMPURE_NAMES = frozenset({"environ", "getenv", "now", "utcnow", "today", "time", "monotonic"})
@@ -29,7 +33,8 @@ def code_only(sql: str) -> str:
 
 def writes(statements: tuple[str, ...]) -> tuple[str, ...]:
     """Pure. One line per statement that writes rows."""
-    return tuple(f"statement {i}: {m.group(1).upper()}" for i, s in enumerate(statements) if (m := WRITE.search(code_only(s))))
+    found = ((i, WRITE.search(code_only(s))) for i, s in enumerate(statements))
+    return tuple(f"statement {i}: {(m.group(1) or 'CREATE TABLE AS').upper()}" for i, m in found if m)
 
 
 def impure_reads(source: str) -> tuple[str, ...]:
@@ -56,6 +61,10 @@ def declared(module, name: str) -> bool:
     "INSERT INTO t (id) VALUES (1)",
     "update t SET a = 1",
     "CREATE TRIGGER x AFTER INSERT ON t BEGIN DELETE FROM u; END",
+    "TRUNCATE TABLE t",
+    "COPY t FROM '/tmp/rows.csv'",
+    "CREATE TABLE t2 AS SELECT * FROM t",
+    "CREATE TEMP TABLE IF NOT EXISTS t2 AS (WITH x AS (SELECT 1) SELECT * FROM x)",
 ])
 def test_a_statement_that_writes_rows_is_named(sql):
     assert writes((sql,)) != ()
@@ -65,6 +74,8 @@ def test_a_statement_that_writes_rows_is_named(sql):
     "CREATE TABLE t (updated_at TEXT NOT NULL DEFAULT 'update', inserted_by TEXT)",
     "ALTER TABLE t ADD COLUMN note TEXT NOT NULL DEFAULT ''  -- never updated",
     "CREATE INDEX t_by_deleted ON t (deleted_at)",
+    "CREATE TABLE copies (copied_at TEXT, truncated INTEGER, PRIMARY KEY (copied_at))",
+    "CREATE TABLE t (a TEXT GENERATED ALWAYS AS (upper(b)) STORED, b TEXT)",
 ])
 def test_schema_only_ddl_is_not_a_write(sql):
     assert writes((sql,)) == ()

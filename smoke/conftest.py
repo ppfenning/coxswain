@@ -42,8 +42,9 @@ sys.path[:0] = [str(ROOT / "src" / name) for name in ("tools", "graphs", "cartri
 from agent_tools.forge_forgejo import parse_branch_tip  # noqa: E402
 
 # The harness backs a store up with `pg_dump` before it migrates one that holds something (`harness.store_migrate`,
-# `should_back_up`); a fresh smoke database is not backed up, but test_store_backup_pg_dump.py migrates one that is. Linux has it in /usr/bin; Homebrew puts it under /opt/homebrew, off the minimal PATH, so the folder
-# the caller's PATH finds it in is added after the system's, and nothing else from that PATH comes with it.
+# `should_back_up`); a fresh smoke database is not backed up, but test_store_backup_pg_dump.py migrates one that is.
+# Linux has pg_dump in /usr/bin; Homebrew puts it under /opt/homebrew, off the minimal PATH, so the folder the
+# caller's PATH finds it in is added after the system's, and nothing else from that PATH comes with it.
 PG_DUMP = shutil.which("pg_dump")
 SYSTEM_PATH = plan.system_path_with("/usr/local/bin:/usr/bin:/bin", str(Path(PG_DUMP).parent) if PG_DUMP else None)
 READY_TIMEOUT_S = 120

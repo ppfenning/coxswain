@@ -115,6 +115,14 @@ def parse_counts(stdout: str) -> dict[str, int]:
     return table_rows or {m.group(1): int(m.group(2)) for line in lines if (m := _COUNT_LINE.match(line))}
 
 
+def copy_env(environ: Mapping[str, str]) -> dict[str, str]:
+    """Pure. The environment `harness.store_copy` runs in: `environ` with the sqlite double allowed, so the legacy
+    store opens, and never the suites' `COX_SQLITE_SYNC_OFF` opt-in: that store holds real rows, so a commit to it (a
+    migration `open_store_exact` applies) syncs to disk."""
+    kept = {k: v for k, v in environ.items() if k != "COX_SQLITE_SYNC_OFF"}
+    return {**kept, "COXSWAIN_STORE_DOUBLE": "sqlite"}
+
+
 def default_copy_store(source_url: str, target_url: str) -> dict[str, int]:
     """Edge. Run `python -m harness.store_copy --json SOURCE TARGET` and return its per-table counts.
 
@@ -127,7 +135,7 @@ def default_copy_store(source_url: str, target_url: str) -> dict[str, int]:
         capture_output=True,
         text=True,
         check=False,
-        env={**os.environ, "COXSWAIN_STORE_DOUBLE": "sqlite"},
+        env=copy_env(os.environ),
     )
     if done.returncode != 0:
         tail = (done.stderr or done.stdout).strip().splitlines()[-1:] or ["no output"]
