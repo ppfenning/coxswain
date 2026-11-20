@@ -3,7 +3,7 @@ import json
 import pytest
 
 import harness.store_copy as sc
-from harness.store_migrate import open_store
+from harness.store_migrate import NotExactVersion, default_modules, exact_refusal, open_store
 
 T0 = "2026-09-25T00:00:00Z"
 
@@ -335,3 +335,47 @@ def test_a_password_never_reaches_output_even_when_the_copy_fails(src_url, capsy
     assert sc.main([src_url, "postgresql://user:hunter2@127.0.0.1:1/store"]) == 2
     seen = capsys.readouterr()
     assert "hunter2" not in seen.out + seen.err
+
+
+NEWEST = len(default_modules())
+
+
+def _one_additive_migration_newer(url):
+    """The store at `url` as a build one additive migration newer leaves it: a new table holding a row, a new column
+    on runs, and the schema_version row that says additive."""
+    conn = open_store(url, T0)
+    try:
+        conn.execute("CREATE TABLE newer_notes (key TEXT NOT NULL, PRIMARY KEY (key))")
+        conn.execute("INSERT INTO newer_notes (key) VALUES ('kept')")
+        conn.execute("ALTER TABLE runs ADD COLUMN newer_note TEXT NOT NULL DEFAULT ''")
+        conn.execute("INSERT INTO schema_version (version, applied_at, description) VALUES (?, ?, ?)",
+                     (NEWEST + 1, T0, "additive: newer notes"))
+    finally:
+        conn.close()
+
+
+def test_exact_refusal_takes_only_this_codes_version():
+    assert exact_refusal("source", NEWEST, NEWEST) is None
+    assert "older than" in exact_refusal("source", NEWEST - 1, NEWEST)
+    newer = exact_refusal("source", NEWEST + 2, NEWEST)
+    assert newer.startswith(f"the source store is at schema version {NEWEST + 2}, newer than the {NEWEST}")
+    assert f"migration {NEWEST + 1:04d}-{NEWEST + 2:04d}" in newer
+
+
+def test_a_copy_from_a_store_one_additive_migration_newer_is_refused_not_truncated(src_url, tmp_path, capsys):
+    _one_additive_migration_newer(src_url)
+    dst = f"sqlite:///{tmp_path / 'fresh-dst.db'}"
+    with pytest.raises(NotExactVersion, match=f"the source store is at schema version {NEWEST + 1}, newer"):
+        sc.copy(src_url, dst, T0)
+    assert not (tmp_path / "fresh-dst.db").exists()  # refused before the destination was opened
+    assert sc.main([src_url, dst]) == 2
+    err = capsys.readouterr().err
+    assert f"would drop what migration {NEWEST + 1:04d} adds" in err
+
+
+def test_a_copy_into_a_store_one_additive_migration_newer_is_refused_and_writes_no_row(src_url, tmp_path):
+    dst = f"sqlite:///{tmp_path / 'newer-dst.db'}"
+    _one_additive_migration_newer(dst)
+    with pytest.raises(NotExactVersion, match="the destination store is at schema version"):
+        sc.copy(src_url, dst, T0)
+    assert counts(dst)["runs"] == 0

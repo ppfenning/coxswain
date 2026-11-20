@@ -1,8 +1,9 @@
 """The read path the tools repository uses. It only reads: no write and no migration.
 
-Standard library only, plus store_dialect, store_migrate.check_version and
-store_traces. It must not import `graphs`, which is optional for tools, and the
-postgres driver stays a lazy import inside store_dialect.connect. Tests import
+Standard library only, plus store_dialect, store_migrate's version check
+(check_version, accepts, newer_descriptions, newer_refusal) and store_traces.
+It must not import `graphs`, which is optional for tools, and the postgres
+driver stays a lazy import inside store_dialect.connect. Tests import
 this module in a fresh interpreter with the harness package stubbed out, and
 read its source for every import, lazy ones included.
 
@@ -31,7 +32,7 @@ from typing import TypedDict, cast
 
 from harness import store_traces
 from harness.store_dialect import SQLITE, SQLITE_BUSY_TIMEOUT_MS, Cell, Connection, Json, JsonObject, connect, json_load
-from harness.store_migrate import check_version
+from harness.store_migrate import accepts, check_version, newer_descriptions, newer_refusal
 
 __all__ = [
     "StoreVersionError",
@@ -186,19 +187,22 @@ def _open(url: str) -> Connection:
 
 
 def connect_readonly(url: str) -> Connection:
-    """Connect without writing and check the schema version; a mismatch closes the connection and raises."""
+    """Connect without writing and check the schema version; a mismatch closes the connection and raises. A store
+    newer than this code is a mismatch unless every newer migration it records is additive (`store_migrate.accepts`)."""
     conn = _open(url)
     try:
         if conn.dialect.name == "postgres":
             conn.execute("SET default_transaction_read_only = on")
         current, expected = check_version(conn)
+        newer = newer_descriptions(conn, expected) if current > expected else ()
     except BaseException:
         conn.close()
         raise
-    if current != expected:
+    if not accepts(current, expected, newer):
         conn.close()
         word = "newer" if current > expected else "older"
-        raise StoreVersionError(f"store is at schema version {current}, {word} than the {expected} this code expects")
+        why = f"; {newer_refusal(expected, newer)}" if current > expected else ""
+        raise StoreVersionError(f"store is at schema version {current}, {word} than the {expected} this code expects{why}")
     return conn
 
 

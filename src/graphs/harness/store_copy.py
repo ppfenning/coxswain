@@ -2,7 +2,8 @@
 
     python -m harness.store_copy SRC_URL DST_URL [--json]
 
-Both sides are opened with `open_store`, so the destination is migrated first. Rows
+Both sides are opened with `open_store_exact`, so the destination is migrated first, and a side newer than this
+code is refused: the copy carries only the tables and columns this code knows, so a newer store's would be dropped. Rows
 of an append-only table go in with insert-ignore: a destination row with the same key
 but different content is left alone. Rows of a table in `_REFRESH` go in with upsert,
 so a second run overwrites them and reports them as refreshed. No run inserts a row twice.
@@ -39,7 +40,7 @@ import harness.store_ddl_0017 as ddl17
 import harness.store_ddl_0018 as ddl18
 import harness.store_ddl_0019 as ddl19
 from harness.store_dialect import Connection, insert_ignore, upsert
-from harness.store_migrate import open_store
+from harness.store_migrate import NotExactVersion, open_store_exact
 
 Table = tuple[str, tuple[str, ...], tuple[str, ...]]
 
@@ -170,9 +171,9 @@ def copy(src_url: str, dst_url: str, now: str, batch: int = 500) -> dict[str, di
     """
     if batch < 1:
         raise ValueError(f"batch must be at least 1, got {batch}")
-    src = open_store(src_url, now)
+    src = open_store_exact(src_url, now, "source")
     try:
-        dst = open_store(dst_url, now)
+        dst = open_store_exact(dst_url, now, "destination")
         try:
             report: dict[str, dict[str, int]] = {}
             for name, columns, key in plan(tables()):
@@ -208,6 +209,9 @@ def main(argv: Sequence[str]) -> int:
         report, short = copy(args.src_url, args.dst_url, now), {}
     except CopyCheckFailed as failed:
         report, short = failed.report, failed.short
+    except NotExactVersion as exc:  # names the role and the versions, never a URL
+        print(f"error: could not copy {src} to {dst}: {exc}", file=sys.stderr)
+        return 2
     except Exception as exc:  # the message may hold the URL; name only the class
         print(f"error: could not copy {src} to {dst}: {type(exc).__name__}", file=sys.stderr)
         return 2

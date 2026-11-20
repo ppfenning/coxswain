@@ -464,12 +464,15 @@ def intake_input_from_row(row: Mapping) -> dict:
     return {"id": row["task_id"], "body": row["body"], "state": row["state"]}
 
 
-def plan_writes(plan: Mapping, intake_row: Mapping, existing: Sequence[Mapping]) -> tuple[list[dict], str | None]:
+def plan_writes(
+    plan: Mapping, intake_row: Mapping, existing: Sequence[Mapping], lane_model: str = queue_rows.DEFAULT_LANE_MODEL,
+) -> tuple[list[dict], str | None]:
     """`(rows, failure)`: the initiative row, ticket rows and stamped intake row to upsert, in that order.
 
     A plan with no tasks gives no rows and the `decompose_empty` reason. A row the store holds past ready
     is left out, so a rerun never resets it. `existing` is the store's rows for the plan's initiative.
     A non-zero intake priority is set on the initiative and task rows; the intake row keeps its own.
+    `lane_model` is stamped on a new initiative row; one the store already holds keeps the model it was decomposed under.
     """
     outcome = decompose_empty.empty_outcome(len(plan["tasks"]), list(plan.get("lint", [])), False)
     if outcome["empty"]:
@@ -477,7 +480,12 @@ def plan_writes(plan: Mapping, intake_row: Mapping, existing: Sequence[Mapping])
     started = {(r["kind"], r["task_id"]) for r in existing if r.get("state") not in _UNSTARTED_STATES}
     value = _row_priority(intake_row)
     inherit = {"initiative", "task"} if value else set()
-    planned = [{**r, "priority": value} if r["kind"] in inherit else r for r in queue_rows.plan_to_rows(plan, intake_row["task_id"])]
+    held = next((r for r in existing if r.get("kind") == "initiative" and r.get("task_id") == plan["id"]), None)
+    model = lane_model if held is None else queue_rows.lane_model_of_row(held)
+    planned = [
+        {**r, "priority": value} if r["kind"] in inherit else r
+        for r in queue_rows.plan_to_rows(plan, intake_row["task_id"], model)
+    ]
     built = [*planned, queue_rows.intake_stamp(dict(intake_row), plan["id"])]
     return [r for r in built if (r["kind"], r["task_id"]) not in started], None
 
@@ -527,11 +535,12 @@ def missing_repo_refusal(intake_name: str, fields: Mapping) -> str | None:
 
 
 def decompose_into_rows(
-    runs_dir: Path, intake_id: str, run: Callable[[dict], Mapping],
+    runs_dir: Path, intake_id: str, run: Callable[[dict], Mapping], lane_model: str = queue_rows.DEFAULT_LANE_MODEL,
 ) -> tuple[int, list[str]]:
     """Edge for store mode: read the intake row, hand its body to `run`, write the plan it returns as rows.
 
-    No workspace file is read or written. Returns `(exit code, lines to print)`.
+    No workspace file is read or written. `lane_model` is `policy.dispatch.lane_model`, stamped by `plan_writes`.
+    Returns `(exit code, lines to print)`.
     """
     intake = select_intake_row(run_store.read_queue(runs_dir, kind="intake"), intake_id)
     if intake is None:
@@ -540,7 +549,7 @@ def decompose_into_rows(
         return 2, [f"routing: intake {intake_id} is a draft; ready it with `cox route ready {intake_id}`"]
     plan = run(intake_input_from_row(intake))
     existing = run_store.read_queue(runs_dir, plan["id"]) if plan["tasks"] else []
-    rows, failure = plan_writes(plan, intake, existing)
+    rows, failure = plan_writes(plan, intake, existing, lane_model)
     if failure is not None:
         return 1, [failure]
     for row in rows:

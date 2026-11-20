@@ -43,6 +43,7 @@ from agent_tools.cli_lazy import (
     lane_toolchain,
     launch_place,
     queue_export,
+    queue_rows,
     remote_argv,
     remote_doctor,
     remote_lane,
@@ -53,7 +54,7 @@ from agent_tools.cli_lazy import (
     work_state,
 )
 from agent_tools.cli_route import _initiative_path, _refuse_if_already_running
-from agent_tools.cli_route_sync import _harness_ready_or_refuse, _local_max_in_flight
+from agent_tools.cli_route_sync import _harness_ready_or_refuse, _lane_model, _local_max_in_flight
 from agent_tools.cli_runs import _leader_heartbeat_minutes, _waiting_lines
 from agent_tools.cli_runs_fetch import _holder_label, _lane_host_candidates, _profile_lane_hosts, _remote_edge
 from agent_tools.cli_stats import _resolve_profile_or_refuse
@@ -322,6 +323,11 @@ def _route_launch(a: argparse.Namespace) -> int:
             print(f"routing: intake {idea_path.stem} is a draft; ready it with `cox route ready {idea_path.stem}`")
             return 2
         via_rows = _decompose_via_rows(store_mode, a.dry_run, host, intake_row, detach=bool(getattr(a, "detach", False)))
+        # Decided here, once: the stub the chair writes below carries it to a hosted or detached run, which reads it back.
+        stub_text = _read_text_or_none(initiative_md)
+        lane_model = queue_rows.launch_lane_model(
+            route.parse_frontmatter(stub_text)[0] if stub_text is not None else None, _lane_model(profile),
+        )
         rows_when_detached = not via_rows and _decompose_via_rows(store_mode, a.dry_run, host, intake_row)
         if via_rows:
             pass  # the plan lands as rows after the run; the chair's export writes the files
@@ -337,13 +343,13 @@ def _route_launch(a: argparse.Namespace) -> int:
             else:
                 content = route.initiative_text(
                     fields.get("id", a.initiative_id), fields.get("title", ""),
-                    fields.get("repo", ""), fields.get("intake", intake), idea_body,
+                    fields.get("repo", ""), fields.get("intake", intake), idea_body, lane_model,
                 )
                 initiative_md.write_text(content, encoding="utf-8")
                 print(f"routing: initiative.md refreshed from {idea_path}")
         else:
             initiative_content = route.initiative_text(
-                a.initiative_id, idea_fields.get("title", ""), idea_fields.get("repo", ""), intake, idea_body,
+                a.initiative_id, idea_fields.get("title", ""), idea_fields.get("repo", ""), intake, idea_body, lane_model,
             )
             if a.dry_run:
                 print(f"dry-run: would write {initiative_md}")
@@ -484,7 +490,7 @@ def _route_launch(a: argparse.Namespace) -> int:
         plan = route.plan_from_result(
             result, a.initiative_id, idea_fields.get("title", ""), idea_body, repo=idea_fields["repo"],
         )
-        rows_code, rows_lines = route.decompose_into_rows(runs_dir, idea_path.stem, lambda _intake: plan)
+        rows_code, rows_lines = route.decompose_into_rows(runs_dir, idea_path.stem, lambda _intake: plan, lane_model)
         for line in rows_lines:
             print(line)
         return rows_code
@@ -895,6 +901,12 @@ def _workspace_probe(cwd: Path) -> Callable[[list[str]], tuple[int, str]]:
     return probe
 
 
+def _decompose_stub(workspace: Path, initiative: str) -> str | None:
+    """Edge. `work/<initiative>/initiative.md` relative to `workspace` when the launch wrote or kept that stub there, else None."""
+    relative = f"work/{initiative}/initiative.md"
+    return relative if (workspace / relative).is_file() else None
+
+
 def _route_launch_on_host(
     a: argparse.Namespace, host: lane_hosts.LaneHost, runs_dir: Path, run_id: str, repo: str | None = None,
     harness_dir: str | None = None, *, home: str | None = None, tools: Sequence[str] = (),
@@ -922,6 +934,7 @@ def _route_launch_on_host(
         preflight=preflight, home=home, host_checkouts=_host_checkouts(run_store.hosts(runs_dir), host.name), tools=tools,
         graph=graph, intake=intake, cartridges=_workspace_cartridges(runs_dir), probe=_workspace_probe(runs_dir.parent),
         profile=provider, phase=phase, cartridge_sha=_published_cartridges(runs_dir, _routing_profile_or_empty(a)),
+        stub=_decompose_stub(runs_dir.parent, initiative) if graph == "decompose" else None,
     )
     if isinstance(result, remote_launch.LaunchError):
         print(f"routing: launch on {host.name} failed at {result.step}: {result.message}")

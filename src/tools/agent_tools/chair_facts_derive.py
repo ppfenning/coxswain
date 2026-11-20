@@ -46,6 +46,7 @@ from agent_tools.chair_land_backoff import LandRefusal, aligned
 from agent_tools.chair_launch_budget import DEFAULT_MAX_LAUNCHES_PER_HOUR, WINDOW
 from agent_tools.chair_no_progress import NoProgress, RunOutcome, no_progress_facts, resolve_no_progress_after
 from agent_tools.chair_plan import initiative_homes
+from agent_tools.chair_plan_fill import less_phase_ready
 from agent_tools.chair_plan_land import planned_tasks
 from agent_tools.chair_read_dag import dag_problems
 from agent_tools.chair_read_docket import Docket, DocketInitiative, docket_from_rows, str_items
@@ -55,7 +56,7 @@ from agent_tools.chair_read_land_heads import read_land_heads
 from agent_tools.chair_read_quarantined import quarantined_from_rows
 from agent_tools.chair_read_stranded import stranded_from_rows
 from agent_tools.chair_read_tuning import current_lanes, tuning_facts
-from agent_tools.chair_stall_alarm import resolve_settings, stall_facts
+from agent_tools.chair_stall_alarm import resolve_settings, stall_facts, work_holds
 from agent_tools.chair_types import (
     DEFAULT_QUARANTINE_HOLD_AFTER,
     HELD_FILE_CAUSE,
@@ -607,8 +608,8 @@ def initiative_facts(
 ) -> list[InitiativeFacts]:
     """The docket's initiatives with no live run, so a live run is never relaunched.
 
-    `repo`, `ready_surfaces`, `land_at` and `phases` ride along only when their source was read; `rows` is each initiative's
-    ticket rows. `phases` leaves out a phase in `live_phases` and a task in `claimed` (initiative, task id), and is absent
+    `repo`, `ready_surfaces`, `land_at` and `phases` ride along only when their source was read, `lane_model` only when
+    the docket entry holds one; `rows` is each initiative's ticket rows. `phases` leaves out a phase in `live_phases` and a task in `claimed` (initiative, task id), and is absent
     when no phase can start a lane, so an initiative with no phase rows reads as it did."""
     from core.landing import DEFAULT_LAND_AT  # lazy: core sits beside agent_tools in one venv
 
@@ -641,6 +642,8 @@ def initiative_facts(
             facts["repo_dir"] = repo_dir_name(repos[i["id"]])
         if land_at is not None and i["id"] in land_at:
             facts["land_at"] = land_at[i["id"]]
+        if "lane_model" in i:
+            facts["lane_model"] = i["lane_model"]
         shown = phases_entry(i["id"])
         if shown:
             facts["phases"] = shown
@@ -1331,11 +1334,12 @@ def gather_facts(
         "stranded": stranded_facts(approved, list(deps.run_commits()), list(deps.phase_state())),
         "phase_branches": phase_branch_facts(list(deps.branch_counts())),
         "landing": list(deps.landing()) if deps.landing is not None else [],
-        "idle_stall": deps.idle_stall(now),
+        "idle_stall": less_phase_ready(deps.idle_stall(now), initiatives),
         "stall_alarm": stall_facts(
             resolve_settings(deps.stall_alarm() if deps.stall_alarm is not None else None),
             landing_records, [action_doc(row) for row in action_rows],
             stranded_alarm_facts(stranded, rows, live, {(t["initiative"], t["id"]) for t in planned_tasks(approved, initiatives) if t["run"]}),
+            work_holds(rows) if rows else [], deps.host,
         ),
         "tuning": tuning_facts(
             *deps.tuning(now),

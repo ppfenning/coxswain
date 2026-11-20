@@ -17,7 +17,7 @@ from agent_tools.chair_decompose_streak import DecomposeStreak
 from agent_tools.chair_land_backoff import LandRefusal
 from agent_tools.chair_land_conflict import LandConflict
 from agent_tools.chair_no_progress import NoProgress
-from agent_tools.chair_stall_alarm import StallFacts
+from agent_tools.chair_stall_alarm import HeldItem, StallFacts
 from core.jsontypes import conform
 
 EASTERN = ZoneInfo("America/New_York")  # every time the chair prints for an operator is shown in this zone
@@ -256,6 +256,7 @@ class InitiativeFacts(TypedDict):
     dag_problem: NotRequired[str]  # the first work-store DAG problem, e.g. "b needs x"; absent means valid
     land_at: NotRequired[str]  # the land_at (ticket, level or task) resolved this tick; old fixtures omit it
     phases: NotRequired[list[PhaseFacts]]  # the phases that can start a lane now; absent means none can, or the initiative's rows were not read
+    lane_model: NotRequired[str]  # `phase` when its row was stamped so at decompose (the tick loop never launches it); absent means `task`
 
 
 class QuarantineFacts(TypedDict):
@@ -858,7 +859,9 @@ class Action(TypedDict, total=False):
     stall: str  # a stall_alarm or stall_clear: the stall's key (chair_stall_alarm.Stall)
     subject: str  # a stall_alarm or stall_clear: the initiative or task its courier entry points at
     detail: str  # a stall_alarm or stall_clear: what stalled, in words; the recorded reason is the executor's own
-    quiet: bool  # a stall_clear for a same-failure streak that went quiet: it closes the stall and tells no one
+    quiet: bool  # a stall_clear for a same-failure streak that went quiet, or for an idle spell that ended: it closes the stall and tells no one
+    held: list[HeldItem]  # an idle_held stall_alarm: each held item, its hold reason and the command that releases it
+    seq: int  # a stall_alarm or stall_clear: how many of its kind the stall was told in before (chair_stall_alarm.told_counts)
     carry: list[str]  # the phases a clear_branches keeps and merges main into
     url: str  # a review_landed names the review PR
     merged_at: str | None  # a review_landed names when that PR merged

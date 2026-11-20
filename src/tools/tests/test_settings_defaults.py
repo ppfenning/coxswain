@@ -23,6 +23,7 @@ def test_missing_keys_yield_exactly_those_built_in_rows():
     present = [_set("cartridge", "epic_threshold"), _set("profile", "chair.stale_days"), _set("profile", "team")]
     rows = default_rows(present)
     assert [r["key"] for r in rows] == [
+        "policy.dispatch.lane_model",
         "policy.build_budget_usd_max",
         "policy.review_tier",
         "chair.housekeeping_hours",

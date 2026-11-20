@@ -38,6 +38,7 @@ from agent_tools import chair_cap, route
 
 # Private names, imported the way settings_model.py imports them.
 from agent_tools.editor_model import _MISSING, _get
+from agent_tools.queue_rows import LANE_MODELS
 from agent_tools.settings_model import STORE_MODES, Setting, setting_for
 
 # Cartridge keys the chair reads, with the reader it calls and the rule it enforces.
@@ -377,6 +378,8 @@ def plan_set(
         return PlanError(f"{scope}:{key}: {value.reason}")
     if is_profile and setting.path == "store.mode" and value not in STORE_MODES:
         return refuse(f"store.mode must be one of {', '.join(STORE_MODES)}, got '{value}'")
+    if setting.path == "policy.dispatch.lane_model" and value not in LANE_MODELS:
+        return refuse(f"policy.dispatch.lane_model must be one of {', '.join(LANE_MODELS)}, got '{value}'")
     if is_profile:
         new_text = _splice_profile(text, parts, value)
         if isinstance(new_text, PlanError):
