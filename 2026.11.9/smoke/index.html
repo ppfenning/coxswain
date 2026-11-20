@@ -6969,6 +6969,11 @@ into a scratch copy of the tree and confirming that they fail.</p>
 <td>A phase merge recorded before (or without) its push of the initiative branch, a phase rebuilt after its merge that is never merged again, and a second "merge phase" commit in the lander's clone: reset to origin's when its tree is the same, held with both commits named when it is not. All four tests failed on the tree before the fix.</td>
 </tr>
 <tr>
+<td><code>test_lander_empty.py</code></td>
+<td><code>cox lander adopt --apply</code> and <code>cox lander once</code> to a real clone of a bare origin and a Postgres store</td>
+<td>An approved phase whose branch holds only merge commits being merged, queued to land or given a pull request, or the chair told of it more than once; and a phase with a real change no longer landing. The first test failed on the tree before the fix.</td>
+</tr>
+<tr>
 <td><code>test_lander_unreadable_record.py</code></td>
 <td><code>cox lander once</code>, <code>status</code> and <code>adopt</code> to a Postgres store holding one malformed landing record</td>
 <td>One bad row stopping every lander pass in the store, a stall nobody is told of (or told of twice), or any reader writing into the bad row.</td>
