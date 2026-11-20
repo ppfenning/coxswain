@@ -14,12 +14,14 @@ from agent_tools.chair_types import (
     Action,
     ActionKind,
     Facts,
+    IdleStallInputs,
     InitiativeFacts,
     RunningInitiative,
     SteerPolicy,
     action_text,
 )
 from agent_tools.checkout_env import blocks_launch, host_env_verdict, sync_instruction
+from agent_tools.queue_rows import launchable_by_tick
 
 # name, weight (a host's share of new placements; its capacity when the hosts table sets none),
 # capabilities, free lane count, assigned-so-far (live lanes plus placements made this call)
@@ -41,6 +43,13 @@ PULL_MIN_AGE_S = 600
 
 def required_capabilities(initiative: InitiativeFacts) -> frozenset[str]:
     return frozenset(cap for task in initiative["ready_tasks"] for cap in task.get("requires", []))
+
+
+def less_phase_ready(inputs: IdleStallInputs, initiatives: Sequence[InitiativeFacts]) -> IdleStallInputs:
+    """`inputs` with the ready tasks of each initiative `launchable_by_tick` refuses taken off its `ready` count, never
+    below zero. Those tasks wait for a phase worker, not for the tick, so they must not make the lanes look idle."""
+    withheld = sum(len(i["ready_tasks"]) for i in initiatives if not launchable_by_tick(i))
+    return inputs if not withheld else {**inputs, "ready": max(0, inputs["ready"] - withheld)}
 
 
 def _launchable(initiative: InitiativeFacts, held_phases: frozenset[tuple[str, str]]) -> InitiativeFacts:
@@ -220,6 +229,8 @@ def _epic_launches(
 
     An initiative with a `dag_problem` never launches either; `plan_recover` is the one place that reports it.
 
+    Nor does one `launchable_by_tick` refuses, stamped for the phase lane model; `chair_plan` names it withheld.
+
     With now, an initiative the launch budget refuses is left out like a withheld one; `budget_skips` names why.
 
     The first free_lanes launch locally. The rest fill host_free in proportion to weight, capped at each
@@ -229,7 +240,7 @@ def _epic_launches(
     candidates = [
         i
         for i in (_launchable(i, held_phases) for i in facts["initiatives"])
-        if i["ready_tasks"] and i["id"] not in withheld and not i.get("dag_problem")
+        if i["ready_tasks"] and i["id"] not in withheld and not i.get("dag_problem") and launchable_by_tick(i)
     ]
     skips = budget_skips(facts, candidates, now)
     open_ = [i for i in candidates if i["id"] not in skips]
@@ -312,7 +323,7 @@ def scheduled_launches(
     open_ = [
         i
         for i in (_launchable(i, held_phases) for i in facts["initiatives"])
-        if i["ready_tasks"] and i["id"] not in withheld and not i.get("dag_problem")
+        if i["ready_tasks"] and i["id"] not in withheld and not i.get("dag_problem") and launchable_by_tick(i)
     ]
     skips = budget_skips(facts, open_, now)
     by_id = {i["id"]: i for i in open_ if i["id"] not in skips}

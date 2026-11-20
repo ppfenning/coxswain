@@ -83,6 +83,7 @@ from agent_tools.chair_types import (
     stamp,
 )
 from agent_tools.ci_gate import CiGate
+from agent_tools.queue_rows import launchable_by_tick
 from agent_tools.route_schedule import plan_from_inputs
 from core.jsontypes import is_list, is_mapping
 from core.landing import DEFAULT_LAND_AT
@@ -1356,6 +1357,8 @@ def plan_launch_kind(basis: TickBasis, land: LandPlan, decompose: DecomposePlan,
         "its launch was refused on a held lease": basis.lease_held,
         "it is held or deferred to a later release": basis.gated,
         "its last runs ended the same way": quarantine.no_progress,
+        # A `phase` initiative is the phase worker's to claim (F5); the tick's launch_epic leaves it alone.
+        "waits for a phase worker": frozenset(i["id"] for i in facts["initiatives"] if not launchable_by_tick(i)),
     }
     withheld = frozenset[str]().union(*withheld_by.values())
     claimed = claimed_by(quarantine.recover_actions, facts)

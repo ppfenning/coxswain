@@ -7,7 +7,7 @@ import os
 from collections.abc import Callable, Collection, Mapping, Sequence
 from typing import Any
 
-from agent_tools import intake_queue, release_gate, run_store
+from agent_tools import intake_queue, queue_rows, release_gate, run_store
 from agent_tools.intake_state import intake_group, intake_index
 
 # Not core.landing.DEFAULT_LAND_AT ("ticket"): callers such as chair_read_docket and cli.py do not pass land_at yet, and
@@ -201,6 +201,14 @@ def deferred_by_target(queue: Sequence[Mapping], current: str) -> dict[str, list
     return group_deferred(intakes, initiatives)
 
 
+def phase_lane_initiatives(queue: Sequence[Mapping]) -> list[str]:
+    """The ids of the initiatives stamped `lane_model: phase`, sorted, dropped ones left out. Every other one is `task`."""
+    return sorted(
+        str(r["task_id"]) for r in queue
+        if r.get("kind") == "initiative" and r.get("state") != "dropped" and queue_rows.lane_model_of_row(r) == "phase"
+    )
+
+
 def held_initiative_entries(
     queue: Sequence[Mapping], held_ids: Collection[str], held_intakes: Sequence[Mapping] = ()
 ) -> list[dict]:
@@ -233,6 +241,9 @@ def merged_event_lines(events: Sequence[Mapping]) -> list[str]:
     ]
 
 
+PHASE_LANE_HEADING = "lane model phase (waits for a phase worker; every other initiative is task):"
+
+
 def render_status(rows: list, groups: dict | None = None, problems: list | None = None,
                   gate_level: str | None = None, hidden: int = 0,
                   short_ids: Mapping[str, str] | None = None,
@@ -240,7 +251,8 @@ def render_status(rows: list, groups: dict | None = None, problems: list | None 
                   held: Sequence[Mapping] | None = None,
                   deferred: Mapping[str, Sequence[str]] | None = None,
                   chair_line: str = "",
-                  events: Mapping[str, Sequence[Mapping]] | None = None) -> str:
+                  events: Mapping[str, Sequence[Mapping]] | None = None,
+                  phase_lane: Sequence[str] = ()) -> str:
     """The human-readable text `agent-tools route status` prints, spec §5,
     from `status_rows`' output. One line per row: a run with no pidfile
     states only its id and state, since `pid` and `started` are both
@@ -261,6 +273,8 @@ def render_status(rows: list, groups: dict | None = None, problems: list | None 
     after the held block, in the mapping's order, with one `  id` line each.
     `chair_line`, when non-empty, is the last line, after `gate:`.
     `events` (run id to its initiative's events) puts a `merged:` line under a row for each `tasks_merged` event.
+    `phase_lane` (`phase_lane_initiatives`' output) adds a `PHASE_LANE_HEADING` after the deferred block, one `  id`
+    line each; every initiative it does not name runs under `task`, so an empty one adds no line.
     """
     ids = short_ids or {}
     by_run = events or {}
@@ -290,6 +304,7 @@ def render_status(rows: list, groups: dict | None = None, problems: list | None 
         else []
     )
     lines += [line for target, names in (deferred or {}).items() for line in (f"deferred to {target}:", *(f"  {n}" for n in names))]
+    lines += [PHASE_LANE_HEADING, *(f"  {i}" for i in phase_lane)] if phase_lane else []
     lines += [f"problem: {p}" for p in problems or []]
     lines += [f"gate: {gate_level}"] if gate_level is not None else []
     lines += [chair_line] if chair_line else []

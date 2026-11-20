@@ -9,6 +9,7 @@ Where each default comes from, measured in this repository:
 - `analytics.snapshot_max_age_s`: imported from `agent_tools.analytics_snapshot.DEFAULT_MAX_AGE_S`.
 - `operator`: imported from `agent_tools.settings_model.DEFAULT_OPERATOR`.
 - `store.mode`: imported from `agent_tools.settings_model.DEFAULT_STORE_MODE`.
+- `policy.dispatch.lane_model`: imported from `agent_tools.queue_rows.DEFAULT_LANE_MODEL`, `task`, the model that is off.
 - `policy.build_budget_usd_max`, `epic_threshold`, `policy.review_tier`: no code default.
   The cartridge sets them. Per the chair pin of 2026-10-05 they stay in the table with
   default `None` and the note "set by the cartridge". No value is invented.
@@ -24,6 +25,7 @@ from dataclasses import dataclass
 
 from agent_tools.analytics_snapshot import DEFAULT_MAX_AGE_S
 from agent_tools.chair_facts import DEFAULT_HOUSEKEEPING_HOURS, DEFAULT_STALE_DAYS
+from agent_tools.queue_rows import DEFAULT_LANE_MODEL
 from agent_tools.settings_model import DEFAULT_OPERATOR, DEFAULT_STORE_MODE, SettingRow
 
 BUILT_IN = "built-in"
@@ -40,6 +42,7 @@ class DefaultKey:
 
 
 DEFAULT_KEYS: tuple[DefaultKey, ...] = (
+    DefaultKey("cartridge", "policy.dispatch.lane_model", "lanes and machines", DEFAULT_LANE_MODEL),
     DefaultKey("cartridge", "policy.build_budget_usd_max", "builds and budgets", None),
     DefaultKey("cartridge", "epic_threshold", "builds and budgets", None),
     DefaultKey("cartridge", "policy.review_tier", "models and tiers", None, operator_only=True),

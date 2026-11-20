@@ -44,6 +44,7 @@ from collections.abc import Collection, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, NotRequired, TypedDict
 
+from agent_tools.queue_rows import launchable_by_tick
 from core.jsontypes import is_list, is_mapping
 
 if TYPE_CHECKING:  # chair_types imports this module for StallFacts, so the import runs only for the checker
@@ -686,7 +687,7 @@ def plan_stall_alarm(
         "progress_at": str(progress) if progress else None,
         "free_lanes": _count(idle.get("free_lanes")),
         "ready": _count(idle.get("ready")) + _count(idle.get("queued")),
-        "subject": next((str(i["id"]) for i in facts.get("initiatives") or [] if i.get("ready_tasks")), ""),
+        "subject": next((str(i["id"]) for i in facts.get("initiatives") or [] if i.get("ready_tasks") and launchable_by_tick(i)), ""),
         "held": frozenset(facts.get("held_initiatives") or ()) | frozenset(facts.get("no_progress") or {}),
         "idle_raised": bool(idle.get("open_signature"))
         or any(a.get("kind") == "needs_chair" and a.get("cause") in IDLE_CAUSES for a in planned),

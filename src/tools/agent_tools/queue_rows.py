@@ -11,11 +11,17 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
 Row = dict[str, Any]
+
+LaneModel = Literal["task", "phase"]
+# `policy.dispatch.lane_model`: how an initiative's work is run. `task` is today's epic run, one lane per initiative;
+# `phase` waits for a phase worker to claim it. Stamped on the initiative row at decompose and never changed after.
+LANE_MODELS: tuple[LaneModel, ...] = ("task", "phase")
+DEFAULT_LANE_MODEL: LaneModel = "task"
 
 _TASK_DEFAULT_STATE = "todo"  # route.work_item's default for a file that names no state
 _LIFTED = ("title", "needs", "surfaces")
@@ -84,6 +90,48 @@ def epic_of_row(row: Mapping[str, Any]) -> str | None:
         return None if value is None else valid_epic_id(value)
     except ValueError:
         return None
+
+
+def lane_model_of(value: object) -> LaneModel:
+    """`phase` only for the exact value `phase`; absent, `task` or anything unknown reads `task`, the model that is off."""
+    return "phase" if value == "phase" else DEFAULT_LANE_MODEL
+
+
+def launchable_by_tick(initiative: Mapping[str, Any]) -> bool:
+    """False for an initiative fact stamped `lane_model: phase` at decompose: a phase worker claims it, so the chair
+    tick's launch_epic never does. Absent or any other value is the task model, which the tick launches as before."""
+    return lane_model_of(initiative.get("lane_model")) != "phase"
+
+
+def lane_model_of_row(row: Mapping[str, Any]) -> LaneModel:
+    """The lane model an initiative row was stamped with at decompose; any other kind, or no stamp, reads `task`."""
+    return lane_model_of(_initiative_extra(row, "lane_model"))
+
+
+def cartridge_lane_model(cartridge: Mapping[str, Any]) -> LaneModel:
+    """The resolved cartridge's `policy.dispatch.lane_model`; absent, malformed or unknown reads `task`."""
+    policy = cartridge.get("policy")
+    dispatch = policy.get("dispatch") if isinstance(policy, Mapping) else None
+    return lane_model_of(dispatch.get("lane_model") if isinstance(dispatch, Mapping) else None)
+
+
+def launch_lane_model(stub: Mapping[str, Any] | None, configured: str) -> LaneModel:
+    """The model a decompose launch stamps: the `initiative.md` stub's when one exists, else `configured`, the
+    cartridge's. The chair writes the stub before a hosted or detached run and the run carries it along, so the chair's
+    cartridge decides even when the run's own machine names another model. A stub with no key was written under `task`."""
+    return lane_model_of(configured if stub is None else stub.get("lane_model"))
+
+
+def stamp_lane_model(row: Row, lane_model: str) -> Row:
+    """`row` with `extra.lane_model: phase` when it is an initiative row, `lane_model` is `phase` and it holds no stamp yet.
+
+    A `task` model writes no key, so the setting left off keeps every row as it was. A row already stamped keeps its
+    stamp, so a repeat write never changes the model an initiative was decomposed under."""
+    extra = row.get("extra")
+    stamped = isinstance(extra, Mapping) and "lane_model" in extra
+    if row.get("kind") != "initiative" or lane_model_of(lane_model) != "phase" or stamped:
+        return row
+    return {**row, "extra": {**(extra if isinstance(extra, Mapping) else {}), "lane_model": "phase"}}
 
 
 def target_branch_of_row(row: Mapping[str, Any]) -> str | None:
@@ -160,11 +208,13 @@ def render_item(row: Row) -> str:
     return f"---\n{header}---\n{row['body']}"
 
 
-def plan_to_rows(plan: Mapping[str, Any], intake_id: str) -> list[Row]:
-    """The rows parse_item gives for the plan's initiative.md, then its task files, in plan order."""
+def plan_to_rows(plan: Mapping[str, Any], intake_id: str, lane_model: str = DEFAULT_LANE_MODEL) -> list[Row]:
+    """The rows parse_item gives for the plan's initiative.md, then its task files, in plan order.
+
+    `lane_model` is `policy.dispatch.lane_model` at decompose: `phase` stamps `extra.lane_model` on the initiative row."""
     # A ticket's needs_json and surfaces_json are the `needs` and `surfaces` lists below: this row shape has no _json keys.
     initiative = plan["id"]
-    head: Row = {
+    head: Row = stamp_lane_model({
         "kind": "initiative",
         "initiative": initiative,
         "task_id": initiative,
@@ -180,7 +230,7 @@ def plan_to_rows(plan: Mapping[str, Any], intake_id: str) -> list[Row]:
             "phases": [{"id": p["id"], "goal": p["goal"]} for p in plan["phases"]],
             **({"repo": plan["repo"]} if isinstance(plan.get("repo"), str) and plan["repo"] else {}),
         },
-    }
+    }, lane_model)
     tasks = [
         {
             "kind": "task",

@@ -9,6 +9,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 
 from agent_tools.chair_types import Action, ActionKind, Facts, action_text
+from agent_tools.queue_rows import launchable_by_tick
 
 IDLE_READY_MINUTES = 30
 IDLE_READY_CAUSE = "idle_ready"
@@ -49,7 +50,7 @@ def _reason(ids: list[str], waits: Mapping[str, list[str]]) -> str:
 
 def plan_idle_ready(facts: Facts, actions: Sequence[Action], now: datetime) -> list[Action]:
     """One needs_chair with cause idle_ready, or nothing. A missing `last_progress_at` counts as not yet idle."""
-    ready = sorted(str(i["id"]) for i in facts.get("initiatives") or [] if i.get("ready_tasks"))
+    ready = sorted(str(i["id"]) for i in facts.get("initiatives") or [] if i.get("ready_tasks") and launchable_by_tick(i))
     idle = _idle_minutes(facts, now)
     if not ready or idle is None or idle < IDLE_READY_MINUTES:
         return []

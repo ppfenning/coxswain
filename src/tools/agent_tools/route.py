@@ -72,6 +72,7 @@ from agent_tools.route_status import latest_groups_file as latest_groups_file
 from agent_tools.route_status import launch_blockers as launch_blockers
 from agent_tools.route_status import parse_frontmatter as parse_frontmatter
 from agent_tools.route_status import parse_pid as parse_pid
+from agent_tools.route_status import phase_lane_initiatives as phase_lane_initiatives
 from agent_tools.route_status import render_status as render_status
 from agent_tools.route_status import run_entries as run_entries
 from agent_tools.route_status import state_problems as state_problems
@@ -114,6 +115,7 @@ __all__ = [
     "parse_frontmatter",
     "parse_pid",
     "parse_profile",
+    "phase_lane_initiatives",
     "priority_rows",
     "priority_target",
     "priority_text",
