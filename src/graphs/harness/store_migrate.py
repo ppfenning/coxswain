@@ -36,13 +36,17 @@ from harness.store_dialect import Connection, Dialect, connect
 __all__ = [
     "ADDITIVE_PREFIX",
     "MigrationError",
+    "NotExactVersion",
     "accepts",
+    "additive_violations",
     "check_version",
     "default_modules",
+    "exact_refusal",
     "migrate",
     "newer_descriptions",
     "newer_refusal",
     "open_store",
+    "open_store_exact",
     "pending",
     "recorded_description",
 ]
@@ -60,6 +64,11 @@ ADDITIVE_PREFIX = "additive: "
 
 class MigrationError(RuntimeError):
     """The migration set or the database is not in a state the runner will act on."""
+
+
+class NotExactVersion(MigrationError):
+    """A whole-schema consumer (a copy, a switch) was given a store not at exactly this code's version. The message
+    names the role and the versions only, never the store's URL."""
 
 
 def _ordered(given: Sequence[ModuleType | str]) -> tuple[ModuleType, ...]:
@@ -120,6 +129,63 @@ def recorded_description(description: str, additive: bool) -> str:
 def _declares_additive(m: ModuleType) -> bool:
     """Whether the module sets `ADDITIVE = True`; anything else, absence included, is not additive."""
     return getattr(m, "ADDITIVE", False) is True
+
+
+_LITERAL = re.compile(r"'(?:[^']|'')*'")
+_COMMENT = re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL)
+_ALTER = re.compile(r"^\s*ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?(\w+)\s+(.*)$", re.DOTALL)
+_CREATED = re.compile(r"^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)")
+_UNIQUE_INDEX = re.compile(r"^\s*CREATE\s+UNIQUE\s+INDEX\b.*?\bON\s+(?:ONLY\s+)?(\w+)", re.DOTALL)
+# Anywhere in a statement: each removes, renames or rewrites what older code reads and writes, or makes its write fail.
+_NEVER_ADDITIVE = (
+    ("DROP", re.compile(r"\bDROP\b")),
+    ("RENAME", re.compile(r"\bRENAME\b")),
+    ("ALTER COLUMN", re.compile(r"\bALTER\s+COLUMN\b")),
+    ("DELETE", re.compile(r"\bDELETE\s+FROM\b")),
+    ("TRUNCATE", re.compile(r"\bTRUNCATE\b")),
+    ("RAISE", re.compile(r"\bRAISE\b")),
+)
+_ADD_COLUMN = re.compile(
+    r"^ADD\s+(?:COLUMN\s+)?(?:IF\s+NOT\s+EXISTS\s+)?(?!(?:CONSTRAINT|PRIMARY|UNIQUE|CHECK|FOREIGN|EXCLUDE)\b)\w+\b"
+)
+_CONSTRAINT = re.compile(r"\b(?:PRIMARY\s+KEY|UNIQUE|CHECK|REFERENCES)\b")
+
+
+def _actions(clauses: str) -> list[str]:
+    """An ALTER TABLE's comma-separated actions, splitting only at commas outside parentheses."""
+    parts: list[str] = []
+    depth, start = 0, 0
+    for i, ch in enumerate(clauses):
+        depth += (ch == "(") - (ch == ")")
+        if ch == "," and depth == 0:
+            parts.append(clauses[start:i])
+            start = i + 1
+    return [p.strip().rstrip(";").strip() for p in (*parts, clauses[start:])]
+
+
+def additive_violations(statements: Sequence[str]) -> tuple[str, ...]:
+    """Pure. Why `statements`, one migration's, are not additive, one reason per offence; () when they only add.
+    Additive means code older than the migration still reads and writes the store as before: no DROP, RENAME, ALTER
+    COLUMN, DELETE, TRUNCATE or RAISE; an ALTER TABLE only adds columns, each without a constraint and, when NOT NULL,
+    with a DEFAULT, or an older insert that omits it fails; a unique index only on a table this migration creates.
+    String literals and comments are not read."""
+    codes = [_COMMENT.sub(" ", _LITERAL.sub("''", sql)).upper() for sql in statements]
+    created = {m.group(1) for code in codes if (m := _CREATED.match(code))}
+    reasons: list[str] = []
+    for i, code in enumerate(codes, start=1):
+        reasons += [f"statement {i} has {word}" for word, rx in _NEVER_ADDITIVE if rx.search(code)]
+        if (index := _UNIQUE_INDEX.match(code)) and index.group(1) not in created:
+            reasons.append(f"statement {i} adds a unique index to {index.group(1).lower()}, a table it did not create")
+        if (alter := _ALTER.match(code)) is None:
+            continue
+        for action in _actions(alter.group(2)):
+            if not _ADD_COLUMN.match(action):
+                reasons.append(f"statement {i} alters {alter.group(1).lower()} by more than adding a column")
+            elif _CONSTRAINT.search(action):
+                reasons.append(f"statement {i} adds a column to {alter.group(1).lower()} with a constraint")
+            elif re.search(r"\bNOT\s+NULL\b", action) and not re.search(r"\bDEFAULT\b", action):
+                reasons.append(f"statement {i} adds a NOT NULL column to {alter.group(1).lower()} with no DEFAULT")
+    return tuple(reasons)
 
 
 def accepts(current: int, expected: int, newer_descriptions: Sequence[str]) -> bool:
@@ -293,6 +359,10 @@ def migrate(conn: Connection, applied_at: str, modules: Sequence[ModuleType | st
     before = _current_version(conn)
     if before > newest:
         return _newer_or_refused(conn, before, newest)
+    for m in ordered[before:]:
+        broken = additive_violations(m.statements(conn.dialect)) if _declares_additive(m) else ()
+        if broken:
+            raise MigrationError(f"migration {m.VERSION:04d} declares ADDITIVE but is not: {'; '.join(broken)}")
     conn.execute(_CREATE)
     p = conn.dialect.placeholder
     record = f"INSERT INTO schema_version (version, applied_at, description) VALUES ({p}, {p}, {p})"
@@ -329,6 +399,35 @@ def open_store(url: str, now: str) -> Connection:
     except BaseException:
         conn.close()
         raise
+    return conn
+
+
+def exact_refusal(role: str, current: int, expected: int) -> str | None:
+    """Pure. None when a store at `current` is at exactly this code's `expected` version; else why a whole-schema
+    consumer refuses it. The additive rule (`accepts`) is for code that uses the tables it knows: a copy made by this
+    code carries only those, so it would silently drop what a newer store's migrations add."""
+    if current == expected:
+        return None
+    if current < expected:
+        return f"the {role} store is at schema version {current}, older than the {expected} this code expects"
+    span = f"{expected + 1:04d}" if current == expected + 1 else f"{expected + 1:04d}-{current:04d}"
+    return (f"the {role} store is at schema version {current}, newer than the {expected} this code knows: a copy by this "
+            f"code would drop what migration {span} adds. Run it from a build at schema version {current}.")
+
+
+def open_store_exact(url: str, now: str, role: str) -> Connection:
+    """Edge. `open_store`, then refuse, closing the connection, unless the store is at exactly this code's newest
+    migration: for a consumer that must see the whole schema, which `open_store` alone no longer guarantees once it
+    accepts a store newer by additive migrations. Raises `NotExactVersion`."""
+    conn = open_store(url, now)
+    try:
+        refusal = exact_refusal(role, _current_version(conn), len(_ordered(default_modules())))
+    except BaseException:
+        conn.close()
+        raise
+    if refusal is not None:
+        conn.close()
+        raise NotExactVersion(refusal)
     return conn
 
 

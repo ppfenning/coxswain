@@ -11,6 +11,7 @@ from harness.store_migrate import (
     ADDITIVE_PREFIX,
     MigrationError,
     accepts,
+    additive_violations,
     check_version,
     default_modules,
     migrate,
@@ -403,6 +404,60 @@ def test_every_default_module_statement_is_portable_and_has_no_foreign_key(modul
     sql = module.statements(dialect)
     assert [forbidden_constructs(s) for s in sql] == [()] * len(sql)
     assert not [s for s in sql if "REFERENCES" in s.upper() or "FOREIGN KEY" in s.upper()]
+
+
+@pytest.mark.parametrize("module", default_modules(), ids=lambda m: f"{m.VERSION:04d}")
+@pytest.mark.parametrize("dialect", [SQLITE, POSTGRES], ids=["sqlite", "postgres"])
+def test_every_default_module_that_declares_additive_holds_only_additive_ddl(module, dialect):
+    declared = getattr(module, "ADDITIVE", False) is True
+    assert (additive_violations(module.statements(dialect)) if declared else ()) == ()
+
+
+ADDITIVE_DDL = (
+    "CREATE TABLE IF NOT EXISTS notes (key TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (key))",
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_notes_body ON notes (body)",
+    "CREATE INDEX IF NOT EXISTS ix_runs_host ON runs (host)",
+    "ALTER TABLE hosts ADD COLUMN lanes INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE hosts ADD COLUMN IF NOT EXISTS labels TEXT NOT NULL DEFAULT '', ADD COLUMN note TEXT",
+    "-- DROP is only named in this comment\nINSERT INTO notes (key, body) VALUES ('drop', 'RENAME me')",
+    "CREATE TRIGGER IF NOT EXISTS tr_runs AFTER INSERT ON runs BEGIN INSERT INTO notes VALUES (NEW.run_id, ''); END",
+)
+
+
+def test_additive_ddl_has_no_violation():
+    assert additive_violations(ADDITIVE_DDL) == ()
+
+
+@pytest.mark.parametrize(("sql", "reason"), [
+    pytest.param("DROP TABLE notes", "has DROP", id="drop-table"),
+    pytest.param("ALTER TABLE runs DROP COLUMN host", "has DROP", id="drop-column"),
+    pytest.param("ALTER TABLE runs RENAME COLUMN host TO machine", "has RENAME", id="rename-column"),
+    pytest.param("ALTER TABLE runs RENAME TO old_runs", "has RENAME", id="rename-table"),
+    pytest.param("ALTER TABLE runs ALTER COLUMN host TYPE INTEGER", "has ALTER COLUMN", id="alter-column-type"),
+    pytest.param("ALTER TABLE runs ALTER host TYPE INTEGER", "by more than adding a column", id="alter-type-bare"),
+    pytest.param("ALTER TABLE runs ADD COLUMN lanes INTEGER NOT NULL", "NOT NULL column to runs with no DEFAULT",
+                 id="not-null-no-default"),
+    pytest.param("ALTER TABLE runs ADD COLUMN a TEXT, ADD COLUMN b TEXT NOT NULL", "with no DEFAULT", id="second-action"),
+    pytest.param("ALTER TABLE runs ADD CONSTRAINT one_host UNIQUE (host)", "by more than adding a column",
+                 id="add-constraint"),
+    pytest.param("ALTER TABLE runs ADD COLUMN code TEXT UNIQUE", "with a constraint", id="unique-column"),
+    pytest.param("CREATE UNIQUE INDEX ux_runs_host ON runs (host)", "unique index to runs", id="unique-index-old-table"),
+    pytest.param("DELETE FROM runs", "has DELETE", id="delete"),
+    pytest.param("TRUNCATE runs", "has TRUNCATE", id="truncate"),
+    pytest.param("CREATE TRIGGER t BEFORE INSERT ON runs BEGIN SELECT RAISE(ABORT, 'no'); END", "has RAISE",
+                 id="raising-trigger"),
+])
+def test_a_non_additive_statement_is_named(sql, reason):
+    found = additive_violations(("CREATE TABLE IF NOT EXISTS notes (key TEXT NOT NULL, PRIMARY KEY (key))", sql))
+    assert found and all(r.startswith("statement 2 ") for r in found) and any(reason in r for r in found), found
+
+
+def test_a_module_declaring_additive_with_non_additive_ddl_is_refused_before_any_write(conn):
+    migrate(conn, NOW, [fake(1, ONE)])
+    before = rows(conn)
+    with pytest.raises(MigrationError, match=r"migration 0002 declares ADDITIVE but is not: statement 1 has DROP"):
+        migrate(conn, NOW, [fake(1, ONE), fake(2, ("DROP TABLE t1",), additive=True)])
+    assert rows(conn) == before and "t1" in tables(conn)
 
 
 def _and_a_newer_build_commits(description):

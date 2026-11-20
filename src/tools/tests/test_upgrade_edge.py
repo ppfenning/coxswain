@@ -110,6 +110,25 @@ def test_a_migration_is_additive_only_when_it_sets_additive_to_the_literal_true_
     assert not upgrade_edge.declares_additive("ADDITIVE = (\n")
 
 
+@pytest.mark.parametrize("source", [
+    pytest.param("ADDITIVE: bool = True\nADDITIVE = False\n", id="annotated-then-rebound"),
+    pytest.param("ADDITIVE = True\nADDITIVE = False\n", id="rebound"),
+    pytest.param("ADDITIVE = False\nADDITIVE = True\n", id="bound-twice"),
+    pytest.param("ADDITIVE, X = False, 1\n", id="tuple"),
+    pytest.param("ADDITIVE = True\nADDITIVE, X = False, 1\n", id="true-then-tuple"),
+    pytest.param("if 1:\n    ADDITIVE = True\n", id="inside-if"),
+    pytest.param("ADDITIVE = True\nif 1:\n    ADDITIVE = False\n", id="true-then-if-rebind"),
+    pytest.param("ADDITIVE = True\nfor ADDITIVE in (False,):\n    pass\n", id="loop-target"),
+    pytest.param("ADDITIVE = True\ndel ADDITIVE\n", id="deleted"),
+    pytest.param("ADDITIVE = True\nfrom x import ADDITIVE\n", id="import"),
+    pytest.param("ADDITIVE = True\nfrom x import *\n", id="star-import"),
+    pytest.param("ADDITIVE = X = True\n", id="chained"),
+    pytest.param("ADDITIVE = True\ndef f():\n    global ADDITIVE\n    ADDITIVE = False\n", id="global"),
+])
+def test_any_other_binding_of_additive_means_the_module_is_not_additive(source):
+    assert not upgrade_edge.declares_additive(source)
+
+
 def test_the_rule_is_carried_by_a_store_migrate_source_that_defines_accepts():
     assert upgrade_edge.tolerates_additive("def accepts(current, expected, newer):\n    return True\n")
     assert not upgrade_edge.tolerates_additive("def check_version(conn):\n    pass\n")

@@ -107,23 +107,49 @@ def migration_path(number: str) -> str:
     return f"{MIGRATIONS_DIR}store_ddl_{number}.py"
 
 
-def _top_level_assigns(source: str) -> dict[str, ast.expr]:
-    """The module-level `NAME = value` assignments in `source`, by name; none when it does not parse."""
-    try:
-        body = ast.parse(source).body
-    except SyntaxError:
-        return {}
-    plain = {t.id: n.value for n in body if isinstance(n, ast.Assign) for t in n.targets if isinstance(t, ast.Name)}
-    annotated = {n.target.id: n.value for n in body
-                 if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name) and n.value is not None}
-    return {**plain, **annotated}
+_DECLARED = "ADDITIVE"
+
+
+def _binds(node: ast.AST, name: str) -> bool:
+    """Whether `node` itself binds or unbinds `name`: an assignment or deletion target (inside a tuple, a loop, a
+    `with`, a walrus, anywhere), an import alias, a def or class, a `global`/`nonlocal`, or a match capture."""
+    if isinstance(node, ast.Name):
+        return node.id == name and isinstance(node.ctx, ast.Store | ast.Del)
+    if isinstance(node, ast.alias):
+        return (node.asname or node.name.split(".")[0]) == name or node.name == "*"
+    if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+        return node.name == name
+    if isinstance(node, ast.Global | ast.Nonlocal):
+        return name in node.names
+    if isinstance(node, ast.MatchAs | ast.MatchStar):
+        return node.name == name
+    return False
+
+
+def _the_declaration(node: ast.stmt) -> bool:
+    """Whether a module-level statement is `ADDITIVE = True` or `ADDITIVE: <type> = True`, with the literal True."""
+    if isinstance(node, ast.Assign):
+        target, value = (node.targets[0] if len(node.targets) == 1 else None), node.value
+    elif isinstance(node, ast.AnnAssign):
+        target, value = node.target, node.value
+    else:
+        return False
+    return (isinstance(target, ast.Name) and target.id == _DECLARED
+            and isinstance(value, ast.Constant) and value.value is True)
 
 
 def declares_additive(source: str) -> bool:
-    """Whether a `store_ddl_NNNN` module's source sets `ADDITIVE = True` at module level, as
-    `harness.store_migrate` reads it: anything other than the literal True is not additive."""
-    value = _top_level_assigns(source).get("ADDITIVE")
-    return isinstance(value, ast.Constant) and value.value is True
+    """Whether a `store_ddl_NNNN` module's source declares `ADDITIVE = True`: exactly one binding of the name in the
+    whole module, and it is a module-level plain or annotated assignment of the literal True. Any other binding
+    anywhere (a later rebind, a tuple target, one inside an `if` or a function, an import, `from x import *`) means
+    not additive, as does a source that does not parse. Stricter than `harness.store_migrate`'s runtime read, so the
+    edge upgrade errs toward refusing a rollback."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    bindings = sum(_binds(node, _DECLARED) for node in ast.walk(tree))
+    return bindings == 1 and any(_the_declaration(n) for n in tree.body)
 
 
 def tolerates_additive(source: str) -> bool:
