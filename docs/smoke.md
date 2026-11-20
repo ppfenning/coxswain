@@ -186,10 +186,11 @@ macOS launchd stays an operator check: the suite runs on Linux and starts no lau
 
 ## Where it runs
 
-- **CI.** The required `test` job has a Postgres service (the pinned image) and two steps: `smoke` runs
+- **CI.** The `smoke` and `smoke (forge)` jobs each have a Postgres service (the pinned image). `smoke` runs
   `-m "not forge"` and `smoke (forge)` runs `-m forge`, which starts the Forgejo container with the runner's docker.
   Both set `COX_SMOKE_POSTGRES_URL` to the service and `COX_SMOKE_REQUIRED=1`, so a missing `uv`, Postgres or docker
-  fails the job instead of skipping it.
+  fails the job instead of skipping it. They run in parallel with the unit suites and the checks job; the required
+  `test` check passes only when every one of those jobs succeeded.
 - **Lane checks.** `.agent-checks` runs `pytest -q -rs smoke` after the component suites. A lane host with docker
   runs it against its own container. A host with no docker on PATH skips it and prints the reason. A host whose
   `docker` is on PATH but whose daemon does not answer fails, because that is a host fault a skip would hide. Set

@@ -43,15 +43,17 @@ slash, then `home` or `Users`, then a name, such as `/home/<name>` or
 `/Users/<name>`, or that starts with a tilde and a slash, such as `~/`, never
 appears in a test or fixture, even a made-up one. `tmp_path` is preferred. The
 one neutral home directory is `/home/user`, the home folder of a user named
-`user`, and it is only for data that must look like a home folder. Hosts are
-example names with no `.lan` suffix. Ssh users and operator or team settings
+`user`, and it is only for data that must look like a home folder. A machine
+is a placeholder with no `.lan` suffix, `lane-host` for a build lane and
+`lander-host` for the lander, never a name from the hosts table. Ssh users and operator or team settings
 are a neutral word such as `dev` or `acme`. No private-network or tailnet
 address appears.
 
 CI's clean check rejects anything else, and the names rule reads a pattern you
 cannot see, so the safe move is never to use a real name or path. The harness
 runs the clean check on your patch before review, so a hit costs a fix round
-inside the same attempt.
+inside the same attempt. Its refusal names each hit's file, line and matched
+text, and the placeholder to put there instead; use that placeholder.
 
 ## What good looks like
 
