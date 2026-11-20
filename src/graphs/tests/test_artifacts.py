@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from harness.artifacts import (
-    MISSING_NOTICE_KEY,
+    ERROR_FIELD,
     ArtifactConflict,
     ArtifactsRoot,
     Source,
@@ -21,6 +21,7 @@ from harness.artifacts import (
     mark_missing,
     put_object,
     scrub,
+    secret_values,
     sources,
     step_artifacts,
     upload,
@@ -104,9 +105,35 @@ def test_a_key_is_written_when_empty_left_at_the_same_size_and_refused_at_anothe
         decide("k", 3, 4)
 
 
-def test_scrub_replaces_each_long_enough_secret_and_leaves_short_ones():
-    assert scrub(b"key=GKabcdef123 secret=s3cr3tvalue x=abc", ["GKabcdef123", "s3cr3tvalue", "abc"]) == (
-        b"key=[redacted] secret=[redacted] x=abc")
+def test_secret_values_are_the_long_values_of_every_variable_named_like_a_secret():
+    env = {"GH_TOKEN": "gho_placeholder0", "CLAUDE_CODE_OAUTH_TOKEN": "sk-placeholder-oauth",
+           "PGPASSWORD": "placeholder-pw", "DB_PASSWD": "placeholder-pw2", "AWS_SECRET_ACCESS_KEY": "placeholder-sk",
+           "GARAGE_ACCESS_KEY_ID": "GKplaceholder1", "api_key": "lowercase-key", "PATH": "/usr/bin:/bin",
+           "SHORT_TOKEN": "abc"}
+    assert secret_values(env) == ("sk-placeholder-oauth", "gho_placeholder0", "placeholder-pw2", "GKplaceholder1",
+                                  "placeholder-pw", "placeholder-sk", "lowercase-key")
+
+
+def test_scrub_replaces_each_secret_in_its_escaped_forms_and_leaves_short_ones():
+    assert scrub("key=GKabcdef123 x=abc repr='s3cr\\tvalue'", ["GKabcdef123", "s3cr\tvalue", "abc"]) == (
+        "key=*** x=abc repr='***'")
+
+
+def test_scrub_removes_the_userinfo_and_query_passwords_of_every_url():
+    text = ("store postgresql://worker:placeholder@db.example.internal:5432/cox?sslpassword=x9 and "
+            "https://gho_placeholder@github.com/o/r.git and plain https://example.internal/path?a=1")
+    assert scrub(text, []) == (
+        "store postgresql://***@db.example.internal:5432/cox?sslpassword=*** and "
+        "https://***@github.com/o/r.git and plain https://example.internal/path?a=1")
+
+
+def test_a_check_that_prints_its_environment_uploads_no_secret_of_it():
+    env = {"GH_TOKEN": "gho_placeholder0", "COX_STORE_URL": "postgresql://w:placeholder-pw9@h/db",
+           "PGPASSWORD": "placeholder-pw9", "HOME": "/home/someone"}
+    printed = "\n".join(f"{k}={v}" for k, v in env.items())
+    out = scrub(printed, secret_values(env))
+    assert all(secret not in out for secret in ("gho_placeholder0", "placeholder-pw9")), out
+    assert "HOME=/home/someone" in out
 
 
 # --- sources, attach and mark_missing -------------------------------------------------------------------------------
@@ -141,13 +168,14 @@ def test_a_build_with_no_patch_and_checks_with_no_log_carry_nothing(tmp_path):
     assert sources(rows_of(bare), bare, run_dir=tmp_path) == ()
 
 
-def test_attach_and_mark_missing_append_and_leave_the_rest_of_the_row():
+def test_attach_lists_items_and_mark_missing_records_the_error_in_its_own_field():
     row = step_row(run_id="r", step="task/t1/build", initiative="i", phase="p", task_id="t1", kind="build", round_=1,
-                   ok=True, verdict="", result={}, finished_at=AT)
+                   ok=True, verdict="", result={"patch_ok": True}, finished_at=AT)
     listed = mark_missing(attach(row, [{"key": "k"}]), "boom")
-    assert listed["artifacts_json"] == [{"key": "k"}, {"artifacts_missing": True, "error": "boom"}]
-    assert {**listed, "artifacts_json": []} == row
-    assert row["artifacts_json"] == []
+    assert listed["artifacts_json"] == [{"key": "k"}]
+    assert listed["result_json"] == {"patch_ok": True, ERROR_FIELD: "boom"}
+    assert {**listed, "artifacts_json": [], "result_json": {"patch_ok": True}} == row
+    assert row["artifacts_json"] == [] and row["result_json"] == {"patch_ok": True}
 
 
 # --- the root -------------------------------------------------------------------------------------------------------
@@ -179,12 +207,14 @@ def test_a_relative_path_is_under_the_runs_directory_and_an_absolute_one_stays(t
     assert absolute is not None and absolute.path == str(tmp_path / "elsewhere")
 
 
-def test_the_root_scrubs_the_values_of_the_variables_the_object_store_block_names(tmp_path):
+def test_the_root_scrubs_the_secret_values_of_the_lanes_environment(tmp_path):
     pytest.importorskip("pyarrow")
-    block = {"endpoint": "http://127.0.0.1:1", "access_key_env": "K_ENV", "secret_key_env": "S_ENV"}
-    found = artifacts_root({"artifacts_url": "s3://bucket/a", "object_store": block},
-                           {"K_ENV": "GKplaceholder1", "S_ENV": "placeholder-secret"}, tmp_path)
-    assert found is not None and found.secrets == ("GKplaceholder1", "placeholder-secret")
+    block = {"endpoint": "http://127.0.0.1:1", "access_key_env": "GARAGE_ACCESS_KEY_ID", "secret_key_env": "GARAGE_SECRET_ACCESS_KEY"}
+    env = {"GARAGE_ACCESS_KEY_ID": "GKplaceholder1", "GARAGE_SECRET_ACCESS_KEY": "placeholder-secret",
+           "GH_TOKEN": "gho_placeholder0", "HOME": "/home/someone"}
+    found = artifacts_root({"artifacts_url": "s3://bucket/a", "object_store": block}, env, tmp_path)
+    assert found is not None and found.secrets == secret_values(env)
+    assert "gho_placeholder0" in found.secrets and "/home/someone" not in found.secrets
 
 
 # --- put_object, on a real local root -------------------------------------------------------------------------------
@@ -256,7 +286,7 @@ def test_uploads_are_scrubbed_and_listed_by_what_was_written(tmp_path):
                      (Source("task/t1/build", "patch.diff", "text/x-diff", text="token placeholder-secret\n"),))
     item = by_step(rows)["task/t1/build"]["artifacts_json"][0]
     data = (tmp_path / "a" / item["key"]).read_bytes()
-    assert data == b"token [redacted]\n" and item["sha256"] == hashlib.sha256(data).hexdigest()
+    assert data == b"token ***\n" and item["sha256"] == hashlib.sha256(data).hexdigest()
 
 
 def test_a_broken_root_stops_the_uploads_and_marks_each_row_that_had_artifacts(tmp_path):
@@ -271,8 +301,19 @@ def test_a_broken_root_stops_the_uploads_and_marks_each_row_that_had_artifacts(t
     listed = by_step(rows)
     assert error
     for step in ("task/t1/build", "task/t1/checks"):
-        assert listed[step]["artifacts_json"] == [{"artifacts_missing": True, "error": error}]
-    assert listed["task/t1/plan"]["artifacts_json"] == []
+        assert listed[step]["artifacts_json"] == [] and listed[step]["result_json"][ERROR_FIELD] == error
+    assert ERROR_FIELD not in listed["task/t1/plan"]["result_json"]
+
+
+def test_a_filesystem_with_no_hard_links_marks_the_save_missing(root):
+    def no_links(src: str, dst: str) -> None:
+        raise PermissionError(1, "Operation not permitted", dst)
+
+    rows, error = upload(root, "ship-1", rows_of(), (Source("task/t1/build", "patch.diff", "text/x-diff", text=PATCH),),
+                         link=no_links)
+    build = by_step(rows)["task/t1/build"]
+    assert error is not None and "Operation not permitted" in error
+    assert build["artifacts_json"] == [] and build["result_json"][ERROR_FIELD] == error
 
 
 # --- the save path: record_steps on a real store --------------------------------------------------------------------
@@ -301,8 +342,8 @@ def _lane_files(tmp_path, store):
 
 def test_without_a_root_the_save_path_gets_its_rows_back_unchanged(tmp_path, store_conn):
     rows = rows_of()
-    assert step_artifacts(None, store_conn, rows, RESULT, runs_dir=tmp_path, run_id="ship-1", phase="p1", task="t1",
-                          now=AT) == rows
+    assert step_artifacts(None, store_conn, rows, RESULT, runs_dir=tmp_path, run_id="ship-1", phase="p1",
+                          task="t1") == rows
 
 
 def test_record_steps_uploads_the_patch_the_log_and_the_transcript_and_the_rows_list_them(tmp_path, store_conn, root):
@@ -326,24 +367,10 @@ def test_record_steps_uploads_the_patch_the_log_and_the_transcript_and_the_rows_
     assert by_step(steps_for(store_conn, "ship-1")) == stored
 
 
-def _courier_on_path(tmp_path, monkeypatch) -> Path:
-    """A `cox` on PATH that records each `courier send` it is given, as the real one takes the note."""
-    record = tmp_path / "courier.txt"
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    cox = bin_dir / "cox"
-    cox.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> {record}\n', encoding="utf-8")
-    cox.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
-    return record
-
-
-@pytest.mark.real_courier
-def test_a_broken_bucket_still_writes_every_row_marked_and_the_chair_is_told_once(tmp_path, store_conn, monkeypatch):
+def test_a_broken_bucket_still_writes_every_row_and_marks_those_that_carried_artifacts(tmp_path, store_conn):
     pytest.importorskip("pyarrow")
     from pyarrow.fs import LocalFileSystem
 
-    record = _courier_on_path(tmp_path, monkeypatch)
     blocker = _write(tmp_path / "blocker", b"x")
     c = _ctx(tmp_path, store_conn, ArtifactsRoot(LocalFileSystem(), str(blocker / "root"), "file://blocker/root"))
     _lane_files(tmp_path, c.store)
@@ -351,13 +378,6 @@ def test_a_broken_bucket_still_writes_every_row_marked_and_the_chair_is_told_onc
     stored = by_step(steps_for(store_conn, "ship-1"))
     assert sorted(stored) == ["task/t1/build", "task/t1/checks", "task/t1/plan", "task/t1/review"]
     for step in ("task/t1/build", "task/t1/checks"):
-        assert [e["artifacts_missing"] for e in stored[step]["artifacts_json"]] == [True], stored[step]
-    assert stored["task/t1/plan"]["artifacts_json"] == stored["task/t1/review"]["artifacts_json"] == []
-
-    # one alarm per run: a re-entry's failing save in the same run tells nobody again
-    record_steps(c, {**RESULT, "run_id": "ship-1:p1:refix1:t1"}, phase="p1", task="t1")
-    assert "task/t1-refix-1/build" in by_step(steps_for(store_conn, "ship-1"))
-    sent = record.read_text(encoding="utf-8").splitlines()
-    assert len(sent) == 1 and "ship-1 could not upload step artifacts" in sent[0], sent
-    notices = store_conn.query_all("SELECT key FROM lander_notices")
-    assert [r[0] for r in notices] == [f"{MISSING_NOTICE_KEY}ship-1"]
+        assert stored[step]["artifacts_json"] == [] and stored[step]["result_json"][ERROR_FIELD], stored[step]
+    for step in ("task/t1/plan", "task/t1/review"):
+        assert stored[step]["artifacts_json"] == [] and ERROR_FIELD not in stored[step]["result_json"], stored[step]

@@ -16,8 +16,9 @@ def test_listing_gives_one_entry_per_artifact_in_step_order_and_skips_rows_with_
 
 
 def test_a_missing_mark_is_listed_with_its_error():
-    rows = [{"step": "task/t1/build", "artifacts_json": [ITEM, {"artifacts_missing": True, "error": "OSError: down"}]}]
+    rows = [{"step": "task/t1/build", "artifacts_json": [ITEM], "result_json": {"artifacts_error": "OSError: down"}}]
     found = listing(rows)
+    assert found[0] == {"step": "task/t1/build", **ITEM}
     assert found[1] == {"step": "task/t1/build", "missing": True, "error": "OSError: down"}
     assert lines("demo-1", found)[1] == "task/t1/build: MISSING artifacts: OSError: down"
 

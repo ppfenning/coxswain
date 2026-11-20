@@ -729,7 +729,7 @@ def record_steps(ctx: Ctx, result: Mapping[str, object], *, phase: str, task: st
         def write() -> None:
             if fence_reason(ctx) is None:
                 for row in step_artifacts(ctx.artifacts, store.conn, rows, data, runs_dir=ctx.runs_dir,
-                                          run_id=ctx.run_id, phase=phase, task=task, now=at):
+                                          run_id=ctx.run_id, phase=phase, task=task):
                     put_step(store.conn, row)
 
         if rows:

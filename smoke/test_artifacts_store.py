@@ -42,8 +42,9 @@ def _ran(launchable) -> list[dict]:
 def _keys(steps: list[dict]) -> dict[str, list[str]]:
     """Each step's keys without their `@<sha12>` suffix; each suffix is first held to the sha256 its entry records."""
     for s in steps:
+        assert "artifacts_error" not in s["result_json"], s
         for a in s["artifacts_json"]:
-            assert "artifacts_missing" not in a, a
+            assert set(a) == {"key", "bytes", "sha256", "media"}, a
             assert a["key"].rpartition("@")[2] == a["sha256"][:12], a
     return {s["step"]: [a["key"].rpartition("@")[0] for a in s["artifacts_json"]] for s in steps}
 
@@ -134,15 +135,31 @@ def test_an_s3_artifacts_url_on_garage_holds_each_steps_patch_and_logs(launchabl
     _check_rows(sandbox, steps, read)
 
 
-def test_a_broken_artifacts_root_still_finishes_the_run_and_writes_every_row_marked(launchable, repo, tmp_path):
+ALARMS = """import json, psycopg
+with psycopg.connect({url!r}) as conn:
+    rows = conn.execute("SELECT kind, status, action_json->>'stall', action_json->>'subject' FROM chair_actions "
+                        "WHERE kind IN ('stall_alarm', 'stall_clear') ORDER BY ts, kind").fetchall()
+print(json.dumps([list(r) for r in rows]))
+"""
+
+
+def test_a_broken_artifacts_root_finishes_the_run_marks_its_rows_and_the_chair_alarms_once(launchable, repo, tmp_path):
+    sandbox = launchable.sandbox
     blocker = tmp_path / "blocker"
     blocker.write_text("a file where the root's folder should be", encoding="utf-8")
-    _with_profile_lines(launchable.sandbox, f"artifacts_url: file://{blocker}/root\n")
+    _with_profile_lines(sandbox, f"artifacts_url: file://{blocker}/root\n")
     steps = _ran(launchable)
-    by_step = {s["step"]: s["artifacts_json"] for s in steps}
+    by_step = {s["step"]: s for s in steps}
     for step in ("task/t1/build", "task/t1/checks"):
-        assert [a.get("artifacts_missing") for a in by_step[step]] == [True], by_step
-        assert by_step[step][0]["error"], by_step
-    assert all(by_step[s] == [] for s in by_step if s not in ("task/t1/build", "task/t1/checks")), by_step
-    assert launchable.sandbox.store_row(INITIATIVE, "t1")["state"] == "approved"
-    assert {e["step"] for e in _listed(launchable.sandbox) if e.get("missing")} == {"task/t1/build", "task/t1/checks"}
+        assert by_step[step]["artifacts_json"] == [] and by_step[step]["result_json"]["artifacts_error"], by_step
+    for step in set(by_step) - {"task/t1/build", "task/t1/checks"}:
+        assert "artifacts_error" not in by_step[step]["result_json"], by_step
+    assert sandbox.store_row(INITIATIVE, "t1")["state"] == "approved"
+    assert {e["step"] for e in _listed(sandbox) if e.get("missing")} == {"task/t1/build", "task/t1/checks"}
+
+    # The worker only marked the rows; a chair tick over the store raises the one alarm, and a second raises none.
+    for _ in range(2):
+        tick = sandbox.cox("chair", "run", "--once", timeout=180)
+        assert tick.returncode == 0, tick.stdout + tick.stderr
+    alarms = [r for r in sandbox.python_json(ALARMS.format(url=sandbox.store_url)) if r[2].startswith("artifacts_missing")]
+    assert alarms == [["stall_alarm", "done", f"artifacts_missing:{RUN}", INITIATIVE]], alarms

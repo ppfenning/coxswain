@@ -17,15 +17,19 @@ Nothing is downloaded to compare. A save that uploaded and then failed before it
 writing the same keys again. A rebuild with a different patch writes a different key, so no step is ever locked out.
 - `file://` and plain paths: the bytes go to a temporary name in the key's own directory, are fsynced, and are then
   hard-linked to the key, which fails if the key exists. A write cut off part way leaves a `.part` file, never a
-  truncated key.
+  truncated key. A filesystem with no hard links (SMB, some FUSE mounts) fails every link, so every save on it is
+  marked missing: use a local disk, NFS, or `s3://`.
 - `s3://`: one PutObject, or one multipart upload, is all or nothing on the server, so no reader sees a partial
   object. pyarrow's S3 filesystem cannot send `If-None-Match`, and staging the object then copying it would only add a
   copy, so the guard against two writers is the run claim: a run id is one claim, and one claim has one writer.
   Timeouts are bounded (`S3_BOUNDS`) so a broken bucket cannot stall a save.
 
 **A broken bucket never drops a step row.** `step_artifacts` does not raise. If an upload fails, it stops uploading
-for that save. Each new row that carried artifacts gets `{"artifacts_missing": true, "error": ...}` in its
-`artifacts_json`, after the entries that were written. The chair is told once per run over the courier.
+for that save. Every row is still written. `artifacts_json` keeps only the items that were written, each
+`{key, bytes, sha256, media}`. A row that carried an artifact which was not written records the failure in its own
+field, `result_json.artifacts_error` (see `store_types.StepRow`). The worker only marks the row. The chair reads the
+marked rows and tells the operator once per run (`agent_tools.chair_stall_alarm`), because a worker's scoped store
+role can write nothing else.
 
 **What a step carries.** The build step carries its patch, and the checks step carries each check's non-empty log.
 Each step carries the trace files of the task's node calls whose role is of its kind (`ROLE_KINDS`). Two limits
@@ -35,12 +39,15 @@ follow from today's model:
 - A later fix round inside one graph run writes no new row, because its step key is the one round 1 wrote. Its
   transcripts are therefore uploaded nowhere.
 
-**Secrets.** Check logs and transcripts may hold secrets. Before upload, each value of an environment variable that the
-`object_store` block names is replaced with `[redacted]`. Nothing else is scrubbed, so the bucket must be private to
-the fleet and reached with scoped credentials.
+**Secrets.** Checks inherit the lane's environment, so a check log or a transcript may print a token, a password or
+a store URL. Before upload, `scrub` replaces two things with `***`. The first is the value of every environment
+variable whose name holds TOKEN, SECRET, PASSWORD, PASSWD or KEY (`secret_values`), in each of the forms
+`forgejo_api.redact` knows. The second is the userinfo, and any password in the query (`store_switch.display`), of
+every URL in the text. That is a floor, not a guarantee, so the bucket must be private to the fleet and reached with
+credentials scoped to it.
 
-`key`, `entry`, `decide`, `scrub`, `sources`, `attach` and `mark_missing` are pure. `artifacts_root`, `put_object`,
-`upload`, `tell_missing` and `step_artifacts` are the edges.
+`key`, `entry`, `decide`, `secret_values`, `scrub`, `sources`, `attach` and `mark_missing` are pure.
+`artifacts_root`, `put_object`, `upload` and `step_artifacts` are the edges.
 """
 
 from __future__ import annotations
@@ -63,8 +70,8 @@ if TYPE_CHECKING:
     from pyarrow.fs import FileSystem
 
 __all__ = [
+    "ERROR_FIELD",
     "LAYOUT",
-    "MISSING_NOTICE_KEY",
     "ROLE_KINDS",
     "S3_BOUNDS",
     "ArtifactConflict",
@@ -78,15 +85,15 @@ __all__ = [
     "mark_missing",
     "put_object",
     "scrub",
+    "secret_values",
     "sources",
     "step_artifacts",
-    "tell_missing",
     "upload",
 ]
 
 LAYOUT = "v1"
-MISSING_NOTICE_KEY = "artifacts-missing:"
-REDACTED = b"[redacted]"
+ERROR_FIELD = "artifacts_error"  # the `result_json` key a row whose artifacts were not all written carries
+SECRET_NAME_PARTS = ("TOKEN", "SECRET", "PASSWORD", "PASSWD", "KEY")
 # Seconds, and attempts: a save waits at most about connect + request per attempt per object, then gives up.
 S3_BOUNDS: Mapping[str, float] = {"connect_timeout": 5.0, "request_timeout": 30.0, "max_attempts": 2}
 
@@ -106,6 +113,8 @@ _PART = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 _SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 _SECRET_MIN = 8  # a shorter value would redact ordinary text
+_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>`]+")
+_USERINFO = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*://)[^/?#@]+@")
 
 
 class ArtifactConflict(ValueError):
@@ -114,8 +123,8 @@ class ArtifactConflict(ValueError):
 
 @dataclass(frozen=True)
 class ArtifactsRoot:
-    """Where artifacts go: a pyarrow filesystem, the root path on it, the URL as it may be shown, and the secrets to
-    scrub from every upload."""
+    """Where artifacts go: a pyarrow filesystem, the root path on it, the URL as it may be shown, and the secret values
+    of the lane's environment (`secret_values`) to scrub from every upload."""
 
     fs: FileSystem
     path: str
@@ -164,11 +173,32 @@ def decide(object_key: str, size: int, existing_size: int | None) -> Literal["wr
     raise ArtifactConflict(f"artifact {object_key} already holds {existing_size} bytes, not {size}")
 
 
-def scrub(data: bytes, secrets: Sequence[str]) -> bytes:
-    """Pure. `data` with every secret of at least 8 characters replaced by `[redacted]`, longest first."""
+def secret_values(env: Mapping[str, str]) -> tuple[str, ...]:
+    """Pure. The values, of at least 8 characters, of every variable whose name holds TOKEN, SECRET, PASSWORD, PASSWD
+    or KEY, longest first, so a secret that holds another is replaced whole."""
+    found = {v for k, v in env.items() if any(part in k.upper() for part in SECRET_NAME_PARTS) and len(v) >= _SECRET_MIN}
+    return tuple(sorted(found, key=lambda v: (-len(v), v)))
+
+
+def _url_scrubbed(match: re.Match[str]) -> str:
+    from agent_tools.store_switch import display  # the tools package: imported on use, as land_claims does
+
+    return display(_USERINFO.sub(r"\1***@", match.group(0)))
+
+
+def scrub(text: str, secrets: Sequence[str]) -> str:
+    """Pure. `text` with each secret, in every form `forgejo_api.redact` replaces, then the userinfo and any query
+    password of every URL, replaced by `***`."""
+    from agent_tools.forgejo_api import redact  # the tools package: imported on use, as land_claims does
+
     for secret in sorted({s for s in secrets if len(s) >= _SECRET_MIN}, key=len, reverse=True):
-        data = data.replace(secret.encode("utf-8"), REDACTED)
-    return data
+        text = redact(text, secret)
+    return _URL.sub(_url_scrubbed, text)
+
+
+def _scrub_bytes(data: bytes, secrets: Sequence[str]) -> bytes:
+    """`scrub` over bytes that may not be UTF-8: bytes that do not decode pass through unchanged."""
+    return scrub(data.decode("utf-8", "surrogateescape"), secrets).encode("utf-8", "surrogateescape")
 
 
 def _mapping(value: object) -> Mapping[str, object]:
@@ -231,8 +261,9 @@ def attach(row: StepRow, entries: Sequence[JsonObject]) -> StepRow:
 
 
 def mark_missing(row: StepRow, error: str) -> StepRow:
-    """Pure. `row` noting that some of its artifacts were not uploaded, and why."""
-    return attach(row, [{"artifacts_missing": True, "error": error}])
+    """Pure. `row` with `result_json.artifacts_error` saying why some of its artifacts were not written. Its
+    `artifacts_json` still lists only objects that were written."""
+    return cast(StepRow, {**row, "result_json": {**row["result_json"], ERROR_FIELD: error}})
 
 
 def _resolved_url(url: str, runs_dir: Path) -> str:
@@ -257,8 +288,7 @@ def artifacts_root(profile: Mapping[str, Any], env: Mapping[str, str], runs_dir:
     resolved = _resolved_url(url, runs_dir)
     extra = _s3_extra() if resolved.startswith("s3://") else None
     found = resolve_traces_root(resolved, runs_dir, env, block, label="artifacts", s3_extra=extra)
-    names = [str(block[k]) for k in ("access_key_env", "secret_key_env") if block and block.get(k)]
-    return ArtifactsRoot(found.fs, found.path.rstrip("/"), redact_url(url), tuple(env[n] for n in names if env.get(n)))
+    return ArtifactsRoot(found.fs, found.path.rstrip("/"), redact_url(url), secret_values(env))
 
 
 def _existing_size(root: ArtifactsRoot, path: str) -> int | None:
@@ -268,7 +298,7 @@ def _existing_size(root: ArtifactsRoot, path: str) -> int | None:
     return None if info.type == FileType.NotFound else int(info.size or 0)
 
 
-def _link_local(path: str, data: bytes) -> bool:
+def _link_local(path: str, data: bytes, link: Callable[[str, str], None]) -> bool:
     """Write `data` to a temporary name beside `path`, fsync it, and hard-link it to `path`; False if `path` exists."""
     final = Path(path)
     final.parent.mkdir(parents=True, exist_ok=True)
@@ -279,7 +309,7 @@ def _link_local(path: str, data: bytes) -> bool:
             out.flush()
             os.fsync(out.fileno())
         try:
-            os.link(tmp, final)
+            link(tmp, str(final))
         except FileExistsError:
             return False
         directory = os.open(final.parent, os.O_RDONLY)
@@ -293,17 +323,19 @@ def _link_local(path: str, data: bytes) -> bool:
             os.unlink(tmp)
 
 
-def put_object(root: ArtifactsRoot, object_key: str, data: bytes) -> bool:
+def put_object(
+    root: ArtifactsRoot, object_key: str, data: bytes, link: Callable[[str, str], None] = os.link
+) -> bool:
     """Edge. Write `data` at `object_key` under the root; True when written, False when it was already there.
 
-    Compares sizes only: the key carries the content hash."""
+    Compares sizes only: the key carries the content hash. `link` is the hard link a local write ends with."""
     from pyarrow.fs import LocalFileSystem
 
     path = f"{root.path}/{object_key}"
     if decide(object_key, len(data), _existing_size(root, path)) == "same":
         return False
     if isinstance(root.fs, LocalFileSystem):
-        if _link_local(path, data):
+        if _link_local(path, data, link):
             return True
         decide(object_key, len(data), _existing_size(root, path))  # another writer won: same size, or a conflict
         return False
@@ -323,7 +355,7 @@ def _bytes_of(source: Source) -> bytes | None:
 
 def _shown(exc: BaseException, root: ArtifactsRoot) -> str:
     text = " ".join(f"{type(exc).__name__}: {exc}".split())
-    return scrub(text.encode("utf-8"), root.secrets).decode("utf-8", "replace")[:500]
+    return scrub(text, root.secrets)[:500]
 
 
 def upload(
@@ -332,6 +364,7 @@ def upload(
     rows: Sequence[StepRow],
     found: Sequence[Source],
     read: Callable[[Source], bytes | None] = _bytes_of,
+    link: Callable[[str, str], None] = os.link,
 ) -> tuple[tuple[StepRow, ...], str | None]:
     """Edge. Upload each source, scrubbed, then give back the rows listing what was written, and the error that stopped
     the uploads, or None.
@@ -349,10 +382,10 @@ def upload(
         data = read(source)
         if not data:
             continue
-        data = scrub(data, root.secrets)
+        data = _scrub_bytes(data, root.secrets)
         object_key = key(run_id, source.step, source.name, hashlib.sha256(data).hexdigest())
         try:
-            put_object(root, object_key, data)
+            put_object(root, object_key, data, link)
         except Exception as exc:
             error = _shown(exc, root)
             short.add(source.step)
@@ -360,22 +393,6 @@ def upload(
         entries.setdefault(source.step, []).append(entry(object_key, data, source.media))
     listed = (attach(row, entries.get(row["step"], [])) for row in rows)
     return tuple(mark_missing(r, cast(str, error)) if r["step"] in short else r for r in listed), error
-
-
-def tell_missing(conn: Connection, run_id: str, initiative: str, error: str, now: str) -> None:
-    """Edge. Tell the chair once per run that step artifacts were not uploaded, as the lane tells a diverged branch:
-    the memory is the store's `lander_notices`, written only once the courier took the note. Never raises."""
-    from harness import courier_adapter, landing_store
-
-    notice = f"{MISSING_NOTICE_KEY}{run_id}"
-    try:
-        if landing_store.told(conn, notice).get(notice) is not None:
-            return
-        note = f"needs_chair: {initiative}: run {run_id} could not upload step artifacts: {error}"
-        if courier_adapter.send(f"coxswain://run/{run_id}", "chair", note):
-            landing_store.remember(conn, notice, error, now)
-    except Exception as exc:
-        print(f"  the chair was not told that {run_id}'s artifacts are missing: {type(exc).__name__}: {exc}")
 
 
 def _task_calls(conn: Connection, run_id: str, phase: str, task: str) -> list[tuple[str, Path]]:
@@ -400,13 +417,12 @@ def step_artifacts(
     run_id: str,
     phase: str,
     task: str,
-    now: str,
 ) -> tuple[StepRow, ...]:
     """Edge. The save path's one call, which never raises. With a root, it uploads the artifacts of each row that is
     not yet stored and returns the rows listing their keys. Without a root, it returns the rows unchanged.
 
     A stored row is passed through untouched: `put_step` keeps the first row. If the uploads fail, the rows are still
-    returned, each one that carried artifacts marked `artifacts_missing`, and the chair is told once per run."""
+    returned, each one that carried artifacts marked (`mark_missing`); the chair raises the alarm from the marks."""
     if root is None or not rows:
         return tuple(rows)
     try:
@@ -418,7 +434,5 @@ def step_artifacts(
     except Exception as exc:
         error = _shown(exc, root)
         done = tuple(mark_missing(row, error) for row in rows)
-    if error is not None:
-        tell_missing(conn, run_id, rows[0]["initiative"], error, now)
     by_step = {row["step"]: row for row in done}
     return tuple(by_step.get(row["step"], row) for row in rows)

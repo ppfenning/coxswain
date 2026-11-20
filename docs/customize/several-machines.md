@@ -216,9 +216,15 @@ well as in the run folder, set `artifacts_url` the same way, for example
 the keys a run wrote. Without the key nothing is uploaded.
 
 Check logs and transcripts may contain secrets that a check printed or an
-agent read. Before upload, only the values of the `object_store` key
-variables are scrubbed. Keep the artifacts bucket private to your
-machines, and give them credentials scoped to that bucket.
+agent read. Before upload, coxswain replaces two things with `***`. The
+first is the value of every environment variable whose name holds TOKEN,
+SECRET, PASSWORD, PASSWD or KEY. The second is the user and password part of
+every URL. Other secrets can still get through, so keep the artifacts bucket
+private to your machines and give them credentials scoped to that bucket.
+
+`file://` artifacts need a filesystem with hard links. On SMB or some FUSE
+mounts every upload fails, and each step row records the failure in its
+`artifacts_error` field instead.
 
 ### A Garage server
 
