@@ -1091,16 +1091,6 @@ def _unlaunched_actions(
     ]
 
 
-def _unlocked(facts: Facts) -> tuple[Facts, list[Action]]:
-    """Facts without a steer cycle's non-live holders, and the restores of approvals an earlier release wrongly took.
-
-    No approval is released here. An approval used to go back to ready once it had held files for `approval_hold_ticks`
-    ticks, which threw finished work away because time had passed. Approved work now stops holding files when its
-    phase merges into the initiative branch, and a land that fails files a rectify task on top of what is built."""
-    restores = chair_approval_restore.plan_restore(facts)
-    return chair_steer_cycle.break_cycle(facts)[0], list(restores)
-
-
 def _planned_schedule(facts: Facts, now: datetime | None, withheld: frozenset[str] = frozenset()) -> Schedule | None:
     """The queue's Schedule, or None when the facts carry no inputs or there is no clock; withheld ids claim no surfaces."""
     if "schedule_inputs" not in facts or now is None:
@@ -1137,30 +1127,29 @@ def _schedule_update(facts: Facts, schedule: Schedule | None, now: datetime | No
 
 @dataclass(frozen=True)
 class TickBasis:
-    """The facts a holder's tick plans from, and the gates more than one kind reads."""
+    """The facts a holder's tick plans from, and the gates more than one kind reads. Every field but `facts` is a
+    frozenset, a tuple or a frozen record; no planner writes to `facts` (test_chair_plan_kinds checks it)."""
 
     facts: Facts  # the raw facts with silent dead-pid runs lost and a steer cycle's non-live holders dropped
     now: datetime | None
     held: frozenset[str]  # started initiatives the paused CI gate holds from a relaunch
-    releases: list[Action]  # approval restores, read before the steer cycle is broken
     schedule: Schedule | None
     gated: frozenset[str]  # held, or deferred to a later release
     lost: frozenset[str]
     remote_unfetched: frozenset[str]
     deadlock: tuple[str, ApprovedTask] | None
-    waiting: list[WaitingInitiative]
+    waiting: tuple[WaitingInitiative, ...]
     waiting_ids: frozenset[str]
     lease_held: frozenset[str]
 
 
 def tick_basis(raw_facts: Facts, now: datetime | None, held: frozenset[str] = frozenset()) -> TickBasis:
-    facts, releases = _unlocked(_with_dead_pid_lost(raw_facts, now))
-    waiting = waiting_initiatives(facts)
+    facts = chair_steer_cycle.break_cycle(_with_dead_pid_lost(raw_facts, now))[0]
+    waiting = tuple(waiting_initiatives(facts))
     return TickBasis(
         facts=facts,
         now=now,
         held=held,
-        releases=releases,
         schedule=_planned_schedule(facts, now),
         gated=_gated_initiatives(facts),
         lost=frozenset(facts.get("lost_runs", {})),
@@ -1225,7 +1214,7 @@ def plan_decompose_kind(basis: TickBasis) -> DecomposePlan:
 
 @dataclass(frozen=True)
 class QuarantinePlan:
-    releases: list[Action]
+    releases: list[Action]  # restores of approvals an earlier release wrongly took
     widen: list[Action]
     held_needs_chair: list[Action]
     no_progress_holds: list[Action]
@@ -1268,7 +1257,11 @@ def plan_quarantine_kind(basis: TickBasis) -> QuarantinePlan:
         basis.lease_held,
     )
     return QuarantinePlan(
-        releases=basis.releases,
+        # No approval is released here. An approval used to go back to ready once it had held files for
+        # `approval_hold_ticks` ticks, which threw finished work away because time had passed. Approved work now stops
+        # holding files when its phase merges into the initiative branch, and a land that fails files a rectify task on
+        # top of what is built.
+        releases=chair_approval_restore.plan_restore(facts),
         widen=widen,
         held_needs_chair=plan_held_files(facts),
         no_progress_holds=no_progress_holds,
@@ -1294,14 +1287,37 @@ class LaunchPlan:
     launch_paused: bool
 
 
-def plan_launch_kind(basis: TickBasis, land: LandPlan, decompose: DecomposePlan, quarantine: QuarantinePlan) -> LaunchPlan:
+@dataclass(frozen=True)
+class LaunchGates:
+    """What the launch planner reads from the land, decompose and quarantine plans, and nothing more."""
+
+    lands: tuple[Action, ...]  # the land_phase and partial_land this tick plans: their initiatives wait for the land
+    stalled_intake: frozenset[str]  # intakes fill must not launch
+    recovered: tuple[Action, ...]  # recovery's relaunches, retries, rescues and needs_chair, before the cap
+    recover_actions: tuple[Action, ...]  # plan_recover's own plan, whose claims fill must not take
+    not_exited: frozenset[str]
+    no_progress: frozenset[str]
+
+
+def launch_gates(land: LandPlan, decompose: DecomposePlan, quarantine: QuarantinePlan) -> LaunchGates:
+    return LaunchGates(
+        lands=tuple(land.lands),
+        stalled_intake=decompose.stalled_intake,
+        recovered=tuple(quarantine.recovered),
+        recover_actions=tuple(quarantine.recover_actions),
+        not_exited=quarantine.not_exited,
+        no_progress=quarantine.no_progress,
+    )
+
+
+def plan_launch_kind(basis: TickBasis, gates: LaunchGates) -> LaunchPlan:
     """Relaunches and new epics under the launch cap, the lanes and every withheld set, and why the rest wait."""
     facts, now = basis.facts, basis.now
     waiting_actions = _without_deadlocked(_waiting_actions(basis.waiting, facts.get("waiting_reported", {})), basis.deadlock)
     unstarted_waiting_chair = _without_deadlocked(_unstarted_waiting_chair(facts["initiatives"]), basis.deadlock)
     lease_stuck = _lease_stuck_actions(facts, now)
     schedule_update = _schedule_update(facts, basis.schedule, now)
-    recovered = quarantine.recovered
+    recovered = list(gates.recovered)
     if facts["limits"]["hard_stop"]:
         # Nothing launches, so every ready initiative is left out; a pace cap of 0 names the first reason, which the stop replaces.
         stopped: list[Action] = [
@@ -1345,28 +1361,28 @@ def plan_launch_kind(basis: TickBasis, land: LandPlan, decompose: DecomposePlan,
         "stranded": frozenset(q["initiative"] for q in facts["quarantines"] if q["cause"] == STRANDED_CAUSE),
         # A decompose-only unfetched run holds no epic branches, so it does not keep the initiative from launching.
         "its branches are not fetched": basis.remote_unfetched - decompose_only,
-        "its last run has not exited": quarantine.not_exited,
+        "its last run has not exited": gates.not_exited,
         "its run is lost": basis.lost,
         "schema version death": frozenset(facts.get("schema_deaths", {})),
         "an unmet need": _unmet_needs_ids(facts["initiatives"]),
-        "its repo is landing": _landing_initiatives(facts, land.lands),
+        "its repo is landing": _landing_initiatives(facts, list(gates.lands)),
         # A relaunch the budget or the loop rule refused must not go out again as a launch_epic.
         "relaunch refused by the budget or the loop rule": refused_launches(facts, now),
         "land backoff": backoff_held(facts, now),
         "waiting on a need": basis.waiting_ids,
         "its launch was refused on a held lease": basis.lease_held,
         "it is held or deferred to a later release": basis.gated,
-        "its last runs ended the same way": quarantine.no_progress,
+        "its last runs ended the same way": gates.no_progress,
         # A `phase` initiative is the phase worker's to claim (F5); the tick's launch_epic leaves it alone.
         "waits for a phase worker": frozenset(i["id"] for i in facts["initiatives"] if not launchable_by_tick(i)),
     }
     withheld = frozenset[str]().union(*withheld_by.values())
-    claimed = claimed_by(quarantine.recover_actions, facts)
+    claimed = claimed_by(list(gates.recover_actions), facts)
     free_lanes = _free_lanes(cap, kept, facts["dispatch"], _cap_count(capped) - kept)
     # Fill plans with the withheld set, so an initiative recovery holds does not keep others behind its surfaces.
     fill_schedule = _planned_schedule(facts, now, withheld) if withheld else basis.schedule
     planned_fill = plan_fill(
-        facts, free_lanes, withheld, consumed, claimed, stalled=decompose.stalled_intake, now=now, schedule=fill_schedule
+        facts, free_lanes, withheld, consumed, claimed, stalled=gates.stalled_intake, now=now, schedule=fill_schedule
     )
     # Fill places epics on lane hosts past the local lanes; what the cap has no room left for is dropped here.
     filled = _within_cap(planned_fill, cap - _cap_count(capped))
@@ -1435,7 +1451,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     land = plan_land_kind(basis)
     decompose = plan_decompose_kind(basis)
     quarantine = plan_quarantine_kind(basis)
-    launch = plan_launch_kind(basis, land, decompose, quarantine)
+    launch = plan_launch_kind(basis, launch_gates(land, decompose, quarantine))
     housekeeping = plan_housekeeping_kind(basis, launch)
     planned = [
         *watch.reverts,
