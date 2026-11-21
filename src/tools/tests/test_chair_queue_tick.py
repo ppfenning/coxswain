@@ -178,3 +178,39 @@ def test_marking_seen_twice_changes_nothing_and_an_unwritable_runs_dir_is_said_n
     assert chair_read_queues.mark_seen(runs) and chair_read_queues.mark_seen(runs)
     assert chair_read_queues.seen_marker(runs).read_bytes() == b""
     assert chair_read_queues.mark_seen(tmp_path / "no-such-dir") is False
+
+
+def test_a_quarantine_lease_taken_mid_perform_skips_the_triage_and_the_relaunch_pair_after_it(tmp_path: Path):
+    runs = _runs(tmp_path)
+    conn = open_store(run_store.store_url_for(runs), "2026-11-20T00:00:00Z")
+    taken: list[str] = []
+
+    recorded: list = []
+
+    def record(action):  # once the tick's first action is recorded, a quarantine worker takes its kind
+        recorded.append(action)
+        if not taken:
+            assert kl.acquire(conn, "chair:quarantine", "worker-q", 60) == 1
+            taken.append("quarantine")
+
+    reader = chair_read_queues.QueueLeasesReader(runs, lambda: 0.0)
+    deps = Deps(**{**_deps(recorded, queue_held=reader.held).__dict__, "record": record})
+    actions = [
+        {"kind": "stale_to_draft", "initiative": "a", "epoch": 0},
+        {"kind": "request_triage", "initiative": "i", "task_id": "t1", "key": "k", "cause": "code", "epoch": 0, "queue_kind": "quarantine"},
+        {"kind": "clear_branches", "initiative": "i", "repo": "r", "epoch": 0},
+        {"kind": "relaunch", "initiative": "i", "repo": "r", "epoch": 0},
+        {"kind": "launch_epic", "initiative": "i", "repo": "r", "epoch": 0},
+        {"kind": "clear_branches", "initiative": "j", "repo": "r", "epoch": 0},
+    ]
+    try:
+        results = perform(actions, deps, lambda: 0, False)  # type: ignore[arg-type]
+    finally:
+        conn.close()
+    statuses = [(r["action"]["kind"], r["action"].get("initiative"), r["status"]) for r in results]
+    assert taken == ["quarantine"]
+    assert [s for s in statuses if s[1] == "i"] == [
+        ("request_triage", "i", "skipped"), ("clear_branches", "i", "skipped"), ("relaunch", "i", "skipped"),
+        ("launch_epic", "i", "skipped"),
+    ], statuses
+    assert ("clear_branches", "j", "done") in statuses  # another initiative's pair is untouched
