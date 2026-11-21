@@ -8,6 +8,7 @@
 "smoke/test_chair_launch_queue.py": 22.9,
 "smoke/test_chair_parity_status.py": 11.7,
 "smoke/test_chair_queue_alarm_handover.py": 17.1,
+"smoke/test_chair_queue_chores.py": 16.2,
 "smoke/test_chair_queue_handoff.py": 30.4,
 "smoke/test_chair_queue_parity.py": 5.2,
 "smoke/test_chair_queue_triage.py": 21.0,
