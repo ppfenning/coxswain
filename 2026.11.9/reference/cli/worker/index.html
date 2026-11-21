@@ -6753,7 +6753,7 @@ examples:
 </code></pre></div>
 <h2 id="run">run</h2>
 <div class="highlight"><pre><span></span><code>usage: cox worker run [-h] [--name NAME] [--capability TOKEN] [--lanes LANES]
-                      [--profile PROFILE]
+                      [--lease-s SECONDS] [--profile PROFILE]
 
 options:
   -h, --help          show this help message and exit
@@ -6763,12 +6763,14 @@ options:
                       toolchain:go; repeatable
   --lanes LANES       phases it runs at once (default: its hosts row's
                       capacity, else 1)
+  --lease-s SECONDS   the lease it claims on, from 48 to 600 (default: 60);
+                      its heartbeat, stop time and lanes' margin scale with it
   --profile PROFILE   the routing profile (default: ~/.config/agent-
                       tools/profile.yaml or $AGENT_TOOLS_PROFILE)
 </code></pre></div>
 <h2 id="once">once</h2>
 <div class="highlight"><pre><span></span><code>usage: cox worker once [-h] [--name NAME] [--capability TOKEN] [--lanes LANES]
-                       [--profile PROFILE]
+                       [--lease-s SECONDS] [--profile PROFILE]
 
 options:
   -h, --help          show this help message and exit
@@ -6778,6 +6780,8 @@ options:
                       toolchain:go; repeatable
   --lanes LANES       phases it runs at once (default: its hosts row's
                       capacity, else 1)
+  --lease-s SECONDS   the lease it claims on, from 48 to 600 (default: 60);
+                      its heartbeat, stop time and lanes' margin scale with it
   --profile PROFILE   the routing profile (default: ~/.config/agent-
                       tools/profile.yaml or $AGENT_TOOLS_PROFILE)
 </code></pre></div>
