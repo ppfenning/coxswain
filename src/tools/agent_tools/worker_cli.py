@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import cast
 
 from agent_tools import worker, worker_ports
-from harness import phase_pick, repo_cache, worker_identity, worktree
+from harness import phase_pick, repo_cache, store_phases, worker_identity, worktree
 
 
 def claim_of(row: Mapping[str, object], now: str) -> dict[str, object] | None:
@@ -154,6 +154,21 @@ def cmd_status(a: argparse.Namespace) -> int:
     else:
         print("\n".join(status_lines(phases, workers, now)))
     return 0
+
+
+def cmd_forget(a: argparse.Namespace) -> int:
+    """`cox worker forget NAME`: mark a dead worker's row stopping, so the next start of that name takes it over.
+    Exit 0 when the row is stopping afterwards (forgotten now, or already not up), 1 when nothing was changed."""
+    ws = _workspace(a)
+    if ws is None:
+        return 2
+    store = worker_ports.Store(ws / "runs")
+    try:
+        done = store.call(lambda c: store_phases.forget_worker(c, a.name, force=bool(a.force)))
+    finally:
+        store.close()
+    print(worker_identity.forget_note(a.name, done.verdict, done.prior))
+    return 0 if done.verdict in ("forget", "already") else 1
 
 
 def cmd_checkout(a: argparse.Namespace) -> int:

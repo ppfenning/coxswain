@@ -25,11 +25,13 @@ __all__ = [
     "PHASE_COLUMNS",
     "WORKER_COLUMNS",
     "Claim",
+    "Forgotten",
     "Registration",
     "apply_changes",
     "beat_worker",
     "claim_next",
     "finish",
+    "forget_worker",
     "get_row",
     "heartbeat",
     "held",
@@ -544,6 +546,30 @@ def register(conn: Connection, name: str, capabilities: Sequence[str], lanes: in
             conn.execute(upsert(conn.dialect, "workers", WORKER_COLUMNS, ("name",)), values)
             return Registration(verdict, row, prior)
     raise RuntimeError(f"the workers row of {name} was inserted and then not found")
+
+
+@dataclass(frozen=True)
+class Forgotten:
+    """What `forget_worker` did: `worker_identity.forget`'s verdict, and the row as it stood before."""
+
+    verdict: worker_identity.ForgetVerdict
+    prior: Row | None
+
+
+def forget_worker(conn: Connection, name: str, *, force: bool = False) -> Forgotten:
+    """Edge. `cox worker forget`: mark the row of `name` stopping, so the next start of that name takes it over
+    (`worker_identity.takeover`'s `stopped`). Decided on the row as read, locked until the write commits; a row that
+    records a machine and was beaten recently is left alone unless `force` (`worker_identity.forget`)."""
+    p = conn.dialect.placeholder
+    lock = " FOR UPDATE" if conn.dialect.name == "postgres" else ""
+    with conn.transaction():
+        now = store_now(conn)
+        found = conn.query_one(f"SELECT {', '.join(WORKER_COLUMNS)} FROM workers WHERE name = {p}{lock}", (name,))
+        prior = None if found is None else _decode(WORKER_COLUMNS, found)
+        verdict = worker_identity.forget(prior, now, force)
+        if verdict == "forget":
+            conn.execute(f"UPDATE workers SET state = 'stopping' WHERE name = {p} AND state = 'up'", (name,))
+    return Forgotten(verdict, prior)
 
 
 def beat_worker(conn: Connection, name: str, machine_id: str) -> bool:

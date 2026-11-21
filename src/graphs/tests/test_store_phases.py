@@ -235,6 +235,26 @@ def test_two_machines_registering_one_new_name_at_once_give_one_winner(store_url
         c.close()
 
 
+def test_forget_marks_a_dead_older_build_row_stopping_and_the_next_start_takes_it_over(conn):
+    assert store_phases.forget_worker(conn, "devbox").verdict == "absent"
+    store_phases.register(conn, "devbox", [], 1, "up", "1.0", {}, machine_id="laptop")
+    assert store_phases.forget_worker(conn, "devbox").verdict == "live", "a recently beaten machine's row"
+    assert store_phases.list_workers(conn)[0]["state"] == "up"
+    _workers_set(conn, "devbox", machine_id="", beat_at=PAST)  # what a crashed older build leaves
+    assert store_phases.register(conn, "devbox", [], 1, "up", "2.0", {}, machine_id="desk").verdict == "refused"
+    done = store_phases.forget_worker(conn, "devbox")
+    assert done.verdict == "forget" and done.prior is not None and done.prior["state"] == "up"
+    assert store_phases.list_workers(conn)[0]["state"] == "stopping"
+    assert store_phases.forget_worker(conn, "devbox").verdict == "already", "a repeat changes nothing"
+    assert store_phases.register(conn, "devbox", [], 1, "up", "2.0", {}, machine_id="desk").verdict == "stopped"
+
+
+def test_forget_with_force_frees_even_a_recently_beaten_row(conn):
+    store_phases.register(conn, "devbox", [], 1, "up", "1.0", {}, machine_id="laptop")
+    assert store_phases.forget_worker(conn, "devbox", force=True).verdict == "forget"
+    assert store_phases.list_workers(conn)[0]["state"] == "stopping"
+
+
 def test_a_worker_beats_only_its_own_machine_s_row(conn):
     assert store_phases.beat_worker(conn, "devbox", "laptop") is False, "no row yet"
     store_phases.register(conn, "devbox", [], 1, "up", "1.0", {}, machine_id="laptop")

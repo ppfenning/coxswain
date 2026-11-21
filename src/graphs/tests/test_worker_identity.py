@@ -75,3 +75,35 @@ def test_with_no_machine_id_the_workspace_keeps_one_of_its_own(tmp_path: Path):
 def test_on_linux_the_machine_id_is_systemd_s(tmp_path: Path):
     assert wi.machine_id(tmp_path, platform="linux") == Path("/etc/machine-id").read_text().strip()
     assert not (tmp_path / wi.FALLBACK_FILE).exists()
+
+
+@pytest.mark.parametrize(("found", "force", "verdict"), [
+    (None, False, "absent"),
+    (row(state="stopping"), False, "already"),
+    (row(state="stopping"), True, "already"),
+    (row(machine=""), False, "forget"),  # an older build's row: no beat to go by, the operator's word is enough
+    (row(machine="", beat=OLD), False, "forget"),
+    (row(), False, "live"),  # records a machine, beaten 30 s ago: it may be running
+    (row(), True, "forget"),
+    (row(beat=OLD), False, "forget"),
+    (row(beat=""), False, "forget"),
+])
+def test_forget_frees_a_dead_row_and_refuses_a_recently_beaten_one_without_force(found, force, verdict):
+    assert wi.forget(found, NOW, force) == verdict
+
+
+def test_forget_is_refused_only_inside_stale_s():
+    assert wi.forget(row(beat="2026-11-21T09:45:01Z"), NOW) == "live"
+    assert wi.forget(row(beat="2026-11-21T09:45:00Z"), NOW) == "forget"
+
+
+def test_what_forget_says_names_the_row_and_whether_anything_changed():
+    assert "marked stopping now" in wi.forget_note("devbox", "forget", row(machine=""))
+    assert "an unrecorded machine" in wi.forget_note("devbox", "forget", row(machine=""))
+    assert "nothing changed" in wi.forget_note("devbox", "absent", None)
+    assert "is stopping, not up; nothing changed" in wi.forget_note("devbox", "already", row(state="stopping"))
+    assert "--force" in wi.forget_note("devbox", "live", row())
+
+
+def test_the_refusal_of_an_older_build_s_row_names_the_command_that_frees_it():
+    assert "`cox worker forget devbox`" in wi.takeover_note("devbox", "refused", row(machine=""), "desk")

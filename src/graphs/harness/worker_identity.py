@@ -25,7 +25,10 @@ from typing import Literal
 
 from harness import phase_pick
 
-__all__ = ["BEAT_S", "STALE_S", "Verdict", "machine_id", "parse_ioreg", "pick", "takeover", "takeover_note"]
+__all__ = [
+    "BEAT_S", "STALE_S", "ForgetVerdict", "Verdict", "forget", "forget_note", "machine_id", "parse_ioreg", "pick", "takeover",
+    "takeover_note",
+]
 
 BEAT_S = 30  # how often a running worker beats its row
 STALE_S = 900  # a row not beaten for this long (thirty beats) is long lapsed: its worker is gone
@@ -62,6 +65,41 @@ def takeover(found: Mapping[str, object] | None, machine: str, now: str, stale_s
     return "stale" if aged else "refused"
 
 
+ForgetVerdict = Literal["forget", "absent", "already", "live"]
+
+
+def forget(found: Mapping[str, object] | None, now: str, force: bool = False, fresh_s: int = STALE_S) -> ForgetVerdict:
+    """Pure. Whether `cox worker forget` marks the row `found` stopping at the store's `now`, so the next start of
+    its name takes it over: `absent` (no row), `already` (it is not `up`), `live` (it records a machine and was
+    beaten within `fresh_s`: that worker may be running, so only `force` forgets it), else `forget`. A row with no
+    machine recorded has no beat to go by (`takeover`), so the operator's word is enough."""
+    if found is None:
+        return "absent"
+    if found.get("state") != "up":
+        return "already"
+    if force or not str(found.get("machine_id") or ""):
+        return "forget"
+    try:
+        fresh = phase_pick.seconds(str(found.get("beat_at") or ""), now) < fresh_s
+    except ValueError:
+        fresh = False
+    return "live" if fresh else "forget"
+
+
+def forget_note(name: str, verdict: ForgetVerdict, found: Mapping[str, object] | None) -> str:
+    """Pure. What `cox worker forget` says it did, or why it did nothing."""
+    machine = str((found or {}).get("machine_id") or "") or "an unrecorded machine"
+    beat = str((found or {}).get("beat_at") or "never")
+    return {
+        "forget": f"worker: {name} (machine {machine}, beat {beat}) was up; it is marked stopping now, so the next "
+                  "start of that name takes it over",
+        "absent": f"worker: no worker named {name} is registered; nothing changed",
+        "already": f"worker: {name} is {(found or {}).get('state')}, not up; nothing changed",
+        "live": f"worker: {name} is registered from machine {machine} and was beaten at {beat}, within "
+                f"{STALE_S}s: it may be running; nothing changed (stop it, or pass --force)",
+    }[verdict]
+
+
 def takeover_note(name: str, verdict: Verdict, found: Mapping[str, object] | None, machine: str) -> str:
     """Pure. What the worker says of its registration: why it was refused, or whose row it took over; "" when the
     row was new or its own."""
@@ -70,7 +108,8 @@ def takeover_note(name: str, verdict: Verdict, found: Mapping[str, object] | Non
     if verdict == "refused" and not (found or {}).get("machine_id"):
         return (f"worker: {name} is registered as up by an older build that records no machine (beat {beat}), and "
                 f"this machine ({machine}) cannot tell whether that worker still runs: stop it cleanly on its own "
-                "machine (its row then says `stopping`), or give this worker a name of its own (`--name`)")
+                f"machine (its row then says `stopping`); if it is gone, `cox worker forget {name}` frees the name; "
+                "or give this worker a name of its own (`--name`)")
     if verdict == "refused":
         return (f"worker: {name} is registered and live from machine {prior} (beat {beat}), not this one ({machine}): "
                 "give this worker a name of its own (`--name`), or stop the other one")

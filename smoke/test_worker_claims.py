@@ -373,6 +373,34 @@ def test_a_worker_never_shares_its_name_with_another_machine_s_live_worker(launc
     _no_ssh(calls)
 
 
+def test_a_dead_older_build_row_blocks_its_name_until_cox_worker_forget_frees_it(launchable, repo):
+    """An older build records no machine and beats only on register, so a row it left `up` is never taken over on
+    its own, however old. `cox worker forget` is the way out: refused for a recently beaten machine's row without
+    --force, it marks the dead row stopping, and the next start takes the name over."""
+    sandbox, calls = _ssh_trap(launchable.sandbox)
+    _status(sandbox)  # the store, migrated
+    _other_machines_row(sandbox, "old", "2026-01-01T00:00:00Z")
+    with psycopg.connect(sandbox.store_url, connect_timeout=10) as conn:
+        conn.execute("UPDATE workers SET machine_id = '' WHERE name = 'old'")  # what a crashed older build leaves
+    blocked = Worker(sandbox, "once", "--name", "old")
+    assert blocked.proc.wait(timeout=120) == 3, blocked.said()
+    assert "`cox worker forget old`" in blocked.said(), blocked.said()
+
+    _other_machines_row(sandbox, "busy", _store_clock(sandbox))
+    refused = sandbox.cox("worker", "forget", "busy", cwd=sandbox.workspace)
+    assert refused.returncode == 1 and "pass --force" in refused.stdout, refused.stdout + refused.stderr
+
+    forgot = sandbox.cox("worker", "forget", "old", cwd=sandbox.workspace)
+    assert forgot.returncode == 0, forgot.stdout + forgot.stderr
+    assert "old (machine an unrecorded machine, beat 2026-01-01T00:00:00Z) was up; it is marked stopping now" in forgot.stdout
+    rows = {w["name"]: w for w in _status(sandbox)["workers"]}
+    assert (rows["old"]["state"], rows["busy"]["state"]) == ("stopping", "up"), rows
+
+    started = Worker(sandbox, "once", "--name", "old").finished(timeout=120)
+    assert "old takes over the row machine an unrecorded machine left (it was stopped)" in started, started
+    _no_ssh(calls)
+
+
 def _take_over(sandbox, name: str, machine: str) -> None:
     """What another machine's `register` writes when it takes the row of `name` over: its own machine, beaten now."""
     with psycopg.connect(sandbox.store_url, connect_timeout=10) as conn:
