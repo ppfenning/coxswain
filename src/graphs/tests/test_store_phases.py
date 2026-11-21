@@ -439,3 +439,24 @@ def test_a_phase_an_older_worker_parked_built_is_queued_again_with_its_attempts_
     assert store_phases.apply_changes(conn, [review], "chair-loop") == 0
     row = store_phases.get_row(conn, "ship", "p1")
     assert (row["state"], row["attempts"]) == ("ready", 2)
+
+
+def test_the_chair_quarantines_a_quarantined_phase_s_task_with_its_mark_in_the_same_write_as_the_queue(conn):
+    from harness import store_api
+
+    _task_row(conn, "t1")
+    _task_row(conn, "t2", state="in_progress")
+    store_api.queue_upsert_on(conn, {"initiative": "ship", "task_id": "t1", "extra": {"kept": 1}})
+    mark = {"cause": "review", "reason": "goal missed", "run": "ship.p1-4"}
+
+    def quarantine(task, state):
+        return {"op": "quarantine_task", "initiative": "ship", "phase": "p1", "task_id": task, "from": state,
+                "mark_key": "quarantine_mark", "mark": mark}
+
+    changes = [_change(), quarantine("t1", "ready"), quarantine("t2", "ready")]  # t2 moved on: not quarantined
+    assert store_api.phase_changes_on(conn, changes, "chair-loop") == 2
+    rows = {r["task_id"]: r for r in store_api.queue_rows_on(conn, "ship", "task")}
+    assert (rows["t1"]["state"], rows["t1"]["extra"]) == ("quarantined", {"kept": 1, "quarantine_mark": mark})
+    assert (rows["t2"]["state"], rows["t2"]["extra"]) == ("in_progress", {})
+    assert store_phases.get_row(conn, "ship", "p1")["state"] == "ready"
+    assert store_api.phase_changes_on(conn, changes, "chair-loop") == 0  # a repeat changes nothing

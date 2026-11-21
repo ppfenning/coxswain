@@ -30,7 +30,9 @@ from typing import Literal, cast
 __all__ = [
     "BUDGET_SPENT",
     "CAP",
+    "QUARANTINE_TASK",
     "REOPENED",
+    "REVIEW_CAUSE",
     "Progress",
     "Round",
     "Step",
@@ -45,6 +47,10 @@ __all__ = [
 CAP = 3  # review rounds an episode may hold
 REOPENED = "reopened"  # the chair's row that closes an episode when it reopens the phase
 BUDGET_SPENT = "revision budget spent"
+# The chair's reaction to a quarantined phase: one `queue_phases` change per task (`store_api.phase_changes_on`), whose
+# quarantine carries the cause triage reads, the review's.
+QUARANTINE_TASK = "quarantine_task"
+REVIEW_CAUSE = "review"
 _FINISHED = {"approve": "approved", "quarantine": "quarantined"}
 
 Action = Literal["smoke", "review", "build_revision", "finish"]
