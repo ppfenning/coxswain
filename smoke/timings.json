@@ -5,6 +5,7 @@
 "smoke/test_chair_dry_run_read_only.py": 2.2,
 "smoke/test_chair_fetch_exit_quarantined.py": 1.8,
 "smoke/test_chair_idle_alarm.py": 10.3,
+"smoke/test_chair_queue_workers.py": 66.5,
 "smoke/test_chair_stranded_stall_alarm.py": 10.0,
 "smoke/test_chair_tick_cache.py": 10.2,
 "smoke/test_contract_chair_quarantine.py": 5.3,
