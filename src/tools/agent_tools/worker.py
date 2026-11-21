@@ -8,7 +8,7 @@ check or a store call can hold up the next claim, never a heartbeat.
 
 A claim's clock starts when the worker sets out to claim it. A claim whose heartbeat is refused (another worker holds
 it, or it lapsed) is `lost`; one with no good heartbeat for 45 s is `expired`, which is before its 60 s lease can
-lapse. A worker given a shorter lease (`--lease-s`, `phase_pick.Timings`) scales all three. Either way the heartbeat thread stops its run at once (the launch and the harness, by process group, until
+lapse. A worker given another lease (`--lease-s`, 48 s to 600 s, `phase_pick.Timings`) scales all three. Either way the heartbeat thread stops its run at once (the launch and the harness, by process group, until
 they are gone) and the main loop drops it without a write: it is no longer this worker's to write. So no phase is
 ever run by two workers at once.
 
@@ -38,6 +38,7 @@ DOCTOR_EVERY_S = 600.0  # how often the lane checks run again, so `docker` follo
 STATEMENT_TIMEOUT_MS = 5_000  # a worker's store call: well inside the 45 s it may go without a heartbeat
 LOCK_TIMEOUT_MS = 3_000
 CONNECT_TIMEOUT_S = 5
+STATEMENT_S = STATEMENT_TIMEOUT_MS / 1000 + 1  # the client's own bound on one statement, past the server's
 
 # `cox route launch` exits 2 with one of these when a gate refused the launch, not because the phase is broken.
 REFUSALS = (

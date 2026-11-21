@@ -43,8 +43,12 @@ A worker claims a phase (`store_phases.claim_next`) and starts this lane under t
 (`store_phases.put_steps_fenced`: one transaction, under a share lock on the claim row), so a lane that lost its claim
 writes no row, ever. The lane stops itself, its agents and checks with it (their process groups), once its claim is
 lost or its lease is within its margin of lapsing (`phase_pick.margin_of`: a quarter of the claim's own lease, 15 s of
-the default 60 s): by then its worker has gone the 45 s it may go without a heartbeat. A push follows a claim check that found at least that margin and is bounded to
-`lane_rollup.REMOTE_TIMEOUT_S` (8 s), so a lane that keeps running cannot push once its lease has lapsed. What no check
+the default 60 s): by then its worker has gone the 45 s it may go without a heartbeat. A push follows a claim check
+that found at least that margin and is bounded to `lane_rollup.REMOTE_TIMEOUT_S` (8 s), and the margin holds that
+check's own bound (`phase_pick.CHECK_CALL_S`) and that push with slack to spare (`phase_pick.MARGIN_FLOOR_S`), so a
+lane that keeps running cannot push once its lease has lapsed. Every store call of the lane's is bounded on the
+client's side as well (`store_dialect.Connection.limit`, `.within`), so a store gone silent, its sockets open and
+nothing coming back, loses the claim at the next check rather than holding the lane past its lease. What no check
 can close is a lane frozen (stopped, swapped out, its machine suspended) between its last check and the moment git
 sends the refs: it may wake after another lane holds the claim. Then the push is a plain fast-forward: if the new
 holder pushed first it is refused; if not, it lands one commit, which is a whole roll-up of a task built on the phase
@@ -85,6 +89,7 @@ from harness import (
     lane_progress,
     lane_rollup,
     lane_smoke,
+    phase_pick,
     repo_cache,
     review_loop,
     store_phases,
@@ -238,13 +243,15 @@ class Fence:
     of its own; once the claim is gone, or its lease is within its margin of lapsing, `lost` is set and
     `on_lost` runs once (it stops the lane's agents and checks). Any part of the lane may also `lose` it, when a
     fenced write was refused or the branch moved under it. A read that fails counts as lost: the lane cannot show it
-    still holds the claim, and stopping is the safe side."""
+    still holds the claim, and stopping is the safe side. So does one that takes longer than `phase_pick.CHECK_CALL_S`
+    (a store gone silent): the fence gives up on it then (`Connection.within`), whatever the kernel would wait."""
 
     def __init__(self, open_conn: Callable[[], Connection], claim: LaneClaim, log: Callable[[str], None],
                  on_lost: Callable[[], None], beat: Callable[[int], None] = lambda _n: None,
-                 watch_s: float = WATCH_S) -> None:
+                 watch_s: float = WATCH_S, still_lost: Callable[[], None] | None = None) -> None:
         self._open, self._claim, self._log, self._on_lost, self._beat = open_conn, claim, log, on_lost, beat
         self._watch_s = watch_s
+        self._still_lost = still_lost or on_lost
         self._conn: Connection | None = None
         self._lock = threading.Lock()
         self._halt = threading.Event()
@@ -261,7 +268,8 @@ class Fence:
             with self._lock:
                 if self._conn is None:
                     self._conn = self._open()
-                ok = store_phases.held(self._conn, c.initiative, c.phase, c.worker, c.epoch, None)
+                with self._conn.within(phase_pick.CHECK_CALL_S):
+                    ok = store_phases.held(self._conn, c.initiative, c.phase, c.worker, c.epoch, None)
         except Exception as exc:
             self.lose(f"the claim could not be read: {type(exc).__name__}: {' '.join(str(exc).split())[:200]}")
             return False
@@ -280,9 +288,11 @@ class Fence:
 
     def start(self) -> None:
         """The watch thread: a claim check every `WATCH_S`, and after each good one the progress mark the worker
-        watches (`beat`), so a lane that stops checking stops marking too. Once the claim is lost it runs `on_lost`
-        again every `WATCH_S` until the lane is done, so a check a task thread started after the loss is stopped too
-        rather than run on with nobody left to stop it."""
+        watches (`beat`), so a lane that stops checking stops marking too. Once the claim is lost it runs `still_lost`
+        every `WATCH_S` until the lane is done, so a check or build a task thread started after the loss is stopped
+        too rather than run on with nobody left to stop it. `still_lost` stops only those (the children that lead a
+        group of their own, `terminate_groups(..., groups_only=True)`), never a task thread's cleanup in the shared
+        checkout, which must finish; it is `on_lost` when not given."""
 
         def loop() -> None:
             count = 0
@@ -297,7 +307,7 @@ class Fence:
                 if not self.check():
                     break
             while not self._halt.wait(self._watch_s):
-                self._on_lost()
+                self._still_lost()
 
         self._thread = threading.Thread(target=loop, name="lane-fence", daemon=True)
         self._thread.start()
@@ -493,6 +503,8 @@ def _collide(lane: Lane, task: str, base: str, tip: str, diff: str) -> lane_merg
     titles = {t: str(item.get("title") or t) for t, item in lane.items.items()}
 
     def ask(prompt: str) -> Mapping[str, object]:
+        if lane.stopping():
+            return {"resolved": False, "summary": "the lane is stopping"}
         if lane_merge.ROLE not in lane.ctx.bound:
             return {"resolved": False, "summary": f"no {lane_merge.ROLE} seat is bound"}
         try:
@@ -505,6 +517,8 @@ def _collide(lane: Lane, task: str, base: str, tip: str, diff: str) -> lane_merg
             return {"resolved": False, "summary": f"the merge agent failed: {exc}"}
 
     def check(worktree: Path, since: str, side: str) -> tuple[lane_merge.Results, lane_merge.Results]:
+        if lane.stopping():  # no check starts once the lane is stopping; none ran, so the merge is not taken
+            return (), ()
         return task_checks(TaskCtx.of(home, since), worktree, phase=c.phase, label=f"@merge-{side}",
                            verify=verify_of(lane.items, side))
 
@@ -627,6 +641,8 @@ def _attempt(lane: Lane, task: str, base: str, rebuild: bool = False) -> Rolled:
     try:
         if result is None:
             return False, why
+        if lane.stopping():  # no check starts once the lane is stopping: nobody would be left to stop it
+            return False, "the lane is stopping"
         phase = lane.claim.phase
         record = build_task(tctx, phase=phase, task=task, result=result, verify=verify_of(lane.items, task))
         checked = json.loads(json.dumps(with_checks(result, record.get("checks") or [], lane.ctx.run_id), default=str))
@@ -672,6 +688,8 @@ def _smoke(lane: Lane, tip: str, round_: int) -> bool:
         result = lane_smoke.result_json(tip, cmds, c.worker, smoke, earlier,
                                         reused_from=str(prior.get("run_id") or ""))
     else:
+        if lane.stopping():  # no check starts once the lane is stopping, and a lost claim writes no row
+            return False
         if checks:
             lane.log(f"lane: the phase smoke runs at {tip[:12]}: {'; '.join(cmds)}")
             env = checks_env(ctx, {LANE_BASE_VAR: lane.base_sha}, c.phase, SMOKE_SCRATCH)
@@ -968,12 +986,15 @@ def _sweep_dead_clones(ctx: Ctx) -> list[str]:
 
 def run_lane(ctx: Ctx, claim: LaneClaim, conn: Connection, open_conn: Callable[[], Connection],
              items: Sequence[Mapping[str, Any]], base: str, log: Callable[[str], None],
-             stop_children: Callable[[], None], goal: str = "") -> int:
+             stop_children: Callable[[], None], goal: str = "",
+             stop_new_children: Callable[[], None] | None = None) -> int:
     """Edge. Run the claimed phase as the module docstring says, its review judging it against `goal`; the exit code
     (`EXIT_*`). On every way out the run's worktrees, its own clone (under `<worktree_root>/<run>`, with the private
-    refs it fetched), any private refs in the shared checkout, and its progress mark are removed."""
+    refs it fetched), any private refs in the shared checkout, and its progress mark are removed. Once the claim is
+    lost, `stop_children` stops every child the lane has, and `stop_new_children` (`Fence`'s `still_lost`) whatever
+    check or build starts after that."""
     mark = beat_path(ctx.runs_dir, ctx.run_id)
-    fence = Fence(open_conn, claim, log, stop_children, lambda n: write_beat(mark, n))
+    fence = Fence(open_conn, claim, log, stop_children, lambda n: write_beat(mark, n), still_lost=stop_new_children)
     phase_worktree = ctx.worktree_root / ctx.run_id / claim.phase / "_phase"
     lane_ctx = ctx
     held = _hold_run_lock(ctx)  # before the clone exists, so no sweep ever sees this run's clone unlocked
@@ -1068,11 +1089,19 @@ def write_beat(path: Path, count: int) -> None:
     os.replace(part, path)
 
 
-def terminate_groups(pids: Sequence[int]) -> None:
+def terminate_groups(pids: Sequence[int], groups_only: bool = False) -> None:
     """Edge. TERM each of the lane's children and, for one that leads a process group of its own (a check runs in a
     session of its own), its whole group, so a shell's grandchildren stop too and nothing holds a pipe open. A child
-    in the lane's own group is signalled alone: the lane's group is never signalled."""
+    in the lane's own group is signalled alone: the lane's group is never signalled. With `groups_only`, only the
+    children that lead a group of their own (the checks, the agents, a push), never one in the lane's group (a task
+    thread's git, cleaning up the shared checkout)."""
     for pid in pids:
+        if groups_only:
+            try:
+                if os.getpgid(pid) != pid:
+                    continue
+            except ProcessLookupError:
+                continue
         try:
             os.killpg(pid, signal.SIGTERM)
         except (ProcessLookupError, PermissionError):

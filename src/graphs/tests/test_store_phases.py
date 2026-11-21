@@ -291,15 +291,15 @@ def test_a_shorter_lease_is_the_claim_s_own_and_its_lane_reads_its_margin_from_t
     from harness import phase_pick
 
     store_phases.apply_changes(conn, [_change()], "chair-loop")
-    claim = store_phases.claim_next(conn, "w1", [], 1, lease_s=32)
+    claim = store_phases.claim_next(conn, "w1", [], 1, lease_s=48)
     row = store_phases.get_row(conn, "ship", "p1")
-    assert phase_pick.seconds(row["heartbeat_at"], row["lease_until"]) == 32 and claim.lease_until == row["lease_until"]
-    assert phase_pick.margin_of(row) == 8
-    renewed = store_phases.heartbeat(conn, claim, "w1", lease_s=32)
+    assert phase_pick.seconds(row["heartbeat_at"], row["lease_until"]) == 48 and claim.lease_until == row["lease_until"]
+    assert phase_pick.margin_of(row) == 12
+    renewed = store_phases.heartbeat(conn, claim, "w1", lease_s=48)
     row = store_phases.get_row(conn, "ship", "p1")
-    assert renewed == row["lease_until"] and phase_pick.seconds(row["heartbeat_at"], row["lease_until"]) == 32
-    assert store_phases.held(conn, "ship", "p1", "w1", claim.epoch, None)  # 32 s left, more than its 8 s margin
-    assert not store_phases.held(conn, "ship", "p1", "w1", claim.epoch, 40)  # a margin past the lease: not held
+    assert renewed == row["lease_until"] and phase_pick.seconds(row["heartbeat_at"], row["lease_until"]) == 48
+    assert store_phases.held(conn, "ship", "p1", "w1", claim.epoch, None)  # 48 s left, more than its 12 s margin
+    assert not store_phases.held(conn, "ship", "p1", "w1", claim.epoch, 50)  # a margin past the lease: not held
 
 
 def test_the_chair_marks_a_lapsed_claim_lost_once_and_never_a_claim_a_worker_holds(conn):
@@ -322,7 +322,15 @@ def test_the_chair_marks_a_lapsed_claim_lost_once_and_never_a_claim_a_worker_hol
     assert (row["state"], row["claimed_by"], row["claim_epoch"], row["attempts"]) == ("claimed", "w1", 1, 1)
     second = store_phases.claim_next(conn, "w2", [], 1)  # the mark leaves it claimable
     assert second is not None and second.epoch == 2
+    assert store_phases.get_row(conn, "ship", "p1")["reason"] == ""  # A's mark is not shown on B's live claim
     assert store_phases.apply_changes(conn, [mark], "chair-loop") == 0  # and never touches the new claim
+
+
+def test_a_claim_clears_only_a_run_lost_mark_and_keeps_any_other_reason(conn):
+    store_phases.apply_changes(conn, [_change()], "chair-loop")
+    _set(conn, "p1", reason="the last attempt failed: t1's check")
+    claim = store_phases.claim_next(conn, "w1", [], 1)
+    assert claim is not None and store_phases.get_row(conn, "ship", "p1")["reason"] == "the last attempt failed: t1's check"
 
 
 def test_the_rollups_and_the_last_review_round_of_a_phase_are_read_back(conn):

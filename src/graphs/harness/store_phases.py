@@ -215,7 +215,8 @@ def claim_next(conn: Connection, worker: str, capabilities: Sequence[str], free:
     `phase_pick.choices` keeps those the worker meets; a page with none it meets is paged past, so phases nobody here
     can run never starve the rest. Each choice is then locked alone, `FOR UPDATE SKIP LOCKED` on Postgres (sqlite's
     BEGIN IMMEDIATE serialises instead), re-checked as claimable, and taken by one conditional UPDATE: the epoch goes
-    up by one and the attempt is counted. A row another worker holds locked, or claimed since the read, is skipped
+    up by one and the attempt is counted, and the chair's "run lost" mark of the claim before it, when the row carries
+    one, is cleared: it was that claim's, not this one's. A row another worker holds locked, or claimed since the read, is skipped
     for the next, so two claimers never wait on each other and never take the same row."""
     if free <= 0:
         return None
@@ -245,8 +246,9 @@ def claim_next(conn: Connection, worker: str, capabilities: Sequence[str], free:
                 taken = conn.execute(
                     f"UPDATE phase_queue SET state = 'claimed', claimed_by = {p}, claim_epoch = claim_epoch + 1, "
                     f"run_id = '', claimed_at = {p}, heartbeat_at = {p}, lease_until = {p}, attempts = attempts + 1, "
+                    f"reason = CASE WHEN reason LIKE {p} THEN '' ELSE reason END, "
                     f"updated_at = {p}, updated_by = {p} WHERE initiative = {p} AND phase = {p} AND {claimable_sql}",
-                    (worker, now, now, until, now, worker, initiative, phase, *page_args),
+                    (worker, now, now, until, f"{phase_pick.RUN_LOST}:%", now, worker, initiative, phase, *page_args),
                 )
                 row = get_row(conn, initiative, phase) if taken == 1 else None
                 if row is not None:

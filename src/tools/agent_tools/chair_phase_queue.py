@@ -15,8 +15,10 @@ docket, then the phase's place in it.
 
 A claimed row is the worker's and is never changed here, but for one mark. A claim whose lease lapsed with nobody
 taking it over is a lost run (its worker died, or lost the store): the chair writes the "run lost" mark as the row's
-reason (`mark_lost`, `phase_pick.lost_reason`) and tells the operator once (`lost_runs`: one `needs_chair`, cause
-`RUN_LOST_CAUSE`, keyed by the claim's epoch). Nothing else is done for it: the lapsed claim is claimable, the next
+reason (`mark_lost`, `phase_pick.lost_reason`) and tells the operator (one `needs_chair`, cause `RUN_LOST_CAUSE`) only
+when that write changed the row (`lost_runs`). The tick plans on its own clock, but the mark lands only on a claim
+lapsed by the store's, at the epoch the tick saw, and only once; so a claim that is still live (the chair's clock runs
+ahead) or was taken over meanwhile is neither marked nor told about. Nothing else is done for it: the lapsed claim is claimable, the next
 worker that claims it starts where the branch stands (`lane_progress.resume_plan`), and a phase whose claims ran out
 is exhausted as before. A lost run taken over before any tick saw it lapse gets no mark: it was recovered. A withheld phase's ready row is withdrawn (`cancelled`) and
 comes back when it is wanted again. A finished row is reopened when its phase is ready again and it finished approved
@@ -174,36 +176,27 @@ def changes(wanted_rows: Sequence[Row], stored: Sequence[Row], now: str, holds: 
     return out
 
 
-def lost_key(initiative: str, phase: str, epoch: object) -> str:
-    """The told-once key of a lost run: the phase and the epoch of the claim that lapsed."""
-    return f"{initiative}|{phase}|{epoch}"
-
-
-def run_lost_keys(actions: Sequence[Row]) -> list[str]:
-    """The `lost_key` of each run_lost needs_chair in the action log (`action_doc` rows), in row order."""
-    return [lost_key(str(a.get("initiative")), str(a.get("phase")), a.get("claim_epoch")) for a in actions
-            if a.get("kind") == ActionKind.NEEDS_CHAIR and a.get("cause") == RUN_LOST_CAUSE]
-
-
-def lost_runs(stored: Sequence[Row], now: str, reported: Collection[str] = ()) -> tuple[list[dict[str, object]], list[Action]]:
-    """The lost runs at the store's `now`: each claimed row whose lease lapsed (`phase_pick.lapsed`) and whose claims
-    have not run out (that one is exhausted instead). For each, the `mark_lost` change while its reason is not the mark
-    yet, and the needs_chair notice while the action log holds none for its epoch (`reported`): each is planned until
-    it is done, and then never again for that claim."""
-    marks: list[dict[str, object]] = []
-    notices: list[Action] = []
+def lost_runs(stored: Sequence[Row], now: str) -> list[Action]:
+    """The lost runs as of `now`, the tick's own clock: each claimed row whose lease lapsed (`phase_pick.lapsed`), whose
+    claims have not run out (that one is exhausted instead), and whose reason is not the mark yet. For each, a
+    `queue_phases` of its one `mark_lost` change carrying the needs_chair `notice`, which the chair records only when
+    the mark changed the row (`chair_exec_act`): by the store's clock, at the epoch seen here, once."""
+    out: list[Action] = []
     for row in stored:
         if not phase_pick.lapsed(row, now) or phase_pick.exhausted(row, now):
             continue
         raw = row.get("claim_epoch")
         (initiative, phase), epoch, why = _key(row), raw if isinstance(raw, int) else 0, phase_pick.lost_reason(row)
-        if str(row.get("reason") or "") != why:
-            marks.append({"op": "mark_lost", "initiative": initiative, "phase": phase, "epoch": epoch, "reason": why})
-        if lost_key(initiative, phase, epoch) not in reported:
-            notices.append({"kind": ActionKind.NEEDS_CHAIR, "initiative": initiative, "phase": phase,
-                            "cause": RUN_LOST_CAUSE, "claim_epoch": epoch, "worker": str(row.get("claimed_by") or ""),
-                            "run": str(row.get("run_id") or ""), "reason": why, "command": list(STATUS_COMMAND)})
-    return marks, notices
+        if str(row.get("reason") or "") == why:
+            continue
+        notice: Action = {"kind": ActionKind.NEEDS_CHAIR, "initiative": initiative, "phase": phase,
+                          "cause": RUN_LOST_CAUSE, "claim_epoch": epoch, "worker": str(row.get("claimed_by") or ""),
+                          "run": str(row.get("run_id") or ""), "reason": why, "command": list(STATUS_COMMAND)}
+        out.append({"kind": ActionKind.QUEUE_PHASES, "initiative": initiative, "phase": phase,
+                    "changes": [{"op": "mark_lost", "initiative": initiative, "phase": phase, "epoch": epoch,
+                                 "reason": why}],
+                    "notice": notice, "reason": f"phase queue: {initiative}/{phase} mark_lost"})
+    return out
 
 
 _DONE = frozenset({"done", "dropped"})
@@ -252,9 +245,9 @@ def quarantines(stored: Sequence[Row], tasks: Sequence[Row]) -> list[dict[str, o
 
 def plan(facts: Facts, now: str, holds: Collection[str] = ()) -> list[Action]:
     """One `approve_phase_tasks` action for the tasks of phases that finished approved (`approvals`), one
-    `queue_phases` action with the tick's changes, the task quarantines of phases that finished quarantined
-    (`quarantines`) and the marks of lost runs, and a notice for each lost run not told yet (`lost_runs`); each is
-    left out when it has nothing. Without the stored rows (`phase_queue` unread) nothing is
+    `queue_phases` action with the tick's changes and the task quarantines of phases that finished quarantined
+    (`quarantines`), and one `queue_phases` per lost run, its mark with its notice (`lost_runs`); each is left out
+    when it has nothing. Without the stored rows (`phase_queue` unread) nothing is
     planned. A phase whose tasks wait to be approved or quarantined is not wanted again: its ready tasks are what this
     tick settles, not work that came back. `holds` is the tick's held and deferred initiatives; the facts add those
     stopped by their own failures and the tasks held for a person."""
@@ -269,8 +262,7 @@ def plan(facts: Facts, now: str, holds: Collection[str] = ()) -> list[Action]:
     pending = {(a["initiative"], a["phase"]) for a in approve} | {_key(q) for q in quarantine}
     wanted = [w for w in rows(facts.get("initiatives") or [], queue["lane_prereqs"], held, held_phases, closed, stopped)
               if _key(w) not in pending]
-    marks, notices = lost_runs(queue["rows"], now, facts.get("run_lost_reported") or [])
-    found = [*changes(wanted, queue["rows"], now, held, held_phases, closed, stopped), *quarantine, *marks]
+    found = [*changes(wanted, queue["rows"], now, held, held_phases, closed, stopped), *quarantine]
     out: list[Action] = []
     if approve:
         names = ", ".join(f"{a['initiative']}/{a['task_id']}@{a['commit'][:12]}" for a in approve)
@@ -279,4 +271,4 @@ def plan(facts: Facts, now: str, holds: Collection[str] = ()) -> list[Action]:
     if found:
         names = ", ".join(f"{c['initiative']}/{c['phase']}{'/' + str(c['task_id']) if 'task_id' in c else ''} {c['op']}" for c in found)
         out.append({"kind": ActionKind.QUEUE_PHASES, "changes": found, "reason": f"phase queue: {names}"})
-    return [*out, *notices]
+    return [*out, *lost_runs(queue["rows"], now)]

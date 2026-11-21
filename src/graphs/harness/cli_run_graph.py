@@ -779,7 +779,7 @@ def _run_phase_lane(
 ) -> int:
     """Edge. `shell.py phase-lane`: build the one phase a worker claimed (`harness.phase_lane`), under its epoch."""
     from core.cartridge import test_database_setting
-    from harness import phase_lane
+    from harness import phase_lane, phase_pick
     from harness.checks import repo_checks
     from harness.cli_launch import _child_pids, _pgrep_children, lane_store_url, profile_storage_url
     from harness.epic import Ctx, resolve_default_ref
@@ -825,11 +825,15 @@ def _run_phase_lane(
     )
     url, _ = lane_store_url(profile_storage_url(provider, args.runs_dir))
     register_stack_dump(sys.stdout)
+    # Every statement of the lane's, on each of its connections, ends within LANE_STATEMENT_S on the client's side, so
+    # a store gone silent cannot hold the lane past its lease; the fence's checks are bounded tighter still.
+    bound = phase_pick.LANE_STATEMENT_S
     code = phase_lane.run_lane(
-        ctx, claim, store.conn, lambda: open_scoped(url), list(initiative.get("items") or []),
+        ctx, claim, store.conn.limit(bound), lambda: open_scoped(url).limit(bound), list(initiative.get("items") or []),
         default_ref, lambda line: print(line, flush=True),
         lambda: phase_lane.terminate_groups(_child_pids(pgrep=_pgrep_children)),
         goal=phase_goal(initiative, phase),
+        stop_new_children=lambda: phase_lane.terminate_groups(_child_pids(pgrep=_pgrep_children), groups_only=True),
     )
     print(f"phase-lane {run_id}: {claim.initiative}/{claim.phase} exit {code}")
     return code

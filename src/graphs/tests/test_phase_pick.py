@@ -52,26 +52,39 @@ def test_a_heartbeat_is_sent_only_when_it_is_due_and_cannot_run_past_the_stop():
 def test_a_lease_s_timings_scale_as_the_operator_s_sixty_seconds_do():
     assert phase_pick.Timings.of(60) == phase_pick.DEFAULT_TIMINGS == phase_pick.Timings(60, 10, 45)
     assert phase_pick.DEFAULT_TIMINGS.margin_s == phase_pick.LANE_MARGIN_S == 15
-    short = phase_pick.Timings.of(32)
-    assert (short.heartbeat_s, short.stop_after_s, short.margin_s) == (5, 24, 8)
-    assert phase_pick.stop_at(100.0, short) == 100.0 + 24 - 8
-    assert phase_pick.next_step(100.0, 105.0, 105.0, short) == "beat"  # 105 + 10 = 115: ends before its stop at 116
-    assert phase_pick.next_step(100.0, 106.1, 105.0, short) == "stop"
+    short = phase_pick.Timings.of(48)
+    assert (short.heartbeat_s, short.stop_after_s, short.margin_s) == (8, 36, 12)
+    assert phase_pick.stop_at(100.0, short) == 100.0 + 36 - 8
+    assert phase_pick.next_step(100.0, 108.0, 108.0, short) == "beat"  # 108 + 10 = 118: ends before its stop at 128
+    assert phase_pick.next_step(100.0, 118.1, 108.0, short) == "stop"
 
 
-def test_the_shortest_lease_leaves_its_lanes_one_bounded_push_and_its_heartbeat_time_to_finish():
+def test_the_shortest_lease_leaves_its_lanes_a_check_a_push_and_slack_and_its_heartbeat_time_to_finish():
     from harness import lane_rollup
 
     assert phase_pick.PUSH_BOUND_S == lane_rollup.REMOTE_TIMEOUT_S
+    # What can pass after a good check's store read: the rest of that check, one bounded push, and the slack.
+    assert phase_pick.MARGIN_FLOOR_S == phase_pick.CHECK_CALL_S + phase_pick.PUSH_BOUND_S + phase_pick.SKEW_S == 12
+    assert phase_pick.MIN_LEASE_S == 48 and phase_pick.MAX_LEASE_S == 600
     assert phase_pick.lease_problem(phase_pick.MIN_LEASE_S) == "" and phase_pick.lease_problem(60) == ""
-    assert "bounded push" in phase_pick.lease_problem(phase_pick.MIN_LEASE_S - 1)
+    assert "a claim check (3s), one bounded push (8s) and 1s of slack" in phase_pick.lease_problem(phase_pick.MIN_LEASE_S - 1)
+    assert phase_pick.lease_problem(32) and phase_pick.lease_problem(40)  # the old floor, and the reviewer's
     assert phase_pick.lease_problem(0) and phase_pick.lease_problem(-5)
-    assert all(phase_pick.lease_problem(n) == "" for n in range(phase_pick.MIN_LEASE_S, 600))
-    # Every accepted lease: a heartbeat sent when due ends before the stop, and the run is gone before the margin.
-    for n in range(phase_pick.MIN_LEASE_S, 600):
+    assert phase_pick.lease_problem(phase_pick.MAX_LEASE_S) == ""
+    assert "longer than the longest a worker takes (600s)" in phase_pick.lease_problem(phase_pick.MAX_LEASE_S + 1)
+    assert phase_pick.lease_problem(86_400)
+    accepted = range(phase_pick.MIN_LEASE_S, phase_pick.MAX_LEASE_S + 1)
+    assert all(phase_pick.lease_problem(n) == "" for n in accepted)
+    for n in accepted:
         t = phase_pick.Timings.of(n)
+        # A heartbeat sent when due ends, at its client-side bound, before the stop; the run is gone before the margin.
         assert phase_pick.next_step(0.0, t.heartbeat_s, t.heartbeat_s, t) == "beat", n
-        assert t.margin_s >= phase_pick.PUSH_BOUND_S and t.stop_after_s + t.margin_s == n, n
+        assert t.heartbeat_s + phase_pick.HEARTBEAT_CALL_S <= phase_pick.stop_at(0.0, t), n
+        assert t.stop_after_s + t.margin_s == n, n
+        # A push that follows a good check lands before the lease lapses, the check's own worst case included.
+        assert t.margin_s >= phase_pick.CHECK_CALL_S + phase_pick.PUSH_BOUND_S + phase_pick.SKEW_S, n
+        # The lane's other statements, and a fence check that hangs, end inside the margin too.
+        assert t.margin_s > phase_pick.LANE_STATEMENT_S and t.margin_s > phase_pick.CHECK_CALL_S, n
 
 
 def test_a_lane_reads_its_margin_from_its_claim_s_own_lease():
@@ -79,10 +92,12 @@ def test_a_lane_reads_its_margin_from_its_claim_s_own_lease():
         return {"heartbeat_at": heartbeat_at, "lease_until": lease_until}
 
     assert phase_pick.margin_of(row(NOW, phase_pick.lease(NOW, 60))) == 15
-    assert phase_pick.margin_of(row(NOW, phase_pick.lease(NOW, 32))) == 8
+    assert phase_pick.margin_of(row(NOW, phase_pick.lease(NOW, 48))) == 12
     assert phase_pick.margin_of(row(NOW, phase_pick.lease(NOW, 120))) == 30
     # A row that says no lease a worker accepts: the default margin.
     assert phase_pick.margin_of(row(NOW, phase_pick.lease(NOW, 10))) == 15
+    assert phase_pick.margin_of(row(NOW, phase_pick.lease(NOW, 32))) == 15  # under the floor now
+    assert phase_pick.margin_of(row(NOW, phase_pick.lease(NOW, 3600))) == 15  # over the cap
     assert phase_pick.margin_of(row("", "")) == phase_pick.margin_of(None) == phase_pick.margin_of({}) == 15
     assert phase_pick.seconds(NOW, "2026-11-20T10:00:32Z") == 32 and phase_pick.seconds("2026-11-20T10:00:32Z", NOW) == -32
 

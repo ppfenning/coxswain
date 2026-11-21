@@ -13,10 +13,15 @@ lapse: no phase is run by two workers at once. A lapsed claim is simply
 claimable again; there is no sweeper. A phase that has had `MAX_ATTEMPTS` claims is never claimed again: the chair
 finishes it as failed (`exhausted`).
 
-The operator may give a worker a shorter lease (`cox worker run --lease-s N`, `Timings.of`): the heartbeat, the stop
-time and the lane's margin scale with it, a sixth, three quarters and a quarter of it, as 10, 45 and 15 are of 60. A
-claim carries its own lease's length (`lease_until` less `heartbeat_at`), so the lane reads its margin from the claim
-row (`margin_of`) and nothing has to pass the length to it.
+The operator may give a worker another lease (`cox worker run --lease-s N`, `Timings.of`), from `MIN_LEASE_S` to
+`MAX_LEASE_S`: the heartbeat, the stop time and the lane's margin scale with it, a sixth, three quarters and a quarter
+of it, as 10, 45 and 15 are of 60. A claim carries its own lease's length (`lease_until` less `heartbeat_at`), so the
+lane reads its margin from the claim row (`margin_of`) and nothing has to pass the length to it.
+
+Every call these timings count on is bounded on the client's side as well as the server's
+(`store_dialect.Connection.within`), so a store gone silent costs a heartbeat `HEARTBEAT_CALL_S` and a lane's claim
+check `CHECK_CALL_S`, never the minute the kernel would wait. The shortest lease is the one whose margin still holds
+what follows a good check: the rest of that check, one bounded push, and `SKEW_S` of slack (`lease_problem`).
 """
 
 from __future__ import annotations
@@ -30,17 +35,22 @@ from typing import Literal
 __all__ = [
     "BEAT_LOOP_S",
     "CANDIDATES",
+    "CHECK_CALL_S",
     "DEFAULT_TIMINGS",
     "HEARTBEAT_CALL_S",
     "HEARTBEAT_S",
     "KILL_WAIT_S",
     "LANE_MARGIN_S",
     "LANE_STALL_S",
+    "LANE_STATEMENT_S",
     "LEASE_S",
+    "MARGIN_FLOOR_S",
     "MAX_ATTEMPTS",
+    "MAX_LEASE_S",
     "MIN_LEASE_S",
     "PUSH_BOUND_S",
     "RUN_LOST",
+    "SKEW_S",
     "STOP_AFTER_S",
     "STOP_GRACE_S",
     "SmokeSeen",
@@ -71,7 +81,9 @@ __all__ = [
 HEARTBEAT_S = 10
 LEASE_S = 60
 STOP_AFTER_S = 45
-HEARTBEAT_CALL_S = 10  # the longest one heartbeat call can take: a 5 s connect plus a 5 s statement (`worker.bounded_url`)
+# The longest one heartbeat call can take, connect included: the worker gives it that long and then shuts its socket
+# (`worker_ports.Store`, `store_dialect.Connection.within`); a live store answers in a 5 s connect plus 5 s statements.
+HEARTBEAT_CALL_S = 10
 STOP_GRACE_S = 5  # TERM to KILL, for the launch and the harness alike
 KILL_WAIT_S = 2  # KILL to gone
 BEAT_LOOP_S = 1  # how often the heartbeat loop looks at its claims
@@ -83,9 +95,18 @@ LANE_MARGIN_S = LEASE_S - STOP_AFTER_S
 # A lane rewrites its progress mark every 2 s while it holds its claim; one whose mark has not moved for this long,
 # under a worker that is itself alive, is hung (stopped, deadlocked) and is stopped so its phase can be claimed again.
 LANE_STALL_S = 90
-# The lane's margin must hold one bounded push (`lane_rollup.REMOTE_TIMEOUT_S`): a push follows a check that found it.
+# A push follows a claim check that found the margin left, so the margin must hold what can pass after the store read
+# its clock for that check: the rest of the check (`CHECK_CALL_S`, the fence's own bound on it), one bounded push
+# (`lane_rollup.REMOTE_TIMEOUT_S`), and `SKEW_S` for the lane's own scheduling and the store's clock reading.
 PUSH_BOUND_S = 8
-MIN_LEASE_S = 32  # the shortest lease `lease_problem` accepts: a quarter of it is the push bound
+CHECK_CALL_S = 3
+SKEW_S = 1
+MARGIN_FLOOR_S = CHECK_CALL_S + PUSH_BOUND_S + SKEW_S
+MIN_LEASE_S = 4 * MARGIN_FLOOR_S  # 48 s, the shortest lease `lease_problem` accepts: a quarter of it is the floor
+MAX_LEASE_S = 600  # the longest: past ten minutes a dead worker's phase would wait too long for anyone to notice
+# Each statement of a lane's other store connections (its row writes, its uploads) ends within this, so a lane cut off
+# from a silent store still ends well before its lease can lapse (`store_dialect.Connection.limit`).
+LANE_STATEMENT_S = 10
 _BACKOFF_BASE_S = 60
 _BACKOFF_CAP_S = 900
 
@@ -145,11 +166,15 @@ DEFAULT_TIMINGS = Timings()
 
 
 def lease_problem(lease_s: int) -> str:
-    """Why a worker may not run on a `lease_s` lease, or "" when it may: its lanes' margin must hold one bounded push,
-    and a heartbeat sent when due must be able to finish before the worker's stop time (`next_step`)."""
+    """Why a worker may not run on a `lease_s` lease, or "" when it may: no longer than `MAX_LEASE_S`; its lanes' margin
+    must hold the rest of a claim check, one bounded push and the slack (`MARGIN_FLOOR_S`); and a heartbeat sent when
+    due must be able to finish, at its client-side bound, before the worker's stop time (`next_step`)."""
     t = Timings.of(lease_s)
-    if t.margin_s < PUSH_BOUND_S:
-        return f"a {lease_s}s lease leaves its lanes a {t.margin_s}s margin, less than one bounded push ({PUSH_BOUND_S}s)"
+    if lease_s > MAX_LEASE_S:
+        return f"a {lease_s}s lease is longer than the longest a worker takes ({MAX_LEASE_S}s)"
+    if t.margin_s < MARGIN_FLOOR_S:
+        return (f"a {lease_s}s lease leaves its lanes a {t.margin_s}s margin, less than a claim check ({CHECK_CALL_S}s), "
+                f"one bounded push ({PUSH_BOUND_S}s) and {SKEW_S}s of slack")
     if t.heartbeat_s + HEARTBEAT_CALL_S > stop_at(0.0, t):
         return f"a {lease_s}s lease leaves no time for a heartbeat ({HEARTBEAT_CALL_S}s) before the worker must stop"
     return ""

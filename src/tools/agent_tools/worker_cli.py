@@ -107,7 +107,8 @@ def _run(a: argparse.Namespace, *, once: bool) -> int:
     given = getattr(a, "lease_s", None)
     lease_s = given if isinstance(given, int) else phase_pick.LEASE_S
     if problem := phase_pick.lease_problem(lease_s):
-        print(f"worker: --lease-s {lease_s}: {problem}; the shortest is {phase_pick.MIN_LEASE_S}s")
+        print(f"worker: --lease-s {lease_s}: {problem}; a lease runs from {phase_pick.MIN_LEASE_S}s to "
+              f"{phase_pick.MAX_LEASE_S}s")
         return 2
     name = a.name or socket.gethostname()
     ports, store = worker_ports.build(ws, name=name, declared=list(a.capability or []), lanes=a.lanes, version=_version(),

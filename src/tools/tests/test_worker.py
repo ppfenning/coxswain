@@ -1,7 +1,9 @@
 """The phase worker's pure rules: lanes, capabilities, repository tokens, the launch, and `cox worker status` lines.
 The loop itself is glue, proven against a real store by smoke/test_worker_claims.py."""
 
-from agent_tools import worker, worker_cli
+import pytest
+
+from agent_tools import worker, worker_cli, worker_ports
 from harness import phase_pick
 
 NOW = "2026-11-20T10:00:00Z"
@@ -161,21 +163,47 @@ def test_a_heartbeat_that_runs_long_and_fails_is_stopped_on_its_return():
 
 
 def test_a_worker_on_a_short_lease_beats_and_stops_on_its_own_timings():
-    short = phase_pick.Timings.of(32)  # a heartbeat every 5 s, a stop 24 s after the last good one
+    short = phase_pick.Timings.of(48)  # a heartbeat every 8 s, a stop 36 s after the last good one
     clock, leases = _Clock(), worker.Leases(timings=short)
     run = worker.Running("ship.p1-1", 4242)
     leases.add(_claim(), clock(), run)
-    assert leases.snapshot()[0].beat_due == 105.0
+    assert leases.snapshot()[0].beat_due == 108.0
     beats: list[float] = []
-    for t in (104.0, 105.0, 110.0):
+    for t in (107.0, 108.0, 116.0):
         clock.t = t
         assert _pass(leases, clock, lambda claim: beats.append(clock.t) or True) == []
-    assert beats == [105.0, 110.0] and leases.snapshot()[0].last_ok == 110.0
-    clock.t = 115.0  # due, and 115 + 10 still ends before the stop at 110 + 16: sent, and it times out
-    assert _pass(leases, clock, _timed_out) == []
-    clock.t = 120.0
-    assert _pass(leases, clock, _timed_out) == [run]  # 120 + 10 > 126: stop, 16 s after the last good heartbeat
+    assert beats == [108.0, 116.0] and leases.snapshot()[0].last_ok == 116.0
+    for t in (124.0, 132.0):  # due, and t + 10 still ends before the stop at 116 + 28: sent, and it times out
+        clock.t = t
+        assert _pass(leases, clock, _timed_out) == []
+    clock.t = 140.0
+    assert _pass(leases, clock, _timed_out) == [run]  # 140 + 10 > 144: stop, 28 s after the last good heartbeat
     assert leases.snapshot()[0].state == "expired"
+
+
+@pytest.mark.parametrize("lease_s", [0, 32, 40, 47, 601, 3600])
+def test_a_lease_outside_the_floor_and_the_cap_is_refused_with_exit_2_before_the_store_is_opened(
+        lease_s, monkeypatch, tmp_path, capsys):
+    import argparse
+
+    monkeypatch.setattr(worker_cli, "_workspace", lambda a: tmp_path)
+    monkeypatch.setattr(worker_ports, "build", lambda *a, **k: pytest.fail("the store was opened"))
+    a = argparse.Namespace(capability=None, lease_s=lease_s, name="w", lanes=None)
+    assert worker_cli.cmd_run(a) == 2
+    said = capsys.readouterr().out
+    assert said.startswith(f"worker: --lease-s {lease_s}: ") and "a lease runs from 48s to 600s" in said, said
+
+
+def test_the_lease_floor_and_cap_the_help_names_are_the_rules():
+    from agent_tools import cli
+
+    (arg,) = [a for a in cli._WORKER_ARGS if a.flags == ("--lease-s",)]
+    assert f"from {phase_pick.MIN_LEASE_S} to {phase_pick.MAX_LEASE_S}" in arg.kwargs["help"]
+
+
+def test_the_worker_bounds_each_statement_past_the_server_s_and_the_heartbeat_s_whole_call():
+    assert worker.STATEMENT_S == worker.STATEMENT_TIMEOUT_MS / 1000 + 1 == 6
+    assert worker.STATEMENT_S < phase_pick.HEARTBEAT_CALL_S
 
 
 def test_a_good_heartbeat_moves_the_clock_and_a_refused_one_stops_the_run_at_once():

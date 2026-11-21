@@ -381,7 +381,10 @@ def _queue_phases(action: Action, deps: Deps) -> Result:
         return make_result(action, "failed", f"phase queue: {written.detail}")
     if isinstance(written, store_api.NotAvailable):
         return make_result(action, "failed", f"phase queue: {written.reason}")
-    return make_result(action, "done", f"{written} phase queue row(s) written; {action.get('reason', '')}")
+    done = make_result(action, "done", f"{written} phase queue row(s) written; {action.get('reason', '')}")
+    # A lost run's notice is told only when its mark changed the row: by the store's clock, at the epoch planned, once.
+    notice = action.get("notice")
+    return {**done, "needs_chair": notice} if notice is not None and written > 0 else done
 
 
 def _approve_phase_tasks(action: Action, deps: Deps) -> Result:
@@ -830,7 +833,8 @@ def _would(action: Action) -> str:
 
 
 # The kinds whose result may carry a needs_chair that is recorded as its own row after the result.
-_CARRIES_NEEDS_CHAIR = ("clear_branches", "rebuild_quarantined", "review_landed", "carry_phase", "rebase_phase", "revert_land", "rerun_main")
+_CARRIES_NEEDS_CHAIR = ("clear_branches", "rebuild_quarantined", "review_landed", "carry_phase", "rebase_phase", "revert_land",
+                       "rerun_main", "queue_phases")
 
 
 def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:

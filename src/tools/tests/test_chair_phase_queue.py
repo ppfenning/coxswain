@@ -289,36 +289,107 @@ def _lost(phase="p1", *, epoch=1, lease_until="2026-11-20T09:59:00Z", reason="",
             "claimed_by": "a", "run_id": f"ship.{phase}-{epoch}", "reason": reason}
 
 
-def test_a_lapsed_claim_is_marked_lost_and_told_once_and_a_live_or_exhausted_one_never():
+def test_a_lapsed_claim_is_planned_as_its_mark_carrying_its_notice_and_a_live_or_exhausted_one_never():
     from harness import phase_pick
 
     lost = _lost()
-    marks, notices = chair_phase_queue.lost_runs([lost], STAMP)
     why = phase_pick.lost_reason(lost)
-    assert marks == [{"op": "mark_lost", "initiative": "ship", "phase": "p1", "epoch": 1, "reason": why}]
-    assert notices == [{"kind": "needs_chair", "initiative": "ship", "phase": "p1", "cause": chair_phase_queue.RUN_LOST_CAUSE,
-                        "claim_epoch": 1, "worker": "a", "run": "ship.p1-1", "reason": why,
-                        "command": ["cox", "worker", "status"]}]
-    # Marked, and told: nothing more for that claim. A later claim of the phase that is lost too is a new epoch.
-    told = chair_phase_queue.run_lost_keys(notices)
-    assert told == ["ship|p1|1"]
-    assert chair_phase_queue.lost_runs([{**lost, "reason": why}], STAMP, told) == ([], [])
-    assert chair_phase_queue.lost_runs([{**lost, "reason": why}], STAMP, []) == ([], notices)  # marked, not yet told: the notice alone
-    again = _lost(epoch=2)
-    assert [n["claim_epoch"] for n in chair_phase_queue.lost_runs([again], STAMP, told)[1]] == [2]
+    (action,) = chair_phase_queue.lost_runs([lost], STAMP)
+    assert action["kind"] == "queue_phases" and action["changes"] == [
+        {"op": "mark_lost", "initiative": "ship", "phase": "p1", "epoch": 1, "reason": why}]
+    assert action["notice"] == {"kind": "needs_chair", "initiative": "ship", "phase": "p1",
+                                "cause": chair_phase_queue.RUN_LOST_CAUSE, "claim_epoch": 1, "worker": "a",
+                                "run": "ship.p1-1", "reason": why, "command": ["cox", "worker", "status"]}
+    # Marked: nothing more for that claim. A later claim of the phase that is lost too is a new epoch.
+    assert chair_phase_queue.lost_runs([{**lost, "reason": why}], STAMP) == []
+    assert [a["notice"]["claim_epoch"] for a in chair_phase_queue.lost_runs([_lost(epoch=2)], STAMP)] == [2]
     live = _lost(lease_until="2026-11-20T10:00:30Z")
     exhausted = _lost(attempts=3)
-    assert chair_phase_queue.lost_runs([live, exhausted, _stored("p2")], STAMP) == ([], [])
-    assert chair_phase_queue.run_lost_keys([{"kind": "needs_chair", "cause": "held_file", "initiative": "ship"}]) == []
+    assert chair_phase_queue.lost_runs([live, exhausted, _stored("p2")], STAMP) == []
 
 
-def test_the_tick_marks_a_lost_run_in_its_queue_action_and_tells_it_once():
+def test_the_tick_plans_a_lost_run_s_mark_apart_with_its_notice_and_no_notice_of_its_own():
     lost = _lost()
     queued = plan_tick({**_tick_facts(initiatives=[]), "phase_queue": _queue([lost])}, NOW)
     (action,) = [a for a in queued if a["kind"] == "queue_phases"]
     assert _ops(action["changes"]) == [("mark_lost", "ship", "p1")]
-    (notice,) = [a for a in queued if a.get("cause") == chair_phase_queue.RUN_LOST_CAUSE]
-    assert notice["kind"] == "needs_chair" and notice["reason"].startswith("run lost: a's claim at epoch 1")
+    assert action["notice"]["reason"].startswith("run lost: a's claim at epoch 1")
+    assert not [a for a in queued if a.get("cause") == chair_phase_queue.RUN_LOST_CAUSE]  # told only once marked
     marked = {**lost, "reason": action["changes"][0]["reason"]}
-    after = plan_tick({**_tick_facts(initiatives=[]), "phase_queue": _queue([marked]), "run_lost_reported": ["ship|p1|1"]}, NOW)
-    assert not [a for a in after if a["kind"] == "queue_phases" or a.get("cause") == chair_phase_queue.RUN_LOST_CAUSE]
+    after = plan_tick({**_tick_facts(initiatives=[]), "phase_queue": _queue([marked])}, NOW)
+    assert not [a for a in after if a["kind"] == "queue_phases"]
+
+
+def _claimed_store(tmp_path, store_at):
+    """A store (the sqlite double) the chair's executor reaches, holding ship/p1 claimed by `a` at epoch 1."""
+    from harness import store_phases
+    from harness.store_migrate import open_store
+
+    url = f"sqlite:///{tmp_path / 'cox.db'}"
+    store_at(url)
+    conn = open_store(url, STAMP)
+    store_phases.apply_changes(conn, [{"op": "insert", "initiative": "ship", "phase": "p1", "requires": []}], "chair")
+    claim = store_phases.claim_next(conn, "a", [], 1)
+    store_phases.set_run(conn, claim, "a", "ship.p1-1")
+    return conn, claim
+
+
+def _execute(action, tmp_path):
+    from types import SimpleNamespace
+
+    from agent_tools.chair_exec_act import _queue_phases
+
+    return _queue_phases(action, SimpleNamespace(runs_dir=tmp_path))
+
+
+def _lapse(conn, until="2000-01-01T00:00:00Z"):
+    conn.execute("UPDATE phase_queue SET lease_until = ? WHERE initiative = 'ship' AND phase = 'p1'", (until,))
+
+
+def test_the_notice_is_told_only_when_the_mark_changed_the_row_and_once(tmp_path, store_at):
+    from harness import store_phases
+
+    conn, _ = _claimed_store(tmp_path, store_at)
+    try:
+        _lapse(conn)
+        (action,) = chair_phase_queue.lost_runs([store_phases.get_row(conn, "ship", "p1")], STAMP)
+        done = _execute(action, tmp_path)
+        assert done["status"] == "done" and done["needs_chair"] == action["notice"]
+        assert store_phases.get_row(conn, "ship", "p1")["reason"] == action["notice"]["reason"]
+        again = _execute(action, tmp_path)  # a repeat of the same mark changes nothing, and tells nothing
+        assert again["status"] == "done" and "needs_chair" not in again
+    finally:
+        conn.close()
+
+
+def test_no_notice_when_another_worker_claimed_the_phase_before_the_mark(tmp_path, store_at):
+    from harness import store_phases
+
+    conn, _ = _claimed_store(tmp_path, store_at)
+    try:
+        _lapse(conn)
+        (action,) = chair_phase_queue.lost_runs([store_phases.get_row(conn, "ship", "p1")], STAMP)
+        taken = store_phases.claim_next(conn, "b", [], 1)  # B re-claims between the tick's read and its write
+        assert taken is not None and taken.epoch == 2
+        done = _execute(action, tmp_path)
+        assert done["status"] == "done" and "needs_chair" not in done
+        row = store_phases.get_row(conn, "ship", "p1")
+        assert (row["claimed_by"], row["claim_epoch"], row["reason"]) == ("b", 2, "")
+    finally:
+        conn.close()
+
+
+def test_no_notice_for_a_live_claim_when_the_chair_s_clock_runs_ahead(tmp_path, store_at):
+    from harness import store_phases
+
+    conn, claim = _claimed_store(tmp_path, store_at)
+    try:
+        row = store_phases.get_row(conn, "ship", "p1")
+        ahead = "2099-01-01T00:00:00Z"  # the chair's clock, far past the lease by its own reckoning
+        (action,) = chair_phase_queue.lost_runs([row], ahead)
+        done = _execute(action, tmp_path)
+        assert done["status"] == "done" and "needs_chair" not in done
+        assert store_phases.get_row(conn, "ship", "p1")["reason"] == ""  # by the store's clock it is still the worker's
+        assert store_phases.held(conn, "ship", "p1", "a", claim.epoch)
+    finally:
+        conn.close()

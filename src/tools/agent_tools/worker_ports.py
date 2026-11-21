@@ -60,10 +60,14 @@ def _checkouts(repos: Sequence[str], home: str) -> list[str]:
 
 class Store:
     """One connection, opened on first use and opened again after a failure, so a store restart costs one call. Every
-    statement, lock wait and connect on it is bounded well inside the heartbeat window (`worker.bounded_url`)."""
+    statement, lock wait and connect on it is bounded well inside the heartbeat window (`worker.bounded_url`), by the
+    server and, for a server gone silent, by the client too (`worker.STATEMENT_S`, `Connection.limit`). With `call_s`
+    each whole call, connect included, ends within that or raises (`Connection.within`): the heartbeat's
+    (`phase_pick.HEARTBEAT_CALL_S`)."""
 
-    def __init__(self, runs_dir: Path) -> None:
+    def __init__(self, runs_dir: Path, call_s: float | None = None) -> None:
         self._runs_dir = runs_dir
+        self._call_s = call_s
         self._conn: Connection | None = None
 
     def _open(self) -> Connection:
@@ -71,12 +75,17 @@ class Store:
             from harness.store_migrate import open_store
 
             url = worker.bounded_url(run_store.store_url_for(self._runs_dir))
-            self._conn = open_store(url, time.strftime(_STAMP, time.gmtime()))
+            self._conn = open_store(url, time.strftime(_STAMP, time.gmtime())).limit(worker.STATEMENT_S)
         return self._conn
 
     def call[T](self, act: Callable[[Connection], T]) -> T:
+        started = time.monotonic()
         try:
-            return act(self._open())
+            conn = self._open()
+            if self._call_s is None:
+                return act(conn)
+            with conn.within(self._call_s - (time.monotonic() - started)):
+                return act(conn)
         except Exception:
             self.close()
             raise
@@ -277,7 +286,7 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
 
     def heartbeats(leases: worker.Leases) -> Callable[[], None]:
         """A thread of its own, on a store connection of its own, renewing each lease when it is due."""
-        own = Store(runs_dir)
+        own = Store(runs_dir, call_s=phase_pick.HEARTBEAT_CALL_S)
         halt = threading.Event()
 
         def renew(claim: Claim) -> bool:

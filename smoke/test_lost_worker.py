@@ -3,15 +3,20 @@ worker B, once A's lease lapses by the store's clock, claims the phase and carri
 store stand (`lane_progress.resume_plan`, `review_loop.next`), building and reviewing nothing twice.
 
 The machine is `test_phase_lane.py`'s (`lane_machine`): three tasks t1, t2 and t3 (t3 needing both) of phase p1. Both
-workers run with `--lease-s 32`, the shortest lease a worker accepts, so the wait for A's lease to lapse is the
+workers run with `--lease-s 48`, the shortest lease a worker accepts, so the wait for A's lease to lapse is the
 worker's own setting, not a patch. A reaches the store only through a relay of the test's (`Relay`), named in A's own
-provider profile (`AGENT_TOOLS_PROFILE`, so the lane A starts inherits it); cutting the relay closes that port and every
-connection through it, as a machine that lost its network leaves them. B reaches the store directly.
+provider profile (`AGENT_TOOLS_PROFILE`, so the lane A starts inherits it). B reaches the store directly. The relay
+loses A's store in one of two ways: blackholed (`silence`: every socket stays open and every byte is dropped, so
+nothing is refused or reset and only a bound of the lane's own can end a call), or cut (`cut`: the port and every
+connection through it closed, as a machine that lost its network leaves them).
 
-- A is killed after two of the three tasks rolled up, with t3 in its check: A's lane, cut off, stops itself; the
-  chair marks the lapsed claim's run lost and tells the operator once; `cox worker status` shows the lapsed claim; B
-  builds t3 alone and the phase is reviewed once, its branch holding exactly the three task commits.
-- A is killed in review round 2, during its smoke: B's first step is round 2's smoke, then round 2's review.
+- A is killed after two of the three tasks rolled up, with t3 in its check, and its store blackholed: A's lane gives
+  up its claim check at its bound and stops itself, and its children with it, all before A's lease lapses and so
+  before B can claim; the chair marks the lapsed claim's run lost and tells the operator once; `cox worker status`
+  shows the lapsed claim; B builds t3 alone and the phase is reviewed once, its branch holding exactly the three task
+  commits.
+- A is killed in review round 2, during its smoke, and its store cut: B's first step is round 2's smoke, then round 2's
+  review.
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ from __future__ import annotations
 import contextlib
 import json
 import socket
+import subprocess
 import threading
 from datetime import UTC, datetime
 from urllib.parse import urlsplit, urlunsplit
@@ -46,12 +52,14 @@ from smoke.test_phase_review import REVISE, _build, _phase_steps, _rounds
 
 lane_machine = lanes.lane_machine  # the machine these tests request, as a fixture of this module too
 
-LEASE_S = 32  # `--lease-s`: harness.phase_pick.MIN_LEASE_S
+LEASE_S = 48  # `--lease-s`: harness.phase_pick.MIN_LEASE_S
+CHECK_CALL_S = 3  # harness.phase_pick.CHECK_CALL_S: how long the lane's claim check waits on a silent store
 
 
 class Relay:
-    """A TCP relay to the store on a loopback port of its own: worker A's store address. `cut` closes the port and
-    shuts every connection through it."""
+    """A TCP relay to the store on a loopback port of its own: worker A's store address. `silence` blackholes it: every
+    connection, open or new, stays open and every byte either way is dropped. `cut` closes the port and shuts every
+    connection through it."""
 
     def __init__(self, url: str) -> None:
         parts = urlsplit(url)
@@ -60,7 +68,7 @@ class Relay:
         self._server.settimeout(0.5)
         self.port = self._server.getsockname()[1]
         self._open: list[socket.socket] = []
-        self._lock, self._cut = threading.Lock(), threading.Event()
+        self._lock, self._cut, self._silent = threading.Lock(), threading.Event(), threading.Event()
         threading.Thread(target=self._accept, daemon=True).start()
 
     def url(self, url: str) -> str:
@@ -82,6 +90,11 @@ class Relay:
             self._server.close()
 
     def _relay(self, near: socket.socket) -> None:
+        if self._silent.is_set():  # blackholed: the connection is taken and held, and nothing it sends goes anywhere
+            with self._lock:
+                self._open.append(near)
+            threading.Thread(target=self._drain, args=(near,), daemon=True).start()
+            return
         try:
             far = socket.create_connection(self._target, timeout=10)
         except OSError:
@@ -98,14 +111,25 @@ class Relay:
         for src, dst in ((near, far), (far, near)):
             threading.Thread(target=self._pump, args=(src, dst), daemon=True).start()
 
-    @staticmethod
-    def _pump(src: socket.socket, dst: socket.socket) -> None:
+    def _pump(self, src: socket.socket, dst: socket.socket) -> None:
         with contextlib.suppress(OSError):
             while data := src.recv(65536):
-                dst.sendall(data)
+                if not self._silent.is_set():
+                    dst.sendall(data)
+        if self._silent.is_set() and not self._cut.is_set():
+            return  # a blackhole closes nothing: the other side's socket stays open until the test cuts it
         for s in (src, dst):
             with contextlib.suppress(OSError):
                 s.shutdown(socket.SHUT_RDWR)
+
+    @staticmethod
+    def _drain(near: socket.socket) -> None:
+        with contextlib.suppress(OSError):
+            while near.recv(65536):
+                pass
+
+    def silence(self) -> None:
+        self._silent.set()
 
     def cut(self) -> None:
         self._cut.set()
@@ -145,23 +169,44 @@ def _seconds(earlier: str, later: str) -> int:
     return int((at(later) - at(earlier)).total_seconds())
 
 
-def _lose(sandbox, worker: Worker, relay: Relay) -> tuple[str, int, dict]:
-    """Kill worker A and cut its store address; its lane, cut off, stops itself well before the lease lapses. The run,
-    the lane's pid, and the claim as it stood."""
+def _descendants(pid: int) -> set[int]:
+    """Every live process under `pid`, its children's children too, by `pgrep -P` (Linux and macOS)."""
+    found: set[int] = set()
+    todo = [pid]
+    while todo:
+        done = subprocess.run(["pgrep", "-P", str(todo.pop())], capture_output=True, text=True, check=False)
+        children = {int(line) for line in done.stdout.split() if line.isdigit()} - found
+        found |= children
+        todo += children
+    return found
+
+
+def _lose(sandbox, worker: Worker, relay: Relay, *, blackhole: bool = False) -> tuple[str, int, dict]:
+    """Kill worker A and lose its store address, blackholed or cut; its lane, cut off, stops itself, and every process
+    under it, before the lease lapses: before anyone else may claim the phase. The run, the lane's pid, and the claim
+    as it stood."""
     run_id = _row(sandbox)["run_id"]
     lane = _lane_pid(sandbox, run_id)
+    tree = _descendants(lane)
     worker.kill()
-    relay.cut()
+    if blackhole:
+        relay.silence()
+    else:
+        relay.cut()
     held = _row(sandbox)  # read once A can no longer renew it: its last heartbeat is in
     [(beat_at, until)] = _owner(sandbox, "SELECT heartbeat_at, lease_until FROM phase_queue WHERE initiative = %s AND "
                                          "phase = %s", args=(INITIATIVE, PHASE))[0]
     assert _seconds(beat_at, until) == LEASE_S, (beat_at, until)  # the claim is on the worker's own lease
     try:
-        _until(lambda: not _alive(lane), LEASE_S, "A's lane to stop itself")
+        _until(lambda: not _alive(lane) and not [p for p in tree if _alive(p)], LEASE_S,
+               "A's lane and every process under it to stop")
     except AssertionError as exc:
         raise AssertionError(f"{exc}\n{_run_log(sandbox, run_id)}") from None
-    assert _store_now(sandbox) < held["lease_until"], held  # it stopped itself: nobody had taken the claim yet
-    assert "lane: stopping: the claim could not be read" in _run_log(sandbox, run_id), _run_log(sandbox, run_id)
+    assert _store_now(sandbox) < held["lease_until"], held  # it stopped itself: nobody could take the claim yet
+    log = _run_log(sandbox, run_id)
+    assert "lane: stopping: the claim could not be read" in log, log
+    if blackhole:  # nothing refused or reset the call: the check's own bound ended it
+        assert f"StoreDeadline: the store did not answer within {CHECK_CALL_S}s" in log, log
     _until(lambda: _store_now(sandbox) > held["lease_until"], LEASE_S + 30, "A's lease to lapse by the store's clock")
     return run_id, lane, held
 
@@ -189,11 +234,11 @@ def test_a_worker_killed_after_two_roll_ups_is_recovered_by_another_that_builds_
         _until(lambda: {s["task_id"] for s in _steps(sandbox) if s["kind"] == "rollup"} == {"t1", "t2"}
                and [s for s in _steps(sandbox) if (s["task_id"], s["kind"]) == ("t3", "build")], 240,
                "two roll-ups and t3's build")
-        lost_run, _, held = _lose(sandbox, a, relay)
+        lost_run, _, held = _lose(sandbox, a, relay, blackhole=True)
     finally:
         a.kill()
         relay.cut()
-    assert f"heartbeat every 5s, lease {LEASE_S}s" in a.said(), a.said()
+    assert f"heartbeat every 8s, lease {LEASE_S}s" in a.said(), a.said()
 
     # The chair marks the lapsed claim's run lost and tells the operator, once; `cox worker status` shows it lapsed.
     for _ in range(2):

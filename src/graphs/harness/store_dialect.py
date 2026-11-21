@@ -7,11 +7,14 @@ Postgres driver is imported inside `connect`, on first use.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
+import socket
 import sqlite3
 import threading
+import time
 from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -33,6 +36,7 @@ __all__ = [
     "Dialect",
     "Json",
     "JsonObject",
+    "StoreDeadline",
     "StoreDriverMissing",
     "connect",
     "default_url",
@@ -76,6 +80,55 @@ class RawConnection(Protocol):
 
 class StoreDriverMissing(RuntimeError):
     """The Postgres driver is not installed; the `postgres` extra provides it."""
+
+
+class StoreDeadline(TimeoutError):
+    """A statement that had not finished by the deadline its caller set (`Connection.limit`, `Connection.within`): the
+    client gave up and shut the socket under it, so the connection is dead from then on."""
+
+
+def _shut(fd: int) -> None:
+    """Edge. Shut down both directions of the socket `fd` (through a duplicate, so `fd` itself stays the driver's to
+    close): a call blocked reading it returns at once with an error."""
+    with contextlib.suppress(OSError):
+        dup = socket.socket(fileno=os.dup(fd))
+        try:
+            dup.shutdown(socket.SHUT_RDWR)
+        finally:
+            dup.close()
+
+
+def tcp_options(seconds: float) -> list[tuple[int, int, int]]:
+    """Pure. The (level, option, value) settings that bound a TCP socket's silence to about `seconds` where the kernel
+    can: keepalives that start after half of it and give up after three more seconds of unanswered probes, and on
+    Linux `TCP_USER_TIMEOUT`, which ends a connection whose sent data goes unacknowledged that long. A kernel without
+    an option (macOS has no `TCP_USER_TIMEOUT`) is simply not given it: the client's own deadline still holds there."""
+    def option(*names: str) -> int | None:
+        found = next((getattr(socket, n) for n in names if isinstance(getattr(socket, n, None), int)), None)
+        return cast("int | None", found)
+
+    wanted = [
+        (option("TCP_KEEPIDLE", "TCP_KEEPALIVE"), max(int(seconds // 2), 1)),
+        (option("TCP_KEEPINTVL"), 1),
+        (option("TCP_KEEPCNT"), 3),
+        (option("TCP_USER_TIMEOUT"), int(seconds * 1000)),
+    ]
+    return [(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
+            *((socket.IPPROTO_TCP, name, value) for name, value in wanted if name is not None)]
+
+
+def _set_tcp(fd: int, seconds: float) -> None:
+    """Edge. `tcp_options(seconds)` on the socket `fd`, each best effort (a Unix socket takes none of the TCP ones)."""
+    try:
+        dup = socket.socket(fileno=os.dup(fd))
+    except OSError:
+        return
+    try:
+        for level, option, value in tcp_options(seconds):
+            with contextlib.suppress(OSError):
+                dup.setsockopt(level, option, value)
+    finally:
+        dup.close()
 
 
 @dataclass(frozen=True)
@@ -162,6 +215,11 @@ class Connection:
     transaction open. `transaction` owns BEGIN, COMMIT and ROLLBACK as plain SQL.
     One lock serialises the threads sharing it (a runner's calls run on a thread pool):
     a statement waits while another thread's transaction is open, and never joins it.
+
+    The server bounds each statement (`BOUND_OPTIONS`), but only a server that answers can. A caller that must not
+    wait on a store gone silent also bounds it on the client's side: `limit` gives every statement a deadline, and
+    `within` gives a whole call one. A statement still running at its deadline has its socket shut down under it and
+    raises `StoreDeadline`; the connection is dead after that, and every later statement on it raises the same at once.
     """
 
     def __init__(self, raw: RawConnection, dialect: Dialect, begin: str = "BEGIN") -> None:
@@ -170,13 +228,98 @@ class Connection:
         self._begin = begin
         self._in_tx = False
         self._lock = threading.RLock()
+        self._statement_s: float | None = None
+        self._until: float | None = None  # the deadline of the `within` block this thread is in, on the monotonic clock
+        self._watch_lock = threading.Lock()
+        self._armed = 0  # which statement the watchdog may shut the socket under; 0 for none
+        self._watches = 0  # how many statements have been watched: each one's token, never reused
+        self.expired = ""  # why the connection is dead: the deadline it missed
+
+    def _fileno(self) -> int | None:
+        """The socket under a Postgres connection; None for sqlite, which has none and waits on a file lock instead."""
+        fileno = getattr(self.raw, "fileno", None)
+        if self.dialect is not POSTGRES or not callable(fileno):
+            return None
+        try:
+            return int(cast("Callable[[], int]", fileno)())
+        except Exception:  # a closed connection has no socket left to bound
+            return None
+
+    def limit(self, statement_s: float) -> Connection:
+        """Bound every statement on this connection to `statement_s` on the client's side (above), and the socket's
+        own silence to about the same where the kernel can (`tcp_options`). A no-op on sqlite. The connection."""
+        self._statement_s = statement_s
+        if (fd := self._fileno()) is not None:
+            _set_tcp(fd, statement_s)
+        return self
+
+    @contextmanager
+    def within(self, seconds: float) -> Generator[Connection]:
+        """Every statement in the block ends within `seconds` of its start, on the client's side (above); nested, the
+        earlier deadline holds. The connection's lock is held throughout, so the deadline is this caller's alone."""
+        with self._lock:
+            outer = self._until
+            until = time.monotonic() + seconds
+            self._until = until if outer is None else min(outer, until)
+            try:
+                yield self
+            finally:
+                self._until = outer
+
+    def _deadline_s(self) -> float | None:
+        """Seconds the next statement may take: the tighter of `limit` and what is left of `within`; None for no bound."""
+        left = None if self._until is None else self._until - time.monotonic()
+        bounds = [b for b in (self._statement_s, left) if b is not None]
+        return min(bounds) if bounds else None
+
+    def _fire(self, token: int, seconds: float) -> None:
+        with self._watch_lock:
+            if self._armed != token:
+                return
+            self.expired = f"the store did not answer within {round(seconds, 1):g}s"
+            fd = self._fileno()
+        if fd is not None:
+            _shut(fd)
+
+    @contextmanager
+    def _watched(self) -> Generator[None]:
+        """Run one statement under its deadline (`_deadline_s`): a watchdog shuts the socket when it passes, and the
+        error the driver raises then is raised as `StoreDeadline`. A dead connection raises it before trying."""
+        if self.expired:
+            raise StoreDeadline(f"{self.expired}; the connection was given up")
+        seconds = self._deadline_s() if self._fileno() is not None else None
+        if seconds is None:
+            yield
+            return
+        if seconds <= 0:
+            raise StoreDeadline("the call's deadline passed before the statement could start")
+        with self._watch_lock:  # a token never reused: a timer that fired late finds a later statement not its own
+            self._watches += 1
+            token = self._armed = self._watches
+        timer = threading.Timer(seconds, self._fire, (token, seconds))
+        timer.daemon = True
+        timer.start()
+        try:
+            yield
+        except BaseException as exc:
+            if self.expired:
+                raise StoreDeadline(self.expired) from exc
+            raise
+        finally:
+            with self._watch_lock:
+                self._armed = 0
+            timer.cancel()
+
+    def _raw_exec(self, sql: str) -> None:
+        with self._watched():
+            self.raw.cursor().execute(sql)
 
     def _run(self, action: Callable[[RawCursor], _T]) -> _T:
-        with self._lock:
+        with self._lock, self._watched():
             try:
                 return action(self.raw.cursor())
             except BaseException:
-                if not self._in_tx:
+                if not self._in_tx and not self.expired:
                     self.raw.rollback()
                 raise
 
@@ -216,13 +359,14 @@ class Connection:
             if self._in_tx:
                 yield self
                 return
-            self.raw.cursor().execute(self._begin)
+            self._raw_exec(self._begin)
             self._in_tx = True
             try:
                 yield self
-                self.raw.cursor().execute("COMMIT")
+                self._raw_exec("COMMIT")
             except BaseException:
-                self.raw.cursor().execute("ROLLBACK")
+                if not self.expired:  # a dead connection has no transaction left to roll back
+                    self._raw_exec("ROLLBACK")
                 raise
             finally:
                 self._in_tx = False
