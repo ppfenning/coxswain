@@ -1729,6 +1729,8 @@ Coxswain is in beta — versions may change between releases
       
         
       
+        
+      
     
     
     
@@ -2188,6 +2190,34 @@ Coxswain is in beta — versions may change between releases
     
   
     Autonomous chair
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../customize/chair-cutover/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chair cutover
   
 
     
@@ -6975,6 +7005,14 @@ Nothing writes them, so no event can announce them.</p>
 <li>Remove the tick loop. <code>--once</code> stays as the drain.</li>
 </ol>
 <p>Each step ships behind the existing tick until the next replaces it: the tick skips a kind whose queue is enabled.</p>
+<p>The cutover (C6) is an operator's procedure, on the <a href="../../customize/chair-cutover/">chair cutover</a> page: the plan's
+§5.3 to §5.5 with the commands as built. Two of them differ from the plan's text. The worker is
+<code>cox chair worker --kind &lt;kind&gt;</code> (the plan wrote <code>cox chair work</code>), so §5.4 step 4 is
+<code>cox chair worker --kind housekeeping --once</code>. And §5.3 step 3's comparison is one command, <code>cox chair parity</code>.
+Once the tick is stopped, the queue alarms (<code>queue_unowned</code>) are raised by the first live worker, and
+<code>cox chair watchdog</code> checks the worker leases behind them. The stall alarm, the host checks and the tick's loop chores
+(the workspace pull, the export, the chat directives, the lane checkout check, the CI-gate line) go with housekeeping,
+and the old model's land slot with the watch, so the stopped tick leaves no work without an owner.</p>
 <h2 id="open-questions">Open questions</h2>
 <ul>
 <li><strong>Cursor or trigger for store changes.</strong> A cursor on <code>updated_at</code> needs every writer to stamp it. Most do, but the

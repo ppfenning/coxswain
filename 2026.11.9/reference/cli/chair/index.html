@@ -1574,6 +1574,8 @@ Coxswain is in beta — versions may change between releases
       
         
       
+        
+      
     
     
     
@@ -2033,6 +2035,34 @@ Coxswain is in beta — versions may change between releases
     
   
     Autonomous chair
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../customize/chair-cutover/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chair cutover
   
 
     
@@ -3679,6 +3709,28 @@ Coxswain is in beta — versions may change between releases
     <span class="md-ellipsis">
       
         worker
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        status
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#parity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        parity
       
     </span>
   </a>
@@ -6735,6 +6787,28 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        status
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#parity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        parity
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#service" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6839,18 +6913,22 @@ Coxswain is in beta — versions may change between releases
 
 <h1 id="chair">chair</h1>
 <div class="highlight"><pre><span></span><code>usage: cox chair [-h]
-                 {run,worker,service,ask,attach,answer,decisions,watchdog,freeze-lands} ...
+                 {run,worker,status,parity,service,ask,attach,answer,decisions,watchdog,freeze-lands} ...
 
 The chair loop that runs the landing and launch ticks itself.
 
 positional arguments:
-  {run,worker,service,ask,attach,answer,decisions,watchdog,freeze-lands}
+  {run,worker,status,parity,service,ask,attach,answer,decisions,watchdog,freeze-lands}
     run                 beat, gather, plan, perform and report every tick
                         until interrupted
     worker              run one kind of the chair's work (housekeeping, watch,
                         quarantine, decompose or launch) as its own process
+    status              who runs the chair's work: the chair lease, each queue
+                        kind's worker lease, and their units
+    parity              plan the tick and every queue worker dry against one
+                        store and compare them kind by kind
     service             write or show the systemd user unit that keeps `cox
-                        chair run` alive
+                        chair run` alive, or swap in the queue workers' units
     ask                 put a question with its options to the operator on the
                         courier bus
     attach              say whether a live chair loop holds the lease; exit 0
@@ -6900,7 +6978,8 @@ options:
 </code></pre></div>
 <h2 id="worker">worker</h2>
 <div class="highlight"><pre><span></span><code>usage: cox chair worker [-h] --kind KIND [--once] [--dry-run] [--poll POLL]
-                        [--min-gap MIN_GAP] [--settle SETTLE] [--label LABEL]
+                        [--min-gap MIN_GAP] [--settle SETTLE]
+                        [--pass-deadline PASS_DEADLINE] [--label LABEL]
                         [--profile PROFILE]
 
 Plans and performs one kind of the chair's work, the kind the profile's chair.queues moves off the tick.
@@ -6908,36 +6987,88 @@ It holds the store lease chair:&lt;kind&gt;, so a second copy stands by. It wake
 table its kind reads, and polls as its fallback. While chair.queues does not list the kind it stays idle.
 
 options:
+  -h, --help            show this help message and exit
+  --kind KIND           the kind of work: housekeeping, watch, quarantine,
+                        decompose or launch
+  --once                run one pass and exit; exit 1 if it could not act (not
+                        queued, or another worker holds the kind)
+  --dry-run             plan and report each pass without taking the kind
+                        lease or performing any action
+  --poll POLL           seconds between passes with no notification (default:
+                        60)
+  --min-gap MIN_GAP     seconds a notified pass waits after the last one
+                        (default: 30)
+  --settle SETTLE       seconds a freshly taken kind lease waits before its
+                        first pass (default: 30)
+  --pass-deadline PASS_DEADLINE
+                        seconds a pass may run before it counts as hung: its
+                        lease lapses, then the worker exits (default: 2700 for
+                        watch, 900 for the rest)
+  --label LABEL         the worker's holder label (default:
+                        $COX_SESSION_LABEL, else unlabeled)
+  --profile PROFILE     the routing profile (default: ~/.config/agent-
+                        tools/profile.yaml or $AGENT_TOOLS_PROFILE)
+</code></pre></div>
+<h2 id="status">status</h2>
+<div class="highlight"><pre><span></span><code>usage: cox chair status [-h] [--profile PROFILE]
+
+Prints chair.queues, the chair lease and each kind's lease (chair:&lt;kind&gt;) with its holder, epoch, the age of
+its last beat and its expiry, all on the store's clock, then the state of the tick's and the workers' units.
+Exits 0 when every listed kind has a live worker, 1 when one does not, 2 when the store cannot be read.
+
+options:
   -h, --help         show this help message and exit
-  --kind KIND        the kind of work: housekeeping, watch, quarantine,
-                     decompose or launch
-  --once             run one pass and exit; exit 1 if it could not act (not
-                     queued, or another worker holds the kind)
-  --dry-run          plan and report each pass without taking the kind lease
-                     or performing any action
-  --poll POLL        seconds between passes with no notification (default: 60)
-  --min-gap MIN_GAP  seconds a notified pass waits after the last one
-                     (default: 30)
-  --settle SETTLE    seconds a freshly taken kind lease waits before its first
-                     pass (default: 30)
-  --label LABEL      the worker's holder label (default: $COX_SESSION_LABEL,
-                     else unlabeled)
   --profile PROFILE  the routing profile (default: ~/.config/agent-
                      tools/profile.yaml or $AGENT_TOOLS_PROFILE)
 </code></pre></div>
+<h2 id="parity">parity</h2>
+<div class="highlight"><pre><span></span><code>usage: cox chair parity [-h] --store-url STORE_URL [--profile PROFILE]
+                        [--timeout TIMEOUT] [--workspace WORKSPACE]
+
+Section 5.3 step 3 of the cutover. Runs `cox chair run --once --dry-run --as-holder` with chair.queues: []
+and with every kind listed, and `cox chair worker --kind K --once --dry-run` for each kind, all against
+--store-url through a copy of the profile. None takes a lease or performs anything. Exits 0 when the
+workers together plan what the tick alone planned, 1 on a mismatch, 2 when a run could not be read.
+It refuses the store the profile itself names.
+
+options:
+  -h, --help            show this help message and exit
+  --store-url STORE_URL
+                        the store to plan against: a throwaway restored from a
+                        dump, never the live one
+  --profile PROFILE     the routing profile to copy (default: ~/.config/agent-
+                        tools/profile.yaml or $AGENT_TOOLS_PROFILE)
+  --timeout TIMEOUT     seconds each dry run may take (default: 300)
+  --workspace WORKSPACE
+                        the workspace the dry runs read (default: an empty
+                        scratch one, so nothing lands in the live workspace's
+                        runs directory)
+</code></pre></div>
 <h2 id="service">service</h2>
-<div class="highlight"><pre><span></span><code>usage: cox chair service [-h] [--install] [--status] [--label LABEL]
-                         [--interval INTERVAL]
+<div class="highlight"><pre><span></span><code>usage: cox chair service [-h] [--install | --uninstall] [--queues] [--dry-run]
+                         [--status] [--label LABEL] [--interval INTERVAL]
                          [--environment-file ENVIRONMENT_FILE]
                          [--profile PROFILE] [--host HOST] [--apply]
 
 --install writes ~/.config/systemd/user/coxswain-chair.service and prints the systemctl lines.
 It does not run systemctl.
+--install --queues is the cutover's one command: it writes the queue workers' units (the systemd template
+coxswain-chair@.service, or one launchd agent per kind), starts all five, and disables the tick's unit.
+It refuses unless chair.queues lists every kind. --uninstall --queues is the rollback: it stops and removes
+them and starts the tick's unit again, and refuses while chair.queues lists any kind. Both run systemctl or
+launchctl, and both can run again safely.
 
 options:
   -h, --help            show this help message and exit
   --install             write the unit file and print the systemctl lines to
                         run; runs nothing itself
+  --queues              with --install, install and start one unit per queue
+                        kind and disable the tick's; with --uninstall, the
+                        reverse (the rollback)
+  --uninstall           with --queues, stop and remove the queue units and
+                        start the tick's unit again
+  --dry-run             with --queues, print the files and the systemctl or
+                        launchctl steps; write and run nothing
   --status              print the unit file, or say there is none
   --label LABEL         the chair's holder label (default: $COX_SESSION_LABEL,
                         else unlabeled)
