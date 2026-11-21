@@ -1,14 +1,17 @@
 """`cox worker`: run the phase worker on this machine, or look at the phase queue and the workers.
 
 `run` claims and runs phases until interrupted; `once` makes one claim pass and runs what it claimed to its end;
-`status` prints the queue and the registry. The handlers are thin: the loop is `worker.py`, the effects
-`worker_ports.py`, the store `harness.store_phases`. There is no service unit yet: the CLI is the whole surface.
+`status` prints the queue and the registry; `checkout` clones a repository through this machine's mirror
+(`harness.worktree.clone_worktree`), so a machine joining as a worker gets the checkout its `repo:` token needs.
+The handlers are thin: the loop is `worker.py`, the effects `worker_ports.py`, the store `harness.store_phases`.
+There is no service unit yet: the CLI is the whole surface.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import signal
 import socket
 from collections.abc import Mapping, Sequence
@@ -16,7 +19,7 @@ from pathlib import Path
 from typing import cast
 
 from agent_tools import worker, worker_ports
-from harness import phase_pick
+from harness import phase_pick, repo_cache, worktree
 
 
 def _held(row: Mapping[str, object], now: str) -> str:
@@ -113,3 +116,17 @@ def cmd_status(a: argparse.Namespace) -> int:
     else:
         print("\n".join(status_lines(phases, workers, now)))
     return 0
+
+
+def cmd_checkout(a: argparse.Namespace) -> int:
+    """Clone `a.url` into `a.dest` through the mirror under the worker's cache directory, and say what it cost."""
+    url, dest = str(a.url), Path(str(a.dest)).expanduser()
+    root = repo_cache.cache_root(os.environ, os.path.expanduser("~"))
+    cloned = worktree.clone_worktree(url, dest, cache_root=root, branch=a.branch, base=a.base)
+    if a.json:
+        print(json.dumps({**cloned._asdict(), "url": url, "dest": str(dest), "cache_root": str(root)}, indent=2))
+    else:
+        print(cloned.trace(url))
+        if not cloned.ok:
+            print(f"worker: checkout failed: {cloned.detail}")
+    return 0 if cloned.ok else 1
