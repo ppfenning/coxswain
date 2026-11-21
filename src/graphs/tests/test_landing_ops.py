@@ -256,3 +256,62 @@ def test_the_parent_is_taken_forward_by_a_merge_and_a_conflict_leaves_the_branch
     assert store_lease.acquire(conn, ops.branch_lease("i"), "someone-else", T1, 900).ok, "the lease was released each time"
     busy = ops.take_parent_forward(conn, repo, initiative="i", parent_ref="main", worker="w", now=T1)
     assert (busy.status, busy.detail) == ("busy", "someone-else is moving the branch of i")
+
+
+# -- the branch lease is kept through a long merge, and a lost one stops the push -----------------------------------
+
+
+def _wall() -> str:
+    from datetime import UTC, datetime
+
+    return ops.stamp(datetime.now(UTC))
+
+
+def test_a_merge_longer_than_its_branch_lease_keeps_the_lease_and_pushes(conn, repo):  # noqa: F811
+    """The merge agent (450 s) and the gate (minutes) can outlive the 900 s lease; here the lease is 2 s, the gate 3."""
+    import time
+
+    from harness import store_lease
+
+    start(conn, repo)
+    build(repo, "p1")
+    tried: list[bool] = []
+
+    def slow_gate(tree):
+        time.sleep(3)  # past the lease taken at the start of the merge
+        tried.append(store_lease.acquire(conn, ops.branch_lease("i"), "intruder", _wall(), 2).ok)
+        return True, "green"
+
+    pushed: list[str] = []
+    done = ops.merge_phase(conn, repo, initiative="i", phase="p1", tasks=[task("a", "p1")], worker="lander", now=_wall(),
+                           checks=slow_gate, claim_seconds=2, clock=_wall, beat_s=0.25,
+                           publish=lambda branch: pushed.append(branch) or None)
+    assert tried == [False], "nobody else could take the lease while the merge ran"
+    assert (done.status, pushed) == ("merged", ["init/i"])
+    assert ls.get_record(conn, "i")["phases"]["p1"]["state"] == "merged"
+    assert store_lease.acquire(conn, ops.branch_lease("i"), "intruder", _wall(), 2).ok, "released once the merge is done"
+
+
+@pytest.mark.parametrize("how", ["taken", "lapsed"])
+def test_a_lost_branch_lease_stops_the_merge_before_it_pushes(conn, repo, how):  # noqa: F811
+    from harness import store_lease
+
+    start(conn, repo)
+    build(repo, "p1")
+    before = run(repo, "rev-parse", "init/i")
+
+    def gate(tree):
+        if how == "taken":  # another writer steals the lease while the gate runs
+            assert store_lease.acquire(conn, ops.branch_lease("i"), "intruder", T1, 900, steal=True).ok
+        return True, "green"
+
+    # `lapsed`: the clock has gone past the lease by the time the merge would push, and no renew came in between.
+    clock = (lambda: T1) if how == "taken" else (lambda: T9)
+    pushed: list[str] = []
+    done = ops.merge_phase(conn, repo, initiative="i", phase="p1", tasks=[task("a", "p1")], worker="lander", now=T1,
+                           checks=gate, clock=clock, beat_s=3600, publish=lambda branch: pushed.append(branch) or None)
+    assert done.status == "error" and "was not pushed or recorded merged" in done.detail
+    assert pushed == [], "nothing was pushed"
+    assert run(repo, "rev-parse", "init/i") == before, "the merge this call made is unwound"
+    assert (ls.get_record(conn, "i")["phases"] or {}).get("p1", {}).get("state") != "merged"
+    assert ls.get_item(conn, "phase_merge:i:p1")["state"] == "failed"

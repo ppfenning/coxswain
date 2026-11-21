@@ -15,6 +15,7 @@ src/graphs/harness/store_ddl_0020.py::statements  # migration module, discovered
 src/graphs/harness/store_ddl_0021.py::statements  # migration module, discovered by store_migrate.default_modules' package walk
 src/graphs/harness/store_ddl_0022.py::store_ddl_0022  # index-only migration: no store_copy table or column to import, found by the package walk
 src/graphs/harness/store_ddl_0022.py::statements  # migration module, discovered by store_migrate.default_modules' package walk
+src/graphs/harness/store_ddl_0023.py::statements  # migration module, discovered by store_migrate.default_modules' package walk
 
 # Commands a person runs as `python -m <module>`, documented where they are used.
 src/graphs/harness/graphdoc.py::graphdoc  # `python -m harness.graphdoc`, docs/customize/write-a-graph.md

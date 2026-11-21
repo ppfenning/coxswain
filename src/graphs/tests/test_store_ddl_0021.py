@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 import harness.store_copy as store_copy
-from harness import store_ddl_0021, store_notify
+from harness import store_ddl_0021, store_ddl_0023, store_notify
 from harness.store_ddl_0021 import (
     ADDITIVE,
     ADDITIVE_EXEMPT,
@@ -56,7 +56,9 @@ def test_the_function_only_notifies_with_the_invokers_rights_and_a_pinned_path()
 
 def test_the_watched_columns_are_the_tables_columns_at_this_version_and_only_a_heartbeat_is_left_out():
     known = {name: columns for name, columns, _ in store_copy.tables()}
-    assert dict(WATCHED) == {t: known[t] for t, _ in WATCHED}
+    # A later migration that adds a watched table's column replaces its trigger with the longer list (0023: workers).
+    now_watched = {**dict(WATCHED), **dict(store_ddl_0023.WATCHED)}
+    assert now_watched == {t: known[t] for t, _ in WATCHED}
     assert all(set(beat) < set(dict(WATCHED)[t]) for t, beat in BEATS.items())
     assert "hosts" not in BEATS  # host_beat always sets versions_json, which is data
     assert notified_columns("workers", dict(WATCHED)["workers"]) == dict(WATCHED)["workers"][:-1]

@@ -334,3 +334,40 @@ def test_a_worker_whose_heartbeat_is_blocked_stops_its_harness_before_its_lease_
     finally:
         worker.kill()
     _no_ssh(calls)
+
+
+def _other_machines_row(sandbox, name: str, beat: str) -> None:
+    """The `workers` row another machine's worker of `name` wrote, beaten at the store time `beat`."""
+    with psycopg.connect(sandbox.store_url, connect_timeout=10) as conn:
+        conn.execute(
+            "INSERT INTO workers (name, capabilities_json, lanes, threads, state, version, doctor_json, doctor_at, "
+            "started_at, beat_at, machine_id) VALUES (%s, '[]', 1, 0, 'up', '', '{}', %s, %s, %s, 'another-machine')",
+            (name, beat, beat, beat),
+        )
+
+
+def _set_beat(sandbox, name: str, beat: str) -> None:
+    with psycopg.connect(sandbox.store_url, connect_timeout=10) as conn:
+        conn.execute("UPDATE workers SET beat_at = %s WHERE name = %s", (beat, name))
+
+
+def test_a_worker_never_shares_its_name_with_another_machine_s_live_worker(launchable, repo):
+    """Two machines left on one default host name would be one worker. The row records the machine; a live row of
+    the name from another machine refuses this worker, and one long lapsed is taken over and said so."""
+    sandbox, calls = _ssh_trap(launchable.sandbox)
+    _status(sandbox)  # the store, migrated
+    _other_machines_row(sandbox, "shared", _store_clock(sandbox))
+    refused = Worker(sandbox, "once", "--name", "shared")
+    assert refused.proc.wait(timeout=120) == 3, refused.said()
+    assert "shared is registered and live from machine another-machine" in refused.said(), refused.said()
+    (row,) = _status(sandbox)["workers"]
+    assert (row["machine_id"], row["state"]) == ("another-machine", "up"), "the other machine's row is left as it was"
+
+    _set_beat(sandbox, "shared", "2026-01-01T00:00:00Z")  # its machine went away long ago
+    taken = Worker(sandbox, "once", "--name", "shared").finished(timeout=120)
+    assert "shared takes over the row machine another-machine left (its last beat was 2026-01-01T00:00:00Z)" in taken, taken
+    (row,) = _status(sandbox)["workers"]
+    assert row["machine_id"] not in ("", "another-machine") and row["state"] == "stopping", row
+    again = Worker(sandbox, "once", "--name", "shared").finished(timeout=120)
+    assert "takes over" not in again, "its own row, stopped by itself, is simply its own"
+    _no_ssh(calls)

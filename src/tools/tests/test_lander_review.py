@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent_tools import chair_initiative_review, lander, lander_hold, lander_review
+from agent_tools import chair_initiative_review, lander, lander_hold, lander_release, lander_review
 from core import landing_record as lr
 from harness import initiative_review as ir
 from harness import landing_ops as ops
@@ -176,7 +176,7 @@ def test_a_suite_that_fails_at_the_tip_holds_the_initiative_and_tells_the_chair_
     assert again.status == "waiting" and models.record("n")["held"] == hold
     assert len([n for n in models.notes if n[0] == "needs_chair"]) == 1, "a hold that stands is not told again"
     # An operator releases it: the next pass decides again, holds again (counted) and tells the answer.
-    released, _ = lander.release_merge_hold(models.ports, "n")
+    released, _ = lander_release.release_merge_hold(models.ports, "n")
     assert released
     _land(models)
     again_held = models.record("n")["held"]
@@ -262,7 +262,7 @@ def test_a_parent_that_outpaces_the_suite_holds_the_pull_request_and_tells_the_c
     _approve(models, 9, tip)  # even a pass at the new tip waits on the operator: nothing lifts it on its own
     assert _land(models).status == "waiting" and models.record("n")["held"]["cause"] == "outpaced"
     assert models.forge.prs == {} and len([n for n in models.notes if n[0] == "needs_chair"]) == 1
-    released, _ = lander.release_merge_hold(models.ports, "n")
+    released, _ = lander_release.release_merge_hold(models.ports, "n")
     assert released
     opened = _land(models)
     assert any(e.startswith("opened the pull request for n") for e in opened.events), opened

@@ -148,13 +148,63 @@ def test_live_claims_are_the_unlapsed_ones(conn):
 
 
 def test_the_registry_row_is_the_worker_s_own_and_a_repeat_keeps_its_start(conn):
-    first = store_phases.register(conn, "w1", ["os:linux", "docker", "docker"], 2, "up", "1.0", {"lane": []})
-    again = store_phases.register(conn, "w1", ["os:linux"], 2, "up", "1.0", {})
-    assert again["started_at"] == first["started_at"]
-    store_phases.register(conn, "w1", ["os:linux"], 0, "stopping", "1.0", {})
+    first = store_phases.register(conn, "w1", ["os:linux", "docker", "docker"], 2, "up", "1.0", {"lane": []}, machine_id="m1")
+    again = store_phases.register(conn, "w1", ["os:linux"], 2, "up", "1.0", {}, machine_id="m1")
+    assert (first.verdict, again.verdict) == ("new", "same")
+    assert first.row is not None and again.row is not None
+    assert again.row["started_at"] == first.row["started_at"]
+    store_phases.register(conn, "w1", ["os:linux"], 0, "stopping", "1.0", {}, machine_id="m1")
     (row,) = store_phases.list_workers(conn)
-    assert (row["name"], row["capabilities_json"], row["lanes"], row["state"]) == ("w1", ["os:linux"], 0, "stopping")
-    assert first["capabilities_json"] == ["docker", "os:linux"]
+    assert (row["name"], row["capabilities_json"], row["lanes"], row["state"], row["machine_id"]) == (
+        "w1", ["os:linux"], 0, "stopping", "m1")
+    assert first.row["capabilities_json"] == ["docker", "os:linux"]
+
+
+def _workers_set(conn, name, **columns):
+    p = conn.dialect.placeholder
+    sets = ", ".join(f"{k} = {p}" for k in columns)
+    conn.execute(f"UPDATE workers SET {sets} WHERE name = {p}", (*columns.values(), name))
+
+
+def test_another_machine_s_live_row_of_the_same_name_is_never_taken_over(conn):
+    store_phases.register(conn, "devbox", ["docker"], 2, "up", "1.0", {}, machine_id="laptop")
+    refused = store_phases.register(conn, "devbox", ["os:macos"], 1, "up", "2.0", {}, machine_id="desk")
+    assert (refused.verdict, refused.ok, refused.row) == ("refused", False, None)
+    assert refused.prior is not None and refused.prior["machine_id"] == "laptop"
+    stopping = store_phases.register(conn, "devbox", [], 0, "stopping", "2.0", {}, machine_id="desk")
+    assert not stopping.ok, "nor is it marked stopping by the other machine"
+    (row,) = store_phases.list_workers(conn)
+    assert (row["machine_id"], row["capabilities_json"], row["state"], row["version"]) == ("laptop", ["docker"], "up", "1.0")
+
+
+@pytest.mark.parametrize(("left", "verdict"), [({"beat_at": PAST}, "stale"), ({"state": "stopping"}, "stopped")])
+def test_a_row_long_lapsed_or_stopped_is_taken_over_and_says_whose_it_was(conn, left, verdict):
+    store_phases.register(conn, "devbox", ["docker"], 2, "up", "1.0", {}, machine_id="laptop")
+    _workers_set(conn, "devbox", **left)
+    taken = store_phases.register(conn, "devbox", ["os:macos"], 1, "up", "2.0", {}, machine_id="desk")
+    assert (taken.verdict, taken.ok) == (verdict, True)
+    assert taken.prior is not None and taken.prior["machine_id"] == "laptop"
+    (row,) = store_phases.list_workers(conn)
+    assert (row["machine_id"], row["capabilities_json"], row["state"]) == ("desk", ["os:macos"], "up")
+
+
+def test_a_live_row_with_no_machine_recorded_counts_as_another_machine_s(conn):
+    """A row an older build wrote has machine_id '' (0023's default): it may be a live worker elsewhere."""
+    store_phases.register(conn, "devbox", [], 1, "up", "1.0", {}, machine_id="laptop")
+    _workers_set(conn, "devbox", machine_id="")
+    assert store_phases.register(conn, "devbox", [], 1, "up", "2.0", {}, machine_id="laptop").verdict == "refused"
+
+
+def test_a_worker_beats_only_its_own_machine_s_row(conn):
+    assert store_phases.beat_worker(conn, "devbox", "laptop") is False, "no row yet"
+    store_phases.register(conn, "devbox", [], 1, "up", "1.0", {}, machine_id="laptop")
+    _workers_set(conn, "devbox", beat_at=PAST)
+    assert store_phases.beat_worker(conn, "devbox", "laptop") is True
+    (row,) = store_phases.list_workers(conn)
+    assert row["beat_at"] > PAST
+    _workers_set(conn, "devbox", beat_at=PAST)
+    store_phases.register(conn, "devbox", [], 1, "up", "1.0", {}, machine_id="desk")  # the stale row, taken over
+    assert store_phases.beat_worker(conn, "devbox", "laptop") is False, "the old machine learns its row is gone"
 
 
 def test_a_refused_launch_s_release_gives_the_attempt_back(conn):

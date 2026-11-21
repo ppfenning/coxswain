@@ -25,7 +25,7 @@ from pathlib import Path
 
 from agent_tools import bounded_run, chair, epic, lane_prereqs, repo_path, route, run_store, worker
 from agent_tools.chair_read_run_id import next_run_id, taken_names
-from harness import initiative_review, phase_pick, store_phases
+from harness import initiative_review, phase_pick, store_phases, worker_identity
 from harness.store_dialect import Connection, Json
 from harness.store_phases import Claim
 
@@ -180,11 +180,23 @@ def _pid_in(pidfile: Path) -> int | None:
     return int(text) if text.isdigit() else None
 
 
-def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, version: str,
+def registered_or_refused(registration: store_phases.Registration, name: str, machine_id: str,
+                          log: Callable[[str], None]) -> None:
+    """Edge. Say whose row a registration took over, if anyone's; raise `worker.NameTaken` when it was refused."""
+    note = worker_identity.takeover_note(name, registration.verdict, registration.prior, machine_id)
+    if not registration.ok:
+        raise worker.NameTaken(note)
+    if note:
+        log(note)
+
+
+def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, version: str, machine_id: str,
           lease_s: int = phase_pick.LEASE_S,
           log: Callable[[str], None] = lambda line: print(line, flush=True)) -> tuple[worker.Ports, Store]:
-    """Edge. The ports of a worker named `name` on the workspace `ws`, claiming on a `lease_s` lease (a valid one:
-    `phase_pick.lease_problem`), and the store it holds open."""
+    """Edge. The ports of a worker named `name`, on the machine `machine_id` (`worker_identity.machine_id`), on the
+    workspace `ws`, claiming on a `lease_s` lease (a valid one: `phase_pick.lease_problem`), and the store it holds
+    open. Its first pass registers it, and is refused (`worker.NameTaken`) while another machine's live worker has the
+    name; the heartbeat thread beats its row, and once another machine has taken the row the next pass stops."""
     timings = phase_pick.Timings.of(lease_s)
     runs_dir = ws / "runs"
     launches_dir = ws / "worker-launches"  # each launch's own output, beside the workspace's runs, not among them
@@ -192,22 +204,28 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
     home = os.path.expanduser("~")
     host = socket.gethostname()
     registered: list[str] = []
+    written: list[bool] = []  # set once the row is this worker's
+    taken: list[str] = []  # set by the heartbeat thread once the row of `name` is another machine's
     probed: list[list[dict[str, object]]] = []  # the last lane check's rows, one entry once it has run
     probed_at = [0.0]
     launchers: dict[int, subprocess.Popen[bytes]] = {}
     launchers_lock = threading.Lock()  # the main loop polls a launch while the heartbeat thread may stop it
 
     def caps() -> list[str]:
+        if taken:
+            raise worker.NameTaken(taken[0])
         now = time.monotonic()
         if not probed or now - probed_at[0] >= worker.DOCTOR_EVERY_S:
             probed[:], probed_at[0] = [doctor_rows()], now
         rows = probed[0]
         queued = [str(r.get("repo") or "") for r in store.call(store_phases.list_rows) if r.get("state") != "finished"]
         found = sorted({*worker.capabilities(detected(), declared, rows), *worker.repo_tokens(queued, _checkouts(queued, home))})
-        if found != registered:
+        if found != registered or not written:  # the first pass registers, whatever it advertises
             doctor_json: Json = {"lane": [{"check": str(r.get("check")), "ok": r.get("ok") is True} for r in rows]}
-            store.call(lambda c: store_phases.register(c, name, found, capacity(), "up", version, doctor_json))
-            registered[:] = found
+            done = store.call(lambda c: store_phases.register(c, name, found, capacity(), "up", version, doctor_json,
+                                                              machine_id=machine_id))
+            registered_or_refused(done, name, machine_id, log)
+            registered[:], written[:] = found, [True]
             log(f"worker: {name} advertises {', '.join(found) or 'nothing'}")
         return found
 
@@ -341,11 +359,28 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
             return own.call(lambda c: store_phases.heartbeat(c, claim, name, timings.lease_s)) is not None
 
         request_stop = worker.stopper(stop, leases, log)
+        row_due = [time.monotonic() + worker_identity.BEAT_S]
+
+        def beat_row() -> None:
+            """The worker's own row, every `BEAT_S` once it is written: another machine that took it over stops this
+            worker at its next pass (`caps`)."""
+            if not written or taken or time.monotonic() < row_due[0]:
+                return
+            row_due[0] = time.monotonic() + worker_identity.BEAT_S
+            try:
+                ours = own.call(lambda c: store_phases.beat_worker(c, name, machine_id))
+            except Exception as exc:  # the store did not answer: the row ages one beat, far inside STALE_S
+                log(f"worker: {name}'s row was not beaten: {type(exc).__name__}: {exc}")
+                return
+            if not ours:
+                taken.append(f"worker: the row of {name} is no longer this machine's ({machine_id}): another machine's "
+                             "worker took the name over; this worker stops")
 
         def loop() -> None:
             try:
                 while not halt.wait(phase_pick.BEAT_LOOP_S):
                     worker.beat(leases, renew, request_stop, time.monotonic, log)
+                    beat_row()
             finally:
                 own.close()
 
@@ -360,10 +395,16 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
         return halt_and_join
 
     def unregister() -> None:
+        if not written:
+            return  # never registered (refused, or stopped first): the row of the name is not this worker's to mark
         try:
-            store.call(lambda c: store_phases.register(c, name, registered, 0, "stopping", version, {}))
+            done = store.call(lambda c: store_phases.register(c, name, registered, 0, "stopping", version, {},
+                                                              machine_id=machine_id))
         except Exception as exc:  # the store is gone: the row's beat ages, which says the same
             log(f"worker: {name} could not mark itself stopping: {type(exc).__name__}: {exc}")
+            return
+        if not done.ok:
+            log(f"worker: {name} left the row as it is: another machine's worker holds it")
 
     ports = worker.Ports(
         name=name,
