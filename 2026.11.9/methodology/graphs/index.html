@@ -972,6 +972,8 @@ Coxswain is in beta — versions may change between releases
       
         
       
+        
+      
     
     
     
@@ -1316,6 +1318,34 @@ Coxswain is in beta — versions may change between releases
     
   
     rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="phase-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    phase-review
   
 
     
@@ -2546,6 +2576,8 @@ Coxswain is in beta — versions may change between releases
       
         
       
+        
+      
     
     
     
@@ -2697,6 +2729,34 @@ Coxswain is in beta — versions may change between releases
     
   
     lifecycle-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../components/graphs/docs/graphs/phase-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    phase-review
   
 
     
@@ -6828,7 +6888,7 @@ decides. The diagram is generated from the graph module's docstring by
 <code>python -m harness.graphdoc</code>, so it changes when the graph does.</p>
 <h2 id="the-eleven-graphs">The eleven graphs</h2>
 <p>The registry is whatever <code>harness/registry.py</code> discovers: every module
-under <code>graphs/</code> that declares a <code>SPEC</code>. Today that is eleven graphs. The
+under <code>graphs/</code> that declares a <code>SPEC</code>. Today that is twelve graphs. The
 subcommand is what <code>shell.py</code> takes; the graph name is what the run
 records.</p>
 <table>
@@ -6866,6 +6926,11 @@ records.</p>
 <td>Reviews a patch that already exists against the harness's own check results.</td>
 </tr>
 <tr>
+<td><code>phase-review</code></td>
+<td><a href="phase-review/">phase-review</a></td>
+<td>One review round of a whole phase branch against its base, the phase smoke as evidence: does it meet its goal, does it carry fat. The phase lane runs it.</td>
+</tr>
+<tr>
 <td><code>cos</code></td>
 <td><a href="coxswain/">coxswain</a></td>
 <td>One dispatch node: picks which graphs to run next from a docket the driver assembled.</td>
@@ -6897,7 +6962,7 @@ records.</p>
 </tr>
 </tbody>
 </table>
-<p><code>delivery</code> holds the first five, <code>ops</code> the other six.</p>
+<p><code>delivery</code> holds the first six, <code>ops</code> the other six.</p>
 <h2 id="drivers-are-not-graphs">Drivers are not graphs</h2>
 <p><code>shell.py</code> also takes three subcommands that are not graphs. They invoke
 graphs, block on them and write, which a graph may not do.</p>
@@ -6911,6 +6976,9 @@ graphs, block on them and write, which a graph may not do.</p>
   <a href="../#the-hierarchy">the hierarchy</a> describes.</li>
 <li><code>rescue</code> runs <code>rescue-review</code> on one quarantined task's kept patch.
   <code>cox route launch rescue</code> starts it.</li>
+<li><code>phase-lane</code> builds one claimed phase on the phase model and runs
+  <code>phase-review</code> once per round, after the phase smoke, until a round
+  approves or quarantines it (<code>harness/review_loop.py</code>).</li>
 </ul>
 <p><code>cox route launch</code> also starts <code>decompose</code>, <code>cos</code> and <code>sweep</code> directly.
 <code>cox runs review --pr &lt;url&gt;</code> runs <code>review-diff</code> on a pull request.</p>

@@ -965,6 +965,8 @@ Coxswain is in beta — versions may change between releases
       
         
       
+        
+      
     
     
     
@@ -1163,6 +1165,34 @@ Coxswain is in beta — versions may change between releases
     
   
     rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../methodology/graphs/phase-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    phase-review
   
 
     
@@ -2491,6 +2521,8 @@ Coxswain is in beta — versions may change between releases
       
         
       
+        
+      
     
     
     
@@ -2642,6 +2674,34 @@ Coxswain is in beta — versions may change between releases
     
   
     lifecycle-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../docs/graphs/phase-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    phase-review
   
 
     
@@ -6705,7 +6765,7 @@ they ship as part of the one <code>coxswain</code> package. To install Coxswain,
 <div class="highlight"><pre><span></span><code>harness/   the runtime. resolve, discover, run, gate, apply, record
 graphs/    the programs. pure functions of (args, runner)
   delivery/   work that produces work: initiative-decompose, lifecycle-propose, phase-validate,
-              review-diff, rescue-review
+              review-diff, rescue-review, phase-review
   ops/        keeping a running system honest: coxswain, epic-reconcile, retro-propose,
               triage-propose, triage, sweep
 runner/    node execution: the protocol, a scripted runner, the live one
@@ -6784,6 +6844,12 @@ model; the provider profile decides which model each tier means. A host's
 <td><code>rescue-review</code></td>
 <td>delivery</td>
 <td>handoff → review_charter → review_adversary → [arbitrate] → emit. A patch that already exists, reviewed with the harness's own check results</td>
+</tr>
+<tr>
+<td><code>phase-review</code></td>
+<td><code>phase-review</code></td>
+<td>delivery</td>
+<td>review_phase → review_adversary → [arbitrate] → emit. One review round of a whole phase branch against its base, the phase smoke as evidence: does it meet its goal, does it carry fat</td>
 </tr>
 <tr>
 <td><code>coxswain</code></td>

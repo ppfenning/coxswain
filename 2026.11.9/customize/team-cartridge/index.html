@@ -965,6 +965,8 @@ Coxswain is in beta — versions may change between releases
       
         
       
+        
+      
     
     
     
@@ -1163,6 +1165,34 @@ Coxswain is in beta — versions may change between releases
     
   
     rescue-review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../methodology/graphs/phase-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    phase-review
   
 
     
@@ -2572,6 +2602,8 @@ Coxswain is in beta — versions may change between releases
       
         
       
+        
+      
     
     
     
@@ -2723,6 +2755,34 @@ Coxswain is in beta — versions may change between releases
     
   
     lifecycle-propose
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../components/graphs/docs/graphs/phase-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    phase-review
   
 
     
@@ -6904,7 +6964,8 @@ list of task checks: the task lines, then the lines of the widest level the file
 command once. So an initiative already on the old model checks what it checked before levels. Its lander, <code>cox runs
 land</code> and the chair's carry do the same. The lander's gate for a phase-model initiative arrives with the phase-model
 lander.</p>
-<p>On the phase model, a phase whose smoke fails gets no review and is not parked <code>built</code>. A failing check finishes the
+<p>On the phase model, a phase whose smoke passes goes to its review, in the same lane (<code>phase-review</code>), and the smoke
+runs again before each later round. A phase whose smoke fails gets no review. A failing check finishes the
 phase <code>failed</code> at once, with the failure as its reason, because a retry would run the same commands on the same
 commit. A smoke that could not run (a harness fault) goes back to the queue once. A second harness fault on the same
 commit finishes the phase <code>failed</code>. Either way the operator decides what happens next. A pass counts as evidence
