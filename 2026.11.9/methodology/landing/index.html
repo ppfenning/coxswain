@@ -7363,6 +7363,23 @@ no <code>lane_model</code> is on the old model.</p>
   answers in the merge's scratch worktree, and nothing but the conflicted paths may change there: an answer that
   staged or changed anything else, or moved the merge, is refused. Reconciliation never replaces a merge hold: a drift
   it finds is kept beside it and cleared on its own.</li>
+<li><strong>New model: the initiative review gates the pull request.</strong> Once every phase has merged (the record reads
+  <code>assembled</code>), the chair queues one <code>initiative_review</code> item in the phase queue, under the reserved phase
+  <code>initiative</code>. A worker's lane reviews the whole initiative branch against its parent with the phase review's own
+  loop and rules (<code>review_loop.next</code>; its rounds and steps are the initiative's own, phase <code>''</code>, and only the current
+  episode counts). A <code>revise</code> round asks for one revision phase, <code>revise-&lt;round&gt;</code>: the chair writes its task and its
+  build queue row, cut from the merged initiative branch; it is built, reviewed and approved like any phase, and the
+  lander merges it; then the chair queues the same review again for the next round, at most three an episode. On
+  <code>approve</code>, the lane runs the full suite at the tip: the <code>ticket</code> gate, the cartridge's <code>ticket_checks</code> and the
+  <code># level: initiative</code> section of the tip's own <code>.agent-checks</code>, recorded as one <code>suite</code> step. The lander opens the
+  one pull request only when the episode's last round approved and a passing <code>suite</code> step stands at the initiative
+  branch's current tip on origin (<code>lander_review.pr_gate</code>); it says so in the pull request's body. Before that the
+  land waits. A quarantine, or a suite that failed at the tip, holds the initiative with a review hold, which follows
+  the merge hold's rules (the chair is told once, <code>cox lander release</code> releases it, reconciliation keeps a drift
+  beside it) but holds the pull request alone: phase merges go on, so the work that answers it can land, and the hold
+  lifts once the gate no longer says it (the tip moved, or the review moved on). With <code>land_checks: ci</code> CI runs on the
+  pull request as well; it does not stand in for the suite, which has passed at this tip before the pull request
+  exists.</li>
 </ul>
 <p>Refreshes are always forward merges of the parent into the child. No branch the record names is rebased, reset or
 force-pushed, and a merge that would drop a recorded commit is refused. After a land, a phase branch is deleted only
