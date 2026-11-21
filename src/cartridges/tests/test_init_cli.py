@@ -111,18 +111,24 @@ def test_second_init_without_force_exits_2_and_changes_nothing(tmp_path, capsys)
     assert "wrote" not in out
 
 
-def test_force_rewrites_the_yaml(tmp_path):
+def test_force_never_replaces_an_existing_cartridge_yaml(tmp_path, capsys):
     cartridges_dir = tmp_path / "cartridges"
-    assert _main(["init", "acme", "--cartridges-dir", str(cartridges_dir)]) == 0
+    argv = ["init", "acme", "--cartridges-dir", str(cartridges_dir), "--force"]
+    assert _main(argv) == 0
     yaml_path = cartridges_dir / "acme" / "cartridge.yaml"
-    yaml_path.write_text("mutated\n", encoding="utf-8")
+    yaml_path.write_text(
+        yaml_path.read_text(encoding="utf-8") + "# kept by hand\ncrew:\n  reviewer: mine  # why\n",
+        encoding="utf-8",
+    )
+    before = yaml_path.read_bytes()
+    capsys.readouterr()
 
-    exit_code = _main(["init", "acme", "--cartridges-dir", str(cartridges_dir), "--force"])
+    exit_code = _main(argv)
+    out = capsys.readouterr().out
 
     assert exit_code == 0
-    rewritten = yaml_path.read_text(encoding="utf-8")
-    assert rewritten != "mutated\n"
-    assert "team: acme" in rewritten.splitlines()
+    assert yaml_path.read_bytes() == before
+    assert f"kept existing {yaml_path}" in out
 
 
 def test_existing_correct_symlink_is_accepted_silently(tmp_path):

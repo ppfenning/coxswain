@@ -9,7 +9,7 @@ imports only the standard library and never opens a file itself.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from pathlib import Path
 
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]*$")
@@ -61,8 +61,11 @@ def init_plan(
     extends: str = "local",
     package_cartridges_dir: str | Path,
     template: Mapping[str, str],
+    existing_files: Collection[str] = frozenset(),
 ) -> list[dict[str, str]]:
-    """Return the ordered steps that would build `<cartridges_dir>/<team>`."""
+    """Return the ordered steps that would build `<cartridges_dir>/<team>`.
+
+    `existing_files` names the team files (relative to the team dir) already on disk."""
     root = Path(cartridges_dir)
     package_root = Path(package_cartridges_dir)
     _validate(team, extends)
@@ -92,12 +95,19 @@ def init_plan(
     # would hand a new team ten bindings that resolve to no skill body.
     # Everything else the template carries (context/* charters, etc.) is
     # still copied verbatim, if the caller's template includes any.
-    write_steps = [
-        {"op": "write", "path": str(team_dir / "cartridge.yaml"), "text": _minimal_cartridge_yaml(team, extends)}
-    ] + [
+    # A cartridge.yaml that already exists is a hand-kept file (comments, values);
+    # it is never replaced, not even under force, so the step says it was kept.
+    cartridge_path = str(team_dir / "cartridge.yaml")
+    cartridge_step: dict[str, str] = (
+        {"op": "print", "text": f"kept existing {cartridge_path}"}
+        if "cartridge.yaml" in existing_files
+        else {"op": "write", "path": cartridge_path, "text": _minimal_cartridge_yaml(team, extends)}
+    )
+    context_steps: list[dict[str, str]] = [
         {"op": "write", "path": str(team_dir / relative_path), "text": text}
         for relative_path, text in context_template.items()
     ]
+    write_steps = [cartridge_step] + context_steps
     print_step = [{"op": "print", "text": f"team: {team}\ncartridges_dir: {root}"}]
 
     return mkdir_steps + symlink_steps + write_steps + print_step
