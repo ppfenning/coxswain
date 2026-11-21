@@ -88,12 +88,13 @@ def bounded_url(url: str) -> str:
     return urlunsplit(parts._replace(query=urlencode(query)))
 
 
-def launch_argv(initiative: str, phase: str, run_id: str, label: str) -> list[str]:
-    """Today's per-phase launch, run in the workspace: the harness for one phase, here, under the run id the claim
-    recorded. `--no-claim` because a worker never takes the landing loop."""
+def launch_argv(initiative: str, phase: str, run_id: str, label: str, worker: str, epoch: int) -> list[str]:
+    """The phase lane's launch, run in the workspace: the harness's `phase-lane` for the one claimed phase, here,
+    under the run id the claim recorded and the claim's epoch, which every write of the lane is fenced on.
+    `--no-claim` because a worker never takes the landing loop."""
     return [
         "cox", "route", "launch", "epic", "--local", "--initiative", f"work/{initiative}", "--phase", phase,
-        "--run-id", run_id, "--label", label, "--no-claim",
+        "--run-id", run_id, "--label", label, "--no-claim", "--lane-worker", worker, "--claim-epoch", str(epoch),
     ]
 
 
@@ -116,6 +117,25 @@ def attempts_of(claim: Claim) -> int:
 
 def key_of(claim: Claim) -> str:
     return f"{claim.initiative}/{claim.phase} (epoch {claim.epoch})"
+
+
+@dataclass(frozen=True)
+class LaneFacts:
+    """What the store holds for a phase once its lane ended: its tasks (dropped ones left out), the tasks whose roll-up
+    put a commit on the phase branch in any run, and its last review round as (round, verdict)."""
+
+    tasks: tuple[str, ...]
+    rolled_up: tuple[str, ...]
+    last_round: tuple[int, str] | None
+
+
+def lane_facts(task_rows: Sequence[Mapping[str, object]], rollups: Sequence[Mapping[str, object]], phase: str,
+               last_round: tuple[int, str] | None) -> LaneFacts:
+    """The `LaneFacts` of `phase`, from its initiative's work-item rows and roll-up step rows."""
+    tasks = sorted(str(r["task_id"]) for r in task_rows
+                   if r.get("kind") == "task" and r.get("phase") == phase and r.get("state") != "dropped")
+    rolled = sorted({str(r["task_id"]) for r in rollups if r.get("phase") == phase})
+    return LaneFacts(tuple(tasks), tuple(rolled), last_round)
 
 
 @dataclass(frozen=True)
@@ -262,7 +282,7 @@ class Ports:
     set_run: Callable[[Claim, str], bool]
     finish: Callable[[Claim, str, str], bool]
     release: Callable[[Claim, str, int, bool], bool]  # (claim, reason, wait_s, refund)
-    task_states: Callable[[str, str], list[str]]  # (initiative, phase) -> its tasks' states
+    lane_facts: Callable[[Claim], LaneFacts]  # what the store holds for the claimed phase once its lane ended
     launch: Callable[[Claim, Callable[[str], bool]], Started | str]  # the spawned launch, or why it did not spawn
     launched: Callable[[Started], Running | tuple[int, str] | None]  # the run, the launch's (exit, output), or None while it runs
     alive: Callable[[Running], bool]
@@ -311,8 +331,8 @@ def reap(ports: Ports, leases: Leases) -> None:
                 else:
                     settle(ports, leases, claim, phase_pick.verdict([], attempts_of(claim), launch_error=f"the launch exited {code}: {last}"))
         elif isinstance(held.run, Running) and not ports.alive(held.run):
-            states = ports.task_states(claim.initiative, claim.phase)
-            settle(ports, leases, claim, phase_pick.verdict(states, attempts_of(claim)))
+            facts = ports.lane_facts(claim)
+            settle(ports, leases, claim, phase_pick.lane_verdict(facts.tasks, facts.rolled_up, facts.last_round, attempts_of(claim)))
 
 
 def fill(ports: Ports, leases: Leases, caps: Sequence[str]) -> int:

@@ -18,6 +18,8 @@ from typing import cast
 
 from harness import phase_pick
 from harness.store_dialect import Cell, Connection, Json, insert_ignore, json_load, json_text, upsert
+from harness.store_steps import put_step
+from harness.store_types import StepRow
 
 __all__ = [
     "PHASE_COLUMNS",
@@ -28,11 +30,16 @@ __all__ = [
     "finish",
     "get_row",
     "heartbeat",
+    "held",
+    "host_threads",
+    "last_round",
     "list_rows",
     "list_workers",
     "live_claims",
+    "put_steps_fenced",
     "register",
     "release",
+    "rollup_rows",
     "set_run",
     "store_now",
 ]
@@ -275,6 +282,71 @@ def live_claims(conn: Connection) -> list[Row]:
         (now,),
     )
     return [_decode(PHASE_COLUMNS, r) for r in rows]
+
+
+# -- the lane's side: every write it makes is fenced on the claim its worker holds --------------------------------
+
+def held(conn: Connection, initiative: str, phase: str, worker: str, epoch: int, margin_s: int = 0) -> bool:
+    """Edge. Whether `worker` still holds the claim at `epoch` with at least `margin_s` seconds of its lease left, by
+    the store's clock. A plain read: it never waits on a lock another session holds on the row."""
+    now = store_now(conn)
+    return phase_pick.fenced(get_row(conn, initiative, phase), worker, epoch, phase_pick.lease(now, margin_s))
+
+
+def put_steps_fenced(conn: Connection, rows: Sequence[StepRow], worker: str, epoch: int) -> bool:
+    """Edge. Insert step rows (insert-ignore, so a repeat changes nothing) only while `worker` holds the claim at
+    `epoch`, in one transaction; False, with nothing written, when it does not. The claim row is read under a share
+    lock (Postgres; sqlite serialises every writer), so a takeover cannot commit between the check and the insert.
+    Each row's `finished_at` is the store's time of this write, and its `started_at` too when the row has none."""
+    if not rows:
+        return True
+    p = conn.dialect.placeholder
+    initiative, phase = rows[0]["initiative"], rows[0]["phase"]
+    with conn.transaction():
+        now = store_now(conn)
+        found = conn.query_one(
+            f"SELECT {', '.join(PHASE_COLUMNS)} FROM phase_queue WHERE initiative = {p} AND phase = {p}"
+            f"{conn.dialect.share_lock}",
+            (initiative, phase),
+        )
+        if not phase_pick.fenced(None if found is None else _decode(PHASE_COLUMNS, found), worker, epoch, now):
+            return False
+        for row in rows:
+            put_step(conn, cast(StepRow, {**row, "finished_at": now, "started_at": row["started_at"] or now}))
+    return True
+
+
+def last_round(conn: Connection, initiative: str, phase: str) -> tuple[int, str] | None:
+    """Edge. The phase's last completed review round as (round, verdict), None before its first."""
+    p = conn.dialect.placeholder
+    found = conn.query_one(
+        f"SELECT round, verdict FROM review_rounds WHERE initiative = {p} AND phase = {p} ORDER BY round DESC LIMIT 1",
+        (initiative, phase),
+    )
+    return None if found is None else (int(str(found[0])), str(found[1]))
+
+
+def host_threads(conn: Connection, name: str) -> int:
+    """Edge. The operator's thread budget for the machine `name` (`hosts.threads`); 0, which means its cores, when
+    it has no row or set none."""
+    found = conn.query_one(f"SELECT threads FROM hosts WHERE name = {conn.dialect.placeholder}", (name,))
+    value = None if found is None else found[0]
+    return value if isinstance(value, int) and value > 0 else 0
+
+
+def rollup_rows(conn: Connection, initiatives: Sequence[str]) -> list[Row]:
+    """Edge. Every roll-up step that put a commit on its phase branch, of the named initiatives, as {initiative,
+    phase, task_id, subject_sha, run_id, finished_at}, oldest first."""
+    if not initiatives:
+        return []
+    p = conn.dialect.placeholder
+    columns = ("initiative", "phase", "task_id", "subject_sha", "run_id", "finished_at")
+    rows = conn.query_all(
+        f"SELECT {', '.join(columns)} FROM step_results WHERE kind = 'rollup' AND ok = 1 AND subject_sha <> '' "
+        f"AND initiative IN ({', '.join(p for _ in initiatives)}) ORDER BY finished_at, run_id, step",
+        tuple(initiatives),
+    )
+    return [dict(zip(columns, r, strict=True)) for r in rows]
 
 
 # -- the registry -------------------------------------------------------------------------------------------------

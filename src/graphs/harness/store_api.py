@@ -577,6 +577,11 @@ def phase_queue_rows(url: str) -> list[dict[str, object]] | Failed | NotAvailabl
     return _read(url, store_phases.list_rows)
 
 
+def phase_rollups(url: str, initiatives: Sequence[str]) -> list[dict[str, object]] | Failed | NotAvailable:
+    """The roll-up step rows of the named initiatives, oldest first (`store_phases.rollup_rows`)."""
+    return _read(url, lambda c: store_phases.rollup_rows(c, initiatives))
+
+
 def apply_phase_changes(url: str, changes: Sequence[Mapping[str, object]], by: str, now: str) -> int | Failed | NotAvailable:
     """The chair's phase queue writes, in one transaction at the store's own time; the rows they changed."""
     return _write(url, now, lambda c: store_phases.apply_changes(c, changes, by))

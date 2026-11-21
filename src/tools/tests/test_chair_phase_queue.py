@@ -192,3 +192,29 @@ def test_the_idle_count_leaves_out_a_phase_initiative_a_worker_is_running():
     live = _phase_initiative("ship", ("p2", [_task("t2", "p2"), _task("t3", "p2")]))
     inputs = {"free_lanes": 2, "ready": 3, "queued": 0, "open_signature": None}
     assert less_phase_ready(inputs, [live, _unstarted("b")])["ready"] == 1
+
+
+def test_a_phase_finished_approved_approves_its_open_tasks_at_their_roll_up_commits():
+    stored = [_stored("p1", state="finished", outcome="approved"), _stored("p2", state="finished", outcome="quarantined")]
+    tasks = [{"initiative": "ship", "task_id": t, "phase": p, "state": s}
+             for t, p, s in (("t2", "p1", "ready"), ("t1", "p1", "approved"), ("t3", "p1", "ready"), ("t4", "p2", "ready"))]
+    rollups = [{"initiative": "ship", "task_id": "t2", "subject_sha": "old"}, {"initiative": "ship", "task_id": "t2", "subject_sha": "b2"},
+               {"initiative": "ship", "task_id": "t1", "subject_sha": "a1"}, {"initiative": "ship", "task_id": "t4", "subject_sha": "d4"}]
+    # t1 is approved already, t3 has no commit on the branch, and p2's review quarantined it: only t2 moves, at its last
+    assert chair_phase_queue.approvals(stored, tasks, rollups) == [
+        {"initiative": "ship", "phase": "p1", "task_id": "t2", "commit": "b2"},
+    ]
+
+
+def test_the_tick_approves_an_approved_phases_tasks_and_does_not_reopen_it_meanwhile():
+    initiatives = [_phase_initiative("ship", ("p1", [_task("t1", "p1")]))]
+    queue = {**_queue([_stored("p1", state="finished", outcome="approved")]),
+             "tasks": [{"initiative": "ship", "task_id": "t1", "phase": "p1", "state": "ready"}],
+             "rollups": [{"initiative": "ship", "task_id": "t1", "subject_sha": "a1"}]}
+    planned = plan_tick({**_tick_facts(initiatives=initiatives), "phase_queue": queue}, NOW)
+    (approve,) = [a for a in planned if a["kind"] == "approve_phase_tasks"]
+    assert approve["approvals"] == [{"initiative": "ship", "phase": "p1", "task_id": "t1", "commit": "a1"}]
+    assert not [a for a in planned if a["kind"] == "queue_phases"]
+    settled = {**queue, "tasks": [{"initiative": "ship", "task_id": "t1", "phase": "p1", "state": "approved"}]}
+    again = plan_tick({**_tick_facts(initiatives=initiatives), "phase_queue": settled}, NOW)
+    assert not [a for a in again if a["kind"] == "approve_phase_tasks"]

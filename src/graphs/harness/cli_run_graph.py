@@ -15,7 +15,7 @@ import tempfile
 from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TextIO
+from typing import TYPE_CHECKING, Any, TextIO, cast
 
 import yaml
 
@@ -773,6 +773,65 @@ def register_stack_dump(stream: TextIO) -> None:
     faulthandler.register(signal.SIGUSR1, file=stream, all_threads=True)
 
 
+def _run_phase_lane(
+    *, parser: argparse.ArgumentParser, args: argparse.Namespace, cartridge: Mapping[str, Any], runner: Any,
+    specs: dict[str, GraphSpec], run_id: str, store: Store | None,
+) -> int:
+    """Edge. `shell.py phase-lane`: build the one phase a worker claimed (`harness.phase_lane`), under its epoch."""
+    from core.cartridge import test_database_setting
+    from harness import phase_lane
+    from harness.checks import repo_checks
+    from harness.cli_launch import _child_pids, _pgrep_children, lane_store_url, profile_storage_url
+    from harness.epic import Ctx, resolve_default_ref
+    from harness.lane_workers import lane_workers
+    from harness.store_scoped import open_scoped
+
+    phase = (getattr(args, "phase", None) or [None])[0]
+    if not (args.initiative and args.repo and phase and args.lane_worker and args.claim_epoch is not None and store):
+        parser.error("phase-lane needs --initiative, --repo, --phase, --lane-worker, --claim-epoch and a store")
+    try:
+        initiative = workstore.read_initiative(args.initiative)
+        provider = read_provider_profile(args.provider_profile)
+        artifacts = artifacts_root(provider, os.environ, Path(args.runs_dir))
+    except (workstore.WorkStoreError, ValueError, ImportError) as exc:
+        print(f"phase-lane: {exc}", file=sys.stderr)
+        return phase_lane.EXIT_FAILED
+    repo = Path(args.repo)
+    claim = phase_lane.LaneClaim(str(initiative.get("id")), phase, args.lane_worker, args.claim_epoch)
+    threads = phase_lane.threads_for(store.conn, claim.worker, os.environ)
+    try:
+        checks_text = (repo / ".agent-checks").read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeDecodeError):
+        checks_text = ""
+    try:
+        default_ref = resolve_default_ref(repo, getattr(args, "base", None))
+    except RuntimeError as exc:
+        print(f"phase-lane: {exc}", file=sys.stderr)
+        return phase_lane.EXIT_FAILED
+    worktree_root = args.worktree_root or (cartridge.get("landing_areas") or {}).get("worktree_root", "~/worktrees")
+    ctx = Ctx(
+        repo=repo, cartridge=cartridge, runner=runner, specs=specs, run_id=run_id, date=args.date,
+        max_parallel=threads, ledger_path=Path(args.ledger), provider_profile=_provider_profile_scope(args.provider_profile),
+        runs_dir=Path(args.runs_dir), worktree_root=Path(str(worktree_root)).expanduser(), assume=args.assume,
+        fix_attempts=0, initiative_id=claim.initiative, default_ref=default_ref, repo_checks=repo_checks(checks_text),
+        store=store, test_database=cast("Mapping[str, str] | None", test_database_setting(cartridge)),
+        # each check's own workers: the cores split over every task build this machine runs at once
+        lane_workers=lane_workers(os.cpu_count() or 1, threads * phase_lane.lanes_of(os.environ)),
+        pool=_pool_setting(enabled=not getattr(args, "no_pool", False), keep=getattr(args, "pool_keep", DEFAULT_POOL_KEEP),
+                           worktree_root=worktree_root, landing_areas=cartridge.get("landing_areas")),
+        artifacts=artifacts,
+    )
+    url, _ = lane_store_url(profile_storage_url(provider, args.runs_dir))
+    register_stack_dump(sys.stdout)
+    code = phase_lane.run_lane(
+        ctx, claim, store.conn, lambda: open_scoped(url), list(initiative.get("items") or []),
+        default_ref, lambda line: print(line, flush=True),
+        lambda: phase_lane.terminate_groups(_child_pids(pgrep=_pgrep_children)),
+    )
+    print(f"phase-lane {run_id}: {claim.initiative}/{claim.phase} exit {code}")
+    return code
+
+
 def _run_graph(
     *,
     specs: dict[str, GraphSpec],
@@ -785,6 +844,10 @@ def _run_graph(
     epoch: int | None = None,
     lease_name: str | None = None,
 ) -> int:
+    if args.graph == "phase-lane":
+        return _run_phase_lane(parser=parser, args=args, cartridge=cartridge, runner=runner, specs=specs,
+                               run_id=run_id, store=store)
+
     if args.graph == "epic":
         # The whole initiative. The driver gates and records PER PHASE — phase
         # N+1's base depends on which merges the gate let into phase N's branch,

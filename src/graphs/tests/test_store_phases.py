@@ -252,3 +252,57 @@ def test_two_workers_claiming_at_once_never_take_the_same_phase(store_url):
     assert sorted(every) == [f"p{n}" for n in range(8)]
     assert {r["claim_epoch"] for r in store_phases.list_rows(setup)} == {1}
     setup.close()
+
+
+def _step(task, kind, sha="", run="ship.p1-1", epoch=1):
+    from harness.store_steps import step_key, step_row
+
+    return step_row(run_id=run, step=step_key("task", task, kind, 0), initiative="ship", phase="p1", task_id=task,
+                    kind=kind, round_=0, ok=True, verdict="", result={}, finished_at="", started_at="",
+                    subject_sha=sha, worker="w1", claim_epoch=epoch)
+
+
+def test_a_lane_writes_its_step_rows_only_while_its_worker_holds_the_claim(conn):
+    from harness.store_steps import steps_for
+
+    store_phases.apply_changes(conn, [_change()], "chair-loop")
+    claim = store_phases.claim_next(conn, "w1", [], 1)
+    assert store_phases.held(conn, "ship", "p1", "w1", claim.epoch)
+    assert store_phases.put_steps_fenced(conn, [_step("t1", "rollup", "a1")], "w1", claim.epoch)
+    assert store_phases.put_steps_fenced(conn, [_step("t1", "rollup", "a1")], "w1", claim.epoch)  # a repeat: no change
+    (row,) = steps_for(conn, "ship.p1-1")
+    assert row["finished_at"].endswith("Z") and row["started_at"] == row["finished_at"] and row["subject_sha"] == "a1"
+    assert not store_phases.put_steps_fenced(conn, [_step("t2", "rollup")], "w2", claim.epoch)  # not its claim
+    assert not store_phases.put_steps_fenced(conn, [_step("t2", "rollup")], "w1", claim.epoch + 1)
+    _set(conn, "p1", lease_until=PAST)  # the store's clock moved past the lease
+    assert not store_phases.held(conn, "ship", "p1", "w1", claim.epoch)
+    assert not store_phases.put_steps_fenced(conn, [_step("t2", "rollup")], "w1", claim.epoch)
+    assert [r["step"] for r in steps_for(conn, "ship.p1-1")] == ["task/t1/rollup"]
+
+
+def test_a_lane_stops_holding_its_claim_once_the_lease_is_inside_the_margin(conn):
+    store_phases.apply_changes(conn, [_change()], "chair-loop")
+    claim = store_phases.claim_next(conn, "w1", [], 1)
+    assert store_phases.held(conn, "ship", "p1", "w1", claim.epoch, margin_s=15)
+    assert not store_phases.held(conn, "ship", "p1", "w1", claim.epoch, margin_s=3600)
+
+
+def test_the_rollups_and_the_last_review_round_of_a_phase_are_read_back(conn):
+    store_phases.apply_changes(conn, [_change()], "chair-loop")
+    claim = store_phases.claim_next(conn, "w1", [], 1)
+    store_phases.put_steps_fenced(conn, [_step("t1", "rollup", "a1"), _step("t1", "checks")], "w1", claim.epoch)
+    rows = store_phases.rollup_rows(conn, ["ship"])
+    assert [(r["phase"], r["task_id"], r["subject_sha"]) for r in rows] == [("p1", "t1", "a1")]
+    assert store_phases.rollup_rows(conn, ["other"]) == [] and store_phases.rollup_rows(conn, []) == []
+    assert store_phases.last_round(conn, "ship", "p1") is None
+    p = conn.dialect.placeholder
+    for number, verdict in ((1, "revise"), (2, "approve")):
+        conn.execute(
+            f"INSERT INTO review_rounds VALUES ({', '.join([p] * 13)})",
+            ("ship", "p1", number, "h", verdict, "", "{}", "", "r", "w1", 1, 0.0, AT),
+        )
+    assert store_phases.last_round(conn, "ship", "p1") == (2, "approve")
+
+
+def test_a_machine_with_no_thread_budget_reads_zero(conn):
+    assert store_phases.host_threads(conn, "nobody") == 0

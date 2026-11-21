@@ -151,19 +151,47 @@ def changes(wanted_rows: Sequence[Row], stored: Sequence[Row], now: str, holds: 
     return out
 
 
+_SETTLED = frozenset({"approved", "done", "dropped"})
+
+
+def approvals(stored: Sequence[Row], tasks: Sequence[Row], rollups: Sequence[Row]) -> list[dict[str, str]]:
+    """The tasks to approve: each task of a phase whose row finished approved that is not yet approved, done or
+    dropped, with the commit its last roll-up put on the phase branch as its `merged_commit`. A task with no roll-up
+    commit is left alone: there is nothing on the branch to record."""
+    approved = {_key(r) for r in stored if r.get("state") == "finished" and r.get("outcome") == "approved"}
+    commits = {(str(r.get("initiative")), str(r.get("task_id"))): str(r.get("subject_sha")) for r in rollups}
+    out: list[dict[str, str]] = []
+    for task in sorted(tasks, key=lambda t: (str(t.get("initiative")), str(t.get("phase")), str(t.get("task_id")))):
+        initiative, phase, task_id = str(task.get("initiative")), str(task.get("phase")), str(task.get("task_id"))
+        commit = commits.get((initiative, task_id), "")
+        if (initiative, phase) in approved and task.get("state") not in _SETTLED and commit:
+            out.append({"initiative": initiative, "phase": phase, "task_id": task_id, "commit": commit})
+    return out
+
+
 def plan(facts: Facts, now: str, holds: Collection[str] = ()) -> list[Action]:
-    """One `queue_phases` action with the tick's changes, or nothing: no phase initiative is ready, or the store
-    already holds every row. Without the stored rows (`phase_queue` unread) nothing is planned. `holds` is the tick's
-    held and deferred initiatives; the facts add those stopped by their own failures and the tasks held for a person."""
+    """One `approve_phase_tasks` action for the tasks of phases that finished approved (`approvals`), and one
+    `queue_phases` action with the tick's changes; either is left out when it has nothing. Without the stored rows
+    (`phase_queue` unread) nothing is planned. A phase whose tasks wait to be approved is not wanted again: its ready
+    tasks are what this tick approves, not work that came back. `holds` is the tick's held and deferred initiatives;
+    the facts add those stopped by their own failures and the tasks held for a person."""
     queue = facts.get("phase_queue")
     if queue is None or not queue["readable"]:
         return []
     held = frozenset(holds) | frozenset(facts.get("held_initiatives") or []) | frozenset(facts.get("no_progress") or {})
     held_phases = frozenset((t["initiative"], t["phase"]) for t in facts.get("held_tasks") or [])
     closed, stopped = frozenset(queue["closed"]), bool(facts["limits"]["hard_stop"])
-    wanted = rows(facts.get("initiatives") or [], queue["lane_prereqs"], held, held_phases, closed, stopped)
+    approve = approvals(queue["rows"], queue.get("tasks") or [], queue.get("rollups") or [])
+    pending = {(a["initiative"], a["phase"]) for a in approve}
+    wanted = [w for w in rows(facts.get("initiatives") or [], queue["lane_prereqs"], held, held_phases, closed, stopped)
+              if _key(w) not in pending]
     found = changes(wanted, queue["rows"], now, held, held_phases, closed, stopped)
-    if not found:
-        return []
-    names = ", ".join(f"{c['initiative']}/{c['phase']} {c['op']}" for c in found)
-    return [{"kind": ActionKind.QUEUE_PHASES, "changes": found, "reason": f"phase queue: {names}"}]
+    out: list[Action] = []
+    if approve:
+        names = ", ".join(f"{a['initiative']}/{a['task_id']}@{a['commit'][:12]}" for a in approve)
+        out.append({"kind": ActionKind.APPROVE_PHASE_TASKS, "approvals": approve,
+                    "reason": f"the phase review approved: {names}"})
+    if found:
+        names = ", ".join(f"{c['initiative']}/{c['phase']} {c['op']}" for c in found)
+        out.append({"kind": ActionKind.QUEUE_PHASES, "changes": found, "reason": f"phase queue: {names}"})
+    return out

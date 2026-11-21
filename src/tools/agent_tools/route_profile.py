@@ -801,7 +801,8 @@ def harness_argv(
 ) -> list:
     """Build the harness command line, spec §4, from a parsed `profile`
     and the graph-specific `needs` (`initiative`/`repo` for `epic`, plus
-    `task` for `rescue`, and an optional `phase` for `epic`; `idea`/`initiative_id`, plus an optional `task_ids` and `repo`, for `decompose`). Pure: no Popen, no env reads.
+    `task` for `rescue`, and an optional `phase` for `epic`; for `phase-lane` the epic's plus `lane_worker` and
+    `claim_epoch`, the claim it runs under; `idea`/`initiative_id`, plus an optional `task_ids` and `repo`, for `decompose`). Pure: no Popen, no env reads.
     `python` is the interpreter `install_root.harness_python` chose; without it, the harness checkout's own venv.
     `result_out`, for `decompose` only, adds `--result-out <path>` so the graph result lands as JSON.
     """
@@ -828,10 +829,13 @@ def harness_argv(
         "--run-id",
         run_id,
     ]
-    if graph in ("epic", "rescue"):
+    if graph in ("epic", "rescue", "phase-lane"):
         argv += ["--initiative", needs["initiative"], "--repo", needs["repo"]]
-        if graph == "epic" and needs.get("phase"):
+        if graph in ("epic", "phase-lane") and needs.get("phase"):
             argv += ["--phase", needs["phase"]]
+        if graph == "phase-lane":
+            # The worker's claim the lane runs under: every step row and push it makes is fenced on it.
+            argv += ["--lane-worker", needs["lane_worker"], "--claim-epoch", str(needs["claim_epoch"])]
         if graph == "rescue":
             argv += ["--task", needs["task"]]
         if needs.get("fix_attempts") is not None:

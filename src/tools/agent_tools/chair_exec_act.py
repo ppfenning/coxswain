@@ -384,6 +384,26 @@ def _queue_phases(action: Action, deps: Deps) -> Result:
     return make_result(action, "done", f"{written} phase queue row(s) written; {action.get('reason', '')}")
 
 
+def _approve_phase_tasks(action: Action, deps: Deps) -> Result:
+    """Edge. A phase the phase review approved: each of its tasks moves to approved, its roll-up commit recorded as
+    `merged_commit`, the lander's precondition (every approved task's commit is on the phase tip). Each write is
+    safe to repeat: the state write names the state it sets, and the same commit again changes nothing."""
+    from harness import store_api
+
+    url, by, now = run_store.store_url_for(deps.runs_dir), "chair-loop", _stamp_now()
+    done: list[str] = []
+    for one in action.get("approvals", []):
+        initiative, task, commit = one["initiative"], one["task_id"], one["commit"]
+        moved = store_api.set_work_state(url, initiative, task, "approved", by, now)
+        if not isinstance(moved, store_api.StateSet):
+            return make_result(action, "failed", f"{initiative}/{task} not approved: {moved}; approved first: {', '.join(done) or 'none'}")
+        merged = store_api.record_task_merge(url, initiative, task, commit, by, now)
+        if not isinstance(merged, store_api.MergeRecorded):
+            return make_result(action, "failed", f"{initiative}/{task} merged_commit {commit[:12]} not recorded: {merged}")
+        done.append(task)
+    return make_result(action, "done", f"approved {', '.join(done)}; {action.get('reason', '')}")
+
+
 def _stamp_now() -> str:
     """Edge. Only the migration's bookkeeping reads this: every phase queue time is the store's own."""
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -874,6 +894,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
             return _finish_task(action, deps)
         case ActionKind.QUEUE_PHASES:
             return _queue_phases(action, deps)
+        case ActionKind.APPROVE_PHASE_TASKS:
+            return _approve_phase_tasks(action, deps)
         case ActionKind.REQUEUE_TASK:
             return _requeue_task(action, deps)
         case ActionKind.RESCUE:

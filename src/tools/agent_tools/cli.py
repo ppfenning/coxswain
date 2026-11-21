@@ -1330,6 +1330,8 @@ ROUTE_COMMANDS = [
                     commands.Arg(("--local",), {"action": "store_true", "help": "start the lane on this machine, not where the hosts table places it"}),
                     commands.Arg(("--include-blocked",), {"action": "store_true", "help": "launch despite a ready task behind a blocked item (--force does not)"}),
                     commands.Arg(("--phase",), {"action": "append", "default": None, "help": "run only the named phases of the initiative; repeat to start one run per phase, each on its own lane"}),
+                    commands.Arg(("--lane-worker",), {"help": "run the phase as the phase lane of this worker's phase_queue claim (with --claim-epoch; `cox worker` passes both)"}),
+                    commands.Arg(("--claim-epoch",), {"type": int, "default": None, "help": "the claim's epoch, which every write of the phase lane is fenced on"}),
                     *_LAUNCH_SHARED_ARGS,
                 ),
                 "agent_tools.cli:_route_launch", False, (), defaults={"graph": "epic"},

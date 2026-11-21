@@ -87,6 +87,9 @@ class Dialect:
     # The suffix that locks the rows a SELECT returns and skips the rows another transaction holds. Postgres only:
     # sqlite's BEGIN IMMEDIATE already serialises every writer, so its suffix is empty.
     skip_locked: str = ""
+    # The suffix that holds the rows a SELECT returns against another transaction's update until this one ends, so a
+    # write fenced on a row's claim cannot interleave with a takeover of it. Postgres only, for the same reason.
+    share_lock: str = ""
     # The store's own clock as UTC text `YYYY-MM-DD HH:MM:SS[.ffffff]`; `store_phases.store_now` cuts it to a stamp.
     now_sql: str = "SELECT CURRENT_TIMESTAMP"
 
@@ -94,6 +97,7 @@ class Dialect:
 SQLITE = Dialect(name="sqlite", placeholder="?", json_type="TEXT", bool_type="SMALLINT")
 POSTGRES = Dialect(
     name="postgres", placeholder="%s", json_type="JSONB", bool_type="SMALLINT", skip_locked=" FOR UPDATE SKIP LOCKED",
+    share_lock=" FOR SHARE",
     now_sql="SELECT CAST(CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AS TEXT)",
 )
 
