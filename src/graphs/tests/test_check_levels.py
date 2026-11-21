@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from harness.check_gate import GATE_LEVELS, GATES, gate_checks, gate_commands
-from harness.checks import LEVELS, for_level, old_model_checks, repo_checks
+from harness.checks import LEVELS, check_timeout, fixable_checks, for_level, old_model_checks, repo_checks
 from harness.epic import Ctx
 from harness.epic_branches import _merge_checks
 
@@ -146,6 +146,36 @@ def test_a_marker_must_be_the_whole_comment_line():
     assert [(c["cmd"], c.get("level")) for c in parsed] == [("full", "initiative"), ("x", "initiative")]
 
 
+def test_a_timeout_mark_sets_the_lines_own_timeout_and_never_reaches_the_shell_or_the_name():
+    parsed = repo_checks("# level: phase\nsmoke -n 4  # timeout: 2400\n"
+                         "# level: initiative\nfmt --check  # fix: fmt  # timeout: 90  # new model only\nall\n")
+    assert for_level(parsed, "phase") == [{"name": "smoke -n 4", "cmd": "smoke -n 4", "level": "phase", "timeout": 2400}]
+    fmt, every = for_level(parsed, "initiative")
+    assert fmt == {"name": "fmt --check  # fix: fmt", "cmd": "fmt --check", "fix": "fmt", "level": "initiative",
+                   "timeout": 90, "new_model_only": True}
+    assert "timeout" not in every  # an unmarked line keeps the runner's default
+    assert check_timeout(for_level(parsed, "phase")[0], 600) == 2400 and check_timeout(every, 600) == 600
+
+
+def test_a_timeout_mark_carries_into_the_old_models_list_and_into_a_fix_entry():
+    """The old model takes the widest section's lines whole, their own timeout with them: the command set is as
+    before, and a line given more time than the default can only run where it would have timed out."""
+    taken = old_model_checks(repo_checks("a\n# level: initiative\nsuite  # timeout: 3600\n"))
+    assert taken == [{"name": "a", "cmd": "a"}, {"name": "suite", "cmd": "suite", "timeout": 3600}]
+    assert fixable_checks(repo_checks("fmt --check  # fix: fmt  # timeout: 90\n")) == [
+        {"name": "fmt --check  # fix: fmt", "cmd": "fmt", "timeout": 90}]
+
+
+@pytest.mark.parametrize("value", ["0", "-5", "abc", "1.5", "2400s"])
+def test_a_bad_timeout_is_a_failing_task_check_and_its_line_runs_nowhere(value):
+    parsed = repo_checks(f"lint\n# level: phase\nsmoke  # timeout: {value}\n")
+    task = for_level(parsed, "task")
+    assert [c["cmd"] for c in task][:1] == ["lint"] and len(task) == 2
+    assert task[1]["name"] == (f".agent-checks line 3: bad timeout {value!r}, expected a positive whole number of "
+                               "seconds")
+    assert task[1]["cmd"].endswith("exit 2") and for_level(parsed, "phase") == []
+
+
 def test_for_level_refuses_a_level_that_does_not_exist():
     assert LEVELS == ("task", "phase", "initiative")
     with pytest.raises(ValueError, match="unknown check level 'ticket'"):
@@ -178,7 +208,10 @@ def test_this_repositorys_file_names_the_three_levels():
     parsed = _real()
     task = [c["cmd"] for c in for_level(parsed, "task")]
     assert not [c for c in task if "smoke" in c]  # no phase-model task runs the smoke
-    assert [c["cmd"] for c in for_level(parsed, "phase")] == ['pytest -q -rs smoke -m "not forge"']
+    assert [c["cmd"] for c in for_level(parsed, "phase")] == ['pytest -q -rs smoke -m "not forge" -n 4']
+    # E1: each wider line carries its own timeout, well past the runner's 600 s default the serial smoke outran.
+    assert [c.get("timeout") for c in for_level(parsed, "phase")] == [2400]
+    assert [c.get("timeout") for c in for_level(parsed, "initiative")] == [1800, 1800, 1800, 3600, 1800]
     assert [c["cmd"] for c in for_level(parsed, "initiative")] == [
         "cd src/tools && pytest -q -n auto", "cd src/graphs && pytest -q -n auto",
         "cd src/cartridges && pytest -q -n auto", "pytest -q -rs smoke", "pytest -q -n auto"]

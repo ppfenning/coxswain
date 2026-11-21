@@ -68,6 +68,11 @@ imports, a data file or `pytest.ini`. A narrowed line gets a 1,800 s timeout, un
 is not Python, or a source no test reaches, runs no unit test at the task level; the phase smoke and the initiative's
 full suite cover it. The mark implies `# new model only`. This repository marks its three component suites this way, and its initiative section
 names them whole, so the old model's flat list still runs each suite once.
+A command line may end `# timeout: <seconds>`, after any `# fix:` and before `# new model only` or `# touched only`.
+That is the line's own limit, in place of the runner's 600 s default (and of the 1,800 s a narrowed line gets), on both
+models, and the mark is in neither the command nor its name. A value that is not a positive whole number of seconds
+becomes a task check that fails and names the line. This repository's phase smoke runs in 4 xdist workers under 2,400 s,
+and each initiative line sets its own: 1,800 s for a unit suite, 3,600 s for the whole smoke suite run serially.
 
 Only the phase model reads the sections at their gates. There, each gate runs the cartridge's list first, then the
 repository's section, without repeating a command the cartridge already runs. The old model reads the file as one

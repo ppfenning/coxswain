@@ -59,11 +59,14 @@ def test_the_phase_level_is_the_smoke_without_the_forge_and_the_initiative_level
     # L2: the smoke runs once per phase, never in a task's own checks; the full suite is the initiative's, which
     # `land_checks: ci` leaves to CI on the pull request.
     sections = _sections()
-    assert sections["phase"] == [f'{SMOKE_LINE} -m "not forge"']
-    pytest_lines = [f"cd src/{name} && pytest -q -n auto" for name in ("tools", "graphs", "cartridges")]
+    # E1 (2026-11-21): serially the non-forge smoke outran the runner's 600 s default, so it runs in 4 workers under a
+    # timeout of its own, and every initiative line carries one too.
+    assert sections["phase"] == [f'{SMOKE_LINE} -m "not forge" -n 4  # timeout: 2400']
+    pytest_lines = [f"cd src/{name} && pytest -q -n auto  # timeout: 1800" for name in ("tools", "graphs", "cartridges")]
     # D2: and the umbrella's own tests/, which the new model's suite runs before the pull request; the old model's
-    # flat list leaves the marked line out (`test_old_model_checks`).
-    assert sections["initiative"] == [*pytest_lines, SMOKE_LINE, "pytest -q -n auto  # new model only"]
+    # flat list leaves the marked line out (`test_old_model_checks`). Its smoke line's command is main's, unchanged.
+    assert sections["initiative"] == [*pytest_lines, f"{SMOKE_LINE}  # timeout: 3600",
+                                      "pytest -q -n auto  # timeout: 1800  # new model only"]
 
 
 def ci_workflow() -> dict:

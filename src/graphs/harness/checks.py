@@ -178,6 +178,11 @@ NEW_MODEL_ONLY = "new_model_only"
 # component: the whole suite is a wider level's. The entry carries `TOUCHED_ONLY` and `NEW_MODEL_ONLY` both, since the
 # old model has no wider level to leave a suite to: its flat list takes the suite from the widest section instead.
 _TOUCHED_MARK = re.compile(r"\s+#\s*touched only\s*$")
+# A trailing `# timeout: <seconds>` on a command line: the check's own `timeout` (`check_timeout`), which `run_checks`
+# and the touched-only scoping (`check_scope.TOUCHED_TIMEOUT_S`) honour over their defaults. It sits after a line's
+# `# fix:` and before its `# new model only` or `# touched only`; a value that is not a positive whole number of seconds
+# becomes a failing task check that names the line.
+_TIMEOUT_MARK = re.compile(r"\s+#\s*timeout:\s*(\S*)\s*$")
 
 
 def repo_checks(text: str) -> list[dict[str, Any]]:
@@ -194,6 +199,9 @@ def repo_checks(text: str) -> list[dict[str, Any]]:
     (`NEW_MODEL_ONLY`): it runs at its level on the phase model, and the old model's flat list leaves it out. A task
     line may end `# touched only` (`TOUCHED_ONLY`, which implies `NEW_MODEL_ONLY`): the phase model's task gate runs it
     on the tests the task touched alone. At another level the mark only keeps the line out of the old model's list.
+    A line may end `# timeout: <seconds>` (after any `# fix:`, before those two marks): the entry carries that
+    `timeout`, the line's own limit in place of the runner's default, and the mark is in neither its `cmd` nor its
+    `name`. A value that is not a positive whole number becomes one task check that fails and names the line.
 
     Blank lines and other lines starting with `#` are ignored. Each surviving line,
     stripped, becomes an entry whose `name` and `cmd` are the stripped line
@@ -218,9 +226,15 @@ def repo_checks(text: str) -> list[dict[str, Any]]:
         text = _NEW_MODEL_MARK.sub("", line) if only else line
         touched = bool(_TOUCHED_MARK.search(text))
         text = _TOUCHED_MARK.sub("", text) if touched else text
+        limit = _TIMEOUT_MARK.search(text)
+        text = text[: limit.start()] if limit else text
+        if limit and not (re.fullmatch(r"[0-9]+", limit.group(1)) and int(limit.group(1)) > 0):
+            entries.setdefault(("task", f"#{number}"), _bad_timeout(number, limit.group(1)))
+            continue
         cmd, fix = _split_fix(text)
         tagged = {} if level == "task" else {"level": level}
         entries.setdefault((level, cmd), {"name": text, "cmd": cmd, **({"fix": fix} if fix else {}), **tagged,
+                                          **({"timeout": int(limit.group(1))} if limit else {}),
                                           **({NEW_MODEL_ONLY: True} if only or touched else {}),
                                           **({TOUCHED_ONLY: True} if touched else {})})
     return list(entries.values())
@@ -229,6 +243,12 @@ def repo_checks(text: str) -> list[dict[str, Any]]:
 def _bad_level(number: int, level: str) -> dict[str, Any]:
     """The failing task check an unknown `# level:` marker becomes; its own lines are not run at any level."""
     said = f".agent-checks line {number}: unknown level {level!r}, expected one of {', '.join(LEVELS)}"
+    return {"name": said, "cmd": f"echo {shlex.quote(said)} >&2; exit 2"}
+
+
+def _bad_timeout(number: int, value: str) -> dict[str, Any]:
+    """The failing task check a `# timeout:` mark with a bad value becomes; its own line is not run at any level."""
+    said = f".agent-checks line {number}: bad timeout {value!r}, expected a positive whole number of seconds"
     return {"name": said, "cmd": f"echo {shlex.quote(said)} >&2; exit 2"}
 
 
