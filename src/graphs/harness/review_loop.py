@@ -173,6 +173,13 @@ def revision_id(phase: str, number: int) -> str:
     return f"{phase}-rev-{number}"
 
 
+def revision_of(row: Mapping[str, object]) -> str:
+    """Pure. The revision task a `review_rounds` row asked for (`revision_json`'s id, as `store_phases.review_rounds`
+    gives it), "" when it names none."""
+    revision = row.get("revision_json")
+    return str(revision.get("id") or "") if isinstance(revision, Mapping) else ""
+
+
 def _items(value: object) -> list[Mapping[str, object]]:
     return [cast("Mapping[str, object]", v) for v in cast("list[object]", value) if isinstance(v, Mapping)] \
         if isinstance(value, list) else []

@@ -81,3 +81,37 @@ def test_a_lane_whose_progress_mark_stands_still_is_stalled_and_one_that_moves_i
     assert phase_pick.lane_stalled(seen, "1", 150.0 + phase_pick.LANE_STALL_S - 1)[1] is False
     assert phase_pick.lane_stalled(seen, "1", 150.0 + phase_pick.LANE_STALL_S)[1] is True
     assert phase_pick.lane_stalled(("", 0.0), "", phase_pick.LANE_STALL_S)[1] is True  # a lane that never marked
+
+
+OUTSIDE = "node 'build' patch_outside_scratch: the reported patch is not in the scratch tree and does not apply to it"
+
+
+def test_a_revision_that_did_not_roll_up_is_the_reason_not_the_smoke_before_its_round():
+    # E1, 2026-11-21: the revision's build failed, and the phase finished failed "before the phase smoke ran".
+    why = phase_pick.revision_failure([
+        {"kind": "plan", "ok": True, "verdict": "done", "result_json": {}},
+        {"kind": "build", "ok": False, "verdict": "failed", "result_json": {"error": OUTSIDE}}])
+    assert why == f"its build failed: {OUTSIDE}"
+    retried = phase_pick.lane_verdict(["t1"], ["t1"], (1, "revise"), 1, smoke=None, revision=why)
+    assert (retried.kind, retried.reason) == ("retry", f"review round 1 asked for a revision, which did not roll up: {why}")
+    assert retried.wait_s == phase_pick.backoff_s(1)
+    smoked = phase_pick.lane_verdict(["t1"], ["t1"], (1, "revise"), 1, smoke=PASSED, revision=why)
+    assert smoked.reason == retried.reason  # the passing smoke before round 1 says nothing of why the lane ended
+    spent = phase_pick.lane_verdict(["t1"], ["t1"], (1, "revise"), phase_pick.MAX_ATTEMPTS, smoke=None, revision=why)
+    assert (spent.outcome, spent.reason) == ("failed", f"{phase_pick.MAX_ATTEMPTS} attempt(s), the last: {retried.reason}")
+    # Only a revise round's revision speaks; tasks not rolled up still come first.
+    assert phase_pick.lane_verdict(["t1"], ["t1"], (2, "approve"), 1, smoke=None, revision=why).kind == "ack"
+    assert phase_pick.lane_verdict(["t1", "t2"], ["t1"], (1, "revise"), 1, smoke=None, revision=why).reason == (
+        "tasks not rolled up: t2")
+
+
+def test_a_revision_failure_reads_the_last_failed_step_or_says_where_the_lane_ended():
+    assert phase_pick.revision_failure([]) == "the lane ended before it was built"
+    assert phase_pick.revision_failure([{"kind": "build", "ok": 1, "result_json": {}}]) == (
+        "the lane ended before it rolled up")
+    rows = [{"kind": "build", "ok": 0, "verdict": "failed", "result_json": {"error": "first"}},
+            {"kind": "rollup", "ok": 0, "verdict": "conflict", "result_json": {"reason": "does not apply"}}]
+    assert phase_pick.revision_failure(rows) == "its rollup failed: does not apply"
+    assert phase_pick.revision_failure([{"kind": "checks", "ok": 0, "verdict": "quarantined", "result_json": None}]) == (
+        "its checks failed: it was quarantined")
+    assert phase_pick.revision_failure([*rows, {"kind": "rollup", "ok": 1, "result_json": {}}]) == ""

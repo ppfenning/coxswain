@@ -11,7 +11,8 @@ A worker claims a phase (`store_phases.claim_next`) and starts this lane under t
    to the review loop (7);
 4. starts each task once everything it needs inside the phase has rolled up (`lane_plan.next_tasks`), up to its share
    of the machine's threads (`lane_plan.threads`), each in a worktree of its own cut from the phase tip at that moment;
-5. per task: the lifecycle graph in build-only mode (plan, build, handoff; never a review, which is the phase's), then
+5. per task: the lifecycle graph in build-only mode (plan, build, handoff; never a review, which is the phase's), its
+   builder reading a tree at the task's base, never the shared checkout's own HEAD (`builder_runner`), then
    the cheap checks in the task's worktree (the cartridge's and `.agent-checks`' task checks, narrowed to what the
    change touches: unit tests, lint, the privacy check), with the task's own verification commands. A task an earlier
    attempt of this episode refused (its handoff found evidence missing, or its checks failed) is built with the reasons
@@ -113,7 +114,8 @@ from harness import (
 from harness.artifacts import mark_missing, step_artifacts
 from harness.check_gate import repo_gate_lock, tree_gate_checks
 from harness.checks import run_checks
-from harness.epic_branches import LIFECYCLE, checks_env
+from harness.digest import build_digest
+from harness.epic_branches import LIFECYCLE, PhaseRunner, checks_env
 from harness.epic_build import (
     LANE_BASE_VAR,
     build_task,
@@ -495,13 +497,41 @@ def _rows_of(lane: Lane, result: Mapping[str, object], task: str, started: str, 
 
 def _build(lane: Lane, task: str, base: str, ident: str = "") -> tuple[Mapping[str, object] | None, str, str, TaskCtx]:
     """Edge. The task's build-only lifecycle run, with its plan and build rows written: (result, why not, start). A
-    rebuild after a collision passes `ident` (`<task>-rebuild`), which keys its graph run and its rows."""
+    rebuild after a collision passes `ident` (`<task>-rebuild`), which keys its graph run and its rows. The builder
+    reads a worktree of the checkout the task builds in, detached at `base` (`builder_runner`), for the run only."""
     started = lane.now()
-    tctx = TaskCtx.of(lane.shared or lane.ctx, base)
+    home = lane.shared or lane.ctx
+    tctx = TaskCtx.of(home, base)
     shared, why = _share_base(lane, task, base)
-    if not shared:
+    tree = lane.ctx.worktree_root / lane.ctx.run_id / lane.claim.phase / f"{BUILDER_TREE}{ident or task}"
+    opened, said = lane_rollup.open_phase_worktree(home.repo, tree, base) if shared else (False, "")
+    if not opened:
+        why = why or f"no tree at the task's base {base[:12]} for its builder to read: {' '.join(said.split())[:300]}"
         lane.put([lane.row(task, "build", False, "failed", {"error": why[:500]}, started, ident=ident)])
         return None, why, started, tctx
+    try:
+        link_venv(home.repo, tree)
+        return _run_build(lane, task, ident, started, tctx, builder_runner(lane.ctx.runner, tree))
+    finally:
+        remove_worktree(home.repo, tree)
+
+
+BUILDER_TREE = "@tree-"  # the builder's tree's prefix: `@` keeps it apart from every task id (`epic_branches.scratch_dir`)
+
+
+def builder_runner(runner: object, tree: Path) -> PhaseRunner:
+    """Edge. The run's runner as one task's builder sees it: reading `tree`, a worktree at the task's base, the tip its
+    change is applied to. A patch-returning node cuts its scratch at its runner's `repo_dir` HEAD, so a runner left at
+    the shared checkout builds on whatever that checkout has checked out, not on the phase tip, and a revision cannot
+    see the phase's own files (E1, 2026-11-21: `patch_outside_scratch`, then `patch_empty`). A view, never an
+    assignment, since the lane's tasks build in parallel on one runner; its check commands are the runner's own."""
+    return PhaseRunner(runner, tree, build_digest(tree) or None, list(getattr(runner, "check_commands", None) or []),
+                       dict(getattr(runner, "gate_check_commands", None) or {}))
+
+
+def _run_build(lane: Lane, task: str, ident: str, started: str, tctx: TaskCtx,
+               runner: object) -> tuple[Mapping[str, object] | None, str, str, TaskCtx]:
+    """Edge. The task's build-only lifecycle run on `runner`, with its plan and build rows written (`_build`)."""
     item = lane.items[task]
     with lane.store_lock:  # the task's refused attempts of this episode, whichever run made them
         refused = store_phases.task_attempt_rows(lane.conn, lane.claim.initiative, lane.claim.phase, task)
@@ -512,7 +542,7 @@ def _build(lane: Lane, task: str, base: str, ident: str = "") -> tuple[Mapping[s
                                                                                    feedback), fix_attempts=0)
     args = {**invocation.args, "run_id": f"{lane.ctx.run_id}:{ident or task}", "build_only": True}
     try:
-        result = json.loads(json.dumps(lane.ctx.specs[LIFECYCLE].run(args, lane.ctx.runner), default=str))
+        result = json.loads(json.dumps(lane.ctx.specs[LIFECYCLE].run(args, runner), default=str))
     except LimitStop as exc:
         lane.halted.set()
         lane.put([lane.row(task, "build", False, "stopped", {"error": str(exc)[:500]}, started, ident=ident)])

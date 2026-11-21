@@ -13,6 +13,7 @@ adding `notes/<task>.txt`. The cases share it two to a test, since each run of t
 
 from __future__ import annotations
 
+from runner.scripted import TREE
 from smoke import plan
 from smoke import test_phase_lane as lanes
 from smoke.test_phase_lane import (
@@ -159,6 +160,41 @@ def test_a_duplicated_helper_is_revised_away_and_a_reopened_phase_is_reviewed_af
     assert tasks["t4"][2] == {"cause": "review", "reason": reason, "run": row["run_id"]}, tasks
     assert _row(sandbox)["state"] == "finished"  # not reopened while its task waited for the quarantine
     assert sandbox.git(repo.origin, "rev-parse", INIT) == init_sha
+
+
+def test_a_revision_of_a_file_only_the_phase_holds_is_built_on_the_phase_tip_with_the_lanes_own_clone(lane_machine):
+    """E1, 2026-11-21: the lane rolls up in its own clone (E2) while its tasks build in the shared checkout, whose HEAD
+    is main; a builder's scratch is cut at its runner's tree, which the lane left at that checkout, so the revision of
+    a file the phase itself added did not apply there (`patch_outside_scratch`, three attempts). The scripted runner
+    here builds in its tree (`runner.scripted.TREE`), as the Claude Code runner does: the revision deletes
+    `lib/copy.py`, which only the phase tip holds, so it builds only on a tree at that tip."""
+    sandbox, repo, name, env, _, launchable = lane_machine
+    answers = _answers({"t1": 1, "t2": 1, "t3": 1}, review=None)
+    _with_file(answers, "t1", "lib/helper.py", HELPER)
+    _with_file(answers, "t2", "lib/copy.py", HELPER)
+    answers[f"build@{PHASE}-rev-1"] = _build(DELETE_COPY, ["lib/copy.py"])
+    answers[f"review_phase@{PHASE}-review-1"] = REVISE
+    answers[f"review_phase@{PHASE}-review-2"] = APPROVE
+    launchable.scripted({**answers, TREE: True})
+    out = Worker(sandbox, env, "once", "--name", name).finished(timeout=420)
+
+    row = _row(sandbox)
+    run_id = row["run_id"]
+    assert "finished approved: the phase review approved it in round 2" in out, (out, _run_log(sandbox, run_id))
+    assert (row["state"], row["outcome"], row["attempts"]) == ("finished", "approved", 1), row
+    assert _clone_trace(sandbox, run_id)["how"] == "borrowed from the mirror"  # the lane rolled up in its own clone
+    assert "lib/copy.py" not in sandbox.git(repo.path, "ls-tree", "-r", "--name-only", "HEAD").split()  # main has none
+    commits = _commits(sandbox, repo.origin)
+    assert [(c["task"], c["kind"], c["run"]) for c in commits[3:]] == [(f"{PHASE}-rev-1", "revision", run_id)], commits
+    assert sandbox.git(repo.origin, "log", "-1", "--format=%(trailers:key=Cox-Round,valueonly)", BRANCH).strip() == "1"
+    files = sandbox.git(repo.origin, "ls-tree", "-r", "--name-only", BRANCH).split()
+    assert "lib/helper.py" in files and "lib/copy.py" not in files, files
+    assert [r[:2] + (r[3],) for r in _rounds(sandbox)] == [(1, "revise", f"{PHASE}-rev-1"), (2, "approve", "")]
+    steps = {(s["task_id"], s["kind"]): s for s in _steps(sandbox, run_id)}
+    assert steps[(f"{PHASE}-rev-1", "build")]["ok"] == 1 and steps[(f"{PHASE}-rev-1", "rollup")]["subject_sha"] == (
+        commits[3]["sha"])
+    # Every builder's tree is gone with the run: the shared checkout lists only itself.
+    assert sandbox.git(repo.path, "worktree", "list", "--porcelain").count("worktree ") == 1
 
 
 def test_reviewers_that_always_revise_stop_after_round_three_with_the_revision_budget_spent(lane_machine):

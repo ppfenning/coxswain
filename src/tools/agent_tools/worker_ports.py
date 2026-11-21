@@ -25,7 +25,7 @@ from pathlib import Path
 
 from agent_tools import bounded_run, chair, epic, lane_prereqs, repo_path, route, run_store, unit_children, worker
 from agent_tools.chair_read_run_id import next_run_id, taken_names
-from harness import initiative_review, phase_pick, store_phases, worker_identity
+from harness import initiative_review, phase_pick, review_loop, store_phases, worker_identity
 from harness.store_dialect import Connection, Json
 from harness.store_phases import Claim
 
@@ -265,8 +265,11 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
         rounds = store.call(lambda c: store_phases.review_rounds(c, claim.initiative, claim.phase))
         last = (int(str(rounds[-1]["round"])), str(rounds[-1]["verdict"])) if rounds else None
         smokes = store.call(lambda c: store_phases.smoke_rows(c, claim.initiative, claim.phase))
+        revision = review_loop.revision_of(rounds[-1]) if last is not None and last[1] == "revise" else ""
+        tried = store.call(lambda c: store_phases.task_run_rows(c, claim.initiative, claim.phase, revision, run_id)) \
+            if revision else []
         return worker.lane_facts(rows, rollups, claim.phase, last, smokes, run_id,
-                                 str(rounds[-1]["reason"] or "") if rounds else "")
+                                 str(rounds[-1]["reason"] or "") if rounds else "", revision, tried)
 
     def launch(claim: Claim, record: Callable[[str], bool]) -> worker.Started | str:
         names = [p.name for p in runs_dir.iterdir()] if runs_dir.is_dir() else []

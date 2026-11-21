@@ -146,6 +146,7 @@ class LaneFacts:
     suite: initiative_review.SuiteSeen | None = None  # an initiative review's: the suite at the tip its round reviewed
     lost: str = ""  # why the lane gave its claim up (its lost mark, `phase_lane.lost_path`), "" when it did not
     checked: bool = False  # whether a check of that lane read its lease before the loss (the lost mark says)
+    revision: str = ""  # why a last `revise` round's revision task did not roll up (`phase_pick.revision_failure`)
 
 
 def lane_verdict(claim: Claim, facts: LaneFacts) -> phase_pick.Verdict:
@@ -166,7 +167,7 @@ def lane_verdict(claim: Claim, facts: LaneFacts) -> phase_pick.Verdict:
         found = initiative_review.lane_verdict(facts.last_round, facts.suite, attempts, reason=facts.reason)
     else:
         found = phase_pick.lane_verdict(facts.tasks, facts.rolled_up, facts.last_round, attempts,
-                                        smoke=facts.smoke, reason=facts.reason)
+                                        smoke=facts.smoke, reason=facts.reason, revision=facts.revision)
     if not facts.lost or found.kind != "retry":
         return found
     if refund:
@@ -180,14 +181,19 @@ def lane_verdict(claim: Claim, facts: LaneFacts) -> phase_pick.Verdict:
 
 def lane_facts(task_rows: Sequence[Mapping[str, object]], rollups: Sequence[Mapping[str, object]], phase: str,
                last_round: tuple[int, str] | None, smokes: Sequence[Mapping[str, object]], run_id: str,
-               reason: str = "") -> LaneFacts:
+               reason: str = "", revision_task: str = "",
+               revision_rows: Sequence[Mapping[str, object]] = ()) -> LaneFacts:
     """The `LaneFacts` of `phase`, from its initiative's work-item rows and roll-up step rows, and the phase's `smoke`
-    step rows of every run, oldest first (`store_phases.smoke_rows`), of which the ended run is `run_id`."""
+    step rows of every run, oldest first (`store_phases.smoke_rows`), of which the ended run is `run_id`. A last round
+    of `revise` names its revision task (`revision_task`), whose step rows of the ended run (`revision_rows`) say why
+    it did not roll up, unless a roll-up of any run holds it."""
     tasks = sorted(str(r["task_id"]) for r in task_rows
                    if r.get("kind") == "task" and r.get("phase") == phase and r.get("state") != "dropped")
     rolled = sorted({str(r["task_id"]) for r in rollups if r.get("phase") == phase})
     own = [r for r in smokes if r.get("run_id") == run_id]
-    return LaneFacts(tuple(tasks), tuple(rolled), last_round, _smoke_of(own[-1], smokes) if own else None, reason)
+    pending = last_round is not None and last_round[1] == "revise" and bool(revision_task) and revision_task not in rolled
+    return LaneFacts(tuple(tasks), tuple(rolled), last_round, _smoke_of(own[-1], smokes) if own else None, reason,
+                     revision=phase_pick.revision_failure(revision_rows) if pending else "")
 
 
 def _fault(row: Mapping[str, object]) -> bool:
