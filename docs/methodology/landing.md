@@ -256,8 +256,17 @@ no `lane_model` is on the old model.
   level gate: the cartridge's `level_checks`, then the `# level: phase` section of the merged tree's `.agent-checks`. A
   conflict goes to the merge agent, in the merge's own scratch worktree. Its answer must leave no conflict marker and
   must pass the same guard and level checks as any merge, and the phase records who resolved it (`resolved_by`). If the
-  merge cannot be made, the initiative is held and the chair is told once; no rectify task is filed. The hold lifts
-  when origin's branch of that phase moves to a new tip (a fix was pushed), and the merge is then tried again.
+  merge cannot be made, the initiative is held and the chair is told; no rectify task is filed, and the lander never
+  writes the phase branch. The hold records its phase, the tip it could not merge, its cause and how many times that
+  merge was tried. It lifts, and the merge is tried again, in three ways. Origin's branch of that phase moves to a new
+  tip (a fix was pushed). An operator releases it with `cox lander release <initiative>`. Or its automatic retry
+  comes due: a resolver that raised, or a harness fault, is retried up to three times, 10, 20 and 40 minutes after
+  each attempt, and "no merge agent yet" is retried hourly without a bound, so the first pass after a merge agent is
+  wired settles it. A clean refusal, a failed level check and a guard refusal are never retried on their own. A retry
+  that fails the same way is not told again; a released one, and the last automatic retry, are. The merge agent
+  answers in the merge's scratch worktree, and nothing but the conflicted paths may change there: an answer that
+  staged or changed anything else, or moved the merge, is refused. Reconciliation never replaces a merge hold: a drift
+  it finds is kept beside it and cleared on its own.
 
 Refreshes are always forward merges of the parent into the child. No branch the record names is rebased, reset or
 force-pushed, and a merge that would drop a recorded commit is refused. After a land, a phase branch is deleted only

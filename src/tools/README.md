@@ -173,6 +173,7 @@ cox lander status [--json] [--profile PROFILE]   every initiative in flight with
 cox lander adopt [INITIATIVE...] [--apply] [--profile PROFILE]   bring initiatives that were in flight before the landing record under it; a dry run unless --apply
 cox lander backlog --manifest MANIFEST --pr PR [--apply] [--profile PROFILE]   mark the tasks a hand-folded pull request carried as done, once it has merged; a dry run unless --apply
 cox lander service [--install] [--status] [--interval INTERVAL] [--environment-file ENVIRONMENT_FILE] [--profile PROFILE]   write or show the systemd user unit; never runs systemctl
+cox lander release INITIATIVE [--profile PROFILE]   lift a new-model merge hold so the next pass tries the merge again
 cox worker run [--name NAME] [--capability TOKEN] [--lanes LANES] [--profile PROFILE]   claim and run phases until interrupted
 cox worker once [--name NAME] [--capability TOKEN] [--lanes LANES] [--profile PROFILE]   one claim pass, then run what it claimed to its end
 cox worker status [--json] [--profile PROFILE]   every queued phase with its claim, and every registered worker

@@ -838,9 +838,9 @@ def _hold_phase(ports: Ports, record: lr.LandingRecord, phase: str, done: ops.Ph
     cause = lander_hold.merge_cause(done.cause, done.unsettled, done.detail)
     hold = lander_hold.next_hold(prior, phase, tip, done.detail, ports.now(), cause)
     if held and not lander_hold.is_merge_hold(held):
-        hold = {**hold, "drift": str(held.get("reason") or "")}  # a drift hold set meanwhile is kept beside it
+        hold["drift"] = str(held.get("reason") or "")  # a drift hold set meanwhile is kept beside it
     elif held and held.get("drift"):
-        hold = {**hold, "drift": str(held.get("drift"))}
+        hold["drift"] = str(held.get("drift"))
     reason = str(hold.get("reason") or "")
     same = prior is not None and reason_key(reason) == reason_key(str(prior.get("reason") or ""))
     news = lander_hold.told_now(prior, hold, same)

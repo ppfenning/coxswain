@@ -26,7 +26,7 @@
 "smoke/test_lake.py": 11.4,
 "smoke/test_lander_empty.py": 5.4,
 "smoke/test_lander_lanes.py": 32.2,
-"smoke/test_lander_models.py": 6.4,
+"smoke/test_lander_models.py": 7.8,
 "smoke/test_lander_push.py": 10.2,
 "smoke/test_lander_unreadable_record.py": 8.5,
 "smoke/test_lane_env_check.py": 0.0,
