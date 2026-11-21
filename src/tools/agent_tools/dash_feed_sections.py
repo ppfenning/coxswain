@@ -240,17 +240,30 @@ def _budget_v1(month: budget.MonthBudget, avg_7d: float, avg_14d: float) -> dict
     }
 
 
+# The earliest call the budget block can ask about: the month's first day (at most 31 days back, in any zone) and the
+# first of the fourteen daily averages both fall after it.
+_BUDGET_LOOKBACK = timedelta(days=32)
+
+
+def _window_costs(runs_dir: Path, at: datetime) -> Callable[[str, str], float | None]:
+    """Edge. The budget block's `cost_between`: one read of the calls since `_BUDGET_LOOKBACK` before `at`, from the
+    lake and the store's unsynced tail (`analytics_costs`), not one store scan per window."""
+    # Imported here, not at the top: the chair imports this module (cli_chair -> chair_read_idle_open -> dash_feed),
+    # and its path must not load the lake reader.
+    from agent_tools import analytics_costs
+
+    return analytics_costs.cost_reader(Path(runs_dir), at - _BUDGET_LOOKBACK)
+
+
 def _budget_edge(runs_dir: Path, at: datetime) -> dict:
-    """Edge. The budget block for `at`'s month, spend read from the store with the usage files as fallback.
-    Reads the profile file as `_spend` does, not `gather_feed`'s `profile` argument. A read failure yields the
-    none block: a secondary block must not take the whole feed down."""
+    """Edge. The budget block for `at`'s month, spend read from the lake and the store's tail, with the usage files
+    as fallback. Reads the profile file as `_spend` does, not `gather_feed`'s `profile` argument. A read failure
+    yields the none block: a secondary block must not take the whole feed down."""
     limit, zone = _profile_budget()
     runs_dir = Path(runs_dir)
 
-    def cost_between(since: str, until: str) -> float | None:
-        return run_store.cost_since(runs_dir, since, until)
-
     try:
+        cost_between = _window_costs(runs_dir, at)
         month = usage_window.gather_month(
             runs_dir, at, zone, limit, cost_between,
             min_elapsed_fraction=_pacing_policy(runs_dir).min_elapsed_fraction,

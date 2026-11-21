@@ -1,3 +1,4 @@
+import functools
 import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -31,7 +32,7 @@ def _store(runs_dir, since: str, until: str | None = None) -> float | None:
 def _wire(monkeypatch, limit: float | None) -> None:
     monkeypatch.setattr(dash_feed, "_profile_budget", lambda: (limit, "UTC"))
     monkeypatch.setattr(dash_feed, "_pacing_policy", lambda runs_dir: SimpleNamespace(min_elapsed_fraction=0.1, weekly_hard_stop_fraction=0.93))
-    monkeypatch.setattr(dash_feed.run_store, "cost_since", _store)
+    monkeypatch.setattr(dash_feed, "_window_costs", lambda runs_dir, at: functools.partial(_store, runs_dir))
 
 
 def _no_nulls(value) -> bool:
@@ -129,7 +130,7 @@ def _bare_feed(monkeypatch):
     monkeypatch.setattr(dash_feed, "_inbox", lambda entries: ([], 0))
     monkeypatch.setattr(dash_feed.run_store, "initiative_short_ids", lambda runs_dir: {})
     monkeypatch.setattr(dash_feed, "_pacing_policy", lambda runs_dir: SimpleNamespace(min_elapsed_fraction=0.1, weekly_hard_stop_fraction=0.93))
-    monkeypatch.setattr(dash_feed.run_store, "cost_since", _store)
+    monkeypatch.setattr(dash_feed, "_window_costs", lambda runs_dir, at: functools.partial(_store, runs_dir))
 
 
 def test_gather_feed_carries_the_budget_block_the_store_and_profile_give(_bare_feed, monkeypatch, tmp_path):
