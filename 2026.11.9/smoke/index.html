@@ -7132,8 +7132,7 @@ forge (<code>test_lander_push.py</code>, <code>test_lander_lanes.py</code>'s <co
 facts:</p>
 <ul>
 <li>each behaviour in <code>plan.GIT_ONLY_BEHAVIOURS</code> (push after merge, re-merge, roll-up, resume from task commits) names
-  smoke tests that exist and carry no <code>forge</code> mark. A behaviour whose test has not landed sits in
-  <code>plan.GIT_ONLY_PENDING</code>, and fails the meta-test once its test exists, so it moves over instead of going stale;</li>
+  smoke tests that exist and carry no <code>forge</code> mark;</li>
 <li>only the <code>forge</code> fixture calls <code>plan.forgejo_run_argv</code>, and no test of the run without the <code>forge</code> mark has <code>forge</code>
   in its fixture closure. A run that deselects the forge tests therefore starts no container of the Forgejo image.
   Under <code>COX_SMOKE_SHARD</code> this covers the files of the shard that holds the meta-test; the unsharded phase command
