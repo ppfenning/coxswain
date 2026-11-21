@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from agent_tools import chair_run
+from agent_tools import chair_run, workspace_lock
 from agent_tools.chair_exec import Result
 from agent_tools.chair_queue import Chores, ChoreStep
 from agent_tools.chair_types import Action, Facts
@@ -45,12 +45,14 @@ class ExportState:
     stamp: object | None = None
     head: str | None = None
     exported: bool = False
+    busy: bool = False  # the last export was skipped on the workspace lock (`workspace_lock`), so the next is due
 
 
 def export_due(state: ExportState, stamp: object | None, head: str | None, changed: Sequence[str]) -> bool:
     """Pure. Whether the export runs this pass: the first pass, a row this pass changed, or the store's version or the
-    workspace's HEAD (a pull brought commits) moved since the last export. An unreadable version is a move."""
-    return not state.exported or bool(changed) or stamp is None or stamp != state.stamp or head != state.head
+    workspace's HEAD (a pull brought commits) moved since the last export, or the last was skipped on the workspace
+    lock. An unreadable version is a move."""
+    return not state.exported or state.busy or bool(changed) or stamp is None or stamp != state.stamp or head != state.head
 
 
 def workspace_head(workspace: Path) -> str | None:
@@ -109,6 +111,9 @@ def housekeeping_chores(
         if not export_due(state, now_stamp, now_head, ids):
             return ""
         note = chair_run.export_note(deps.export_rows, ids)
+        state.busy = workspace_lock.skipped(note)  # another writer held the workspace past the bound
+        if state.busy:  # retried on the next pass, not on the next move
+            return note
         # The export's own fill and commit move both, so read them again: the next quiet pass must find no change. A
         # failed export is retried on the next move, as the tick retried it on its next changed row, not every pass.
         state.stamp, state.head, state.exported = stamp(), head(), True

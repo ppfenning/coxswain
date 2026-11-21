@@ -33,11 +33,17 @@ def _launch_rows_then_export(
     `land_at` reaches `route.launch_from_rows`; an injected `read_rows` takes three arguments and ignores it.
 
     The fill runs first for every host, since a decompose writes files and the rows read sees only the store. A fill that
-    cannot read the store refuses with code 2 before any rows read or export. A rows error returns before any export."""
-    from agent_tools import store_fill  # imported here: cli loads a command module only when it runs
+    cannot read the store refuses with code 2 before any rows read or export. A rows error returns before any export.
+
+    The fill and the export each hold the workspace lock (`workspace_lock`), since housekeeping pulls, fills, exports
+    and commits the same checkout at the same time. A fill that waited past the lock's bound refuses with code 2, so
+    the launch is retried on a later pass; an export that did is a note, since housekeeping's own export follows."""
+    from agent_tools import store_fill, workspace_lock  # imported here: cli loads a command module only when it runs
 
     try:
         (fill or store_fill.fill_workspace)(runs_dir.parent)
+    except workspace_lock.WorkspaceBusy as busy:
+        return 2, [f"routing: {busy}; launch {initiative_id} on a later pass"]
     except RuntimeError:
         return 2, [f"routing: no initiative row {initiative_id} in the store, or the store is unavailable"]
     code, lines, _ = (read_rows or (lambda *args: route.launch_from_rows(*args, land_at=land_at)))(runs_dir, initiative_id, repo)
@@ -45,7 +51,10 @@ def _launch_rows_then_export(
         return code, lines
     if not route.should_export_board(is_chair):
         return 0, []
-    skipped = (export or _export_board)(runs_dir, runs_dir.parent)
+    try:
+        skipped = (export or _export_board)(runs_dir, runs_dir.parent)
+    except workspace_lock.WorkspaceBusy as busy:
+        return 0, [f"export: {busy}"]
     return 0, [f"export: skipped {len(skipped)} contentless row(s): {', '.join(skipped)}"] if skipped else []
 
 
@@ -61,17 +70,33 @@ def _chair_export_hook(runs_dir: Path, ids: tuple[str, ...], commit: bool = True
 
     The files the export held are left out of the commit: committing one would make the hand edit this workspace's HEAD
     baseline, and the next export would overwrite it. A git failure raises, so the tick reports it as an export failure.
-    A failed push is a note, never a raise."""
+    A failed push is a note, never a raise.
+
+    The export and the commit are one hold of the workspace lock (`workspace_lock`), so no other writer's pull, fill
+    or export lands between them and no two `git` calls race for the index; the push runs after it is released. A lock
+    held past its bound raises `WorkspaceBusy`, which the caller reports as a skipped export."""
+    from agent_tools import workspace_lock
+
+    workspace = runs_dir.parent
+    with workspace_lock.held(workspace, "commit"):
+        committed, made, skipped = _export_and_commit(runs_dir, ids, commit)
+    if made:
+        pushed = workspace_sync.push_workspace(workspace)
+        committed += f"; {pushed}" if pushed else ""
+    return f"{committed}; skipped {len(skipped)} contentless row(s): {', '.join(skipped)}" if skipped else committed
+
+
+def _export_and_commit(runs_dir: Path, ids: tuple[str, ...], commit: bool) -> tuple[str, bool, list[str]]:
+    """Edge. `_chair_export_hook` up to the push: its note, whether a commit was made to push, and the skipped ids."""
     workspace = runs_dir.parent
     # Fills the store from the files first; see _export_board. Out of git, a stale copy of a dropped row goes first.
     skipped = _export_board(runs_dir, workspace) if commit else _export_board(runs_dir, workspace, prune_stale=True)
     if not commit:
-        wrote = f"export: wrote the files for {len(ids)} changed row(s); the workspace is not in git"
-        return f"{wrote}; skipped {len(skipped)} contentless row(s): {', '.join(skipped)}" if skipped else wrote
+        return f"export: wrote the files for {len(ids)} changed row(s); the workspace is not in git", False, skipped
     git = ["git", "-C", str(workspace)]
     names = [name for name in ("work", "intake") if (workspace / name).exists()]  # git add refuses a path that matches nothing
     if not names:  # `git add -A --` with no path stages the whole tree
-        return "export: no work/ or intake/ directory to commit"
+        return "export: no work/ or intake/ directory to commit", False, []
     paths = [*names, *export_commit_excludes(queue_export.read_held_record(workspace))]
     add = bounded_run.completed([*git, "add", "-A", "--", *paths], capture_output=True, text=True)
     if add.returncode != 0:
@@ -82,15 +107,12 @@ def _chair_export_hook(runs_dir: Path, ids: tuple[str, ...], commit: bool = True
         raise RuntimeError(f"git diff: {staged.stderr.strip()}")
     files = [name for name in staged.stdout.split("\0") if name]
     if not files:
-        committed = "export: no file changes"
-    else:
-        message = f"chair: export {len(ids)} changed row(s)"
-        commit = bounded_run.completed([*git, "commit", "-m", message, "--", *files], capture_output=True, text=True)
-        if commit.returncode != 0:
-            raise RuntimeError(f"git commit: {(commit.stderr or commit.stdout).strip()}")
-        pushed = workspace_sync.push_workspace(workspace)
-        committed = f"export: committed {len(ids)} row(s)" + (f"; {pushed}" if pushed else "")
-    return f"{committed}; skipped {len(skipped)} contentless row(s): {', '.join(skipped)}" if skipped else committed
+        return "export: no file changes", False, skipped
+    message = f"chair: export {len(ids)} changed row(s)"
+    made = bounded_run.completed([*git, "commit", "-m", message, "--", *files], capture_output=True, text=True)
+    if made.returncode != 0:
+        raise RuntimeError(f"git commit: {(made.stderr or made.stdout).strip()}")
+    return f"export: committed {len(ids)} row(s)", True, skipped
 
 
 def _initiative_head(runs_dir: Path, initiative_id: str) -> dict | None:

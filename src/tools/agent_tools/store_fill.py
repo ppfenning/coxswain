@@ -232,7 +232,16 @@ def fill_workspace(ws: Path, prune_stale: bool = False) -> str:
     store cannot be read or refuses a row, so a caller about to export (and delete files with no row) stops instead.
 
     With `prune_stale` (a workspace that is only this machine's copy of the store), a file that is an unchanged
-    exported copy of a row the store has since dropped is deleted first, so a stale machine never puts the row back."""
+    exported copy of a row the store has since dropped is deleted first, so a stale machine never puts the row back.
+
+    Under the workspace lock (`workspace_lock`); a lock held past its bound raises `WorkspaceBusy`, a RuntimeError."""
+    from agent_tools import workspace_lock
+
+    with workspace_lock.held(ws, "fill"):
+        return _fill(ws, prune_stale)
+
+
+def _fill(ws: Path, prune_stale: bool) -> str:
     runs_dir = ws / "runs"
     existing = _read_store(runs_dir)
     if existing is None:
