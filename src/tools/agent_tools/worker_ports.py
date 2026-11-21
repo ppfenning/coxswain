@@ -136,8 +136,11 @@ def _pid_in(pidfile: Path) -> int | None:
 
 
 def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, version: str,
+          lease_s: int = phase_pick.LEASE_S,
           log: Callable[[str], None] = lambda line: print(line, flush=True)) -> tuple[worker.Ports, Store]:
-    """Edge. The ports of a worker named `name` on the workspace `ws`, and the store it holds open."""
+    """Edge. The ports of a worker named `name` on the workspace `ws`, claiming on a `lease_s` lease (a valid one:
+    `phase_pick.lease_problem`), and the store it holds open."""
+    timings = phase_pick.Timings.of(lease_s)
     runs_dir = ws / "runs"
     launches_dir = ws / "worker-launches"  # each launch's own output, beside the workspace's runs, not among them
     store = Store(runs_dir)
@@ -278,7 +281,7 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
         halt = threading.Event()
 
         def renew(claim: Claim) -> bool:
-            return own.call(lambda c: store_phases.heartbeat(c, claim, name)) is not None
+            return own.call(lambda c: store_phases.heartbeat(c, claim, name, timings.lease_s)) is not None
 
         request_stop = worker.stopper(stop, leases, log)
 
@@ -310,7 +313,9 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
         capabilities=caps,
         capacity=capacity,
         old_runs=old_runs,
-        claim=lambda capabilities, free: store.call(lambda c: store_phases.claim_next(c, name, capabilities, free)),
+        claim=lambda capabilities, free: store.call(
+            lambda c: store_phases.claim_next(c, name, capabilities, free, timings.lease_s)
+        ),
         set_run=lambda claim, run_id: store.call(lambda c: store_phases.set_run(c, claim, name, run_id)),
         finish=lambda claim, outcome, reason: store.call(lambda c: store_phases.finish(c, claim, name, outcome, reason)),
         release=lambda claim, reason, wait_s, refund: store.call(
@@ -327,6 +332,7 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
         monotonic=time.monotonic,
         sleep=time.sleep,
         log=log,
+        timings=timings,
     )
     return ports, store
 

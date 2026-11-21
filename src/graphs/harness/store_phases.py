@@ -127,7 +127,10 @@ def _apply(conn: Connection, change: Mapping[str, object], by: str, now: str) ->
     row forever; with it each round costs one and the row runs out (`exhaust`). `withdraw`
     takes a waiting or ready row out of the queue (state `cancelled`: its phase is held, closed or over budget), never
     a claimed one. `exhaust` finishes as failed a row whose claims ran out while nobody holds it
-    (`phase_pick.exhausted`, in SQL). Each is conditional on the state it moves from, so a repeat changes nothing."""
+    (`phase_pick.exhausted`, in SQL). `mark_lost` writes the chair's "run lost" mark (`phase_pick.lost_reason`) as the
+    reason of a claim whose lease lapsed with nobody taking it over: only the reason, only of the epoch the chair saw,
+    only while it is still lapsed, so a worker that claims meanwhile is never touched. Each is conditional on the state
+    it moves from, so a repeat changes nothing."""
     p = conn.dialect.placeholder
     op, initiative, phase = change["op"], change["initiative"], change["phase"]
     requires = json_text(list(cast("Sequence[str]", change.get("requires") or [])))
@@ -168,6 +171,12 @@ def _apply(conn: Connection, change: Mapping[str, object], by: str, now: str) ->
             f"WHERE initiative = {p} AND phase = {p} AND state IN ('waiting', 'ready')",
             (reason, now, by, initiative, phase),
         ) == 1
+    if op == "mark_lost":
+        return conn.execute(
+            f"UPDATE phase_queue SET reason = {p}, updated_at = {p}, updated_by = {p} WHERE initiative = {p} "
+            f"AND phase = {p} AND state = 'claimed' AND claim_epoch = {p} AND lease_until < {p} AND reason <> {p}",
+            (reason, now, by, initiative, phase, change.get("epoch", 0), now, reason),
+        ) == 1
     if op == "exhaust":
         return conn.execute(
             f"UPDATE phase_queue SET state = 'finished', outcome = 'failed', reason = {p}, lease_until = '', "
@@ -197,8 +206,10 @@ def apply_changes(conn: Connection, changes: Sequence[Mapping[str, object]], by:
 
 # -- the worker's side --------------------------------------------------------------------------------------------
 
-def claim_next(conn: Connection, worker: str, capabilities: Sequence[str], free: int) -> Claim | None:
-    """Edge. Claim the next phase `worker` qualifies for, in one transaction; None when it has no free lane or none.
+def claim_next(conn: Connection, worker: str, capabilities: Sequence[str], free: int,
+               lease_s: int = phase_pick.LEASE_S) -> Claim | None:
+    """Edge. Claim the next phase `worker` qualifies for, in one transaction, on a `lease_s` lease; None when it has no
+    free lane or none.
 
     Claimable rows are read a page of `phase_pick.CANDIDATES` at a time in (band, seq) order, without a lock, and
     `phase_pick.choices` keeps those the worker meets; a page with none it meets is paged past, so phases nobody here
@@ -230,7 +241,7 @@ def claim_next(conn: Connection, worker: str, capabilities: Sequence[str], free:
                 )
                 if locked is None:
                     continue
-                until = phase_pick.lease(now)
+                until = phase_pick.lease(now, lease_s)
                 taken = conn.execute(
                     f"UPDATE phase_queue SET state = 'claimed', claimed_by = {p}, claim_epoch = claim_epoch + 1, "
                     f"run_id = '', claimed_at = {p}, heartbeat_at = {p}, lease_until = {p}, attempts = attempts + 1, "
@@ -251,13 +262,13 @@ def _fence(p: str) -> str:
             f"AND state = 'claimed' AND lease_until > {p}")
 
 
-def heartbeat(conn: Connection, claim: Claim, worker: str) -> str | None:
-    """Edge. Renew the claim's lease from the store's clock; the new lease, or None when the claim is gone (another
-    worker holds it, or it lapsed). A lapsed lease is never revived."""
+def heartbeat(conn: Connection, claim: Claim, worker: str, lease_s: int = phase_pick.LEASE_S) -> str | None:
+    """Edge. Renew the claim's lease, `lease_s` from the store's clock; the new lease, or None when the claim is gone
+    (another worker holds it, or it lapsed). A lapsed lease is never revived."""
     p = conn.dialect.placeholder
     with conn.transaction():
         now = store_now(conn)
-        until = phase_pick.lease(now)
+        until = phase_pick.lease(now, lease_s)
         changed = conn.execute(
             f"UPDATE phase_queue SET heartbeat_at = {p}, lease_until = {p} {_fence(p)}",
             (now, until, claim.initiative, claim.phase, worker, claim.epoch, now),
@@ -318,11 +329,14 @@ def live_claims(conn: Connection) -> list[Row]:
 
 # -- the lane's side: every write it makes is fenced on the claim its worker holds --------------------------------
 
-def held(conn: Connection, initiative: str, phase: str, worker: str, epoch: int, margin_s: int = 0) -> bool:
+def held(conn: Connection, initiative: str, phase: str, worker: str, epoch: int, margin_s: int | None = 0) -> bool:
     """Edge. Whether `worker` still holds the claim at `epoch` with at least `margin_s` seconds of its lease left, by
-    the store's clock. A plain read: it never waits on a lock another session holds on the row."""
+    the store's clock; with `margin_s` None, the margin the claim's own lease gives its lane (`phase_pick.margin_of`).
+    A plain read: it never waits on a lock another session holds on the row."""
     now = store_now(conn)
-    return phase_pick.fenced(get_row(conn, initiative, phase), worker, epoch, phase_pick.lease(now, margin_s))
+    row = get_row(conn, initiative, phase)
+    margin = phase_pick.margin_of(row) if margin_s is None else margin_s
+    return phase_pick.fenced(row, worker, epoch, phase_pick.lease(now, margin))
 
 
 def put_steps_fenced(conn: Connection, rows: Sequence[StepRow], worker: str, epoch: int,

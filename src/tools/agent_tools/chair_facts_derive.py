@@ -45,6 +45,7 @@ from agent_tools.chair_idle_stall import IDLE_STALL_MINUTES
 from agent_tools.chair_land_backoff import LandRefusal, aligned
 from agent_tools.chair_launch_budget import DEFAULT_MAX_LAUNCHES_PER_HOUR, WINDOW
 from agent_tools.chair_no_progress import NoProgress, RunOutcome, no_progress_facts, resolve_no_progress_after
+from agent_tools.chair_phase_queue import RUN_LOST_CAUSE, run_lost_keys
 from agent_tools.chair_plan import initiative_homes
 from agent_tools.chair_plan_fill import less_phase_ready
 from agent_tools.chair_plan_land import planned_tasks
@@ -1294,6 +1295,7 @@ def gather_facts(
         "env_stale_reported": stale_checkout_keys(selected(index, ("needs_chair", STALE_CHECKOUT_CAUSE))),
         "held_files": [HeldFile(**h) for h in deps.held_files()],
         "held_reported": held_file_keys(selected(index, ("needs_chair", HELD_FILE_CAUSE))),
+        "run_lost_reported": run_lost_keys([action_doc(r) for r in selected(index, ("needs_chair", RUN_LOST_CAUSE))]),
         "stale_drafts_reported": stale_draft_keys(selected(index, "stale_to_draft")),
         "held_initiatives": sorted(held_initiatives(rows)) if rows else [],
         "deferred_initiatives": deferred_initiatives(rows, current) if rows and current is not None else {},

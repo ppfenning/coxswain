@@ -282,3 +282,43 @@ def test_the_tick_quarantines_a_quarantined_phase_s_tasks_and_does_not_reopen_it
     settled = {**queue, "tasks": _tasks(("t1", "p1", "quarantined", ""))}
     again = plan_tick({**_tick_facts(initiatives=[]), "phase_queue": settled}, NOW)
     assert not [a for a in again if a["kind"] == "queue_phases"]
+
+
+def _lost(phase="p1", *, epoch=1, lease_until="2026-11-20T09:59:00Z", reason="", attempts=1):
+    return {**_stored(phase, state="claimed", epoch=epoch, attempts=attempts, lease_until=lease_until),
+            "claimed_by": "a", "run_id": f"ship.{phase}-{epoch}", "reason": reason}
+
+
+def test_a_lapsed_claim_is_marked_lost_and_told_once_and_a_live_or_exhausted_one_never():
+    from harness import phase_pick
+
+    lost = _lost()
+    marks, notices = chair_phase_queue.lost_runs([lost], STAMP)
+    why = phase_pick.lost_reason(lost)
+    assert marks == [{"op": "mark_lost", "initiative": "ship", "phase": "p1", "epoch": 1, "reason": why}]
+    assert notices == [{"kind": "needs_chair", "initiative": "ship", "phase": "p1", "cause": chair_phase_queue.RUN_LOST_CAUSE,
+                        "claim_epoch": 1, "worker": "a", "run": "ship.p1-1", "reason": why,
+                        "command": ["cox", "worker", "status"]}]
+    # Marked, and told: nothing more for that claim. A later claim of the phase that is lost too is a new epoch.
+    told = chair_phase_queue.run_lost_keys(notices)
+    assert told == ["ship|p1|1"]
+    assert chair_phase_queue.lost_runs([{**lost, "reason": why}], STAMP, told) == ([], [])
+    assert chair_phase_queue.lost_runs([{**lost, "reason": why}], STAMP, []) == ([], notices)  # marked, not yet told: the notice alone
+    again = _lost(epoch=2)
+    assert [n["claim_epoch"] for n in chair_phase_queue.lost_runs([again], STAMP, told)[1]] == [2]
+    live = _lost(lease_until="2026-11-20T10:00:30Z")
+    exhausted = _lost(attempts=3)
+    assert chair_phase_queue.lost_runs([live, exhausted, _stored("p2")], STAMP) == ([], [])
+    assert chair_phase_queue.run_lost_keys([{"kind": "needs_chair", "cause": "held_file", "initiative": "ship"}]) == []
+
+
+def test_the_tick_marks_a_lost_run_in_its_queue_action_and_tells_it_once():
+    lost = _lost()
+    queued = plan_tick({**_tick_facts(initiatives=[]), "phase_queue": _queue([lost])}, NOW)
+    (action,) = [a for a in queued if a["kind"] == "queue_phases"]
+    assert _ops(action["changes"]) == [("mark_lost", "ship", "p1")]
+    (notice,) = [a for a in queued if a.get("cause") == chair_phase_queue.RUN_LOST_CAUSE]
+    assert notice["kind"] == "needs_chair" and notice["reason"].startswith("run lost: a's claim at epoch 1")
+    marked = {**lost, "reason": action["changes"][0]["reason"]}
+    after = plan_tick({**_tick_facts(initiatives=[]), "phase_queue": _queue([marked]), "run_lost_reported": ["ship|p1|1"]}, NOW)
+    assert not [a for a in after if a["kind"] == "queue_phases" or a.get("cause") == chair_phase_queue.RUN_LOST_CAUSE]

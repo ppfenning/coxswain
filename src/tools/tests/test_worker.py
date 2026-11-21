@@ -62,12 +62,31 @@ def test_status_says_who_holds_a_claim_and_when_one_has_lapsed():
     workers = [{"name": "w1", "state": "up", "lanes": 1, "capabilities_json": ["docker"], "beat_at": NOW}]
     assert worker_cli.status_lines(phases, workers, NOW) == [
         "ship/p1: claimed, epoch 2, 2 attempt(s), needs [docker]; held by w1 until 2026-11-20T10:00:30Z; run ship.p1-2",
-        "ship/p2: claimed, epoch 1, 1 attempt(s), needs []; lapsed (was w2), claimable",
+        "ship/p2: claimed, epoch 1, 1 attempt(s), needs []; lapsed at 2026-11-20T09:59:00Z, 60s ago (was w2's, epoch 1), "
+        "claimable",
         "ship/p3: ready, epoch 0, 1 attempt(s), needs [os:macos]; claimable from 2026-11-20T10:01:00Z",
         "",
         f"worker w1: up, 1 lane(s), [docker], beat {NOW}",
     ]
     assert worker_cli.status_lines([], [], NOW) == ["the phase queue is empty", "", "no worker has registered"]
+
+
+def test_status_shows_a_lapsed_claim_s_lost_run_and_whether_the_chair_marked_it():
+    row = {"initiative": "ship", "phase": "p1", "state": "claimed", "claim_epoch": 1, "attempts": 1, "claimed_by": "a",
+           "lease_until": "2026-11-20T09:59:28Z", "heartbeat_at": "2026-11-20T09:58:56Z", "requires_json": [],
+           "run_id": "ship.p1-1", "reason": ""}
+    assert worker_cli.claim_of(row, NOW) == {"holder": "a", "epoch": 1, "lease_until": "2026-11-20T09:59:28Z",
+                                             "run_id": "ship.p1-1", "lapsed": True, "lapsed_s": 32, "marked_lost": False}
+    (line, *_) = worker_cli.status_lines([row], [], NOW)
+    assert line == ("ship/p1: claimed, epoch 1, 1 attempt(s), needs []; lapsed at 2026-11-20T09:59:28Z, 32s ago "
+                    "(was a's, epoch 1); run ship.p1-1 lost, claimable")
+    marked = {**row, "reason": phase_pick.lost_reason(row)}
+    assert worker_cli.claim_of(marked, NOW)["marked_lost"] is True
+    assert worker_cli.status_lines([marked], [], NOW)[0].endswith("; run ship.p1-1 lost (the chair marked it), claimable")
+    held = {**row, "lease_until": "2026-11-20T10:00:20Z"}
+    assert worker_cli.claim_of(held, NOW) == {**worker_cli.claim_of(row, NOW), "lease_until": "2026-11-20T10:00:20Z",
+                                              "lapsed": False, "lapsed_s": None}
+    assert worker_cli.claim_of({**row, "state": "ready"}, NOW) is None
 
 
 def test_a_worker_s_store_url_bounds_every_call_inside_the_heartbeat_window():
@@ -139,6 +158,24 @@ def test_a_heartbeat_that_runs_long_and_fails_is_stopped_on_its_return():
         raise TimeoutError("statement timeout")
 
     assert _pass(leases, clock, slow) == [run]
+
+
+def test_a_worker_on_a_short_lease_beats_and_stops_on_its_own_timings():
+    short = phase_pick.Timings.of(32)  # a heartbeat every 5 s, a stop 24 s after the last good one
+    clock, leases = _Clock(), worker.Leases(timings=short)
+    run = worker.Running("ship.p1-1", 4242)
+    leases.add(_claim(), clock(), run)
+    assert leases.snapshot()[0].beat_due == 105.0
+    beats: list[float] = []
+    for t in (104.0, 105.0, 110.0):
+        clock.t = t
+        assert _pass(leases, clock, lambda claim: beats.append(clock.t) or True) == []
+    assert beats == [105.0, 110.0] and leases.snapshot()[0].last_ok == 110.0
+    clock.t = 115.0  # due, and 115 + 10 still ends before the stop at 110 + 16: sent, and it times out
+    assert _pass(leases, clock, _timed_out) == []
+    clock.t = 120.0
+    assert _pass(leases, clock, _timed_out) == [run]  # 120 + 10 > 126: stop, 16 s after the last good heartbeat
+    assert leases.snapshot()[0].state == "expired"
 
 
 def test_a_good_heartbeat_moves_the_clock_and_a_refused_one_stops_the_run_at_once():

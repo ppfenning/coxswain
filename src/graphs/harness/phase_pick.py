@@ -12,6 +12,11 @@ TERM grace and the KILL wait end by then, and it never starts a heartbeat that c
 lapse: no phase is run by two workers at once. A lapsed claim is simply
 claimable again; there is no sweeper. A phase that has had `MAX_ATTEMPTS` claims is never claimed again: the chair
 finishes it as failed (`exhausted`).
+
+The operator may give a worker a shorter lease (`cox worker run --lease-s N`, `Timings.of`): the heartbeat, the stop
+time and the lane's margin scale with it, a sixth, three quarters and a quarter of it, as 10, 45 and 15 are of 60. A
+claim carries its own lease's length (`lease_until` less `heartbeat_at`), so the lane reads its margin from the claim
+row (`margin_of`) and nothing has to pass the length to it.
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ from typing import Literal
 __all__ = [
     "BEAT_LOOP_S",
     "CANDIDATES",
+    "DEFAULT_TIMINGS",
     "HEARTBEAT_CALL_S",
     "HEARTBEAT_S",
     "KILL_WAIT_S",
@@ -32,9 +38,13 @@ __all__ = [
     "LANE_STALL_S",
     "LEASE_S",
     "MAX_ATTEMPTS",
+    "MIN_LEASE_S",
+    "PUSH_BOUND_S",
+    "RUN_LOST",
     "STOP_AFTER_S",
     "STOP_GRACE_S",
     "SmokeSeen",
+    "Timings",
     "Verdict",
     "backoff_s",
     "bad_tokens",
@@ -44,10 +54,15 @@ __all__ = [
     "fenced",
     "lane_stalled",
     "lane_verdict",
+    "lapsed",
     "lease",
+    "lease_problem",
+    "lost_reason",
+    "margin_of",
     "meets",
     "next_step",
     "refusal",
+    "seconds",
     "stamp_of",
     "stop_at",
     "verdict",
@@ -68,6 +83,9 @@ LANE_MARGIN_S = LEASE_S - STOP_AFTER_S
 # A lane rewrites its progress mark every 2 s while it holds its claim; one whose mark has not moved for this long,
 # under a worker that is itself alive, is hung (stopped, deadlocked) and is stopped so its phase can be claimed again.
 LANE_STALL_S = 90
+# The lane's margin must hold one bounded push (`lane_rollup.REMOTE_TIMEOUT_S`): a push follows a check that found it.
+PUSH_BOUND_S = 8
+MIN_LEASE_S = 32  # the shortest lease `lease_problem` accepts: a quarter of it is the push bound
 _BACKOFF_BASE_S = 60
 _BACKOFF_CAP_S = 900
 
@@ -87,6 +105,12 @@ def _parse(stamp: str) -> datetime:
     return datetime.strptime(stamp, _STAMP).replace(tzinfo=UTC)
 
 
+def seconds(earlier: str, later: str) -> int:
+    """The whole seconds from stamp `earlier` to stamp `later` (negative when `later` is the earlier); ValueError when
+    either is not a stamp."""
+    return int((_parse(later) - _parse(earlier)).total_seconds())
+
+
 def lease(now: str, ttl_s: int = LEASE_S) -> str:
     """The stamp `ttl_s` seconds after `now`: when a claim taken or renewed at `now` lapses."""
     return (_parse(now) + timedelta(seconds=ttl_s)).strftime(_STAMP)
@@ -97,21 +121,66 @@ def backoff_s(attempts: int) -> int:
     return min(_BACKOFF_BASE_S * 2 ** max(attempts - 1, 0), _BACKOFF_CAP_S)
 
 
-def stop_at(last_ok: float) -> float:
+@dataclass(frozen=True)
+class Timings:
+    """One worker's lease and what follows from it: how often it renews, how long it may go without a good heartbeat
+    before its run is gone, and the margin its lanes stop at. The default is the operator's 60 s."""
+
+    lease_s: int = LEASE_S
+    heartbeat_s: int = HEARTBEAT_S
+    stop_after_s: int = STOP_AFTER_S
+
+    @property
+    def margin_s(self) -> int:
+        """How much of the lease a lane must still have: once less is left, its worker has gone `stop_after_s`."""
+        return self.lease_s - self.stop_after_s
+
+    @classmethod
+    def of(cls, lease_s: int) -> Timings:
+        """The timings of a `lease_s` lease, scaled as 60 s's are: a heartbeat every sixth, a stop at three quarters."""
+        return cls(lease_s, max(lease_s // 6, 1), lease_s - lease_s // 4)
+
+
+DEFAULT_TIMINGS = Timings()
+
+
+def lease_problem(lease_s: int) -> str:
+    """Why a worker may not run on a `lease_s` lease, or "" when it may: its lanes' margin must hold one bounded push,
+    and a heartbeat sent when due must be able to finish before the worker's stop time (`next_step`)."""
+    t = Timings.of(lease_s)
+    if t.margin_s < PUSH_BOUND_S:
+        return f"a {lease_s}s lease leaves its lanes a {t.margin_s}s margin, less than one bounded push ({PUSH_BOUND_S}s)"
+    if t.heartbeat_s + HEARTBEAT_CALL_S > stop_at(0.0, t):
+        return f"a {lease_s}s lease leaves no time for a heartbeat ({HEARTBEAT_CALL_S}s) before the worker must stop"
+    return ""
+
+
+def margin_of(row: Row | None) -> int:
+    """The margin a lane of this claim stops at: a quarter of the claim's own lease (`lease_until` less `heartbeat_at`,
+    both written from one reading of the store's clock), or `LANE_MARGIN_S` when the row does not say one a worker
+    accepts (`lease_problem`)."""
+    try:
+        ttl = seconds(str((row or {}).get("heartbeat_at")), str((row or {}).get("lease_until")))
+    except ValueError:
+        return LANE_MARGIN_S
+    return Timings.of(ttl).margin_s if not lease_problem(ttl) else LANE_MARGIN_S
+
+
+def stop_at(last_ok: float, timings: Timings = DEFAULT_TIMINGS) -> float:
     """When, on the worker's own monotonic clock, it must start stopping a claim whose last good heartbeat (or, before
     the first, the moment it set out to claim) was `last_ok`: early enough that the TERM grace, the KILL wait and one
-    pass of the heartbeat loop all fit before `STOP_AFTER_S`, so the run is gone by then, 15 s inside the lease."""
-    return last_ok + STOP_AFTER_S - STOP_GRACE_S - KILL_WAIT_S - BEAT_LOOP_S
+    pass of the heartbeat loop all fit before `stop_after_s`, so the run is gone by then, `margin_s` inside the lease."""
+    return last_ok + timings.stop_after_s - STOP_GRACE_S - KILL_WAIT_S - BEAT_LOOP_S
 
 
 Step = Literal["wait", "beat", "stop"]
 
 
-def next_step(last_ok: float, now: float, due: float) -> Step:
+def next_step(last_ok: float, now: float, due: float, timings: Timings = DEFAULT_TIMINGS) -> Step:
     """What the heartbeat loop does for one claim at `now`: `stop` once `stop_at` has come, or when the heartbeat that
     is due could not finish before it (one call takes up to `HEARTBEAT_CALL_S`); `beat` when one is due and fits;
     else `wait`. Pure: both clocks are the worker's own monotonic clock."""
-    deadline = stop_at(last_ok)
+    deadline = stop_at(last_ok, timings)
     if now >= deadline:
         return "stop"
     if now < due:
@@ -141,6 +210,22 @@ def _attempts(row: Row) -> int:
 
 def _lapsed(row: Row, now: str) -> bool:
     return row.get("state") == "claimed" and str(row.get("lease_until") or "") < now
+
+
+def lapsed(row: Row, now: str) -> bool:
+    """A claimed row whose lease lapsed before `now`: its worker stopped renewing it, and nobody has claimed it since."""
+    return _lapsed(row, now)
+
+
+RUN_LOST = "run lost"  # how the chair's mark on a lapsed claim opens (`lost_reason`)
+
+
+def lost_reason(row: Row) -> str:
+    """The chair's "run lost" mark for a lapsed claim, as the row's reason: whose claim, its epoch, when it lapsed and
+    the run it started. The same row always gives the same text, so the mark is written once."""
+    run = str(row.get("run_id") or "")
+    return (f"{RUN_LOST}: {row.get('claimed_by')}'s claim at epoch {row.get('claim_epoch')} lapsed at "
+            f"{row.get('lease_until')}" + (f", leaving run {run}" if run else "") + "; claimable again")
 
 
 def claimable(row: Row, now: str, max_attempts: int = MAX_ATTEMPTS) -> bool:

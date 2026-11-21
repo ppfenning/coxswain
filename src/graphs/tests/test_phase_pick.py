@@ -49,6 +49,55 @@ def test_a_heartbeat_is_sent_only_when_it_is_due_and_cannot_run_past_the_stop():
     assert phase_pick.next_step(100.0, 127.1, 120.0) == "stop"  # a 10 s call from here would end past 137
 
 
+def test_a_lease_s_timings_scale_as_the_operator_s_sixty_seconds_do():
+    assert phase_pick.Timings.of(60) == phase_pick.DEFAULT_TIMINGS == phase_pick.Timings(60, 10, 45)
+    assert phase_pick.DEFAULT_TIMINGS.margin_s == phase_pick.LANE_MARGIN_S == 15
+    short = phase_pick.Timings.of(32)
+    assert (short.heartbeat_s, short.stop_after_s, short.margin_s) == (5, 24, 8)
+    assert phase_pick.stop_at(100.0, short) == 100.0 + 24 - 8
+    assert phase_pick.next_step(100.0, 105.0, 105.0, short) == "beat"  # 105 + 10 = 115: ends before its stop at 116
+    assert phase_pick.next_step(100.0, 106.1, 105.0, short) == "stop"
+
+
+def test_the_shortest_lease_leaves_its_lanes_one_bounded_push_and_its_heartbeat_time_to_finish():
+    from harness import lane_rollup
+
+    assert phase_pick.PUSH_BOUND_S == lane_rollup.REMOTE_TIMEOUT_S
+    assert phase_pick.lease_problem(phase_pick.MIN_LEASE_S) == "" and phase_pick.lease_problem(60) == ""
+    assert "bounded push" in phase_pick.lease_problem(phase_pick.MIN_LEASE_S - 1)
+    assert phase_pick.lease_problem(0) and phase_pick.lease_problem(-5)
+    assert all(phase_pick.lease_problem(n) == "" for n in range(phase_pick.MIN_LEASE_S, 600))
+    # Every accepted lease: a heartbeat sent when due ends before the stop, and the run is gone before the margin.
+    for n in range(phase_pick.MIN_LEASE_S, 600):
+        t = phase_pick.Timings.of(n)
+        assert phase_pick.next_step(0.0, t.heartbeat_s, t.heartbeat_s, t) == "beat", n
+        assert t.margin_s >= phase_pick.PUSH_BOUND_S and t.stop_after_s + t.margin_s == n, n
+
+
+def test_a_lane_reads_its_margin_from_its_claim_s_own_lease():
+    def row(heartbeat_at, lease_until):
+        return {"heartbeat_at": heartbeat_at, "lease_until": lease_until}
+
+    assert phase_pick.margin_of(row(NOW, phase_pick.lease(NOW, 60))) == 15
+    assert phase_pick.margin_of(row(NOW, phase_pick.lease(NOW, 32))) == 8
+    assert phase_pick.margin_of(row(NOW, phase_pick.lease(NOW, 120))) == 30
+    # A row that says no lease a worker accepts: the default margin.
+    assert phase_pick.margin_of(row(NOW, phase_pick.lease(NOW, 10))) == 15
+    assert phase_pick.margin_of(row("", "")) == phase_pick.margin_of(None) == phase_pick.margin_of({}) == 15
+    assert phase_pick.seconds(NOW, "2026-11-20T10:00:32Z") == 32 and phase_pick.seconds("2026-11-20T10:00:32Z", NOW) == -32
+
+
+def test_a_lapsed_claim_s_lost_mark_names_its_holder_epoch_and_run_and_is_the_same_each_time():
+    held = {**_row("p1", state="claimed", lease_until="2026-11-20T09:59:00Z"), "claimed_by": "w1", "claim_epoch": 3,
+            "run_id": "i.p1-4"}
+    assert phase_pick.lapsed(held, NOW) and not phase_pick.lapsed(held, "2026-11-20T09:58:00Z")
+    assert not phase_pick.lapsed({**held, "state": "ready"}, NOW)
+    assert phase_pick.lost_reason(held) == phase_pick.lost_reason(dict(held)) == (
+        "run lost: w1's claim at epoch 3 lapsed at 2026-11-20T09:59:00Z, leaving run i.p1-4; claimable again")
+    assert phase_pick.lost_reason({**held, "run_id": ""}).endswith("lapsed at 2026-11-20T09:59:00Z; claimable again")
+    assert phase_pick.lost_reason(held).startswith(phase_pick.RUN_LOST)
+
+
 def test_backoff_doubles_from_a_minute_and_stops_at_fifteen():
     assert [phase_pick.backoff_s(n) for n in (1, 2, 3, 4, 5, 9)] == [60, 120, 240, 480, 900, 900]
 

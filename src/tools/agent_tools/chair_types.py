@@ -718,6 +718,7 @@ class Facts(TypedDict):
     deferred_initiatives: NotRequired[dict[str, str]]  # initiative id to target release, while the umbrella is below it; absent means none
     # `<path>|<blob>` of each held_file needs_chair already in the action log, so each held text is reported once. Absent means [].
     held_reported: NotRequired[list[str]]
+    run_lost_reported: NotRequired[list[str]]  # `chair_phase_queue.lost_key` of each lost run already told; absent means none
     # `<initiative>|<sorted stale task ids>` of each stale_to_draft in the action log that a later tick would only repeat
     # (done, or refused as held or as one the export restores), so one stale set is drafted or refused once. Absent means [].
     stale_drafts_reported: NotRequired[list[str]]
@@ -833,6 +834,8 @@ class Action(TypedDict, total=False):
     initiative and cause, or host and cause when the entry names a lane host rather than an
     initiative; when host is present cause is "login_lapsed" or "stale_checkout" and there is no initiative key.
     A "lane_prereqs" needs_chair carries host and reason: the smoke-gate checks that host failed (`lane_prereqs`).
+    A "run_lost" needs_chair carries initiative, phase, claim_epoch, worker, run, reason and command: a phase claim that
+    lapsed with nobody taking it over (`chair_phase_queue.lost_runs`), told once per epoch.
     A stale_checkout needs_chair also carries repo, the repo directory name keyed in the host's checkout_env record.
     review_landed carries initiative, phase, task_id, repo, url and merged_at. steer_clear carries
     initiative, other and paths: the launch of initiative is deferred because it shares paths with other.
@@ -938,6 +941,8 @@ class Action(TypedDict, total=False):
     head: str  # a land_phase names its phase branch's tip just before the land, when the branch resolves
     changes: list[dict[str, object]]  # a queue_phases carries its phase_queue writes (`chair_phase_queue.changes`)
     approvals: list[dict[str, str]]  # an approve_phase_tasks carries {initiative, phase, task_id, commit} per task
+    claim_epoch: int  # a run_lost needs_chair names the epoch of the phase claim that lapsed (`chair_phase_queue.lost_runs`)
+    worker: str  # and the worker that held it
 
 
 class PlanLands(Protocol):

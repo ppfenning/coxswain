@@ -42,8 +42,8 @@ A worker claims a phase (`store_phases.claim_next`) and starts this lane under t
 **What is fenced, and what is left.** Every step row is written only while the claim is held, by the store's clock
 (`store_phases.put_steps_fenced`: one transaction, under a share lock on the claim row), so a lane that lost its claim
 writes no row, ever. The lane stops itself, its agents and checks with it (their process groups), once its claim is
-lost or its lease is within `phase_pick.LANE_MARGIN_S` (15 s) of lapsing: by then its worker has gone the 45 s it may
-go without a heartbeat. A push follows a claim check that found at least that margin and is bounded to
+lost or its lease is within its margin of lapsing (`phase_pick.margin_of`: a quarter of the claim's own lease, 15 s of
+the default 60 s): by then its worker has gone the 45 s it may go without a heartbeat. A push follows a claim check that found at least that margin and is bounded to
 `lane_rollup.REMOTE_TIMEOUT_S` (8 s), so a lane that keeps running cannot push once its lease has lapsed. What no check
 can close is a lane frozen (stopped, swapped out, its machine suspended) between its last check and the moment git
 sends the refs: it may wake after another lane holds the claim. Then the push is a plain fast-forward: if the new
@@ -85,7 +85,6 @@ from harness import (
     lane_progress,
     lane_rollup,
     lane_smoke,
-    phase_pick,
     repo_cache,
     review_loop,
     store_phases,
@@ -236,14 +235,16 @@ class TaskCtx(Ctx):
 
 class Fence:
     """Edge. The claim as the lane sees it. A thread of its own reads the claim row every `WATCH_S` on a connection
-    of its own; once the claim is gone, or its lease is within `LANE_MARGIN_S` of lapsing, `lost` is set and
+    of its own; once the claim is gone, or its lease is within its margin of lapsing, `lost` is set and
     `on_lost` runs once (it stops the lane's agents and checks). Any part of the lane may also `lose` it, when a
     fenced write was refused or the branch moved under it. A read that fails counts as lost: the lane cannot show it
     still holds the claim, and stopping is the safe side."""
 
     def __init__(self, open_conn: Callable[[], Connection], claim: LaneClaim, log: Callable[[str], None],
-                 on_lost: Callable[[], None], beat: Callable[[int], None] = lambda _n: None) -> None:
+                 on_lost: Callable[[], None], beat: Callable[[int], None] = lambda _n: None,
+                 watch_s: float = WATCH_S) -> None:
         self._open, self._claim, self._log, self._on_lost, self._beat = open_conn, claim, log, on_lost, beat
+        self._watch_s = watch_s
         self._conn: Connection | None = None
         self._lock = threading.Lock()
         self._halt = threading.Event()
@@ -260,7 +261,7 @@ class Fence:
             with self._lock:
                 if self._conn is None:
                     self._conn = self._open()
-                ok = store_phases.held(self._conn, c.initiative, c.phase, c.worker, c.epoch, phase_pick.LANE_MARGIN_S)
+                ok = store_phases.held(self._conn, c.initiative, c.phase, c.worker, c.epoch, None)
         except Exception as exc:
             self.lose(f"the claim could not be read: {type(exc).__name__}: {' '.join(str(exc).split())[:200]}")
             return False
@@ -279,7 +280,9 @@ class Fence:
 
     def start(self) -> None:
         """The watch thread: a claim check every `WATCH_S`, and after each good one the progress mark the worker
-        watches (`beat`), so a lane that stops checking stops marking too."""
+        watches (`beat`), so a lane that stops checking stops marking too. Once the claim is lost it runs `on_lost`
+        again every `WATCH_S` until the lane is done, so a check a task thread started after the loss is stopped too
+        rather than run on with nobody left to stop it."""
 
         def loop() -> None:
             count = 0
@@ -289,8 +292,12 @@ class Fence:
                     self._beat(count)
                 except OSError as exc:  # a mark that cannot be written ages, and the worker stops the lane: say why
                     self._log(f"lane: the progress mark could not be written: {exc}")
-                if self._halt.wait(WATCH_S) or not self.check():
+                if self._halt.wait(self._watch_s):
                     return
+                if not self.check():
+                    break
+            while not self._halt.wait(self._watch_s):
+                self._on_lost()
 
         self._thread = threading.Thread(target=loop, name="lane-fence", daemon=True)
         self._thread.start()

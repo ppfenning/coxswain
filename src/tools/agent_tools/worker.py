@@ -8,7 +8,7 @@ check or a store call can hold up the next claim, never a heartbeat.
 
 A claim's clock starts when the worker sets out to claim it. A claim whose heartbeat is refused (another worker holds
 it, or it lapsed) is `lost`; one with no good heartbeat for 45 s is `expired`, which is before its 60 s lease can
-lapse. Either way the heartbeat thread stops its run at once (the launch and the harness, by process group, until
+lapse. A worker given a shorter lease (`--lease-s`, `phase_pick.Timings`) scales all three. Either way the heartbeat thread stops its run at once (the launch and the harness, by process group, until
 they are gone) and the main loop drops it without a write: it is no longer this worker's to write. So no phase is
 ever run by two workers at once.
 
@@ -204,10 +204,11 @@ class Leases:
 
     entries: dict[str, Held] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
+    timings: phase_pick.Timings = phase_pick.DEFAULT_TIMINGS
 
     def add(self, claim: Claim, started: float, run: Run | None = None) -> None:
         with self.lock:
-            self.entries[key_of(claim)] = Held(claim, started, started + phase_pick.HEARTBEAT_S, run)
+            self.entries[key_of(claim)] = Held(claim, started, started + self.timings.heartbeat_s, run)
 
     def set_run(self, claim: Claim, run: Run) -> None:
         with self.lock:
@@ -249,18 +250,19 @@ def beat(leases: Leases, heartbeat: Callable[[Claim], bool], request_stop: Reque
     mark `lost` one whose heartbeat is refused, and `expired` one whose stop time has come or whose due heartbeat
     could run past it. A marked claim's run is handed to `request_stop`, which returns at once (`stopper`), so a
     slow stop never holds up another claim's heartbeat. A heartbeat that raises (the store did not answer within its
-    bound) leaves the claim held until its stop time."""
+    bound) leaves the claim held until its stop time. Every time here is the leases' own (`Leases.timings`)."""
+    timings = leases.timings
     for held in leases.snapshot():
         if held.state != "held":
             continue
-        step = phase_pick.next_step(held.last_ok, now(), held.beat_due)
+        step = phase_pick.next_step(held.last_ok, now(), held.beat_due, timings)
         if step == "wait":
             continue
         ok_at, due = None, held.beat_due
         state: State = "expired" if step == "stop" else "held"
         if step == "beat":
             at = now()
-            due = at + phase_pick.HEARTBEAT_S
+            due = at + timings.heartbeat_s
             try:
                 renewed = heartbeat(held.claim)
             except Exception as exc:  # the store did not answer within its bound: the stop time decides
@@ -268,7 +270,7 @@ def beat(leases: Leases, heartbeat: Callable[[Claim], bool], request_stop: Reque
                 renewed = None
             ok_at = at if renewed is True else None  # the time it was sent: the lease runs from no later than that
             state = "lost" if renewed is False else "held"
-            if state == "held" and ok_at is None and now() >= phase_pick.stop_at(held.last_ok):
+            if state == "held" and ok_at is None and now() >= phase_pick.stop_at(held.last_ok, timings):
                 state = "expired"
         run = _record_beat(leases, held.claim, ok_at, due, state)
         if state != "held" and run is not False:
@@ -327,6 +329,7 @@ class Ports:
     monotonic: Callable[[], float]
     sleep: Callable[[float], None]
     log: Callable[[str], None]
+    timings: phase_pick.Timings = phase_pick.DEFAULT_TIMINGS  # the lease it claims on and the heartbeat and stop it keeps
 
 
 def settle(ports: Ports, leases: Leases, claim: Claim, verdict: phase_pick.Verdict) -> None:
@@ -407,7 +410,7 @@ def run(ports: Ports, *, once: bool = False) -> int:
     """The loop. With `once`, one claim pass, then until every run it started has ended and been settled.
     An interrupt (SIGINT, or SIGTERM made one by the CLI) stops every run this worker started, confirms each is gone,
     and gives each claim it still holds back without costing an attempt."""
-    leases = Leases()
+    leases = Leases(timings=ports.timings)
     stop_beats = ports.heartbeats(leases)
     claimed = False
     try:

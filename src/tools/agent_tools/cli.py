@@ -1076,6 +1076,8 @@ _WORKER_ARGS = (
     commands.Arg(("--capability",), {"action": "append", "metavar": "TOKEN",
                                      "help": "a capability the operator declares, e.g. os:macos or toolchain:go; repeatable"}),
     commands.Arg(("--lanes",), {"type": int, "help": "phases it runs at once (default: its hosts row's capacity, else 1)"}),
+    commands.Arg(("--lease-s",), {"type": int, "metavar": "SECONDS", "help": (
+        "the lease it claims on, at least 32 (default: 60); its heartbeat, stop time and lanes' margin scale with it")}),
     _PROFILE_ARG,
 )
 WORKER_GROUP = commands.Group(
