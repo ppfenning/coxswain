@@ -274,6 +274,23 @@ no `lane_model` is on the old model.
   answers in the merge's scratch worktree, and nothing but the conflicted paths may change there: an answer that
   staged or changed anything else, or moved the merge, is refused. Reconciliation never replaces a merge hold: a drift
   it finds is kept beside it and cleared on its own.
+- **New model: the initiative review gates the pull request.** Once every phase has merged (the record reads
+  `assembled`), the chair queues one `initiative_review` item in the phase queue, under the reserved phase
+  `initiative`. A worker's lane reviews the whole initiative branch against its parent with the phase review's own
+  loop and rules (`review_loop.next`; its rounds and steps are the initiative's own, phase `''`, and only the current
+  episode counts). A `revise` round asks for one revision phase, `revise-<round>`: the chair writes its task and its
+  build queue row, cut from the merged initiative branch; it is built, reviewed and approved like any phase, and the
+  lander merges it; then the chair queues the same review again for the next round, at most three an episode. On
+  `approve`, the lane runs the full suite at the tip: the `ticket` gate, the cartridge's `ticket_checks` and the
+  `# level: initiative` section of the tip's own `.agent-checks`, recorded as one `suite` step. The lander opens the
+  one pull request only when the episode's last round approved and a passing `suite` step stands at the initiative
+  branch's current tip on origin (`lander_review.pr_gate`); it says so in the pull request's body. Before that the
+  land waits. A quarantine, or a suite that failed at the tip, holds the initiative with a review hold, which follows
+  the merge hold's rules (the chair is told once, `cox lander release` releases it, reconciliation keeps a drift
+  beside it) but holds the pull request alone: phase merges go on, so the work that answers it can land, and the hold
+  lifts once the gate no longer says it (the tip moved, or the review moved on). With `land_checks: ci` CI runs on the
+  pull request as well; it does not stand in for the suite, which has passed at this tip before the pull request
+  exists.
 
 Refreshes are always forward merges of the parent into the child. No branch the record names is rebased, reset or
 force-pushed, and a merge that would drop a recorded commit is refused. After a land, a phase branch is deleted only

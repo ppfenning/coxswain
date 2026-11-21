@@ -210,7 +210,11 @@ def _route_launch(a: argparse.Namespace) -> int:
         with _merging_into(runs_dir):
             merged = _merge_initiative_tickets(launch_dir)
         known_phases = sorted({str(item["phase"]) for item in merged})
-        if phase is not None and phase not in known_phases:
+        # A worker's claim of an initiative review names the reserved phase of the initiative itself (D2).
+        from harness import initiative_review
+
+        reviewing = lane_worker is not None and phase == initiative_review.QUEUE_PHASE
+        if phase is not None and phase not in known_phases and not reviewing:
             print(f"routing: {initiative_id} has no phase {phase}; phases: {', '.join(known_phases) or 'none'}")
             return 2
         # Only --include-blocked lifts this guard; --force never does.

@@ -27,6 +27,10 @@ The phase lane reviews its own phase (L6, `harness.review_loop`), and the chair 
   triage reads (`chair_phase_quarantine.MARK_KEY`), so the work goes to triage rather than straight back to a lane.
 Neither phase is wanted again while its tasks wait for that write.
 
+A new-model initiative assembled on its initiative branch is reviewed as a whole before its pull request
+(`chair_initiative_review`, D2): its one `initiative_review` row, the revision phase a `revise` round asks for, and the
+same review queued again once that phase has merged.
+
 An initiative on the phase model is the worker's for its whole life: `withhold_old_model` drops every action of the
 old model (a launch, a relaunch, a branch clear, a fetch, a land, a signal to a run) that names one, so the two models
 never build, wipe or land the same phase.
@@ -37,11 +41,12 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping, Sequence
 from typing import cast
 
+from agent_tools import chair_initiative_review
 from agent_tools.chair_phase_quarantine import MARK_KEY
 from agent_tools.chair_types import Action, ActionKind, Facts, InitiativeFacts
 from agent_tools.lane_prereqs import DOCKER_CAPABILITY
 from agent_tools.queue_rows import launchable_by_tick
-from harness import phase_pick, review_loop
+from harness import initiative_review, phase_pick, review_loop
 
 BAND = 1  # every phase today; band 0 is kept for hotfixes and bugs
 _SEQ_STRIDE = 1000  # phases per initiative the order leaves room for
@@ -229,7 +234,12 @@ def plan(facts: Facts, now: str, holds: Collection[str] = ()) -> list[Action]:
     pending = {(a["initiative"], a["phase"]) for a in approve} | {_key(q) for q in quarantine}
     wanted = [w for w in rows(facts.get("initiatives") or [], queue["lane_prereqs"], held, held_phases, closed, stopped)
               if _key(w) not in pending]
-    found = [*changes(wanted, queue["rows"], now, held, held_phases, closed, stopped), *quarantine]
+    withheld_ids = {i for i in queue["phase_initiatives"]
+                    if withheld((i, initiative_review.QUEUE_PHASE), held, held_phases, closed, stopped)}
+    reviews = chair_initiative_review.review_changes(
+        queue.get("records") or [], queue.get("tasks") or [], queue["rows"], queue.get("initiative_rounds") or {},
+        lambda repo: requirements([], repo.rstrip("/").rpartition("/")[2], queue["lane_prereqs"]), withheld_ids)
+    found = [*changes(wanted, queue["rows"], now, held, held_phases, closed, stopped), *quarantine, *reviews]
     out: list[Action] = []
     if approve:
         names = ", ".join(f"{a['initiative']}/{a['task_id']}@{a['commit'][:12]}" for a in approve)

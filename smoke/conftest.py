@@ -518,6 +518,12 @@ class Launchable:
 
 @pytest.fixture
 def launchable(sandbox: Sandbox, repo: Repo, tmp_path: Path) -> Launchable:
+    return make_launchable(sandbox, repo.path, tmp_path)
+
+
+def make_launchable(sandbox: Sandbox, repo_path: Path, tmp_path: Path, extra: dict[str, str] | None = None) -> Launchable:
+    """The `launchable` set-up over the clone at `repo_path`, its profile with `extra` keys too (the forge's
+    `forge: auto`, for a sandbox whose repository lives on the sandbox forge)."""
     # The launcher a checkout carries at src/graphs/shell.py; the package does not ship it, so the install has none.
     shutil.copy2(ROOT / "src" / "graphs" / "shell.py", sandbox.install.root / "shell.py")
     cartridges, worktrees = tmp_path / "cartridges", tmp_path / "worktrees"
@@ -525,11 +531,11 @@ def launchable(sandbox: Sandbox, repo: Repo, tmp_path: Path) -> Launchable:
     (cartridges / TEAM).mkdir()
     (cartridges / TEAM / "cartridge.yaml").write_text(plan.team_cartridge_text(TEAM, str(worktrees), plan.smoke_checks(str(sandbox.home / "lane-env.txt"))), encoding="utf-8")
     # The target repository's own venv, holding the probe `lane-probe` looks for; git ignores it, as a real one is.
-    probe = repo.path / ".venv" / "bin" / plan.LANE_PROBE
+    probe = repo_path / ".venv" / "bin" / plan.LANE_PROBE
     probe.parent.mkdir(parents=True)
     probe.write_text(plan.LANE_PROBE_TEXT, encoding="utf-8")
     probe.chmod(0o755)
-    with open(repo.path / ".git" / "info" / "exclude", "a", encoding="utf-8") as exclude:
+    with open(repo_path / ".git" / "info" / "exclude", "a", encoding="utf-8") as exclude:
         exclude.write(".venv/\n")
     skills = tmp_path / "skills"
     for relative, text in plan.skill_plugin_files().items():
@@ -541,7 +547,7 @@ def launchable(sandbox: Sandbox, repo: Repo, tmp_path: Path) -> Launchable:
                         encoding="utf-8")
     (config / "profile.yaml").write_text(
         plan.routing_profile_text(team=TEAM, workspace=str(sandbox.workspace), harness_dir=str(sandbox.install.root),
-                                  provider_profile=str(provider), extra={"cartridges_dir": str(cartridges), "skills_roots": f"[{skills}]", "assume": "a"}),
+                                  provider_profile=str(provider), extra={"cartridges_dir": str(cartridges), "skills_roots": f"[{skills}]", "assume": "a", **(extra or {})}),
         encoding="utf-8",
     )
     return Launchable(sandbox=sandbox, cartridges=cartridges, skills=skills, worktrees=worktrees)

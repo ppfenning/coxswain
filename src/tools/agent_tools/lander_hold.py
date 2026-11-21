@@ -15,6 +15,13 @@ merge was tried. It is lifted in one of three ways, all decided here and acted o
 A hold lifted for a retry leaves its count on the record (`retried`), so the next hold of the same phase at the same
 tip counts on from it (`next_hold`). Reconciliation never replaces a merge hold: a drift it finds is kept beside it
 (`drift`) and cleared on its own (`reconciled_hold`).
+
+D2's pull-request gate (`lander_review.pr_gate`) holds a new-model initiative the same way, with a review hold
+(`review_hold`): the initiative review quarantined it, or the suite failed at the branch's tip. It counts as a merge
+hold for every rule here (reconciliation keeps it, `cox lander release` releases it, the chair is told once, a released
+one is told again), has no phase and is never retried on its own; it holds the pull request only, so phase merges go
+on (`landing_record.holds_merges`) and the work that answers it can land; the gate itself lifts it once it no longer
+says the same hold (the tip moved, or the review moved on).
 """
 
 from __future__ import annotations
@@ -35,6 +42,9 @@ RETRIED: frozenset[str] = frozenset({"resolver_error", "harness_fault"})  # boun
 MERGE_RETRIES = 3  # automatic retries of one phase at one tip after a resolver error or a harness fault
 RETRY_BASE_SECONDS = 600  # the first retry's backoff; each next one doubles (10m, 20m, 40m)
 NO_AGENT_RETRY_SECONDS = 3600  # "no merge agent yet" is tried again hourly, unbounded, until an agent answers
+# The prefix of the hold D2's pull-request gate sets, and why: the review quarantined it, or the suite failed at the tip.
+REVIEW_HOLD = "the initiative review holds the pull request: "
+ReviewCause = Literal["quarantined", "suite_failed"]
 
 _STAMP = "%Y-%m-%dT%H:%M:%SZ"
 
@@ -60,8 +70,24 @@ def merge_cause(cause: str, unsettled: str, detail: str) -> MergeCause:
 
 
 def is_merge_hold(hold: Mapping[str, object] | None) -> bool:
-    """Pure. Whether `hold` is a merge hold (`merge_hold`)."""
-    return str((hold or {}).get("reason") or "").startswith(MERGE_HOLD)
+    """Pure. Whether `hold` is a merge hold (`merge_hold`), or a review hold, which follows its rules (`review_hold`)."""
+    return str((hold or {}).get("reason") or "").startswith((MERGE_HOLD, REVIEW_HOLD))
+
+
+def is_review_hold(hold: Mapping[str, object] | None) -> bool:
+    """Pure. Whether `hold` is the pull-request gate's (`review_hold`)."""
+    return str((hold or {}).get("reason") or "").startswith(REVIEW_HOLD)
+
+
+def review_hold(prior: Mapping[str, object] | None, tip: str, detail: str, now: str, cause: ReviewCause) -> lr.Hold:
+    """Pure. The hold the pull-request gate sets at `tip`, counting on from `prior` (the review hold the record
+    carries, or the one lifted for an operator's release) when it held the same tip for the same cause."""
+    same = is_review_hold(prior) and (prior or {}).get("tip") == tip and (prior or {}).get("cause") == cause
+    counted = (prior or {}).get("attempts")
+    attempts = (counted if isinstance(counted, int) else 1) + 1 if same else 1
+    since = str((prior or {}).get("since") or now) if same else now
+    return {"reason": f"{REVIEW_HOLD}{detail}", "since": since, "phase": "", "tip": tip, "cause": cause,
+            "attempts": attempts, "last_attempt": now, "pull_request_only": True}
 
 
 def merge_held(record: lr.LandingRecord) -> bool:
@@ -151,11 +177,12 @@ def release(record: lr.LandingRecord) -> tuple[lr.LandingRecord | None, str]:
     if not is_merge_hold(hold):
         return None, (f"{initiative} is held, but not by a merge: {hold.get('reason')}; "
                       "only reconciliation lifts that, once the record and origin agree")
+    what = f"phase {hold.get('phase')}" if not is_review_hold(hold) else "its pull-request gate"
     if hold.get("released") is True:
-        return None, f"{initiative}: its merge hold is already released; the next pass tries phase {hold.get('phase')} again"
+        return None, f"{initiative}: its merge hold is already released; the next pass tries {what} again"
     released: lr.Hold = {**hold, "released": True}
     return {**record, "held": released}, (
-        f"{initiative}: the merge hold on phase {hold.get('phase')} is released; the next lander pass tries it again "
+        f"{initiative}: the merge hold on {what} is released; the next lander pass tries it again "
         f"(cause {hold.get('cause') or 'unrecorded'}, {hold.get('attempts') or 1} attempt(s) so far)")
 
 

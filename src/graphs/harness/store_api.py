@@ -19,7 +19,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, cast, get_args
 
-from harness import review_loop, store_lease, store_phases, store_queue
+from harness import initiative_review, review_loop, store_lease, store_phases, store_queue
 from harness.store_dialect import Cell, Connection, Json, JsonObject, StoreDriverMissing, json_load, json_text
 from harness.store_landed import mark_landed
 from harness.store_migrate import MigrationError, open_store
@@ -585,6 +585,27 @@ def phase_review_facts(
     return _read(url, lambda c: (store_phases.rollup_rows(c, initiatives), store_phases.task_commits(c, initiatives)))
 
 
+def initiative_review_facts(
+    url: str, initiatives: Sequence[str],
+) -> tuple[list[Mapping[str, object]], dict[str, list[dict[str, object]]]] | Failed | NotAvailable:
+    """What the chair's initiative review planner reads (D2), in one connection: the landing records of the named
+    initiatives (a row that does not read is left out: the lander tells it), and each one's own review rounds, phase
+    '' (`store_phases.review_rounds`), every episode's, oldest first."""
+    from harness.landing_store import list_records
+
+    named = frozenset(initiatives)
+
+    def read(conn: Connection) -> tuple[list[Mapping[str, object]], dict[str, list[dict[str, object]]]]:
+        if not named:
+            return [], {}
+        records = [r for r in list_records(conn).records if str(r.get("initiative")) in named]
+        rounds = {str(r.get("initiative")): store_phases.review_rounds(conn, str(r.get("initiative")),
+                                                                         initiative_review.ROUNDS_PHASE) for r in records}
+        return [cast("Mapping[str, object]", r) for r in records], rounds
+
+    return _read(url, read)
+
+
 class _Refused(Exception):
     """Raised inside `approve_at` to roll its transaction back."""
 
@@ -624,13 +645,31 @@ def _quarantine_task_on(conn: Connection, change: Mapping[str, object], by: str,
     return 1
 
 
+def _revision_on(conn: Connection, change: Mapping[str, object], by: str, now: str) -> int:
+    """One revision phase an initiative review round asked for (`initiative_review.REVISE_OP`): its task row, written
+    only when the initiative has no task of that id (a repeat, or a person who filed it first, changes nothing), and
+    its build queue row (an insert-ignore), cut from the initiative branch the change names. The rows written."""
+    task = cast("Mapping[str, object]", change.get("task") or {})
+    initiative, task_id = str(change["initiative"]), str(task.get("task_id") or "")
+    if not task_id:
+        return 0
+    known = any(r["task_id"] == task_id for r in queue_rows_on(conn, initiative, "task"))
+    wrote = 0 if known else int(store_queue.upsert(conn, {**task, "initiative": initiative, "updated_at": now,
+                                                           "updated_by": by}))
+    row = cast("Mapping[str, object]", change.get("row") or {})
+    return wrote + store_phases.apply_changes(conn, [{**row, "op": "insert"}], by) if row else wrote
+
+
 def phase_changes_on(conn: Connection, changes: Sequence[Mapping[str, object]], by: str) -> int:
-    """The chair's phase queue writes (`store_phases.apply_changes`) and the task quarantines its reaction to a
-    quarantined phase plans (`review_loop.QUARANTINE_TASK`), in one transaction at the store's time; the rows they changed."""
+    """The chair's phase queue writes (`store_phases.apply_changes`), the task quarantines its reaction to a
+    quarantined phase plans (`review_loop.QUARANTINE_TASK`), and the revision phases initiative reviews asked for
+    (`initiative_review.REVISE_OP`), in one transaction at the store's time; the rows they changed."""
+    special = (review_loop.QUARANTINE_TASK, initiative_review.REVISE_OP)
     with conn.transaction():
-        written = store_phases.apply_changes(conn, [c for c in changes if c.get("op") != review_loop.QUARANTINE_TASK], by)
+        written = store_phases.apply_changes(conn, [c for c in changes if c.get("op") not in special], by)
         now = store_phases.store_now(conn)
-        return written + sum(_quarantine_task_on(conn, c, by, now) for c in changes if c.get("op") == review_loop.QUARANTINE_TASK)
+        return (written + sum(_quarantine_task_on(conn, c, by, now) for c in changes if c.get("op") == special[0])
+                + sum(_revision_on(conn, c, by, now) for c in changes if c.get("op") == special[1]))
 
 
 def apply_phase_changes(url: str, changes: Sequence[Mapping[str, object]], by: str, now: str) -> int | Failed | NotAvailable:

@@ -52,16 +52,16 @@ def skips_only(result: Mapping[str, object]) -> bool:
     return result.get("outcome") == "skipped" or (bool(counted.get("skipped")) and not counted.get("passed"))
 
 
-def outcome(results: Sequence[Mapping[str, object]]) -> Smoke:
+def outcome(results: Sequence[Mapping[str, object]], prefix: str = _PREFIX) -> Smoke:
     """The smoke `run_checks` gave as `results`: `none` with no checks, `passed` when every one passed (reusable
     unless one of them only skipped), else `failed` with the first failing check as its reason
-    (`checks.quarantine_reason`), marked a harness fault when a check could not run."""
+    (`checks.quarantine_reason`) after `prefix`, marked a harness fault when a check could not run."""
     if not results:
         return Smoke(True, "none")
     reason = quarantine_reason(results)
     if reason is None:
         return Smoke(True, "passed", reusable=not any(skips_only(r) for r in results))
-    return Smoke(False, "failed", _PREFIX + reason, harness_fault=is_harness_fault(reason))
+    return Smoke(False, "failed", prefix + reason, harness_fault=is_harness_fault(reason))
 
 
 def result_json(tip: str, cmds: Sequence[str], host: str, smoke: Smoke, results: Sequence[Mapping[str, object]],

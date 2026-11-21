@@ -27,10 +27,14 @@ python .github/check_types.py
 pytest -q -rs smoke -m "not forge"
 
 # level: initiative
-# The full suite: the three component suites whole, and the smoke suite with the forge tests (the umbrella's own
-# tests/ run in CI's `unit (root)` job, as they always have). An old-model run reads this file as one flat list, its
-# task lines and then these (checks.old_model_checks): exactly the seven commands it ran before levels.
+# The full suite, which gates the new model's one pull request (D2: the initiative review's `suite` step, run on the
+# worker at the initiative branch's tip before the pull request opens): the three component suites whole, the smoke
+# suite with the forge tests, and the umbrella's own tests/. An old-model run reads this file as one flat list, its
+# task lines and then these (checks.old_model_checks): exactly the seven commands it ran before levels. The root suite
+# is marked `# new model only`, so that list leaves it out: the old model runs it in CI's `unit (root)` job, as it
+# always has.
 cd src/tools && pytest -q -n auto
 cd src/graphs && pytest -q -n auto
 cd src/cartridges && pytest -q -n auto
 pytest -q -rs smoke
+pytest -q -n auto  # new model only

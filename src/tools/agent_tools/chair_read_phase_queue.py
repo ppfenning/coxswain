@@ -1,5 +1,6 @@
 """The tick's read of the phase queue: the stored `phase_queue` rows, the lane-prerequisite gate, and which
-initiatives are on the phase model or closed, from the work-item rows the tick already read (no second read)."""
+initiatives are on the phase model or closed, from the work-item rows the tick already read (no second read); and,
+for the initiative review (D2), the phase initiatives' landing records and their own review rounds."""
 
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -28,9 +29,12 @@ def read_phase_queue(runs_dir: Path, profile: Mapping[str, object], work_rows: S
     review = store_api.phase_review_facts(url, phase)
     unread = (store_api.Failed, store_api.NotAvailable)
     rollups, tasks = review if not isinstance(review, unread) else ([], [])
+    whole = store_api.initiative_review_facts(url, phase)  # unread: no record is assembled, so no review is planned
+    records, rounds = whole if not isinstance(whole, unread) else ([], {})
     return {
         "rows": rows if not isinstance(rows, unread) else [],
         "readable": not isinstance(rows, unread) and not isinstance(review, unread),
         "lane_prereqs": chair_capacity.chair_lane_prereqs(profile),
         "phase_initiatives": phase, "closed": closed, "tasks": tasks, "rollups": rollups,
+        "records": [dict(r) for r in records], "initiative_rounds": rounds,
     }

@@ -107,6 +107,7 @@ class Hold(TypedDict, total=False):
     last_attempt: str  # a merge hold: when the last of them was held; the automatic retry backs off from it
     released: bool  # a merge hold an operator released (`cox lander release`): the next pass tries the merge again
     drift: str  # a merge hold that reconciliation also found a drift on: the drift's reason, kept beside the hold
+    pull_request_only: bool  # D2's review hold: it holds the pull request, never a phase merge (`holds_merges`)
 
 
 class LandingRecord(TypedDict, total=False):
@@ -218,6 +219,15 @@ def phase_move_allowed(old: str, new: str) -> bool:
 
 def initiative_move_allowed(old: str, new: str) -> bool:
     return old == new or new in INITIATIVE_MOVES.get(old, frozenset())
+
+
+def holds_merges(hold: Mapping[str, object] | None) -> bool:
+    """Pure. Whether a hold stops phase merges into the initiative branch: every hold does, except D2's review hold
+    (`pull_request_only`), which holds only the pull request, so the work that answers it can still merge; unless
+    reconciliation has kept a drift beside it, which holds everything as a drift always has."""
+    if not hold:
+        return False
+    return hold.get("pull_request_only") is not True or bool(hold.get("drift"))
 
 
 LaneModel = Literal["task", "phase"]
