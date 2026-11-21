@@ -6787,8 +6787,8 @@ positional arguments:
   {run,worker,service,ask,attach,answer,decisions,watchdog,freeze-lands}
     run                 beat, gather, plan, perform and report every tick
                         until interrupted
-    worker              run one kind of the chair's work (housekeeping or
-                        watch) as its own process
+    worker              run one kind of the chair's work (housekeeping, watch,
+                        quarantine or decompose) as its own process
     service             write or show the systemd user unit that keeps `cox
                         chair run` alive
     ask                 put a question with its options to the operator on the
@@ -6849,7 +6849,8 @@ table its kind reads, and polls as its fallback. While chair.queues does not lis
 
 options:
   -h, --help         show this help message and exit
-  --kind KIND        the kind of work: housekeeping or watch
+  --kind KIND        the kind of work: housekeeping, watch, quarantine or
+                     decompose
   --once             run one pass and exit; exit 1 if it could not act (not
                      queued, or another worker holds the kind)
   --dry-run          plan and report each pass without taking the kind lease
