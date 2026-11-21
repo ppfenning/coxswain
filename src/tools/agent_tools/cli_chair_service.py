@@ -103,8 +103,13 @@ def _chair_run(a: argparse.Namespace) -> int:
 
 def _chair_worker(a: argparse.Namespace) -> int:
     """`cox chair worker --kind K`: one kind of the chair's work in its own process (`chair_queue`). Refuses, holding no
-    lease, while a fact source or recorder is unwired, as `chair run` does."""
-    from agent_tools import chair_kinds, chair_queue, chair_read_queues, store_cli
+    lease, while a fact source or recorder is unwired, as `chair run` does.
+
+    Every lease call opens its own connection to the store (the beat thread and the fence never share one) and is
+    bounded by `chair_queue.CALL_TIMEOUT_SECONDS`, so a store that hangs reads as a lost lease."""
+    from agent_tools import chair_kinds, chair_queue, chair_read_queues
+    from harness import store_chair_lease
+    from harness.store_dialect import connect
 
     if a.kind not in chair_kinds.QUEUE_KINDS:
         print(f"chair worker: no queue worker for kind {a.kind!r}; one of: {', '.join(chair_kinds.QUEUE_KINDS)}")
@@ -116,52 +121,64 @@ def _chair_worker(a: argparse.Namespace) -> int:
     if problem:
         print(f"chair worker: refusing to start, no lease taken; lake: {problem}")
         return 2
-    held: list[int] = [-1]  # edge state: the kind lease's epoch, which the recorder and the fence read
+    held = chair_queue.Held()  # the kind lease's epoch, read by the recorder, the fence and the pass's beat thread
     pid, host = os.getpid(), socket.gethostname()
     session = _holder_label(a)
+    url = run_store.store_url_for(runs_dir)
+    name, holder = chair_kinds.lease_name(a.kind), f"{a.kind}-{chair.lease_holder(session, pid, host)}"
+    ttl, limit = chair_queue.LEASE_TTL_SECONDS, chair_queue.CALL_TIMEOUT_SECONDS
+
+    def on_store(call, otherwise):
+        def opened():
+            conn = connect(url)
+            try:
+                return call(conn)
+            finally:
+                conn.close()
+
+        return chair_queue.bounded(opened, limit, otherwise)
+
+    def record_store(argv: list[str]) -> tuple[int, str]:
+        epoch = held.epoch
+        action = json.loads(argv[-1])
+        kept = epoch is not None and on_store(
+            lambda c: store_chair_lease.record_fenced(c, name, holder, epoch, argv[2], action), False
+        )
+        return (0, "") if kept else (1, f"the kind lease {name} is no longer held; the row was not written")
+
     deps = _chair_run_deps(
         runs_dir, profile, session, pid, host, a.dry_run, chair_report.echo_line,
-        _profile_path(a), work_state.work_state_mode(provider), worker_epoch=lambda: held[0],
+        _profile_path(a), work_state.work_state_mode(provider),
+        worker_epoch=lambda: held.epoch if held.epoch is not None else -1, record_store=record_store,
     )
     missing = _chair_unwired_sources(deps)
     if missing:
         print(f"chair worker: refusing to start, no lease taken; not wired: {', '.join(missing)}")
         return 2
-    name, holder = chair_kinds.lease_name(a.kind), f"{a.kind}-{chair.lease_holder(session, pid, host)}"
-    ttl = chair_queue.LEASE_TTL_SECONDS
-
-    def acquire() -> int | None:
-        result = store_cli.lease_acquire(runs_dir, name, holder, ttl)
-        held[0] = result.epoch if isinstance(result, store_cli.LeaseGranted) else -1
-        return result.epoch if isinstance(result, store_cli.LeaseGranted) else None
-
-    def renew(epoch: int) -> bool:
-        kept = isinstance(store_cli.lease_renew(runs_dir, name, holder, epoch, ttl), store_cli.LeaseGranted)
-        held[0] = epoch if kept else -1
-        return kept
-
-    def release(epoch: int) -> None:
-        held[0] = -1
-        store_cli.lease_release(runs_dir, name, holder, epoch)
 
     def gather(now: datetime.datetime) -> object:
         deps.beat()  # a worker's beat only clears the read caches of the last pass
         return deps.gather(deps.facts_deps, now)
 
-    def perform(actions: list, current: Callable[[], int], dry_run: bool) -> list:
-        return deps.perform(actions, deps.exec_deps, current, dry_run)
+    def perform_one(action: dict, current: Callable[[], int]) -> list:
+        return deps.perform([action], deps.exec_deps, current, a.dry_run)
 
-    wait, close = chair_queue.store_waiter(run_store.store_url_for(runs_dir), time.sleep)
+    wait, close = chair_queue.store_waiter(url, time.sleep)
     ports = chair_queue.Ports(
         queued=chair_read_queues.queues_keeping_last_good(_profile_path(a)),
-        acquire=acquire, renew=renew, release=release, gather=gather, perform=perform,  # type: ignore[arg-type]
-        wait=wait, clock=time.monotonic, now=lambda: datetime.datetime.now(datetime.UTC), echo=chair_report.echo_line,
+        acquire=lambda: on_store(lambda c: store_chair_lease.acquire(c, name, holder, ttl), None),
+        renew=lambda epoch: on_store(lambda c: store_chair_lease.renew(c, name, holder, epoch, ttl), False),
+        holds=lambda epoch: on_store(lambda c: store_chair_lease.holds(c, name, holder, epoch), False),
+        release=lambda epoch: on_store(lambda c: store_chair_lease.release(c, name, holder, epoch), False),
+        gather=gather, perform_one=perform_one,  # type: ignore[arg-type]
+        wait=wait, pause=close, clock=time.monotonic, now=lambda: datetime.datetime.now(datetime.UTC),
+        echo=chair_report.echo_line,
     )
     poll = a.poll if a.poll is not None else chair_kinds.POLL_SECONDS[a.kind]
-    timing = chair_queue.Timing(poll=poll, min_gap=a.min_gap)
+    timing = chair_queue.Timing(poll=poll, min_gap=a.min_gap, settle=a.settle)
     restore = (lambda: None) if a.dry_run else chair_run.sigterm_as_interrupt()
     try:
-        return chair_queue.run(a.kind, ports, timing, a.once, a.dry_run)
+        return chair_queue.run(a.kind, ports, timing, a.once, a.dry_run, held)
     finally:
         close()
         restore()

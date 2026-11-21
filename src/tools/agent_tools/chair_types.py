@@ -635,7 +635,8 @@ class Facts(TypedDict):
     sources_configured: bool
     profile_stale: NotRequired[bool]  # this tick's profile re-read failed and the last good value was kept; absent means False
     chair_queues: NotRequired[list[str]]  # sorted kinds profile chair.queues moves to a queue worker (chair_kinds); absent means none
-    queue_workers: NotRequired[list[str]]  # sorted kinds whose worker lease `chair:<kind>` is live; absent means none
+    queue_leases: NotRequired[dict[str, str] | None]  # kind to its worker lease's expires_at (store clock); None when unreadable; absent means none
+    queue_lease_now: NotRequired[str]  # the store's clock when queue_leases was read
     drafts: int  # initiatives waiting for approval
     # An initiative's newest run is remote and unfetched: a `<run>.remote.json` beside the runs
     # directory with no local run directory or log for that run id. Maps the initiative id to

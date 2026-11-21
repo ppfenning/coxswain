@@ -93,7 +93,7 @@ def _pass_started(line: str) -> float:
 
 def test_a_committed_write_wakes_the_worker_within_a_second_and_it_runs_housekeeping_once(sandbox):
     _queue(sandbox)
-    worker = Worker(sandbox, "--poll", "600", "--min-gap", "0")
+    worker = Worker(sandbox, "--poll", "600", "--min-gap", "0", "--settle", "0")
     try:
         worker.wait_for(lambda l: "holds chair:housekeeping" in l, 120)
         worker.wait_for(lambda l: l.startswith("chair worker housekeeping 20") and "| start |" in l, 180)
@@ -135,11 +135,11 @@ def test_with_housekeeping_queued_the_tick_plans_no_housekeeping(sandbox):
 
 def test_of_two_copies_only_the_lease_holder_acts(sandbox):
     _queue(sandbox)
-    first = Worker(sandbox, "--poll", "600", "--min-gap", "0")
+    first = Worker(sandbox, "--poll", "600", "--min-gap", "0", "--settle", "0")
     second = None
     try:
         first.wait_for(lambda l: "holds chair:housekeeping" in l, 120)
-        second = Worker(sandbox, "--poll", "600", "--min-gap", "0")
+        second = Worker(sandbox, "--poll", "600", "--min-gap", "0", "--settle", "0")
         second.wait_for(lambda l: "standby: another worker holds chair:housekeeping" in l, 120)
         first.wait_for(lambda l: "| start |" in l, 180)
         _commit_work_item(sandbox, "t-two")
@@ -158,7 +158,7 @@ def test_with_no_notification_at_all_the_poll_still_runs_housekeeping(sandbox):
             conn.execute(f"ALTER TABLE {table} DISABLE TRIGGER cox_notify")
     # A sweep is due every 2 s (housekeeping_hours as a fraction of an hour), so each poll pass runs one.
     _queue(sandbox, hours=2 / 3600)
-    worker = Worker(sandbox, "--poll", "3", "--min-gap", "0")
+    worker = Worker(sandbox, "--poll", "3", "--min-gap", "0", "--settle", "0")
     try:
         worker.wait_for(lambda l: "| start |" in l, 180)
         _commit_work_item(sandbox, "t-silent")

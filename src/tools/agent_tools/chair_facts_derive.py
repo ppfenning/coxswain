@@ -1244,6 +1244,8 @@ def gather_facts(
     refusals = land_refusals_from_actions(selected(index, "land_phase", "partial_land"), now)
     work = list(deps.work_rows()) if deps.work_rows is not None else []
     epics = epic_facts(work, epic_definitions or {}) if deps.work_rows is not None else []
+    read_leases, queue_lease_now = deps.queue_leases()
+    queue_leases = None if read_leases is None else dict(read_leases)  # None: unreadable, so the tick fails closed
     facts: Facts = {
         "lease": lease_facts(deps.lease(), deps.session, deps.pid, deps.host),
         "limits": limits_facts(
@@ -1260,7 +1262,8 @@ def gather_facts(
         "sources_configured": deps.sources_configured(),
         "profile_stale": deps.profile_stale(),
         "chair_queues": sorted(deps.chair_queues()),
-        "queue_workers": sorted(deps.queue_workers()),
+        "queue_leases": queue_leases,
+        "queue_lease_now": queue_lease_now,
         "drafts": deps.drafts() if deps.drafts is not None else 0,
         "missing_repos": new_missing_repos(
             deps.missing_repos() if deps.missing_repos is not None else [],
@@ -1392,3 +1395,4 @@ def gather_facts(
     if deps.work_rows is not None:
         facts["chat_epics"] = chat_epics(work, dict(deps.run_exited()) if deps.run_exited is not None else {})
     return facts
+

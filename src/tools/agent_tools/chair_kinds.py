@@ -4,49 +4,64 @@ Pure. The profile key `chair.queues` lists the kinds that have moved to their ow
 (`cox chair worker --kind K`); the default is empty, so the tick plans every kind as before. Today the kinds that can
 move are `housekeeping` and `watch`; the rest stay on the tick until C4 and C5.
 
-Exactly one of the two plans a kind at any moment, and both decide it from the same facts:
+Who plans a kind, decided from the same facts on both sides:
 
-- the tick skips a kind that the setting lists, and also one whose worker lease (`chair:<kind>`) is live, so a worker
-  on a machine whose profile lists the kind is not doubled by a tick on a machine whose profile does not;
-- a worker acts only for a kind the setting lists, and only while it holds that kind's lease, so two copies of one
-  kind never act at once.
+- the tick skips a kind that its profile lists, and a kind whose worker lease (`chair:<kind>`) is live by the store's
+  clock whatever its profile says, so a worker on a machine whose profile lists the kind is never doubled by a tick
+  on one whose profile does not;
+- when the leases cannot be read, the tick skips every kind a worker could run (it fails closed): it cannot tell
+  whether a worker holds one, and a tick of delay for housekeeping or the watch costs less than a double revert;
+- a worker acts only for a kind its profile lists, and only while it holds that kind's lease;
+- a kind the profile lists whose lease has been dead for longer than its time to live has no owner: the tick says so
+  with one needs_chair (`unowned_actions`), which the notifier pushes once while it stands.
 
-A worker wakes on a `cox_store` notification (migration 0021) for a table its kind reads, and polls on a timer as its
-fallback, so a missed notification costs latency and never a wrong decision.
+The facts carry the leases as `queue_leases` (kind to `expires_at`, None when unreadable) and the store's clock at
+that read as `queue_lease_now`, so every comparison is on the store's clock, never a machine's.
 """
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from typing import cast
 
-from agent_tools.chair_types import Facts
+from agent_tools.chair_types import Action, ActionKind, Facts
 
 __all__ = [
     "LEASE_PREFIX",
+    "LEASE_TTL_SECONDS",
     "POLL_SECONDS",
     "QUEUE_KINDS",
+    "UNOWNED_CAUSE",
     "WAKE_TABLES",
     "lease_name",
     "live_kinds",
     "queued_kinds",
     "tick_skips",
+    "unowned_actions",
+    "unowned_kinds",
     "worker_acts",
 ]
 
 QUEUE_KINDS = ("housekeeping", "watch")
 
-# The tables each kind's facts are read from; a notification for one of them is a reason to plan again now. The watch
-# reads a land's main CI from the forge, which no table records, so the watch leans on its poll more than housekeeping.
+# The tables whose write is a reason to plan a kind again now. Housekeeping reads hosts and workers too, but a host or
+# worker beat writes them every few seconds across a fleet, and each wake costs a full gather (with forge calls), so
+# those changes wait for the poll. A wake is at most one pass per `min_gap`, so a kind passes at most every
+# `min_gap` seconds however busy its tables are, and at least every `poll` seconds when they are quiet.
 WAKE_TABLES: Mapping[str, frozenset[str]] = {
-    "housekeeping": frozenset({"work_items", "runs", "hosts", "workers", "phase_queue", "step_results"}),
+    "housekeeping": frozenset({"work_items", "runs"}),
     "watch": frozenset({"landing_records", "land_queue"}),
 }
 
 # The fallback: a worker plans at least this often with no notification at all (the tick's own default interval).
 POLL_SECONDS: Mapping[str, float] = {"housekeeping": 60.0, "watch": 60.0}
 
+# The leases amendment (2026-11-20): heartbeat 10 s, lease 60 s.
+LEASE_TTL_SECONDS = 60
+
 LEASE_PREFIX = "chair:"
+UNOWNED_CAUSE = "queue_unowned"
 
 
 def lease_name(kind: str) -> str:
@@ -55,33 +70,76 @@ def lease_name(kind: str) -> str:
 
 
 def queued_kinds(raw: object) -> frozenset[str]:
-    """The kinds `chair.queues` moves to a worker. Anything but a list of known kind names counts as none: a typo
-    leaves the kind on the tick, where it has always run, rather than with no planner at all."""
+    """The kinds `chair.queues` moves to a worker. Anything but a list of known kind names counts as none: a name no
+    worker runs stays on the tick, where it has always run, rather than with no planner at all."""
     if not isinstance(raw, list | tuple):
         return frozenset()
     items = cast(Sequence[object], raw)
     return frozenset(k for k in items if isinstance(k, str) and k in QUEUE_KINDS)
 
 
-def live_kinds(leases: Mapping[str, tuple[str, str, str]], now: str) -> frozenset[str]:
-    """The kinds whose worker lease is unexpired at `now`. `leases` maps a lease name to (holder, expires_at,
-    heartbeat_at), as `run_store.lease_table_for` returns it; times are `YYYY-MM-DDTHH:MM:SSZ`, which sort as text."""
-    return frozenset(
-        name.removeprefix(LEASE_PREFIX)
-        for name, (_holder, expires_at, _beat) in leases.items()
-        if name.startswith(LEASE_PREFIX) and name.removeprefix(LEASE_PREFIX) in QUEUE_KINDS and str(expires_at) > now
-    )
+def _at(stamp: str) -> datetime | None:
+    try:
+        return datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
+def live_kinds(leases: Mapping[str, str], now: str) -> frozenset[str]:
+    """The kinds whose worker lease is unexpired at `now`. `leases` maps a kind to its lease's `expires_at`; both
+    times are the store's `YYYY-MM-DDTHH:MM:SSZ` stamps, which sort as text."""
+    return frozenset(kind for kind, expires_at in leases.items() if kind in QUEUE_KINDS and str(expires_at) > now)
+
+
+def _leases(facts: Facts) -> Mapping[str, str] | None:
+    """The kinds' leases, or None when the read failed. Facts with no key at all read as no lease (a gather that never
+    had the reader, as in the planner tests)."""
+    if "queue_leases" not in facts:
+        return {}
+    return facts["queue_leases"]
 
 
 def tick_skips(facts: Facts) -> frozenset[str]:
-    """The kinds the tick does not plan: those the setting lists and those a live worker holds."""
-    return queued_kinds(list(facts.get("chair_queues") or ())) | frozenset(_known(facts.get("queue_workers") or ()))
+    """The kinds the tick does not plan: those its profile lists, those a live worker lease holds, and every kind a
+    worker could run when the leases could not be read."""
+    queued = queued_kinds(list(facts.get("chair_queues") or ()))
+    leases = _leases(facts)
+    if leases is None:
+        return frozenset(QUEUE_KINDS)
+    return queued | live_kinds(leases, facts.get("queue_lease_now", ""))
 
 
 def worker_acts(kind: str, facts: Facts) -> bool:
-    """Whether a worker of `kind` that holds its lease plans and acts: only for a kind the setting lists."""
+    """Whether a worker of `kind` that holds its lease plans and acts: only for a kind its profile lists."""
     return kind in queued_kinds(list(facts.get("chair_queues") or ()))
 
 
-def _known(kinds: Iterable[str]) -> Collection[str]:
-    return [k for k in kinds if k in QUEUE_KINDS]
+def unowned_kinds(facts: Facts, ttl: int = LEASE_TTL_SECONDS) -> frozenset[str]:
+    """The listed kinds no worker has held for longer than `ttl` by the store's clock: no lease row at all, or one that
+    expired more than `ttl` seconds ago. None when the leases could not be read (nothing is known)."""
+    leases = _leases(facts)
+    now = _at(facts.get("queue_lease_now", ""))
+    if leases is None or now is None:
+        return frozenset()
+    queued = queued_kinds(list(facts.get("chair_queues") or ()))
+
+    def dead(kind: str) -> bool:
+        expired = _at(leases.get(kind, ""))
+        return expired is None or (now - expired).total_seconds() > ttl
+
+    return frozenset(k for k in queued if dead(k))
+
+
+def unowned_actions(facts: Facts) -> list[Action]:
+    """One needs_chair per listed kind with no live worker. It stands each tick, so the status line names it, and the
+    notifier pushes its key once while it stands (`notify_core.due`)."""
+    return [
+        {
+            "kind": ActionKind.NEEDS_CHAIR, "initiative": "chair-queue", "cause": f"{UNOWNED_CAUSE} {kind}",
+            "reason": (
+                f"chair.queues lists {kind} but no worker has held {lease_name(kind)} for over {LEASE_TTL_SECONDS}s, so "
+                f"nothing plans it: start `cox chair worker --kind {kind}`, or take {kind} out of chair.queues"
+            ),
+        }
+        for kind in sorted(unowned_kinds(facts))
+    ]

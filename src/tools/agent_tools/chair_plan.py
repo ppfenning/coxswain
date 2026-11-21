@@ -1564,7 +1564,8 @@ def plan_tick_held(facts: Facts, now: datetime | None = None, gate: CiGate = _UN
     # A lent lease plans the routine actions, then standby last, so the tick still reads as not acting.
     lent = gated is not None and gated[0]["kind"] == "standby" and lease.get("lent", False)
     routine = _withhold_blocked_hosts(routine_only(_plan_as_holder(facts, now, skip=skip)), facts) if lent else []
-    actions = [*holder, *housekeeping, *login_checks] if gated is None else [*routine, *gated]
+    unowned = chair_kinds.unowned_actions(facts)  # a listed kind no live worker holds: nobody plans it, so say so
+    actions = [*holder, *housekeeping, *login_checks, *unowned] if gated is None else [*routine, *gated]
     return TickPlan([stamp(a, lease["epoch"]) for a in actions], tuple(sorted(held)))
 
 
