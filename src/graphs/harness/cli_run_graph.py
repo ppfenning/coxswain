@@ -825,11 +825,12 @@ def _run_phase_lane(
     )
     url, _ = lane_store_url(profile_storage_url(provider, args.runs_dir))
     register_stack_dump(sys.stdout)
-    # Every statement of the lane's, on each of its connections, ends within LANE_STATEMENT_S on the client's side, so
-    # a store gone silent cannot hold the lane past its lease; the fence's checks are bounded tighter still.
-    bound = phase_pick.LANE_STATEMENT_S
+    # The lane's sockets find a dead peer within LANE_SOCKET_S; a store gone silent is found by the fence's bounded
+    # check, which then abandons every connection of the lane's (`phase_lane.run_lane`).
+    bound = phase_pick.LANE_SOCKET_S
     code = phase_lane.run_lane(
-        ctx, claim, store.conn.limit(bound), lambda: open_scoped(url).limit(bound), list(initiative.get("items") or []),
+        ctx, claim, store.conn.bound_socket(bound), lambda: open_scoped(url).bound_socket(bound),
+        list(initiative.get("items") or []),
         default_ref, lambda line: print(line, flush=True),
         lambda: phase_lane.terminate_groups(_child_pids(pgrep=_pgrep_children)),
         goal=phase_goal(initiative, phase),

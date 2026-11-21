@@ -41,8 +41,8 @@ __all__ = [
     "HEARTBEAT_S",
     "KILL_WAIT_S",
     "LANE_MARGIN_S",
+    "LANE_SOCKET_S",
     "LANE_STALL_S",
-    "LANE_STATEMENT_S",
     "LEASE_S",
     "MARGIN_FLOOR_S",
     "MAX_ATTEMPTS",
@@ -104,9 +104,10 @@ SKEW_S = 1
 MARGIN_FLOOR_S = CHECK_CALL_S + PUSH_BOUND_S + SKEW_S
 MIN_LEASE_S = 4 * MARGIN_FLOOR_S  # 48 s, the shortest lease `lease_problem` accepts: a quarter of it is the floor
 MAX_LEASE_S = 600  # the longest: past ten minutes a dead worker's phase would wait too long for anyone to notice
-# Each statement of a lane's other store connections (its row writes, its uploads) ends within this, so a lane cut off
-# from a silent store still ends well before its lease can lapse (`store_dialect.Connection.limit`).
-LANE_STATEMENT_S = 10
+# The lane's other store connections (its row writes, its uploads) find a dead peer within about this
+# (`store_dialect.Connection.bound_socket`). Their statements get no client deadline: one may wait on a lock of a live
+# store, as before. A store gone silent is found by the fence's bounded check, which then abandons them all.
+LANE_SOCKET_S = 10
 _BACKOFF_BASE_S = 60
 _BACKOFF_CAP_S = 900
 

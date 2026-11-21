@@ -110,19 +110,42 @@ def test_a_check_the_store_never_answers_loses_the_claim_within_its_bound(pg_sto
     relay = SilentRelay(store_url)
     lost: list[float] = []
     lines: list[str] = []
-    fence = Fence(lambda: open_store(relay.url(store_url), AT).limit(phase_pick.LANE_STATEMENT_S), _claimed(owner),
-                  lines.append, lambda: lost.append(time.monotonic()))
+    claim = _claimed(owner)
+    # The lane's write connection, through the same relay: a write blocked on the silent store when the check gives up.
+    writes = open_store(relay.url(store_url), AT).bound_socket(phase_pick.LANE_SOCKET_S)
+    abandoned: list[str] = []
+
+    def on_silent(why: str) -> None:
+        abandoned.append(why)
+        writes.abandon(why)
+
+    fence = Fence(lambda: open_store(relay.url(store_url), AT), claim, lines.append,
+                  lambda: lost.append(time.monotonic()), on_silent=on_silent)
+    blocked: list[BaseException] = []
+
+    def write() -> None:
+        try:
+            writes.query_one("SELECT 1")
+        except BaseException as exc:  # the test reads which
+            blocked.append(exc)
+
     try:
         assert fence.check()
         relay.silent.set()
+        writer = threading.Thread(target=write)
+        writer.start()
         started = time.monotonic()
         assert not fence.check()
         took = time.monotonic() - started
         assert phase_pick.CHECK_CALL_S - 0.5 < took < phase_pick.CHECK_CALL_S + 1.5, took
         assert lost and fence.lost.is_set()
         assert "the claim could not be read: StoreDeadline: the store did not answer within 3s" in fence.why, fence.why
+        writer.join(timeout=2)  # abandoned: the blocked write fails at once, nothing of the lane's waits on the store
+        assert not writer.is_alive() and abandoned == [fence.why]
+        assert [type(e).__name__ for e in blocked] == ["StoreDeadline"], blocked
         assert store_phases.held(owner, "ship", "p1", "w1", fence._claim.epoch)  # the store itself still says held
     finally:
         fence.stop()
         relay.close()
+        writes.close()
         owner.close()

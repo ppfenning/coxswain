@@ -247,11 +247,29 @@ class Connection:
 
     def limit(self, statement_s: float) -> Connection:
         """Bound every statement on this connection to `statement_s` on the client's side (above), and the socket's
-        own silence to about the same where the kernel can (`tcp_options`). A no-op on sqlite. The connection."""
+        own silence to about the same (`bound_socket`). Only for a connection whose server bounds are tighter still
+        (`worker.bounded_url`): the client cannot tell a store gone silent from one holding a lock it waits on, so a
+        live server must always answer first. A no-op on sqlite. The connection."""
         self._statement_s = statement_s
+        return self.bound_socket(statement_s)
+
+    def bound_socket(self, seconds: float) -> Connection:
+        """Bound the socket's own silence to about `seconds` where the kernel can (`tcp_options`): a peer whose host or
+        network died is found by the kernel, while a statement waiting on a lock of a live server waits as before. A
+        no-op on sqlite. The connection."""
         if (fd := self._fileno()) is not None:
-            _set_tcp(fd, statement_s)
+            _set_tcp(fd, seconds)
         return self
+
+    def abandon(self, why: str) -> None:
+        """Give the connection up now, from any thread: a statement blocked on it raises `StoreDeadline` at once, and so
+        does every later one. For a caller that has learned, elsewhere, that the store has gone silent."""
+        with self._watch_lock:
+            if not self.expired:
+                self.expired = why
+            fd = self._fileno()
+        if fd is not None:
+            _shut(fd)
 
     @contextmanager
     def within(self, seconds: float) -> Generator[Connection]:
@@ -289,7 +307,12 @@ class Connection:
             raise StoreDeadline(f"{self.expired}; the connection was given up")
         seconds = self._deadline_s() if self._fileno() is not None else None
         if seconds is None:
-            yield
+            try:
+                yield
+            except BaseException as exc:
+                if self.expired:  # abandoned under it (`abandon`)
+                    raise StoreDeadline(self.expired) from exc
+                raise
             return
         if seconds <= 0:
             raise StoreDeadline("the call's deadline passed before the statement could start")

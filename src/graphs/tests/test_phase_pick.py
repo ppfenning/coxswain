@@ -84,7 +84,7 @@ def test_the_shortest_lease_leaves_its_lanes_a_check_a_push_and_slack_and_its_he
         # A push that follows a good check lands before the lease lapses, the check's own worst case included.
         assert t.margin_s >= phase_pick.CHECK_CALL_S + phase_pick.PUSH_BOUND_S + phase_pick.SKEW_S, n
         # The lane's other statements, and a fence check that hangs, end inside the margin too.
-        assert t.margin_s > phase_pick.LANE_STATEMENT_S and t.margin_s > phase_pick.CHECK_CALL_S, n
+        assert t.margin_s > phase_pick.LANE_SOCKET_S and t.margin_s > phase_pick.CHECK_CALL_S, n
 
 
 def test_a_lane_reads_its_margin_from_its_claim_s_own_lease():

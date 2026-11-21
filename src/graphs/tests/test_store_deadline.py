@@ -166,3 +166,44 @@ def test_sqlite_has_no_socket_and_the_bounds_leave_it_as_it_is(tmp_path):
             assert conn.query_one("SELECT 1") == (1,)  # no deadline: sqlite waits on its file lock, as before
     finally:
         conn.close()
+
+
+def test_a_lane_s_socket_bound_never_cuts_a_lock_wait_on_a_live_store(pg_url):
+    """The lane's write connections carry only the socket's bound: a statement waiting on a lock a live store holds
+    waits it out, however long past that bound, rather than being taken for a store gone silent."""
+    holder, waiter = connect(pg_url), connect(pg_url).bound_socket(1)
+    try:
+        holder.execute("SELECT pg_advisory_lock(424242)")
+        release = threading.Timer(2.5, lambda: holder.execute("SELECT pg_advisory_unlock(424242)"))
+        release.start()
+        started = time.monotonic()
+        assert waiter.query_one("SELECT pg_advisory_lock(424242)") is not None
+        assert time.monotonic() - started > 2.0
+        waiter.execute("SELECT pg_advisory_unlock(424242)")
+        release.join()
+    finally:
+        holder.close()
+        waiter.close()
+
+
+def test_an_abandoned_connection_fails_a_blocked_statement_at_once_and_every_later_one(pg_url):
+    conn = connect(pg_url)
+    try:
+        failed: list[BaseException] = []
+
+        def sleep() -> None:
+            try:
+                conn.query_one("SELECT pg_sleep(30)")
+            except BaseException as exc:  # the test reads which
+                failed.append(exc)
+
+        sleeper = threading.Thread(target=sleep)
+        sleeper.start()
+        time.sleep(0.5)
+        conn.abandon("the fence found the store silent")
+        sleeper.join(timeout=3)
+        assert not sleeper.is_alive() and [type(e) for e in failed] == [StoreDeadline], failed
+        took, exc = _timed(conn, "SELECT 1")
+        assert isinstance(exc, StoreDeadline) and "the fence found the store silent" in str(exc) and took < 0.5
+    finally:
+        conn.close()

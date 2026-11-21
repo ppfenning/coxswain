@@ -111,7 +111,7 @@ from harness.epic_context import Ctx, git_in
 from harness.epic_types import as_list
 from harness.handoff import plan_context
 from harness.lane_workers import LANE_CAPACITY_VAR
-from harness.store_dialect import Connection, JsonObject
+from harness.store_dialect import Connection, JsonObject, StoreDeadline
 from harness.store_steps import phase_review_rows, round_row, step_key, step_row, steps_of_result, with_checks
 from harness.store_types import StepRow
 from harness.worktree import clone_worktree, link_venv, remove_worktree
@@ -244,14 +244,19 @@ class Fence:
     `on_lost` runs once (it stops the lane's agents and checks). Any part of the lane may also `lose` it, when a
     fenced write was refused or the branch moved under it. A read that fails counts as lost: the lane cannot show it
     still holds the claim, and stopping is the safe side. So does one that takes longer than `phase_pick.CHECK_CALL_S`
-    (a store gone silent): the fence gives up on it then (`Connection.within`), whatever the kernel would wait."""
+    (a store gone silent): the fence gives up on it then (`Connection.within`), whatever the kernel would wait, and
+    first runs `on_silent`, which abandons the lane's other connections, so a write blocked on the silent store
+    fails at once rather than holding the lane past its lease. Its reads are plain and never wait on a lock, so only
+    a store that does not answer misses that bound."""
 
     def __init__(self, open_conn: Callable[[], Connection], claim: LaneClaim, log: Callable[[str], None],
                  on_lost: Callable[[], None], beat: Callable[[int], None] = lambda _n: None,
-                 watch_s: float = WATCH_S, still_lost: Callable[[], None] | None = None) -> None:
+                 watch_s: float = WATCH_S, still_lost: Callable[[], None] | None = None,
+                 on_silent: Callable[[str], None] = lambda _why: None) -> None:
         self._open, self._claim, self._log, self._on_lost, self._beat = open_conn, claim, log, on_lost, beat
         self._watch_s = watch_s
         self._still_lost = still_lost or on_lost
+        self._on_silent = on_silent
         self._conn: Connection | None = None
         self._lock = threading.Lock()
         self._halt = threading.Event()
@@ -271,7 +276,10 @@ class Fence:
                 with self._conn.within(phase_pick.CHECK_CALL_S):
                     ok = store_phases.held(self._conn, c.initiative, c.phase, c.worker, c.epoch, None)
         except Exception as exc:
-            self.lose(f"the claim could not be read: {type(exc).__name__}: {' '.join(str(exc).split())[:200]}")
+            why = f"the claim could not be read: {type(exc).__name__}: {' '.join(str(exc).split())[:200]}"
+            if isinstance(exc, StoreDeadline):  # the store went silent: nothing else of the lane's will hear back
+                self._on_silent(why)
+            self.lose(why)
             return False
         if not ok:
             self.lose(f"the claim at epoch {c.epoch} is no longer {c.worker}'s, or its lease is about to lapse")
@@ -992,9 +1000,22 @@ def run_lane(ctx: Ctx, claim: LaneClaim, conn: Connection, open_conn: Callable[[
     (`EXIT_*`). On every way out the run's worktrees, its own clone (under `<worktree_root>/<run>`, with the private
     refs it fetched), any private refs in the shared checkout, and its progress mark are removed. Once the claim is
     lost, `stop_children` stops every child the lane has, and `stop_new_children` (`Fence`'s `still_lost`) whatever
-    check or build starts after that."""
+    check or build starts after that. A store gone silent (the fence's check missed its bound) abandons `conn` and
+    every connection the lane opened, so nothing of the lane's waits on it."""
     mark = beat_path(ctx.runs_dir, ctx.run_id)
-    fence = Fence(open_conn, claim, log, stop_children, lambda n: write_beat(mark, n), still_lost=stop_new_children)
+    opened: list[Connection] = [conn]
+
+    def open_tracked() -> Connection:
+        c = open_conn()
+        opened.append(c)
+        return c
+
+    def abandon_all(why: str) -> None:
+        for c in list(opened):
+            c.abandon(why)
+
+    fence = Fence(open_conn, claim, log, stop_children, lambda n: write_beat(mark, n), still_lost=stop_new_children,
+                  on_silent=abandon_all)
     phase_worktree = ctx.worktree_root / ctx.run_id / claim.phase / "_phase"
     lane_ctx = ctx
     held = _hold_run_lock(ctx)  # before the clone exists, so no sweep ever sees this run's clone unlocked
@@ -1009,7 +1030,7 @@ def run_lane(ctx: Ctx, claim: LaneClaim, conn: Connection, open_conn: Callable[[
         if dead:
             log(f"lane: removed the clones of dead runs {', '.join(dead)}")
         lane_ctx = _own_clone(ctx, log)
-        return _run(lane_ctx, claim, conn, fence, items, base, log, phase_worktree, open_conn,
+        return _run(lane_ctx, claim, conn, fence, items, base, log, phase_worktree, open_tracked,
                     ctx if lane_ctx is not ctx else None, goal)
     finally:
         fence.stop()
