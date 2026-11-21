@@ -514,6 +514,38 @@ def test_a_file_weighs_the_test_functions_it_defines():
     assert plan.file_weights({"smoke/test_x.py": source, "smoke/test_y.py": ""}) == {"smoke/test_x.py": 3, "smoke/test_y.py": 0}
 
 
+def test_a_file_weighs_its_recorded_seconds_and_an_unrecorded_one_its_tests_at_the_mean():
+    sources = {"smoke/test_a.py": "def test_1(): pass\ndef test_2(): pass\n", "smoke/test_b.py": "def test_1(): pass\n",
+               "smoke/test_new.py": "def test_1(): pass\ndef test_2(): pass\ndef test_3(): pass\n"}
+    timings = {"smoke/test_a.py": 20.0, "smoke/test_b.py": 4.0, "smoke/test_gone.py": 99.0}
+    # 24 s over the 3 recorded test functions is 8 s each, so the new file's 3 weigh 24; a deleted file weighs nothing
+    assert plan.file_weights(sources, timings) == {"smoke/test_a.py": 20.0, "smoke/test_b.py": 4.0, "smoke/test_new.py": 24.0}
+    # nothing recorded: the test-function count, as before the timings file
+    assert plan.file_weights(sources, {}) == {"smoke/test_a.py": 2.0, "smoke/test_b.py": 1.0, "smoke/test_new.py": 3.0}
+
+
+def test_the_timings_file_reads_seconds_per_file_and_refuses_anything_else():
+    assert plan.read_timings('{"smoke/test_a.py": 1.5, "smoke/test_b.py": 0}') == {"smoke/test_a.py": 1.5, "smoke/test_b.py": 0.0}
+    for text in ("[]", '{"smoke/test_a.py": -1}', '{"smoke/test_a.py": "3"}', '{"smoke/test_a.py": true}'):
+        with pytest.raises(ValueError, match=plan.TIMINGS_FILE):
+            plan.read_timings(text)
+
+
+def test_a_run_s_seconds_sum_per_file_and_rewrite_only_the_files_it_measured():
+    durations = [("smoke/test_a.py::test_1", 1.25), ("smoke/test_a.py::test_2[x]", 2.0), ("smoke/test_b.py::test_1", -0.1)]
+    measured = plan.file_seconds(durations, deselected=["smoke/test_forge.py::test_1"])
+    assert measured == {"smoke/test_a.py": 3.2, "smoke/test_b.py": 0.0, "smoke/test_forge.py": 0.0}
+    text = plan.timings_text({"smoke/test_a.py": 9.0, "smoke/test_c.py": 5.0}, {"smoke/test_a.py": 3.2})
+    assert plan.read_timings(text) == {"smoke/test_a.py": 3.2, "smoke/test_c.py": 5.0}
+    assert text.splitlines()[1:3] == ['"smoke/test_a.py": 3.2,', '"smoke/test_c.py": 5.0']  # one file per line, sorted
+
+
+def test_the_template_database_is_one_per_session_and_never_a_test_s():
+    names = {plan.template_name(s) for s in ("0123456789ab", "ba9876543210", "X-Y" * 30)}
+    assert len(names) == 3 and all(len(n) <= 63 and n.replace("_", "").isalnum() and n == n.lower() for n in names)
+    assert not plan.database_name("smoke/test_a.py::test_b").startswith("smoke_template_")
+
+
 def test_the_shards_partition_every_file_heaviest_first():
     weights = {"smoke/test_a.py": 12, "smoke/test_b.py": 7, "smoke/test_c.py": 5, "smoke/test_d.py": 1, "smoke/test_e.py": 1}
     shards = plan.shard_files(weights, 3)

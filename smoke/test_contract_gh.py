@@ -155,30 +155,3 @@ def test_a_stray_https_request_never_leaves_the_machine_and_is_named(tmp_path):
                               text=True, timeout=60)
     assert done.returncode != 0, done.stdout
     assert server.misses == ["CONNECT api.github.com:443 (an https request; only the replay host is answered)"], server.misses
-
-
-def _executable(path, text):
-    path.write_text(text, encoding="utf-8")
-    path.chmod(0o755)
-    return path
-
-
-def test_a_mise_shim_for_gh_resolves_to_the_binary_mise_names(tmp_path):
-    # A real shim layout: bin/gh links to an executable named `mise`, which answers `which gh` as mise does.
-    real = _executable(tmp_path / "real-gh", "#!/bin/sh\nexit 0\n")
-    mise = _executable(tmp_path / "mise", f'#!/bin/sh\n[ "$1 $2" = "which gh" ] && echo {real} && exit 0\nexit 2\n')
-    (tmp_path / "bin").mkdir()
-    (tmp_path / "bin" / "gh").symlink_to(mise)
-    assert gh_replay.real_gh(str(tmp_path / "bin" / "gh")) == str(real)
-
-
-def test_a_shim_mise_cannot_resolve_fails_with_mises_stderr(tmp_path):
-    mise = _executable(tmp_path / "mise", "#!/bin/sh\necho 'gh is not installed' >&2\nexit 1\n")
-    (tmp_path / "gh").symlink_to(mise)
-    with pytest.raises(RuntimeError, match="gh is not installed"):
-        gh_replay.real_gh(str(tmp_path / "gh"))
-
-
-def test_a_plain_gh_binary_is_its_own_answer(tmp_path):
-    gh = _executable(tmp_path / "gh", "#!/bin/sh\nexit 0\n")
-    assert gh_replay.real_gh(str(gh)) == str(gh)

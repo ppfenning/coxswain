@@ -25,7 +25,8 @@ without mocks in `tests/test_smoke_plan.py`.
 - **`install`** (once per session): `cox` installed from this checkout, with `[postgres,traces,lake]`, into a venv of its own with `uv pip install`.
   The install is not editable. Before any test runs, the fixture compares every installed module, and every file
   `[tool.setuptools.package-data]` lists, with the tree. A stale build or another checkout therefore cannot stand in
-  for this one (#1184, #1185). The venv sits at `<install>/.venv`. A profile whose `harness_dir` is `<install>`
+  for this one (#1184, #1185), and the install's python, under the install's environment, must import `agent_tools`,
+  `harness` and `core` from that venv's site-packages. The venv sits at `<install>/.venv`. A profile whose `harness_dir` is `<install>`
   therefore makes every harness child that `cox` starts run the same install.
 - **`postgres`** (once per session): the server named by `COX_SMOKE_POSTGRES_URL`, or else a container started with
   `docker` on a random loopback port and removed at the end of the session. The image is `postgres:16` pinned by
@@ -33,9 +34,13 @@ without mocks in `tests/test_smoke_plan.py`.
   loopback host (`localhost`, `127.0.0.1` or `::1`). It refuses a URL that lists several hosts (`a:5432,b:5432`), and
   one whose query sets `host`, `hostaddr` or `service`, since libpq would connect wherever those say. A URL it
   refuses fails the run, whether or not the run is required.
-- **`store_url`** (per test): a fresh database on that server. It is created, and opened once by `harness.store_cli`
-  so the schema migrations apply, under the install's own sandboxed environment. The caller's `PYTHONPATH`, `PG*`
-  variables and HOME do not reach it. It is dropped after the test.
+- **`store_template`** (once per session): a database at the newest schema, named for the session
+  (`plan.template_name`). It is created and opened once by `harness.store_cli`, so the schema migrations apply the way
+  they do on any store, under the install's own sandboxed environment. The caller's `PYTHONPATH`, `PG*` variables and
+  HOME do not reach it. It is dropped at the end of the session.
+- **`store_url`** (per test): a fresh database on that server, a copy of the template
+  (`CREATE DATABASE ... TEMPLATE`), so the migrations run once per session and not once per test. It is dropped after
+  the test. The backup before a migration is proven on its own path, by `test_store_backup_pg_dump.py`.
 - **`sandbox`** (per test): a temporary home with a routing profile at `~/.config/agent-tools/profile.yaml`, a
   provider profile naming the test's store, a workspace with `work/` and `runs/`, and a git config. Every `cox` runs
   with HOME, the XDG roots and git's global config inside the sandbox, and with the install's `bin` first on PATH.
@@ -149,7 +154,6 @@ into a scratch copy of the tree and confirming that they fail.
 | `test_chair_tick_cache.py` | the chair's store readers to Postgres's change counters | A quiet tick that reads the store again, or a write that re-reads readers of other tables (H6). |
 | `test_chair_actions_window.py` | `cox chair run --dry-run` and the chair's wiring to a Postgres store holding 34,000 `chair_actions` rows | A quiet tick that reads the whole `chair_actions` window again, a row written behind the tail that the kept window misses, or an intake's decompose runs that differ when read from the tick's shared reads (H6). |
 | `test_unit_env_doctor.py` | a hand-run `cox setup doctor` to the units' env file | The object_store keys held only in the file the upgrade unit names (written by `cox upgrade --install-timer --environment-file`) and missing from the shell: the required rows fail and a good `cox upgrade` rolls back. Also a file value overriding one the shell already sets (the shell must win). Each test failed with the doctor's loading taken out. |
-| `test_sandbox.py` | the harness itself | A child interpreter importing another checkout. It also checks that `cox` resolves the profile the sandbox HOME names, and that every path `cox route context` reports is under the sandbox or the install. It does not prove that `cox` opens no other file; the environment the sandbox builds is what keeps the real home out of reach. |
 
 **A drift found while building this suite, now closed.** The chair's revert of a phase quarantines its tasks with
 `set-state <initiative> <task> quarantined` (`cli._quarantine_phase_with`). The store CLI refused that target with
@@ -192,11 +196,17 @@ macOS launchd stays an operator check: the suite runs on Linux and starts no lau
   Both set `COX_SMOKE_POSTGRES_URL` to the service and `COX_SMOKE_REQUIRED=1`, so a missing `uv`, Postgres or docker
   fails the job instead of skipping it. `smoke` is three parallel jobs, `smoke (1/3)` to `smoke (3/3)`, each with
   `COX_SMOKE_SHARD=<k>/3`. The conftest keeps the files `plan.shard_files` puts in shard k: whole files, heaviest
-  first onto the lightest shard by the test functions each defines, so each file lands in exactly one shard and each
-  shard installs `cox` once. The split comes from the folder's files, not from one run's collection, so a nested pytest
-  a smoke test starts on its own file (`test_imports_this_tree.py`) keeps that file in its parent's shard. `tests/test_workflows.py` checks that the matrix names every shard from 1 to n. Without the variable, the
+  first onto the lightest shard, so each file lands in exactly one shard and each shard installs `cox` once. A file
+  weighs its seconds in `smoke/timings.json`; a file with none recorded weighs its test functions at the recorded mean
+  per test function. The split comes from the folder's files and that committed file, not from one run's collection,
+  so a nested pytest on one file keeps that file in its parent's shard. `tests/test_workflows.py` checks that the
+  matrix names every shard from 1 to n. Without the variable, the
   suite runs whole. They run in parallel with the unit suites and the checks job; the required `test` check passes
   only when every one of those jobs succeeded.
+- **The timings.** Regenerate `smoke/timings.json` after adding or slowing a file, serially, as the shards run:
+  `COX_SMOKE_TIMINGS=smoke/timings.json pytest -q -rs -p smoke.timings -m "not forge" smoke`. A test's seconds are its
+  setup, call and teardown, less the session fixtures it set up, which every shard pays once whatever it holds. A run
+  on a few files rewrites only theirs; a file whose every test was deselected weighs 0.
 - **Lane checks.** `.agent-checks` runs `pytest -q -rs smoke` after the component suites. A lane host with docker
   runs it against its own container. A host with no docker on PATH skips it and prints the reason. A host whose
   `docker` is on PATH but whose daemon does not answer fails, because that is a host fault a skip would hide. Set
