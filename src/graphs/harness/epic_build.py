@@ -440,6 +440,26 @@ def _build_task_checked(
     return record
 
 
+def task_checks(
+    ctx: Ctx, worktree: Path, *, phase: str, label: str, verify: Sequence[str] = ()
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """The task gate's cheap checks, narrowed to what `worktree`'s HEAD changes against `ctx.phase_branch(phase)`, and
+    a task's `verify` commands, run there in the lane environment of `label` (its scratch, log and database name; an
+    `@`-name, so never a task id's): (check results, verify results). How the phase lane's merge agent checks each
+    colliding task on the merged tree (`phase_lane._collide`). Its scratch and any lane database are dropped after."""
+    lane = lane_env(ctx.test_database, ctx.run_id, phase, label)
+    if lane:
+        ctx.lane_names[(phase, label)] = database_name(next(iter(lane.values())))
+    try:
+        env = _lane_checks_env(ctx, phase, label)
+        scoped = _lane_checks(worktree, ctx.phase_branch(phase), ctx.checks)[0] if ctx.checks else []
+        results = _gate_checks(worktree, scoped, env=env, **_checks_log(ctx, phase, label)) if scoped else []
+        commands = [{"name": f"verify-{i}", "cmd": cmd} for i, cmd in enumerate(verify, 1)]
+        return results, list(run_checks(worktree, commands, env=env)) if commands else []
+    finally:
+        drop_lane(ctx, phase, label)
+
+
 def verify_of(by_id: Mapping[str, Mapping[str, object]], task: str) -> list[str]:
     return [str(c) for c in as_list(as_mapping(by_id.get(task)).get("verify"))]
 
