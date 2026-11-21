@@ -69,3 +69,101 @@ def test_the_tick_reads_the_worker_leases_on_the_stores_clock_and_an_unreadable_
     broken.parent.mkdir(parents=True)
     broken.write_text("not a database", encoding="utf-8")
     assert chair_read_queues.read_queue_leases(tmp_path / "broken" / "runs") == (None, "")
+
+
+def test_a_launch_pass_is_one_perform_and_a_lease_lost_mid_pass_fences_the_launches_after_it(tmp_path: Path):
+    """C5: the launch worker performs its pass as one batch (`perform_batched`), so the rules across its actions hold,
+    and the epoch the perform reads before each action asks the store: once another worker has taken `chair:launch`,
+    every later launch is fenced and its command never runs. The perform is the tick's own (`chair_exec.perform`)."""
+    from agent_tools import chair_kinds
+    from agent_tools.chair_exec import perform
+    from agent_tools.chair_queue import perform_batched
+    from tests.test_chair_queue_launch import _launch_deps
+
+    conn = _store(tmp_path)
+    name = chair_kinds.lease_name("launch")
+    try:
+        epoch = kl.acquire(conn, name, "launch-a", 60)
+        argvs: list = []
+        deps = _launch_deps(argvs, chair_kinds.QueueProof(name, "launch-a", epoch))
+        real_run = deps.run
+
+        def run(argv: list) -> tuple[int, str]:
+            out = real_run(argv)
+            if len(argvs) == 1:  # while the first launch starts, another worker takes the launch kind over
+                with conn.transaction():
+                    conn.execute("UPDATE leases SET expires_at = '1970-01-01T00:00:00Z' WHERE name = ?", (name,))
+                assert kl.acquire(conn, name, "launch-b", 60) == epoch + 1
+            return out
+
+        deps = type(deps)(**{**deps.__dict__, "run": run})
+        actions = [{"kind": "launch_decompose", "intake_ids": [f"intake/{n}.md"], "epoch": epoch} for n in ("x", "y", "z")]
+        results = perform_batched(
+            actions, lambda: kl.holds(conn, name, "launch-a", epoch), lambda: epoch,
+            lambda batch, current: perform(list(batch), deps, current, False),  # type: ignore[arg-type]
+        )
+        assert len(argvs) == 1 and "intake/x.md" in argvs[0]
+        assert [r["status"] for r in results] == ["done", "fenced", "fenced"]
+    finally:
+        conn.close()
+
+
+def test_a_launch_pass_whose_lease_still_holds_performs_every_launch_in_one_perform():
+    from agent_tools.chair_queue import perform_batched
+
+    calls: list = []
+
+    def perform_batch(batch, current):
+        calls.append([current() for _ in batch])
+        return [{"action": a, "status": "done", "reason": ""} for a in batch]
+
+    actions = [{"kind": "launch_epic", "initiative": i, "epoch": 4} for i in ("a", "b")]
+    results = perform_batched(actions, lambda: True, lambda: 4, perform_batch)  # type: ignore[arg-type]
+    assert calls == [[4, 4]] and [r["status"] for r in results] == ["done", "done"]
+    assert perform_batched(actions, lambda: True, lambda: None, lambda b, c: [{"e": c()}]) == [{"e": -2}]  # type: ignore[arg-type,list-item]
+
+
+def test_a_store_read_that_fails_briefly_fences_only_the_action_read_while_it_failed():
+    """The epoch is asked for before each action, and each asks the store again: one failed `holds` read fences that
+    action alone, and the next runs once the store answers that the lease still holds."""
+    from agent_tools.chair_queue import perform_batched
+
+    answers = iter([True, False, True])
+
+    def perform_batch(batch, current):
+        return [{"action": a, "status": "done" if current() == a["epoch"] else "fenced", "reason": ""} for a in batch]
+
+    actions = [{"kind": "launch_epic", "initiative": i, "epoch": 4} for i in ("a", "b", "c")]
+    results = perform_batched(actions, lambda: next(answers), lambda: 4, perform_batch)  # type: ignore[arg-type]
+    assert [r["status"] for r in results] == ["done", "fenced", "done"]
+
+
+def test_a_launch_worker_pass_plans_the_launch_slot_and_hands_it_to_one_batched_perform():
+    """`chair_queue.run` for `launch`, one pass, over the tick's own planner: every launch the pass plans goes to
+    `perform_batch` in one call, stamped with the worker's epoch; `perform_one` is never used for it."""
+    import datetime as dt
+
+    from agent_tools import chair_queue
+    from tests.test_chair_plan_kinds import _SCENARIOS
+
+    facts, now = _SCENARIOS["launch fills free lanes"]
+    facts = {**facts, "chair_queues": ["launch"]}
+    batches: list = []
+    singles: list = []
+
+    def perform_batch(batch, current):
+        batches.append([(a["kind"], a.get("epoch"), current()) for a in batch])
+        return [{"action": a, "status": "done", "reason": ""} for a in batch]
+
+    clock = iter(float(n) for n in range(1000))
+    ports = chair_queue.Ports(
+        queued=lambda: frozenset({"launch"}), acquire=lambda: 7, renew=lambda e: True, holds=lambda e: e == 7,
+        release=lambda e: None, gather=lambda at: facts, perform_one=lambda a, c: singles.append(a) or [],
+        wait=lambda s: frozenset(), pause=lambda: None, clock=lambda: next(clock),
+        now=lambda: now if isinstance(now, dt.datetime) else dt.datetime.now(dt.UTC), echo=lambda line: None,
+        perform_batch=perform_batch,
+    )
+    assert chair_queue.run("launch", ports, chair_queue.Timing(poll=60, settle=0), once=True, dry_run=False) == 0
+    assert singles == [] and len(batches) == 1
+    assert batches[0] and any(kind == "launch_epic" for kind, _e, _c in batches[0])
+    assert {(e, c) for _k, e, c in batches[0]} == {(7, 7)}

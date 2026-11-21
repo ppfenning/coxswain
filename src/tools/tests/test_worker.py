@@ -311,3 +311,23 @@ def test_every_other_live_lane_of_the_phase_is_an_older_claims_and_is_stopped_be
             {"run": "ship.p1-3", "pid": 13, "state": "running"}]
     assert worker.stale_lanes(live, "ship.p1-3") == [worker.Running("ship.p1-1", 11), worker.Running("ship.p1-2", 12)]
     assert worker.stale_lanes([], "ship.p1-3") == []
+
+
+def test_an_ended_initiative_review_is_judged_by_its_round_and_suite_and_a_phase_by_its_tasks():
+    """D2: the claim's row kind picks the verdict; an initiative review has no tasks of its own to count."""
+    from harness import initiative_review
+    from harness.store_phases import Claim
+
+    review = Claim("ship", initiative_review.QUEUE_PHASE, 2, "2026-11-20T10:01:00Z",
+                   {"attempts": 1, "kind": initiative_review.KIND})
+    passed = initiative_review.SuiteSeen(True, "a" * 40)
+    approved = worker.lane_verdict(review, worker.LaneFacts((), (), (2, "approve"), None, "", passed))
+    assert (approved.kind, approved.outcome) == ("ack", "approved")
+    revised = worker.lane_verdict(review, worker.LaneFacts((), (), (1, "revise"), None, "dedupe"))
+    assert (revised.kind, revised.outcome, revised.reason) == (
+        "ack", "revised", "the initiative review's round 1 asked for revise-1: dedupe")
+    # A build row is `phase_pick.lane_verdict`'s, as before: its approve round acks it; with no round and its task not
+    # rolled up it is retried.
+    build = worker.lane_verdict(_claim(), worker.LaneFacts(("t1",), (), (2, "approve"), None, "", passed))
+    assert (build.kind, build.outcome) == ("ack", "approved")
+    assert worker.lane_verdict(_claim(), worker.LaneFacts(("t1",), (), None, None)).kind == "retry"

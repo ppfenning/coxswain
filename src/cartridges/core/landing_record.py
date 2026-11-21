@@ -107,6 +107,16 @@ class Hold(TypedDict, total=False):
     last_attempt: str  # a merge hold: when the last of them was held; the automatic retry backs off from it
     released: bool  # a merge hold an operator released (`cox lander release`): the next pass tries the merge again
     drift: str  # a merge hold that reconciliation also found a drift on: the drift's reason, kept beside the hold
+    pull_request_only: bool  # D2's review hold: it holds the pull request, never a phase merge (`holds_merges`)
+    review: dict[str, object]  # a merge hold set over a review hold: that review hold, kept beside it (as `drift` is)
+
+
+class ReviewTip(TypedDict, total=False):
+    """D2: the initiative branch's tip the pull-request gate last judged, and how many times in a row the tip moved
+    between a passing suite and the pull request (`lander_review.refresh_step`)."""
+
+    tip: str
+    moves: int
 
 
 class LandingRecord(TypedDict, total=False):
@@ -131,6 +141,7 @@ class LandingRecord(TypedDict, total=False):
     landed_pr: str
     held: Hold | None  # set by the lander's reconcile; absent or None means not held
     retried: Hold | None  # a merge hold the sweep lifted to try again: its count, which the next hold counts on
+    review_tip: ReviewTip  # D2: the tip the gate last judged; the chair re-queues a review that judged another
     lane_model: str  # `phase` (the new model) when stamped so at creation; absent, or anything else, is the old model
 
 
@@ -218,6 +229,15 @@ def phase_move_allowed(old: str, new: str) -> bool:
 
 def initiative_move_allowed(old: str, new: str) -> bool:
     return old == new or new in INITIATIVE_MOVES.get(old, frozenset())
+
+
+def holds_merges(hold: Mapping[str, object] | None) -> bool:
+    """Pure. Whether a hold stops phase merges into the initiative branch: every hold does, except D2's review hold
+    (`pull_request_only`), which holds only the pull request, so the work that answers it can still merge; unless
+    reconciliation has kept a drift beside it, which holds everything as a drift always has."""
+    if not hold:
+        return False
+    return hold.get("pull_request_only") is not True or bool(hold.get("drift"))
 
 
 LaneModel = Literal["task", "phase"]

@@ -51,6 +51,7 @@ __all__ = [
     "STEP_COLUMNS",
     "TASK_KINDS",
     "belongs",
+    "collision_steps",
     "phase_review_rows",
     "put_round",
     "put_step",
@@ -387,3 +388,15 @@ def put_round(conn: Connection, row: Mapping[str, object]) -> int:
     leaves the round the first write decided."""
     sql = insert_ignore(conn.dialect, "review_rounds", ROUND_COLUMNS, _ROUND_KEY)
     return conn.execute(sql, [json_text(row[c]) if c.endswith("_json") else row[c] for c in ROUND_COLUMNS])
+
+
+def collision_steps(conn: Connection) -> list[StepRow]:
+    """Edge. Every `collision` step row (`lane_merge.collision_row`), oldest first by when it finished: the record that
+    two tasks a decompose called independent edited the same files, which the chair counts as a miss of that
+    decompose (`chair_decompose_streak`)."""
+    sql = f"SELECT {', '.join(STEP_COLUMNS)} FROM step_results WHERE kind = {conn.dialect.placeholder}"
+    rows = [
+        cast(StepRow, {c: json_load(v) if c.endswith("_json") else v for c, v in zip(STEP_COLUMNS, r, strict=True)})
+        for r in conn.query_all(sql, ("collision",))
+    ]
+    return sorted(rows, key=lambda row: (str(row["finished_at"] or ""), row["run_id"], row["step"]))

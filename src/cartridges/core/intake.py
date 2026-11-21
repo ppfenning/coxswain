@@ -21,6 +21,11 @@ Consumption must be auditable — a queue that deletes its history cannot answer
     read_queue(root) -> list[dict]      id, kind, title, body, path
     consume(path) -> Path               moved into <parent>/consumed/
 
+The frontmatter `kind` names what the item is, one of `KINDS`: `idea` (the default for a bare note), `feature`,
+`bug` or `hotfix`. The chair queues an initiative whose intake is a hotfix or a bug (`URGENT_KINDS`) ahead of every
+other (band 0 of the phase queue); every other kind waits in band 1, first in first out. A kind outside `KINDS` is
+read as written, never refused, and queues as an ordinary item.
+
 Frontmatter is optional here, unlike `workstore`: a work item is a structured
 thing the harness itself writes, but an intake item is a note someone jotted,
 and a queue that rejects a bare note is a queue nobody uses. When frontmatter
@@ -36,13 +41,23 @@ from pathlib import Path
 
 from core.workstore import WorkStoreError, split_frontmatter
 
-__all__ = ["IntakeError", "consume", "read_queue"]
+__all__ = ["DEFAULT_KIND", "KINDS", "URGENT_KINDS", "IntakeError", "consume", "kind_of", "read_queue"]
+
+DEFAULT_KIND = "idea"
+KINDS = ("idea", "feature", "bug", "hotfix")  # what an intake's frontmatter `kind` names
+URGENT_KINDS = frozenset({"hotfix", "bug"})  # the kinds the chair queues ahead of the rest
 
 _FRONTMATTER = "---"
 
 
 class IntakeError(Exception):
     """A queued item could not be read, or a consume could not complete safely."""
+
+
+def kind_of(raw: object) -> str:
+    """An intake's `kind` as the queue reads it: stripped and lowercase, `idea` when absent or blank."""
+    text = "" if raw is None else str(raw).strip().lower()
+    return text or DEFAULT_KIND
 
 
 def _read_item(path: Path) -> dict[str, str]:
@@ -62,7 +77,7 @@ def _read_item(path: Path) -> dict[str, str]:
 
     return {
         "id": path.stem,
-        "kind": str(meta.get("kind") or "idea"),
+        "kind": kind_of(meta.get("kind")),
         "title": str(meta.get("title") or path.stem),
         "body": body,
         "path": str(path),

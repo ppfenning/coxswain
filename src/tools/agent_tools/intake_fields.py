@@ -4,6 +4,7 @@ import re
 from collections.abc import Collection
 
 from agent_tools.queue_rows import coerce_priority
+from core.intake import KINDS
 
 _VERSION = re.compile(r"v?\d+(\.\d+)+")
 
@@ -46,6 +47,11 @@ def _release_refusals(release: str) -> list[str]:
     return [] if ok else [f"target_release {release!r} must be {shape}"]
 
 
+def _kind_refusals(kind: str) -> list[str]:
+    ok = kind == "" or kind.lower() in KINDS
+    return [] if ok else [f"kind {kind!r} is not known; valid kinds: {', '.join(KINDS)} (a hotfix or a bug goes first)"]
+
+
 def validate(
     repo: str,
     epic: str | None,
@@ -53,6 +59,7 @@ def validate(
     target_release: str | None,
     known_repos: Collection[str],
     known_epics: Collection[str],
+    kind: str | None = None,
 ) -> list[str]:
     """One-line refusals, each carrying the valid choices. Empty when every field is valid."""
     return [
@@ -60,6 +67,7 @@ def validate(
         *_epic_refusals(_text(epic), known_epics),
         *_priority_refusals(priority),
         *_release_refusals(_text(target_release)),
+        *_kind_refusals(_text(kind)),
     ]
 
 
@@ -68,12 +76,14 @@ def normalise(
     epic: str | None,
     priority: object,
     target_release: str | None,
+    kind: str | None = None,
 ) -> dict[str, object]:
-    """Accepted values as frontmatter fields: int priority, release without its v, empties dropped."""
+    """Accepted values as frontmatter fields: int priority, release without its v, kind in lowercase, empties dropped."""
     candidates = {
         "repo": _text(repo),
         "epic": _text(epic),
         "priority": _priority(priority) if _priority_given(priority) else None,
         "target_release": _text(target_release).removeprefix("v"),
+        "kind": _text(kind).lower(),
     }
     return {key: value for key, value in candidates.items() if value is not None and value != ""}

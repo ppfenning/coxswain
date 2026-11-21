@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from agent_tools import lane_prereqs
-from harness import phase_pick
+from harness import initiative_review, phase_pick
 
 if TYPE_CHECKING:
     from harness.store_phases import Claim
@@ -138,6 +138,16 @@ class LaneFacts:
     last_round: tuple[int, str] | None
     smoke: phase_pick.SmokeSeen | None
     reason: str = ""
+    suite: initiative_review.SuiteSeen | None = None  # an initiative review's: the suite at the tip its round reviewed
+
+
+def lane_verdict(claim: Claim, facts: LaneFacts) -> phase_pick.Verdict:
+    """The ack or nack for a claim whose lane ended: an initiative review's by its round and suite
+    (`initiative_review.lane_verdict`), any other phase's by its tasks, round and smoke (`phase_pick.lane_verdict`)."""
+    if claim.row.get("kind") == initiative_review.KIND:
+        return initiative_review.lane_verdict(facts.last_round, facts.suite, attempts_of(claim), reason=facts.reason)
+    return phase_pick.lane_verdict(facts.tasks, facts.rolled_up, facts.last_round, attempts_of(claim),
+                                   smoke=facts.smoke, reason=facts.reason)
 
 
 def lane_facts(task_rows: Sequence[Mapping[str, object]], rollups: Sequence[Mapping[str, object]], phase: str,
@@ -372,9 +382,7 @@ def reap(ports: Ports, leases: Leases) -> None:
                 else:
                     settle(ports, leases, claim, phase_pick.verdict([], attempts_of(claim), launch_error=f"the launch exited {code}: {last}"))
         elif isinstance(held.run, Running) and not ports.alive(held.run):
-            facts = ports.lane_facts(claim, held.run.run_id)
-            settle(ports, leases, claim, phase_pick.lane_verdict(facts.tasks, facts.rolled_up, facts.last_round,
-                                                                 attempts_of(claim), smoke=facts.smoke, reason=facts.reason))
+            settle(ports, leases, claim, lane_verdict(claim, ports.lane_facts(claim, held.run.run_id)))
         elif isinstance(held.run, Running):
             mark, stalled = phase_pick.lane_stalled(held.mark, ports.lane_mark(held.run), ports.monotonic())
             leases.see(claim, mark)

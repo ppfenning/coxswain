@@ -148,6 +148,7 @@ ROUTE_COMMANDS = [
             commands.Arg(("--epic",), {"default": None, "help": "with --intake: the epic id this intake belongs to; it must already exist"}),
             commands.Arg(("--priority",), {"default": None, "help": "with --intake: a whole number; higher runs first"}),
             commands.Arg(("--target-release",), {"default": None, "help": "with --intake: the release it ships in, a dotted version such as 2026.11.6"}),
+            commands.Arg(("--kind",), {"default": None, "help": "with --intake: what it is, one of idea, feature, bug or hotfix; a hotfix or bug is queued first"}),
         ),
         "agent_tools.cli:_route_file", False, (),
     ),

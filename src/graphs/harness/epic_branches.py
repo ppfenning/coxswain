@@ -14,7 +14,7 @@ from typing import cast
 from core import landing_record, workstore
 from core.jsontypes import is_mapping
 from core.landing import TemplateError, initiative_branch_name, pr_branch_name, resolve_push_initiative
-from core.landing_record import INTEGRATE_PHASE
+from core.landing_record import INTEGRATE_PHASE, lane_model_of
 from harness import bounded_proc, courier_adapter, landing_git, landing_ops, landing_store
 from harness.check_gate import repo_gate_lock
 from harness.checks import outside_surface_files, run_checks
@@ -270,7 +270,8 @@ def _initiative_branch_for(ctx: Ctx, initiative: Mapping[str, object]) -> str:
 
 def start_initiative(ctx: Ctx, initiative: Mapping[str, object]) -> str:
     """Edge. Start the initiative's landing record on first use (cutting its branch from the parent) and return the
-    branch name. A record that exists is kept as it is: the parent it names no longer floats."""
+    branch name. A record that exists is kept as it is: the parent it names no longer floats. The record is stamped
+    with the initiative's own `lane_model`, as `cox lander adopt` stamps it, so the lander merges it by its model."""
     name = _initiative_branch_for(ctx, initiative)
     # Another host may have cut it and merged phases into it: its copy on origin comes first, forward only.
     fetch_phase_branches(ctx, [name])
@@ -285,6 +286,7 @@ def start_initiative(ctx: Ctx, initiative: Mapping[str, object]) -> str:
             ctx_store(ctx).conn, ctx.repo, initiative=ctx.initiative_id, branch=name,
             parent=ctx.default_ref.removeprefix("origin/"), parent_ref=ctx.default_ref, now=_landing_stamp(),
             land_at=ctx.land_at, epic=epic if isinstance(epic, str) else None,
+            lane_model=lane_model_of(initiative.get("lane_model")),
         ),
         END_WRITE_WINDOW_S,
     )

@@ -159,6 +159,45 @@ the intake and pass `--set`, `--up`, `--down`, `--top` or `--bottom`:
 cox route priority fix-login-redirect --top
 ```
 
+### The order of the phase queue
+
+A worker claims the ready phases of `lane_model: phase` initiatives in this
+order:
+
+1. A phase whose intake was filed as a hotfix or a bug comes first. Every
+   other phase comes after.
+2. Within each of those two groups, the initiative with the higher priority
+   goes first: the priority the docket ranks it by, which
+   `cox route priority <initiative> --top` (or `--set`, `--up`, `--down`,
+   `--bottom`) sets. Priority never moves a phase between the two groups.
+3. At equal priority, the initiative queued first goes first. Its time is the
+   first time any of its phases was queued, by the store's clock, so work that
+   comes back after a review keeps its place.
+4. Initiatives that ship in the same `target_release` are claimed together, at
+   the place of the first of them in that order. A release whose first member
+   was queued long ago pulls its newly filed members forward to that place.
+5. Every ready phase has its own row. A worker that can run only a later row
+   (another repository, say) takes it at once, so one repository's work never
+   waits behind another's.
+
+Each tick places every row a worker could claim, including one an older worker
+parked `built` and one the docket no longer lists, around the rows workers have
+claimed, so no two rows ever share a place in the queue.
+
+An intake's kind is its frontmatter `kind`: `idea` (the default), `feature`,
+`bug` or `hotfix`. Set it when you file the intake:
+
+```sh
+cox route file --intake --repo coxswain --title "Fix the login redirect" --kind hotfix --body -
+```
+
+A decompose that keeps missing is reported once, as `decompose_stalled`. A miss
+is a decompose run that wrote no task items, or one whose tasks collided: the
+lane's merge agent wrote a `collision` step because two tasks the decompose
+called independent edited the same files. A collision counts against the
+decompose run of its initiative that was launched last before it, and the
+report names each collision with its files.
+
 ### Waiting on other work with after
 
 An intake can carry an `after` key. It lists the initiatives or intakes that
@@ -428,7 +467,7 @@ does not know.
 
 ### Queue workers
 
-Four kinds of the tick's work can run as their own process instead:
+Five kinds of the tick's work can run as their own process instead:
 
 - housekeeping: stale tickets, lane tuning, stalled runs, idle lanes, lapsed
   logins, and the periodic sweep above;
@@ -436,15 +475,17 @@ Four kinds of the tick's work can run as their own process instead:
 - quarantine: the triage of a failed task (a triage request, a hold for a
   person, or a `needs chair` line), restored approvals, widened tickets, held
   files, repeated failures and review PRs;
-- decompose: launching a decompose for a new intake, and the reports of empty
-  and stalled decomposes.
+- decompose: the reports of empty and stalled decomposes, and the gates that
+  hold a decompose back;
+- launch: every run the chair starts (a new epic, a relaunch, a retry, a
+  rescue, and a decompose for a new intake), the branch work that goes with
+  them, and the phase queue's rows for `lane_model: phase` initiatives.
 
-Launches, relaunches, retries and rescues stay on the tick. The tick stays the
-default.
+The tick stays the default.
 
 ```yaml
 chair:
-  queues: [housekeeping, watch, quarantine, decompose]
+  queues: [housekeeping, watch, quarantine, decompose, launch]
 ```
 
 With a kind listed, the tick no longer plans it, and
@@ -475,23 +516,36 @@ file:
 rm <workspace_dir>/runs/chair-queue-lease-seen
 ```
 
-With quarantine listed, the tick does not launch or relaunch an initiative in
-the tick where the quarantine worker owns a triage request or hold for one of
-its tasks. A launch before the worker's write would build the initiative
-without the triaged task. The tick launches it on its next pass, once the
-worker has flagged the task.
+When the triage and the launch are made by two processes (quarantine is
+listed, or launch is), the launcher does not launch or relaunch an initiative
+in the pass where the triage has a request or hold for one of its tasks. A
+launch before the triage's write would build the initiative without the
+triaged task. It launches on the next pass, once the task is flagged.
 
-A decompose worker launches its decompose beside the tick's live loop lock,
-which is held under the tick's label. The launch carries the worker's lease
-(`--queue-lease chair:decompose --queue-holder <holder> --queue-epoch <n>`).
-The loop guard lets it through only while the store says that holder holds
-`chair:decompose` at that epoch, so a worker that lost its lease is refused. The
-launch cap is applied when the tick and the worker plan, not when they launch,
-so a worker's decompose launch can fill a lane past the cap by one.
+Exactly one process starts runs: whoever holds the launch kind, the tick or the
+one worker holding `chair:launch`. The launch cap is applied when that process
+plans, and the same process performs the launches it planned, so two launches
+never race for the last free lane. No other kind launches anything; before C5
+the decompose worker launched decomposes, and a decompose launch from it could
+fill a lane past the cap by one.
+
+The launch worker performs its pass in one batch, as the tick does, so a
+relaunch still waits on its branch clear and launches on one host are still
+staggered. Before each action it asks the store whether it still holds
+`chair:launch`, and it fences the action when the answer is no. A lease another
+worker took stays lost, so every later action is fenced too. A store read that
+fails only briefly fences only the actions asked about while it failed.
+A launch command that hangs is killed after 15 minutes and recorded as a failed
+launch, so a hung launch cannot hold the launch kind for good.
+Its launches start beside the tick's live loop lock, which is held under the
+tick's label. Each carries the worker's lease
+(`--queue-lease chair:launch --queue-holder <holder> --queue-epoch <n>`), and
+the loop guard lets it through only while the store says that holder holds
+`chair:launch` at that epoch, so a worker that lost its lease is refused.
 
 A worker wakes on a write to a table its kind reads: `work_items` and `runs` for
 housekeeping; `landing_records` and `land_queue` for the watch; and
-`work_items`, `runs` and `phase_queue` for quarantine and decompose. A phase
+`work_items`, `runs` and `phase_queue` for quarantine, decompose and launch. A phase
 that finishes moves its `phase_queue` row, which wakes the triage within
 seconds, so no `run_exited` courier line is needed for it. It passes at
 most once per `--min-gap` seconds (default 30), and at least every `--poll`
@@ -509,6 +563,12 @@ Every machine needs a `cox` that knows `chair: queues:` before any profile
 sets it. An older `cox` refuses a profile with the key, so a rollback to one
 also takes the key out. Only the flow list form, `queues: [a, b]`, is
 accepted.
+
+Every chair machine must run a `cox` with the launch kind (C5) before any
+profile lists `decompose` or `launch`. A C4 decompose worker still launches
+its decomposes itself under `chair:decompose`. Beside a C5 tick or launch
+worker, which launches decomposes too, both can launch the same intake. Stop
+every `cox chair worker`, upgrade every machine, and only then list either kind.
 
 ## Lane hosts
 

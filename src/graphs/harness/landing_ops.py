@@ -195,8 +195,9 @@ def _merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: 
     record = ls.get_record(conn, initiative)
     if record is None:
         return PhaseMerge("error", initiative, phase, detail=f"{initiative} has no landing record")
-    if record.get("held"):
-        # The lander holds an initiative whose record and origin's branch disagree: nothing merges into it until they agree.
+    if lr.holds_merges(record.get("held")):
+        # The lander holds an initiative whose record and origin's branch disagree: nothing merges into it until they
+        # agree. A hold of the pull request alone (D2's review hold) lets the work that answers it merge.
         why = (record.get("held") or {}).get("reason") or "its record and its branch disagree"
         return PhaseMerge("not_ready", initiative, phase, detail=f"{initiative} is held: {why}")
     state = lr.phase_state(record, phase, tasks)

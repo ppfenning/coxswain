@@ -15,3 +15,10 @@ up like any task, then smokes and reviews again. `reject` quarantines the
 phase with the reviewer's reason. The loop's rules are `harness/review_loop.py`:
 at most three rounds an episode, and a revise the budget cannot buy finishes the
 phase quarantined, "revision budget spent".
+
+The same graph reviews a whole new-model initiative once every phase has merged
+(`scope: initiative`): the initiative branch's diff against its parent, judged
+against the initiative's own goal. Its `revise` asks for a revision phase of its
+own, which the chair writes and a lane builds; on `approve` the lane runs the
+full suite at the tip, and the lander opens the pull request only on both
+(`harness/initiative_review.py`, `docs/methodology/landing.md`).

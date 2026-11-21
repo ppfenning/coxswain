@@ -6,9 +6,10 @@
   Then the tick's next pass, live, relaunches it, and the run it starts reads the flag: it triages t1 (the scripted
   triage holds it for a person), records the verdict and takes the flag off.
 - A worker's decompose launch beside the tick's live lock. The tick (`cox chair run`, live) holds the loop lock under
-  its own label; the decompose worker's real `launch_decompose` (the harness's scripted runner, offline) is let past
-  the loop guard because the store says the worker holds `chair:decompose` at that epoch. The same launch naming a
-  lease the store does not hold, or an epoch it has moved past, is refused.
+  its own label; the launch worker's real `launch_decompose` (the harness's scripted runner, offline) is let past the
+  loop guard because the store says the worker holds `chair:launch` at that epoch (C5: every launch is the launch
+  kind's, so a decompose worker launches nothing). The same launch naming a lease the store does not hold, or an epoch
+  it has moved past, is refused.
 
 Nothing is stubbed.
 """
@@ -160,7 +161,7 @@ def test_the_ticks_live_relaunch_after_the_workers_triage_runs_with_the_flag_and
     assert t1["state"] == "blocked", why
 
 
-# -- a worker's decompose launch beside the tick's live lock --------------------------------------------------------
+# -- the launch worker's decompose launch beside the tick's live lock --------------------------------------------------------
 
 DECOMPOSE_SKILLS = {**plan.SMOKE_SKILLS, "decompose": "smoke-skills:decompose", "review_adversary": "smoke-skills:review-adversary"}
 
@@ -183,16 +184,16 @@ def plan_team(launchable) -> str:
     return next(p.name for p in launchable.cartridges.iterdir() if p.name != "base")
 
 
-# A worker that held chair:decompose and lost it: another took the lease over, so the store's epoch moved past the
+# A worker that held chair:launch and lost it: another took the lease over, so the store's epoch moved past the
 # first one's. Prints the first holder's epoch, now stale.
 LOST = """import json
 from harness import store_chair_lease
 from harness.store_dialect import connect
 conn = connect({url!r})
 try:
-    first = store_chair_lease.acquire(conn, "chair:decompose", "decompose-a", 60)
-    store_chair_lease.release(conn, "chair:decompose", "decompose-a", first)
-    store_chair_lease.acquire(conn, "chair:decompose", "decompose-b", 60)
+    first = store_chair_lease.acquire(conn, "chair:launch", "launch-a", 60)
+    store_chair_lease.release(conn, "chair:launch", "launch-a", first)
+    store_chair_lease.acquire(conn, "chair:launch", "launch-b", 60)
 finally:
     conn.close()
 print(json.dumps(first))
@@ -234,10 +235,10 @@ def _chair_session(sandbox, timeout: float = 120) -> str:
     raise AssertionError("the tick wrote no chair lock")
 
 
-def test_a_decompose_launch_from_the_worker_goes_past_the_ticks_live_lock_under_its_held_lease(launchable):
+def test_a_decompose_launch_from_the_launch_worker_goes_past_the_ticks_live_lock_under_its_held_lease(launchable):
     sandbox = launchable.sandbox
     _decompose_ready(launchable)
-    _queue(_profile(sandbox), "decompose")
+    _queue(_profile(sandbox), "decompose, launch")
     text = plan.work_item_text({"title": "A new idea", "repo": "app"}, "Build the new idea.")
     sandbox.write("intake/n1.md", text)  # the idea file the decompose reads, and its row in the store
     imported = sandbox.cox("route", "import")
@@ -245,19 +246,21 @@ def test_a_decompose_launch_from_the_worker_goes_past_the_ticks_live_lock_under_
     tick = Tick(sandbox)
     try:
         session = _chair_session(sandbox)
-        worker = sandbox.cox("chair", "worker", "--kind", "decompose", "--once", "--settle", "0", "--label", "decompose-worker", timeout=600)
+        decompose = sandbox.cox("chair", "worker", "--kind", "decompose", "--once", "--settle", "0", "--label", "decompose-worker", timeout=600)
+        worker = sandbox.cox("chair", "worker", "--kind", "launch", "--once", "--settle", "0", "--label", "launch-worker", timeout=600)
         out = tick.stop() if tick.proc.poll() is None else tick.proc.communicate()[0]
     finally:
         if tick.proc.poll() is None:
             tick.stop()
-    assert session != "decompose-worker", session
+    assert session != "launch-worker", session
+    assert decompose.returncode == 0 and "launch_decompose" not in decompose.stdout, decompose.stdout + decompose.stderr
     rows = _decompose_rows(sandbox.store_url)
     why = worker.stdout + worker.stderr + "\n--- rows ---\n" + json.dumps(rows, default=str) + "\n--- tick ---\n" + out
     assert worker.returncode == 0, why
     assert "1x launch_decompose done" in worker.stdout, why
     assert [(r[0], r[2]) for r in rows] == [(1, "done")], why  # once, under the worker's first epoch
     # The loop guard met the tick's live lock and let the launch past on the worker's lease, not on an idle lock.
-    assert f"decompose launch under chair:decompose at epoch 1, beside {session}'s live loop" in rows[0][3], why
+    assert f"decompose launch under chair:launch at epoch 1, beside {session}'s live loop" in rows[0][3], why
     tasks = {r["task_id"] for r in sandbox.store_rows() if r["initiative"] == "n1" and r["kind"] == "task"}
     assert tasks, why  # the decompose ran to the end and wrote its plan
 
@@ -270,14 +273,14 @@ def test_a_decompose_launch_naming_a_lease_the_store_does_not_hold_is_refused_be
     try:
         session = _chair_session(sandbox)
         argv = ["route", "launch", "decompose", "--idea", str(sandbox.workspace / "intake" / "n1.md"), "--initiative-id", "n1",
-                "--no-claim", "--label", "decompose-worker"]
+                "--no-claim", "--label", "launch-worker"]
         stale = sandbox.python_json(LOST.format(url=sandbox.store_url))
         # the worker that lost the lease, its stale epoch; the new holder at an epoch the store never gave; nobody
-        for holder, epoch in (("decompose-a", stale), ("decompose-b", stale + 7), ("nobody", 1)):
-            refused = sandbox.cox(*argv, "--queue-lease", "chair:decompose", "--queue-holder", holder, "--queue-epoch", str(epoch), timeout=180)
+        for holder, epoch in (("launch-a", stale), ("launch-b", stale + 7), ("nobody", 1)):
+            refused = sandbox.cox(*argv, "--queue-lease", "chair:launch", "--queue-holder", holder, "--queue-epoch", str(epoch), timeout=180)
             assert refused.returncode == 2, refused.stdout + refused.stderr
             assert f"refusing: the landing loop is held by {session} (live)" in refused.stdout, refused.stdout
-            assert f"chair:decompose is not held by {holder} at epoch {epoch}" in refused.stdout, refused.stdout
+            assert f"chair:launch is not held by {holder} at epoch {epoch}" in refused.stdout, refused.stdout
         plain = sandbox.cox(*argv, timeout=180)
         assert plain.returncode == 2 and "refusing: the landing loop is held by" in plain.stdout, plain.stdout
     finally:

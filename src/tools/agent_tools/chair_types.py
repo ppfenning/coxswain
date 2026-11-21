@@ -628,6 +628,12 @@ class PhaseQueueFacts(TypedDict):
     closed: list[str]  # the initiatives whose store row is done or dropped
     tasks: NotRequired[list[dict[str, object]]]  # the phase initiatives' task rows, with state and merged_commit
     rollups: NotRequired[list[dict[str, object]]]  # their roll-up step rows (`store_phases.rollup_rows`), oldest first
+    records: NotRequired[list[dict[str, object]]]  # their landing records, for the initiative review (D2)
+    initiative_rounds: NotRequired[dict[str, list[dict[str, object]]]]  # each one's own review rounds (phase '')
+    releases: NotRequired[dict[str, str]]  # initiative to its `target_release`, from its intake or its own row
+    # initiative to its explicit priority (`work_items.priority`, higher first): the docket's, `cox route priority`
+    priorities: NotRequired[dict[str, int]]
+    kinds: NotRequired[dict[str, str]]  # initiative to its intake's `kind` (`core.intake.KINDS`): a hotfix or bug goes first
 
 
 class Facts(TypedDict):

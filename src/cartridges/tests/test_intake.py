@@ -96,3 +96,17 @@ def test_consume_returns_the_new_path(tmp_path: Path) -> None:
     result = consume(path)
     assert result == root / "consumed" / "idea.md"
     assert not path.exists()
+
+
+def test_the_kind_is_read_in_lowercase_and_a_blank_one_is_an_idea(tmp_path: Path) -> None:
+    root = tmp_path / "intake"
+    write(root, "a.md", "---\nkind: HotFix\n---\n\nUrgent.\n")
+    write(root, "b.md", "---\nkind: ''\n---\n\nPlain.\n")
+    write(root, "c.md", "---\nkind: chore\n---\n\nRead as written.\n")
+    assert [item["kind"] for item in read_queue(root)] == ["hotfix", "idea", "chore"]
+
+
+def test_the_urgent_kinds_are_a_hotfix_and_a_bug_and_both_are_known() -> None:
+    from core.intake import KINDS, URGENT_KINDS
+
+    assert {"hotfix", "bug"} == URGENT_KINDS and set(KINDS) >= URGENT_KINDS
