@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from core.cartridge import _DEFAULT_CARTRIDGES_DIR, _main, load
 from core.skills import index_from_roots
 
@@ -109,6 +111,34 @@ def test_second_init_without_force_exits_2_and_changes_nothing(tmp_path, capsys)
     assert exit_code == 2
     assert yaml_path.read_text(encoding="utf-8") == before
     assert "wrote" not in out
+
+
+def test_refused_init_leaves_a_hand_edited_cartridge_byte_identical(tmp_path, capsys):
+    cartridges_dir = tmp_path / "cartridges"
+    assert _main(["init", "acme", "--cartridges-dir", str(cartridges_dir)]) == 0
+    yaml_path = cartridges_dir / "acme" / "cartridge.yaml"
+    yaml_path.write_text("# keep me\nteam: acme\ncustom_key: 1\n", encoding="utf-8")
+    before = yaml_path.read_bytes()
+    capsys.readouterr()
+
+    exit_code = _main(["init", "acme", "--cartridges-dir", str(cartridges_dir)])
+    err = capsys.readouterr().err
+
+    assert exit_code == 2
+    assert str(yaml_path) in err
+    assert "already exists" in err
+    assert yaml_path.read_bytes() == before
+
+
+def test_init_help_names_what_force_loses(capsys):
+    with pytest.raises(SystemExit) as raised:
+        _main(["init", "--help"])
+    out = capsys.readouterr().out
+
+    assert raised.value.code == 0
+    force_tail = " ".join(out[out.index("--force") :].split())
+    assert "values" in force_tail
+    assert "comments" in force_tail
 
 
 def test_force_rewrites_the_yaml(tmp_path):
