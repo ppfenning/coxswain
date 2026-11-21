@@ -30,7 +30,7 @@ def test_the_carry_runs_the_same_seven_commands_as_main_each_once():
     assert carry_commands(MAIN_TEXT) == MAIN_COMMANDS  # an unmarked file: every command line, in order, as before
     carried = carry_commands(_real())
     assert sorted(carried) == sorted(MAIN_COMMANDS) and len(carried) == len(MAIN_COMMANDS), carried
-    assert 'pytest -q -rs smoke -m "not forge" -n 4' not in carried  # the phase section is the phase lane's alone
+    assert 'pytest -q -rs smoke -m "not forge"' not in carried  # the phase section is the phase lane's alone
 
 
 def test_a_land_checks_what_main_checked_and_its_ticket_gate_is_the_cartridges_alone(tmp_path, monkeypatch):

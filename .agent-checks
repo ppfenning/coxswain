@@ -30,10 +30,10 @@ python .github/check_types.py
 # The smoke suite without the forge (docs/smoke.md, "The phase check needs no forge"): real cox from this tree against
 # real git and a throwaway Postgres container, and no Forgejo. With no docker on PATH it skips and says why (-rs); a
 # docker whose daemon does not answer fails unless the host sets COX_SMOKE_SKIP_BROKEN_DOCKER=1.
-# In 4 xdist workers, each its own smoke session (its own install, template and databases; docs/smoke.md), and under
-# its own timeout (`# timeout:`): serially the suite is CI's three ~170 s shards end to end, past the runner's 600 s
-# default (E1, 2026-11-21: a harness fault on a worker, which a retry of the same command repeats).
-pytest -q -rs smoke -m "not forge" -n 4  # timeout: 2400
+# Serially, under its own timeout (`# timeout:`): the suite is CI's three ~170 s shards end to end, past the runner's
+# 600 s default (E1, 2026-11-21: a harness fault on a worker, which a retry of the same command repeats). It stays
+# serial: one session, one build of this tree, and no worker count the lane's own cap does not set.
+pytest -q -rs smoke -m "not forge"  # timeout: 2400
 
 # level: initiative
 # The full suite, which gates the new model's one pull request (D2: the initiative review's `suite` step, run on the

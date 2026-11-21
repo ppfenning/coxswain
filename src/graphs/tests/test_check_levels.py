@@ -176,6 +176,34 @@ def test_a_bad_timeout_is_a_failing_task_check_and_its_line_runs_nowhere(value):
     assert task[1]["cmd"].endswith("exit 2") and for_level(parsed, "phase") == []
 
 
+@pytest.mark.parametrize(("line", "want"), [
+    ("x  # new model only  # timeout: 90", {"cmd": "x", "name": "x", "timeout": 90, "new_model_only": True}),
+    ("x  # timeout: 90  # new model only", {"cmd": "x", "name": "x", "timeout": 90, "new_model_only": True}),
+    ("x  # touched only  # timeout: 90",
+     {"cmd": "x", "name": "x", "timeout": 90, "new_model_only": True, "touched_only": True}),
+    ("x  # timeout: 90  # touched only",
+     {"cmd": "x", "name": "x", "timeout": 90, "new_model_only": True, "touched_only": True}),
+    ("x  # timeout: 90  # fix: f", {"cmd": "x", "name": "x  # fix: f", "fix": "f", "timeout": 90}),
+    ("x  # fix: f  # timeout: 90", {"cmd": "x", "name": "x  # fix: f", "fix": "f", "timeout": 90}),
+    ("x  # new model only  # fix: f --all  # timeout: 90",
+     {"cmd": "x", "name": "x  # fix: f --all", "fix": "f --all", "timeout": 90, "new_model_only": True}),
+])
+def test_the_trailing_marks_read_the_same_in_any_order(line, want):
+    assert repo_checks(line + "\n") == [want]
+
+
+@pytest.mark.parametrize(("line", "why"), [
+    ("x  # timeout: 90  # timeout: 60", "the mark '# timeout: 90' is given twice"),
+    ("x  # new model only  # fix: f  # new model only", "the mark '# new model only' is given twice"),
+    ("x  # touched only y", "misplaced mark '# touched only'"),
+    ("x  # fix: f  # timeout: 90 y", "misplaced mark '# timeout:'"),
+])
+def test_a_mark_given_twice_or_left_inside_the_command_is_a_failing_task_check(line, why):
+    parsed = repo_checks(f"# level: phase\n{line}\n")
+    assert [c["name"] for c in parsed] == [f".agent-checks line 2: {why}"]
+    assert parsed[0]["cmd"].endswith("exit 2") and for_level(parsed, "phase") == []
+
+
 def test_for_level_refuses_a_level_that_does_not_exist():
     assert LEVELS == ("task", "phase", "initiative")
     with pytest.raises(ValueError, match="unknown check level 'ticket'"):
@@ -208,7 +236,7 @@ def test_this_repositorys_file_names_the_three_levels():
     parsed = _real()
     task = [c["cmd"] for c in for_level(parsed, "task")]
     assert not [c for c in task if "smoke" in c]  # no phase-model task runs the smoke
-    assert [c["cmd"] for c in for_level(parsed, "phase")] == ['pytest -q -rs smoke -m "not forge" -n 4']
+    assert [c["cmd"] for c in for_level(parsed, "phase")] == ['pytest -q -rs smoke -m "not forge"']
     # E1: each wider line carries its own timeout, well past the runner's 600 s default the serial smoke outran.
     assert [c.get("timeout") for c in for_level(parsed, "phase")] == [2400]
     assert [c.get("timeout") for c in for_level(parsed, "initiative")] == [1800, 1800, 1800, 3600, 1800]
