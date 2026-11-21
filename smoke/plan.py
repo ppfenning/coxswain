@@ -7,6 +7,7 @@ by the smoke tests themselves.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import re
@@ -891,3 +892,79 @@ def gh_env(proxy: str, config_dir: str) -> dict[str, str]:
 def gh_remote_url(slug: str) -> str:
     """The origin URL of a clone of `slug` on the replay's host."""
     return f"https://{GH_HOST}/{slug}.git"
+
+
+# --- the phase check needs no forge (L3) ---------------------------------------------------------------------------
+
+# The git-only behaviours the lander and the phase roll-up rely on, each proven against bare origins and the local
+# forge, never the sandbox forge. `smoke/test_phase_check_no_forge.py` asserts that every node id here names a test
+# without the `forge` mark, so the phase-level smoke (`-m "not forge"`, which starts no Forgejo) still proves them.
+GIT_ONLY_BEHAVIOURS: Mapping[str, tuple[str, ...]] = {
+    "push after merge": (
+        "smoke/test_lander_push.py::test_a_phase_the_lander_merges_is_on_origin_before_it_is_recorded_merged",
+        "smoke/test_lander_lanes.py::test_a_repair_merged_here_but_never_pushed_is_pushed_on_the_next_pass_and_lands_with_the_phase",
+    ),
+    "re-merge": (
+        "smoke/test_lander_push.py::test_a_phase_rebuilt_after_its_merge_is_merged_again_and_the_initiative_branch_carries_it",
+    ),
+}
+# Behaviours whose tests L1 (#1299) adds. Each entry fails the meta-test once its test exists, so it moves into
+# GIT_ONLY_BEHAVIOURS the day L1 lands instead of going stale here. Empty once it has.
+GIT_ONLY_PENDING: Mapping[str, tuple[str, ...]] = {
+    "roll-up": (
+        "smoke/test_phase_lane.py::test_three_tasks_build_in_parallel_each_pushed_as_it_lands_and_the_approved_round_approves_them",
+    ),
+    "resume from task commits": (
+        "smoke/test_phase_lane.py::test_a_frozen_lane_is_stopped_by_the_next_claim_which_builds_only_what_is_missing",
+        "smoke/test_phase_lane.py::test_a_lane_frozen_between_its_claim_check_and_its_push_writes_no_row_and_the_next_claim_adopts_the_push",
+    ),
+}
+
+
+def split_node_id(node: str) -> tuple[str, str]:
+    """`path::name` as (path, name); a node id without a test name is a ValueError."""
+    path, sep, name = node.partition("::")
+    if not (sep and path and name) or "::" in name:
+        raise ValueError(f"not a module-level test node id: {node!r}")
+    return path, name
+
+
+def _mark_names(node: ast.expr) -> set[str]:
+    """The `pytest.mark.<name>` marks `node` carries: one mark, a call of one, or a list or tuple of them."""
+    if isinstance(node, ast.List | ast.Tuple):
+        return {name for element in node.elts for name in _mark_names(element)}
+    target = node.func if isinstance(node, ast.Call) else node
+    if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Attribute) and target.value.attr == "mark":
+        return {target.attr}
+    return set()
+
+
+def unmarked_tests(source: str, mark: str) -> frozenset[str]:
+    """The module-level test functions of `source` that do not carry `mark`, neither from the module's `pytestmark` nor
+    from a decorator of their own."""
+    tree = ast.parse(source)
+    module = {name for statement in tree.body if isinstance(statement, ast.Assign)
+              and any(isinstance(target, ast.Name) and target.id == "pytestmark" for target in statement.targets)
+              for name in _mark_names(statement.value)}
+    if mark in module:
+        return frozenset()
+    return frozenset(statement.name for statement in tree.body
+                     if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef) and statement.name.startswith("test_")
+                     and mark not in {name for decorator in statement.decorator_list for name in _mark_names(decorator)})
+
+
+def callers_of(source: str, function: str) -> frozenset[str]:
+    """The module-level functions of `source` whose body calls `function`, by bare name or as an attribute."""
+    def calls(body: ast.AST) -> bool:
+        return any(isinstance(node, ast.Call) and (
+            (isinstance(node.func, ast.Name) and node.func.id == function)
+            or (isinstance(node.func, ast.Attribute) and node.func.attr == function)) for node in ast.walk(body))
+    return frozenset(statement.name for statement in ast.parse(source).body
+                     if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef) and calls(statement))
+
+
+def forge_users(fixtures_by_test: Mapping[str, Iterable[str]], marked: Iterable[str], fixture: str = "forge") -> list[str]:
+    """The tests (node id -> the closure of fixtures it requests) that request `fixture` and are not in `marked`: each
+    would start the sandbox forge in a run that deselects the forge tests."""
+    skip = set(marked)
+    return sorted(node for node, names in fixtures_by_test.items() if node not in skip and fixture in set(names))
