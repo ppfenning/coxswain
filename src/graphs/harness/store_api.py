@@ -577,11 +577,12 @@ def phase_queue_rows(url: str) -> list[dict[str, object]] | Failed | NotAvailabl
     return _read(url, store_phases.list_rows)
 
 
-def phase_review_facts(url: str, initiatives: Sequence[str]) -> tuple[list[dict[str, object]], ...] | Failed | NotAvailable:
-    """What the chair's phase-queue planner reads besides the rows, in one connection: the roll-up step rows, the
-    task rows with their `merged_commit`, and each phase's last review round."""
-    return _read(url, lambda c: (store_phases.rollup_rows(c, initiatives), store_phases.task_commits(c, initiatives),
-                                 store_phases.last_rounds(c, initiatives)))
+def phase_review_facts(
+    url: str, initiatives: Sequence[str],
+) -> tuple[list[dict[str, object]], list[dict[str, object]]] | Failed | NotAvailable:
+    """What the chair's phase-queue planner reads besides the rows, in one connection: the roll-up step rows and the
+    task rows with their `merged_commit`."""
+    return _read(url, lambda c: (store_phases.rollup_rows(c, initiatives), store_phases.task_commits(c, initiatives)))
 
 
 class _Refused(Exception):

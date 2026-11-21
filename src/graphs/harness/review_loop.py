@@ -18,7 +18,9 @@ the one after the last row, whatever it was.
 
 A revise whose revision the budget cannot buy is not a revision: the lane records that round as a quarantine with
 `BUDGET_SPENT` as its reason (`recorded`), so the store holds the verdict that finished the phase and the worker
-reads it as every other round's.
+reads it as every other round's. A revise the budget stops buying only after it was written (the revision's own
+cost spent the rest, or the budget or cap was lowered) gets a quarantine round of its own (`unwritten`), for the same
+reason.
 """
 
 from __future__ import annotations
@@ -42,6 +44,7 @@ __all__ = [
     "revision_id",
     "revision_task",
     "rounds_of",
+    "unwritten",
 ]
 
 CAP = 3  # review rounds an episode may hold
@@ -141,6 +144,18 @@ def next(rounds: Sequence[Round], progress: Progress, cap: int = CAP, spent: flo
         return Step("build_revision", last.number)
     upcoming = max((r.number for r in rounds), default=0) + 1
     return Step("review" if upcoming in progress.smoked else "smoke", upcoming)
+
+
+def unwritten(rounds: Sequence[Round], step: Step) -> Round | None:
+    """The round a `finish` step still needs written, or None. A finish on the episode's own approve or quarantine is
+    written already. One `next` came to on a revise whose revision the budget no longer buys (the money ran out
+    building it, or the budget or cap was lowered since the round was written) has no round saying so: it is written
+    as a quarantine of its own, one past the last round, so the worker finishes the phase on it, with its reason
+    (`phase_pick.lane_verdict`), rather than reading a revise and building the revision again."""
+    held = episode(rounds)
+    if step.action != "finish" or (held and held[-1].verdict in _FINISHED):
+        return None
+    return Round(max((r.number for r in rounds), default=0) + 1, "quarantine", step.reason)
 
 
 def recorded(rounds: Sequence[Round], number: int, verdict: str, reason: str, progress: Progress, cap: int = CAP,

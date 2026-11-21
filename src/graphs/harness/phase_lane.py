@@ -727,6 +727,13 @@ def _cost(lane: Lane, tasks: Sequence[str]) -> float:
     return float(value) if isinstance(value, int | float) else 0.0
 
 
+def review_diff(worktree: Path, base_sha: str, tip: str) -> tuple[bool, str]:
+    """Edge. The phase's own change, for its reviewer: `git diff base_sha...tip`, from the merge base of the base and
+    the tip, so a base that has moved on since the phase was cut (other phases landed on `init/`) shows none of their
+    work, as deletions or otherwise."""
+    return git_in("-C", str(worktree), "diff", "--no-color", "--no-renames", f"{base_sha}...{tip}")
+
+
 def _review(lane: Lane, rounds: Sequence[review_loop.Round], number: int, tip: str, progress: review_loop.Progress,
             pending_usd: float) -> bool:
     """Edge. Review round `number` of the phase at `tip`: the `phase-review` graph over the branch's diff against its
@@ -736,7 +743,7 @@ def _review(lane: Lane, rounds: Sequence[review_loop.Round], number: int, tip: s
     `review` row and no round."""
     c, ctx = lane.claim, lane.ctx
     started = lane.now()
-    ok, diff = git_in("-C", str(lane.phase_worktree), "diff", "--no-color", "--no-renames", lane.base_sha, tip)
+    ok, diff = review_diff(lane.phase_worktree, lane.base_sha, tip)
     held = review_loop.episode(rounds)
     titles = [f"{t}: {item.get('title') or t}" for t, item in lane.items.items() if item.get("kind") != "revision"]
     args = review_args(ctx.run_id, ctx.date, ctx.cartridge, c, number, lane.goal, titles, diff + "\n" if ok and diff else "",
@@ -807,6 +814,13 @@ def _review_phase(lane: Lane) -> bool:
             return False
         taken.add((step.action, step.round, tip))
         if step.action == "finish":
+            if (closing := review_loop.unwritten(rounds, step)) is not None:
+                decided = round_row(initiative=c.initiative, phase=c.phase, round_=closing.number, verdict=closing.verdict,
+                                    reason=closing.reason, head_sha=tip, run_id=lane.ctx.run_id, worker=c.worker,
+                                    claim_epoch=c.epoch)
+                if not lane.put([], rounds=[decided]):
+                    return False
+                step = review_loop.Step("finish", closing.number, step.outcome, step.reason)
             lane.log(f"lane: the phase review finished {c.phase} {step.outcome} in round {step.round}"
                      + (f": {' '.join(step.reason.split())[:300]}" if step.reason else ""))
             return True

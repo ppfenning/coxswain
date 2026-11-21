@@ -62,6 +62,34 @@ def test_the_money_running_out_stops_the_revisions_and_no_budget_means_none_is_c
     assert review_loop.next(_rounds("revise"), Progress(), spent=50.0, budget=0.0) == Step("build_revision", 1)
 
 
+def test_a_budget_quarantine_with_no_round_saying_so_is_written_as_a_round_of_its_own():
+    """A revise written while the budget bought its revision, whose revision then spent the rest: `next` finishes the
+    phase quarantined, and the round that says so is the one past the last, so the worker reads a quarantine with its
+    reason, not a revise to build again."""
+    from harness import phase_pick
+
+    rounds = _rounds("revise")
+    step = review_loop.next(rounds, Progress(), spent=2.0, budget=2.0)
+    assert step == Step("finish", 1, "quarantined", BUDGET_SPENT)
+    closing = review_loop.unwritten(rounds, step)
+    assert closing == Round(2, "quarantine", BUDGET_SPENT)
+    after = [*rounds, closing]
+    assert review_loop.next(after, Progress(), spent=2.0, budget=2.0) == Step("finish", 2, "quarantined", BUDGET_SPENT)
+    assert review_loop.unwritten(after, review_loop.next(after, Progress())) is None  # written once
+    verdict = phase_pick.lane_verdict(["t1"], ["t1"], (closing.number, closing.verdict), 1, smoke=None,
+                                      reason=closing.reason)
+    assert (verdict.outcome, verdict.reason) == ("quarantined", f"the phase review quarantined it in round 2: {BUDGET_SPENT}")
+
+
+def test_a_finish_on_the_episode_s_own_verdict_and_every_other_step_need_no_round():
+    assert review_loop.unwritten(_rounds("approve"), review_loop.next(_rounds("approve"), Progress())) is None
+    assert review_loop.unwritten(_rounds("quarantine"), review_loop.next(_rounds("quarantine"), Progress())) is None
+    assert review_loop.unwritten(_rounds("revise"), Step("build_revision", 1)) is None
+    reopened = [*_rounds("revise"), Round(2, REOPENED), Round(3, "revise")]
+    assert review_loop.unwritten(reopened, review_loop.next(reopened, Progress(), cap=1)) == Round(
+        4, "quarantine", BUDGET_SPENT)
+
+
 def test_a_reopened_phase_never_finishes_on_the_last_episode_s_approve():
     """(a) of L1's review: the chair's `reopened` row closes the episode; the next round is numbered after it."""
     old = [*_rounds("revise", "approve"), Round(3, REOPENED)]

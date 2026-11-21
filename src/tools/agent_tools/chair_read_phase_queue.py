@@ -27,10 +27,10 @@ def read_phase_queue(runs_dir: Path, profile: Mapping[str, object], work_rows: S
     rows = store_api.phase_queue_rows(url)
     review = store_api.phase_review_facts(url, phase)
     unread = (store_api.Failed, store_api.NotAvailable)
-    rollups, tasks, rounds = review if not isinstance(review, unread) else ([], [], [])
+    rollups, tasks = review if not isinstance(review, unread) else ([], [])
     return {
         "rows": rows if not isinstance(rows, unread) else [],
         "readable": not isinstance(rows, unread) and not isinstance(review, unread),
         "lane_prereqs": chair_capacity.chair_lane_prereqs(profile),
-        "phase_initiatives": phase, "closed": closed, "tasks": tasks, "rollups": rollups, "rounds": rounds,
+        "phase_initiatives": phase, "closed": closed, "tasks": tasks, "rollups": rollups,
     }

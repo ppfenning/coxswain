@@ -33,7 +33,6 @@ __all__ = [
     "held",
     "host_threads",
     "last_round",
-    "last_rounds",
     "list_rows",
     "list_workers",
     "live_claims",
@@ -119,9 +118,13 @@ def _apply(conn: Connection, change: Mapping[str, object], by: str, now: str) ->
     """`insert` adds a ready row and leaves an existing one alone. `update` rewrites a waiting or ready row's
     requirements and order, never a claimed one's. `reopen` makes a finished or withdrawn row ready again, only while
     it is still the row the chair saw (same epoch), claimable at once with its attempts back at 0: work that came back
-    is a new episode, and the last one's claims must not fail it before it runs, nor its review rounds finish it, so the
-    reopen also ends the last episode in `review_rounds` (`_close_episode`). `review` makes claimable again a row an
-    older worker parked `built` (L1, before the lane reviewed its own phase), its attempts as they were. `withdraw`
+    is a new episode, and the last one's claims must not fail it before it runs, nor its review rounds finish it, so a
+    reopen from `finished` also ends the last episode in `review_rounds` (`_close_episode`). A reopen from `cancelled`
+    does not: a withdraw is a hold released (often the hard stop on spend, flapping), not work that came back, and
+    ending the episode there would hand the phase fresh rounds on every flap. `review` makes claimable again a row an
+    older worker parked `built` (L1, before the lane reviewed its own phase), and counts an attempt: that worker's
+    park gives its claim's attempt back, so without it an old worker and this chair would claim, park and requeue the
+    row forever; with it each round costs one and the row runs out (`exhaust`). `withdraw`
     takes a waiting or ready row out of the queue (state `cancelled`: its phase is held, closed or over budget), never
     a claimed one. `exhaust` finishes as failed a row whose claims ran out while nobody holds it
     (`phase_pick.exhausted`, in SQL). Each is conditional on the state it moves from, so a repeat changes nothing."""
@@ -139,20 +142,24 @@ def _apply(conn: Connection, change: Mapping[str, object], by: str, now: str) ->
             (requires, change.get("band", 1), change.get("seq", 0), change.get("repo") or "", now, by, initiative, phase),
         ) == 1
     if op == "reopen":
-        reopened = conn.execute(
-            f"UPDATE phase_queue SET state = 'ready', outcome = '', reason = {p}, requires_json = {p}, band = {p}, "
-            f"seq = {p}, ready_at = {p}, attempts = 0, updated_at = {p}, updated_by = {p} "
-            f"WHERE initiative = {p} AND phase = {p} AND state IN ('finished', 'cancelled') AND claim_epoch = {p}",
-            (reason, requires, change.get("band", 1), change.get("seq", 0), now, now, by,
-             initiative, phase, change.get("epoch", 0)),
-        ) == 1
-        if reopened:
+        def reopen_from(state: str) -> bool:
+            return conn.execute(
+                f"UPDATE phase_queue SET state = 'ready', outcome = '', reason = {p}, requires_json = {p}, band = {p}, "
+                f"seq = {p}, ready_at = {p}, attempts = 0, updated_at = {p}, updated_by = {p} "
+                f"WHERE initiative = {p} AND phase = {p} AND state = {p} AND claim_epoch = {p}",
+                (reason, requires, change.get("band", 1), change.get("seq", 0), now, now, by,
+                 initiative, phase, state, change.get("epoch", 0)),
+            ) == 1
+
+        if reopen_from("finished"):
             _close_episode(conn, str(initiative), str(phase), str(reason), by, now)
-        return reopened
+            return True
+        return reopen_from("cancelled")
     if op == "review":
         return conn.execute(
-            f"UPDATE phase_queue SET state = 'ready', reason = {p}, ready_at = {p}, updated_at = {p}, "
-            f"updated_by = {p} WHERE initiative = {p} AND phase = {p} AND state = 'built' AND claim_epoch = {p}",
+            f"UPDATE phase_queue SET state = 'ready', reason = {p}, ready_at = {p}, attempts = attempts + 1, "
+            f"updated_at = {p}, updated_by = {p} "
+            f"WHERE initiative = {p} AND phase = {p} AND state = 'built' AND claim_epoch = {p}",
             (reason, now, now, by, initiative, phase, change.get("epoch", 0)),
         ) == 1
     if op == "withdraw":
@@ -355,20 +362,6 @@ def last_round(conn: Connection, initiative: str, phase: str) -> tuple[int, str]
         (initiative, phase),
     )
     return None if found is None else (int(str(found[0])), str(found[1]))
-
-
-def last_rounds(conn: Connection, initiatives: Sequence[str]) -> list[Row]:
-    """Edge. The last review round of each phase of the named initiatives, as {initiative, phase, round, verdict}."""
-    if not initiatives:
-        return []
-    p = conn.dialect.placeholder
-    rows = conn.query_all(
-        f"SELECT initiative, phase, round, verdict FROM review_rounds WHERE phase <> '' "
-        f"AND initiative IN ({', '.join(p for _ in initiatives)}) ORDER BY initiative, phase, round",
-        tuple(initiatives),
-    )
-    last = {(str(r[0]), str(r[1])): r for r in rows}
-    return [{"initiative": r[0], "phase": r[1], "round": r[2], "verdict": r[3]} for r in last.values()]
 
 
 def review_rounds(conn: Connection, initiative: str, phase: str) -> list[Row]:

@@ -18,7 +18,8 @@ comes back when it is wanted again. A finished row is reopened when its phase is
 or quarantined: work came back to it, and the reopen starts a new review episode (`store_phases`). A row whose claims
 ran out while nobody held it is finished as failed (`exhaust`), and so is any phase that ran out of attempts: it stays
 finished for the operator. A row an older worker parked `built` (L1's interim, before the lane reviewed its own phase)
-is made claimable again, so its next lane reviews it.
+is made claimable again, so its next lane reviews it; the requeue counts an attempt, since that worker's park gave
+its claim's back, so an old worker that keeps parking the row runs it out of attempts rather than looping.
 
 The phase lane reviews its own phase (L6, `harness.review_loop`), and the chair reacts to how the review finished it:
 - approved: each task is approved at its roll-up commit (`approvals`, through `store_api.approve_on`);
@@ -132,7 +133,8 @@ def changes(wanted_rows: Sequence[Row], stored: Sequence[Row], now: str, holds: 
             held_phases: Collection[Key] = (), closed: Collection[str] = (), stopped: bool = False) -> list[dict[str, object]]:
     """What the store needs so it holds `wanted_rows`, at the tick's `now`:
     - `review` for a `built` row (parked by an older worker, before the lane reviewed its own phase): claimable again,
-      its attempts as they were, so its next lane reviews it;
+      at the cost of an attempt (the park gave its claim's back), so its next lane reviews it and an old worker that
+      parks it again and again exhausts it;
     - `insert` for a phase with no row; `update` for a waiting or ready row whose requirements or order moved;
     - `reopen` for a finished (approved or quarantined) or withdrawn row whose phase is wanted again;
     - `withdraw` for a waiting or ready row whose phase is withheld (`withheld`);
@@ -159,7 +161,7 @@ def changes(wanted_rows: Sequence[Row], stored: Sequence[Row], now: str, holds: 
                         "reason": f"{row.get('attempts')} claims and none finished it; the operator decides"})
         elif row.get("state") == "built":
             out.append({"op": "review", "initiative": key[0], "phase": key[1], "epoch": row.get("claim_epoch", 0),
-                        "reason": "parked built before the lane reviewed its own phase: its next lane reviews it"})
+                        "reason": "parked built before the lane reviewed its own phase: its next lane reviews it (one attempt)"})
         elif row.get("state") in ("waiting", "ready") and (why := withheld(key, holds, held_phases, closed, stopped)):
             out.append({"op": "withdraw", "initiative": key[0], "phase": key[1], "reason": why})
     return out

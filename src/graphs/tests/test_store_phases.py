@@ -332,12 +332,6 @@ def test_a_machine_with_no_thread_budget_reads_zero(conn):
     assert store_phases.host_threads(conn, "nobody") == 0
 
 
-def _round(conn, phase, number, verdict):
-    p = conn.dialect.placeholder
-    conn.execute(f"INSERT INTO review_rounds VALUES ({', '.join([p] * 13)})",
-                 ("ship", phase, number, "h", verdict, "", "{}", "", "r", "w1", 1, 0.0, AT))
-
-
 def _task_row(conn, task, state="ready"):
     from harness.store_queue import upsert
 
@@ -345,12 +339,7 @@ def _task_row(conn, task, state="ready"):
                   "title": task, "surfaces": {}, "body": "", "extra": {}, "updated_at": AT, "updated_by": "t"})
 
 
-def test_each_phases_last_round_and_the_tasks_commits_are_read_for_the_chair(conn):
-    _round(conn, "p1", 1, "revise")
-    _round(conn, "p1", 2, "approve")
-    _round(conn, "p2", 1, "quarantine")
-    assert sorted((r["phase"], r["round"], r["verdict"]) for r in store_phases.last_rounds(conn, ["ship"])) == [
-        ("p1", 2, "approve"), ("p2", 1, "quarantine")]
+def test_the_tasks_commits_are_read_for_the_chair(conn):
     for task in ("t1", "t2"):
         _task_row(conn, task)
     assert [(r["task_id"], r["state"], r["merged_commit"]) for r in store_phases.task_commits(conn, ["ship"])] == [
@@ -413,17 +402,64 @@ def test_a_reopen_ends_the_review_episode_once_and_a_withdrawn_phase_with_no_rou
     assert store_phases.review_rounds(conn, "ship", "p2") == []
 
 
-def test_a_phase_an_older_worker_parked_built_is_queued_again_with_its_attempts_as_they_were(conn):
-    """(b) of L1's review: the requeue no longer gives the phase its attempts back, so a loop of them is bounded."""
+def test_releasing_a_hold_keeps_the_review_episode_and_its_round_cap(conn):
+    """A withdraw is a hold (the hard stop on spend flaps it on its own): reopening from `cancelled` writes no
+    boundary, so the rounds the phase already spent still count. Only a reopen from `finished` starts an episode."""
+    from harness import review_loop
+
     store_phases.apply_changes(conn, [_change()], "chair-loop")
     claim = store_phases.claim_next(conn, "w1", [], 1)
-    _set(conn, "p1", state="built", lease_until="", attempts=2)
+    store_phases.put_steps_fenced(conn, [], "w1", claim.epoch, rounds=[_review_round(1, "revise"), _review_round(2, "revise")])
+    store_phases.release(conn, claim, "w1", "the account's limit stopped the lane", 0)
+    for _ in range(3):  # the limit flaps: withdrawn, then reopened, three times
+        assert store_phases.apply_changes(conn, [_change(op="withdraw", reason="the hard stop on spend")], "chair-loop") == 1
+        assert store_phases.apply_changes(conn, [_change(op="reopen", epoch=claim.epoch, reason="ready again")],
+                                          "chair-loop") == 1
+    rounds = store_phases.review_rounds(conn, "ship", "p1")
+    assert [(r["round"], r["verdict"]) for r in rounds] == [(1, "revise"), (2, "revise")]
+    assert store_phases.last_round(conn, "ship", "p1") == (2, "revise")
+    assert len(review_loop.episode(review_loop.rounds_of(rounds))) == 2
+
+
+def test_a_phase_an_older_worker_parked_built_is_queued_again_at_the_cost_of_an_attempt(conn):
+    """(b) of L1's review: the requeue no longer gives the phase its attempts back; it counts one, since the park gave
+    its claim's back."""
+    store_phases.apply_changes(conn, [_change()], "chair-loop")
+    claim = store_phases.claim_next(conn, "w1", [], 1)
+    _set(conn, "p1", state="built", lease_until="", attempts=1)
     review = {"op": "review", "initiative": "ship", "phase": "p1", "epoch": claim.epoch, "reason": "parked by L1"}
     assert store_phases.apply_changes(conn, [{**review, "epoch": claim.epoch + 1}], "chair-loop") == 0
     assert store_phases.apply_changes(conn, [review], "chair-loop") == 1
     assert store_phases.apply_changes(conn, [review], "chair-loop") == 0
     row = store_phases.get_row(conn, "ship", "p1")
     assert (row["state"], row["attempts"]) == ("ready", 2)
+
+
+def _old_park(conn, claim):
+    """An L1 worker's park, as it shipped: `built`, the claim's attempt given back."""
+    p = conn.dialect.placeholder
+    conn.execute(f"UPDATE phase_queue SET state = 'built', lease_until = '', attempts = attempts - 1 "
+                 f"WHERE initiative = {p} AND phase = {p} AND claim_epoch = {p}", ("ship", claim.phase, claim.epoch))
+
+
+def test_an_old_worker_that_keeps_parking_a_phase_runs_it_out_of_attempts_instead_of_looping(conn):
+    """Rollout: an L1 worker claims and parks, the new chair requeues, again and again. Each requeue costs an attempt
+    the park does not give back, so the row stops being claimable and the chair's `exhaust` finishes it failed."""
+    store_phases.apply_changes(conn, [_change()], "chair-loop")
+    from harness import phase_pick
+
+    claims = 0
+    while (claim := store_phases.claim_next(conn, "old", [], 1)) is not None:
+        claims += 1
+        assert claims <= phase_pick.MAX_ATTEMPTS, "the claim, park and requeue loop did not end"
+        _old_park(conn, claim)
+        review = {"op": "review", "initiative": "ship", "phase": "p1", "epoch": claim.epoch, "reason": "parked by L1"}
+        assert store_phases.apply_changes(conn, [review], "chair-loop") == 1
+    row = store_phases.get_row(conn, "ship", "p1")
+    assert (row["state"], row["attempts"]) == ("ready", phase_pick.MAX_ATTEMPTS)
+    exhaust = {"op": "exhaust", "initiative": "ship", "phase": "p1", "reason": "out of attempts"}
+    assert store_phases.apply_changes(conn, [exhaust], "chair-loop") == 1
+    assert store_phases.get_row(conn, "ship", "p1")["outcome"] == "failed"
 
 
 def test_the_chair_quarantines_a_quarantined_phase_s_task_with_its_mark_in_the_same_write_as_the_queue(conn):

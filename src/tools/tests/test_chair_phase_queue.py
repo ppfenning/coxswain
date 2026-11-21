@@ -247,6 +247,17 @@ def test_a_phase_an_older_worker_parked_built_is_queued_again_for_its_lane_to_re
     assert _ops(action["changes"]) == [("review", "ship", "p1")]
 
 
+def test_a_built_row_an_old_worker_keeps_parking_is_exhausted_once_the_requeues_spend_its_attempts():
+    """The requeue costs an attempt in the store (`store_phases._apply`'s `review`): once they are spent, the row the
+    last requeue left ready is finished failed, not requeued or claimed again."""
+    from harness import phase_pick
+
+    want = chair_phase_queue.rows([_phase_initiative("ship", ("p1", [_task("t1", "p1")]))], True)
+    spent = _stored("p1", state="ready", epoch=3, attempts=phase_pick.MAX_ATTEMPTS)
+    (exhaust,) = chair_phase_queue.changes(want, [spent], STAMP)
+    assert (exhaust["op"], exhaust["phase"]) == ("exhaust", "p1")
+
+
 def test_a_phase_its_review_quarantined_quarantines_its_open_tasks_with_the_round_s_reason():
     stored = {**_stored("p1", state="finished", outcome="quarantined"), "run_id": "ship.p1-7",
               "reason": "the phase review quarantined it in round 3: revision budget spent"}
