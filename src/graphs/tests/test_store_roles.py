@@ -28,11 +28,10 @@ STORE_TABLES = (
     "attempts", "cartridge_snapshots", "chair_actions", "chair_queue", "courier_log", "gate_decisions", "graph_edges",
     "graph_nodes", "graphs", "hosts", "id_sequence", "land_queue", "lander_notices", "landing_records", "leases",
     "ledger", "node_calls", "phase_queue", "phases", "review_rounds", "runs", "schema_version", "step_results",
-    "store_cursor", "task_records", "tasks", "work_items", "workers",
+    "task_records", "tasks", "work_items", "workers",
 )
-# store_cursor among them: a worker's write bumps it only through the trigger's SECURITY DEFINER (store_ddl_0021).
 NEVER_WRITTEN = ("work_items", "hosts", "land_queue", "lander_notices", "chair_actions", "courier_log", "leases",
-                 "id_sequence", "landing_records", "cartridge_snapshots", "schema_version", "store_cursor")
+                 "id_sequence", "landing_records", "cartridge_snapshots", "schema_version")
 UNTOUCHED = ("land_queue", "lander_notices", "chair_actions", "chair_queue", "courier_log", "leases", "id_sequence")
 
 

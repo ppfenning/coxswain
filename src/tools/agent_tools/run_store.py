@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from agent_tools import analytics_snapshot, epic, store_cursor
+from agent_tools import analytics_snapshot, epic
 from agent_tools.chair_read_cache import Stamp, StampCache
 from agent_tools.jsonl_log import parse_log
 from agent_tools.lake_config import _LITERAL_SECRETS, _from_env
@@ -222,28 +222,11 @@ def _stamp_of_rows(rows: Sequence[Any]) -> Hashable:
 
 
 def table_counters(runs_dir: Path) -> dict[str, int] | None:
-    """Edge. A counter per user table, for the chair's reader cache: each table's inserted, updated and deleted row
-    count (`_change_stamp_sql`), with each table the store's change cursor watches (`store_cursor`, schema 21) read
-    from the cursor instead, in a second query on the same connection only when the cursor table is visible. A
-    watched table's counter moves when its write commits; any other table's trails a write as `store_change_stamp`
-    says. None for a SQLite store, an absent store or any failure, which the cache reads as "re-read everything".
-    Never raises."""
-    try:
-        if not is_postgres(store_url_for(Path(runs_dir))):
-            return None
-        opened = open_store(runs_dir)
-        if opened is None:
-            return None
-        conn = opened[0]
-        try:
-            statistics = dict(_stamp_of_rows(conn.execute(_change_stamp_sql()).fetchall()))  # type: ignore[arg-type]
-            present = store_cursor.TABLE in statistics
-            cursor = store_cursor.seqs(conn.execute(store_cursor.READ_SQL).fetchall()) if present else None
-            return store_cursor.merged(statistics, cursor)
-        finally:
-            conn.close()
-    except Exception:  # never raise: as `store_change_stamp`, any failure means "always changed"
-        return None
+    """Edge. Each user table's inserted, updated and deleted row count (`_change_stamp_sql`), one query; None for a
+    SQLite store, an absent store or any failure, which the chair's reader cache reads as "re-read everything".
+    The counters trail a write as `store_change_stamp` says. Never raises."""
+    stamp = store_change_stamp(runs_dir)
+    return None if stamp is None else dict(stamp)  # type: ignore[arg-type]
 
 
 def store_change_stamp(runs_dir: Path) -> Hashable | None:

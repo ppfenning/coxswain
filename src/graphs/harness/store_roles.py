@@ -71,7 +71,7 @@ RUN_RECORD_TABLES = (
 )
 
 # Read so a worker can see what it was asked to do, never written.
-READ_ONLY_TABLES = ("work_items", "hosts", "cartridge_snapshots", "landing_records", "schema_version", "store_cursor")
+READ_ONLY_TABLES = ("work_items", "hosts", "cartridge_snapshots", "landing_records", "schema_version")
 
 # The grant table. Anything not here gets nothing: land_queue, lander_notices, chair_actions, chair_queue,
 # courier_log, leases, id_sequence, and any table no one has decided about yet.

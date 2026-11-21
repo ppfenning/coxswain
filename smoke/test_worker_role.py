@@ -201,16 +201,42 @@ def test_the_role_writes_its_results_and_claims_and_is_refused_everything_else(w
     assert rows == [[[1]], [["smoke-w1", 1, 1]]]
 
 
-CURSOR_SQL = "SELECT name, seq FROM store_cursor ORDER BY name"
+# Run as the worker while the owner listens: each statement on its own, reported as ok or its SQLSTATE, then the tables
+# the owner's listener heard (harness.store_notify).
+WORKER_HEARD = """
+import json, os, sys
+from harness import store_notify
+from harness.store_scoped import open_scoped
+listener = store_notify.listen(sys.argv[2])
+conn = open_scoped(os.environ["SMOKE_WORKER_URL"])
+out, heard = {}, {}
+for label, sql in json.loads(sys.argv[1]):
+    try:
+        conn.execute(sql)
+        out[label] = "ok"
+    except Exception as exc:
+        out[label] = getattr(exc, "sqlstate", None) or type(exc).__name__
+    heard[label] = sorted(listener.wait(2))
+conn.close()
+listener.close()
+print(json.dumps({"out": out, "heard": heard}))
+"""
+
+# The reviewer's attack on the SECURITY DEFINER design, aimed at this one: attach the store's trigger function to a
+# temp table of the worker's own. EXECUTE is revoked from PUBLIC, so creating the trigger is refused.
+ATTACH = [
+    ("temp table", "CREATE TEMP TABLE bait (x int)"),
+    ("attach", "CREATE TRIGGER s AFTER INSERT ON bait FOR EACH STATEMENT EXECUTE FUNCTION public.cox_notify()"),
+    ("call", "SELECT public.cox_notify()"),
+]
 
 
-def test_a_worker_write_still_commits_and_bumps_the_cursor_it_may_not_write_itself(worker_machine):
-    # The cursor's trigger function is SECURITY DEFINER (store_ddl_0021): it bumps store_cursor as the owner, so a
-    # role that may only read store_cursor still has its claim and its step result commit, each bumping its table.
+def test_a_worker_write_still_commits_and_wakes_the_listener_and_a_heartbeat_does_not(worker_machine):
+    # The trigger function runs with the writer's rights and NOTIFY needs none, so the worker's scoped role writes
+    # and notifies with no grant on the function. Postgres checks EXECUTE when a trigger is created, not when it fires.
     _setup(worker_machine)
     url = worker_machine.store_url
     _owner(worker_machine, url, CLAIM_ROW)
-    before = dict(_owner(worker_machine, url, CURSOR_SQL)[0])
     values = _env_values(worker_machine)
     statements = [
         ("claim", "UPDATE phase_queue SET claimed_by = 'smoke-w1', claim_epoch = claim_epoch + 1, state = 'claimed' "
@@ -218,18 +244,20 @@ def test_a_worker_write_still_commits_and_bumps_the_cursor_it_may_not_write_itse
         ("heartbeat", "UPDATE phase_queue SET heartbeat_at = 'now', lease_until = 'later' "
                       "WHERE initiative = 'ship' AND phase = 'p1' AND claimed_by = 'smoke-w1'"),
         ("insert step", STEP_ROW),
-        ("write cursor", "UPDATE store_cursor SET seq = seq + 100"),
+        *ATTACH,
     ]
-    done = subprocess.run([str(worker_machine.install.python), "-c", WORKER_SQL, json.dumps(statements)],
+    done = subprocess.run([str(worker_machine.install.python), "-c", WORKER_HEARD, json.dumps(statements), url],
                           env={**worker_machine.env, "SMOKE_WORKER_URL": _worker_url(url, _login(worker_machine), values[PASSWORD_ENV])},
-                          cwd=worker_machine.home, capture_output=True, text=True, timeout=60)
+                          cwd=worker_machine.home, capture_output=True, text=True, timeout=120)
     assert done.returncode == 0, done.stderr
-    assert json.loads(done.stdout) == {"claim": "ok", "heartbeat": "ok", "insert step": "ok", "write cursor": "42501"}
-    after = dict(_owner(worker_machine, url, CURSOR_SQL)[0])
-    moved = {k: after[k] - before[k] for k in before if after[k] != before[k]}
-    # The claim and the step each stamp once; the heartbeat stamps nothing; the direct write was refused.
-    assert moved == {"*": 2, "phase_queue": 1, "step_results": 1}, (before, after)
+    result = json.loads(done.stdout)
+    assert result["out"] == {"claim": "ok", "heartbeat": "ok", "insert step": "ok", "temp table": "ok",
+                             "attach": "42501", "call": "42501"}, result
+    assert result["heard"] == {"claim": ["phase_queue"], "heartbeat": [], "insert step": ["step_results"],
+                               "temp table": [], "attach": [], "call": []}, result
     assert _owner(worker_machine, url, "SELECT heartbeat_at, lease_until FROM phase_queue")[0] == [["now", "later"]]
+    assert _owner(worker_machine, url, "SELECT has_function_privilege('cox_worker', 'public.cox_notify()', "
+                                       "'EXECUTE')")[0] == [[False]]
 
 
 def test_a_role_widened_by_hand_is_put_back_by_the_next_run(worker_machine):

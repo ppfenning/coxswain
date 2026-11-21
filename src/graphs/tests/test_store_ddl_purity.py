@@ -3,8 +3,7 @@
 A migration that writes rows (INSERT, UPDATE, DELETE, MERGE, TRUNCATE, COPY, CREATE TABLE ... AS SELECT) changes data
 on every store it opens, and one that reads the environment or the clock migrates two stores differently. Either may be right for a migration, but only on
 purpose: it then declares `WRITES_DATA = "<why>"` or `READS_ENV_OR_TIME = "<why>"`, a non-empty reason, and this guard
-lets it through. 0021 declares WRITES_DATA (the cursor's seed rows and its trigger function); none declares
-READS_ENV_OR_TIME.
+lets it through. No migration declares either today.
 """
 
 import ast
@@ -32,9 +31,18 @@ def code_only(sql: str) -> str:
     return re.sub(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|--[^\n]*|/\*.*?\*/", " ", sql, flags=re.DOTALL)
 
 
+# A trigger's events, between its timing and ON: there INSERT, UPDATE, DELETE and TRUNCATE name what fires it.
+TRIGGER_EVENTS = re.compile(
+    r"^(\s*CREATE\s+(?:OR\s+REPLACE\s+)?TRIGGER\s+\w+\s+(?:BEFORE|AFTER|INSTEAD\s+OF))\s+"
+    r"(?:INSERT|DELETE|TRUNCATE|UPDATE(?:\s+OF\s+\w+(?:\s*,\s*\w+)*)?)"
+    r"(?:\s+OR\s+(?:INSERT|DELETE|TRUNCATE|UPDATE(?:\s+OF\s+\w+(?:\s*,\s*\w+)*)?))*\s+ON\b",
+    re.IGNORECASE,
+)
+
+
 def writes(statements: tuple[str, ...]) -> tuple[str, ...]:
-    """Pure. One line per statement that writes rows."""
-    found = ((i, WRITE.search(code_only(s))) for i, s in enumerate(statements))
+    """Pure. One line per statement that writes rows. A trigger's event list is not a write; its body is read."""
+    found = ((i, WRITE.search(TRIGGER_EVENTS.sub(r"\1 ON", code_only(s), count=1))) for i, s in enumerate(statements))
     return tuple(f"statement {i}: {(m.group(1) or 'CREATE TABLE AS').upper()}" for i, m in found if m)
 
 
@@ -77,6 +85,8 @@ def test_a_statement_that_writes_rows_is_named(sql):
     "CREATE INDEX t_by_deleted ON t (deleted_at)",
     "CREATE TABLE copies (copied_at TEXT, truncated INTEGER, PRIMARY KEY (copied_at))",
     "CREATE TABLE t (a TEXT GENERATED ALWAYS AS (upper(b)) STORED, b TEXT)",
+    "CREATE TRIGGER n AFTER INSERT OR DELETE OR TRUNCATE OR UPDATE OF a, b ON t "
+    "FOR EACH STATEMENT EXECUTE FUNCTION f()",
 ])
 def test_schema_only_ddl_is_not_a_write(sql):
     assert writes((sql,)) == ()

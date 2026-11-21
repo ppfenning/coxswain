@@ -456,20 +456,17 @@ def test_every_default_module_statement_is_portable_and_has_no_foreign_key(modul
 KNOWN_EXEMPTIONS: dict[int, dict[str, str]] = {
     21: {
         "trigger": (
-            "Each CREATE TRIGGER is a FOR EACH STATEMENT trigger. Postgres ignores the value a statement-level "
-            "trigger returns, BEFORE or AFTER, so it cannot skip, drop or rewrite any row the statement writes; "
-            "the function only updates store_cursor, a table this migration creates and no older build writes. "
-            "Its one way to touch the write is to fail it: store_cursor missing, which this same migration rules "
-            "out, or a wait on the gate row longer than the store's lock bound, which is the old write's own "
-            "bound on any row it locks."
+            "Each CREATE TRIGGER is an AFTER ... FOR EACH STATEMENT trigger. It fires once the statement's rows "
+            "are written, and Postgres ignores what a statement-level trigger returns, so it cannot skip, drop or"
+            " rewrite a row. Its function writes no row and takes no row lock: the only lock NOTIFY adds is "
+            "Postgres's short queue lock at commit, taken after every lock the writer holds, so it cannot "
+            "deadlock an older writer either."
         ),
         "function": (
-            "cox_stamp has no arguments and returns NULL, which a statement-level trigger's caller ignores. Its "
-            "body runs one UPDATE twice, on store_cursor's gate row '*' and then on its row named TG_TABLE_NAME, "
-            "setting seq + 1 and at to the statement's time, in the firing table's own schema "
-            "(quote_ident(TG_TABLE_SCHEMA)). It reads and writes no other table. SECURITY DEFINER lets a worker's"
-            " scoped role, which may only read store_cursor, still bump it; search_path is pinned to pg_catalog, "
-            "pg_temp so that grant reaches nothing else."
+            "cox_notify has no arguments, returns NULL, and runs one statement: pg_catalog.pg_notify('cox_store',"
+            " TG_TABLE_NAME). It reads and writes no table. It runs with the invoker's rights (no SECURITY "
+            "DEFINER), its search_path is pinned, and EXECUTE is revoked from PUBLIC so no other role can attach "
+            "it to a table."
         ),
     },
 }
@@ -530,6 +527,15 @@ def test_additive_ddl_has_no_violation():
     pytest.param("CREATE UNIQUE INDEX ux_runs_host ON runs (host)", "unique index to runs", id="unique-index-old-table"),
     pytest.param("DELETE FROM runs", "has DELETE", id="delete"),
     pytest.param("TRUNCATE runs", "has TRUNCATE", id="truncate"),
+    pytest.param("CREATE TRIGGER t AFTER INSERT ON runs BEGIN DELETE FROM notes; END", "has DELETE",
+                 id="trigger-body-deletes"),
+    pytest.param("REVOKE EXECUTE ON FUNCTION note_run() FROM PUBLIC", "a function it did not create",
+                 id="revoke-on-an-older-function"),
+    pytest.param("REVOKE SELECT ON TABLE runs FROM PUBLIC", "a REVOKE this check cannot read", id="revoke-on-a-table"),
+    pytest.param("REVOKE EXECUTE ON FUNCTION f(int) FROM PUBLIC", "a REVOKE this check cannot read",
+                 id="revoke-with-arguments"),
+    pytest.param("REVOKE EXECUTE ON FUNCTION f() FROM cox_worker", "a REVOKE this check cannot read",
+                 id="revoke-from-a-role"),
     pytest.param("CREATE TRIGGER t BEFORE INSERT ON runs BEGIN SELECT RAISE(ABORT, 'no'); END", "has RAISE",
                  id="raising-trigger"),
     # Quoted and schema-qualified names are read, not skipped.
@@ -602,6 +608,16 @@ def test_a_trigger_or_function_body_may_hold_semicolons_and_is_still_scanned():
     assert additive_violations((NOTES, nested, atomic), {"trigger": WHY, "function": WHY}) == ()
     hidden = FUNCTION.replace("RETURN NEW;", "DELETE FROM notes; RETURN NEW;")
     assert additive_violations((NOTES, hidden), {"function": WHY}) == ("statement 2 has DELETE",)
+
+
+def test_truncate_as_a_trigger_event_and_a_revoke_on_its_own_new_function_are_additive():
+    trigger = ("CREATE TRIGGER t AFTER INSERT OR DELETE OR TRUNCATE OR UPDATE OF a, b ON runs "
+               "FOR EACH STATEMENT EXECUTE FUNCTION note_run()")
+    revoke = "REVOKE EXECUTE ON FUNCTION note_run() FROM PUBLIC"
+    assert additive_violations((NOTES, FUNCTION, revoke, trigger), {"trigger": WHY, "function": WHY}) == ()
+    # The event list is read only in its place: a TRUNCATE in a trigger's body still counts.
+    body = "CREATE TRIGGER t AFTER TRUNCATE ON runs BEGIN TRUNCATE notes; END"
+    assert additive_violations((NOTES, body), {"trigger": WHY}) == ("statement 2 has TRUNCATE",)
 
 
 def test_a_trigger_function_and_update_pass_only_when_exempted_with_a_reason():

@@ -1,17 +1,26 @@
 import re
+from types import SimpleNamespace
 
 import pytest
 
 import harness.store_copy as store_copy
-from harness import store_ddl_0021
-from harness.store_ddl_0021 import ADDITIVE, ADDITIVE_EXEMPT, BEATS, GATE, TABLES, WATCHED, stamped_columns, statements
+from harness import store_ddl_0021, store_notify
+from harness.store_ddl_0021 import (
+    ADDITIVE,
+    ADDITIVE_EXEMPT,
+    BEATS,
+    CHANNEL,
+    TABLES,
+    WATCHED,
+    notified_columns,
+    statements,
+)
 from harness.store_dialect import POSTGRES, SQLITE, connect
 from harness.store_migrate import ADDITIVE_PREFIX, additive_violations, check_version, default_modules, migrate
 
 NOW1 = "2026-11-20T00:00:00Z"
 NOW2 = "2026-11-21T00:00:00Z"
 LATEST = len(default_modules())
-NAMES = (GATE, *(t for t, _ in WATCHED))
 
 
 def test_the_migration_is_additive_only_with_its_two_stated_exemptions_on_both_dialects():
@@ -25,54 +34,57 @@ def test_the_migration_is_additive_only_with_its_two_stated_exemptions_on_both_d
     assert additive_violations(statements(SQLITE), {}) == ()
 
 
-def test_sqlite_gets_the_tables_their_index_and_seed_rows_and_postgres_adds_the_function_and_triggers():
+def test_sqlite_gets_the_queue_and_postgres_adds_the_function_its_revoke_and_one_trigger_per_watched_table():
     sqlite, postgres = statements(SQLITE), statements(POSTGRES)
-    assert postgres[: len(sqlite)] == sqlite and len(sqlite) == 4
-    assert not [s for s in sqlite if re.search(r"\b(TRIGGER|FUNCTION)\b", s)]
-    triggers = [re.search(r" ON (\w+) FOR EACH STATEMENT EXECUTE FUNCTION cox_stamp\(\)$", s) for s in postgres[5:]]
-    assert [m.group(1) for m in triggers if m] == [t for t, _ in WATCHED]
-    assert all(s.startswith("CREATE TRIGGER cox_stamp BEFORE INSERT OR DELETE OR UPDATE") for s in postgres[5:])
-    assert re.findall(r"'([^']*)', 0, ''", sqlite[3]) == list(NAMES)
-    assert sqlite[3].endswith("ON CONFLICT (name) DO NOTHING")
+    assert postgres[: len(sqlite)] == sqlite and len(sqlite) == 2
+    assert not [s for s in sqlite if re.search(r"\b(TRIGGER|FUNCTION|REVOKE)\b", s)]
+    assert postgres[3] == "REVOKE EXECUTE ON FUNCTION cox_notify() FROM PUBLIC"
+    triggers = postgres[4:]
+    ons = [re.search(r" ON (\w+) FOR EACH STATEMENT EXECUTE FUNCTION cox_notify\(\)$", s) for s in triggers]
+    assert [m.group(1) for m in ons if m] == [t for t, _ in WATCHED]
+    assert all(s.startswith("CREATE TRIGGER cox_notify AFTER INSERT OR DELETE OR TRUNCATE OR UPDATE") for s in triggers)
 
 
-def test_the_function_runs_as_its_owner_with_a_pinned_path_and_takes_the_gate_before_its_table():
-    function = statements(POSTGRES)[4]
-    assert "SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $cox_stamp$" in function
-    assert function.endswith("$cox_stamp$") and function.count("$cox_stamp$") == 2
+def test_the_function_only_notifies_with_the_invokers_rights_and_a_pinned_path():
+    function = statements(POSTGRES)[2]
+    assert "SECURITY DEFINER" not in function and "SET search_path = pg_catalog, pg_temp" in function
+    assert f"PERFORM pg_catalog.pg_notify('{CHANNEL}', TG_TABLE_NAME);" in function
+    assert function.endswith("$cox_notify$") and function.count("$cox_notify$") == 2
     assert "%" not in function  # psycopg would read it as a placeholder: migrate passes every statement a tuple
-    # The one statement it runs names store_cursor in the firing table's schema, and the gate goes first.
-    assert "quote_ident(TG_TABLE_SCHEMA)" in function and "'.store_cursor SET seq = seq + 1" in function
-    assert function.index("USING stamped, '*'") < function.index("USING stamped, TG_TABLE_NAME")
-    assert "RETURN NULL;" in function
+    assert not re.search(r"\b(INSERT|UPDATE|DELETE|EXECUTE)\b", function.split("$cox_notify$")[1])
 
 
 def test_the_watched_columns_are_the_tables_columns_at_this_version_and_only_a_heartbeat_is_left_out():
     known = {name: columns for name, columns, _ in store_copy.tables()}
     assert dict(WATCHED) == {t: known[t] for t, _ in WATCHED}
     assert all(set(beat) < set(dict(WATCHED)[t]) for t, beat in BEATS.items())
-    assert stamped_columns("hosts", dict(WATCHED)["hosts"]) == (
-        "name", "ssh", "capacity", "state", "updated_at", "updated_by", "threads", "capabilities_json")
-    assert stamped_columns("runs", dict(WATCHED)["runs"]) == dict(WATCHED)["runs"]
-    by_table = {re.search(r" ON (\w+) FOR", s).group(1): s for s in statements(POSTGRES)[5:]}  # type: ignore[union-attr]
+    assert "hosts" not in BEATS  # host_beat always sets versions_json, which is data
+    assert notified_columns("workers", dict(WATCHED)["workers"]) == dict(WATCHED)["workers"][:-1]
+    assert notified_columns("runs", dict(WATCHED)["runs"]) == dict(WATCHED)["runs"]
+    by_table = {re.search(r" ON (\w+) FOR", s).group(1): s for s in statements(POSTGRES)[4:]}  # type: ignore[union-attr]
     for table, columns in WATCHED:
-        expected = f"UPDATE OF {', '.join(stamped_columns(table, columns))} ON" if table in BEATS else "UPDATE ON"
+        expected = f"UPDATE OF {', '.join(notified_columns(table, columns))} ON" if table in BEATS else "UPDATE ON"
         assert expected in by_table[table], table
 
 
-def test_the_queue_is_copied_and_the_cursor_is_not():
-    names = [n for n, _, _ in store_copy.plan(store_copy.tables())]
-    assert names[-1] == "chair_queue" and "store_cursor" not in names
-    assert {n for n, _, _ in TABLES} == {"chair_queue"}
+def test_the_queue_is_the_one_table_and_it_is_copied():
+    assert [n for n, _, _ in TABLES] == ["chair_queue"]
+    assert [n for n, _, _ in store_copy.plan(store_copy.tables())][-1] == "chair_queue"
 
 
-def test_a_store_at_twenty_gains_both_tables_with_the_cursor_seeded_at_zero_and_a_repeat_changes_nothing(store_url):
+def test_the_listener_keeps_only_its_channels_tables_once_each():
+    note = lambda channel, payload: SimpleNamespace(channel=channel, payload=payload)  # noqa: E731
+    found = [note(CHANNEL, "runs"), note(CHANNEL, "runs"), note("other", "hosts"), note(CHANNEL, "work_items")]
+    assert store_notify.tables(found) == {"runs", "work_items"}
+    assert store_notify.tables([]) == frozenset()
+
+
+def test_a_store_at_twenty_gains_the_queue_and_a_repeat_changes_nothing(store_url):
     c = connect(store_url)
     try:
         assert migrate(c, NOW1, default_modules()[:20]) == 20
         assert migrate(c, NOW2, default_modules()[:21]) == 21
         assert c.query_all("SELECT COUNT(*) FROM chair_queue") == [(0,)]
-        assert sorted(c.query_all("SELECT name, seq, at FROM store_cursor")) == sorted((n, 0, "") for n in NAMES)
         recorded = c.query_one("SELECT description FROM schema_version WHERE version = 21")
         assert recorded == (ADDITIVE_PREFIX + store_ddl_0021.DESCRIPTION,)
         assert migrate(c, NOW2, default_modules()) == LATEST
@@ -83,35 +95,30 @@ def test_a_store_at_twenty_gains_both_tables_with_the_cursor_seeded_at_zero_and_
         c.close()
 
 
-def _seqs(conn) -> dict[str, int]:
-    return {str(n): int(s) for n, s in conn.query_all("SELECT name, seq FROM store_cursor")}  # type: ignore[arg-type]
-
-
-def test_a_statement_bumps_the_gate_and_its_table_once_inside_the_writers_own_transaction(store_url):
-    """The one boundary test: what the trigger does on a real Postgres. One statement writing two rows bumps its table
-    and the gate once each; the bump is visible inside the writer's transaction and to no one else until the commit,
-    and a rolled-back write leaves the cursor where it was."""
+def test_a_committed_write_wakes_the_listener_once_and_a_rolled_back_one_never(store_url):
+    """The one boundary test: what the trigger does on a real Postgres, heard through `store_notify.listen`. Two
+    statements on one table in one transaction are one notification, delivered at commit; a rollback delivers none."""
     if not store_url.startswith("postgres"):
-        pytest.skip("sqlite has no trigger: the cursor is Postgres's")
-    writer, reader = connect(store_url), connect(store_url)
+        assert store_notify.listen(store_url) is None  # sqlite has no NOTIFY: the caller keeps its plain sleep
+        return
+    writer = connect(store_url)
+    migrate(writer, NOW1)
+    listener = store_notify.listen(store_url)
+    assert listener is not None
+    insert = ("INSERT INTO landing_records (initiative, repo, state, record_json, created_at, updated_at) "
+              "VALUES ('{0}', 'r', 'building', '{{}}', '', '')")
     try:
-        migrate(writer, NOW1)
-        before = _seqs(reader)
-        insert = ("INSERT INTO landing_records (initiative, repo, state, record_json, created_at, updated_at) "
-                  "VALUES ('i1', 'r', 'building', '{}', '', ''), ('i2', 'r', 'building', '{}', '', '')")
         with writer.transaction():
-            writer.execute(insert)
-            inside = _seqs(writer)
-            outside = _seqs(reader)
-        after = _seqs(reader)
-        assert {k: inside[k] - before[k] for k in before if inside[k] != before[k]} == {"*": 1, "landing_records": 1}
-        assert outside == before
-        assert after == inside
-        assert reader.query_one("SELECT at FROM store_cursor WHERE name = 'landing_records'") != ("",)
+            writer.execute(insert.format("i1"))
+            writer.execute(insert.format("i2"))
+            assert listener.wait(0.5) == frozenset()  # nothing before the commit
+        assert listener.wait(5) == {"landing_records"}
+        assert listener.wait(0.5) == frozenset()  # and only once
         with pytest.raises(RuntimeError, match="roll back"), writer.transaction():
             writer.execute("DELETE FROM landing_records")
             raise RuntimeError("roll back")
-        assert _seqs(reader) == after
+        assert listener.wait(1) == frozenset()
+        assert writer.query_one("SELECT COUNT(*) FROM landing_records") == (2,)
     finally:
+        listener.close()
         writer.close()
-        reader.close()
