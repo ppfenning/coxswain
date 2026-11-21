@@ -232,22 +232,30 @@ def verdict(task_states: Sequence[str], attempts: int, launch_error: str = "", m
 
 
 def lane_verdict(tasks: Collection[str], rolled_up: Collection[str], last_round: tuple[int, str] | None, attempts: int,
-                 max_attempts: int = MAX_ATTEMPTS) -> Verdict:
+                 max_attempts: int = MAX_ATTEMPTS, *, smoke: tuple[bool, str] | None) -> Verdict:
     """The ack or nack for a phase whose lane ended, from what the store holds for it: the phase's tasks (dropped ones
-    left out), the tasks whose roll-up put a commit on the phase branch, and its last review round.
+    left out), the tasks whose roll-up put a commit on the phase branch, its last review round, and the phase smoke
+    the ended lane wrote, as (ok, reason), or None when it wrote none (`lane_smoke`).
 
     The review round decides: approve is the ack, quarantine the permanent nack. With no round, a phase whose every
-    task rolled up is `built`: it is parked, not claimable, until a review round is written for it (the phase review
-    loop is L6) and the chair queues it again. A phase with tasks left is retryable with backoff, and after
-    `max_attempts` claims it has failed."""
+    task rolled up and whose smoke passed is `built`: it is parked, not claimable, until a review round is written for
+    it (the phase review loop is L6) and the chair queues it again. A failed smoke means no review and no park: the
+    phase goes back to the queue with the failure as its reason, and so does a lane that ended before its smoke ran
+    and a phase with tasks left. Each is retryable with backoff, and after `max_attempts` claims it has failed.
+
+    A failed smoke is not quarantined: the chair reopens a quarantined phase whose tasks are still ready, which would
+    run the same smoke on the same tip without bound; a counted retry ends, as `failed`, for the operator."""
     if last_round is not None and last_round[1] == "approve":
         return Verdict("ack", "approved", f"the phase review approved it in round {last_round[0]}")
     if last_round is not None and last_round[1] == "quarantine":
         return Verdict("quarantine", "quarantined", f"the phase review quarantined it in round {last_round[0]}")
     missing = sorted(set(tasks) - set(rolled_up))
-    if tasks and not missing:
+    if tasks and not missing and smoke is not None and smoke[0]:
         return Verdict("built", "", "every task rolled up; waiting for the phase review")
-    why = f"tasks not rolled up: {', '.join(missing)}" if tasks else "the phase has no tasks in the store"
+    if tasks and not missing:
+        why = smoke[1] if smoke is not None else "every task rolled up, but the lane ended before the phase smoke ran"
+    else:
+        why = f"tasks not rolled up: {', '.join(missing)}" if tasks else "the phase has no tasks in the store"
     if attempts >= max_attempts:
         return Verdict("quarantine", "failed", f"{attempts} attempt(s), the last: {why}")
     return Verdict("retry", "", why, backoff_s(attempts))

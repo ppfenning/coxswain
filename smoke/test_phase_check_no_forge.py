@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from smoke import plan
+from smoke.conftest import SELECTED
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -40,7 +41,9 @@ def test_only_the_forge_fixture_starts_forgejo_and_no_unmarked_test_of_this_run_
     conftest = (ROOT / "smoke" / "conftest.py").read_text(encoding="utf-8")
     assert plan.callers_of(conftest, "forgejo_run_argv") == {"forge"}
 
-    items = [item for item in request.session.items if isinstance(item, pytest.Function)]
+    # The whole run's selection, every shard's files and not only this one's (conftest's SELECTED).
+    items = [item for item in request.config.stash[SELECTED] if isinstance(item, pytest.Function)]
     assert request.node in items
+    assert {item.nodeid for item in request.session.items} <= {item.nodeid for item in items}
     marked = [item.nodeid for item in items if item.get_closest_marker(plan.FORGE_MARK)]
     assert plan.forge_users({item.nodeid: item.fixturenames for item in items}, marked) == []

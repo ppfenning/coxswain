@@ -210,8 +210,17 @@ def test_a_lanes_facts_are_the_phases_open_tasks_its_roll_ups_in_any_run_and_its
             {"kind": "task", "task_id": "t9", "phase": "p2", "state": "ready"},
             {"kind": "initiative", "task_id": "ship", "phase": "", "state": "ready"}]
     rollups = [{"phase": "p1", "task_id": "t1"}, {"phase": "p1", "task_id": "t1"}, {"phase": "p2", "task_id": "t9"}]
-    facts = worker.lane_facts(rows, rollups, "p1", (1, "revise"))
-    assert facts == worker.LaneFacts(("t1", "t2"), ("t1",), (1, "revise"))
+    facts = worker.lane_facts(rows, rollups, "p1", (1, "revise"), [])
+    assert facts == worker.LaneFacts(("t1", "t2"), ("t1",), (1, "revise"), None)
+
+
+def test_a_lanes_smoke_is_the_last_smoke_row_its_run_wrote_with_its_reason():
+    failed = {"ok": 0, "verdict": "failed", "result_json": {"reason": "the phase smoke failed: wiring"}}
+    passed = {"ok": 1, "verdict": "passed", "result_json": {"tip": "a1", "reason": ""}}
+    assert worker.lane_facts([], [], "p1", None, [passed, failed]).smoke == (False, "the phase smoke failed: wiring")
+    assert worker.lane_facts([], [], "p1", None, [failed, passed]).smoke == (True, "the phase smoke was passed")
+    assert worker.lane_facts([], [], "p1", None, [{"ok": 0, "result_json": None}]).smoke == (
+        False, "the phase smoke was not recorded")
 
 
 def test_every_other_live_lane_of_the_phase_is_an_older_claims_and_is_stopped_before_the_new_one_starts():

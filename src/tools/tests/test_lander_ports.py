@@ -142,6 +142,20 @@ def test_a_gate_runs_its_checks_in_the_tree_and_an_unresolved_cartridge_fails_it
     )
 
 
+def test_a_gate_also_runs_the_trees_own_section_for_its_level_and_ci_keeps_the_initiative_section(tmp_path: Path) -> None:
+    (tmp_path / ".agent-checks").write_text(
+        "touch task-ran\n# level: phase\ntouch phase-ran\n# level: initiative\necho suite broke; exit 4\n")
+    assert lander_ports.run_gate(tmp_path, tmp_path, "level", {}, None) == (True, "")
+    assert (tmp_path / "phase-ran").exists() and not (tmp_path / "task-ran").exists()
+    passed, output = lander_ports.run_gate(tmp_path, tmp_path, "ticket", {}, None)
+    assert passed is False and "suite broke" in output
+    # `land_checks: ci`: CI runs the repository's suite on the pull request, so the land does not run it here.
+    assert lander_ports.run_gate(tmp_path, tmp_path, "ticket", {"land_checks": "ci"}, None) == (True, "")
+    (tmp_path / ".agent-checks").write_text("echo unmarked; exit 5\n")  # an unmarked file is task checks only
+    assert lander_ports.run_gate(tmp_path, tmp_path, "ticket", {}, None) == (True, "")
+    assert lander_ports.run_gate(tmp_path, tmp_path, "level", {}, None) == (True, "")
+
+
 def test_a_phase_has_one_open_rectify_task_and_a_new_one_takes_the_first_free_id() -> None:
     def row(ident: str, state: str, phase: str = "p1") -> dict:
         return {"id": ident, "phase": phase, "state": state}

@@ -401,6 +401,17 @@ def test_the_land_facts_read_ticket_checks_from_the_cartridge_alone(tmp_path, mo
     assert cli._land_repo_facts(tmp_path, {}, "main")["ticket_checks"] == []
 
 
+def test_the_land_runs_the_task_section_as_its_checks_and_the_initiative_section_at_its_ticket_gate(tmp_path, monkeypatch):
+    (tmp_path / ".agent-checks").write_text("echo task\n# level: phase\necho smoke\n# level: initiative\necho suite\n")
+    monkeypatch.setattr(cli, "_cartridge_landing", lambda repo, profile: ({"ticket_checks": _TICKET}, None))
+    facts = cli._land_repo_facts(tmp_path, {}, "main")
+    assert [c["cmd"] for c in facts["checks"]] == ["echo task"]
+    assert [c["cmd"] for c in facts["ticket_checks"]] == [*(c["cmd"] for c in _TICKET), "echo suite"]
+    monkeypatch.setattr(cli, "_cartridge_landing", lambda repo, profile: ({"ticket_checks": _TICKET, "land_checks": "ci"}, None))
+    monkeypatch.setattr(cli, "_required_checks", lambda *args: ("test",))
+    assert cli._land_repo_facts(tmp_path, {}, "main")["ticket_checks"] == _TICKET  # CI runs the suite on the PR
+
+
 def test_the_dry_run_labels_the_ticket_gate_step():
     [gate] = _ticket_steps(_card_plan({"ticket_checks": _TICKET}))
     assert cli._land_checks_lines([gate]) == [f"ticket gate ({_BRANCH}): e2e = cd e2e && pytest -q; lint = ruff check ."]

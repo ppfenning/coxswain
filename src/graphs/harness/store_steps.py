@@ -29,7 +29,8 @@ Where today's lanes write them (`epic_records.record_steps`, which `save_task_re
 - a rescue's review, adversary and arbitration, whatever their verdict (`epic_execute.rescue_task`).
 
 Steps that run but get no row yet: a rescue's harness checks (`rescue_checks.verify_patch` returns evidence rows, not
-check results), the style-pass edit itself, and every phase-level step (smoke, suite, the phase validators).
+check results), the style-pass edit itself, and every phase-level step but the phase lane's smoke (`phase_lane._smoke`
+writes `phase/smoke/<round>`): suite and the phase validators.
 """
 
 from __future__ import annotations

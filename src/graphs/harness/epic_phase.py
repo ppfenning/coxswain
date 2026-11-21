@@ -20,7 +20,6 @@ from harness import rescue_select
 from harness.base_check import stale_base_stop
 from harness.base_sync import fetch_origin, merge_in
 from harness.cause_rule import is_auth_failure
-from harness.check_gate import gate_commands
 from harness.checks import HARNESS_FAULT_PREFIX, check_feedback, is_harness_fault
 from harness.digest import build_digest
 from harness.epic_batch import (
@@ -417,7 +416,7 @@ def run_phase_tasks(
             worktree,
             build_digest(worktree) or None,
             [str(c.get("cmd")) for c in ctx.checks if c.get("cmd")],
-            gate_commands(ctx.landing_areas),
+            ctx.gate_commands,
         ),
     )
 

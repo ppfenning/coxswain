@@ -2,5 +2,8 @@
 # instead of running them again locally. Task checks (.agent-checks) run the same commands
 # narrowed to the tests a patch can affect; the full suite runs once, in CI, on the PR
 # (Pat, 2026-11-10: "only testing what is touched, then leave tests to CI for initiative level PRs").
+# The three check levels live in .agent-checks, not here: its task lines, its `# level: phase` smoke
+# (the level gate, run once per phase) and its `# level: initiative` full suite (the ticket gate,
+# which `land_checks: ci` leaves to CI). This overlay adds no `level_checks` or `ticket_checks` of its own.
 landing_areas:
   land_checks: ci

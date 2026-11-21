@@ -21,8 +21,8 @@ from core.landing import pr_branch_name
 from graphs._spec import GraphSpec
 from harness import pool_edge
 from harness.artifacts import ArtifactsRoot
-from harness.check_gate import gate_checks
-from harness.checks import check_timeout
+from harness.check_gate import gate_checks, gate_commands
+from harness.checks import check_timeout, for_level
 from harness.epic_types import PhaseRecord
 from harness.store_dialect import Connection, connect
 from harness.store_retry import retry_store_write
@@ -226,13 +226,19 @@ class Ctx:
         listed = self.landing_areas.get("checks")
         cartridge_checks = [c for c in listed if is_mapping(c)] if is_list(listed) else []
         known = {c.get("cmd") for c in cartridge_checks}
-        extra = [c for c in self.repo_checks if c.get("cmd") not in known]
+        extra = [c for c in for_level(self.repo_checks, "task") if c.get("cmd") not in known]
         return cartridge_checks + extra
 
     @property
     def level_checks(self) -> list[Mapping[str, object]]:
-        """The cartridge's level gate; never joined with `.agent-checks`, and never read by a task build."""
-        return list(gate_checks(self.landing_areas, "level"))
+        """The level gate, a phase's smoke: the cartridge's `level_checks`, then `.agent-checks`' `# level: phase`
+        section. Never read by a task build."""
+        return list(gate_checks(self.landing_areas, "level", self.repo_checks))
+
+    @property
+    def gate_commands(self) -> dict[str, list[str]]:
+        """The command strings of each gate, the repository's own sections included (`check_gate.gate_commands`)."""
+        return gate_commands(self.landing_areas, self.repo_checks)
 
     @property
     def integration_checks(self) -> list[Mapping[str, object]]:

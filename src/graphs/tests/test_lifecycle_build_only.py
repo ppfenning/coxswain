@@ -5,6 +5,8 @@ from graphs.delivery import lifecycle_propose
 from harness import phase_pick
 from runner import ScriptedRunner
 
+PASSED = (True, "")  # the ended lane's smoke, as `worker.lane_facts` reads it: passed
+
 
 def _args(cartridge, ticket="t1", **extra):
     return {"run_id": f"run-1:{ticket}", "date": "2026-11-20", "ticket": ticket, "cartridge": cartridge,
@@ -29,16 +31,30 @@ def test_parallel_tasks_each_get_their_own_build_answer_whatever_order_they_ask_
 
 
 def test_a_lane_verdict_comes_from_the_review_round_then_from_the_roll_ups():
-    approved = phase_pick.lane_verdict(["t1"], [], (2, "approve"), 1)
+    approved = phase_pick.lane_verdict(["t1"], [], (2, "approve"), 1, smoke=None)
     assert (approved.kind, approved.outcome) == ("ack", "approved")
-    assert phase_pick.lane_verdict(["t1"], ["t1"], (1, "quarantine"), 1).outcome == "quarantined"
-    waiting = phase_pick.lane_verdict(["t1", "t2"], ["t1", "t2"], None, 2)
+    assert phase_pick.lane_verdict(["t1"], ["t1"], (1, "quarantine"), 1, smoke=PASSED).outcome == "quarantined"
+    waiting = phase_pick.lane_verdict(["t1", "t2"], ["t1", "t2"], None, 2, smoke=PASSED)
     assert (waiting.kind, waiting.reason) == ("built", "every task rolled up; waiting for the phase review")
-    left = phase_pick.lane_verdict(["t1", "t2"], ["t1"], None, 1)
+    left = phase_pick.lane_verdict(["t1", "t2"], ["t1"], None, 1, smoke=PASSED)
     assert (left.kind, left.refund, left.reason) == ("retry", False, "tasks not rolled up: t2")
-    spent = phase_pick.lane_verdict(["t1", "t2"], ["t1"], None, phase_pick.MAX_ATTEMPTS)
+    spent = phase_pick.lane_verdict(["t1", "t2"], ["t1"], None, phase_pick.MAX_ATTEMPTS, smoke=PASSED)
     assert (spent.kind, spent.outcome) == ("quarantine", "failed")
-    assert phase_pick.lane_verdict([], [], None, 1).reason == "the phase has no tasks in the store"
+    assert phase_pick.lane_verdict([], [], None, 1, smoke=PASSED).reason == "the phase has no tasks in the store"
+
+
+def test_a_failed_smoke_is_never_parked_built_and_goes_back_to_the_queue_with_its_failure_until_attempts_run_out():
+    failed = (False, "the phase smoke failed: configured check failed: wiring")
+    back = phase_pick.lane_verdict(["t1", "t2"], ["t1", "t2"], None, 1, smoke=failed)
+    assert (back.kind, back.outcome, back.reason, back.refund) == ("retry", "", failed[1], False)
+    assert back.wait_s == phase_pick.backoff_s(1)
+    spent = phase_pick.lane_verdict(["t1", "t2"], ["t1", "t2"], None, phase_pick.MAX_ATTEMPTS, smoke=failed)
+    assert (spent.kind, spent.outcome) == ("quarantine", "failed") and failed[1] in spent.reason
+    # A lane that ended before its smoke ran is not parked either: the next claim runs it.
+    unrun = phase_pick.lane_verdict(["t1"], ["t1"], None, 1, smoke=None)
+    assert (unrun.kind, unrun.reason) == ("retry", "every task rolled up, but the lane ended before the phase smoke ran")
+    # The review round still decides over any smoke.
+    assert phase_pick.lane_verdict(["t1"], ["t1"], (1, "approve"), 1, smoke=failed).kind == "ack"
 
 
 def test_a_lane_whose_progress_mark_stands_still_is_stalled_and_one_that_moves_is_not():
