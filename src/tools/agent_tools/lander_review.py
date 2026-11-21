@@ -30,14 +30,35 @@ Which tip: origin's copy of the initiative branch, which the lander pushes befor
 which the review and the suite read. `land_checks: ci` adds CI on the pull request; it does not stand in for the
 suite: the suite has passed at this tip before the pull request exists, and CI runs again once it does.
 
-`decide` and `pr_gate` are pure; `settle` is the edge.
+Wait for fresh (the operator's decision of 2026-11-21): once the pull request is open, any change to its head waits for
+a fresh passing suite at that very head before the pull request lands: a parent refresh, a phase merge, a fix phase.
+The land keeps judging the gate while the pull request is open (`settle` at origin's tip, every pass), so each move of
+the head is recorded on `review_tip` and the chair reopens the review there, the pull request open or not. The moves
+keep going to origin as they always did (a refresh is pushed, a phase merge lands): the worker runs the suite at
+origin's tip, so the head must be there first. What changes is that a head with no passing suite cannot land:
+
+- the lander's own merge (`gate: full`) waits on `pr_gate`, as the opening did, and right before the merge reads the
+  head again (`head_moved`);
+- everything else that could merge it (a person on the forge, `cox pr land`, a batch) is refused by the forge itself:
+  the pull request is a draft while its head is stale, and ready again once a suite passes there (`freshness`,
+  `mark_pr`). A draft is what GitHub and Forgejo both refuse to merge without any rule set on the repository, where a
+  required commit status works only once the repository's ruleset requires it, and is skipped by an admin's bypass;
+- the body names the sha the suite last passed at and, while the head is ahead of it, says so (`pr_status`).
+
+The pull request is stale on the record (`pr.stale`, with `pr.passed` the sha the suite last passed at and `pr.at` the
+head the body last named). `MOVE_LIMIT` holds here too: the count starts again when the pull request opens, so the
+refreshes in a row that outpace the suite before it lands hold it `outpaced`, as they would have before it opened.
+
+`decide`, `pr_gate`, `refresh_step`, `freshness`, `pr_status` and `head_moved` are pure; `settle`, `moved` and
+`mark_pr` are the edges.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from pathlib import Path
+from typing import Literal, Protocol
 
 from agent_tools import lander_hold
 from core import landing_record as lr
@@ -47,7 +68,8 @@ from harness.store_dialect import Connection
 
 Gate = Literal["open", "wait", "hold"]
 
-__all__ = ["MOVE_LIMIT", "Decision", "Gate", "Refresh", "decide", "moved", "pr_gate", "pr_note", "refresh_step", "settle"]
+__all__ = ["MOVE_LIMIT", "Decision", "DraftForge", "Freshness", "Gate", "Refresh", "decide", "freshness", "head_moved",
+           "mark_pr", "moved", "opened", "pr_gate", "pr_note", "pr_status", "refresh_step", "settle"]
 
 MOVE_LIMIT = 3  # tip moves in a row between a passing suite and the pull request before the gate holds it
 
@@ -224,3 +246,98 @@ def settle(conn: Connection, record: lr.LandingRecord, tip: str, now: str,
         notify("needs_chair", {"initiative": initiative, "reason": f"held: {hold.get('reason')}"})
         events.append(f"{initiative}: the chair has been told")
     return holding, decision, events
+
+
+# -- an open pull request: wait for fresh -----------------------------------------------------------------------------
+
+def opened(record: lr.LandingRecord, passed: str) -> tuple[lr.PullRequest, lr.ReviewTip]:
+    """Pure. What the record keeps once the pull request opens at `passed`, the tip the suite passed at: the pull
+    request's own fields (fresh, `passed`, `at`, `pr.stale` False) and the `review_tip` with its moves counted afresh
+    (`MOVE_LIMIT` counts the moves in a row between a passing suite and the land from here)."""
+    return {"stale": False, "passed": passed, "at": passed}, {**_review_tip(record), "tip": passed, "moves": 0}
+
+
+def pr_status(decision: Decision, head: str, passed: str) -> str:
+    """Pure. The line an open pull request's body carries for its head: where the suite passed, the head where it is,
+    and, when the head is ahead of it, that the pull request is a draft until the suite passes there."""
+    if decision.gate == "open" and decision.tip == head:
+        return pr_note(decision)
+    last = f"The full suite last passed at `{passed}`" if passed else "The full suite has not passed at this pull request's head"
+    return (f"Initiative review: {last}; the head is at `{head}`, ahead of it. Wait for fresh: this pull request stays "
+            f"a draft and cannot land until the suite passes at `{head}`.")
+
+
+@dataclass(frozen=True)
+class Freshness:
+    """What an open new-model pull request should look like at `head`: `stale` (no passing suite at `head`), `passed`
+    (the sha the suite last passed at, '' when none), `mark` (`draft` or `ready`, the forge call that brings the
+    pull request into line; '' when it already is), `report` (the body has to say so) and `note`, the body's line."""
+
+    stale: bool
+    passed: str
+    head: str
+    mark: Literal["draft", "ready", ""]
+    report: bool
+    note: str
+
+
+def freshness(decision: Decision, head: str, pr: lr.PullRequest) -> Freshness:
+    """Pure. `decision` is the gate at the tip it judged (`decide`), `head` the pull request's head now (the tip the
+    land just pushed, or that tip), `pr` the record's pull request as it stands. Fresh only when the gate is `open` at
+    `head` itself; else stale, whatever the reason (a move, a hold, a suite that failed)."""
+    stale = decision.gate != "open" or decision.tip != head
+    passed = head if not stale else str(pr.get("passed") or "")
+    was = bool(pr.get("stale"))
+    mark: Literal["draft", "ready", ""] = "draft" if stale and not was else ("ready" if was and not stale else "")
+    return Freshness(stale, passed, head, mark, bool(mark) or pr.get("at") != head, pr_status(decision, head, passed))
+
+
+def head_moved(approved: str, head: str | None) -> str:
+    """Pure. Why the lander's own merge waits, read again right before it: the head is no longer `approved`, the tip
+    the gate passed at; '' when it still is."""
+    if head == approved:
+        return ""
+    now_at = head[:12] if head else "an unread tip"
+    return f"the head moved from {approved[:12]}, where the suite passed, to {now_at}: the merge waits for a suite there"
+
+
+class DraftForge(Protocol):
+    """What `mark_pr` asks of the forge: a draft, a ready, and a body, each on the open pull request from a branch."""
+
+    def mark_draft(self, repo: Path, branch: str) -> tuple[bool, str]: ...
+
+    def mark_ready(self, repo: Path, branch: str) -> tuple[bool, str]: ...
+
+    def update_pr(self, repo: Path, title: str, body: str, *, head: str) -> tuple[bool, str]: ...
+
+
+def mark_pr(conn: Connection, forge: DraftForge, repo: Path, record: lr.LandingRecord, fresh: Freshness,
+            text: tuple[str, str], now: str) -> list[str]:
+    """Edge. Bring the open pull request into line with `fresh`: a draft while its head is stale, ready once the suite
+    passed there (`mark`), then its body (`text`: the title and the body without `fresh.note`) naming the sha the
+    suite last passed at. The record keeps `stale` only once the forge took the mark, so a refused mark is asked again
+    next pass; the lander's own merge waits on `pr_gate` whatever the forge said. The events it reports."""
+    initiative, branch = str(record.get("initiative") or ""), str(record.get("branch") or "")
+    current = ls.get_record(conn, initiative) or record
+    pr = current.get("pr") or {}
+    if not pr.get("url") or not fresh.report:
+        return []
+    events: list[str] = []
+    stale = bool(pr.get("stale"))
+    if fresh.mark:
+        ok, why = (forge.mark_draft if fresh.mark == "draft" else forge.mark_ready)(repo, branch)
+        if not ok:
+            return [f"{initiative}: the pull request could not be marked {fresh.mark} ({why}); the lander's own merge "
+                    f"still waits for a suite at {fresh.head[:12]}"]
+        stale = fresh.stale
+        events.append(f"{initiative}: the pull request is a draft: its head {fresh.head[:12]} has no passing suite"
+                      if fresh.stale else f"{initiative}: the pull request is ready: the suite passed at its head {fresh.head[:12]}")
+    title, body = text
+    ok, why = forge.update_pr(repo, title, f"{body}\n{fresh.note}\n", head=branch)
+    if not ok:
+        events.append(f"{initiative}: the pull request's body was not updated: {why}")
+    updated: lr.LandingRecord = {**current, "pr": {**pr, "stale": stale, "passed": fresh.passed,
+                                                   "at": fresh.head if ok else str(pr.get("at") or "")},
+                                 "updated_at": now}
+    ls.put_record(conn, updated)
+    return events

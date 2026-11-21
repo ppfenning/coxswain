@@ -191,6 +191,11 @@ def mark_ready(repo: Path, *, head: str) -> tuple[bool, str]:
     return _gh_on_open_pr(repo, head, ["ready"])
 
 
+def mark_draft(repo: Path, *, head: str) -> tuple[bool, str]:
+    """Turn the open PR from `head` back into a draft, which GitHub refuses to merge until it is marked ready."""
+    return _gh_on_open_pr(repo, head, ["ready", "--undo"])
+
+
 def _update_local_default(repo: Path, default: str) -> str:
     """Bring the local `default` branch up to `origin` without a checkout; git's output, or the failure."""
     try:

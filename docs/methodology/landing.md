@@ -291,6 +291,15 @@ no `lane_model` is on the old model.
   lifts once the gate no longer says it (the tip moved, or the review moved on). With `land_checks: ci` CI runs on the
   pull request as well; it does not stand in for the suite, which has passed at this tip before the pull request
   exists.
+- **Wait for fresh.** Once the pull request is open, any change to its head waits for a fresh passing suite at that
+  exact head before it lands: a refresh onto a moved parent, a phase merge, a fix phase. The moves go to origin as
+  before (the worker runs the suite at origin's tip), each records the new head on the record's `review_tip`, and the
+  chair reopens the initiative review there, pull request open or not. While the head has no passing suite the pull
+  request is `stale` on the record and a draft on the forge (GitHub's draft; Forgejo's `WIP: ` title), which the forge
+  itself refuses to merge, so a person's merge and `cox pr land` wait as the lander does; the lander's own merge waits
+  on `pr_gate` and reads the head again right before it merges. The body names the sha the suite last passed at and,
+  while the head is ahead of it, says so. Once the suite passes at the head the pull request is marked ready and lands.
+  The `outpaced` hold applies here too: its count starts again when the pull request opens.
 
 Refreshes are always forward merges of the parent into the child. No branch the record names is rebased, reset or
 force-pushed, and a merge that would drop a recorded commit is refused. After a land, a phase branch is deleted only

@@ -106,6 +106,12 @@ class ForgePort(Protocol):
 
     def pr_state(self, url: str) -> Mapping[str, object]: ...
 
+    def mark_draft(self, repo: Path, branch: str) -> tuple[bool, str]: ...
+
+    def mark_ready(self, repo: Path, branch: str) -> tuple[bool, str]: ...
+
+    def update_pr(self, repo: Path, title: str, body: str, *, head: str) -> tuple[bool, str]: ...
+
 
 def _no_rectify(initiative: str, phase: str, title: str, body: str) -> str | None:
     return None
@@ -955,13 +961,16 @@ def land_initiative(ports: Ports, initiative: str, *, merge: bool = True, refres
         events += adopted
         record = ls.get_record(ports.conn, initiative) or record
     gate: lander_review.Decision | None = None
-    if lr.record_lane_model(record) == lr.NEW_MODEL and record.get("state") != "landed" and not (record.get("pr") or {}).get("url"):
-        # D2: the new model's pull request opens only on the initiative review's approval and a suite passed at the tip.
+    url = str((record.get("pr") or {}).get("url") or "")
+    if lr.record_lane_model(record) == lr.NEW_MODEL and record.get("state") != "landed" and not (
+            url and ports.forge.pr_merged(ports_repo(ports, record), record_text(record, "branch"))[0]):
+        # D2: the new model's pull request opens only on the initiative review's approval and a suite passed at the
+        # tip; once open, it lands only at a head the suite passed at, and is a draft while it is not (wait for fresh).
         tip = _review_tip(ports_repo(ports, record), record_text(record, "branch"))
         if tip is None:
             return close("waiting", f"origin's {record_text(record, 'branch')} could not be read for its gate", events)
         record, gate, gate_events = lander_review.settle(ports.conn, record, tip, ports.now(), ports.notify)
-        events += gate_events
+        events += gate_events + (_mark_pr(ports, initiative, gate, tip) if url and gate.gate != "open" else [])
     if _held(record):
         return close("waiting", held_note(record), events)
     record, stack_events, below, unknown = _restack(ports, record)
@@ -1001,9 +1010,14 @@ def land_initiative(ports: Ports, initiative: str, *, merge: bool = True, refres
         opened = _open_pr(ports, record, tasks, meta, repo, branch, parent, lander_review.pr_note(gate) if gate else "",
                           gate.tip if gate is not None else "")
         if isinstance(opened, Outcome):
-            return close(opened.status, opened.detail, opened.events)
+            moved = ls.get_record(ports.conn, initiative) or record  # a refresh of an open pull request: stale now
+            head = str((moved.get("review_tip") or {}).get("tip") or "")
+            stale = _mark_pr(ports, initiative, gate, head) if url and gate and opened.status == "waiting" and head else []
+            return close(opened.status, opened.detail, [*opened.events, *stale])
         record, new_events = opened
         events += new_events
+    elif url and gate is not None:
+        events += _mark_pr(ports, initiative, gate, gate.tip)  # fresh at its head: ready again
     url = str((record.get("pr") or {}).get("url") or "")
     if not merged:
         merged, _ = ports.forge.pr_merged(repo, branch)
@@ -1021,7 +1035,8 @@ def land_initiative(ports: Ports, initiative: str, *, merge: bool = True, refres
         return close("failed", f"checks failed on {url}: {step.detail}",
                      [*events, *_send_back_initiative(ports, record, "checks", step.detail)])
     if step.action == "merge":
-        unheld = _unheld_at_merge(repo, ls.get_record(ports.conn, initiative) or record)
+        unheld = _unheld_at_merge(repo, ls.get_record(ports.conn, initiative) or record) or (
+            lander_review.head_moved(gate.tip, _review_tip(repo, branch)) if gate is not None else "")
         if unheld:
             return close("waiting", unheld, events)
         # Into an epic branch an initiative merges with a merge commit, so the layers above it retarget cleanly; the
@@ -1224,7 +1239,7 @@ def _open_at(ports: Ports, record: lr.LandingRecord, tasks: Sequence[Row], meta:
     moves = int((record.get("review_tip") or {}).get("moves") or 0)
     step = lander_review.refresh_step(approved, local, origin, moves)
     if step.action == "open":
-        return _push_and_open(ports, record, tasks, meta, repo, refs, note)
+        return _push_and_open(ports, record, tasks, meta, repo, refs, note, approved)
     if step.push and (dropped := lg.missing_from(repo, branch, lr.recorded_shas(record))):
         return Outcome("failed", ident, f"refused to push {branch}: it lacks recorded commit(s) {', '.join(s[:12] for s in dropped)}")
     if step.push and (refused := publish_initiative(ports, repo, branch)):
@@ -1235,9 +1250,35 @@ def _open_at(ports: Ports, record: lr.LandingRecord, tasks: Sequence[Row], meta:
     return Outcome("waiting", ident, step.reason, tuple(lander_review.moved(ports.conn, record, step, tip, ports.now(), ports.notify)))
 
 
+def _pr_text(meta: LandMeta, record: lr.LandingRecord, tasks: Sequence[Row], parent: str) -> tuple[str, str] | str:
+    """The pull request's title and body (without the gate's line), or why the cartridge's templates cannot make them."""
+    initiative = record_text(record, "initiative")
+    try:
+        cartridge: Mapping[str, object] = meta.get("cartridge") or {}
+        own: Mapping[str, object] = meta.get("initiative") or {"id": initiative}
+        title = initiative_pr_title(cartridge, own, parent, meta.get("epic_issue"))
+        return title, _pr_body(meta, record, tasks, initiative_pr_reference(cartridge, own, parent, meta.get("epic_issue")))
+    except TemplateError as exc:
+        return str(exc)
+
+
+def _mark_pr(ports: Ports, initiative: str, gate: lander_review.Decision, head: str) -> list[str]:
+    """An open new-model pull request made a draft while its head has no passing suite, ready once it has, and its
+    body naming the sha the suite last passed at (`lander_review.freshness`, `mark_pr`)."""
+    record = ls.get_record(ports.conn, initiative) or {}
+    fresh = lander_review.freshness(gate, head, record.get("pr") or {})
+    if not fresh.report or not (record.get("pr") or {}).get("url"):
+        return []
+    text = _pr_text(ports.meta(initiative), record, ports.tasks(initiative), record_text(record, "parent"))
+    if isinstance(text, str):
+        return [f"{initiative}: the pull request's body cannot be made: {text}"]
+    return lander_review.mark_pr(ports.conn, ports.forge, ports_repo(ports, record), record, fresh, text, ports.now())
+
+
 def _push_and_open(ports: Ports, record: lr.LandingRecord, tasks: Sequence[Row], meta: LandMeta, repo: Path,
-                   refs: tuple[str, str], note: str) -> tuple[lr.LandingRecord, list[str]] | Outcome:
-    """Push the initiative branch (refused when it lacks a recorded sha) and open its pull request, or find it open."""
+                   refs: tuple[str, str], note: str, passed: str = "") -> tuple[lr.LandingRecord, list[str]] | Outcome:
+    """Push the initiative branch (refused when it lacks a recorded sha) and open its pull request, or find it open.
+    On the new model `passed` is the tip the suite passed at, which the record keeps (`lander_review.opened`)."""
     (branch, parent), initiative = refs, record_text(record, "initiative")
     ident, recorded = ls.item_id(ls.INITIATIVE_LAND, initiative), lr.recorded_shas(record)
     dropped = lg.missing_from(repo, branch, recorded)
@@ -1246,13 +1287,10 @@ def _push_and_open(ports: Ports, record: lr.LandingRecord, tasks: Sequence[Row],
     pushed, why = ports.forge.push(repo, branch)
     if not pushed:
         return Outcome("failed", ident, f"push of {branch} failed: {why}")
-    try:
-        cartridge: Mapping[str, object] = meta.get("cartridge") or {}
-        own: Mapping[str, object] = meta.get("initiative") or {"id": initiative}
-        title = initiative_pr_title(cartridge, own, parent, meta.get("epic_issue"))
-        reference = initiative_pr_reference(cartridge, own, parent, meta.get("epic_issue"))
-    except TemplateError as exc:
-        return Outcome("failed", ident, str(exc))
+    text = _pr_text(meta, record, tasks, parent)
+    if isinstance(text, str):
+        return Outcome("failed", ident, text)
+    title, base_body = text
     existing = ports.forge.find_open_prs(repo, branch)
     if isinstance(existing, str):
         return Outcome("waiting", ident, f"could not ask the forge about {branch}: {existing}")
@@ -1261,13 +1299,15 @@ def _push_and_open(ports: Ports, record: lr.LandingRecord, tasks: Sequence[Row],
         url = str(first.get("url") or first.get("number")) if is_mapping(first) else str(first)
         events = [f"found the open pull request for {branch}: {url}"]
     else:
-        body = _pr_body(meta, record, tasks, reference) + (f"\n{note}\n" if note else "")
-        ok, url = ports.forge.open_pr(repo, title, body, head=branch, base=parent)
+        ok, url = ports.forge.open_pr(repo, title, base_body + (f"\n{note}\n" if note else ""), head=branch, base=parent)
         if not ok:
             return Outcome("failed", ident, f"pull request for {branch} was not opened: {url}")
         events = [f"opened the pull request for {initiative}: {url}"]
-    updated = lr.with_state({**record, "state": "assembled"} if record.get("state") != "pr_open" else record, "pr_open", ports.now(),
-                            pr={"url": url, "title": title, "head": branch, "base": parent})
+    pr: lr.PullRequest = {"url": url, "title": title, "head": branch, "base": parent}
+    if passed:  # the new model: where the suite passed is kept, and its moves are counted afresh
+        fresh, review_tip = lander_review.opened(record, passed)
+        pr, record = {**pr, **fresh}, {**record, "review_tip": review_tip}
+    updated = lr.with_state({**record, "state": "assembled"} if record.get("state") != "pr_open" else record, "pr_open", ports.now(), pr=pr)
     ls.put_record(ports.conn, updated)
     return updated, events
 

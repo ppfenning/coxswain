@@ -360,6 +360,17 @@ def mark_ready(repo: Path, *, head: str) -> tuple[bool, str]:
         return False, str(exc)
 
 
+def mark_draft(repo: Path, *, head: str) -> tuple[bool, str]:
+    """Make the open PR from `head` a draft by giving its title the prefix; Forgejo refuses to merge a draft."""
+    try:
+        target, number, current = _open_pull(repo, head)
+        if is_draft_title(current):
+            return True, f"pull request {number} is already a draft"
+        return _patch_pull(target, number, {"title": f"{DRAFT_PREFIX}{current}"})
+    except ForgeError as exc:
+        return False, str(exc)
+
+
 def merge_state(pr: int, *, repo: Path | str | None = None) -> str:
     if repo is None:
         raise ForgeError("forgejo: a PR number alone does not name a repository")

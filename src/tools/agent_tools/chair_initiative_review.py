@@ -15,8 +15,10 @@ chair plans:
 - `reopen` of a row withdrawn while its initiative was held, once nothing holds it (no episode ends);
 - `reopen` of a row finished `approved`, `failed` or `quarantined` once the initiative branch has moved from the tip
   its last round reviewed (`review_tip`, the tip the lander's gate last judged): a fix merged, or the lander took
-  the parent forward and pushed it rather than open the pull request at a tip the suite never ran at. The reopen
-  ends the episode (`store_phases._close_episode`), so the review and the suite run again, afresh, at the new tip;
+  the parent forward and pushed it rather than open the pull request at a tip the suite never ran at. The pull
+  request may be open already (`pr_open`): a refresh, a phase merge or a fix moved its head, and it waits, a draft,
+  for a fresh suite there (`lander_review`, "wait for fresh"). The reopen ends the episode
+  (`store_phases._close_episode`), so the review and the suite run again, afresh, at the new tip;
 - for a row finished `quarantined`, the triage task: one task (`initiative_review.fix_phase`, `fix-<round>`), written
   `quarantined` with the round's reason as L6's review quarantine marks a phase's tasks (`MARK_KEY`), so the
   chair's triage reads it as the review's and proposes a fix (the task goes to build as a phase of its own, merges,
@@ -41,6 +43,8 @@ Row = Mapping[str, object]
 __all__ = ["review_changes", "revision_change", "triage_change"]
 
 _SETTLED = frozenset({"approved", "failed", "quarantined"})  # finished outcomes a moved tip reviews again
+# Every phase merged: no pull request yet, or one open whose head must pass the suite again before it lands.
+_WHOLE = frozenset({"assembled", "pr_open"})
 
 
 def _tasks_of(tasks: Sequence[Row], initiative: str) -> list[dict[str, object]]:
@@ -135,11 +139,11 @@ def review_changes(records: Sequence[Mapping[str, object]], tasks: Sequence[Row]
             phase = initiative_review.revision_phase(last.number)
             if not any(t["phase"] == phase for t in _tasks_of(tasks, initiative)):
                 out.append(revision_change(initiative, last.number, last.revision, branch, repo, requires(repo), seq))
-            elif state == "assembled":
+            elif state in _WHOLE:
                 out.append({"op": initiative_review.REREVIEW_OP, "initiative": initiative,
                             "phase": initiative_review.QUEUE_PHASE, "epoch": row.get("claim_epoch", 0),
                             "reason": f"{phase} merged into {branch}: round {last.number + 1} reviews it"})
-        elif row.get("state") == "finished" and row.get("outcome") in _SETTLED and state == "assembled" \
+        elif row.get("state") == "finished" and row.get("outcome") in _SETTLED and state in _WHOLE \
                 and tip and reviewed and tip != reviewed:
             out.append({"op": "reopen", "initiative": initiative, "phase": initiative_review.QUEUE_PHASE,
                         "epoch": row.get("claim_epoch", 0), "requires": requires(repo), "band": 1, "seq": seq,

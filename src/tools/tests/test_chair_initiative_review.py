@@ -74,6 +74,9 @@ def test_a_revise_writes_its_revision_phase_once_then_queues_the_review_again_on
     (again,) = _changes([_record("p1", "p2", "revise-1")], merged, stored, rounds)
     assert (again["op"], again["phase"], again["epoch"]) == (ir.REREVIEW_OP, ir.QUEUE_PHASE, 3)
     assert "round 2 reviews it" in again["reason"]
+    # The pull request already open (a revise after a reopen): its head waits for fresh, so the next round runs too.
+    (open_again,) = _changes([_record("p1", "p2", "revise-1", state="pr_open")], merged, stored, rounds)
+    assert open_again["op"] == ir.REREVIEW_OP
 
 
 def test_a_finished_review_is_the_lander_s_and_a_withdrawn_one_comes_back_once_nothing_holds_it():
@@ -100,7 +103,11 @@ def test_a_finished_review_runs_again_once_the_branch_moved_from_the_tip_its_las
         assert not [c for c in _changes([_record("p1", "p2")], stored=stored, rounds=rounds) if c["op"] == "reopen"]
         assert not [c for c in _changes([_moved(held={"reason": "x", "since": "t"})], stored=stored, rounds=rounds)
                     if c["op"] == "reopen"]
-        assert not [c for c in _changes([_moved(state="pr_open")], stored=stored, rounds=rounds) if c["op"] == "reopen"]
+        # Wait for fresh: an open pull request whose head moved is reviewed again too; a phase still building is not.
+        assert [c["op"] for c in _changes([_moved(state="pr_open")], stored=stored, rounds=rounds)
+                if c["op"] == "reopen"] == ["reopen"]
+        assert not [c for c in _changes([_record("p1", review_tip={"tip": "h-new"})], stored=stored, rounds=rounds)
+                    if c["op"] == "reopen"]
     # A reopened episode has no round yet: no tip reviewed, so it is not reopened again.
     closed = {"ship": [*_rounds("approve")["ship"], {"round": 2, "verdict": review_loop.REOPENED, "head_sha": ""}]}
     assert _changes([_moved()], stored=[*PHASES, _review("finished", "approved")], rounds=closed) == []

@@ -18,6 +18,11 @@ without `notes/fix.txt`: the merge breaks a test that neither phase broke alone.
   `main` moves before the land: the lander takes it forward, opens no pull request at a tip the suite never ran at,
   and pushes the refreshed branch; the chair reopens the review, the suite passes at the new tip, and the lander opens
   the pull request on the forge at that tip, saying which round and which sha passed.
+- On Forgejo, wait for fresh: the pull request opens at a passing tip (a person's gate keeps it open), then `main`
+  moves and the gate becomes `full`. The lander takes `main` forward and pushes the head into the open pull request,
+  which becomes a draft (`WIP: `) whose body names the sha that last passed and the head ahead of it; the forge
+  refuses an operator's merge of it, and the lander's own merge waits. The chair reopens the review with the pull
+  request open, the suite passes at the new head, and the lander marks it ready and merges it.
 """
 
 from __future__ import annotations
@@ -313,3 +318,62 @@ def test_a_revise_round_s_revision_phase_is_built_merged_and_reviewed_again_and_
     body = str(forge_repo.api("GET", "/pulls/1")["body"])  # type: ignore[index]
     assert f"the initiative review approved it in round 4 and the suite passed at {third[:12]}." in body
     assert f"The full suite passed at `{third}`." in body
+
+
+def _stale_body(sandbox, forge_repo, passed: str, head: str) -> None:
+    pull = forge_repo.api("GET", "/pulls/1")
+    assert isinstance(pull, dict) and str(pull["title"]).startswith("WIP: "), pull
+    assert f"The full suite last passed at `{passed}`; the head is at `{head}`, ahead of it." in str(pull["body"]), pull
+    assert _record(sandbox, INITIATIVE)["pr"]["stale"] is True
+
+
+@pytest.mark.forge
+def test_an_open_pull_request_whose_head_moves_is_a_draft_that_cannot_land_until_the_suite_passes_there(forge_review_machine):
+    sandbox, name, env, launchable, forge_repo = forge_review_machine
+    clone = forge_repo.path
+    both = {"patch": plan.new_file_patch("notes/b.txt", "b") + plan.new_file_patch("notes/fix.txt", "fix"),
+            "summary": "built", "files_touched": ["notes/b.txt", "notes/fix.txt"], "commands_run": []}
+    launchable.scripted({**_plan_answers(p1_review_1=APPROVE, p2_review_1=APPROVE, initiative_review_1=APPROVE,
+                                         initiative_review_3=APPROVE), "build@b": both})
+    first = _phases_built_and_merged(sandbox, env, name, clone)
+    _queued_review(sandbox)
+    out = _claim_once(sandbox, env, name)
+    assert f"finished approved: the initiative review approved it in round 1 and the suite passed at {first[:12]}" in out, out
+    out = _lander(sandbox)
+    assert "opened the pull request for ship" in out, out
+    pull = forge_repo.pull(1)
+    assert (pull["state"], pull["sha"]) == ("open", first), pull
+    assert _record(sandbox, INITIATIVE)["pr"]["passed"] == first
+
+    # main moves, and the lander now merges the pull request itself: it takes main forward and pushes the head first.
+    sandbox.git(clone, "checkout", "--quiet", "main")
+    (clone / "elsewhere.txt").write_text("another change on main\n", encoding="utf-8")
+    sandbox.git(clone, "add", "elsewhere.txt")
+    sandbox.git(clone, "commit", "--quiet", "-m", "another change lands on main")
+    sandbox.git(clone, "push", "--quiet", "origin", "main")
+    _gate(sandbox, "full")
+    out = _lander(sandbox)
+    second = _origin_tip(sandbox, clone, INIT)
+    assert second != first and "after the suite passed" in out, out
+    assert forge_repo.pull(1)["sha"] == second and forge_repo.pull(1)["state"] == "open", forge_repo.pull(1)
+    assert f"ship: the pull request is a draft: its head {second[:12]} has no passing suite" in out, out
+    _stale_body(sandbox, forge_repo, first, second)
+
+    # Stale, it cannot land: the forge refuses an operator's merge, and the lander's own merge waits for the suite.
+    status, _ = forge_repo.forge.api("POST", f"/repos/{forge_repo.owner}/{forge_repo.name}/pulls/1/merge", {"Do": "squash"})
+    assert status >= 400 and forge_repo.pull(1)["state"] == "open", status
+    out = _lander(sandbox)
+    assert f"the suite has not run at {second[:12]}" in out and forge_repo.pull(1)["state"] == "open", out
+    _stale_body(sandbox, forge_repo, first, second)
+
+    # The chair reopens the review with the pull request open; the suite runs at the new head; it is ready and lands.
+    _reopened(sandbox, second)
+    out = _claim_once(sandbox, env, name)
+    assert f"finished approved: the initiative review approved it in round 3 and the suite passed at {second[:12]}" in out, out
+    assert _suites(sandbox) == [("phase/suite/1", 1, first), ("phase/suite/3", 1, second)]
+    out = _lander(sandbox)
+    assert f"ship: the pull request is ready: the suite passed at its head {second[:12]}" in out, out
+    pull = forge_repo.pull(1)
+    assert (pull["state"], pull["merged"]) == ("closed", True), (out, pull)
+    assert _record(sandbox, INITIATIVE)["state"] == "landed"
+    assert forge_repo.file_text("main", "elsewhere.txt") == "another change on main\n"

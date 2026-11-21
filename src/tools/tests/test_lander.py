@@ -68,6 +68,21 @@ class Forge:
     def pr_merged(self, repo, branch):
         return bool(self.prs.get(branch, {}).get("state") == "merged"), ""
 
+    def mark_draft(self, repo, branch):
+        self.calls.append(("draft", branch))
+        self.prs[branch]["draft"] = True
+        return True, ""
+
+    def mark_ready(self, repo, branch):
+        self.calls.append(("ready", branch))
+        self.prs[branch]["draft"] = False
+        return True, ""
+
+    def update_pr(self, repo, title, body, *, head):
+        self.calls.append(("pr_edit", head))
+        self.prs[head].update(title=title, body=body)
+        return True, ""
+
     def poll_checks(self, repo, *, ref, memo=None):
         self.calls.append(("poll_checks", ref))
         return (*self.checks, dict(memo or {}))

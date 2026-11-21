@@ -67,6 +67,11 @@ class PullRequest(TypedDict, total=False):
     title: str
     head: str
     base: str
+    # The new model's open pull request (`lander_review.freshness`): whether its head has no passing suite (a draft),
+    # the sha the suite last passed at, and the head its body last named.
+    stale: bool
+    passed: str
+    at: str
 
 
 class PhaseEntry(TypedDict, total=False):
