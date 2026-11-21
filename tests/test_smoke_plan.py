@@ -552,3 +552,53 @@ def test_the_shards_partition_every_file_heaviest_first():
     assert shards == (("smoke/test_a.py",), ("smoke/test_b.py",), ("smoke/test_c.py", "smoke/test_d.py", "smoke/test_e.py"))
     assert plan.shard_files(dict(reversed(weights.items())), 3) == shards  # the order the files came in does not matter
 
+
+MARKED_SOURCE = '''
+import pytest
+
+@pytest.mark.forge
+def test_on_the_forge(): ...
+
+@pytest.mark.parametrize("x", [1])
+def test_on_git(x): ...
+
+@pytest.mark.forge(reason="api")
+async def test_also_on_the_forge(): ...
+
+def helper(): ...
+'''
+
+
+def test_unmarked_tests_reads_decorators_and_the_modules_pytestmark():
+    assert plan.unmarked_tests(MARKED_SOURCE, "forge") == {"test_on_git"}
+    assert plan.unmarked_tests("import pytest\npytestmark = pytest.mark.forge\ndef test_a(): ...\n", "forge") == set()
+    listed = "import pytest\npytestmark = [pytest.mark.slow, pytest.mark.forge]\ndef test_a(): ...\n"
+    assert plan.unmarked_tests(listed, "forge") == set()
+    assert plan.unmarked_tests(listed, "other") == {"test_a"}
+
+
+def test_a_node_id_splits_into_its_file_and_its_module_level_test():
+    assert plan.split_node_id("smoke/test_a.py::test_b") == ("smoke/test_a.py", "test_b")
+    for node in ("smoke/test_a.py", "smoke/test_a.py::", "smoke/test_a.py::Class::test_b"):
+        with pytest.raises(ValueError):
+            plan.split_node_id(node)
+
+
+def test_callers_of_names_each_module_level_function_that_calls_it():
+    source = "def forge():\n    run(plan.start(1))\n\ndef other():\n    start()\n\ndef idle():\n    pass\n"
+    assert plan.callers_of(source, "start") == {"forge", "other"}
+    assert plan.callers_of(source, "missing") == set()
+
+
+def test_forge_users_are_the_unmarked_tests_whose_closure_holds_the_forge_fixture():
+    closures = {"a::t1": ["sandbox", "forge"], "a::t2": ["sandbox"], "b::t3": ["forge_repo", "forge"]}
+    assert plan.forge_users(closures, marked=["b::t3"]) == ["a::t1"]
+    assert plan.forge_users(closures, marked=["a::t1", "b::t3"]) == []
+
+
+def test_the_git_only_lists_cover_the_four_behaviours_once_each():
+    lists = (plan.GIT_ONLY_BEHAVIOURS, plan.GIT_ONLY_PENDING)
+    assert not plan.GIT_ONLY_BEHAVIOURS.keys() & plan.GIT_ONLY_PENDING.keys()
+    assert {"push after merge", "re-merge", "roll-up", "resume from task commits"} <= {b for named in lists for b in named}
+    assert all(plan.split_node_id(node)[0].startswith("smoke/") for named in lists for nodes in named.values() for node in nodes)
+

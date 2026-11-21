@@ -189,6 +189,29 @@ unit environment file.
 
 macOS launchd stays an operator check: the suite runs on Linux and starts no launchd agent.
 
+## The phase check needs no forge
+
+A phase and an initiative check different amounts of the suite (L2 gives each level its own `.agent-checks` lines):
+
+| Level | Command | Forgejo |
+| --- | --- | --- |
+| phase | `pytest -q -rs smoke -m "not forge"` | never started |
+| initiative | `pytest -q -rs smoke` | started once, for the `forge` tests |
+
+Every test marked `forge` needs Forgejo's API, not only a git remote: `test_forge_land.py` opens, polls and merges a
+pull request, and `test_edge_upgrade.py` reads the commit statuses that `forge_forgejo.green_commits` picks the
+upgrade from. The git-only behaviours the lander and the phase roll-up rely on run against bare origins and the local
+forge (`test_lander_push.py`, `test_lander_lanes.py`'s `_repository`). `test_phase_check_no_forge.py` holds both
+facts:
+
+- each behaviour in `plan.GIT_ONLY_BEHAVIOURS` (push after merge, re-merge, roll-up, resume from task commits) names
+  smoke tests that exist and carry no `forge` mark. A behaviour whose test has not landed sits in
+  `plan.GIT_ONLY_PENDING`, and fails the meta-test once its test exists, so it moves over instead of going stale;
+- only the `forge` fixture calls `plan.forgejo_run_argv`, and no test of the run without the `forge` mark has `forge`
+  in its fixture closure. A run that deselects the forge tests therefore starts no container of the Forgejo image.
+  Under `COX_SMOKE_SHARD` this covers the files of the shard that holds the meta-test; the unsharded phase command
+  covers them all.
+
 ## Where it runs
 
 - **CI.** The `smoke` and `smoke (forge)` jobs each have a Postgres service (the pinned image). `smoke` runs
