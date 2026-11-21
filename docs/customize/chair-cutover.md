@@ -65,6 +65,31 @@ All of these, at the moment you start:
   is the old model; `phase` is the new one. The old model's land slot (its lands, the fetch of an exited remote run,
   carries and closes) is the watch worker's. The tick runs each land as its own process (`runs/chair-lands/`), so a
   land it started before the stop finishes, and the watch worker collects it.
+- **The tick's unit stops only its own process** (Linux). A stop must leave a land in flight running:
+
+  ```sh
+  systemctl --user show -p KillMode coxswain-chair.service    # KillMode=process
+  ```
+
+  Any other value is a unit installed before the setting. Under the default, `control-group`, the stop in step 1 kills
+  every land the tick started, since each one is still in the unit's cgroup. `cox upgrade` writes the line into the
+  tick's unit file and the workers' template, and reloads systemd, before it restarts anything. Run it, then check
+  again. The first edge upgrade onto this version runs the previous version's upgrade code, which does not write the
+  line, so check after that one too. macOS needs nothing: launchd leaves a process in its own session running.
+- **No land is in flight, as belt and braces.** With the setting above a land outlives the stop, and the watch worker
+  collects it. Still, start from a quiet `runs/chair-lands/`. A spec with no outcome beside it whose process is alive
+  is a live land:
+
+  ```sh
+  cd <workspace_dir>/runs/chair-lands 2>/dev/null && for spec in *.spec.json; do
+    [ -e "$spec" ] || continue
+    [ -e "${spec%.spec.json}.outcome.json" ] && continue
+    pid=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["pid"])' "$spec")
+    kill -0 "$pid" 2>/dev/null && echo "live land: $spec (pid $pid)"
+  done
+  ```
+
+  `<workspace_dir>` is the profile's. Wait until it prints nothing. No directory at all means no land has run.
 - **No land is claimed.** `cox lander status` shows no claimed item in the land queue.
 - **The store was dumped within the hour.** Keep the dump until the queues have run a day.
 
@@ -159,7 +184,10 @@ The tick used to raise `queue_unowned <kind>` when a listed kind had no live wor
 A hung worker does not look live. Each pass has a deadline: 45 minutes for watch, whose revert can wait half an hour
 on checks, and 15 for the rest (`--pass-deadline`). Past it the worker stops renewing its lease, so the lease lapses
 within a minute and the alarms above name the kind. A minute after that the worker exits with code 4, and its unit
-(`Restart=always`, launchd `KeepAlive`) starts a fresh one.
+(`Restart=always`, launchd `KeepAlive`) starts a fresh one. A heavy watch pass can run past its 45 minutes this
+way; that is safe. The worker stops the checks and the git calls the pass was running, the fresh worker replans the
+work from the store, and the lands in flight keep running, since the units stop only the worker's own process
+(`KillMode=process`).
 
 ## What moved from the tick to the workers
 

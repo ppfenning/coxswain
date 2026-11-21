@@ -26,6 +26,7 @@ from xml.sax.saxutils import escape
 from agent_tools.chair_kinds import QUEUE_KINDS
 from agent_tools.chair_service import (
     CHAIR_PLIST_LABEL,
+    KILL_MODE_LINE,
     UNIT_NAME,
     WATCHDOG_PLIST_NAME,
     WATCHDOG_TIMER_NAME,
@@ -108,7 +109,8 @@ def _worker_argv(inputs: UnitInputs, kind: str) -> list[str]:
 
 def template_text(inputs: UnitInputs) -> str:
     """The template every kind's instance runs; `%i` is the instance name, the kind. A worker exits only when stopped
-    or on an error, so systemd restarts it on any exit it did not ask for."""
+    or on an error, so systemd restarts it on any exit it did not ask for. `KillMode=process`, as the tick's unit, so a
+    stop, a hung pass's exit 4 or a restart leaves the watch worker's lands running (`chair_service.KILL_MODE_LINE`)."""
     env_lines = [environment_file_line(inputs.env_file)] if inputs.env_file is not None else []
     lines = [
         "[Unit]",
@@ -120,6 +122,7 @@ def template_text(inputs: UnitInputs) -> str:
         f"Environment=PATH={inputs.path}",
         *env_lines,
         "Restart=always",
+        KILL_MODE_LINE,
         "RestartSec=30",
         "",
         "[Install]",

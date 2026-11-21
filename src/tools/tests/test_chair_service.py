@@ -226,3 +226,36 @@ def test_service_with_neither_flag_prints_its_help(home: Path, capsys) -> None:
     assert _service() == 0
     assert "usage: cox chair service" in capsys.readouterr().out
     assert not chair_service.unit_path(home).exists()
+
+
+def test_the_tick_unit_stops_only_the_tick_so_a_stop_or_restart_leaves_its_lands_running() -> None:
+    for env in ("/h/garage.env", None):
+        text = chair_service.unit_text("/usr/local/bin/cox", "/ws", "chair", 60, env, "/p.yaml", "/usr/bin")
+        service = text.split("[Service]\n", 1)[1].split("\n\n", 1)[0].splitlines()
+        assert service.count("KillMode=process") == 1
+
+
+LEGACY_UNIT = (
+    "[Unit]\nDescription=Coxswain autonomous chair\n\n[Service]\nExecStart=/c chair run --label x --interval 60\n"
+    "Restart=on-failure\nRestartSec=30\n\n[Install]\nWantedBy=default.target\n"
+)
+
+
+def test_with_kill_mode_adds_the_line_at_the_end_of_the_service_section_and_leaves_the_rest() -> None:
+    assert chair_service.with_kill_mode(LEGACY_UNIT) == LEGACY_UNIT.replace(
+        "RestartSec=30\n\n[Install]", "RestartSec=30\nKillMode=process\n\n[Install]"
+    )
+
+
+def test_with_kill_mode_replaces_another_kill_mode_and_is_a_fixed_point() -> None:
+    other = LEGACY_UNIT.replace("Restart=on-failure\n", "Restart=on-failure\nKillMode=control-group\n")
+    once = chair_service.with_kill_mode(other)
+    assert "KillMode=control-group" not in once and once.count("KillMode=process") == 1
+    assert chair_service.with_kill_mode(once) == once
+    rendered = chair_service.unit_text("/c", "/ws", "x", 60, None)
+    assert chair_service.with_kill_mode(rendered) == rendered
+
+
+def test_with_kill_mode_handles_a_last_section_and_no_service_section() -> None:
+    assert chair_service.with_kill_mode("[Service]\nExecStart=/c") == "[Service]\nExecStart=/c\nKillMode=process\n"
+    assert chair_service.with_kill_mode("[Unit]\nDescription=x\n") == "[Unit]\nDescription=x\n"

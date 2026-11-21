@@ -52,6 +52,7 @@ from agent_tools.cli_lazy import (
     repo_path,
     route,
     run_store,
+    unit_children,
     work_state,
 )
 from agent_tools.cli_route import _initiative_path, _refuse_if_already_running
@@ -539,6 +540,7 @@ def _route_launch(a: argparse.Namespace) -> int:
                 background, env={**os.environ, _OWN_RUN_ID_ENV: run_id}, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                 start_new_session=True, cwd=start_in,
             )
+        unit_children.detached(proc.pid)  # outlives a chair that launched it in-process (`unit_children`)
         pid_path.write_text(str(proc.pid))
         print(f"run {run_id}")
         print(f"pid {pid_path}")
@@ -553,6 +555,7 @@ def _route_launch(a: argparse.Namespace) -> int:
         proc = subprocess.Popen(
             argv, env=launch_env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True, cwd=start_in,
         )
+    unit_children.detached(proc.pid)  # outlives a chair that launched it in-process (`unit_children`)
     exit_code = _wait_for_exit(
         proc, lambda: _LAUNCH_STARTED_MARKER in (_read_text_or_none(log_path) or ""), _LAUNCH_SETTLE_S,
     )

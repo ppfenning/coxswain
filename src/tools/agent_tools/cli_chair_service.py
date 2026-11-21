@@ -90,7 +90,10 @@ def _chair_run(a: argparse.Namespace) -> int:
     if missing:
         print(f"chair run: refusing to start, no lease taken; not wired: {', '.join(missing)}")
         return 2
-    chair_run.run(a.once, a.interval, a.dry_run, deps, a.max_overruns)
+    try:
+        chair_run.run(a.once, a.interval, a.dry_run, deps, a.max_overruns)
+    finally:
+        _stop_own_children(a.dry_run)
     if a.once and deps.holds():  # a one-shot process exits here, so its lease must not outlive it
         deps.release()
     if not a.once and deps.restart_state.moved is not None:
@@ -207,8 +210,7 @@ def _chair_worker(a: argparse.Namespace) -> int:
         gather=gather, perform_one=perform_one, perform_batch=perform_batch, notify=notify, chores=chores,  # type: ignore[arg-type]
         wait=wait, pause=close, clock=time.monotonic, now=lambda: datetime.datetime.now(datetime.UTC),
         echo=chair_report.echo_line,
-        # A pass hung past its deadline, its lease lapsed: exit, so the unit's supervisor starts a fresh worker.
-        abandon=None if a.dry_run else (lambda: os._exit(WORKER_HUNG_EXIT)),
+        abandon=None if a.dry_run else _abandon_hung_pass,
     )
     poll = a.poll if a.poll is not None else chair_kinds.POLL_SECONDS[a.kind]
     deadline = a.pass_deadline if getattr(a, "pass_deadline", None) is not None else chair_queue.PASS_DEADLINE_SECONDS[a.kind]
@@ -219,6 +221,24 @@ def _chair_worker(a: argparse.Namespace) -> int:
     finally:
         close()
         restore()
+        _stop_own_children(a.dry_run)
+
+
+def _stop_own_children(dry_run: bool) -> None:
+    """Edge. The chair's units stop only the main process (`KillMode=process`), so on its way out the chair stops what it
+    ran for itself, and leaves the lands and lanes it started detached (`unit_children`). A dry run starts nothing."""
+    from agent_tools import unit_children
+
+    if not dry_run:
+        unit_children.stop_children(log=lambda line: print(line, file=sys.stderr))
+
+
+def _abandon_hung_pass() -> None:
+    """Edge. A pass hung past its deadline, its lease lapsed: stop what the pass was running (a hung check, a hung git),
+    then exit at once, so the unit's supervisor starts a fresh worker. Called from the beat thread, so `os._exit`: the
+    main thread is the one that hung."""
+    _stop_own_children(False)
+    os._exit(WORKER_HUNG_EXIT)
 
 
 def _worker_chores(kind: str, deps: chair_run.RunDeps, runs_dir: Path) -> object:

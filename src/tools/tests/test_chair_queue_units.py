@@ -35,6 +35,12 @@ def test_the_template_runs_the_instance_kind_as_a_worker_under_the_chairs_label_
     assert "WantedBy=default.target" in text
 
 
+def test_the_template_stops_only_the_worker_so_a_stop_or_restart_leaves_the_watch_workers_lands_running():
+    service = units.template_text(INPUTS).split("[Service]\n", 1)[1].split("\n\n", 1)[0].splitlines()
+    assert service.count("KillMode=process") == 1
+    assert not any(line.startswith("KillMode=") and line != "KillMode=process" for line in service)
+
+
 def test_each_kind_has_its_own_launchd_agent_that_sources_the_env_file():
     for kind in QUEUE_KINDS:
         plist = plistlib.loads(units.plist_text(INPUTS, kind).encode())

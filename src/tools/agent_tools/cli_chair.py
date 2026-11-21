@@ -1355,10 +1355,13 @@ def _chair_run_deps(
 
 
 def _spawn_detached(argv: list[str]) -> int:
-    """Edge. A land process in its own session, so it outlives the chair or worker that started it."""
-    return subprocess.Popen(
+    """Edge. A land process in its own session, so it outlives the chair or worker that started it: marked `detached`,
+    so the chair's exit leaves it running (`unit_children`)."""
+    from agent_tools import unit_children
+
+    return unit_children.detached(subprocess.Popen(
         argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True
-    ).pid
+    ).pid)
 
 
 def _landing_records(runs_dir: Path) -> list[dict]:
