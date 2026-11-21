@@ -8,8 +8,8 @@ merge was tried. It is lifted in one of three ways, all decided here and acted o
 - an operator releases it (`cox lander release`, `released`);
 - the automatic retry comes due (`retry_due`). A resolver that raised, or a harness fault, is retried up to
   `MERGE_RETRIES` times with a doubling backoff. "No merge agent yet" is retried every `NO_AGENT_RETRY_SECONDS`
-  without a bound: each try costs one scratch merge and a refusal, and the first pass after L5 wires the agent
-  settles it. A clean refusal, a failed level check and a guard refusal are never retried on their own: they need a
+  without a bound: each try costs one scratch merge and a refusal, and the first pass after the cartridge binds the
+  `merge_tasks` seat settles it. A clean refusal, a failed level check and a guard refusal are never retried on their own: they need a
   new tip or a person.
 
 A hold lifted for a retry leaves its count on the record (`retried`), so the next hold of the same phase at the same
@@ -27,7 +27,8 @@ from core import landing_record as lr
 
 # The prefix of the hold a new-model phase merge sets when it cannot be made.
 MERGE_HOLD = "the lander could not merge new-model phase "
-NO_MERGE_AGENT = "no merge agent yet: this lander has no merge agent wired, so a conflict on the new model holds"
+NO_MERGE_AGENT = ("no merge agent yet: the team cartridge binds no merge_tasks seat, so a conflict on the new model "
+                  "holds")
 
 MergeCause = Literal["refused", "no_merge_agent", "resolver_error", "harness_fault", "checks_failed", "guard"]
 RETRIED: frozenset[str] = frozenset({"resolver_error", "harness_fault"})  # bounded automatic retry

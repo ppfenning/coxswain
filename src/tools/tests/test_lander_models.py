@@ -23,7 +23,7 @@ from tests.test_lander import World, run, task
 T0 = "2026-11-20T00:00:00Z"
 GOLDEN = Path(__file__).parent / "fixtures" / "lander_old_model_collision.json"
 P1_TEXT, P2_TEXT = "one\nTWO from p1\nthree\n", "one\nTWO from p2\nthree\n"
-BOTH = "one\nTWO from p1 and p2\nthree\n"
+BOTH = "one\nTWO from p1\nTWO from p2\nthree\n"  # every line each side added, kept
 
 
 # -- the pure core --------------------------------------------------------------------------------------------------
@@ -220,12 +220,12 @@ def test_the_resolver_sees_the_markers_in_the_scratch_and_its_answer_is_the_merg
 
     def resolve(scratch: Path, paths: tuple[str, ...]) -> lg.Resolved:
         seen.append((scratch / paths[0]).read_text())
-        return lg.Resolved({"f.txt": "one\nmain and side\n"}, "the agent")
+        return lg.Resolved({"f.txt": "one\nmain\nside\n"}, "the agent")
 
     merged = lg.merge_into(repo, branch="main", source="side", message="m", resolve=resolve)
     assert "<<<<<<<" in seen[0] and "side" in seen[0] and "main" in seen[0]
     assert (merged.status, merged.resolved_by) == ("merged", "the agent")
-    assert run(repo, "show", "main:f.txt") == "one\nmain and side"
+    assert run(repo, "show", "main:f.txt") == "one\nmain\nside"
     assert run(repo, "rev-parse", "main^1") == old and lg.is_ancestor(repo, "side", "main")
 
 
@@ -255,7 +255,7 @@ def test_a_resolver_that_breaks_leaves_the_conflict(tmp_path):
 def test_a_resolved_merge_still_meets_the_checks(tmp_path):
     repo, old = _two_sides(tmp_path)
     merged = lg.merge_into(repo, branch="main", source="side", message="m", checks=lambda tree: (False, "red"),
-                           resolve=lambda s, p: lg.Resolved({"f.txt": "x\n"}, "a"))
+                           resolve=lambda s, p: lg.Resolved({"f.txt": "one\nmain\nside\n"}, "a"))
     assert (merged.status, merged.detail) == ("checks_failed", "red")
     assert run(repo, "rev-parse", "main") == old
 
@@ -745,7 +745,7 @@ def test_a_resolver_that_stages_or_changes_another_file_is_refused(tmp_path: Pat
             elif edit == "commit":
                 run(scratch, "add", "-A")
                 run(scratch, "commit", "-qm", "the agent committed it itself")
-            return lg.Resolved({"f.txt": "one\nboth\n"}, "a")
+            return lg.Resolved({"f.txt": "one\nmain\nside\n"}, "a")
         return resolve
 
     for edit, why in (("modify", "touched files that did not conflict: g.txt"),

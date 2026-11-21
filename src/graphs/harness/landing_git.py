@@ -172,21 +172,49 @@ def _merging(scratch: Path) -> tuple[str | None, str | None]:
     return rev(scratch, "HEAD"), rev(scratch, "MERGE_HEAD")
 
 
+def _stages(scratch: Path, path: str) -> tuple[str, str, str]:
+    """Edge. An unmerged file's text at index stages 1 (the common base), 2 (the branch) and 3 (the source); "" for a
+    stage it has none of (a file one side added or deleted)."""
+    def stage(n: int) -> str:  # not `git`: it strips, and a first line's indent is part of the line
+        done = bounded_proc.completed(["git", "-C", str(scratch), "show", f":{n}:{path}"], capture_output=True,
+                                      text=True, errors="replace")
+        return done.stdout if done.returncode == 0 else ""
+    return stage(1), stage(2), stage(3)
+
+
+def guard_problem(files: Mapping[str, str], stages: Mapping[str, tuple[str, str, str]]) -> str | None:
+    """Pure. L5's guards on a resolver's merged files (`lane_merge.has_markers`, `lane_merge.lost_lines`): a conflict
+    marker left in, the diff3 style's `|||||||` included, or a line either side added (each file's index stages: base,
+    branch, source) that the merged text dropped. None when every file passes both."""
+    from harness.lane_merge import has_markers, lost_lines  # lane_merge reaches this module through epic_branches
+
+    if marked_in := sorted(p for p, text in files.items() if has_markers(text)):
+        return f"the resolution left conflict markers in {', '.join(marked_in)}"
+    lost = {p: lost_lines(*stages[p], text) for p, text in files.items() if p in stages}
+    if dropped := sorted(p for p, lines in lost.items() if lines):
+        return (f"the resolution dropped lines a side added in {', '.join(dropped)}: "
+                + "; ".join(f"{p}: {', '.join(repr(line) for line in lost[p][:3])}" for p in dropped))[:400]
+    return None
+
+
 def _settle(scratch: Path, paths: tuple[str, ...], resolve: Resolve) -> tuple[str | None, str, Unsettled]:
     """Edge. Ask `resolve` about the conflicted merge in `scratch`, then write and commit its answer there.
     (its note, "", "") once committed; (None, why not, `Unsettled`) when it did not settle the conflict or could not
-    be committed. Before the commit the scratch must still be the merge the resolver was given, and its index and
-    worktree must differ from that merge only in the conflicted paths: anything else it staged or changed is refused."""
+    be committed. The answer must pass L5's guards against the conflict's index stages (`guard_problem`), read before
+    the resolver is asked. Before the commit the scratch must still be the merge the resolver was given, and its index
+    and worktree must differ from that merge only in the conflicted paths: anything else it staged or changed is
+    refused."""
     before, merging = _index(scratch), _merging(scratch)
     if before is None:
         return None, "the conflicted merge's index could not be read", "fault"
+    stages = {p: _stages(scratch, p) for p in paths}
     try:
         answer = resolve(scratch, paths)
     except Exception as exc:  # a resolver that breaks leaves a conflict, never a half-merged scratch
         return None, f"the resolver failed: {type(exc).__name__}: {exc}", "raised"
     if isinstance(answer, str):
         return None, answer, "refused"
-    if problem := answer_problem(answer.files, paths):
+    if problem := answer_problem(answer.files, paths) or guard_problem(answer.files, stages):
         return None, problem, "refused"
     if _merging(scratch) != merging:
         return None, "the resolver moved the merge it was given (HEAD or MERGE_HEAD changed); refused", "refused"

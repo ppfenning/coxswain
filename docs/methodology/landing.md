@@ -254,15 +254,22 @@ no `lane_model` is on the old model.
 - **New model (`lane_model: phase`).** The phase lane never merges into the initiative branch: the lander is the only
   merger. It merges origin's copy of the phase branch, and never writes that branch. The level checks are the phase
   level gate: the cartridge's `level_checks`, then the `# level: phase` section of the merged tree's `.agent-checks`. A
-  conflict goes to the merge agent, in the merge's own scratch worktree. Its answer must leave no conflict marker and
-  must pass the same guard and level checks as any merge, and the phase records who resolved it (`resolved_by`). If the
+  conflict goes to the merge agent, in the merge's own scratch worktree. The merge agent is the phase lane's own
+  (`merge_tasks`, the seat that merges two colliding tasks), run through the local harness with the provider profile's
+  runner; it is given the phase's change and each conflicted file with both sides between markers, and returns each
+  file's whole merged text. Its whole answer is bounded at 450 s, so the agent, the guards and the level checks fit
+  inside the 900 s branch lease; an agent that runs past it is a resolver error. Its answer must leave no conflict
+  marker (the diff3 style's `|||||||` included) and must keep every line either side added (against the conflict's
+  index stages), or it is refused; then it must pass the same guard and level checks as any merge, and the phase
+  records who resolved it (`resolved_by`). A cartridge that binds no `merge_tasks` seat holds as "no merge agent yet".
+  If the
   merge cannot be made, the initiative is held and the chair is told; no rectify task is filed, and the lander never
   writes the phase branch. The hold records its phase, the tip it could not merge, its cause and how many times that
   merge was tried. It lifts, and the merge is tried again, in three ways. Origin's branch of that phase moves to a new
   tip (a fix was pushed). An operator releases it with `cox lander release <initiative>`. Or its automatic retry
   comes due: a resolver that raised, or a harness fault, is retried up to three times, 10, 20 and 40 minutes after
-  each attempt, and "no merge agent yet" is retried hourly without a bound, so the first pass after a merge agent is
-  wired settles it. A clean refusal, a failed level check and a guard refusal are never retried on their own. A retry
+  each attempt, and "no merge agent yet" is retried hourly without a bound, so the first pass after a `merge_tasks`
+  seat is bound settles it. A clean refusal, a failed level check and a guard refusal are never retried on their own. A retry
   that fails the same way is not told again; a released one, and the last automatic retry, are. The merge agent
   answers in the merge's scratch worktree, and nothing but the conflicted paths may change there: an answer that
   staged or changed anything else, or moved the merge, is refused. Reconciliation never replaces a merge hold: a drift
