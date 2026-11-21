@@ -688,6 +688,11 @@ def _lander_backlog(a: argparse.Namespace) -> int:
     return lander_cli.cmd_backlog(a)
 
 
+def _lander_release(a: argparse.Namespace) -> int:
+    from agent_tools import lander_cli
+    return lander_cli.cmd_release(a)
+
+
 def _lander_service(a: argparse.Namespace) -> int:
     from agent_tools import lander_cli
     return lander_cli.cmd_service(a)

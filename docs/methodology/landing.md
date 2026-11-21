@@ -243,11 +243,37 @@ that passes, the pull requests are merged in queue order without refreshing agai
 landed and the rest wait. Batching applies only where the lander itself merges (gate `full`); an initiative whose
 files overlap another's waits its turn.
 
-The lander never resolves a conflict and never edits code. A phase merge that conflicts, or fails its checks, is sent
-back to build as a rectify task in that phase; a conflict with the parent, or a red pull request, becomes a task in a
-final `integrate` phase. The conflicted merge is committed on the branch the task builds on, so nothing already built
-is redone. A rebuild of any task starts from its last attempt, put back in full in a tree of its own, and only the
-change is built.
+The lander never edits code itself. What a phase merge does with a conflict depends on the lane model the landing
+record was made under. The record's `lane_model` is the initiative's, stamped when the record is made; a record with
+no `lane_model` is on the old model.
+
+- **Old model.** A phase merge that conflicts, or fails its checks, is sent back to build as a rectify task in that
+  phase. A conflict with the parent, or a red pull request, becomes a task in a final `integrate` phase. The conflicted
+  merge is committed on the branch the task builds on, so nothing already built is redone. A rebuild of any task starts
+  from its last attempt, put back in full in a tree of its own, and only the change is built.
+- **New model (`lane_model: phase`).** The phase lane never merges into the initiative branch: the lander is the only
+  merger. It merges origin's copy of the phase branch, and never writes that branch. The level checks are the phase
+  level gate: the cartridge's `level_checks`, then the `# level: phase` section of the merged tree's `.agent-checks`. A
+  conflict goes to the merge agent, in the merge's own scratch worktree. The merge agent is the phase lane's own
+  (`merge_tasks`, the seat that merges two colliding tasks), run through the local harness with the provider profile's
+  runner; it is given the phase's change and each conflicted file with both sides between markers, and returns each
+  file's whole merged text. Its whole answer is bounded at 450 s, so the agent, the guards and the level checks fit
+  inside the 900 s branch lease; an agent that runs past it is a resolver error. Its answer must leave no conflict
+  marker (the diff3 style's `|||||||` included) and must keep every line either side added (against the conflict's
+  index stages), or it is refused; then it must pass the same guard and level checks as any merge, and the phase
+  records who resolved it (`resolved_by`). A cartridge that binds no `merge_tasks` seat holds as "no merge agent yet".
+  If the
+  merge cannot be made, the initiative is held and the chair is told; no rectify task is filed, and the lander never
+  writes the phase branch. The hold records its phase, the tip it could not merge, its cause and how many times that
+  merge was tried. It lifts, and the merge is tried again, in three ways. Origin's branch of that phase moves to a new
+  tip (a fix was pushed). An operator releases it with `cox lander release <initiative>`. Or its automatic retry
+  comes due: a resolver that raised, or a harness fault, is retried up to three times, 10, 20 and 40 minutes after
+  each attempt, and "no merge agent yet" is retried hourly without a bound, so the first pass after a `merge_tasks`
+  seat is bound settles it. A clean refusal, a failed level check and a guard refusal are never retried on their own. A retry
+  that fails the same way is not told again; a released one, and the last automatic retry, are. The merge agent
+  answers in the merge's scratch worktree, and nothing but the conflicted paths may change there: an answer that
+  staged or changed anything else, or moved the merge, is refused. Reconciliation never replaces a merge hold: a drift
+  it finds is kept beside it and cleared on its own.
 
 Refreshes are always forward merges of the parent into the child. No branch the record names is rebased, reset or
 force-pushed, and a merge that would drop a recorded commit is refused. After a land, a phase branch is deleted only
