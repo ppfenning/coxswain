@@ -68,6 +68,7 @@ defaults:
   triage:          judge
   validate_chunk:  reason
   validate_phase:  judge
+  merge_tasks:     reason
 
 # System one is off by default. The local kNN backend was removed on 2026-09-25:
 # measured offline over this workspace's decisions, it could not reach the graduation
