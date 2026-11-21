@@ -69,6 +69,40 @@ def test_the_builder_runner_reads_the_tree_at_the_tasks_base_and_leaves_the_shar
     assert _git("status", "--porcelain", cwd=tree) == ""  # the build never touched the tree itself
 
 
+PROFILE = {"profile": "lane-tree", "runner": "claude-code", "tiers": {"cheap": "haiku", "standard": "sonnet", "deep": "opus"},
+           "tools": {"build": ["Read", "Grep", "Glob"]}}
+
+
+def _scratch_head(runner: object, name: str) -> str:
+    """The commit the runner's named build thread has its scratch at, opening the thread when it is not open."""
+    state = runner._thread(name, "build")  # type: ignore[attr-defined]
+    return _git("rev-parse", "HEAD", cwd=state["scratch"])
+
+
+def test_a_rebuilds_thread_is_cut_at_the_new_tip_once_the_first_builds_threads_are_closed(shared, tmp_path):
+    from runner.claude_code_runner import ClaudeCodeRunner
+
+    repo, tip = shared
+    base = _git("rev-parse", "main", cwd=repo)
+    runner = ClaudeCodeRunner(PROFILE, cwd=tmp_path, repo_dir=repo)
+    first_tree, rebuild_tree = tmp_path / "first", tmp_path / "rebuild"
+    _git("worktree", "add", "-q", "--detach", str(first_tree), base, cwd=repo)
+    _git("worktree", "add", "-q", "--detach", str(rebuild_tree), tip, cwd=repo)
+    first = phase_lane.builder_runner(runner, first_tree)
+    names = phase_lane.builder_threads("t1")
+    scratches = [first._thread(n, "build")["scratch"] for n in names]  # type: ignore[attr-defined]
+    assert _scratch_head(first, "t1") == base
+    # Left open, the thread is the first build's: a rebuild on the new tip would resume it at the old base.
+    assert _scratch_head(phase_lane.builder_runner(runner, rebuild_tree), "t1") == base
+    phase_lane.close_builder_threads(first, "t1")
+    assert not any(Path(s).exists() for s in scratches) and runner._threads == {}  # type: ignore[attr-defined]
+    rebuild = phase_lane.builder_runner(runner, rebuild_tree)
+    assert _scratch_head(rebuild, "t1") == tip
+    phase_lane.close_builder_threads(rebuild, "t1")
+    assert _git("worktree", "list", "--porcelain", cwd=repo).count("worktree ") == 3  # the repo and the two trees
+    phase_lane.close_builder_threads(ScriptedRunner({}), "t1")  # a runner with no threads has nothing to close
+
+
 def test_a_scripted_runner_without_the_tree_mark_has_no_tree_and_replays_the_patch_as_given(shared, tmp_path):
     repo, _ = shared
     runner = ScriptedRunner({"build": _answers()["build"]}, repo)

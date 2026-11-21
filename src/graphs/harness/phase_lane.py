@@ -509,10 +509,12 @@ def _build(lane: Lane, task: str, base: str, ident: str = "") -> tuple[Mapping[s
         why = why or f"no tree at the task's base {base[:12]} for its builder to read: {' '.join(said.split())[:300]}"
         lane.put([lane.row(task, "build", False, "failed", {"error": why[:500]}, started, ident=ident)])
         return None, why, started, tctx
+    runner = builder_runner(lane.ctx.runner, tree)
     try:
         link_venv(home.repo, tree)
-        return _run_build(lane, task, ident, started, tctx, builder_runner(lane.ctx.runner, tree))
+        return _run_build(lane, task, ident, started, tctx, runner)
     finally:
+        close_builder_threads(runner, task)  # while the tree they were cut from still exists
         remove_worktree(home.repo, tree)
 
 
@@ -527,6 +529,24 @@ def builder_runner(runner: object, tree: Path) -> PhaseRunner:
     assignment, since the lane's tasks build in parallel on one runner; its check commands are the runner's own."""
     return PhaseRunner(runner, tree, build_digest(tree) or None, list(getattr(runner, "check_commands", None) or []),
                        dict(getattr(runner, "gate_check_commands", None) or {}))
+
+
+def builder_threads(task: str) -> tuple[str, ...]:
+    """Pure. The named threads one build of `task` may open on its runner (`lifecycle_propose`): the build's own,
+    keyed by the ticket, and the alternative plan's and its arbiter's under it."""
+    return (task, f"{task}/plan_alternative", f"{task}/plan_arbitrate")
+
+
+def close_builder_threads(runner: object, task: str) -> None:
+    """Edge. Close the build's threads on `runner` (`builder_threads`), each with its scratch. A thread outlives its
+    call until it is closed, and is keyed by the ticket alone, so a rebuild (`<task>-rebuild`, the same ticket) would
+    otherwise resume the first build's session in its scratch, at the old base with the old edits; and every scratch
+    would stay in TMPDIR for the life of the process. A runner with no threads (the API runners, the scripted one) has
+    nothing to close; closing a thread never opened is nothing."""
+    close = getattr(runner, "close_thread", None)
+    if callable(close):
+        for name in builder_threads(task):
+            close(name)
 
 
 def _run_build(lane: Lane, task: str, ident: str, started: str, tctx: TaskCtx,
@@ -897,7 +917,9 @@ def _review(lane: Lane, rounds: Sequence[review_loop.Round], number: int, tip: s
     args = review_args(ctx.run_id, ctx.date, ctx.cartridge, c, number, lane.goal, titles, diff + "\n" if ok and diff else "",
                        _smoke_at(lane, tip, number), held)
     try:
-        result = json.loads(json.dumps(ctx.specs[PHASE_REVIEW].run(args, ctx.runner), default=str))
+        # The reviewers read the phase at the tip they judge, never the shared checkout's HEAD (`builder_runner`).
+        reviewer = builder_runner(ctx.runner, lane.phase_worktree)
+        result = json.loads(json.dumps(ctx.specs[PHASE_REVIEW].run(args, reviewer), default=str))
     except LimitStop as exc:
         lane.halted.set()
         result = {"harness_fault": f"the account's limit stopped the review: {exc}"}
