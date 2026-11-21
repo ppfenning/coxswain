@@ -243,11 +243,21 @@ that passes, the pull requests are merged in queue order without refreshing agai
 landed and the rest wait. Batching applies only where the lander itself merges (gate `full`); an initiative whose
 files overlap another's waits its turn.
 
-The lander never resolves a conflict and never edits code. A phase merge that conflicts, or fails its checks, is sent
-back to build as a rectify task in that phase; a conflict with the parent, or a red pull request, becomes a task in a
-final `integrate` phase. The conflicted merge is committed on the branch the task builds on, so nothing already built
-is redone. A rebuild of any task starts from its last attempt, put back in full in a tree of its own, and only the
-change is built.
+The lander never edits code itself. What a phase merge does with a conflict depends on the lane model the landing
+record was made under. The record's `lane_model` is the initiative's, stamped when the record is made; a record with
+no `lane_model` is on the old model.
+
+- **Old model.** A phase merge that conflicts, or fails its checks, is sent back to build as a rectify task in that
+  phase. A conflict with the parent, or a red pull request, becomes a task in a final `integrate` phase. The conflicted
+  merge is committed on the branch the task builds on, so nothing already built is redone. A rebuild of any task starts
+  from its last attempt, put back in full in a tree of its own, and only the change is built.
+- **New model (`lane_model: phase`).** The phase lane never merges into the initiative branch: the lander is the only
+  merger. It merges origin's copy of the phase branch, and never writes that branch. The level checks are the phase
+  level gate: the cartridge's `level_checks`, then the `# level: phase` section of the merged tree's `.agent-checks`. A
+  conflict goes to the merge agent, in the merge's own scratch worktree. Its answer must leave no conflict marker and
+  must pass the same guard and level checks as any merge, and the phase records who resolved it (`resolved_by`). If the
+  merge cannot be made, the initiative is held and the chair is told once; no rectify task is filed. The hold lifts
+  when origin's branch of that phase moves to a new tip (a fix was pushed), and the merge is then tried again.
 
 Refreshes are always forward merges of the parent into the child. No branch the record names is rebased, reset or
 force-pushed, and a merge that would drop a recorded commit is refused. After a land, a phase branch is deleted only

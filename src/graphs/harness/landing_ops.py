@@ -49,6 +49,7 @@ class PhaseMerge:
     cause: str = ""  # for conflicted: `conflict`, `checks_failed` or `guard`
     merged_tasks: tuple[str, ...] = field(default_factory=tuple)
     assembled: bool = False  # every phase of the initiative is now merged
+    resolved_by: str = ""  # who resolved the merge's conflict (`resolve`, the new model only); "" for a clean merge
 
     @property
     def ok(self) -> bool:
@@ -57,11 +58,11 @@ class PhaseMerge:
 
 def start_record(conn: Connection, repo: Path | str, *, initiative: str, branch: str, parent: str, parent_ref: str,
                  now: str, land_at: str = "initiative", epic: str | None = None, stack_base: str | None = None,
-                 adopted: bool = False) -> tuple[lr.LandingRecord | None, str]:
+                 adopted: bool = False, lane_model: str | None = None) -> tuple[lr.LandingRecord | None, str]:
     """The initiative's landing record, made on first use: cut the branch from the parent and record where.
 
-    A record that exists is returned as it is: the parent no longer floats, and the branch is never cut twice.
-    (record, why not)."""
+    A record that exists is returned as it is: the parent no longer floats, the branch is never cut twice, and its
+    `lane_model` (the initiative's, stamped at creation) never changes. (record, why not)."""
     found = ls.get_record(conn, initiative)
     if found is not None:
         tip, _, why = lg.ensure_branch(repo, str(found["branch"]), str(found.get("base_sha") or parent_ref))
@@ -71,7 +72,7 @@ def start_record(conn: Connection, repo: Path | str, *, initiative: str, branch:
         return None, why
     base = tip if created else (_merge_base(repo, branch, parent_ref) or tip)
     record = lr.new_record(initiative, repo=str(repo), branch=branch, parent=parent, base_sha=base, now=now,
-                           land_at=land_at, epic=epic, stack_base=stack_base, adopted=adopted)
+                           land_at=land_at, epic=epic, stack_base=stack_base, adopted=adopted, lane_model=lane_model)
     ls.put_record(conn, record)
     return record, ""
 
@@ -157,7 +158,7 @@ def after_push(merge_status: str, push_warning: str | None) -> str:
 def merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: str, tasks: Sequence[Mapping[str, Any]],
                 worker: str, now: str, checks: lg.Checks | None = None, source: str | None = None,
                 claim_seconds: int = CLAIM_SECONDS, fetch: Callable[[str], str | None] | None = None,
-                publish: Callable[[str], str | None] | None = None) -> PhaseMerge:
+                publish: Callable[[str], str | None] | None = None, resolve: lg.Resolve | None = None) -> PhaseMerge:
     """Merge one built phase into its initiative branch, under the phase's queue item.
 
     `tasks` are the initiative's task rows (`id`, `phase`, `state`, `needs`). The phase must be built: every task
@@ -170,20 +171,26 @@ def merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: s
     the branch up to origin's copy first (it returns why the merge must not go ahead here, or None), and `publish`
     pushes the merged branch (it returns a warning, or None). Both are given the branch name. With `publish`, the
     phase is recorded merged only once the push is taken (`after_push`): a refused push unwinds the merge and fails
-    the item, which the sweep queues again."""
+    the item, which the sweep queues again.
+
+    `resolve` (the new model's merge agent, `lg.merge_into`) is given a conflict before it is one: the branch moves only
+    if what it answers passes the same guard and `checks`, and the phase entry says who resolved it (`resolved_by`).
+    Without it a conflict is a conflict, as it always was."""
     held = store_lease.acquire(conn, branch_lease(initiative), worker, now, claim_seconds)
     if not held.ok:
         return PhaseMerge("busy", initiative, phase, detail=f"{held.holder or 'another worker'} is moving the branch of {initiative}")
     try:
         return _merge_phase(conn, repo, initiative=initiative, phase=phase, tasks=tasks, worker=worker, now=now,
-                            checks=checks, source=source, claim_seconds=claim_seconds, fetch=fetch, publish=publish)
+                            checks=checks, source=source, claim_seconds=claim_seconds, fetch=fetch, publish=publish,
+                            resolve=resolve)
     finally:
         store_lease.release(conn, branch_lease(initiative), worker, int(held.epoch or 0))
 
 
 def _merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: str, tasks: Sequence[Mapping[str, Any]],
                  worker: str, now: str, checks: lg.Checks | None, source: str | None, claim_seconds: int,
-                 fetch: Callable[[str], str | None] | None, publish: Callable[[str], str | None] | None) -> PhaseMerge:
+                 fetch: Callable[[str], str | None] | None, publish: Callable[[str], str | None] | None,
+                 resolve: lg.Resolve | None = None) -> PhaseMerge:
     record = ls.get_record(conn, initiative)
     if record is None:
         return PhaseMerge("error", initiative, phase, detail=f"{initiative} has no landing record")
@@ -214,7 +221,8 @@ def _merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: 
     branch = str(record["branch"])
     before = lg.rev(repo, f"refs/heads/{branch}")
     merged = lg.merge_into(repo, branch=branch, source=source or phase_branch(initiative, phase),
-                           message=f"{initiative}: merge phase {phase}", recorded=lr.recorded_shas(record), checks=checks)
+                           message=f"{initiative}: merge phase {phase}", recorded=lr.recorded_shas(record), checks=checks,
+                           resolve=resolve)
     if merged.ok and publish is not None:
         # Pushed before it is recorded: a phase recorded merged is on origin, where every host reads it.
         warning = publish(branch)
@@ -231,6 +239,8 @@ def _merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: 
         tip = merged.tip
         carried = [str(t["id"]) for t in lr.phase_tasks(tasks, phase) if t.get("state") == "approved"]
         updated = lr.with_phase(record, phase, now, state="merged", tip=merged.merged, merge_sha=tip, error="", tasks=carried)
+        if merged.resolved_by:
+            updated = lr.with_phase(updated, phase, now, resolved_by=merged.resolved_by)
         updated = {**updated, "waves": _green_waves(updated, tasks, tip)}
         assembled = lr.initiative_state(updated, tasks) == "assembled"
         if assembled and updated.get("state") in ("building", "conflicted", "blocked"):
@@ -239,7 +249,7 @@ def _merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: 
         ls.finish(conn, ident, worker, now=now)
         done = tuple(str(t["id"]) for t in lr.phase_tasks(tasks, phase) if t.get("state") == "approved")
         return PhaseMerge("merged", initiative, phase, tip=merged.merged, merge_sha=tip, merged_tasks=done,
-                          assembled=assembled)
+                          assembled=assembled, resolved_by=merged.resolved_by)
     if merged.status == "error":
         ls.fail(conn, ident, worker, now=now, error=merged.detail)
         return PhaseMerge("error", initiative, phase, detail=merged.detail)

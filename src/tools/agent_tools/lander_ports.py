@@ -24,6 +24,7 @@ from agent_tools.forge import ForgeModule
 from agent_tools.store_url import read_provider_profile
 from core.jsontypes import is_mapping
 from core.landing_record import LandingRecord, Listing
+from harness.landing_git import Resolved
 from harness.store_dialect import Connection
 
 WAIT_CHECKS_S = 1800.0  # the bound on a wait for a forge that cannot poll its checks once
@@ -244,13 +245,21 @@ def fetch_branch(repo: Path, branch: str) -> str | None:
 
 
 def run_gate(repo: Path, tree: Path, gate: str, landing: Mapping[str, object], error: str | None) -> tuple[bool, str]:
-    """Edge. Run one gate's checks in `tree`. A cartridge that does not resolve fails the gate: it would run fewer checks."""
+    """Edge. Run one gate's checks in `tree`. A cartridge that does not resolve fails the gate: it would run fewer checks.
+
+    `lander.PHASE_GATE` is the new model's level gate: the cartridge's `level_checks`, then the `# level: phase`
+    section of the tree's own `.agent-checks` (L2). Every other gate reads the cartridge's list alone, as before."""
     from harness.check_gate import gate_checks
-    from harness.checks import run_checks
+    from harness.checks import repo_checks, run_checks
 
     if error:
         return False, f"cartridge checks unavailable ({error})"
-    checks = gate_checks(landing, gate)
+    if gate == lander.PHASE_GATE:
+        listed = tree / ".agent-checks"
+        parsed = repo_checks(listed.read_text(encoding="utf-8")) if listed.is_file() else []
+        checks = gate_checks(landing, "level", parsed)
+    else:
+        checks = gate_checks(landing, gate)
     if not checks:
         return True, ""
     results = run_checks(tree, checks)
@@ -408,6 +417,15 @@ def send_back(ws: Path, conn: Connection, worker: str, mode: str) -> Callable[[s
     return move
 
 
+def resolve_conflict(ask: lander.ConflictAsk) -> Resolved | str:
+    """Edge. The new model's merge agent for one conflicted phase merge, run through the local harness.
+
+    Not wired yet: the merge agent is L5's `merge_tasks` seat (#1309), which has not landed. Until it does, every
+    conflict is refused with `NO_MERGE_AGENT`, which the lander turns into a hold with needs_chair: nothing is merged
+    that nobody resolved, and the old model's rectify path is untouched."""
+    return lander.NO_MERGE_AGENT
+
+
 def initiatives_in(ws: Path) -> list[str]:
     """Edge. Every initiative with an `initiative.md` under the workspace's `work/`, by name."""
     return sorted(p.parent.name for p in (Path(ws) / "work").glob("*/initiative.md"))
@@ -553,6 +571,6 @@ def build(ws: Path, profile: Mapping[str, object], *, worker: str | None = None,
         conn=store, worker=name, now=now_stamp, tasks=tasks, meta=meta, forge=Forge(module), checks=checks,
         mark_merged=lambda initiative, task, tip: None,  # the landing record is the one place that says a phase merged
         mark_done=mark_done, file_rectify=file_rectify, split_blocked=split_blocked, notify=notify, repo=repo_of,
-        fetch=fetch_branch, log=log,
+        fetch=fetch_branch, log=log, resolve_conflict=resolve_conflict,
     ))
     return ports_ref[0]

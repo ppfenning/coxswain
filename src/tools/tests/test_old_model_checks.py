@@ -45,8 +45,8 @@ def test_a_land_checks_what_main_checked_and_its_ticket_gate_is_the_cartridges_a
 
 
 def test_the_landers_level_and_ticket_gates_ignore_the_sections_of_a_tree_on_the_old_model(tmp_path):
-    """The landing record names no model yet (D1's), so the lander keeps main's gates: the cartridge's lists alone.
-    A section that would fail if it ran shows it does not."""
+    """An old-model landing record (one that names no `lane_model`) keeps main's gates: the cartridge's lists alone.
+    A section that would fail if it ran shows it does not. The new model's gate is `lander.PHASE_GATE`."""
     (tmp_path / ".agent-checks").write_text(_real() + "\n# level: phase\nexit 7\n# level: initiative\nexit 8\n")
     overlay = yaml.safe_load((ROOT / ".agent" / "cartridge.yaml").read_text(encoding="utf-8"))["landing_areas"]
     for gate in ("level", "ticket"):

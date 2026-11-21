@@ -20,7 +20,7 @@ import re
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import replace as dataclass_replace
-from typing import TypedDict, Unpack, cast
+from typing import Literal, TypedDict, Unpack, cast
 
 from core.jsontypes import conform, is_mapping
 
@@ -80,6 +80,7 @@ class PhaseEntry(TypedDict, total=False):
     cause: str
     told: bool
     repaired_at: str  # when the lander's reconcile repaired the phase's merge on the branch
+    resolved_by: str  # new model only: who resolved the merge's conflict (the merge agent, and what it said)
 
 
 class WaveEntry(TypedDict, total=False):
@@ -99,6 +100,8 @@ class Hold(TypedDict, total=False):
 
     reason: str
     since: str
+    phase: str  # a merge hold (the new model's merge agent could not merge a phase): the phase
+    tip: str  # and the tip of its branch on origin that it could not merge; a new tip lifts the hold
 
 
 class LandingRecord(TypedDict, total=False):
@@ -122,6 +125,7 @@ class LandingRecord(TypedDict, total=False):
     error: str
     landed_pr: str
     held: Hold | None  # set by the lander's reconcile; absent or None means not held
+    lane_model: str  # `phase` (the new model) when stamped so at creation; absent, or anything else, is the old model
 
 
 class StateFields(TypedDict, total=False):
@@ -210,11 +214,28 @@ def initiative_move_allowed(old: str, new: str) -> bool:
     return old == new or new in INITIATIVE_MOVES.get(old, frozenset())
 
 
+LaneModel = Literal["task", "phase"]
+NEW_MODEL: LaneModel = "phase"  # the phase lane builds each phase on a worker and pushes it; the lander merges it
+
+
+def lane_model_of(value: object) -> LaneModel:
+    """Pure. `phase` only for the exact value `phase`; absent, `task` or anything unknown is `task`, the old model."""
+    return NEW_MODEL if value == NEW_MODEL else "task"
+
+
+def record_lane_model(record: LandingRecord | None) -> LaneModel:
+    """Pure. The lane model a landing record was made under. A record that names none predates it: the old model."""
+    return lane_model_of((record or {}).get("lane_model"))
+
+
 def new_record(initiative: str, *, repo: str, branch: str, parent: str, base_sha: str, now: str,
                land_at: str = "initiative", epic: str | None = None, stack_base: str | None = None,
-               adopted: bool = False) -> LandingRecord:
-    """A fresh record: the branch is cut, nothing is merged. `parent` is resolved here and no longer floats."""
-    return LandingRecord(
+               adopted: bool = False, lane_model: str | None = None) -> LandingRecord:
+    """A fresh record: the branch is cut, nothing is merged. `parent` is resolved here and no longer floats.
+
+    `lane_model` is the initiative's, read once here and never changed after. Only the new model is written: an old
+    model record carries no key, exactly as every record did before the key existed."""
+    record = LandingRecord(
         initiative=initiative,
         repo=repo,
         branch=branch,
@@ -231,6 +252,9 @@ def new_record(initiative: str, *, repo: str, branch: str, parent: str, base_sha
         created_at=now,
         updated_at=now,
     )
+    if lane_model_of(lane_model) == NEW_MODEL:
+        record["lane_model"] = NEW_MODEL
+    return record
 
 
 def phase_parents(tasks: Iterable[Mapping[str, object]]) -> dict[str, set[str]]:

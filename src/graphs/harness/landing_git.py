@@ -5,12 +5,16 @@ resets or force-moves a branch the landing record names. Every merge is built on
 working checkout is touched, and the branch is moved last, with a compare-and-swap on its old tip.
 
 The guard: a branch is never moved to a tip that lacks a sha the record says is on it.
+
+A conflict is aborted and named, unless the caller gives `merge_into` a resolver (the new model's merge agent): the
+conflicted merge is then left in its scratch worktree, markers and all, for the resolver to answer with each file's
+merged text. What it answers is committed there and meets the same guard and checks before the branch moves.
 """
 
 from __future__ import annotations
 
 import tempfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -19,8 +23,24 @@ from harness.worktree import registry_lock
 
 # Mechanical commits: the lander joins branches, it never authors.
 IDENTITY = ("-c", "user.email=lander@invalid", "-c", "user.name=lander")
+# Never a recorded resolution: a conflict the merge agent settled once must not settle the same conflict silently on
+# another merge (an old-model phase that must go to a rectify task, a new-model one the agent must see).
+NO_RERERE = ("-c", "rerere.enabled=false")
 
 Checks = Callable[[Path], tuple[bool, str]]
+_MARKERS = ("<<<<<<< ", ">>>>>>> ", "<<<<<<<\n", ">>>>>>>\n")
+
+
+@dataclass(frozen=True)
+class Resolved:
+    """A resolver's answer to a conflicted merge: each conflicted file's whole merged text, and who resolved it."""
+
+    files: Mapping[str, str]
+    note: str
+
+
+# The scratch worktree holding the conflicted merge, and the conflicted paths -> the merged files, or why not.
+Resolve = Callable[[Path, tuple[str, ...]], Resolved | str]
 
 
 @dataclass(frozen=True)
@@ -33,6 +53,7 @@ class Merge:
     merged: str = ""  # the sha that was merged in
     paths: tuple[str, ...] = field(default_factory=tuple)  # conflicted paths
     detail: str = ""
+    resolved_by: str = ""  # a conflict a resolver settled: its note; "" for a clean merge
 
     @property
     def ok(self) -> bool:
@@ -101,13 +122,52 @@ def _move(repo: Path | str, branch: str, new: str, old: str) -> tuple[bool, str]
     return git(repo, "update-ref", "-m", "lander: merge", f"refs/heads/{branch}", new, old)
 
 
+def marked(text: str) -> bool:
+    """Pure. Whether `text` still holds a conflict marker line (`<<<<<<< ` or `>>>>>>> ` at a line's start)."""
+    return any(line.startswith(_MARKERS) or line in ("<<<<<<<", ">>>>>>>") for line in text.splitlines(keepends=True))
+
+
+def answer_problem(files: Mapping[str, str], conflicted: Sequence[str]) -> str | None:
+    """Pure. Why a resolver's files do not settle the conflict (a conflicted file left out, one named that did not
+    conflict, a marker left in), or None when they do."""
+    if missing := sorted(set(conflicted) - set(files)):
+        return f"the resolution left out {', '.join(missing)}"
+    if extra := sorted(set(files) - set(conflicted)):
+        return f"the resolution named files that do not conflict: {', '.join(extra)}"
+    if left := sorted(p for p, text in files.items() if marked(text)):
+        return f"the resolution left conflict markers in {', '.join(left)}"
+    return None
+
+
+def _settle(scratch: Path, paths: tuple[str, ...], resolve: Resolve) -> tuple[str | None, str]:
+    """Edge. Ask `resolve` about the conflicted merge in `scratch`, then write and commit its answer there.
+    (its note, "") once committed; (None, why not) when it did not settle the conflict or could not be committed."""
+    try:
+        answer = resolve(scratch, paths)
+    except Exception as exc:  # a resolver that breaks leaves a conflict, never a half-merged scratch
+        return None, f"the resolver failed: {type(exc).__name__}: {exc}"
+    if isinstance(answer, str):
+        return None, answer
+    if problem := answer_problem(answer.files, paths):
+        return None, problem
+    for path, text in answer.files.items():
+        (scratch / path).write_text(text, encoding="utf-8")
+    added, out = git(scratch, "add", "--", *paths)
+    committed, out = git(scratch, *IDENTITY, *NO_RERERE, "commit", "--no-verify", "--no-edit") if added else (False, out)
+    return (answer.note or "resolved", "") if committed else (None, f"the resolved merge could not be committed: {out}")
+
+
 def merge_into(repo: Path | str, *, branch: str, source: str, message: str, recorded: Sequence[str] = (),
-               checks: Checks | None = None) -> Merge:
+               checks: Checks | None = None, resolve: Resolve | None = None) -> Merge:
     """Merge `source` into local `branch` with a merge commit, on a scratch worktree, then move the branch.
 
     `source` already on the branch is `up_to_date`. A conflict aborts and names the paths. `checks` runs on the merged
     tree before the branch moves; a failure leaves the branch where it was. `recorded` are the shas the landing
-    record says the branch holds: a merge that would leave one out is refused (`guard`) and the branch is unchanged."""
+    record says the branch holds: a merge that would leave one out is refused (`guard`) and the branch is unchanged.
+
+    With `resolve`, a conflict is first left in the scratch for it (`Resolve`): its answer is committed as the merge,
+    and meets the guard and `checks` like any merge (`resolved_by` says who settled it). A resolver that cannot settle
+    it leaves a `conflict`, its reason in the detail."""
     old = rev(repo, f"refs/heads/{branch}")
     incoming = rev(repo, source)
     if old is None:
@@ -120,14 +180,19 @@ def merge_into(repo: Path | str, *, branch: str, source: str, message: str, reco
     if scratch is None:
         return Merge("error", tip=old, merged=incoming, detail=why)
     try:
-        ok, out = git(scratch, *IDENTITY, "merge", "--no-ff", "--no-edit", "-m", message, incoming)
+        ok, out = git(scratch, *IDENTITY, *NO_RERERE, "merge", "--no-ff", "--no-edit", "-m", message, incoming)
+        resolved_by = ""
         if not ok:
             _, unmerged = git(scratch, "diff", "--name-only", "--diff-filter=U")
             paths = tuple(p for p in unmerged.splitlines() if p)
-            git(scratch, "merge", "--abort")
-            if paths:
-                return Merge("conflict", tip=old, merged=incoming, paths=paths, detail=f"conflict in {', '.join(paths)}")
-            return Merge("error", tip=old, merged=incoming, detail=out)
+            note, why = _settle(scratch, paths, resolve) if paths and resolve is not None else (None, "")
+            if note is None:
+                git(scratch, "merge", "--abort")
+                if paths:
+                    return Merge("conflict", tip=old, merged=incoming, paths=paths,
+                                 detail=f"conflict in {', '.join(paths)}" + (f": {why}" if why else ""))
+                return Merge("error", tip=old, merged=incoming, detail=out)
+            resolved_by = note
         new = rev(scratch, "HEAD")
         if new is None:
             return Merge("error", tip=old, merged=incoming, detail="the merge left no commit")
@@ -142,7 +207,7 @@ def merge_into(repo: Path | str, *, branch: str, source: str, message: str, reco
         moved, out = _move(repo, branch, new, old)
         if not moved:
             return Merge("error", tip=old, merged=incoming, detail=f"{branch} moved while it was being merged: {out}")
-        return Merge("merged", tip=new, merged=incoming)
+        return Merge("merged", tip=new, merged=incoming, resolved_by=resolved_by)
     finally:
         _drop(repo, scratch)
 
@@ -160,7 +225,7 @@ def conflict_commit(repo: Path | str, *, branch: str, source: str, message: str)
     if scratch is None:
         return Merge("error", tip=old, merged=incoming, detail=why)
     try:
-        ok, _ = git(scratch, *IDENTITY, "merge", "--no-ff", "--no-edit", "-m", message, incoming)
+        ok, _ = git(scratch, *IDENTITY, *NO_RERERE, "merge", "--no-ff", "--no-edit", "-m", message, incoming)
         _, unmerged = git(scratch, "diff", "--name-only", "--diff-filter=U")
         paths = tuple(p for p in unmerged.splitlines() if p)
         if not ok:

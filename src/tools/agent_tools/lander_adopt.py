@@ -11,7 +11,8 @@ For each task, in this order:
     approved, its commit nowhere in this clone                          ->  back to ready, with the reason
 
 Then the initiative: its branch is kept (`pr/<id>` from an earlier release) or cut from the parent, the record is
-made, and every built phase is merged in dependency order. Nothing is ever deleted, reset or rebased here, so no
+made (stamped with the initiative's `lane_model`, so the lander knows which model it merges), and every built phase is
+merged in dependency order. Nothing is ever deleted, reset or rebased here, so no
 recorded commit can be lost: one that is not merged stays on the branch it was on.
 
 `plan` only reads. `apply` performs a plan. The dry run is `plan` alone.
@@ -168,8 +169,8 @@ def apply(ports: lander.Ports, found: Plan, send_back: Callable[[str, str, str],
     present = present_skip(ls.read_record(ports.conn, initiative))
     if present is not None:
         return [f"{initiative}: skipped: {present}"]
-    repo = lander.ports_repo(ports, {"initiative": initiative,
-                                     "repo": str((ports.meta(initiative).get("initiative") or {}).get("repo") or "")})
+    own = ports.meta(initiative).get("initiative") or {}
+    repo = lander.ports_repo(ports, {"initiative": initiative, "repo": str(own.get("repo") or "")})
     events: list[str] = []
     for finding in found.tasks:
         if finding.action == "done":
@@ -190,7 +191,8 @@ def apply(ports: lander.Ports, found: Plan, send_back: Callable[[str, str, str],
                 return [*events, f"{initiative}: stopped: {finding.task} could not be carried onto {branch}: {detail}"]
             events.append(f"{initiative}: {finding.task} carried onto {branch}")
     record, why = ops.start_record(ports.conn, repo, initiative=initiative, branch=found.branch, parent=found.parent,
-                                   parent_ref=lander.parent_ref_of(repo, found.parent), now=ports.now(), adopted=True)
+                                   parent_ref=lander.parent_ref_of(repo, found.parent), now=ports.now(), adopted=True,
+                                   lane_model=lr.lane_model_of(own.get("lane_model")))
     if record is None:
         return [*events, f"{initiative}: stopped: no record was made: {why}"]
     events.append(f"{initiative}: record made on {lander.record_text(record, 'branch')}")
