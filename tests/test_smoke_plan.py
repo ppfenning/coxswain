@@ -1,5 +1,8 @@
 """The smoke suite's pure core (smoke/plan.py): example inputs in, outputs checked. No I/O, no mocks."""
 
+import re
+from pathlib import Path
+
 import pytest
 import yaml
 
@@ -27,6 +30,31 @@ def test_an_environment_url_off_loopback_or_not_postgres_fails_even_when_not_req
     decision = plan.postgres_source(url, "/usr/bin/docker", True, required=False)
     assert isinstance(decision, plan.Fail)
     assert plan.URL_ENV in decision.reason
+
+
+def test_the_warm_url_falls_back_to_a_container_when_it_does_not_answer():
+    assert plan.postgres_source(plan.WARM_URL, "/usr/bin/docker", True, required=True, reachable=False) == plan.StartContainer()
+    no_docker = plan.postgres_source(plan.WARM_URL, None, False, required=False, reachable=False)
+    assert isinstance(no_docker, plan.Skip) and "warm server" in no_docker.reason
+    assert plan.postgres_source(plan.WARM_URL, None, False, required=True, reachable=True) == plan.UseUrl(plan.WARM_URL)
+
+
+def test_an_explicit_url_that_does_not_answer_fails():
+    url = "postgresql://postgres:pw@127.0.0.1:5432/postgres"
+    decision = plan.postgres_source(url, "/usr/bin/docker", True, required=False, reachable=False)
+    assert isinstance(decision, plan.Fail) and plan.URL_ENV in decision.reason
+
+
+def test_only_no_url_or_a_silent_warm_url_needs_a_container():
+    assert plan.needs_container(None, False)
+    assert plan.needs_container(plan.WARM_URL, False)
+    assert not plan.needs_container(plan.WARM_URL, True)
+    assert not plan.needs_container("postgresql://u@localhost/db", False)
+
+
+def test_url_address():
+    assert plan.url_address(plan.WARM_URL) == ("127.0.0.1", 55432)
+    assert plan.url_address("postgresql://u@localhost/db") == ("localhost", 5432)
 
 
 def test_without_a_url_docker_decides():
@@ -117,13 +145,44 @@ def test_urls():
     assert plan.with_database("postgresql://u:p@localhost:5/postgres?sslmode=disable", "other") == "postgresql://u:p@localhost:5/other?sslmode=disable"
 
 
+SESSION_ID = "0123456789ab"
+CREATED = 1_700_000_000
+
+
 def test_database_names_are_valid_and_distinct():
     long_id = "smoke/test_contract_route_edit.py::test_" + "x" * 200
-    names = {plan.database_name(i) for i in ("a::b", "a::c", "A::B[x-y]", long_id)}
-    assert len(names) == 4
+    same_stem = ("smoke/test_a_long_shared_prefix.py::test_one", "smoke/test_a_long_shared_prefix.py::test_two")
+    names = {plan.database_name(i, SESSION_ID, CREATED) for i in ("a::b", "a::c", "A::B[x-y]", long_id, *same_stem)}
+    assert len(names) == 6
     for name in names:
         assert len(name) <= 63
+        assert name.startswith(plan.session_prefix(SESSION_ID))
         assert name.replace("_", "").isalnum() and name == name.lower()
+
+
+def test_database_names_differ_by_session():
+    assert plan.database_name("a::b", SESSION_ID, CREATED) != plan.database_name("a::b", "ba9876543210", CREATED)
+    assert plan.database_name("a::b", SESSION_ID, CREATED) != plan.database_name("a::b", SESSION_ID, CREATED + 1)
+
+
+def test_a_database_name_carries_the_session_then_its_own_creation_time():
+    assert plan.session_prefix(SESSION_ID) == "smoke_0123456789ab_"
+    assert plan.database_name("a::b", SESSION_ID, CREATED).startswith("smoke_0123456789ab_1700000000_")
+
+
+def test_stale_databases_returns_only_names_older_than_the_limit():
+    now = CREATED + 3 * 60 * 60
+    old = plan.database_name("a::b", SESSION_ID, CREATED)
+    fresh = plan.database_name("a::b", "ba9876543210", now - 60)
+    assert plan.stale_databases([old, fresh], now) == [old]
+    assert plan.stale_databases([old, fresh], now, stale_after=30) == [old, fresh]
+    assert plan.stale_databases([old], CREATED + plan.STALE_AFTER_S) == []
+
+
+def test_stale_databases_leaves_names_it_cannot_read_alone():
+    now = CREATED + 10 * 60 * 60
+    unreadable = ["postgres", "smoke_x", "smoke_0123_1_a", "smoke_0123456789ab_soon_a", "smoke_0123456789AB_1_a", "other_0123456789ab_1_a"]
+    assert plan.stale_databases(unreadable, now) == []
 
 
 def test_the_sandbox_env_keeps_only_what_it_names():
@@ -234,6 +293,33 @@ def test_the_image_is_pulled_from_forgejos_registry_by_digest():
 def test_every_smoke_image_is_pinned_by_digest():
     for image in (plan.POSTGRES_IMAGE, plan.FORGEJO_IMAGE, plan.GARAGE_IMAGE):
         assert plan.is_digest_pinned(image), image
+
+
+def _warm_literal(name: str) -> str:
+    """`smoke_warm.py` is in another package, so its literals are read from the file text, not imported."""
+    source = (Path(__file__).resolve().parent.parent / "src/tools/agent_tools/smoke_warm.py").read_text()
+    match = re.search(rf'^{name} = "([^"]+)"$', source, re.MULTILINE)
+    assert match is not None
+    return match.group(1)
+
+
+def test_the_warm_postgres_image_is_the_suites_image():
+    assert _warm_literal("IMAGE") == plan.POSTGRES_IMAGE
+
+
+def test_the_warm_url_is_the_one_the_doctor_gives():
+    source = (Path(__file__).resolve().parent.parent / "src/tools/agent_tools/smoke_warm.py").read_text()
+    port = re.search(r"^PORT = (\d+)$", source, re.MULTILINE)
+    assert port is not None
+    doctors = f"postgresql://{_warm_literal('USER')}:{_warm_literal('PASSWORD')}@{_warm_literal('HOST')}:{port.group(1)}/postgres"
+    assert doctors == plan.WARM_URL
+
+
+def test_the_warm_postgres_label_is_not_one_the_reaper_lists_by():
+    label = _warm_literal("LABEL")
+    assert label != plan.CONTAINER_LABEL
+    assert label.partition("=")[0] not in (plan.LABEL, plan.SESSION_LABEL, plan.STARTED_LABEL)
+    assert f"label={label}" not in plan.docker_list_argv()
 
 
 @pytest.mark.parametrize("image", [
@@ -540,10 +626,39 @@ def test_a_run_s_seconds_sum_per_file_and_rewrite_only_the_files_it_measured():
     assert text.splitlines()[1:3] == ['"smoke/test_a.py": 3.2,', '"smoke/test_c.py": 5.0']  # one file per line, sorted
 
 
+def test_a_test_s_worker_and_role_names_carry_its_session_and_creation_time():
+    database = plan.database_name("smoke/test_worker_role.py::test_a", SESSION_ID, CREATED)
+    worker = plan.worker_name(database)
+    assert worker == f"smoke-{SESSION_ID}-{CREATED}-{database.rsplit('_', 1)[-1]}"
+    login = plan.LOGIN_PREFIX + worker.replace("-", "_") + "_c3"  # the longest one the tests make
+    owner = plan.scoped_name(database, "owner")
+    assert len(login) <= 63 and owner == f"smoke_{SESSION_ID}_{CREATED}_owner_{database.rsplit('_', 1)[-1]}"
+    assert login.startswith(plan.session_role_prefixes(SESSION_ID)) and owner.startswith(plan.session_role_prefixes(SESSION_ID))
+    other = plan.database_name("smoke/test_worker_role.py::test_a", "ba9876543210", CREATED)
+    assert plan.worker_name(other) != worker and plan.scoped_name(other, "owner") != owner
+    with pytest.raises(ValueError):
+        plan.worker_name("smoke_template_0123")
+
+
+def test_stale_roles_read_a_login_without_its_front_and_put_logins_first():
+    now = CREATED + plan.STALE_AFTER_S + 1
+    database = plan.database_name("a::b", SESSION_ID, CREATED)
+    login = plan.LOGIN_PREFIX + plan.worker_name(database).replace("-", "_")
+    owner = plan.scoped_name(database, "owner")
+    fresh = plan.scoped_name(plan.database_name("a::b", SESSION_ID, now), "owner")
+    assert plan.stale_roles([owner, fresh, login, "cox_worker", "cox_w_laptop"], now) == [login, owner]
+    assert plan.stale_roles([owner, login], CREATED + 60) == []
+
+
 def test_the_template_database_is_one_per_session_and_never_a_test_s():
-    names = {plan.template_name(s) for s in ("0123456789ab", "ba9876543210", "X-Y" * 30)}
-    assert len(names) == 3 and all(len(n) <= 63 and n.replace("_", "").isalnum() and n == n.lower() for n in names)
-    assert not plan.database_name("smoke/test_a.py::test_b").startswith("smoke_template_")
+    other = "ba9876543210"
+    template = plan.template_name(SESSION_ID, CREATED)
+    assert template.startswith(plan.session_prefix(SESSION_ID)) and len(template) <= 63
+    assert template != plan.template_name(other, CREATED)
+    assert template not in {plan.database_name(i, SESSION_ID, CREATED) for i in ("a::b", "template", "smoke/test_a.py::test_b")}
+    # the reaper reads it like any of the session's databases: kept while young, dropped once a killed session's is old
+    assert plan.stale_databases([template], CREATED + 60) == []
+    assert plan.stale_databases([template], CREATED + plan.STALE_AFTER_S + 1) == [template]
 
 
 def test_the_shards_partition_every_file_heaviest_first():

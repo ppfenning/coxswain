@@ -12,6 +12,9 @@ from harness.serial_tests import pytest_collection_modifyitems, pytest_sessionfi
 
 # sqlite is the suites' stand-in for the one real store, Postgres. Outside the suites it does not open.
 os.environ.setdefault("COXSWAIN_STORE_DOUBLE", "sqlite")
+# `cox setup doctor --fix` starts the warm smoke Postgres where docker answers; the unit suites never touch docker.
+# smoke/test_doctor_warm_postgres.py runs the real thing in its own sandbox.
+os.environ.setdefault("COX_DOCTOR_SKIP_SMOKE_POSTGRES", "1")
 
 
 def pytest_configure(config) -> None:

@@ -15,6 +15,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import time
 import uuid
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -98,6 +99,97 @@ def _chair_run(a: argparse.Namespace) -> int:
         print(f"chair run: stopping after {deps.overrun_state.consecutive} facts-stage overruns in a row; exit 3 for the supervisor")
         return 3
     return _chair_once_exit(last[0]) if a.once else 0
+
+
+def _chair_worker(a: argparse.Namespace) -> int:
+    """`cox chair worker --kind K`: one kind of the chair's work in its own process (`chair_queue`). Refuses, holding no
+    lease, while a fact source or recorder is unwired, as `chair run` does.
+
+    Every lease call opens its own connection to the store (the beat thread and the fence never share one) and is
+    bounded by `chair_queue.CALL_TIMEOUT_SECONDS`, so a store that hangs reads as a lost lease."""
+    from agent_tools import chair_kinds, chair_queue, chair_read_queues
+    from harness import store_chair_lease
+    from harness.store_dialect import connect
+
+    if a.kind not in chair_kinds.QUEUE_KINDS:
+        print(f"chair worker: no queue worker for kind {a.kind!r}; one of: {', '.join(chair_kinds.QUEUE_KINDS)}")
+        return 2
+    profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
+    if refuse_rc is not None:
+        return refuse_rc
+    provider, problem = _lake_provider(a)
+    if problem:
+        print(f"chair worker: refusing to start, no lease taken; lake: {problem}")
+        return 2
+    held = chair_queue.Held()  # the kind lease's epoch, read by the recorder, the fence and the pass's beat thread
+    pid, host = os.getpid(), socket.gethostname()
+    session = _holder_label(a)
+    url = run_store.store_url_for(runs_dir)
+    name, holder = chair_kinds.lease_name(a.kind), f"{a.kind}-{chair.lease_holder(session, pid, host)}"
+    ttl, limit = chair_queue.LEASE_TTL_SECONDS, chair_queue.CALL_TIMEOUT_SECONDS
+
+    def on_store(call, otherwise):
+        def opened():
+            conn = connect(url)
+            try:
+                return call(conn)
+            finally:
+                conn.close()
+
+        return chair_queue.bounded(opened, limit, otherwise)
+
+    def record_store(argv: list[str]) -> tuple[int, str]:
+        """An action's row, fenced on the kind lease. The effect has already run when its row is written, so a lease
+        lost in between does not drop the row: it is written unfenced and marked `late` (`store_chair_lease.late`)."""
+        epoch = held.epoch
+        action = json.loads(argv[-1])
+        kept = epoch is not None and on_store(
+            lambda c: store_chair_lease.record_fenced(c, name, holder, epoch, argv[2], action), False
+        )
+        if kept:
+            return 0, ""
+        wrote = on_store(lambda c: store_chair_lease.record_late(c, argv[2], action) or True, False)
+        if wrote:
+            print(f"chair worker: {action.get('kind')} recorded late: {name} was lost after it ran", file=sys.stderr)
+            return 0, ""
+        return 1, f"the kind lease {name} was lost and the late row could not be written either"
+
+    deps = _chair_run_deps(
+        runs_dir, profile, session, pid, host, a.dry_run, chair_report.echo_line,
+        _profile_path(a), work_state.work_state_mode(provider),
+        worker_epoch=lambda: held.epoch if held.epoch is not None else -1, record_store=record_store,
+    )
+    missing = _chair_unwired_sources(deps)
+    if missing:
+        print(f"chair worker: refusing to start, no lease taken; not wired: {', '.join(missing)}")
+        return 2
+
+    def gather(now: datetime.datetime) -> object:
+        deps.beat()  # a worker's beat only clears the read caches of the last pass
+        return deps.gather(deps.facts_deps, now)
+
+    def perform_one(action: dict, current: Callable[[], int]) -> list:
+        return deps.perform([action], deps.exec_deps, current, a.dry_run)
+
+    wait, close = chair_queue.store_waiter(url, time.sleep)
+    ports = chair_queue.Ports(
+        queued=chair_read_queues.queues_keeping_last_good(_profile_path(a)),
+        acquire=lambda: on_store(lambda c: store_chair_lease.acquire(c, name, holder, ttl), None),
+        renew=lambda epoch: on_store(lambda c: store_chair_lease.renew(c, name, holder, epoch, ttl), False),
+        holds=lambda epoch: on_store(lambda c: store_chair_lease.holds(c, name, holder, epoch), False),
+        release=lambda epoch: on_store(lambda c: store_chair_lease.release(c, name, holder, epoch), False),
+        gather=gather, perform_one=perform_one,  # type: ignore[arg-type]
+        wait=wait, pause=close, clock=time.monotonic, now=lambda: datetime.datetime.now(datetime.UTC),
+        echo=chair_report.echo_line,
+    )
+    poll = a.poll if a.poll is not None else chair_kinds.POLL_SECONDS[a.kind]
+    timing = chair_queue.Timing(poll=poll, min_gap=a.min_gap, settle=a.settle)
+    restore = (lambda: None) if a.dry_run else chair_run.sigterm_as_interrupt()
+    try:
+        return chair_queue.run(a.kind, ports, timing, a.once, a.dry_run, held)
+    finally:
+        close()
+        restore()
 
 
 def _chair_default_environment_file() -> str | None:

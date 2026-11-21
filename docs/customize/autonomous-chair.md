@@ -426,6 +426,50 @@ To keep logs longer, set `log_retention_days` in the routing profile. Every
 machine needs it applied together, since an older `cox` refuses a key it
 does not know.
 
+### Queue workers (housekeeping and watch)
+
+Two kinds of the tick's work can run as their own process instead:
+housekeeping (stale tickets, lane tuning, stalled runs, idle lanes, lapsed
+logins, and the periodic sweep above) and the watch (reverting a landed commit
+whose main CI went red). The tick stays the default.
+
+```yaml
+chair:
+  queues: [housekeeping, watch]
+```
+
+With a kind listed, the tick no longer plans it, and
+`cox chair worker --kind housekeeping` (or `--kind watch`) does. A worker holds
+the store lease `chair:<kind>`, timed by the store's clock, so a second copy of
+one kind stands by, tries again every 10 seconds, and takes over within a
+minute of the first one stopping. A worker that has just taken the lease waits
+`--settle` seconds (default 30) before its first pass.
+
+The tick leaves a kind alone while a worker holds its lease, whatever the
+tick's own profile says, and checks the leases again just before it performs.
+When it cannot read the leases at all, it leaves both kinds alone for that tick
+rather than risk doing them twice. When a listed kind has had no live worker
+for over a minute, the tick raises one `needs chair` line, `queue_unowned
+<kind>`, and the notifier pushes it once.
+
+A worker wakes on a write to a table its kind reads (`work_items` and `runs` for
+housekeeping; `landing_records` and `land_queue` for the watch). It passes at
+most once per `--min-gap` seconds (default 30), and at least every `--poll`
+seconds (default 60) when nothing is written. Host and worker beats do not wake
+it. While the profile does not list its kind, a worker stays idle.
+`cox chair worker --kind K --once --dry-run` plans one pass and performs
+nothing, so its plan can be compared with `cox chair run --once --dry-run`.
+
+`cox setup doctor` has a `store notify queue` row on a Postgres store. It
+fails when more than half of the server's notification queue is in use: a
+session listening without draining fills it, and a full queue fails every
+write to a watched table.
+
+Every machine needs a `cox` that knows `chair: queues:` before any profile
+sets it. An older `cox` refuses a profile with the key, so a rollback to one
+also takes the key out. Only the flow list form, `queues: [a, b]`, is
+accepted.
+
 ## Lane hosts
 
 Each tick, the loop counts the live lanes on every host. It reads them from

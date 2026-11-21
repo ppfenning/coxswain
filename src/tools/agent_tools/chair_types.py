@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal, NotRequired, Protocol, Required, TypedDict
+from typing import Literal, NamedTuple, NotRequired, Protocol, Required, TypedDict
 from zoneinfo import ZoneInfo
 
 from agent_tools.chair_decompose_miss import DecomposeMiss
@@ -600,6 +600,15 @@ class RemoteUnfetched(dict[str, str]):
         self.decompose = decompose
 
 
+class QueueLeases(NamedTuple):
+    """One read of the queue workers' kind leases (C3, `chair_read_queues.QueueLeasesReader`)."""
+
+    leases: Mapping[str, str] | None  # kind to its lease's expires_at; None when the read failed
+    now: str  # the store's clock at the read; "" when it failed
+    seen: bool  # a chair:<kind> lease row has been read in this process
+    failing_s: float  # seconds the read has been failing; 0.0 when it answers
+
+
 @dataclass(frozen=True)
 class LandFreeze:
     """The operator's land freeze (`chair_land_freeze`): no land runs until `expires_at`, for `reason`."""
@@ -637,6 +646,11 @@ class Facts(TypedDict):
     work_store_ready: bool
     sources_configured: bool
     profile_stale: NotRequired[bool]  # this tick's profile re-read failed and the last good value was kept; absent means False
+    chair_queues: NotRequired[list[str]]  # sorted kinds profile chair.queues moves to a queue worker (chair_kinds); absent means none
+    queue_leases: NotRequired[dict[str, str] | None]  # kind to its worker lease's expires_at (store clock); None when unreadable; absent means none
+    queue_lease_now: NotRequired[str]  # the store's clock when queue_leases was read
+    queue_leases_seen: NotRequired[bool]  # a chair:<kind> lease row has been read in this process; absent means False
+    queue_leases_failing_s: NotRequired[float]  # seconds the leases read has been failing; 0 when it answers
     drafts: int  # initiatives waiting for approval
     # An initiative's newest run is remote and unfetched: a `<run>.remote.json` beside the runs
     # directory with no local run directory or log for that run id. Maps the initiative id to
@@ -856,6 +870,7 @@ class Action(TypedDict, total=False):
 
     kind: Required[ActionKind]  # every action names its kind; the other keys depend on it
     epoch: int | None
+    queue_kind: str  # C3: the tick marks an action a queue worker could run (housekeeping, watch); its perform rechecks that lease
     status: str  # a recorded action line carries the outcome the executor wrote
     task_id: str
     repo: str
