@@ -4465,6 +4465,17 @@ Coxswain is in beta — versions may change between releases
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#forget" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        forget
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -6731,6 +6742,17 @@ Coxswain is in beta — versions may change between releases
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#forget" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        forget
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -6758,19 +6780,21 @@ Coxswain is in beta — versions may change between releases
 
 
 <h1 id="worker">worker</h1>
-<div class="highlight"><pre><span></span><code>usage: cox worker [-h] {run,once,status,checkout} ...
+<div class="highlight"><pre><span></span><code>usage: cox worker [-h] {run,once,status,checkout,forget} ...
 
 The phase worker. The chair queues each ready phase of a phase-model initiative; a worker claims the next one it qualifies for, runs it through the harness on this machine, and keeps its claim alive while it runs.
 Nothing reaches a worker over ssh: it pulls.
 
 positional arguments:
-  {run,once,status,checkout}
+  {run,once,status,checkout,forget}
     run                 claim and run phases until interrupted
     once                one claim pass, then run what it claimed to its end
     status              every queued phase with its claim, and every
                         registered worker
     checkout            clone a repository here, borrowing objects from this
                         machine's git mirror
+    forget              mark a dead worker's row stopping, so the next start
+                        of its name takes it over
 
 options:
   -h, --help            show this help message and exit
@@ -6780,6 +6804,7 @@ examples:
   cox worker once
   cox worker run --capability os:macos
   cox worker checkout https://example.org/app.git ~/repos/app
+  cox worker forget devbox
 </code></pre></div>
 <h2 id="run">run</h2>
 <div class="highlight"><pre><span></span><code>usage: cox worker run [-h] [--name NAME] [--capability TOKEN] [--lanes LANES]
@@ -6843,6 +6868,22 @@ options:
                    default branch)
   --base BASE      the commit or ref to check out or to start --branch at
   --json           print what the clone did and cost as JSON
+</code></pre></div>
+<h2 id="forget">forget</h2>
+<div class="highlight"><pre><span></span><code>usage: cox worker forget [-h] [--force] [--profile PROFILE] name
+
+A worker name is one machine's at a time: a start is refused while another machine's live row holds the name. A row an older build left `up` (it records no machine) is never taken over on its own, since that build's beat says nothing about whether it still runs. Once you know that worker is gone, forget it here: its row is marked `stopping`, and the next start of the name takes it over.
+A row that records a machine and was beaten within 900 s may be a running worker, so it is refused without --force. A row not `up` is left as it is.
+
+positional arguments:
+  name               the worker's name, as `cox worker status` lists it
+
+options:
+  -h, --help         show this help message and exit
+  --force            forget it even though it records a machine and was beaten
+                     within 900 s, so it may still be running
+  --profile PROFILE  the routing profile (default: ~/.config/agent-
+                     tools/profile.yaml or $AGENT_TOOLS_PROFILE)
 </code></pre></div>
 
 
