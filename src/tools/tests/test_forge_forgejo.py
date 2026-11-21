@@ -163,6 +163,26 @@ def test_merge_refused_leaves_the_branch(fake, repo):
     assert fake.deleted_branches == []
 
 
+def test_squash_merge_pinned_to_a_head_sends_head_commit_id(fake, target):
+    # The boundary: the field Forgejo's MergePullRequestOption reads to refuse a merge at any other head.
+    fake.add_pull(1, "feat", "main", "a" * 40)
+    assert ff.squash_merge(target, ENV, 1, "a" * 40) == (True, "merged")
+    assert fake.requests[-1]["body"] == {"Do": "squash", "head_commit_id": "a" * 40}
+    assert ff.merge_body() == {"Do": "squash"}, "no pin asked: the body is the old one"
+
+
+def test_merge_pinned_to_the_head_merges(fake, repo):
+    fake.add_pull(1, "feat", "main", "a" * 40)
+    ok, _ = ff.merge(repo, {"branch": "feat", "default_branch": "main", "head_sha": "a" * 40})
+    assert ok and fake.deleted_branches == ["feat"]
+
+
+def test_merge_pinned_to_another_head_is_refused_and_leaves_the_branch(fake, repo):
+    fake.add_pull(1, "feat", "main", "b" * 40)  # the head moved past the sha the suite passed at
+    assert ff.merge(repo, {"branch": "feat", "default_branch": "main", "head_sha": "a" * 40}) == (False, "head out of date")
+    assert fake.deleted_branches == []
+
+
 def test_merge_without_an_open_pr_is_a_refusal(fake, repo):
     assert ff.merge(repo, {"branch": "feat", "default_branch": "main"}) == (False, "no open pull request for feat")
 

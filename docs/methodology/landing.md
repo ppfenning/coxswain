@@ -291,6 +291,28 @@ no `lane_model` is on the old model.
   lifts once the gate no longer says it (the tip moved, or the review moved on). With `land_checks: ci` CI runs on the
   pull request as well; it does not stand in for the suite, which has passed at this tip before the pull request
   exists.
+- **Wait for fresh.** Once the pull request is open, any change to its head waits for a fresh passing suite at that
+  exact head before it lands: a refresh onto a moved parent, a phase merge, a fix phase. The moves go to origin as
+  before (the worker runs the suite at origin's tip), each records the new head on the record's `review_tip`, and the
+  chair reopens the initiative review there, pull request open or not. What holds:
+  - **A push the lander makes is drafted first.** Before it pushes a new head to an open new-model pull request (the
+    push inside a phase merge, and the push of a refresh), the lander marks the pull request a draft on the forge
+    (GitHub's draft; Forgejo's `WIP: ` title, and `[WIP]` is read as one too) and records `pr.stale`, under the
+    initiative's branch lease, so nothing else moves the branch meanwhile. A forge that refuses the draft refuses the
+    push: the phase merge is unwound and not recorded merged, the refresh waits, and both are tried again next pass;
+    after three refusals in a row the chair is told, once. So once a head the lander pushed is visible on origin, the
+    pull request is already a draft, which the forge itself refuses to merge: a person's merge on the forge, `cox pr
+    land` and a batch wait as the lander does.
+  - **The lander's own merge is pinned.** It waits on `pr_gate`, reads the head again right before it merges, and
+    pins the merge to the sha the suite passed at (`gh pr merge --match-head-commit`; Forgejo's `head_commit_id`), so
+    the forge refuses it at any other head.
+  - **A push made outside the lander is caught only on the next pass.** A person or another tool pushing to the
+    initiative branch is not drafted when it pushes: the lander's next pass reads the new head, marks the pull request
+    a draft and records the move. Until that pass the pull request is not a draft, and a person could merge it on the
+    forge at a head no suite ran at; the lander's own merge is never exposed to it, being pinned.
+  - The body names the sha the suite last passed at and, while the head is ahead of it, says so. Once the suite passes
+    at the head the pull request is marked ready and lands. The `outpaced` hold applies here too: its count starts
+    again when the pull request opens. A pull request the land finds already open keeps its draft and its count.
 
 Refreshes are always forward merges of the parent into the child. No branch the record names is rebased, reset or
 force-pushed, and a merge that would drop a recorded commit is refused. After a land, a phase branch is deleted only

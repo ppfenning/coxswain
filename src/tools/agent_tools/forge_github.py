@@ -191,6 +191,11 @@ def mark_ready(repo: Path, *, head: str) -> tuple[bool, str]:
     return _gh_on_open_pr(repo, head, ["ready"])
 
 
+def mark_draft(repo: Path, *, head: str) -> tuple[bool, str]:
+    """Turn the open PR from `head` back into a draft, which GitHub refuses to merge until it is marked ready."""
+    return _gh_on_open_pr(repo, head, ["ready", "--undo"])
+
+
 def _update_local_default(repo: Path, default: str) -> str:
     """Bring the local `default` branch up to `origin` without a checkout; git's output, or the failure."""
     try:
@@ -236,10 +241,18 @@ def merge_flag(step: dict) -> str | None:
     return {"squash": "--squash", "rebase": "--rebase"}.get(step.get("method", "squash"))
 
 
+def match_head(step: Mapping[str, object]) -> list[str]:
+    """The `gh pr merge` arguments that pin the merge to `step["head_sha"]`, the head the lander's gate passed at:
+    GitHub refuses the merge when the pull request's head is any other commit. None asked: no pin."""
+    sha = step.get("head_sha")
+    return ["--match-head-commit", sha] if isinstance(sha, str) and sha else []
+
+
 def merge(repo: Path, step: dict) -> tuple[bool, str]:
     """Merge the PR of `step["branch"]`, then delete its remote and local head branch and update the local default branch.
 
     `step["method"]` is "squash" (the default when absent) or "rebase"; any other value fails without running anything.
+    `step["head_sha"]`, when set, pins the merge to that head (`match_head`).
 
     gh's own `--delete-branch` is not used: its local cleanup needs a current branch and fails on a detached
     HEAD after the server merged, so the head is deleted through the API instead, unless `step["delete_branch"]`
@@ -250,7 +263,7 @@ def merge(repo: Path, step: dict) -> tuple[bool, str]:
     if flag is None:
         return False, f"unknown merge method: {step['method']!r}"
     try:
-        r = _run(["gh", "pr", "merge", step["branch"], flag], timeout=WRITE_TIMEOUT_S, cwd=repo)
+        r = _run(["gh", "pr", "merge", step["branch"], flag, *match_head(step)], timeout=WRITE_TIMEOUT_S, cwd=repo)
     except ForgeError as exc:
         return False, str(exc)
     text = r.stdout.strip() or r.stderr.strip()

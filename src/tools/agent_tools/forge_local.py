@@ -42,6 +42,10 @@ def mark_ready(repo: Path | str, *, head: str) -> tuple[bool, str]:
     return True, "local forge: no pull request to mark ready"
 
 
+def mark_draft(repo: Path | str, *, head: str) -> tuple[bool, str]:
+    return True, "local forge: no pull request to make a draft"
+
+
 def wait_checks(repo: Path | str, timeout_s: float, *, ref: str = "HEAD") -> tuple[bool, str]:
     return True, "local forge: the land's own checks are the gate"
 

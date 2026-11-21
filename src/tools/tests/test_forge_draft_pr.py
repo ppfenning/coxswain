@@ -58,9 +58,16 @@ def test_github_ready_marks_the_pr_found_by_head(monkeypatch):
     assert _writes(calls) == [["gh", "pr", "ready", "7"]]
 
 
+def test_github_draft_turns_the_open_pr_back_into_a_draft(monkeypatch):
+    calls = _fake_gh(monkeypatch, [{"number": 7}])
+    assert forge_github.mark_draft(REPO, head="feat")[0]
+    assert _writes(calls) == [["gh", "pr", "ready", "7", "--undo"]]
+
+
 @pytest.mark.parametrize("call", [
     lambda: forge_github.update_pr(REPO, "T", "B", head="feat"),
     lambda: forge_github.mark_ready(REPO, head="feat"),
+    lambda: forge_github.mark_draft(REPO, head="feat"),
 ])
 def test_github_no_open_pr_fails_naming_the_head_and_opens_nothing(monkeypatch, call):
     calls = _fake_gh(monkeypatch, [])
@@ -145,9 +152,37 @@ def test_forgejo_ready_on_a_ready_pr_sends_no_write(monkeypatch, repo):
     assert api.writes() == []
 
 
+def test_forgejo_draft_prefixes_the_title_once(monkeypatch, repo):
+    api = _api(monkeypatch, [_pull(4, "Old")])
+    assert forge_forgejo.mark_draft(repo, head="feat")[0]
+    assert api.writes() == [("PATCH", f"{PULL_API}/4", {"title": "WIP: Old"})]
+    again = _api(monkeypatch, [_pull(4, "WIP: Old")])
+    assert forge_forgejo.mark_draft(repo, head="feat")[0] and again.writes() == []
+
+
+@pytest.mark.parametrize(("title", "prefix"), [("WIP: T", "WIP:"), ("wip: T", "wip:"), ("[WIP] T", "[WIP]"),
+                                               ("[wip] T", "[wip]"), ("T", ""), ("WIPE T", ""), ("T [WIP]", "")])
+def test_forgejo_reads_each_of_its_draft_prefixes(title, prefix):
+    assert (forge_forgejo.draft_prefix(title), forge_forgejo.is_draft_title(title)) == (prefix, bool(prefix))
+
+
+def test_forgejo_ready_drops_a_bracketed_draft_prefix(monkeypatch, repo):
+    api = _api(monkeypatch, [_pull(4, "[WIP] Old")])
+    assert forge_forgejo.mark_ready(repo, head="feat")[0]
+    assert api.writes() == [("PATCH", f"{PULL_API}/4", {"title": "Old"})]
+
+
+def test_forgejo_draft_and_update_keep_a_bracketed_draft_as_it_is(monkeypatch, repo):
+    api = _api(monkeypatch, [_pull(4, "[WIP] Old")])
+    assert forge_forgejo.mark_draft(repo, head="feat")[0]
+    forge_forgejo.update_pr(repo, "New", "Body", head="feat")
+    assert api.writes() == [("PATCH", f"{PULL_API}/4", {"title": "[WIP] New", "body": "Body"})]
+
+
 @pytest.mark.parametrize("call", [
     lambda repo: forge_forgejo.update_pr(repo, "T", "B", head="feat"),
     lambda repo: forge_forgejo.mark_ready(repo, head="feat"),
+    lambda repo: forge_forgejo.mark_draft(repo, head="feat"),
 ])
 def test_forgejo_no_open_pr_fails_naming_the_head_and_opens_nothing(monkeypatch, repo, call):
     api = _api(monkeypatch, [_pull(5, "Other", head="other")])
@@ -157,7 +192,8 @@ def test_forgejo_no_open_pr_fails_naming_the_head_and_opens_nothing(monkeypatch,
 
 def test_local_accepts_draft_and_answers_one_line():
     assert forge_local.open_pr(REPO, "T", "B", head="h", base="main", draft=True) == forge_local.open_pr(REPO, "T", "B", head="h", base="main")
-    for ok, detail in (forge_local.update_pr(REPO, "T", "B", head="h"), forge_local.mark_ready(REPO, head="h")):
+    for ok, detail in (forge_local.update_pr(REPO, "T", "B", head="h"), forge_local.mark_ready(REPO, head="h"),
+                       forge_local.mark_draft(REPO, head="h")):
         assert ok is True and "\n" not in detail
 
 
@@ -177,14 +213,20 @@ def test_auto_forwards_draft_and_the_new_verbs(monkeypatch):
             seen.append(("ready", kw))
             return True, "u"
 
+        def mark_draft(self, repo, **kw):
+            seen.append(("draft", kw))
+            return True, "u"
+
     monkeypatch.setattr(forge_auto, "forge_of", lambda repo: Stub())
     forge_auto.open_pr(REPO, "T", "B", head="h", base="main", draft=True)
     forge_auto.open_pr(REPO, "T", "B", head="h")
     forge_auto.update_pr(REPO, "T", "B", head="h")
     forge_auto.mark_ready(REPO, head="h")
+    forge_auto.mark_draft(REPO, head="h")
     assert seen == [
         ("open", {"head": "h", "base": "main", "draft": True}),
         ("open", {"head": "h", "base": None}),
         ("update", "T", "B", {"head": "h"}),
         ("ready", {"head": "h"}),
+        ("draft", {"head": "h"}),
     ]

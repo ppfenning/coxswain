@@ -76,7 +76,14 @@ class FakeForgejo:
                 return 200, {"state": state or "pending", "statuses": [{"status": state}] if state else []}
             if method == "POST" and (m := _MERGE.match(path)):
                 refusal = self._refusals.get(int(m.group(1)))
-                return (refusal[0], {"message": refusal[1]}) if refusal else (200, None)
+                if refusal:
+                    return refusal[0], {"message": refusal[1]}
+                # As Forgejo does: a merge pinned to a head (`head_commit_id`) the pull request is no longer at is refused.
+                pinned = body.get("head_commit_id") if isinstance(body, dict) else None
+                pull = self._pulls.get(int(m.group(1))) or {}
+                if pinned and pinned != (pull.get("head") or {}).get("sha"):
+                    return 409, {"message": "head out of date"}
+                return 200, None
             if method == "DELETE" and (m := _BRANCH.match(path)):
                 self.deleted_branches.append(unquote(m.group(1)))
                 return 204, None

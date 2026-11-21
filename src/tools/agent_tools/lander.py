@@ -29,150 +29,37 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Collection, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal, Protocol, TypedDict
+from typing import Literal
 
-from agent_tools import lander_empty, lander_hold, lander_review
+from agent_tools import lander_empty, lander_hold, lander_pr, lander_review
+from agent_tools.lander_base import (
+    ConflictAsk,
+    LandMeta,
+    Outcome,
+    Ports,
+    Row,
+    fetch_origin,
+    ports_repo,
+    publish_initiative,
+    record_text,
+)
 from core import landing_record as lr
 from core.jsontypes import is_mapping
 from core.landing import (
-    TemplateError,
-    initiative_pr_reference,
-    initiative_pr_title,
     resolve_on_blocked,
 )
 from harness import landing_git as lg
 from harness import landing_ops as ops
 from harness import landing_store as ls
 from harness import store_lease
-from harness.phase_remote import Kind, fetched_ref, push_branch, settle_diverged
-from harness.store_dialect import Connection
+from harness.phase_remote import Kind, fetched_ref, settle_diverged
 
 LAND_CLAIM_SECONDS = 3600  # an initiative land waits on CI; its claim is renewed while it works
 QUEUE_ALARM_SECONDS = 3600  # an item still open this long after it was queued is told to the chair, once
 PERSON_GATE_NOTE = "the pull request is open and its merge waits for a person"
 PREPARED_NOTE = "the pull request is open and waits for the rest of its batch"
-
-
-Row = Mapping[str, object]  # a task row (id, phase, state, needs, title) or a queue item
-RecordText = Literal["initiative", "repo", "branch", "parent"]  # the text keys a landing record always carries
-
-
-def record_text(record: lr.LandingRecord, key: RecordText) -> str:
-    """Pure. The str `key` that a landing record always carries; KeyError, as `record[key]` raised, when it is absent."""
-    value = record.get(key)
-    if value is None:
-        raise KeyError(key)
-    return value
-
-
-class LandMeta(TypedDict, total=False):
-    """What `Ports.meta` reads for one initiative: its own fields, the resolved cartridge, and its epic."""
-
-    initiative: Mapping[str, object]
-    cartridge: Mapping[str, object]
-    cartridge_error: str | None
-    epic_issue: object
-    gate: str  # "full": the lander merges the pull request, not a person
-    epic_stack: bool
-    epic_branch: object
-    epic_title: object
-    epic_parent: object  # where the epic branch itself lands
-    target_branch: object
-
-
-class ForgePort(Protocol):
-    """The forge as the lander uses it: the forge module the profile names, plus what the lander adds to it."""
-
-    def push(self, repo: Path, branch: str) -> tuple[bool, str]: ...
-
-    def find_open_prs(self, repo: Path, branch: str) -> Sequence[object] | str: ...
-
-    def open_pr(self, repo: Path, title: str, body: str, *, head: str | None = None,
-                base: str | None = None) -> tuple[bool, str]: ...
-
-    def merge(self, repo: Path, step: Mapping[str, object]) -> tuple[bool, str]: ...
-
-    def pr_merged(self, repo: Path, branch: str) -> tuple[bool, str]: ...
-
-    def delete_branch(self, repo: Path, branch: str) -> tuple[bool, str]: ...
-
-    def poll_checks(self, repo: Path, *, ref: str, memo: Mapping[str, object] | None = None) -> tuple[str, str, dict[str, object]]: ...
-
-    def has_ci(self, repo: Path, ref: str) -> bool: ...
-
-    def retarget(self, repo: Path, branch: str, base: str) -> tuple[bool, str]: ...
-
-    def pr_state(self, url: str) -> Mapping[str, object]: ...
-
-
-def _no_rectify(initiative: str, phase: str, title: str, body: str) -> str | None:
-    return None
-
-
-def _no_split(initiative: str, phases: Sequence[str]) -> str | None:
-    return None
-
-
-def _no_notify(kind: str, fields: Mapping[str, object]) -> None:
-    return None
-
-
-def _no_fetch(repo: Path, branch: str) -> str | None:
-    return None
-
-
-@dataclass(frozen=True)
-class ConflictAsk:
-    """One new-model phase merge that conflicted, as the merge agent is asked to settle it: the merge of `source` (the
-    phase, as origin holds it) into the initiative `branch` is in progress in `scratch`, and `paths` hold its markers."""
-
-    initiative: str
-    phase: str
-    branch: str
-    source: str
-    scratch: Path
-    paths: tuple[str, ...]
-
-
-def _no_merge_agent(ask: ConflictAsk) -> lg.Resolved | str:
-    return lander_hold.NO_MERGE_AGENT
-
-
-@dataclass
-class Ports:
-    """Everything the lander touches outside its own logic."""
-
-    conn: Connection  # the store connection
-    worker: str
-    now: Callable[[], str]
-    tasks: Callable[[str], Sequence[Row]]  # an initiative's task rows: id, phase, state, needs, title
-    meta: Callable[[str], LandMeta]  # {"initiative": {...}, "cartridge": {...}, "epic_issue": ..., "gate": "full"}
-    forge: ForgePort
-    checks: Callable[[Path, Path, str], tuple[bool, str]]  # (repo, tree, "level" | PHASE_GATE | "ticket") -> passed, output
-    mark_merged: Callable[[str, str, str], None]  # initiative, task, the initiative tip that holds it
-    mark_done: Callable[[str, str, str], str | None]  # initiative, task, pr url -> why it was refused, or None
-    file_rectify: Callable[[str, str, str, str], str | None] = _no_rectify  # initiative, phase, title, body -> task id
-    split_blocked: Callable[[str, Sequence[str]], str | None] = _no_split  # initiative, phases -> follow-up id
-    notify: Callable[[str, Mapping[str, object]], None] = _no_notify
-    # The initiative's checkout on this machine. The record's own `repo` is the path on the host that cut the branch.
-    repo: Callable[[lr.LandingRecord], Path] | None = None
-    # Bring one branch up to origin's copy, forward only: why it must not be moved here (it diverged), else None.
-    fetch: Callable[[Path, str], str | None] = _no_fetch
-    log: Callable[[str], None] = print
-    # The new model's merge agent, run through the local harness: each conflicted file's merged text, or why not.
-    resolve_conflict: Callable[[ConflictAsk], lg.Resolved | str] = _no_merge_agent
-
-
-@dataclass(frozen=True)
-class Outcome:
-    """What one item came to. `status`: done, waiting (left queued), failed, skipped."""
-
-    status: str
-    item: str
-    detail: str = ""
-    events: tuple[str, ...] = field(default_factory=tuple)
 
 
 # -- the pure core ------------------------------------------------------------------------------------------------
@@ -474,14 +361,6 @@ def live(record: lr.LandingRecord) -> bool:
     return record.get("state") != "landed" and record.get("land_at") not in ("task", "epic")
 
 
-def ports_repo(ports: Ports, record: lr.LandingRecord) -> Path:
-    found = ports.repo(record) if ports.repo is not None else Path(str(record.get("repo") or "")).expanduser()
-    if not str(found).strip(".") or not found.is_absolute():
-        # Never the current directory: an empty path would run git in whatever checkout the process happens to be in.
-        raise LookupError(f"{record.get('initiative')}: its repository is not known on this machine")
-    return found
-
-
 def parent_ref_of(repo: Path, parent: str) -> str:
     """The parent as it stands on origin after a fetch, else the local branch (a repo with no origin)."""
     lg.git(repo, "fetch", "--quiet", "origin", parent)
@@ -716,7 +595,7 @@ def merge_phase(ports: Ports, initiative: str, phase: str) -> Outcome:
     diverged = ports.fetch(repo, ops.phase_branch(initiative, phase))
     if source is not None:
         # The new model merges origin's copy, whatever this clone's own copy says: only the lane writes the phase.
-        diverged = _fetch_origin(repo, ops.phase_branch(initiative, phase))[1] or None
+        diverged = fetch_origin(repo, ops.phase_branch(initiative, phase))[1] or None
     if diverged:
         return Outcome("waiting", ident, diverged)
     # The initiative branch may exist only on the lane host that built the phases before this one.
@@ -735,8 +614,11 @@ def merge_phase(ports: Ports, initiative: str, phase: str) -> Outcome:
     def publish(branch: str) -> str | None:
         # Every merge is pushed, whatever `push_initiative` says, and before it is recorded (`ops.after_push`): origin's
         # copy is the one every lane builds on. The forge pushes first (Forgejo's wait for the server to show the
-        # branch is kept); a forge that keeps the branch local (the local forge) is followed by a plain git push.
-        why = publish_initiative(ports, repo, branch)
+        # branch is kept); a forge that keeps the branch local (the local forge) is followed by a plain git push. An
+        # open new-model pull request is made a draft first, under the same lease: refused, nothing is pushed.
+        refused, drafted = lander_pr.draft_before_push(ports, repo, initiative)
+        why = refused or publish_initiative(ports, repo, branch)
+        pushed_note.extend(drafted if why is None else [])
         if why is None and lg.git(repo, "remote", "get-url", "origin")[0]:
             tip = lg.rev(repo, f"refs/heads/{branch}") or ""
             pushed_note.append(f"{branch} pushed to origin at {tip[:12]} before phase {phase} was recorded merged")
@@ -798,29 +680,6 @@ def _empty_phase(ports: Ports, repo: Path, initiative: str, phase: str, tasks: S
                lander_empty.Target(f"refs/heads/{branch}", branch, held="own")]
     return lander_empty.refuse_empty(ports.conn, ports.notify, ports.now(), repo, initiative=initiative, source=source,
                                      targets=targets, tasks=tasks, phase=phase)
-
-
-def origin_holds(local_tip: str | None, origin_tip: str | None) -> bool:
-    """Pure. Whether origin's copy of a branch is the local tip, so a push is done. A branch with no local tip has
-    nothing to push."""
-    return local_tip is None or local_tip == origin_tip
-
-
-def publish_initiative(ports: Ports, repo: Path, branch: str) -> str | None:
-    """Edge. Push `branch` through the forge, then make sure origin holds its tip: a forge that keeps an initiative
-    branch local until it merges (the local forge) is followed by a plain fast-forward push. None once origin holds
-    it (or there is no origin), else why not."""
-    pushed, why = ports.forge.push(repo, branch)
-    if not pushed:
-        return f"push of {branch} to origin failed: {why.splitlines()[0] if why else 'no detail from the forge'}"
-    if not lg.git(repo, "remote", "get-url", "origin")[0]:
-        return None
-    local = lg.rev(repo, f"refs/heads/{branch}")
-    ok, out = lg.git(repo, "ls-remote", "origin", f"refs/heads/{branch}")
-    if ok and origin_holds(local, out.split()[0] if out.split() else None):
-        return None
-    pushed, why = push_branch(repo, branch)
-    return None if pushed else f"push of {branch} to origin failed: {why.splitlines()[0] if why else 'no detail from git'}"
 
 
 def _resolver(ports: Ports, record: lr.LandingRecord, phase: str, source: str) -> lg.Resolve:
@@ -893,23 +752,6 @@ def _send_back(ports: Ports, record: lr.LandingRecord, phase: str, done: ops.Pha
 
 # -- initiative_land ----------------------------------------------------------------------------------------------
 
-def _pr_body(meta: LandMeta, record: lr.LandingRecord, tasks: Sequence[Row], reference: str | None) -> str:
-    """The one pull request's body: the initiative, a block per phase with its tasks, and the issue line."""
-    initiative = meta.get("initiative") or {}
-    parents = lr.phase_parents(tasks)
-    lines = [str(initiative.get("summary") or initiative.get("title") or record_text(record, "initiative")).strip(), ""]
-    for phase in lr.merge_order(parents) or sorted(parents, key=lr.natural_key):
-        own = [t for t in lr.phase_tasks(tasks, phase) if t.get("state") != "dropped"]
-        if not own:
-            continue
-        lines.append(f"### {phase}")
-        lines += [f"- {t.get('title') or t['id']} (`{t['id']}`)" for t in own]
-        lines.append("")
-    if reference:
-        lines += [reference, ""]
-    return "\n".join(lines).rstrip() + "\n"
-
-
 def _other_land_on_parent(ports: Ports, mine: Row) -> str | None:
     """Another initiative land holding the same parent branch of the same repo, claimed before this one: it goes first."""
     now = ports.now()
@@ -955,13 +797,16 @@ def land_initiative(ports: Ports, initiative: str, *, merge: bool = True, refres
         events += adopted
         record = ls.get_record(ports.conn, initiative) or record
     gate: lander_review.Decision | None = None
-    if lr.record_lane_model(record) == lr.NEW_MODEL and record.get("state") != "landed" and not (record.get("pr") or {}).get("url"):
-        # D2: the new model's pull request opens only on the initiative review's approval and a suite passed at the tip.
-        tip = _review_tip(ports_repo(ports, record), record_text(record, "branch"))
+    url = str((record.get("pr") or {}).get("url") or "")
+    if lr.record_lane_model(record) == lr.NEW_MODEL and record.get("state") != "landed" and not (
+            url and ports.forge.pr_merged(ports_repo(ports, record), record_text(record, "branch"))[0]):
+        # D2: the new model's pull request opens only on the initiative review's approval and a suite passed at the
+        # tip; once open, it lands only at a head the suite passed at, and is a draft while it is not (wait for fresh).
+        tip = lander_pr.gate_tip(ports_repo(ports, record), record_text(record, "branch"))
         if tip is None:
             return close("waiting", f"origin's {record_text(record, 'branch')} could not be read for its gate", events)
         record, gate, gate_events = lander_review.settle(ports.conn, record, tip, ports.now(), ports.notify)
-        events += gate_events
+        events += gate_events + (lander_pr.mark_open_pr(ports, initiative, gate, tip) if url and gate.gate != "open" else [])
     if _held(record):
         return close("waiting", held_note(record), events)
     record, stack_events, below, unknown = _restack(ports, record)
@@ -1001,9 +846,14 @@ def land_initiative(ports: Ports, initiative: str, *, merge: bool = True, refres
         opened = _open_pr(ports, record, tasks, meta, repo, branch, parent, lander_review.pr_note(gate) if gate else "",
                           gate.tip if gate is not None else "")
         if isinstance(opened, Outcome):
-            return close(opened.status, opened.detail, opened.events)
+            moved = ls.get_record(ports.conn, initiative) or record  # a refresh of an open pull request: stale now
+            head = str((moved.get("review_tip") or {}).get("tip") or "")
+            stale = lander_pr.mark_open_pr(ports, initiative, gate, head) if url and gate and opened.status == "waiting" and head else []
+            return close(opened.status, opened.detail, [*opened.events, *stale])
         record, new_events = opened
         events += new_events
+    elif url and gate is not None:
+        events += lander_pr.mark_open_pr(ports, initiative, gate, gate.tip)  # fresh at its head: ready again
     url = str((record.get("pr") or {}).get("url") or "")
     if not merged:
         merged, _ = ports.forge.pr_merged(repo, branch)
@@ -1021,27 +871,21 @@ def land_initiative(ports: Ports, initiative: str, *, merge: bool = True, refres
         return close("failed", f"checks failed on {url}: {step.detail}",
                      [*events, *_send_back_initiative(ports, record, "checks", step.detail)])
     if step.action == "merge":
-        unheld = _unheld_at_merge(repo, ls.get_record(ports.conn, initiative) or record)
+        unheld = _unheld_at_merge(repo, ls.get_record(ports.conn, initiative) or record) or (
+            lander_review.head_moved(gate.tip, lander_pr.gate_tip(repo, branch)) if gate is not None else "")
         if unheld:
             return close("waiting", unheld, events)
         # Into an epic branch an initiative merges with a merge commit, so the layers above it retarget cleanly; the
-        # squash happens once, from the epic branch to its parent.
-        ok, detail = ports.forge.merge(repo, {"kind": "merge", "squash": not stacked, "delete_branch": True, "branch": branch,
-                                             "default_branch": parent, "subject": str((record.get("pr") or {}).get("title") or initiative)})
+        # squash happens once, from the epic branch to its parent. On the new model the merge is pinned to the head the
+        # suite passed at (`head_sha`): the forge refuses it once the head is anything else.
+        merging: dict[str, object] = {"kind": "merge", "squash": not stacked, "delete_branch": True, "branch": branch,
+                                      "default_branch": parent, "subject": str((record.get("pr") or {}).get("title") or initiative)}
+        ok, detail = ports.forge.merge(repo, {**merging, "head_sha": gate.tip} if gate is not None and gate.tip else merging)
         if not ok:
             return close("failed", f"merge of {url} failed: {detail}", events)
         events.append(f"merged {url} into {parent}")
     events += _finish_landed(ports, record, tasks, url)
     return close("done", f"{initiative} landed on {parent}", events)
-
-
-def _review_tip(repo: Path, branch: str) -> str | None:
-    """Edge. The initiative branch's tip the new model's gate judges (`lander_review`): origin's copy, as the review
-    and the suite read it; this clone's own when there is no origin. None when origin cannot be read."""
-    origin_ref, unreadable = _fetch_origin(repo, branch)
-    if unreadable:
-        return None
-    return lg.rev(repo, origin_ref) if origin_ref else lg.rev(repo, f"refs/heads/{branch}")
 
 
 def _held(record: lr.LandingRecord) -> lr.Hold | None:
@@ -1075,7 +919,7 @@ def _unheld_at_merge(repo: Path, record: lr.LandingRecord) -> str | None:
     """The guard right before the merge: why it waits, when the branch that would merge (origin's, else this clone's
     for a forge that merges locally) lacks a commit the record says a phase merged with. None when it holds them all."""
     branch = record_text(record, "branch")
-    origin_ref, unreadable = _fetch_origin(repo, branch)
+    origin_ref, unreadable = fetch_origin(repo, branch)
     if unreadable:
         return f"origin's {branch} could not be read before the merge: {unreadable}"
     ref = origin_ref or f"refs/heads/{branch}"
@@ -1186,7 +1030,7 @@ def _open_pr(ports: Ports, record: lr.LandingRecord, tasks: Sequence[Row], meta:
              branch: str, parent: str, note: str = "", approved: str = "") -> tuple[lr.LandingRecord, list[str]] | Outcome:
     """Refresh onto the parent, run the gate checks, push, and open the one pull request (or find the one already open).
     `note` is a line the body carries (the new model's gate it passed, `lander_review.pr_note`). On the new model
-    `approved` is the tip that gate passed at, and the only one the pull request opens at (`_open_at`)."""
+    `approved` is the tip that gate passed at, and the only one the pull request opens at (`lander_pr.open_at`)."""
     initiative = record_text(record, "initiative")
     ident = ls.item_id(ls.INITIATIVE_LAND, initiative)
     refreshed = ops.take_parent_forward(ports.conn, repo, initiative=initiative, parent_ref=parent_ref_of(repo, parent),
@@ -1201,75 +1045,14 @@ def _open_pr(ports: Ports, record: lr.LandingRecord, tasks: Sequence[Row], meta:
         if not held.ok:
             return Outcome("waiting", ident, f"{held.holder or 'another worker'} is moving the branch of {initiative}")
         try:
-            return _open_at(ports, record, tasks, meta, repo, (branch, parent), note, approved)
+            return lander_pr.open_at(ports, record, tasks, meta, repo, (branch, parent), note, approved)
         finally:
             store_lease.release(ports.conn, ops.branch_lease(initiative), ports.worker, int(held.epoch or 0))
     passed, output = lg.on_scratch(repo, branch, lambda tree: ports.checks(repo, tree, "ticket"))
     if not passed:
         return Outcome("failed", ident, f"gate checks failed on {branch}",
                        tuple(_send_back_initiative(ports, record, "checks", output)))
-    return _push_and_open(ports, record, tasks, meta, repo, (branch, parent), note)
-
-
-def _open_at(ports: Ports, record: lr.LandingRecord, tasks: Sequence[Row], meta: LandMeta, repo: Path,
-             refs: tuple[str, str], note: str, approved: str) -> tuple[lr.LandingRecord, list[str]] | Outcome:
-    """The new model's push and pull request, under the branch's lease, so no phase merge lands meanwhile: only when
-    the branch and origin's copy are both still at `approved`, the tip the suite passed at (`lander_review.
-    refresh_step`). No ticket checks run here: the suite at that very tip is the gate. A moved branch is pushed when
-    only the parent merge moved it (else this clone goes back to origin's copy, which the next pass fetches), the move
-    is recorded for the chair to queue the review and the suite again (`lander_review.moved`), and the land waits."""
-    branch, initiative = refs[0], record_text(record, "initiative")
-    ident = ls.item_id(ls.INITIATIVE_LAND, initiative)
-    local, origin = lg.rev(repo, f"refs/heads/{branch}"), _review_tip(repo, branch)
-    moves = int((record.get("review_tip") or {}).get("moves") or 0)
-    step = lander_review.refresh_step(approved, local, origin, moves)
-    if step.action == "open":
-        return _push_and_open(ports, record, tasks, meta, repo, refs, note)
-    if step.push and (dropped := lg.missing_from(repo, branch, lr.recorded_shas(record))):
-        return Outcome("failed", ident, f"refused to push {branch}: it lacks recorded commit(s) {', '.join(s[:12] for s in dropped)}")
-    if step.push and (refused := publish_initiative(ports, repo, branch)):
-        return Outcome("waiting", ident, refused)
-    if not step.push and local and origin and local != origin:
-        lg.git(repo, "update-ref", "-m", "lander: origin moved; the next pass fetches it", f"refs/heads/{branch}", origin, local)
-    tip = str((local if step.push else origin) or approved)
-    return Outcome("waiting", ident, step.reason, tuple(lander_review.moved(ports.conn, record, step, tip, ports.now(), ports.notify)))
-
-
-def _push_and_open(ports: Ports, record: lr.LandingRecord, tasks: Sequence[Row], meta: LandMeta, repo: Path,
-                   refs: tuple[str, str], note: str) -> tuple[lr.LandingRecord, list[str]] | Outcome:
-    """Push the initiative branch (refused when it lacks a recorded sha) and open its pull request, or find it open."""
-    (branch, parent), initiative = refs, record_text(record, "initiative")
-    ident, recorded = ls.item_id(ls.INITIATIVE_LAND, initiative), lr.recorded_shas(record)
-    dropped = lg.missing_from(repo, branch, recorded)
-    if dropped:  # guard before any push: nothing the record names may be missing from what goes to origin
-        return Outcome("failed", ident, f"refused to push {branch}: it lacks recorded commit(s) {', '.join(s[:12] for s in dropped)}")
-    pushed, why = ports.forge.push(repo, branch)
-    if not pushed:
-        return Outcome("failed", ident, f"push of {branch} failed: {why}")
-    try:
-        cartridge: Mapping[str, object] = meta.get("cartridge") or {}
-        own: Mapping[str, object] = meta.get("initiative") or {"id": initiative}
-        title = initiative_pr_title(cartridge, own, parent, meta.get("epic_issue"))
-        reference = initiative_pr_reference(cartridge, own, parent, meta.get("epic_issue"))
-    except TemplateError as exc:
-        return Outcome("failed", ident, str(exc))
-    existing = ports.forge.find_open_prs(repo, branch)
-    if isinstance(existing, str):
-        return Outcome("waiting", ident, f"could not ask the forge about {branch}: {existing}")
-    if existing:
-        first = existing[0]
-        url = str(first.get("url") or first.get("number")) if is_mapping(first) else str(first)
-        events = [f"found the open pull request for {branch}: {url}"]
-    else:
-        body = _pr_body(meta, record, tasks, reference) + (f"\n{note}\n" if note else "")
-        ok, url = ports.forge.open_pr(repo, title, body, head=branch, base=parent)
-        if not ok:
-            return Outcome("failed", ident, f"pull request for {branch} was not opened: {url}")
-        events = [f"opened the pull request for {initiative}: {url}"]
-    updated = lr.with_state({**record, "state": "assembled"} if record.get("state") != "pr_open" else record, "pr_open", ports.now(),
-                            pr={"url": url, "title": title, "head": branch, "base": parent})
-    ls.put_record(ports.conn, updated)
-    return updated, events
+    return lander_pr.push_and_open(ports, record, tasks, meta, repo, (branch, parent), note)
 
 
 def _send_back_initiative(ports: Ports, record: lr.LandingRecord, cause: str, detail: str, paths: Sequence[str] = ()) -> list[str]:
@@ -1635,18 +1418,6 @@ def _origin_drift(repo: Path, record: lr.LandingRecord, origin_ref: str) -> list
     return phase_drift(record, on_branch, known)
 
 
-def _fetch_origin(repo: Path, branch: str) -> tuple[str | None, str]:
-    """Fetch origin's `branch` into its remote-tracking ref. (the ref, '') when fetched; (None, '') when origin has
-    no such branch; (None, why) when origin could not be read."""
-    ref = f"refs/remotes/origin/{branch}"
-    if not lg.git(repo, "remote", "get-url", "origin")[0]:
-        return None, ""  # a repository with no origin: this clone is all there is
-    ok, out = lg.git(repo, "fetch", "--quiet", "origin", f"+refs/heads/{branch}:{ref}")
-    if ok:
-        return ref, ""
-    return None, "" if "couldn't find remote ref" in out.lower() else out.splitlines()[0] if out else "fetch failed"
-
-
 @dataclass(frozen=True)
 class Judgement:
     """What one reconciliation found. `reason` holds the initiative (None: the record and origin agree). `judged`
@@ -1739,7 +1510,7 @@ def _moved(ports: Ports, repo: Path, record: lr.LandingRecord, origin_ref: str) 
 def _moved_unleased(ports: Ports, repo: Path, record: lr.LandingRecord) -> bool:
     """Edge. Whether a phase of an unpublished record has moved on origin, read without the branch lease (it fetches
     only into remote-tracking refs). An origin that lacks the branch, or cannot be read, has nothing moved to merge."""
-    origin_ref, _ = _fetch_origin(repo, record_text(record, "branch"))
+    origin_ref, _ = fetch_origin(repo, record_text(record, "branch"))
     return origin_ref is not None and bool(_moved(ports, repo, record, origin_ref))
 
 
@@ -1753,7 +1524,7 @@ def _judge(ports: Ports, repo: Path, initiative: str) -> Judgement:
     if record is None:
         return Judgement(judged=False)
     branch = record_text(record, "branch")
-    origin_ref, unreadable = _fetch_origin(repo, branch)
+    origin_ref, unreadable = fetch_origin(repo, branch)
     if origin_ref is None:
         # Not on origin: not pushed yet, so not the lander's to judge. Unreadable: try again next pass.
         return Judgement((f"reconcile: {initiative} waits: origin could not be read: {unreadable}",) if unreadable else (), judged=False)

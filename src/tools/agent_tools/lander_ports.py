@@ -224,6 +224,23 @@ class Forge:
             name.endswith((".yml", ".yaml")) for name in listed.stdout.split()
         )
 
+    def _optional(self, name: str) -> Callable[..., tuple[bool, str]] | None:
+        found = getattr(self._module, name, None)
+        return cast("Callable[..., tuple[bool, str]]", found) if callable(found) else None
+
+    def mark_draft(self, repo: Path, branch: str) -> tuple[bool, str]:
+        """Make the open pull request from `branch` a draft, which the forge refuses to merge (wait for fresh)."""
+        fn = self._optional("mark_draft")
+        return fn(repo, head=branch) if fn else (False, "this forge cannot make a pull request a draft")
+
+    def mark_ready(self, repo: Path, branch: str) -> tuple[bool, str]:
+        fn = self._optional("mark_ready")
+        return fn(repo, head=branch) if fn else (False, "this forge cannot mark a pull request ready")
+
+    def update_pr(self, repo: Path, title: str, body: str, *, head: str) -> tuple[bool, str]:
+        fn = self._optional("update_pr")
+        return fn(repo, title, body, head=head) if fn else (False, "this forge cannot edit a pull request")
+
     def retarget(self, repo: Path, branch: str, base: str) -> tuple[bool, str]:
         """Point the open pull request from `branch` at a new base: how a stack's layer moves down when the one below lands."""
         edit = getattr(self._module, "_gh_on_open_pr", None)
