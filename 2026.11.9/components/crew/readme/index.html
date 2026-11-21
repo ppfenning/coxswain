@@ -3338,6 +3338,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#old-names-deprecated" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Old names (deprecated)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#voice-is-decoration" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6673,6 +6684,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#old-names-deprecated" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Old names (deprecated)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#voice-is-decoration" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6710,7 +6732,7 @@ Coxswain is in beta — versions may change between releases
 
 
 <h1 id="crew">crew</h1>
-<p>A standing cast of named agent <strong>seats</strong> — who does what, what each may touch,
+<p>A standing cast of agent <strong>seats</strong>, named by function — who does what, what each may touch,
 and how each reports — with no employer inside any of them. This folder is
 part of the coxswain repository and ships in every release. To install
 Coxswain, see the <a href="https://github.com/ppfenning/coxswain/blob/main/README.md">root README</a>.</p>
@@ -6719,9 +6741,10 @@ that board, those conventions. Then the team changes, or you do, and the
 roster is worthless. Here the seat is the durable part and the employer is a
 binding you swap.</p>
 <h2 id="what-is-here">What is here</h2>
-<div class="highlight"><pre><span></span><code>seats/          one agent definition per seat (eleven), and SEATS.md for the chair
+<div class="highlight"><pre><span></span><code>seats/          one agent definition per seat (eight), and SEATS.md: the roster, the voices, the old names
 install.sh      links every seat into ~/.claude/agents (SEATS.md is not linked)
-check_seats.py  checks every seat's frontmatter: name, description, tools, an explicit model
+check_seats.py  checks every seat's frontmatter (name, description, tools, an explicit model), that each seat
+                is named by function, and that each has its row in the SEATS.md voice table
 </code></pre></div>
 <h2 id="checks">Checks</h2>
 <p>From this folder:</p>
@@ -6735,77 +6758,50 @@ the work.</p>
 <thead>
 <tr>
 <th>Seat</th>
-<th>Voice</th>
 <th>Surface</th>
 <th>Write authority</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><strong>Nova</strong></td>
-<td><code>af_nova</code></td>
-<td>recon — codebase sweeps, log analysis, research, readiness audits</td>
+<td><strong>recon</strong></td>
+<td>codebase sweeps, log analysis, research, readiness audits</td>
 <td>none</td>
 </tr>
 <tr>
-<td><strong>Sky</strong></td>
-<td><code>af_sky</code></td>
-<td>triage and incidents — alerts, failures, blast radius</td>
+<td><strong>triage</strong></td>
+<td>alerts, failures, root cause, blast radius</td>
 <td>none</td>
 </tr>
 <tr>
-<td><strong>Lewis</strong></td>
-<td><code>bm_lewis</code></td>
-<td>review — reads the diff, never the builder's account of it</td>
+<td><strong>reviewer</strong></td>
+<td>reads the diff, never the builder's account of it</td>
 <td>none, and no merge</td>
 </tr>
 <tr>
-<td><strong>Sarah</strong></td>
-<td><code>af_sarah</code></td>
-<td>build — worktree, branch, tests, one pull request</td>
+<td><strong>builder</strong></td>
+<td>worktree, branch, tests, one pull request</td>
 <td>code on its own branch</td>
 </tr>
 <tr>
-<td><strong>Michael</strong></td>
-<td><code>am_michael</code></td>
-<td>ops — CI, PR health, deploys, local tooling</td>
+<td><strong>ops</strong></td>
+<td>CI, PR health, deploys, local tooling</td>
 <td>its own PR branches</td>
 </tr>
 <tr>
-<td><strong>Emma</strong></td>
-<td><code>bf_emma</code></td>
-<td>the board — epics, phases, item bodies, dates, reconciliation</td>
+<td><strong>planner</strong></td>
+<td>the board: epics, phases, item bodies, dates, reconciliation</td>
 <td>proposes; the chair writes</td>
 </tr>
 <tr>
-<td><strong>Echo</strong></td>
-<td><code>am_echo</code></td>
-<td>writing — docs, RFCs, outward-facing replies</td>
+<td><strong>writer</strong></td>
+<td>docs, RFCs, outward-facing replies; routes plans and recaps to <code>visual-plan</code> and <code>visual-recap</code></td>
 <td>drafts only</td>
 </tr>
 <tr>
-<td><strong>Alice</strong></td>
-<td><code>bf_alice</code></td>
-<td>scribe — the visual plan for a swarm, tracked to completion</td>
-<td><code>plans/</code> only</td>
-</tr>
-<tr>
-<td><strong>Daniel</strong></td>
-<td><code>bm_daniel</code></td>
-<td>steward — reads the run records and proposes what should change: skills, workflows, spend, hygiene</td>
+<td><strong>retro</strong></td>
+<td>reads the run records and proposes what should change: skills, workflows, spend, model choice, hygiene</td>
 <td>none; every change is a PR</td>
-</tr>
-<tr>
-<td><strong>Liam</strong></td>
-<td><code>am_liam</code></td>
-<td>courier — reads the courier inbox, resolves each reference, relays it to its owner</td>
-<td>none; acks only</td>
-</tr>
-<tr>
-<td><strong>Model steward</strong></td>
-<td>none declared</td>
-<td>model choice — owns which model each role runs on, read off the run stats; not daniel, who changes skills and workflows</td>
-<td>proposes, never applies; one weekly pull request to the provider profile</td>
 </tr>
 </tbody>
 </table>
@@ -6813,9 +6809,9 @@ the work.</p>
 the chair lease for its session unless a live <code>cox chair run</code> loop, the same
 role run unattended, already holds it. <a href="https://github.com/ppfenning/coxswain/blob/main/crew/seats/SEATS.md"><code>seats/SEATS.md</code></a> says why it has no seat
 file.</p>
-<p><strong>A reviewer is independent by construction.</strong> Lewis reads the diff and a base
-ref, never the builder's summary, and is never the instance that wrote the
-code. He advises — <em>not ready</em>, <em>split this</em>, <em>close it instead</em> — and merge
+<p><strong>A reviewer is independent by construction.</strong> The reviewer reads the diff and a
+base ref, never the builder's summary, and is never the instance that wrote the
+code. It advises — <em>not ready</em>, <em>split this</em>, <em>close it instead</em> — and merge
 stays human.</p>
 <h2 id="install">Install</h2>
 <p><code>cox install</code> and <code>cox upgrade</code> run <code>install.sh</code> for you. To run it by hand
@@ -6828,23 +6824,34 @@ crew/install.sh<span class="w"> </span>--check<span class="w">    </span><span c
 overwritten; <code>install.sh</code> says so and skips that seat. <code>--uninstall</code> removes only
 the links that point here.</p>
 <h2 id="binding-a-seat-to-your-team">Binding a seat to your team</h2>
-<p>A seat names roles; a cartridge says which skills fill them. Add a <code>cast:</code>
+<p>A seat names roles; a cartridge says which skills fill them. Add a <code>crew:</code>
 block to your team cartridge (see <code>src/cartridges</code>):</p>
-<div class="highlight"><pre><span></span><code><span class="nt">cast</span><span class="p">:</span>
-<span class="w">  </span><span class="nt">nova</span><span class="p">:</span>
+<div class="highlight"><pre><span></span><code><span class="nt">crew</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">recon</span><span class="p">:</span>
 <span class="w">    </span><span class="nt">skills</span><span class="p">:</span><span class="w">   </span><span class="p p-Indicator">[</span><span class="nv">audit-and-apply</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">pr-fleet-sweep</span><span class="p p-Indicator">]</span>
 <span class="w">    </span><span class="nt">context</span><span class="p">:</span><span class="w">  </span><span class="s">"the</span><span class="nv"> </span><span class="s">read</span><span class="nv"> </span><span class="s">side</span><span class="nv"> </span><span class="s">of</span><span class="nv"> </span><span class="s">your</span><span class="nv"> </span><span class="s">internal</span><span class="nv"> </span><span class="s">SDK"</span>
-<span class="w">  </span><span class="nt">sarah</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">builder</span><span class="p">:</span>
 <span class="w">    </span><span class="nt">skills</span><span class="p">:</span><span class="w">   </span><span class="p p-Indicator">[</span><span class="nv">feature-lifecycle</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">test-driven-development</span><span class="p p-Indicator">]</span>
 </code></pre></div>
 <p>Unbound seats still work; they simply route to nothing team-specific. Nothing
 in this repository names a company, a tracker, a board, or a person.</p>
+<h2 id="old-names-deprecated">Old names (deprecated)</h2>
+<p>The seats used to be named after people. For this release a <code>crew:</code> block may
+still bind an old name: sarah, lewis, nova, michael, emma, echo, daniel and sky
+resolve to builder, reviewer, recon, ops, planner, writer, retro and triage,
+and the resolved cartridge's <code>deprecations</code> list names each one. Three seats
+are retired, and a binding for one is ignored with a deprecation: model-steward
+(model choice is retro's), alice (writer routes plans and recaps to the
+<code>visual-plan</code> and <code>visual-recap</code> skills) and liam (courier events are typed).
+<code>install.sh</code> renders only the function names and removes the links the old
+names left in <code>~/.claude/agents</code>. The old names are removed next release.</p>
 <h2 id="voice-is-decoration">Voice is decoration</h2>
 <p>Every seat is a plain agent definition and works in any session. In a voice
 session a seat reports in its own voice, which is how you hear that a finding
 came from an independent pair of eyes rather than from the chair restating
-itself. In a text session the voice line is dropped. The model steward declares
-no voice. The other ten voices ship with
+itself. In a text session the voice line is dropped. Each seat's voice and
+spoken name live in one table in <a href="https://github.com/ppfenning/coxswain/blob/main/crew/seats/SEATS.md"><code>seats/SEATS.md</code></a>, and no
+seat prompt, cartridge or code path depends on either. The voices ship with
 <a href="https://github.com/remsky/Kokoro-FastAPI">Kokoro</a>; none is required.</p>
 
 

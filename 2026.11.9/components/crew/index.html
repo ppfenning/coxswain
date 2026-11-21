@@ -6567,9 +6567,11 @@ Coxswain is in beta — versions may change between releases
 <p>The crew is the agents that do the rowing: they plan, build, review, and
 validate. The coxswain steers; the crew rows.</p>
 <h2 id="what-it-owns">What it owns</h2>
-<p>The <code>crew</code> folder holds eleven seat definitions — recon, triage, build,
-review, ops, the board, writing, the scribe, the steward, the courier and the
-model steward — each one role filled by one agent doing one job.</p>
+<p>The <code>crew</code> folder holds eight seat definitions, each named by its function —
+recon, triage, reviewer, builder, ops, planner, writer and retro — each one
+role filled by one agent doing one job. The old person names (sarah, lewis,
+nova, ...) still resolve in a cartridge's <code>crew:</code> block for one release, as
+deprecated aliases.</p>
 <h2 id="installing-it">Installing it</h2>
 <p><code>cox install</code> and <code>cox upgrade</code> link every seat from <code>&lt;checkout&gt;/crew</code> into
 <code>~/.claude/agents</code>. Nothing to pass.</p>
