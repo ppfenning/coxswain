@@ -76,7 +76,9 @@ LEASE_TTL_SECONDS = chair_kinds.LEASE_TTL_SECONDS
 # A burst of writes (or the worker's own) makes one pass, not one per commit.
 MIN_GAP_SECONDS = 30.0
 # Past the tick's window between its last lease read and performing a housekeeping or watch action: seconds, since
-# those kinds lead the tick's perform. One beat interval on either side of it.
+# those kinds lead the tick's perform. One beat interval on either side of it. A quarantine or decompose action can
+# come later in the tick's perform (after a land); the tick's per-action lease check (`chair_exec.Deps.queue_held`)
+# covers it there.
 SETTLE_SECONDS = 30.0
 # A lease call that has not answered by then is a lost lease, never a held one.
 CALL_TIMEOUT_SECONDS = 5.0

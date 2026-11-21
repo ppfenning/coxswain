@@ -496,6 +496,10 @@ ROUTE_COMMANDS = [
                     commands.Arg(("--local",), {"action": "store_true", "help": "start the lane on this machine, not where the hosts table places it"}),
                     commands.Arg(("--detach",), {"action": "store_true", "help": "start the decompose in the background and return once it has started"}),
                     commands.Arg(("--dry-run",), {"action": "store_true"}),
+                    # A queue worker's launch carries its kind lease on these (`chair_kinds.proof_argv`).
+                    commands.Arg(("--queue-lease",), {"help": "the kind lease a queue worker launches under (chair:decompose); with --queue-holder and --queue-epoch, the launch goes on beside the loop's live lock while the store says that lease is held"}),
+                    commands.Arg(("--queue-holder",), {"help": "the holder of --queue-lease"}),
+                    commands.Arg(("--queue-epoch",), {"type": int, "default": None, "help": "the epoch of --queue-lease"}),
                     commands.Arg(("--run-id",), {"help": "use this run id instead of the next free one; refused when taken"}),
                     *_LAUNCH_SHARED_ARGS,
                 ),

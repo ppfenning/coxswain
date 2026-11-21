@@ -870,7 +870,7 @@ class Action(TypedDict, total=False):
 
     kind: Required[ActionKind]  # every action names its kind; the other keys depend on it
     epoch: int | None
-    queue_kind: str  # C3: the tick marks an action a queue worker could run (housekeeping, watch); its perform rechecks that lease
+    queue_kind: str  # C3, C4: the tick marks an action a queue worker could run (`chair_kinds.QUEUE_KINDS`); its perform rechecks that lease
     status: str  # a recorded action line carries the outcome the executor wrote
     task_id: str
     repo: str
