@@ -251,7 +251,7 @@ def test_a_phase_its_review_quarantined_quarantines_its_open_tasks_with_the_roun
     stored = {**_stored("p1", state="finished", outcome="quarantined"), "run_id": "ship.p1-7",
               "reason": "the phase review quarantined it in round 3: revision budget spent"}
     tasks = _tasks(("t1", "p1", "ready", ""), ("t2", "p1", "approved", "a2"), ("t3", "p1", "in_progress", ""),
-                   ("t4", "p2", "ready", ""))
+                   ("t4", "p2", "ready", ""), ("t5", "p1", "blocked", ""))
     changes = chair_phase_queue.quarantines([stored], tasks)
     assert [(c["op"], c["task_id"], c["from"]) for c in changes] == [
         ("quarantine_task", "t1", "ready"), ("quarantine_task", "t3", "in_progress")]

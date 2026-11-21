@@ -673,6 +673,7 @@ def _review_phase(lane: Lane) -> bool:
     c = lane.claim
     smoked: set[tuple[int, str]] = set()  # (round, tip) whose smoke passed in this run
     pending = 0.0  # the revision built since the last round, until a round counts it
+    taken: set[tuple[str, int, str]] = set()  # every step this run took, at the tip it took it
     while not lane.stopping():
         tip = lane_rollup.head(lane.phase_worktree)
         with lane.store_lock:
@@ -680,6 +681,10 @@ def _review_phase(lane: Lane) -> bool:
         progress = review_loop.Progress.of(_revisions_at(lane, tip), {n for n, at in smoked if at == tip})
         spent = sum(r.cost_usd for r in review_loop.episode(rounds)) + pending
         step = review_loop.next(rounds, progress, spent=spent, budget=lane.budget)
+        if (step.action, step.round, tip) in taken:  # a step that left nothing changed would only be taken again
+            lane.log(f"lane: {step.action} of round {step.round} at {tip[:12]} changed nothing; stopping the review loop")
+            return False
+        taken.add((step.action, step.round, tip))
         if step.action == "finish":
             lane.log(f"lane: the phase review finished {c.phase} {step.outcome} in round {step.round}"
                      + (f": {' '.join(step.reason.split())[:300]}" if step.reason else ""))

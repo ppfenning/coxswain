@@ -187,14 +187,15 @@ def approvals(stored: Sequence[Row], tasks: Sequence[Row], rollups: Sequence[Row
     return out
 
 
-_OPEN = frozenset({"todo", "ready", "in_progress", "blocked"})  # the task states a phase's quarantine moves
+_OPEN = frozenset({"todo", "ready", "in_progress"})  # the task states a phase's quarantine moves
 
 
 def quarantines(stored: Sequence[Row], tasks: Sequence[Row]) -> list[dict[str, object]]:
-    """The `queue_phases` changes that quarantine each open task (todo, ready, in progress or blocked) of a phase whose
-    row finished quarantined: its review quarantined it, and the row's reason is the round's. Each moves from the state
+    """The `queue_phases` changes that quarantine each open task (todo, ready or in progress) of a phase whose row
+    finished quarantined: its review quarantined it, and the row's reason is the round's. Each moves from the state
     read, and marks the task with the review's cause, that reason and the run that reviewed it, which triage reads. A
-    task approved, done, dropped or quarantined already is left as it is, so a repeat plans nothing."""
+    task approved, done, dropped, blocked or quarantined already is left as it is, so a repeat plans nothing; and a
+    phase finished quarantined because its tasks had stopped (`phase_pick.verdict`) has no open task to move."""
     finished = {_key(r): r for r in stored if r.get("state") == "finished" and r.get("outcome") == "quarantined"}
     out: list[dict[str, object]] = []
     for task in sorted(tasks, key=lambda t: (str(t.get("initiative")), str(t.get("phase")), str(t.get("task_id")))):
