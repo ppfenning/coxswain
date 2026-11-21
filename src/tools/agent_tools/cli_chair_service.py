@@ -592,3 +592,18 @@ def _lander_backlog(a: argparse.Namespace) -> int:
 def _lander_service(a: argparse.Namespace) -> int:
     from agent_tools import lander_cli
     return lander_cli.cmd_service(a)
+
+
+def _worker_run(a: argparse.Namespace) -> int:
+    from agent_tools import worker_cli
+    return worker_cli.cmd_run(a)
+
+
+def _worker_once(a: argparse.Namespace) -> int:
+    from agent_tools import worker_cli
+    return worker_cli.cmd_once(a)
+
+
+def _worker_status(a: argparse.Namespace) -> int:
+    from agent_tools import worker_cli
+    return worker_cli.cmd_status(a)

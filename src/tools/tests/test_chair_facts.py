@@ -705,8 +705,10 @@ def test_gather_facts_fills_every_key_from_the_fakes():
     # live_phases is gathered only when the deps supply it, and these fakes do not.
     # previous_schedule_feed is read by the planner; no task gathers it yet.
     # merged_prs is read by plan_missed_closes; the facts edge does not gather it yet. handled_keys is gathered from the deps.
+    # phase_queue is gathered only when the deps supply it, and these fakes do not.
     declared = set(Facts.__annotations__) - {
         "chat_epics", "live_phases", "schedule_inputs", "previous_schedule_feed", "merged_prs", "land_freeze",
+        "phase_queue",
     }
     assert set(facts) == declared
     assert facts["dispatch"] == {"max_in_flight": 2, "live_runs": 1, "hosts": []}

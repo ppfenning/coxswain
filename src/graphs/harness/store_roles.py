@@ -41,11 +41,12 @@ PASSWORD_ENV = "COX_WORKER_STORE_PASSWORD"
 _MAX_NAME = 63
 _ROLE = re.compile(r"[a-z_][a-z0-9_]*")
 
-# The claim columns of phase_queue: what a worker changes when it claims, beats, and finishes a phase. Not `band`,
-# `seq`, `requires_json`, `kind` or `budget_usd`, which are the chair's.
+# The claim columns of phase_queue: what a worker changes when it claims, beats, and finishes a phase, and `ready_at`,
+# which a retried phase's release pushes out by its backoff (`store_phases.release`). Not `band`, `seq`,
+# `requires_json`, `kind` or `budget_usd`, which are the chair's.
 CLAIM_COLUMNS = (
     "state", "outcome", "reason", "claimed_by", "claim_epoch", "run_id", "claimed_at", "heartbeat_at", "lease_until",
-    "attempts", "updated_at", "updated_by",
+    "attempts", "updated_at", "updated_by", "ready_at",
 )
 
 
