@@ -1,11 +1,12 @@
 """Adopt over the four shapes an in-flight initiative was found in. No recorded commit is lost in any of them."""
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from agent_tools import lander_adopt
+from agent_tools import lander_adopt, lander_ports
 from core import landing_record as lr
 from harness import landing_git as lg
 from harness import landing_store as ls
@@ -173,3 +174,50 @@ def test_an_initiative_whose_repository_is_not_known_is_skipped_and_git_never_ru
     assert found.skip == "nowhere: its repository is not known on this machine"
     assert lander_adopt.apply(world.ports, found, world.send_back) == ["nowhere: skipped: nowhere: its repository is not known on this machine"]
     assert ls.list_records(world.conn) == lr.Listing()
+
+
+def _origin_only(world: World, tmp_path: Path, initiative: str) -> str:
+    """A bare origin the clone pushed `main` to, and a commit another machine pushed to origin's phase branch: the
+    clone has neither the branch nor the commit."""
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(origin)], capture_output=True, check=True)
+    run(world.repo, "remote", "add", "origin", str(origin))
+    run(world.repo, "push", "-q", "origin", "main")
+    other = tmp_path / "other"
+    subprocess.run(["git", "clone", "-q", str(origin), str(other)], capture_output=True, check=True)
+    run(other, "switch", "-q", "-c", f"epic/{initiative}/p1")
+    sha = commit(other, f"epic/{initiative}/p1", "note.txt", "ok\n")
+    run(other, "push", "-q", "origin", f"epic/{initiative}/p1")
+    assert lg.rev(world.repo, sha) is None
+    return sha
+
+
+def test_an_approval_only_on_origins_phase_branch_is_fetched_kept_and_merged_not_sent_back(world: World, tmp_path: Path) -> None:
+    sha = _origin_only(world, tmp_path, "far")
+    world.ports.fetch = lander_ports.fetch_branch  # the phase merge's own fetch, as the lander runs it
+    world.rows["far"] = [task("t1", "p1", commit_sha=sha)]
+    heads_before = run(world.repo, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads")
+
+    assert lander_adopt.refresh(world.ports, "far") == []
+    assert lg.rev(world.repo, "refs/remotes/origin/epic/far/p1") == sha
+    assert run(world.repo, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads") == heads_before, \
+        "the fetch moves no local branch"
+    found = lander_adopt.plan(world.ports, "far")
+    assert [(t.task, t.action) for t in found.tasks] == [("t1", "keep")] and found.merge == ("p1",), found
+    events = lander_adopt.apply(world.ports, found, world.send_back)
+
+    assert world.sent_back == [], events
+    assert lg.is_ancestor(world.repo, sha, ls.get_record(world.conn, "far")["branch"]), events
+
+
+def test_a_failed_fetch_is_reported_and_the_plan_is_made_against_the_clone_as_it_stands(world: World, tmp_path: Path) -> None:
+    run(world.repo, "remote", "add", "origin", str(tmp_path / "gone.git"))
+    world.rows["cut"] = [task("t1", "p1", commit_sha="0" * 40)]
+    (said,) = lander_adopt.refresh(world.ports, "cut")
+    assert said.startswith("cut: origin's phase branches could not be fetched (") and said.endswith(
+        "; planned against this clone as it stands"), said
+    assert [t.action for t in lander_adopt.plan(world.ports, "cut").tasks] == ["ready"]
+
+
+def test_the_refspec_names_only_the_initiatives_phase_branches_on_remote_tracking_refs() -> None:
+    assert lander_adopt.phase_refspec("ship") == "+refs/heads/epic/ship/*:refs/remotes/origin/epic/ship/*"
