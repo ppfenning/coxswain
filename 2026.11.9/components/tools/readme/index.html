@@ -6737,6 +6737,8 @@ cox runs stranded [--runs-dir RUNS_DIR] [--profile PROFILE] [--json]   every app
 cox runs cause RUN_ID TASK_ID ticket|code|harness|unknown [--note NOTE] [--runs-dir RUNS_DIR] [--profile PROFILE]   record why one run's attempt at a task was quarantined
 cox runs stop RUN_ID [--runs-dir RUNS_DIR] [--profile PROFILE] [--json]   stop a run's process, local or remote, and wait for it to exit
 cox runs artifacts RUN_ID [--runs-dir RUNS_DIR] [--json]   list the object-storage keys a run's step rows name (artifacts_url)
+cox runs show RUN_ID [--runs-dir RUNS_DIR]   print a run's transcripts: the run folder's, else the ones its step rows name in artifacts_url
+cox runs log RUN_ID [--runs-dir RUNS_DIR]   print a run's check logs: the run folder's, else the ones its step rows name in artifacts_url
 cox runs pause RUN_ID [--reason REASON] [--runs-dir RUNS_DIR] [--json]   mark a run paused in the store
 cox runs resume RUN_ID [--runs-dir RUNS_DIR] [--json]   mark a paused run resumed in the store
 cox runs move RUN_ID --to TO [--reason REASON] [--runs-dir RUNS_DIR] [--profile PROFILE] [--json]   stop a run at its node boundary and relaunch it on another host

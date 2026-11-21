@@ -6950,15 +6950,34 @@ well as in the run folder, set <code>artifacts_url</code> the same way, for exam
 <code>artifacts_url: s3://&lt;bucket&gt;/artifacts</code>. One machine can use
 <code>artifacts_url: file:///&lt;folder&gt;</code> instead. <code>cox runs artifacts &lt;run&gt;</code> lists
 the keys a run wrote. Without the key nothing is uploaded.</p>
+<p><code>cox runs show &lt;run&gt;</code> prints a run's transcripts and <code>cox runs log &lt;run&gt;</code>
+its check logs. Each copy is read from the run folder when the folder holds
+it, and otherwise from the object the run's step rows name in
+<code>artifacts_url</code>, checked against the size and sha256 its row recorded. So a
+deleted or never-fetched folder reads wholly from the bucket, and a folder
+missing some files reads the rest from there. When a local copy and its
+stored object differ, a note on stderr says so. <code>cox setup doctor</code> has an
+<code>artifacts root</code> row on a machine that sets the key: it writes a probe
+object there, reads it back and removes it.</p>
 <p>Check logs and transcripts may contain secrets that a check printed or an
 agent read. Before upload, coxswain replaces two things with <code>***</code>. The
 first is the value of every environment variable whose name holds TOKEN,
 SECRET, PASSWORD, PASSWD or KEY. The second is the user and password part of
 every URL. Other secrets can still get through, so keep the artifacts bucket
-private to your machines and give them credentials scoped to that bucket.</p>
+private to your machines and give them credentials scoped to that bucket.
+An item the scrub changed is marked <code>scrubbed: true</code> in its step row. The
+patch is never scrubbed: it is the change headed for git, stored byte for
+byte, so a test URL such as <code>postgresql://cox:cox@localhost/db</code> in it is kept.
+A patch the scrub would have changed is marked <code>holds_secret: true</code> instead,
+and <code>cox runs artifacts</code> ends its line with <code>HOLDS A SECRET (stored raw)</code>.</p>
 <p><code>file://</code> artifacts need a filesystem with hard links. On SMB or some FUSE
 mounts every upload fails, and each step row records the failure in its
 <code>artifacts_error</code> field instead.</p>
+<p>The chair raises one <code>artifacts_missing</code> alarm for a run whose rows record
+that failure, but it only looks at rows from the last 24 hours. If the chair
+is down for longer than that, a run that failed to upload in the meantime is
+never alarmed. <code>cox runs artifacts &lt;run&gt;</code> still shows its <code>MISSING</code> lines, so
+after a long chair outage, check the runs that finished while it was down.</p>
 <h3 id="a-garage-server">A Garage server</h3>
 <p>A single-node Garage on the tailnet needs one profile block. Replace <code>&lt;host&gt;</code>
 and <code>&lt;bucket&gt;</code> with your own:</p>
