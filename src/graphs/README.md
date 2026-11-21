@@ -18,7 +18,7 @@ Four nouns, one seam each:
 harness/   the runtime. resolve, discover, run, gate, apply, record
 graphs/    the programs. pure functions of (args, runner)
   delivery/   work that produces work: initiative-decompose, lifecycle-propose, phase-validate,
-              review-diff, rescue-review
+              review-diff, rescue-review, phase-review
   ops/        keeping a running system honest: coxswain, epic-reconcile, retro-propose,
               triage-propose, triage, sweep
 runner/    node execution: the protocol, a scripted runner, the live one
@@ -79,6 +79,7 @@ The registry is every module under `graphs/` that declares a `SPEC`; `harness/re
 | `phase-validate` | `validate` | delivery | validate_chunk per task → validate_phase against the phase's ORIGINAL goal. Invoked by the epic driver |
 | `review-diff` | `review-diff` | delivery | review_charter → review_adversary → verify_evidence → [arbitrate]. Verdict and findings out, nothing written or pushed |
 | `rescue-review` | `rescue-review` | delivery | handoff → review_charter → review_adversary → [arbitrate] → emit. A patch that already exists, reviewed with the harness's own check results |
+| `phase-review` | `phase-review` | delivery | review_phase → review_adversary → [arbitrate] → emit. One review round of a whole phase branch against its base, the phase smoke as evidence: does it meet its goal, does it carry fat |
 | `coxswain` | `cos` | ops | one `dispatch` node over a driver-assembled docket. Selects; the harness invokes |
 | `epic-reconcile` | `reconcile` | ops | compare (set arithmetic) → emit. Declared state vs actual |
 | `retro-propose` | `retro` | ops | stats (pure arithmetic over ledger rows) → retro → emit. Proposes only what it can cite |

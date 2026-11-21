@@ -7,9 +7,8 @@ A worker claims a phase (`store_phases.claim_next`) and starts this lane under t
 2. reads where the phase branch stands on origin (`lane_rollup.fetch`) and what it already holds (`lane_progress.read`
    of the `Cox-*` trailers): git is the authority for what is built, so a lane that claims after another finds the
    tasks already rolled up and builds only the rest; a roll-up whose step row was lost is written again;
-3. joins that with the phase's last review round (`lane_progress.resume_plan`): with tasks missing it builds them; a
-   phase with every task rolled up goes to the smoke (7), then waits for its review, which is L6's, so the lane ends
-   there;
+3. with tasks missing it builds them (`lane_progress.resume_plan`); a phase with every task rolled up goes straight
+   to the review loop (7);
 4. starts each task once everything it needs inside the phase has rolled up (`lane_plan.next_tasks`), up to its share
    of the machine's threads (`lane_plan.threads`), each in a worktree of its own cut from the phase tip at that moment;
 5. per task: the lifecycle graph in build-only mode (plan, build, handoff; never a review, which is the phase's), then
@@ -26,10 +25,19 @@ A worker claims a phase (`store_phases.claim_next`) and starts this lane under t
    (`lane_rollup.next_move`): the claim is checked and origin fetched; a commit of this task another lane landed is
    adopted (and any roll-up row it left out written), a branch that moved has the change re-applied onto it, a push
    that failed to arrive is tried again; past three tries only that task fails.
-7. once every task has rolled up, the phase smoke (`_smoke`, `lane_smoke`): the `level` gate (the cartridge's
-   `level_checks` and `.agent-checks`' `# level: phase` section) run once in the phase worktree at the tip, never in
-   a task's, and one `smoke` step row for the round it precedes. A failed smoke writes no review and does not park the
-   phase `built`: the worker sends it back to the queue with the failure (`phase_pick.lane_verdict`).
+7. once every task has rolled up, the review loop (`_review_phase`, L6), whose rules are `review_loop.next`'s: the
+   phase smoke at the tip (`_smoke`, `lane_smoke`: the `level` gate, the cartridge's `level_checks` and
+   `.agent-checks`' `# level: phase` section, run once in the phase worktree, never in a task's, one `smoke` row for
+   the round it precedes); then one review of the whole branch against its base (`phase-review`, `_review`), whose
+   `review`, `adversary` and `arbitration` rows and the round itself (`review_rounds`) are written in one fenced
+   write; on `revise`, the one revision task the round asked for (`review_loop.revision_task`), built, checked and
+   rolled up like any task as the round's revision commit (`Cox-Kind: revision`, `Cox-Round`), then the smoke again
+   at the new tip and the next round; until a round approves or quarantines the phase, or the revision budget (three
+   rounds an episode, and the phase's `budget_usd` when it has one) is spent, which is a quarantine. Only the current
+   episode's rounds count: a reopened phase never finishes on the last episode's verdict. The worker finishes the
+   claim on the round (`phase_pick.lane_verdict`). A failed smoke writes no review: the worker finishes the phase
+   failed, or retries a harness fault once. A review that decided nothing (a node failed, both reviewers abstained)
+   writes no round, and the next claim reviews again.
 
 **What is fenced, and what is left.** Every step row is written only while the claim is held, by the store's clock
 (`store_phases.put_steps_fenced`: one transaction, under a share lock on the claim row), so a lane that lost its claim
@@ -48,10 +56,11 @@ On one machine the worker also stops any older lane of the phase before it start
 progress mark (`runs/<run>.lane-beat`, rewritten by the fence's thread after each good check) stops moving, so a lane
 frozen under a live worker cannot hold its phase forever. The lane takes no `leases` row (the claim is its lease),
 opens the store through `store_scoped.open_scoped` as the worker's scoped role, and never writes `work_items`, the
-initiative branch or the landing record; the chair turns the roll-ups into approved tasks when the phase is approved.
+initiative branch or the landing record; the chair turns the roll-ups into approved tasks when the phase is approved,
+and quarantines the phase's open tasks with the round's reason when it is quarantined (`chair_phase_queue`).
 
-The rules are pure (`lane_plan`, `lane_progress`, `lane_rollup.message`, and the helpers here marked pure); the rest is
-the edge.
+The rules are pure (`lane_plan`, `lane_progress`, `review_loop`, `lane_rollup.message`, and the helpers here marked
+pure); the rest is the edge.
 """
 
 from __future__ import annotations
@@ -70,7 +79,17 @@ from pathlib import Path
 from typing import Any, cast
 
 from graphs._contract import ContractViolation
-from harness import lane_merge, lane_plan, lane_progress, lane_rollup, lane_smoke, phase_pick, repo_cache, store_phases
+from harness import (
+    lane_merge,
+    lane_plan,
+    lane_progress,
+    lane_rollup,
+    lane_smoke,
+    phase_pick,
+    repo_cache,
+    review_loop,
+    store_phases,
+)
 from harness.artifacts import mark_missing, step_artifacts
 from harness.check_gate import repo_gate_lock
 from harness.checks import run_checks
@@ -89,7 +108,7 @@ from harness.epic_types import as_list
 from harness.handoff import plan_context
 from harness.lane_workers import LANE_CAPACITY_VAR
 from harness.store_dialect import Connection, JsonObject
-from harness.store_steps import step_key, step_row, steps_of_result, with_checks
+from harness.store_steps import phase_review_rows, round_row, step_key, step_row, steps_of_result, with_checks
 from harness.store_types import StepRow
 from harness.worktree import clone_worktree, link_venv, remove_worktree
 from runner.protocol import LimitStop, RunnerError
@@ -98,6 +117,7 @@ __all__ = [
     "EXIT_BUILT",
     "EXIT_FAILED",
     "EXIT_LOST",
+    "PHASE_REVIEW",
     "Fence",
     "LaneClaim",
     "TaskCtx",
@@ -108,9 +128,9 @@ __all__ = [
     "lanes_of",
     "missing_rollups",
     "phase_tasks",
+    "review_args",
     "run_lane",
     "smoke_due",
-    "smoke_round",
     "task_dag",
     "terminate_groups",
     "threads_for",
@@ -121,6 +141,7 @@ EXIT_BUILT = 0  # every task rolled up, or nothing was left to build
 EXIT_FAILED = 1  # a task failed, or the lane could not start
 EXIT_LOST = 5  # the claim was lost: nothing more was written or pushed (3 and 4 are the epic's paused and awaiting-land)
 WATCH_S = 2.0  # how often the fence reads the claim
+PHASE_REVIEW = "phase-review"  # the graph a review round runs (`graphs.delivery.phase_review`)
 _SKIPPED = frozenset({"dropped", "done"})
 
 
@@ -164,7 +185,8 @@ def lane_url(owner_url: str, role: str, password: str, worker_url: Callable[[str
 
 
 def exit_code(lost: bool, failed: Sequence[str], smoke_passed: bool = True) -> int:
-    """Pure. The lane's exit: lost beats failed (a task, or the phase smoke) beats built."""
+    """Pure. The lane's exit: lost beats failed (a task, or the review loop: a smoke, a review that decided nothing, a
+    revision that did not roll up) beats built (the loop reached a round that finished the phase)."""
     return EXIT_LOST if lost else EXIT_FAILED if failed or not smoke_passed else EXIT_BUILT
 
 
@@ -173,10 +195,18 @@ def smoke_due(failed: Mapping[str, str], stopping: bool) -> bool:
     return not failed and not stopping
 
 
-def smoke_round(nxt: lane_progress.Next) -> int:
-    """Pure. The review round the smoke comes before: the round `resume_plan` gave a lane that goes to review, and
-    round 1 for one that built the phase's tasks (it builds only before the first round)."""
-    return nxt.round if nxt.action == "review" else 1
+def review_args(lane_run: str, date: str, cartridge: Mapping[str, Any], claim: LaneClaim, number: int, goal: str,
+                tasks: Sequence[str], patch: str, smoke: Mapping[str, object],
+                held: Sequence[review_loop.Round]) -> dict[str, Any]:
+    """Pure. The `phase-review` graph's arguments for review round `number`: its graph run (`<run>:<phase>-review-N`,
+    the task its model calls are recorded under), the phase's goal and tasks, the branch's diff against its base, the
+    smoke at the tip, and what the episode's earlier rounds said."""
+    return {
+        "run_id": f"{lane_run}:{claim.phase}-review-{number}", "date": date, "cartridge": cartridge,
+        "initiative": claim.initiative, "phase": claim.phase, "round": number, "goal": goal, "tasks": list(tasks),
+        "patch": patch, "smoke": dict(smoke),
+        "previous": [{"round": r.number, "verdict": r.verdict, "reason": r.reason} for r in held],
+    }
 
 
 def missing_rollups(done: Mapping[str, str], stored: Sequence[Mapping[str, object]], phase: str) -> dict[str, str]:
@@ -300,15 +330,19 @@ class Lane:
     # holds the phase's local lock, still one file for every lane of the phase on this machine, and the tasks build in
     # it as before, so the warm pool and its synced venvs keep serving them.
     shared: Ctx | None = None
+    goal: str = ""  # the phase's goal, which its review judges against (`epic_context.phase_goal`)
+    budget: float = 0.0  # the phase row's `budget_usd`: what its revisions may spend in an episode, 0 for no limit
 
     def now(self) -> str:
         with self.store_lock:
             return store_phases.store_now(self.conn)
 
-    def put(self, rows: Sequence[StepRow], result: Mapping[str, object] | None = None) -> bool:
-        """Upload the rows' artifacts (never raises), then write the rows, fenced. False, and the fence lost, when the
-        store refused them: the claim is gone. Nothing at all once the lane is stopping for a lost claim, even while
-        the lease has not yet lapsed: the lane gave the claim up, so its rows are no longer its to write."""
+    def put(self, rows: Sequence[StepRow], result: Mapping[str, object] | None = None,
+            rounds: Sequence[Mapping[str, object]] = ()) -> bool:
+        """Upload the rows' artifacts (never raises), then write the rows, and any review `rounds` with them, fenced.
+        False, and the fence lost, when the store refused them: the claim is gone. Nothing at all once the lane is
+        stopping for a lost claim, even while the lease has not yet lapsed: the lane gave the claim up, so its rows
+        are no longer its to write."""
         c = self.claim
         if self.fence.lost.is_set():
             return False
@@ -324,7 +358,7 @@ class Lane:
                 except Exception as exc:  # the rows are still written, marked, as every failed upload's are
                     listed = tuple(mark_missing(r, f"{type(exc).__name__}: {exc}"[:500]) for r in rows)
         with self.store_lock:
-            written = store_phases.put_steps_fenced(self.conn, listed, c.worker, c.epoch)
+            written = store_phases.put_steps_fenced(self.conn, listed, c.worker, c.epoch, rounds)
         if not written:
             self.fence.lose("a step row was refused: the claim is gone")
         return written
@@ -422,6 +456,17 @@ def _origin_progress(lane: Lane, tip: str) -> dict[str, str]:
     return done
 
 
+def _message(lane: Lane, task: str, merged_with: str = "") -> str:
+    """The task's roll-up commit message: a revision task's (`review_loop.revision_task`) carries `Cox-Kind: revision`
+    and its round, so git shows the round's revision is in. The merged path (`_collide`) passes `merged_with` to this
+    same message, so a revision that collided still carries its kind and round."""
+    c, item = lane.claim, lane.items[task]
+    revision = item.get("kind") == "revision"
+    return lane_rollup.message(c.initiative, c.phase, task, lane.ctx.run_id, str(item.get("title") or task),
+                               kind="revision" if revision else "task",
+                               round_=int(item.get("round") or 0) if revision else 0, merged_with=merged_with)
+
+
 def _tip_tasks(lane: Lane, tip: str) -> dict[str, str]:
     """Edge. The phase's tasks the commits from the phase's base to `tip` carry in their trailers, each with its
     commit (`lane_progress.read`); empty when the log cannot be read."""
@@ -494,8 +539,7 @@ def _roll_up(lane: Lane, task: str, base: str, tctx: TaskCtx, started: str, merg
     ok, diff = lane_rollup.change(tctx.task_worktree(c.phase, task), base)
     if not ok:
         return False, f"the task's change could not be read: {diff[:300]}"
-    title = str(lane.items[task].get("title") or task)
-    text = lane_rollup.message(c.initiative, c.phase, task, lane.ctx.run_id, title)
+    text = _message(lane, task)
     with lane_rollup.phase_lock((lane.shared or lane.ctx).repo, c.initiative, c.phase):
         attempt = 0
         while True:
@@ -516,7 +560,7 @@ def _roll_up(lane: Lane, task: str, base: str, tctx: TaskCtx, started: str, merg
                 if merged.outcome == "rebuild":
                     return None, tip
                 diff = merged.change
-                text = lane_rollup.message(c.initiative, c.phase, task, lane.ctx.run_id, title, merged_with=merged.other)
+                text = _message(lane, task, merged_with=merged.other)
                 sha, why = lane_rollup.apply_and_commit(lane.phase_worktree, diff, text)
             if sha is None:
                 lane.put([lane.row(task, "rollup", False, "conflict", {"reason": why[:500], "tip": tip}, started)])
@@ -645,6 +689,159 @@ def _smoke(lane: Lane, tip: str, round_: int) -> bool:
     return smoke.ok and written
 
 
+# -- the review loop (L6) --------------------------------------------------------------------------------------------
+
+def _revisions_at(lane: Lane, tip: str) -> tuple[int, ...]:
+    """Edge. The review rounds whose revision commit the phase branch holds at `tip` (`lane_progress.read`)."""
+    ok, text = lane_rollup.log_since(lane.ctx.repo, lane.base_sha, tip)
+    return lane_progress.read(text, lane.claim.initiative, lane.claim.phase).revisions if ok else ()
+
+
+def _smoke_at(lane: Lane, tip: str, number: int) -> Mapping[str, object]:
+    """Edge. This run's smoke before round `number` at `tip`, as the review reads it: its verdict and each check with
+    the command it ran; empty when there is none."""
+    c = lane.claim
+    with lane.store_lock:
+        rows = store_phases.smoke_rows(lane.conn, c.initiative, c.phase, lane.ctx.run_id)
+    row = next((r for r in reversed(rows) if r.get("round") == number and r.get("subject_sha") == tip), None)
+    result = row.get("result_json") if row is not None else None
+    if row is None or not isinstance(result, Mapping):
+        return {}
+    found = cast("Mapping[str, object]", result)
+    cmds = [str(x) for x in cast("list[object]", found.get("cmds") or [])]
+    checks = [cast("Mapping[str, object]", x) for x in cast("list[object]", found.get("checks") or []) if isinstance(x, Mapping)]
+    named = [{**ch, **({"cmd": cmds[i]} if len(cmds) == len(checks) else {})} for i, ch in enumerate(checks)]
+    return {"verdict": str(row.get("verdict") or ""), "reason": str(found.get("reason") or ""), "checks": named}
+
+
+def _cost(lane: Lane, tasks: Sequence[str]) -> float:
+    """Edge. What this run's model calls for `tasks` (a round's review, a revision's build) cost, by `node_calls`."""
+    if not tasks:
+        return 0.0
+    p = lane.conn.dialect.placeholder
+    with lane.store_lock:
+        found = lane.conn.query_one(
+            f"SELECT COALESCE(SUM(cost_usd), 0) FROM node_calls WHERE run_id = {p} "
+            f"AND task_id IN ({', '.join(p for _ in tasks)})", (lane.ctx.run_id, *tasks))
+    value = found[0] if found is not None else 0
+    return float(value) if isinstance(value, int | float) else 0.0
+
+
+def review_diff(worktree: Path, base_sha: str, tip: str) -> tuple[bool, str]:
+    """Edge. The phase's own change, for its reviewer: `git diff base_sha...tip`, from the merge base of the base and
+    the tip, so a base that has moved on since the phase was cut (other phases landed on `init/`) shows none of their
+    work, as deletions or otherwise."""
+    return git_in("-C", str(worktree), "diff", "--no-color", "--no-renames", f"{base_sha}...{tip}")
+
+
+def _review(lane: Lane, rounds: Sequence[review_loop.Round], number: int, tip: str, progress: review_loop.Progress,
+            pending_usd: float) -> bool:
+    """Edge. Review round `number` of the phase at `tip`: the `phase-review` graph over the branch's diff against its
+    base, with the smoke as evidence; then its step rows and the round, in one fenced write. A revise carries its one
+    revision task (`review_loop.revision_task`), and one the budget cannot buy is written as the quarantine it comes
+    to (`review_loop.recorded`). Whether a round was written: a review that decided nothing writes its failed
+    `review` row and no round."""
+    c, ctx = lane.claim, lane.ctx
+    started = lane.now()
+    ok, diff = review_diff(lane.phase_worktree, lane.base_sha, tip)
+    held = review_loop.episode(rounds)
+    titles = [f"{t}: {item.get('title') or t}" for t, item in lane.items.items() if item.get("kind") != "revision"]
+    args = review_args(ctx.run_id, ctx.date, ctx.cartridge, c, number, lane.goal, titles, diff + "\n" if ok and diff else "",
+                       _smoke_at(lane, tip, number), held)
+    try:
+        result = json.loads(json.dumps(ctx.specs[PHASE_REVIEW].run(args, ctx.runner), default=str))
+    except LimitStop as exc:
+        lane.halted.set()
+        result = {"harness_fault": f"the account's limit stopped the review: {exc}"}
+    except (ContractViolation, RunnerError) as exc:
+        result = {"harness_fault": f"the review failed: {exc}"}
+    if not ok:
+        result = {"harness_fault": f"the phase branch's diff could not be read: {diff[:300]}"}
+    rows = phase_review_rows(result, run_id=ctx.run_id, initiative=c.initiative, phase=c.phase, round_=number,
+                             subject_sha=tip, started_at=started, claim_epoch=c.epoch, worker=c.worker)
+    if result.get("harness_fault"):
+        lane.put(rows, result)
+        lane.log(f"lane: review round {number} decided nothing: {' '.join(str(result['harness_fault']).split())[:300]}")
+        return False
+    cost = pending_usd + _cost(lane, [f"{c.phase}-review-{number}"])
+    spent = sum(r.cost_usd for r in held) + cost
+    verdict, reason = review_loop.recorded(rounds, number, str(result.get("verdict") or ""), str(result.get("reason") or ""),
+                                           progress, spent=spent, budget=lane.budget)
+    revision = review_loop.revision_task(number, result) if verdict == "revise" else {}
+    decided = round_row(initiative=c.initiative, phase=c.phase, round_=number, verdict=verdict, reason=reason,
+                        head_sha=tip, revision=cast(JsonObject, revision), evidence_step=step_key("phase", "", "review", number),
+                        run_id=ctx.run_id, worker=c.worker, claim_epoch=c.epoch, cost_usd=round(cost, 6))
+    written = lane.put(rows, result, rounds=[decided])
+    lane.log(f"lane: review round {number} at {tip[:12]}: {verdict}" + (f": {' '.join(reason.split())[:300]}" if reason else "")
+             + ("" if written else "; not written, the claim is gone"))
+    return written
+
+
+def _revise(lane: Lane, revision: Mapping[str, object]) -> tuple[bool, str]:
+    """Edge. Build the round's one revision task on the phase tip and roll it up as the round's revision commit, as
+    any task of the phase is (`_task`): (rolled up, the commit or why not)."""
+    task = str(revision.get("id") or "")
+    if not task:
+        return False, "the round names no revision task"
+    lane.items = {**lane.items, task: cast("Mapping[str, Any]", revision)}
+    base = lane_rollup.head(lane.phase_worktree)
+    lane.log(f"lane: building {task} on {base[:12]}")
+    try:
+        return _task(lane, task, base)
+    except Exception as exc:  # a bug in the build fails the revision, never the lane's record
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+def _review_phase(lane: Lane) -> bool:
+    """Edge. The review loop, once every task has rolled up: each step `review_loop.next` gives, until it finishes the
+    phase (True: a round approved or quarantined it, and the worker finishes the claim on that round) or a step fails
+    (False: a smoke failed, a review decided nothing, a revision did not roll up, or the lane is stopping). Each step
+    re-reads the rounds from the store and the revisions from git, so a lane that claims midway carries on where the
+    last one stopped; only the smoke is the run's own, since a new tip needs its own."""
+    c = lane.claim
+    smoked: set[tuple[int, str]] = set()  # (round, tip) whose smoke passed in this run
+    pending = 0.0  # the revision built since the last round, until a round counts it
+    taken: set[tuple[str, int, str]] = set()  # every step this run took, at the tip it took it
+    while not lane.stopping():
+        tip = lane_rollup.head(lane.phase_worktree)
+        with lane.store_lock:
+            rounds = review_loop.rounds_of(store_phases.review_rounds(lane.conn, c.initiative, c.phase))
+        progress = review_loop.Progress.of(_revisions_at(lane, tip), {n for n, at in smoked if at == tip})
+        spent = sum(r.cost_usd for r in review_loop.episode(rounds)) + pending
+        step = review_loop.next(rounds, progress, spent=spent, budget=lane.budget)
+        if (step.action, step.round, tip) in taken:  # a step that left nothing changed would only be taken again
+            lane.log(f"lane: {step.action} of round {step.round} at {tip[:12]} changed nothing; stopping the review loop")
+            return False
+        taken.add((step.action, step.round, tip))
+        if step.action == "finish":
+            if (closing := review_loop.unwritten(rounds, step)) is not None:
+                decided = round_row(initiative=c.initiative, phase=c.phase, round_=closing.number, verdict=closing.verdict,
+                                    reason=closing.reason, head_sha=tip, run_id=lane.ctx.run_id, worker=c.worker,
+                                    claim_epoch=c.epoch)
+                if not lane.put([], rounds=[decided]):
+                    return False
+                step = review_loop.Step("finish", closing.number, step.outcome, step.reason)
+            lane.log(f"lane: the phase review finished {c.phase} {step.outcome} in round {step.round}"
+                     + (f": {' '.join(step.reason.split())[:300]}" if step.reason else ""))
+            return True
+        if step.action == "smoke":
+            if not _smoke(lane, tip, step.round):
+                return False
+            smoked.add((step.round, tip))
+        elif step.action == "review":
+            if not _review(lane, rounds, step.round, tip, progress, pending):
+                return False
+            pending = 0.0
+        else:
+            held = next(r for r in rounds if r.number == step.round)
+            rolled, detail = _revise(lane, held.revision)
+            pending += _cost(lane, [str(held.revision.get("id") or "")])
+            if not rolled:
+                lane.log(f"lane: the revision of round {step.round} did not roll up: {' '.join(detail.split())[:300]}")
+                return False
+    return False
+
+
 def _schedule(lane: Lane, dag: Mapping[str, Sequence[str]], done: Sequence[str], threads: int) -> dict[str, str]:
     """Edge. Start each task once its needs have rolled up, up to `threads` at once, until none is left to start;
     the tasks that failed, with why. A task blocked behind a failed one is never started."""
@@ -764,10 +961,10 @@ def _sweep_dead_clones(ctx: Ctx) -> list[str]:
 
 def run_lane(ctx: Ctx, claim: LaneClaim, conn: Connection, open_conn: Callable[[], Connection],
              items: Sequence[Mapping[str, Any]], base: str, log: Callable[[str], None],
-             stop_children: Callable[[], None]) -> int:
-    """Edge. Run the claimed phase as the module docstring says; the exit code (`EXIT_*`). On every way out the run's
-    worktrees, its own clone (under `<worktree_root>/<run>`, with the private refs it fetched), any private refs in
-    the shared checkout, and its progress mark are removed."""
+             stop_children: Callable[[], None], goal: str = "") -> int:
+    """Edge. Run the claimed phase as the module docstring says, its review judging it against `goal`; the exit code
+    (`EXIT_*`). On every way out the run's worktrees, its own clone (under `<worktree_root>/<run>`, with the private
+    refs it fetched), any private refs in the shared checkout, and its progress mark are removed."""
     mark = beat_path(ctx.runs_dir, ctx.run_id)
     fence = Fence(open_conn, claim, log, stop_children, lambda n: write_beat(mark, n))
     phase_worktree = ctx.worktree_root / ctx.run_id / claim.phase / "_phase"
@@ -785,7 +982,7 @@ def run_lane(ctx: Ctx, claim: LaneClaim, conn: Connection, open_conn: Callable[[
             log(f"lane: removed the clones of dead runs {', '.join(dead)}")
         lane_ctx = _own_clone(ctx, log)
         return _run(lane_ctx, claim, conn, fence, items, base, log, phase_worktree, open_conn,
-                    ctx if lane_ctx is not ctx else None)
+                    ctx if lane_ctx is not ctx else None, goal)
     finally:
         fence.stop()
         settle_pool(ctx, keep_worktrees=False)
@@ -799,7 +996,7 @@ def run_lane(ctx: Ctx, claim: LaneClaim, conn: Connection, open_conn: Callable[[
 
 def _run(ctx: Ctx, claim: LaneClaim, conn: Connection, fence: Fence, items: Sequence[Mapping[str, Any]], base: str,
          log: Callable[[str], None], phase_worktree: Path, open_conn: Callable[[], Connection],
-         shared: Ctx | None = None) -> int:
+         shared: Ctx | None = None, goal: str = "") -> int:
     tasks = phase_tasks(items, claim.phase)
     row = store_phases.get_row(conn, claim.initiative, claim.phase) or {}
     from harness.landing_store import get_record
@@ -824,33 +1021,32 @@ def _run(ctx: Ctx, claim: LaneClaim, conn: Connection, fence: Fence, items: Sequ
     progress = lane_progress.read(text, claim.initiative, claim.phase)
     for sha in progress.ignored:
         log(f"lane: {sha[:12]} on {branch} is not a task commit of {claim.initiative}/{claim.phase}; ignored")
+    budget = row.get("budget_usd")
     lane = Lane(ctx, claim, conn, fence, phase_worktree, branch, base_sha, {str(t["id"]): t for t in tasks}, log,
-                open_conn, shared=shared)
+                open_conn, shared=shared, goal=goal, budget=float(budget) if isinstance(budget, int | float) else 0.0)
     try:
         _origin_progress(lane, tip)
         order = [str(t["id"]) for t in tasks]
-        nxt = lane_progress.resume_plan(order, list(progress.done),
-                                        store_phases.last_round(conn, claim.initiative, claim.phase), progress.revisions)
+        # Only what is left to build: the rounds are the review loop's (`review_loop.next`), episode by episode.
+        nxt = lane_progress.resume_plan(order, list(progress.done), None, progress.revisions)
         log(f"lane: {claim.initiative}/{claim.phase} on {branch} from {base_branch}: "
             f"{len(progress.done)} of {len(order)} task(s) on the branch; next: {nxt.action}"
             + (f" {', '.join(nxt.tasks)}" if nxt.tasks else ""))
-        if nxt.action not in ("build", "review"):
-            return EXIT_BUILT
         ok, detail = lane_rollup.open_phase_worktree(ctx.repo, phase_worktree, tip)
         if not ok:
             log(f"lane: the phase worktree could not be opened at {tip[:12]}: {detail[:300]}")
             return EXIT_FAILED
         failed = _schedule(lane, task_dag(tasks), list(progress.done), ctx.max_parallel) if nxt.action == "build" else {}
-        smoked = None
+        reviewed = None
         if smoke_due(failed, lane.stopping()):
-            smoked = _smoke(lane, lane_rollup.head(phase_worktree), smoke_round(nxt))
+            reviewed = _review_phase(lane)
     finally:
         lane.close()
     for task, why in sorted(failed.items()):
         log(f"lane: {task} not rolled up: {' '.join(why.split())[:300]}")
     if fence.lost.is_set():
         log(f"lane: the claim was lost ({fence.why}); nothing more was written or pushed")
-    return exit_code(fence.lost.is_set(), sorted(failed), smoked is not False)
+    return exit_code(fence.lost.is_set(), sorted(failed), reviewed is not False)
 
 
 def beat_path(runs_dir: Path, run_id: str) -> Path:

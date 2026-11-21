@@ -19,7 +19,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, cast, get_args
 
-from harness import store_lease, store_phases, store_queue
+from harness import review_loop, store_lease, store_phases, store_queue
 from harness.store_dialect import Cell, Connection, Json, JsonObject, StoreDriverMissing, json_load, json_text
 from harness.store_landed import mark_landed
 from harness.store_migrate import MigrationError, open_store
@@ -582,11 +582,12 @@ def phase_queue_rows(url: str) -> list[dict[str, object]] | Failed | NotAvailabl
     return _read(url, store_phases.list_rows)
 
 
-def phase_review_facts(url: str, initiatives: Sequence[str]) -> tuple[list[dict[str, object]], ...] | Failed | NotAvailable:
-    """What the chair's phase-queue planner reads besides the rows, in one connection: the roll-up step rows, the
-    task rows with their `merged_commit`, and each phase's last review round."""
-    return _read(url, lambda c: (store_phases.rollup_rows(c, initiatives), store_phases.task_commits(c, initiatives),
-                                 store_phases.last_rounds(c, initiatives)))
+def phase_review_facts(
+    url: str, initiatives: Sequence[str],
+) -> tuple[list[dict[str, object]], list[dict[str, object]]] | Failed | NotAvailable:
+    """What the chair's phase-queue planner reads besides the rows, in one connection: the roll-up step rows and the
+    task rows with their `merged_commit`."""
+    return _read(url, lambda c: (store_phases.rollup_rows(c, initiatives), store_phases.task_commits(c, initiatives)))
 
 
 class _Refused(Exception):
@@ -611,6 +612,33 @@ def approve_at(url: str, initiative: str, task: str, commit: str, by: str, now: 
     return _write(url, now, lambda c: approve_on(c, initiative, task, commit, by, now))
 
 
+def _quarantine_task_on(conn: Connection, change: Mapping[str, object], by: str, now: str) -> int:
+    """One task of a phase the review quarantined, moved to `quarantined` from the state the chair read (`from`, a
+    compare-and-set), and its row's `extra` given the chair's mark (`mark_key`: the cause, the round's reason, the
+    run), every other key kept, so triage reads the quarantine as the review's. 1 when it moved, 0 when the task had
+    moved on (a repeat, or a person got there first): nothing is marked then."""
+    initiative, task = str(change["initiative"]), str(change["task_id"])
+    expected = cast("WorkState", str(change.get("from") or ""))
+    moved = set_state_on(conn, initiative, task, "quarantined", by, now, expected=expected)
+    if not isinstance(moved, StateSet):
+        return 0
+    row = next((r for r in queue_rows_on(conn, initiative, "task") if r["task_id"] == task), None)
+    extra: Mapping[str, Json] = cast("Mapping[str, Json]", row["extra"]) if row is not None and isinstance(row["extra"], Mapping) else {}
+    mark = cast("Json", change.get("mark") or {})
+    store_queue.upsert(conn, {"initiative": initiative, "task_id": task, "extra": {**extra, str(change["mark_key"]): mark}})
+    return 1
+
+
+def phase_changes_on(conn: Connection, changes: Sequence[Mapping[str, object]], by: str) -> int:
+    """The chair's phase queue writes (`store_phases.apply_changes`) and the task quarantines its reaction to a
+    quarantined phase plans (`review_loop.QUARANTINE_TASK`), in one transaction at the store's time; the rows they changed."""
+    with conn.transaction():
+        written = store_phases.apply_changes(conn, [c for c in changes if c.get("op") != review_loop.QUARANTINE_TASK], by)
+        now = store_phases.store_now(conn)
+        return written + sum(_quarantine_task_on(conn, c, by, now) for c in changes if c.get("op") == review_loop.QUARANTINE_TASK)
+
+
 def apply_phase_changes(url: str, changes: Sequence[Mapping[str, object]], by: str, now: str) -> int | Failed | NotAvailable:
-    """The chair's phase queue writes, in one transaction at the store's own time; the rows they changed."""
-    return _write(url, now, lambda c: store_phases.apply_changes(c, changes, by))
+    """The chair's phase queue writes and task quarantines (`phase_changes_on`), in one transaction at the store's own
+    time; the rows they changed."""
+    return _write(url, now, lambda c: phase_changes_on(c, changes, by))

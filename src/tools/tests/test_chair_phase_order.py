@@ -1,5 +1,6 @@
-"""C5: the phase queue's order, pure (`chair_phase_queue.order`): the hotfix and bug band, first in first out inside a
-band, a release's initiatives claimed together, and nothing serialised across repositories. The claim side is the
+"""C5: the phase queue's order, pure (`chair_phase_queue.order`): the hotfix and bug band, explicit priority then
+first in first out inside a band, a release's initiatives claimed together, nothing serialised across repositories,
+and one pass over every claimable row so no two share a place (`placements`). The claim side is the
 worker's own rule (`phase_pick.choices`) over the rows the chair writes. No mocks."""
 
 from agent_tools import chair_phase_queue as cpq
@@ -100,8 +101,157 @@ def test_the_first_queued_time_is_the_earliest_row_of_the_initiative_finished_on
 def test_ordered_rows_put_a_new_initiative_behind_the_ones_already_waiting():
     wanted = [{"initiative": i, "phase": "p1", "band": 1, "seq": n * 1000} for n, i in enumerate(["new", "old"])]
     stored = [{"initiative": "old", "phase": "p0", "queued_at": "2026-11-21T09:00:00Z", "state": "finished"}]
-    out = cpq.ordered(wanted, stored, {}, {}, NOW)
+    out = cpq.ordered(wanted, cpq.placements(wanted, stored, {}, {}, NOW))
     assert [(r["initiative"], r["band"], r["seq"]) for r in out] == [("new", 1, 1), ("old", 1, 0)]
+
+
+# -- explicit priority inside a band (`cox route priority`, the docket's) --------------------------------------------
+
+
+def test_inside_a_band_explicit_priority_goes_first_then_fifo():
+    seen = {"old": "2026-11-21T09:00:00Z", "mid": "2026-11-21T09:30:00Z", "top": "2026-11-21T10:00:00Z"}
+    placed = cpq.order([("old", "p1"), ("mid", "p1"), ("top", "p1")], {}, {}, seen, {"top": 5})
+    assert _claim_order(placed) == [("top", "p1"), ("old", "p1"), ("mid", "p1")]
+
+
+def test_priority_never_crosses_a_band_a_hotfix_still_goes_ahead_of_a_top_priority_idea():
+    seen = {"idea": "2026-11-21T09:00:00Z", "fix": "2026-11-21T10:00:00Z"}
+    placed = cpq.order([("idea", "p1"), ("fix", "p1")], {}, {"fix": "hotfix"}, seen, {"idea": 99})
+    assert placed == {("fix", "p1"): (0, 0), ("idea", "p1"): (1, 0)}
+
+
+def test_priority_orders_urgent_work_among_itself_too():
+    seen = {"bug1": "2026-11-21T09:00:00Z", "bug2": "2026-11-21T10:00:00Z"}
+    placed = cpq.order([("bug1", "p1"), ("bug2", "p1")], {}, {"bug1": "bug", "bug2": "bug"}, seen, {"bug2": 1})
+    assert _claim_order(placed) == [("bug2", "p1"), ("bug1", "p1")]
+
+
+def test_a_release_follows_its_first_member_in_priority_then_fifo_order():
+    """Release grouping comes after priority and FIFO: the release sits where its first member does, and pulls its
+    other members (here `new`, filed last) forward with it."""
+    seen = {"a": "2026-11-21T09:00:00Z", "b": "2026-11-21T09:30:00Z", "new": "2026-11-21T11:00:00Z",
+            "top": "2026-11-21T10:00:00Z"}
+    placed = cpq.order([("a", "p1"), ("b", "p1"), ("top", "p1"), ("new", "p1")], {"a": "r1", "new": "r1"}, {}, seen,
+                       {"top": 3})
+    assert _claim_order(placed) == [("top", "p1"), ("a", "p1"), ("new", "p1"), ("b", "p1")]
+
+
+def test_route_priority_top_moves_a_later_initiative_ahead_through_the_tick():
+    queue = {"rows": [], "readable": True, "lane_prereqs": False, "phase_initiatives": ["a", "b"], "closed": [],
+             "priorities": {"b": 10}}
+    facts = {"phase_queue": queue, "initiatives": [_initiative(i) for i in ("a", "b")], "limits": {"hard_stop": False}}
+    [action] = cpq.plan(facts, NOW)  # type: ignore[arg-type]
+    inserted = {(c["initiative"], c["seq"]) for c in action["changes"] if c["op"] == "insert"}  # type: ignore[index]
+    assert inserted == {("b", 0), ("a", 1)}
+
+
+def test_the_read_takes_each_initiatives_highest_priority_over_its_open_tasks():
+    from agent_tools.chair_read_phase_queue import initiative_priorities
+
+    heads = [{"kind": "task", "initiative": "a", "state": "ready", "priority": 3},
+             {"kind": "task", "initiative": "a", "state": "todo", "priority": "7"},
+             {"kind": "task", "initiative": "a", "state": "done", "priority": 50},  # finished work does not count
+             {"kind": "task", "initiative": "b", "state": "ready", "priority": 0},
+             {"kind": "task", "initiative": "c", "state": "ready", "priority": "high"},
+             {"kind": "initiative", "initiative": "d", "state": "ready", "priority": 9}]
+    assert initiative_priorities(heads) == {"a": 7}
+
+
+# -- one order pass over every claimable row: no two share a (band, seq) ---------------------------------------------
+
+
+def _stored(initiative: str, phase: str, state: str, band: int, seq: int, **extra: object) -> dict:
+    return {"initiative": initiative, "phase": phase, "state": state, "band": band, "seq": seq, "attempts": 0,
+            "ready_at": NOW, "queued_at": "2026-11-21T08:00:00Z", "requires_json": ["repo:app"], "repo": "~/src/app",
+            "lease_until": "2026-11-21T13:00:00Z", "claim_epoch": 1, **extra}
+
+
+def _after(stored: list[dict], found: list[dict]) -> list[dict]:
+    """The stored rows once `found`'s band and seq writes are applied, as the store's update and review ops do."""
+    by_key = {(r["initiative"], r["phase"]): dict(r) for r in stored}
+    for c in found:
+        key = (c["initiative"], c["phase"])
+        if c["op"] == "insert":
+            by_key[key] = {**c, "state": "ready", "ready_at": NOW, "queued_at": NOW, "requires_json": c["requires"]}
+        elif c["op"] in ("update", "review", "reopen") and "band" in c:
+            by_key[key] = {**by_key[key], "band": c["band"], "seq": c["seq"],
+                           **({"state": "ready"} if c["op"] != "update" else {})}
+    return list(by_key.values())
+
+
+def _places(rows: list[dict]) -> list[tuple]:
+    return [(r["band"], r["seq"]) for r in rows if r["state"] in ("ready", "waiting", "claimed", "built")]
+
+
+def test_a_built_row_made_ready_by_its_review_is_placed_and_never_clashes_with_a_new_row():
+    """L6's `review` makes a parked `built` row ready. Left at its old seq 0 it would share (1, 0) with the new row the
+    pass numbers from 0; the pass places it, and the review carries the place."""
+    stored = [_stored("old", "p1", "built", 1, 0)]
+    wanted = [{"initiative": "new", "phase": "p1", "kind": "build", "repo": "~/src/app", "requires": ["repo:app"],
+               "band": 1, "seq": 0}]
+    placed = cpq.placements(wanted, stored, {}, {}, NOW)
+    found = cpq.changes(cpq.ordered(wanted, placed), stored, NOW, placed=placed)
+    review = next(c for c in found if c["op"] == "review")
+    assert (review["band"], review["seq"]) == (1, 0)  # queued first, so first in line
+    assert next(c for c in found if c["op"] == "insert")["seq"] == 1
+    places = _places(_after(stored, found))
+    assert len(places) == len(set(places)), places
+
+
+def test_a_ready_row_nobody_wants_this_pass_is_renumbered_with_its_requirements_kept():
+    stored = [_stored("gone", "p1", "ready", 1, 0, requires_json=["repo:web", "docker"], repo="~/src/web")]
+    wanted = [{"initiative": "hot", "phase": "p1", "kind": "build", "repo": "~/src/app", "requires": ["repo:app"],
+               "band": 1, "seq": 0}]
+    placed = cpq.placements(wanted, stored, {}, {"hot": "hotfix"}, NOW, {"gone": 1})
+    found = cpq.changes(cpq.ordered(wanted, placed), stored, NOW, placed=placed)
+    assert {(c["op"], c["initiative"], c["band"], c["seq"]) for c in found} == {("insert", "hot", 0, 0)}  # (1, 0) kept
+    stored2 = [*stored, _stored("idea", "p1", "ready", 1, 0, queued_at="2026-11-21T07:00:00Z")]
+    placed2 = cpq.placements([], stored2, {}, {}, NOW)
+    found2 = cpq.changes([], stored2, NOW, placed=placed2)
+    [update] = [c for c in found2 if c["initiative"] == "gone"]
+    assert update == {"op": "update", "initiative": "gone", "phase": "p1", "kind": "build", "repo": "~/src/web",
+                      "requires": ["docker", "repo:web"], "band": 1, "seq": 1}
+    places = _places(_after(stored2, found2))
+    assert len(places) == len(set(places)), places
+
+
+def test_a_claimed_row_keeps_its_place_and_the_pass_numbers_round_it():
+    stored = [_stored("busy", "p1", "claimed", 1, 0), _stored("busy", "p2", "claimed", 1, 2,
+                                                              lease_until="2026-11-21T11:00:00Z")]  # lapsed: claimable
+    wanted = [{"initiative": i, "phase": "p1", "kind": "build", "repo": "~/src/app", "requires": ["repo:app"],
+               "band": 1, "seq": 0} for i in ("a", "b", "c", "busy")]
+    placed = cpq.placements(wanted, stored, {}, {}, NOW)
+    assert placed[("busy", "p1")] == (1, 0) and placed[("busy", "p2")] == (1, 2)
+    found = cpq.changes(cpq.ordered(wanted, placed), stored, NOW, placed=placed)
+    assert not [c for c in found if c["initiative"] == "busy"]  # a claimed row is the worker's
+    assert sorted(c["seq"] for c in found if c["op"] == "insert") == [1, 3, 4]
+    places = _places(_after(stored, found))
+    assert len(places) == len(set(places)), places
+
+
+def test_a_withdrawn_or_exhausted_row_takes_no_place():
+    stored = [_stored("held", "p1", "ready", 1, 0), _stored("spent", "p1", "ready", 1, 1, attempts=99)]
+    placed = cpq.placements([], stored, {}, {}, NOW, leaving={("held", "p1"), ("spent", "p1")})
+    assert placed == {}
+
+
+def test_every_pass_of_the_tick_leaves_the_claimable_rows_on_distinct_places():
+    """Through `plan`: a built row from an older worker, a ready row the docket dropped, a claimed row, a reopened
+    phase and two new ones. After the pass's writes, no two rows a worker could claim share a place, and a second
+    pass over the result plans no band or seq change."""
+    stored = [_stored("parked", "p1", "built", 1, 0), _stored("dropped", "p1", "ready", 1, 1),
+              _stored("busy", "p1", "claimed", 1, 2),
+              _stored("back", "p1", "finished", 1, 0, outcome="approved", queued_at="2026-11-21T06:00:00Z")]
+    queue = {"rows": stored, "readable": True, "lane_prereqs": False, "closed": [],
+             "phase_initiatives": ["parked", "dropped", "busy", "back", "n1", "n2"]}
+    initiatives = [{**_initiative(i), "repo": "~/src/app"} for i in ("back", "n1", "n2")]
+    facts = {"phase_queue": queue, "initiatives": initiatives, "limits": {"hard_stop": False}}
+    [action] = cpq.plan(facts, NOW)  # type: ignore[arg-type]
+    after = _after(stored, action["changes"])  # type: ignore[arg-type]
+    places = _places(after)
+    assert len(places) == len(set(places)) == 6, places
+    again = cpq.plan({**facts, "phase_queue": {**queue, "rows": after}}, NOW)  # type: ignore[arg-type]
+    assert not [c for a in again for c in a.get("changes", []) if c["op"] in ("update", "review", "insert", "reopen")]
 
 
 def _initiative(name: str) -> dict:

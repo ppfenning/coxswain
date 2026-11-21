@@ -213,6 +213,8 @@ def test_a_lanes_facts_are_the_phases_open_tasks_its_roll_ups_in_any_run_and_its
     rollups = [{"phase": "p1", "task_id": "t1"}, {"phase": "p1", "task_id": "t1"}, {"phase": "p2", "task_id": "t9"}]
     facts = worker.lane_facts(rows, rollups, "p1", (1, "revise"), [], "ship.p1-1")
     assert facts == worker.LaneFacts(("t1", "t2"), ("t1",), (1, "revise"), None)
+    quarantined = worker.lane_facts(rows, rollups, "p1", (2, "quarantine"), [], "ship.p1-1", "goal missed")
+    assert (quarantined.last_round, quarantined.reason) == ((2, "quarantine"), "goal missed")
 
 
 def _smoke(run: str, ok: int, sha: str = "a1", reason: str = "", fault: bool = False) -> dict[str, object]:

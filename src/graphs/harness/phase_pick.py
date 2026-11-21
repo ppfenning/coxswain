@@ -186,7 +186,7 @@ def fenced(row: Row | None, worker: str, epoch: int, now: str) -> bool:
     )
 
 
-Kind = Literal["ack", "retry", "quarantine", "built"]
+Kind = Literal["ack", "retry", "quarantine"]
 
 _SETTLED_OK = frozenset({"approved", "done", "dropped"})
 _OPEN = frozenset({"ready", "in_progress", "todo"})
@@ -243,28 +243,33 @@ class SmokeSeen:
 
 
 def lane_verdict(tasks: Collection[str], rolled_up: Collection[str], last_round: tuple[int, str] | None, attempts: int,
-                 max_attempts: int = MAX_ATTEMPTS, *, smoke: SmokeSeen | None) -> Verdict:
+                 max_attempts: int = MAX_ATTEMPTS, *, smoke: SmokeSeen | None, reason: str = "") -> Verdict:
     """The ack or nack for a phase whose lane ended, from what the store holds for it: the phase's tasks (dropped ones
-    left out), the tasks whose roll-up put a commit on the phase branch, its last review round, and the phase smoke
-    the ended lane wrote, or None when it wrote none (`lane_smoke`).
+    left out), the tasks whose roll-up put a commit on the phase branch, its last review round and that round's
+    `reason`, and the phase smoke the ended lane wrote, or None when it wrote none (`lane_smoke`).
 
-    The review round decides: approve is the ack, quarantine the permanent nack. With no round, a phase whose every
-    task rolled up and whose smoke passed is `built`: it is parked, not claimable, until a review round is written for
-    it (the phase review loop is L6) and the chair queues it again. A failed smoke means no review and no park:
+    The review round decides, as the lane's review loop wrote it (`review_loop`): approve is the ack, quarantine the
+    permanent nack, with the round's reason, which the chair hands the phase's tasks for triage. A round of an
+    episode that is over (the chair's `reopened` row) decides nothing. A failed smoke means no review:
     - a real failure finishes the phase `failed` at once: a retry would run the same commands on the same tip;
     - a harness fault (a check that could not run) goes back to the queue once, and a second at that tip is `failed`.
-    A lane that ended before its smoke ran, and a phase with tasks left, are retryable with backoff, and after
-    `max_attempts` claims the phase has failed.
+    Every other end is retryable with backoff, and after `max_attempts` claims the phase has failed: a phase with
+    tasks left, a lane that ended before its smoke ran, and one whose smoke passed but whose review loop did not finish
+    (a review that decided nothing, a revision that did not roll up, a lane that stopped). Each such retry counts its
+    claim, so a loop that never finishes is bounded; nothing is parked, since the lane reviews its own phase.
 
     No failed smoke is quarantined: the chair reopens a quarantined phase whose tasks are still ready, which would
     run the same smoke on the same tip without bound; `failed` stays finished, for the operator."""
     if last_round is not None and last_round[1] == "approve":
         return Verdict("ack", "approved", f"the phase review approved it in round {last_round[0]}")
     if last_round is not None and last_round[1] == "quarantine":
-        return Verdict("quarantine", "quarantined", f"the phase review quarantined it in round {last_round[0]}")
+        return Verdict("quarantine", "quarantined", f"the phase review quarantined it in round {last_round[0]}"
+                                                    + (f": {reason}" if reason else ""))
     missing = sorted(set(tasks) - set(rolled_up))
     if tasks and not missing and smoke is not None and smoke.ok:
-        return Verdict("built", "", "every task rolled up; waiting for the phase review")
+        why = "every task rolled up and the smoke passed, but the lane ended before its review finished the phase"
+        return Verdict("quarantine", "failed", f"{attempts} attempt(s), the last: {why}") if attempts >= max_attempts \
+            else Verdict("retry", "", why, backoff_s(attempts))
     if tasks and not missing and smoke is not None and not smoke.faults:
         return Verdict("quarantine", "failed", smoke.reason)
     if tasks and not missing and smoke is not None and smoke.faults > 1:

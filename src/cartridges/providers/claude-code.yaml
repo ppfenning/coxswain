@@ -65,6 +65,9 @@ role_budget_usd:
   # the dollar ceiling are separate choices; this keeps the ceiling they had.
   review_charter:   1.20
   review_adversary: 1.20
+  # Unmeasured (new with L6): one call per phase round, over the whole phase branch's diff rather than
+  # one task's patch, so the charter reviewer's ceiling and a margin for the larger read.
+  review_phase:     1.50
   triage:    0.80          # a classification seat reading several task records and
                            # traces; measured later by `cox stats bounds`.
   build:     1.50          # it edits, tests and diffs — and a fix-loop retry re-applies
@@ -212,6 +215,7 @@ defaults:
   triage:          judge
   validate_chunk:  reason
   validate_phase:  judge
+  review_phase:    reason
   merge_tasks:     reason
 
 # System one is off by default. The local kNN backend was removed on 2026-09-25:
@@ -233,6 +237,7 @@ tools:
   plan_adversary:   [Read, Grep, Glob]   # attacks claims about the tree by reading the tree
   sweep_plan:       [Read, Grep, Glob]
   review_charter:   [Read, Grep, Glob]
+  review_phase:     [Read, Grep, Glob]
   review_adversary: [Read, Grep, Glob]
   arbitrate:        [Read, Grep, Glob]
   evidence_verify:  [Read, Grep, Glob]

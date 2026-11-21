@@ -211,3 +211,15 @@ def test_a_staged_check_is_its_own_kind_and_a_later_stamp_drops_the_stage():
     staged = with_checks(RESULT, [{"name": "note", "passed": False}], "ship-1", stage="prestyle")
     assert rows_of(staged)[-1]["step"] == "task/t1/checks-prestyle"
     assert "checks_stage" not in with_checks(staged, [], "ship-1")["change_facts"]
+
+
+def test_a_round_row_fills_every_column_and_refuses_round_zero():
+    import pytest
+
+    from harness.store_steps import ROUND_COLUMNS, round_row
+
+    row = round_row(initiative="ship", phase="p1", round_=2, verdict="revise", reason="dup", revision={"id": "p1-rev-2"})
+    assert tuple(row) == ROUND_COLUMNS
+    assert (row["revision_json"], row["head_sha"], row["claim_epoch"], row["decided_at"]) == ({"id": "p1-rev-2"}, "", 0, "")
+    with pytest.raises(ValueError, match="count from 1"):
+        round_row(initiative="ship", phase="p1", round_=0, verdict="approve")

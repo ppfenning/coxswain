@@ -69,7 +69,7 @@ decides. The diagram is generated from the graph module's docstring by
 ## The eleven graphs
 
 The registry is whatever `harness/registry.py` discovers: every module
-under `graphs/` that declares a `SPEC`. Today that is eleven graphs. The
+under `graphs/` that declares a `SPEC`. Today that is twelve graphs. The
 subcommand is what `shell.py` takes; the graph name is what the run
 records.
 
@@ -80,6 +80,7 @@ records.
 | `validate` | [phase-validate](graphs/phase-validate.md) | Judges whether a phase's tasks, together, met the phase's goal. Advisory; emits no proposals. |
 | `review-diff` | [review-diff](graphs/review-diff.md) | Reviews an arbitrary diff outside any build's own run: verdict and findings out, nothing written. |
 | `rescue-review` | [rescue-review](graphs/rescue-review.md) | Reviews a patch that already exists against the harness's own check results. |
+| `phase-review` | [phase-review](graphs/phase-review.md) | One review round of a whole phase branch against its base, the phase smoke as evidence: does it meet its goal, does it carry fat. The phase lane runs it. |
 | `cos` | [coxswain](graphs/coxswain.md) | One dispatch node: picks which graphs to run next from a docket the driver assembled. |
 | `reconcile` | [epic-reconcile](graphs/epic-reconcile.md) | Compares an initiative's declared state with its actual state and proposes corrections. |
 | `retro` | [retro-propose](graphs/retro-propose.md) | Reads ledger rows back and proposes only doc updates it can cite. |
@@ -87,7 +88,7 @@ records.
 | `triage-quarantine` | [triage](graphs/triage.md) | Classifies a task at its attempt cap, or one the chair sent to triage, and applies its class. |
 | `sweep` | [sweep](graphs/sweep.md) | Applies one rule everywhere it matches: plan, apply, verify, review. |
 
-`delivery` holds the first five, `ops` the other six.
+`delivery` holds the first six, `ops` the other six.
 
 ## Drivers are not graphs
 
@@ -103,6 +104,9 @@ graphs, block on them and write, which a graph may not do.
   [the hierarchy](index.md#the-hierarchy) describes.
 - `rescue` runs `rescue-review` on one quarantined task's kept patch.
   `cox route launch rescue` starts it.
+- `phase-lane` builds one claimed phase on the phase model and runs
+  `phase-review` once per round, after the phase smoke, until a round
+  approves or quarantines it (`harness/review_loop.py`).
 
 `cox route launch` also starts `decompose`, `cos` and `sweep` directly.
 `cox runs review --pr <url>` runs `review-diff` on a pull request.
