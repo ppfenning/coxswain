@@ -486,8 +486,8 @@ SMOKE_SCRATCH = "@smoke"  # the smoke's scratch name: `@` keeps it apart from ev
 
 def _smoke(lane: Lane, tip: str, round_: int) -> bool:
     """Edge. The phase smoke at `tip` before review round `round_`, in the phase worktree (checked out at `tip`): the
-    level gate run once under the repository's gate lock, or an earlier passing run of it at this tip reused
-    (`lane_smoke.reusable`), then the `smoke` step row. Whether it passed; a lost claim writes no row and is False.
+    level gate run once under the repository's gate lock, or an earlier passing run of it on this host (the worker)
+    at this tip reused (`lane_smoke.reusable`), then the `smoke` step row. Whether it passed; a lost claim writes no row and is False.
 
     The lane runs it once every task has rolled up; L6 runs it again after each revision, with that round's number."""
     c, ctx = lane.claim, lane.ctx
@@ -495,13 +495,14 @@ def _smoke(lane: Lane, tip: str, round_: int) -> bool:
     cmds = [str(check.get("cmd") or "") for check in checks]
     started = lane.now()
     with lane.store_lock:
-        prior = lane_smoke.reusable(store_phases.smoke_rows(lane.conn, c.initiative, c.phase), tip, cmds)
+        prior = lane_smoke.reusable(store_phases.smoke_rows(lane.conn, c.initiative, c.phase), tip, cmds, c.worker)
     results: list[dict[str, object]] = []
     if prior is not None:
         smoke = lane_smoke.Smoke(True, "reused")
         stored = prior.get("result_json")
         earlier = cast("Sequence[Mapping[str, object]]", stored.get("checks") or []) if isinstance(stored, Mapping) else []
-        result = lane_smoke.result_json(tip, cmds, smoke, earlier, reused_from=str(prior.get("run_id") or ""))
+        result = lane_smoke.result_json(tip, cmds, c.worker, smoke, earlier,
+                                        reused_from=str(prior.get("run_id") or ""))
     else:
         if checks:
             lane.log(f"lane: the phase smoke runs at {tip[:12]}: {'; '.join(cmds)}")
@@ -514,7 +515,7 @@ def _smoke(lane: Lane, tip: str, round_: int) -> bool:
             finally:
                 drop_lane(ctx, c.phase, SMOKE_SCRATCH)
         smoke = lane_smoke.outcome(results)
-        result = lane_smoke.result_json(tip, cmds, smoke, results)
+        result = lane_smoke.result_json(tip, cmds, c.worker, smoke, results)
     row = step_row(run_id=ctx.run_id, step=step_key("phase", "", "smoke", round_), initiative=c.initiative,
                    phase=c.phase, task_id="", kind="smoke", round_=round_, ok=smoke.ok, verdict=smoke.verdict,
                    result=cast(JsonObject, json.loads(json.dumps(result, default=str))), finished_at="",

@@ -322,6 +322,7 @@ def test_the_phase_smoke_rows_are_read_back_decoded_for_every_run_or_one(conn):
     rows = store_phases.smoke_rows(conn, "ship", "p1")
     assert {(r["run_id"], r["round"], r["ok"], r["verdict"], r["subject_sha"]) for r in rows} == {
         ("ship.p1-1", 1, 0, "failed", "a1"), ("ship.p1-2", 1, 1, "passed", "a1")}
+    assert {r["worker"] for r in rows} == {"w1"}  # the host each ran on, which reuse is keyed on
     mine = store_phases.smoke_rows(conn, "ship", "p1", "ship.p1-1")
     assert [r["result_json"] for r in mine] == [{"tip": "a1", "cmds": ["smoke"], "reason": "the phase smoke failed: x"}]
     assert store_phases.smoke_rows(conn, "ship", "p2") == []

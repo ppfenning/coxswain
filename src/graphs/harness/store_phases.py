@@ -404,9 +404,9 @@ def rollup_rows(conn: Connection, initiatives: Sequence[str]) -> list[Row]:
 
 def smoke_rows(conn: Connection, initiative: str, phase: str, run_id: str = "") -> list[Row]:
     """Edge. The phase's `smoke` step rows, of every run or only `run_id`'s, as {run_id, round, ok, verdict,
-    subject_sha, result_json (decoded), finished_at}, oldest first."""
+    subject_sha, result_json (decoded), finished_at, worker}, oldest first."""
     p = conn.dialect.placeholder
-    columns = ("run_id", "round", "ok", "verdict", "subject_sha", "result_json", "finished_at")
+    columns = ("run_id", "round", "ok", "verdict", "subject_sha", "result_json", "finished_at", "worker")
     own = f" AND run_id = {p}" if run_id else ""
     rows = conn.query_all(
         f"SELECT {', '.join(columns)} FROM step_results WHERE kind = 'smoke' AND initiative = {p} AND phase = {p}{own} "

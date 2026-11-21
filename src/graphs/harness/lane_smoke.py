@@ -6,10 +6,12 @@ one `smoke` step row (`phase/smoke/<round>`): the smoke before review round `rou
 round, after that round's revision (L6). A phase whose level gate lists nothing still gets a row (`none`), so the
 worker can tell a smoke that passed from a lane that ended before its smoke ran.
 
-A pass is evidence for the tip it ran on only when something was checked: a row records `reusable` when it passed
-and no check of it ran nothing but skips (a smoke suite on a machine without docker skips every test and exits 0).
-A later lane of the phase at the same tip with the same commands then writes a `reused` row naming that run instead
-of running the suite again. A failure is never reused.
+A pass is evidence only for the tip it ran on, and only on the host it ran on: what a suite skips depends on the
+machine (no docker, a missing tool), so a pass that ran 9 tests and skipped 126 on one host says nothing about
+another. A row records the host (`host`, the worker's name) and `reusable` when it passed and no check of it ran
+nothing but skips; a later lane of the phase on the same host, at the same tip, with the same commands, then writes a
+`reused` row naming that run instead of running the suite again. A lane on another host runs it. Legitimate platform
+skips beside real passes do not stop reuse. A failure is never reused.
 
 How a failed smoke ends is the worker's (`phase_pick.lane_verdict`): no review, and the phase is not parked `built`.
 A real failure finishes the phase `failed` at once, since a retry would run the same commands on the same tip. A
@@ -62,13 +64,14 @@ def outcome(results: Sequence[Mapping[str, object]]) -> Smoke:
     return Smoke(False, "failed", _PREFIX + reason, harness_fault=is_harness_fault(reason))
 
 
-def result_json(tip: str, cmds: Sequence[str], smoke: Smoke, results: Sequence[Mapping[str, object]],
+def result_json(tip: str, cmds: Sequence[str], host: str, smoke: Smoke, results: Sequence[Mapping[str, object]],
                 reused_from: str = "") -> dict[str, object]:
-    """The `smoke` row's result: the tip and commands it ran (what `reusable` matches on), the reason, whether it is
-    a harness fault and whether it may be reused, and each check as `{name, passed, outcome, exit_code}`."""
+    """The `smoke` row's result: the tip, commands and host it ran on (what `reusable` matches on), the reason,
+    whether it is a harness fault and whether it may be reused, and each check as `{name, passed, outcome, exit_code}`."""
     return {
         "tip": tip,
         "cmds": list(cmds),
+        "host": host,
         "reason": smoke.reason,
         "harness_fault": smoke.harness_fault,
         "reusable": smoke.reusable,
@@ -78,13 +81,16 @@ def result_json(tip: str, cmds: Sequence[str], smoke: Smoke, results: Sequence[M
     }
 
 
-def reusable(rows: Sequence[Mapping[str, object]], tip: str, cmds: Sequence[str]) -> Mapping[str, object] | None:
-    """The first stored `smoke` row (as `{run_id, ok, subject_sha, result_json}`) that passed at `tip` with exactly
-    `cmds` and recorded itself `reusable`, or None. A `reused` row is never reusable itself: the run it names is."""
+def reusable(rows: Sequence[Mapping[str, object]], tip: str, cmds: Sequence[str],
+             host: str) -> Mapping[str, object] | None:
+    """The first stored `smoke` row (as `{run_id, ok, subject_sha, result_json}`) that passed on `host` at `tip` with
+    exactly `cmds` and recorded itself `reusable`, or None. A `reused` row is never reusable itself: the run it names
+    is. A row that names no host is never reused, and no host is `""`."""
     for row in rows:
         result = row.get("result_json")
-        if not isinstance(result, Mapping) or result.get("reusable") is not True:
+        if not isinstance(result, Mapping) or result.get("reusable") is not True or not host:
             continue
-        if row.get("ok") in (1, True) and row.get("subject_sha") == tip and result.get("cmds") == list(cmds):
+        if (row.get("ok") in (1, True) and row.get("subject_sha") == tip and result.get("cmds") == list(cmds)
+                and result.get("host") == host):
             return row
     return None
