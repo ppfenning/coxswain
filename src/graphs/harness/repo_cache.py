@@ -114,9 +114,10 @@ def mirror_fetch_argv(mirror: Path, url: str) -> list[str]:
 
 
 def clone_argv(url: str, dest: Path, reference: Path | None) -> list[str]:
-    """Clone `url` into `dest` without a checkout, borrowing `reference`'s objects when there is one."""
+    """Clone `url` into `dest` without a checkout, borrowing `reference`'s objects when there is one. `--no-local`: a
+    path URL goes through git's transport too, so it borrows rather than copying every object of the source."""
     borrow = ["--reference", str(reference)] if reference is not None else []
-    return ["git", "clone", "--quiet", "--no-checkout", *borrow, url, str(dest)]
+    return ["git", "clone", "--quiet", "--no-checkout", "--no-local", *borrow, url, str(dest)]
 
 
 def checkout_argv(dest: Path, branch: str | None, base: str | None) -> list[str]:

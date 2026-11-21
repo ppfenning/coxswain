@@ -70,8 +70,8 @@ def test_the_mirror_fetches_branches_and_tags_forced_and_prunes_with_gc_inside_t
 
 def test_clone_argv_borrows_only_when_given_a_reference():
     assert rc.clone_argv("u", Path("/d"), Path("/m")) == [
-        "git", "clone", "--quiet", "--no-checkout", "--reference", "/m", "u", "/d"]
-    assert rc.clone_argv("u", Path("/d"), None) == ["git", "clone", "--quiet", "--no-checkout", "u", "/d"]
+        "git", "clone", "--quiet", "--no-checkout", "--no-local", "--reference", "/m", "u", "/d"]
+    assert rc.clone_argv("u", Path("/d"), None) == ["git", "clone", "--quiet", "--no-checkout", "--no-local", "u", "/d"]
 
 
 def test_checkout_argv():
