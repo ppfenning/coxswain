@@ -107,8 +107,9 @@ def housekeeping_chores(
         if not export_due(state, now_stamp, now_head, ids):
             return ""
         note = chair_run.export_note(deps.export_rows, ids)
-        # The export's own fill and commit move both, so read them again: the next quiet pass must find no change.
-        state.stamp, state.head, state.exported = stamp(), head(), not note.startswith("export failed")
+        # The export's own fill and commit move both, so read them again: the next quiet pass must find no change. A
+        # failed export is retried on the next move, as the tick retried it on its next changed row, not every pass.
+        state.stamp, state.head, state.exported = stamp(), head(), True
         return note
 
     return Chores(before=before, after=after)

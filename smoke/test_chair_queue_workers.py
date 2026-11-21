@@ -164,7 +164,7 @@ def test_with_no_notification_at_all_the_poll_still_runs_housekeeping(sandbox):
     try:
         worker.wait_for(lambda l: "| start |" in l, 180)
         _commit_work_item(sandbox, "t-silent")
-        worker.wait_for(lambda l: l.startswith("chair worker housekeeping 20") and "| poll |" in l and "housekeeping" in l.split("|")[-1], 60)
+        worker.wait_for(lambda l: l.startswith("chair worker housekeeping 20") and "| poll |" in l and "x housekeeping " in l, 60)
     finally:
         assert worker.stop() == 0, worker.text()
     assert not any("notified" in l for l in worker.passes()), worker.text()

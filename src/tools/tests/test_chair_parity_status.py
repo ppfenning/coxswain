@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from collections import Counter
-from pathlib import PurePosixPath
 from datetime import UTC, datetime
+from pathlib import PurePosixPath
 
 from agent_tools import chair_parity as parity
 from agent_tools import chair_status as status
@@ -172,9 +172,9 @@ def test_parity_refuses_when_either_store_cannot_say_what_it_is():
 
 
 def test_parity_refuses_the_live_workspace_and_anything_inside_it():
-    live = PurePosixPath("/home/u/workspace")
+    live = PurePosixPath("/home/user/workspace")
     assert parity.workspace_refusal(live, None) is None
     assert parity.workspace_refusal(live, PurePosixPath("/tmp/scratch")) is None
-    assert parity.workspace_refusal(live, PurePosixPath("/home/u/workspace-copy")) is None
+    assert parity.workspace_refusal(live, PurePosixPath("/home/user/workspace-copy")) is None
     assert "own workspace" in (parity.workspace_refusal(live, live) or "")
     assert "own workspace" in (parity.workspace_refusal(live, live / "runs") or "")

@@ -12,9 +12,9 @@ import argparse
 import os
 import shlex
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from agent_tools.cli_lazy import bounded_run, chair_queue_units, chair_service
 
@@ -317,11 +317,13 @@ def store_identity(url: str) -> tuple[str, ...] | str:
     try:
         conn = store_dialect.connect_readonly_url(url)
         try:
-            row = conn.execute(_IDENTITY_SQL).fetchone()
+            row = cast("Mapping[str, object] | None", conn.execute(_IDENTITY_SQL).fetchone())  # a dict_row connection
         finally:
             conn.close()
     except Exception as exc:
         return f"{type(exc).__name__}: {str(exc).strip().splitlines()[0] if str(exc).strip() else ''}"
+    if row is None:
+        return "the store returned no identity row"
     return ("postgres", str(row["sysid"]), str(row["db"]))
 
 

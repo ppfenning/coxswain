@@ -200,3 +200,23 @@ def test_the_export_is_due_on_the_first_pass_a_changed_row_or_a_move():
     assert chair_worker_chores.export_due(state, "s2", "h", ())
     assert chair_worker_chores.export_due(state, "s", "h2", ())
     assert chair_worker_chores.export_due(state, None, "h", ())
+
+
+def test_a_failed_export_is_retried_on_the_next_move_not_on_every_pass(tmp_path):
+    rig = Rig(tmp_path, lanes=())
+    attempts: list[tuple[str, ...]] = []
+
+    def failing(ids: tuple[str, ...]) -> str:
+        attempts.append(ids)
+        raise RuntimeError("git add: not a git repository")
+
+    deps = dataclasses.replace(rig.deps(), export_rows=failing)
+    chores = rig.chores(deps)
+    facts = _facts(frozenset(KINDS))
+    _, _, lines = _pass("housekeeping", facts, chores)
+    assert "export failed: RuntimeError: git add: not a git repository" in lines[-1]
+    _pass("housekeeping", facts, chores)
+    assert len(attempts) == 1
+    rig.stamp = ("rows", 9)
+    _pass("housekeeping", facts, chores)
+    assert len(attempts) == 2
