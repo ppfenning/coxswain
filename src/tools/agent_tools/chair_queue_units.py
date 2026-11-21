@@ -27,6 +27,8 @@ from agent_tools.chair_kinds import QUEUE_KINDS
 from agent_tools.chair_service import (
     CHAIR_PLIST_LABEL,
     UNIT_NAME,
+    WATCHDOG_PLIST_NAME,
+    WATCHDOG_TIMER_NAME,
     chair_plist_path,
     environment_variable_lines,
     program_arguments,
@@ -46,10 +48,12 @@ __all__ = [
     "plist_path",
     "plist_text",
     "queue_files",
+    "restore_steps",
     "template_path",
     "template_text",
     "uninstall_refusal",
     "uninstall_steps",
+    "watchdog_refusal",
 ]
 
 TEMPLATE_NAME = "coxswain-chair@.service"
@@ -173,6 +177,42 @@ def install_refusal(platform: str, queued: frozenset[str]) -> str | None:
     return None
 
 
+def watchdog_refusal(platform: str, installed: bool, active: bool) -> str | None:
+    """Why the queue units may not be installed while the chair watchdog timer is not running, or None. The install
+    disables the tick's unit, and with every worker down the timer (`cox chair watchdog`, a new process every few
+    minutes) is the one alarm left: the workers watch each other, but a dead machine or a crash of all five says nothing
+    unless something outside them reads the leases. `installed` is whether its files exist; `active` whether the
+    service manager runs it (systemd: the timer is active; launchd: the agent is loaded)."""
+    if installed and active:
+        return None
+    if platform == "darwin":
+        start = f"launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/{WATCHDOG_PLIST_NAME}"
+        state = "not loaded" if installed else "not installed"
+    else:
+        start = f"systemctl --user daemon-reload && systemctl --user enable --now {WATCHDOG_TIMER_NAME}"
+        state = "not active" if installed else "not installed"
+    first = "" if installed else "`cox chair watchdog --install`, then "
+    return (f"the chair watchdog timer is {state}; once the tick's unit is disabled it is the only alarm that fires "
+            f"with every worker down. Run {first}`{start}` first")
+
+
+def restore_steps(platform: str, home: PurePath, tick_unit: bool, uid: int) -> list[Step]:
+    """The steps that put the tick's unit back after an install that failed partway: re-enable it and start it, so a
+    failed install never leaves nothing running. The workers that did start are left running: the tick skips the
+    kinds they hold, and while it holds the chair lease it raises `queue_unowned` for each one that did not start.
+    With no tick unit file there is nothing to put back."""
+    if not tick_unit:
+        return []
+    if platform == "linux":
+        return [_systemctl("enable", "--now", UNIT_NAME)]
+    if platform == "darwin":
+        domain = f"gui/{uid}"
+        # The bootstrap may find it loaded (the bootout failed before anything else ran): nothing to undo then.
+        return [_launchctl("enable", f"{domain}/{CHAIR_PLIST_LABEL}"),
+                _launchctl("bootstrap", domain, str(chair_plist_path(home)), may_fail=True)]
+    return []
+
+
 def uninstall_refusal(platform: str, queued: frozenset[str]) -> str | None:
     """Why the rollback may not run now, or None. The tick skips every kind `chair.queues` lists whatever the leases
     say, so the list must be empty before the tick's unit comes back (§5.5: step 2 before step 3)."""
@@ -204,7 +244,9 @@ def install_steps(
         instances = instance_names()
         tick = [_systemctl("disable", "--now", UNIT_NAME)] if tick_unit else []
         restart = [_systemctl("restart", *instances)] if template_path(home) in changed else []
-        return [*tick, _systemctl("daemon-reload"), _systemctl("enable", "--now", *instances), *restart]
+        # One start per instance, so a failure names its kind and the ones before it are known to be up.
+        starts = [_systemctl("enable", "--now", instance) for instance in instances]
+        return [*tick, _systemctl("daemon-reload"), *starts, *restart]
     if platform == "darwin":
         domain = f"gui/{uid}"
         # Booted out now, and disabled so the tick's agent (RunAtLoad) does not come back at the next login.

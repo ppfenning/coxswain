@@ -101,6 +101,9 @@ def _chair_run(a: argparse.Namespace) -> int:
     return _chair_once_exit(last[0]) if a.once else 0
 
 
+WORKER_HUNG_EXIT = 4  # `cox chair worker` left a pass hung past its deadline, after its kind lease lapsed
+
+
 def _chair_worker(a: argparse.Namespace) -> int:
     """`cox chair worker --kind K`: one kind of the chair's work in its own process (`chair_queue`). Refuses, holding no
     lease, while a fact source or recorder is unwired, as `chair run` does.
@@ -204,9 +207,12 @@ def _chair_worker(a: argparse.Namespace) -> int:
         gather=gather, perform_one=perform_one, perform_batch=perform_batch, notify=notify, chores=chores,  # type: ignore[arg-type]
         wait=wait, pause=close, clock=time.monotonic, now=lambda: datetime.datetime.now(datetime.UTC),
         echo=chair_report.echo_line,
+        # A pass hung past its deadline, its lease lapsed: exit, so the unit's supervisor starts a fresh worker.
+        abandon=None if a.dry_run else (lambda: os._exit(WORKER_HUNG_EXIT)),
     )
     poll = a.poll if a.poll is not None else chair_kinds.POLL_SECONDS[a.kind]
-    timing = chair_queue.Timing(poll=poll, min_gap=a.min_gap, settle=a.settle)
+    deadline = a.pass_deadline if getattr(a, "pass_deadline", None) is not None else chair_queue.PASS_DEADLINE_SECONDS[a.kind]
+    timing = chair_queue.Timing(poll=poll, min_gap=a.min_gap, settle=a.settle, deadline=deadline)
     restore = (lambda: None) if a.dry_run else chair_run.sigterm_as_interrupt()
     try:
         return chair_queue.run(a.kind, ports, timing, a.once, a.dry_run, held)

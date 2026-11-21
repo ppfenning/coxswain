@@ -19,6 +19,9 @@ what it says and folds the outcome back in (`beaten`, `passed`, `idled`, `lost`)
   the last one; with none, a pass is due every `poll` seconds. The listener is closed for the length of a pass (a watch
   revert can wait on checks for half an hour) and opened again for the next wait; a write during a pass is picked up
   by the next notification or the poll, since each pass re-reads the facts.
+- **Bounded.** A pass has a deadline (`PASS_DEADLINE_SECONDS`, `--pass-deadline`). The beat renews the lease only
+  within it, so a hung pass lets its lease lapse and the watchdog and the other workers see the kind as down; once the
+  lease has surely lapsed the worker exits, and its unit's supervisor starts a fresh one (`pass_beat`).
 - **Fenced.** The lease is beaten on its own thread for the whole pass, the gather as well as the actions. Before each
   action the store is asked whether the epoch still holds; once it does not, that action and every later one are
   fenced, and each action's row is written only inside a transaction that holds the lease row (`record_fenced`).
@@ -31,7 +34,7 @@ from __future__ import annotations
 
 import contextlib
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 
@@ -47,14 +50,18 @@ __all__ = [
     "CALL_TIMEOUT_SECONDS",
     "LEASE_TTL_SECONDS",
     "MIN_GAP_SECONDS",
+    "PASS_DEADLINE_SECONDS",
     "SETTLE_SECONDS",
+    "Abandon",
     "Beat",
     "ChoreStep",
     "Chores",
     "Idle",
+    "Lapse",
     "Loop",
     "Pass",
     "Ports",
+    "Renew",
     "Timing",
     "Wait",
     "beaten",
@@ -64,6 +71,7 @@ __all__ = [
     "heard",
     "idled",
     "lost",
+    "pass_beat",
     "pass_due",
     "pass_line",
     "pass_reason",
@@ -86,6 +94,11 @@ MIN_GAP_SECONDS = 30.0
 SETTLE_SECONDS = 30.0
 # A lease call that has not answered by then is a lost lease, never a held one.
 CALL_TIMEOUT_SECONDS = 5.0
+# A pass that has run this long is hung, not busy (C6). Its beat stops, so its lease lapses within one time to live and
+# the watchdog and the other workers see the kind as down; once the lease has surely lapsed the worker exits, so its
+# supervisor (Restart=always, KeepAlive) starts a fresh one. A land is its own detached process and never holds a pass
+# open; the longest legitimate pass is a watch revert waiting on checks (`chair_exec`, up to half an hour).
+PASS_DEADLINE_SECONDS: Mapping[str, float] = {**dict.fromkeys(chair_kinds.QUEUE_KINDS, 15 * 60.0), "watch": 45 * 60.0}
 
 
 @dataclass(frozen=True)
@@ -94,6 +107,8 @@ class Timing:
     min_gap: float = MIN_GAP_SECONDS  # a notified pass waits this long after the last one
     beat: float = BEAT_SECONDS  # the lease is renewed (or retried) this often, never more often
     settle: float = SETTLE_SECONDS  # a freshly taken lease waits this long before its first pass
+    deadline: float = 15 * 60.0  # a pass running longer is hung: its lease is let lapse (`pass_beat`)
+    ttl: float = LEASE_TTL_SECONDS  # the kind lease's time to live, the wait between the lapse and the abandon
 
 
 @dataclass(frozen=True)
@@ -213,6 +228,31 @@ def lost(loop: Loop) -> Loop:
     return replace(loop, epoch=None, held_since=None)
 
 
+@dataclass(frozen=True)
+class Renew:
+    """Renew the lease: the pass is within its deadline."""
+
+
+@dataclass(frozen=True)
+class Lapse:
+    """Stop renewing and drop the epoch, so the rest of the pass is fenced and the lease lapses on the store's clock."""
+
+
+@dataclass(frozen=True)
+class Abandon:
+    """The lease has lapsed and the pass has still not returned: exit, for the supervisor to start a fresh worker."""
+
+
+def pass_beat(started: float, now: float, deadline: float, ttl: float = LEASE_TTL_SECONDS) -> Renew | Lapse | Abandon:
+    """Pure. What the beat thread does at `now` for a pass that began at `started` (the monotonic clock): renew while
+    the pass is within `deadline`; past it, let the lease lapse (a hung pass must not look live); and once one time to
+    live more has passed, so the lease has lapsed whatever the last renew said, abandon the process."""
+    ran = now - started
+    if ran < deadline:
+        return Renew()
+    return Lapse() if ran < deadline + ttl else Abandon()
+
+
 def planned_pass(kind: str, facts: Facts, now: datetime, epoch: int, dry_run: bool) -> list[Action] | None:
     """Pure. The actions of one pass, each stamped with the kind lease's epoch; None when the facts say the setting
     does not list the kind (a live pass never plans a kind the tick may still be planning). A dry run plans anyway."""
@@ -316,6 +356,9 @@ class Ports:
     notify: Callable[[str, Facts, Sequence[Action]], str] | None = None
     # The tick's loop chores this kind owns once no tick runs them (C6, `chores_due`); None for a kind that owns none.
     chores: Chores | None = None
+    # Called from the beat thread when a pass has outlived its deadline and its lease has lapsed (`pass_beat`): the edge
+    # exits the process. None leaves the hung pass alone, its lease lapsed.
+    abandon: Callable[[], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -353,11 +396,13 @@ class Held:
     epoch: int | None = None
 
 
-def _pass(kind: str, ports: Ports, held: Held, reason: str, dry_run: bool, beat: float) -> str:
-    """Edge. One pass: beat the lease for its whole length, gather, plan, perform each action behind the fence."""
+def _pass(kind: str, ports: Ports, held: Held, reason: str, dry_run: bool, timing: Timing) -> str:
+    """Edge. One pass: beat the lease while the pass is within its deadline, gather, plan, perform each action behind
+    the fence. A pass past its deadline stops renewing (`pass_beat`), so a hung worker's lease lapses."""
     stop = threading.Event()
     if not dry_run:
-        beat_in_thread(lambda: _renew_or_drop(ports, held, stop), beat, stop, lambda _exc: _drop(held, stop))
+        started = ports.clock()
+        beat_in_thread(lambda: _bounded_beat(kind, ports, held, stop, started, timing), timing.beat, stop, lambda _exc: _drop(held, stop))
     try:
         now = ports.now()
         facts = ports.gather(now)
@@ -423,6 +468,26 @@ def _push(kind: str, ports: Ports, facts: Facts, actions: Sequence[Action] | Non
 
 def _with_note(line: str, note: str) -> str:
     return f"{line} | {note}" if note else line
+
+
+def _bounded_beat(kind: str, ports: Ports, held: Held, stop: threading.Event, started: float, timing: Timing) -> None:
+    """Edge. One beat of a pass: renew within the deadline; past it, drop the epoch and say so once; then abandon."""
+    step = pass_beat(started, ports.clock(), timing.deadline, timing.ttl)
+    if isinstance(step, Renew):
+        _renew_or_drop(ports, held, stop)
+        return
+    if isinstance(step, Lapse):
+        if held.epoch is not None:
+            held.epoch = None  # not `_drop`: the thread keeps ticking, to abandon once the lease has surely lapsed
+            ports.echo(
+                f"chair worker {kind} | pass over its {timing.deadline:.0f}s deadline: {chair_kinds.lease_name(kind)} is "
+                "no longer renewed and lapses; the rest of the pass is fenced"
+            )
+        return
+    stop.set()
+    if ports.abandon is not None:
+        ports.echo(f"chair worker {kind} | pass still hung after its lease lapsed: exiting for the supervisor to restart")
+        ports.abandon()
 
 
 def _renew_or_drop(ports: Ports, held: Held, stop: threading.Event) -> None:
@@ -494,7 +559,7 @@ def run(kind: str, ports: Ports, timing: Timing, once: bool, dry_run: bool, held
             else:
                 ports.pause()
                 try:
-                    ports.echo(_pass(kind, ports, held, step.reason, dry_run, timing.beat))
+                    ports.echo(_pass(kind, ports, held, step.reason, dry_run, timing))
                 except Exception as exc:  # one bad pass must not stop the worker; the next is due on the poll
                     ports.echo(f"chair worker {kind} | {step.reason} | error: {type(exc).__name__}: {exc}")
                 loop = passed(loop, ports.clock())

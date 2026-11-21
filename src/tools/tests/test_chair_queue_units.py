@@ -14,7 +14,8 @@ import pytest
 from agent_tools import chair_queue_units as units
 from agent_tools import cli_chair_units
 from agent_tools.chair_kinds import QUEUE_KINDS
-from agent_tools.chair_service import CHAIR_PLIST_LABEL, UNIT_NAME
+from agent_tools.chair_service import CHAIR_PLIST_LABEL, UNIT_NAME, WATCHDOG_PLIST_LABEL, WATCHDOG_TIMER_NAME
+from agent_tools.cli_chair_service import _watchdog_paths
 
 HOME = PurePosixPath("/home/user")
 INPUTS = units.UnitInputs("/opt/cox/bin/cox", "/home/user/repos/workspace", "chair", "/home/user/.config/agent-tools/profile.yaml",
@@ -71,7 +72,7 @@ def test_linux_install_stops_the_tick_first_then_starts_the_five():
     assert _argvs(steps) == [
         f"systemctl --user disable --now {UNIT_NAME}",
         "systemctl --user daemon-reload",
-        f"systemctl --user enable --now {instances}",
+        *(f"systemctl --user enable --now {instance}" for instance in units.instance_names()),
         f"systemctl --user restart {instances}",
     ]
     assert not any(s.may_fail for s in steps)
@@ -136,15 +137,34 @@ def test_run_steps_stops_at_a_failure_and_prints_what_was_not_run():
 
 
 class _Recorder:
-    def __init__(self, loaded: set[str] | None = None) -> None:
+    """A recording systemctl and launchctl. `loaded` are the launchd labels loaded (the watchdog's too, unless
+    `watchdog` is off); `watchdog` is whether systemd says the watchdog timer is active; `fail_start` fails that start
+    (1-based, counting `systemctl enable --now` and `launchctl bootstrap` calls)."""
+
+    def __init__(self, loaded: set[str] | None = None, *, watchdog: bool = True, fail_start: int | None = None) -> None:
         self.calls: list[tuple[str, ...]] = []
-        self.loaded = loaded if loaded is not None else set()
+        self.loaded = (loaded if loaded is not None else set()) | ({WATCHDOG_PLIST_LABEL} if watchdog else set())
+        self.watchdog, self.fail_start, self.starts = watchdog, fail_start, 0
 
     def __call__(self, argv):
-        self.calls.append(tuple(argv))
+        argv = tuple(argv)
+        self.calls.append(argv)
         if argv[:2] == ("launchctl", "print"):
             return (0 if argv[2].rsplit("/", 1)[1] in self.loaded else 113), ""
+        if argv == ("systemctl", "--user", "is-active", WATCHDOG_TIMER_NAME):
+            return (0, "active") if self.watchdog else (3, "inactive")
+        if argv[:4] == ("systemctl", "--user", "enable", "--now") or argv[:2] == ("launchctl", "bootstrap"):
+            self.starts += 1
+            if self.starts == self.fail_start:
+                return 1, "Failed to start: unit failed"
         return 0, ""
+
+
+def _watchdog_files(platform: str) -> None:
+    """The watchdog timer's files, as `cox chair watchdog --install` leaves them."""
+    for path in _watchdog_paths(platform, Path.home()):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("the watchdog\n", encoding="utf-8")
 
 
 def _sandbox(tmp_path: Path, monkeypatch, queues: str) -> argparse.Namespace:
@@ -173,6 +193,7 @@ def test_install_twice_then_uninstall_in_a_sandboxed_home(tmp_path, monkeypatch,
     tick = (home / ".config/systemd/user" / UNIT_NAME) if platform == "linux" else (home / "Library/LaunchAgents/coxswain-chair.plist")
     tick.parent.mkdir(parents=True, exist_ok=True)
     tick.write_text("the tick's unit\n", encoding="utf-8")
+    _watchdog_files(platform)
     first = _Recorder({CHAIR_PLIST_LABEL})
     assert cli_chair_units.chair_service_queues(a, first) == 0
     files = [p for p, _t in units.queue_files(platform, home, units.UnitInputs("", "", "", "", "", None))]
@@ -215,8 +236,70 @@ def test_a_dry_run_writes_and_runs_nothing(tmp_path, monkeypatch, capsys):
     a = _sandbox(tmp_path, monkeypatch, ", ".join(QUEUE_KINDS))
     a.dry_run = True
     monkeypatch.setattr(cli_chair_units.sys, "platform", "linux")
+    _watchdog_files("linux")
     run = _Recorder()
     assert cli_chair_units.chair_service_queues(a, run) == 0
-    assert run.calls == [] and not units.template_path(Path.home()).exists()
+    # The one call is the read-only question whether the watchdog timer runs.
+    assert run.calls == [("systemctl", "--user", "is-active", WATCHDOG_TIMER_NAME)]
+    assert not units.template_path(Path.home()).exists()
     out = capsys.readouterr().out
     assert "would write" in out and "would run: systemctl --user enable --now coxswain-chair@housekeeping.service" in out
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+@pytest.mark.parametrize("files", [False, True], ids=["not installed", "installed but not running"])
+def test_install_refuses_before_writing_unless_the_watchdog_timer_runs(tmp_path, monkeypatch, capsys, platform: str, files: bool):
+    """C6: with the tick's unit disabled the watchdog timer is the only alarm when every worker is down."""
+    a = _sandbox(tmp_path, monkeypatch, ", ".join(QUEUE_KINDS))
+    monkeypatch.setattr(cli_chair_units.sys, "platform", platform)
+    if files:
+        _watchdog_files(platform)
+    run = _Recorder(watchdog=False)
+    assert cli_chair_units.chair_service_queues(a, run) == 2
+    out = capsys.readouterr().out
+    assert "refusing, nothing written: the chair watchdog timer is" in out
+    assert ("`cox chair watchdog --install`" in out) is not files
+    assert not any(p.exists() for p, _t in units.queue_files(platform, Path.home(), INPUTS))
+    assert all(c[:3] == ("systemctl", "--user", "is-active") or c[:2] == ("launchctl", "print") for c in run.calls), run.calls
+
+
+def test_the_watchdog_refusal_names_what_is_missing_and_how_to_start_it():
+    assert units.watchdog_refusal("linux", True, True) is None
+    linux = units.watchdog_refusal("linux", True, False) or ""
+    assert "not active" in linux and f"enable --now {WATCHDOG_TIMER_NAME}" in linux and "--install" not in linux
+    darwin = units.watchdog_refusal("darwin", False, False) or ""
+    assert "not installed" in darwin and "cox chair watchdog --install" in darwin and "launchctl bootstrap" in darwin
+
+
+def test_the_restore_re_enables_and_starts_the_ticks_unit_and_needs_one():
+    assert _argvs(units.restore_steps("linux", HOME, True, 501)) == [f"systemctl --user enable --now {UNIT_NAME}"]
+    darwin = units.restore_steps("darwin", HOME, True, 501)
+    assert _argvs(darwin) == [f"launchctl enable gui/501/{CHAIR_PLIST_LABEL}",
+                              f"launchctl bootstrap gui/501 {units.chair_plist_path(HOME)}"]
+    assert darwin[-1].may_fail
+    assert units.restore_steps("linux", HOME, False, 501) == []
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_an_install_whose_third_start_fails_puts_the_tick_back(tmp_path, monkeypatch, capsys, platform: str):
+    """C6: a failed install never leaves nothing running. The tick's unit was stopped first; the third worker's start
+    fails, so the tick's unit is enabled and started again, and the command exits 1."""
+    a = _sandbox(tmp_path, monkeypatch, ", ".join(QUEUE_KINDS))
+    monkeypatch.setattr(cli_chair_units.sys, "platform", platform)
+    home = Path.home()
+    tick = (home / ".config/systemd/user" / UNIT_NAME) if platform == "linux" else (home / "Library/LaunchAgents/coxswain-chair.plist")
+    tick.parent.mkdir(parents=True, exist_ok=True)
+    tick.write_text("the tick's unit\n", encoding="utf-8")
+    _watchdog_files(platform)
+    run = _Recorder({CHAIR_PLIST_LABEL}, fail_start=3)
+    assert cli_chair_units.chair_service_queues(a, run) == 1
+    joined = [" ".join(c) for c in run.calls]
+    third = f"coxswain-chair@{QUEUE_KINDS[2]}.service" if platform == "linux" else f"coxswain-chair-{QUEUE_KINDS[2]}.plist"
+    failed = next(i for i, c in enumerate(joined) if third in c and (" enable --now " in c or " bootstrap " in c))
+    after = joined[failed + 1:]
+    if platform == "linux":
+        assert after == [f"systemctl --user enable --now {UNIT_NAME}"]
+    else:
+        assert after == [f"launchctl enable gui/{os.getuid()}/{CHAIR_PLIST_LABEL}", f"launchctl bootstrap gui/{os.getuid()} {tick}"]
+    out = capsys.readouterr().out
+    assert "failed partway; putting the tick's unit back" in out and "the tick's unit is back" in out

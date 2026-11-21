@@ -1152,6 +1152,7 @@ CHAIR_COMMANDS = [
             commands.Arg(("--poll",), {"type": float, "default": None, "help": "seconds between passes with no notification (default: 60)"}),
             commands.Arg(("--min-gap",), {"type": float, "default": _CHAIR_WORKER_MIN_GAP, "help": "seconds a notified pass waits after the last one (default: 30)"}),
             commands.Arg(("--settle",), {"type": float, "default": _CHAIR_WORKER_SETTLE, "help": "seconds a freshly taken kind lease waits before its first pass (default: 30)"}),
+            commands.Arg(("--pass-deadline",), {"type": float, "default": None, "help": "seconds a pass may run before it counts as hung: its lease lapses, then the worker exits (default: 2700 for watch, 900 for the rest)"}),
             commands.Arg(("--label",), {"help": "the worker's holder label (default: $COX_SESSION_LABEL, else unlabeled)"}),
             commands.Arg(("--profile",), {"help": "the routing profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
         ),

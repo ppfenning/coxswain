@@ -106,6 +106,11 @@ def _qu_install(a: argparse.Namespace, platform: str, home: Path, uid: int, run:
     if refusal:
         print(f"chair service: refusing, nothing written: {refusal}")
         return 2
+    installed, active = _qu_watchdog(platform, home, uid, run)
+    refusal = chair_queue_units.watchdog_refusal(platform, installed, active)
+    if refusal:
+        print(f"chair service: refusing, nothing written: {refusal}")
+        return 2
     inputs = _qu_inputs(a)
     if isinstance(inputs, str):
         print(inputs)
@@ -134,7 +139,29 @@ def _qu_install(a: argparse.Namespace, platform: str, home: Path, uid: int, run:
     if code == 0:
         print("chair service: the five queue workers are installed and started, and the tick's unit is disabled; "
               "check with `cox chair status`")
+        return code
+    restore = chair_queue_units.restore_steps(platform, home, tick_unit is not None and tick_unit.exists(), uid)
+    if not restore:
+        print("chair service: the install failed partway and there is no tick unit to put back; "
+              "check with `cox chair status`")
+        return code
+    print("chair service: the install failed partway; putting the tick's unit back, so something runs")
+    back = run_steps(restore, run)
+    print("chair service: the tick's unit is back. The workers that started are still running; fix the failure and run "
+          "--install --queues again, or roll back (chair.queues: [], then --uninstall --queues)"
+          if back == 0 else "chair service: the tick's unit could not be put back either: start it by hand (above)")
     return code
+
+
+def _qu_watchdog(platform: str, home: Path, uid: int, run: Runner) -> tuple[bool, bool]:
+    """Edge, read-only. Whether the chair watchdog timer's files are installed, and whether the service manager runs
+    it: `systemctl --user is-active` on its timer, or `launchctl print` on its agent."""
+    from agent_tools.cli_chair_service import _watchdog_paths
+
+    installed = all(path.exists() for path in _watchdog_paths(platform, home))
+    if platform == "darwin":
+        return installed, launchd_loaded([chair_service.WATCHDOG_PLIST_LABEL], uid, run)[chair_service.WATCHDOG_PLIST_LABEL]
+    return installed, run(("systemctl", "--user", "is-active", chair_service.WATCHDOG_TIMER_NAME))[0] == 0
 
 
 def _qu_uninstall(a: argparse.Namespace, platform: str, home: Path, uid: int, run: Runner) -> int:
