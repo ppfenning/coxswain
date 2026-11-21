@@ -4364,6 +4364,17 @@ Coxswain is in beta — versions may change between releases
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#checkout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        checkout
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -6619,6 +6630,17 @@ Coxswain is in beta — versions may change between releases
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#checkout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        checkout
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -6646,25 +6668,28 @@ Coxswain is in beta — versions may change between releases
 
 
 <h1 id="worker">worker</h1>
-<div class="highlight"><pre><span></span><code>usage: cox worker [-h] {run,once,status} ...
+<div class="highlight"><pre><span></span><code>usage: cox worker [-h] {run,once,status,checkout} ...
 
 The phase worker. The chair queues each ready phase of a phase-model initiative; a worker claims the next one it qualifies for, runs it through the harness on this machine, and keeps its claim alive while it runs.
 Nothing reaches a worker over ssh: it pulls.
 
 positional arguments:
-  {run,once,status}
-    run              claim and run phases until interrupted
-    once             one claim pass, then run what it claimed to its end
-    status           every queued phase with its claim, and every registered
-                     worker
+  {run,once,status,checkout}
+    run                 claim and run phases until interrupted
+    once                one claim pass, then run what it claimed to its end
+    status              every queued phase with its claim, and every
+                        registered worker
+    checkout            clone a repository here, borrowing objects from this
+                        machine's git mirror
 
 options:
-  -h, --help         show this help message and exit
+  -h, --help            show this help message and exit
 
 examples:
   cox worker status
   cox worker once
   cox worker run --capability os:macos
+  cox worker checkout https://example.org/app.git ~/repos/app
 </code></pre></div>
 <h2 id="run">run</h2>
 <div class="highlight"><pre><span></span><code>usage: cox worker run [-h] [--name NAME] [--capability TOKEN] [--lanes LANES]
@@ -6704,6 +6729,26 @@ options:
   --json             print the status as JSON
   --profile PROFILE  the routing profile (default: ~/.config/agent-
                      tools/profile.yaml or $AGENT_TOOLS_PROFILE)
+</code></pre></div>
+<h2 id="checkout">checkout</h2>
+<div class="highlight"><pre><span></span><code>usage: cox worker checkout [-h] [--branch BRANCH] [--base BASE] [--json]
+                           url dest
+
+The mirror is $COX_CACHE_DIR/git, else $XDG_CACHE_HOME/coxswain/git, else ~/.cache/coxswain/git.
+Deleting it costs only time: a clone never keeps borrowing from it.
+
+positional arguments:
+  url              the repository's clone URL; the mirror under the cache
+                   directory is per URL
+  dest             the folder to clone into: absent or empty, or already a
+                   clone of URL
+
+options:
+  -h, --help       show this help message and exit
+  --branch BRANCH  check out a new branch of this name (default: the remote's
+                   default branch)
+  --base BASE      the commit or ref to check out or to start --branch at
+  --json           print what the clone did and cost as JSON
 </code></pre></div>
 
 
