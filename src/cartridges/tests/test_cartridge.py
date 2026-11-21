@@ -13,6 +13,7 @@ from core.cartridge import (
     DERIVED_KEYS,
     CartridgeError,
     _fold_fragments,
+    _merge,
     _review_tier_problems,
     apply_overlay,
     cost_level_loosening,
@@ -50,6 +51,34 @@ def test_context_concatenates_base_first(cartridges: Path, skill_index) -> None:
     names = [Path(p).name for p in resolved["context"]]
     assert names == ["conventions.md", "code-style.md"], "base pack must come first — order is reading order"
     assert all(Path(p).is_absolute() for p in resolved["context"])
+
+
+def test_merge_keeps_a_child_seat_context_string_whole() -> None:
+    parent = {"crew": {"builder": {"context": "reads"}}}
+    child = {"crew": {"builder": {"context": "writes"}}}
+    assert _merge(parent, child)["crew"]["builder"]["context"] == "writes"
+
+
+def test_merge_keeps_a_child_seat_context_string_when_the_parent_has_none() -> None:
+    parent = {"crew": {"builder": {"enabled": True}}}
+    child = {"crew": {"builder": {"context": "writes"}}}
+    assert _merge(parent, child)["crew"]["builder"] == {"enabled": True, "context": "writes"}
+
+
+def test_merge_concatenates_top_level_context_base_first_and_replaces_a_nested_list() -> None:
+    assert _merge({"context": ["a", "b"]}, {"context": ["c"]})["context"] == ["a", "b", "c"]
+    nested = _merge({"crew": {"builder": {"context": ["a"]}}}, {"crew": {"builder": {"context": ["c"]}}})
+    assert nested["crew"]["builder"]["context"] == ["c"]
+
+
+@pytest.mark.parametrize("team", ["local-comfort0", "local-comfort1"])
+def test_shipped_teams_extending_local_have_no_character_list_seat_context(team: str) -> None:
+    resolved = load(team, REPO / "cartridges", skill_index=index_from_roots([REPO / "skills-plugins"]))
+    for seat, entry in resolved["crew"].items():
+        if isinstance(entry, dict) and "context" in entry:
+            value = entry["context"]
+            spread = isinstance(value, list) and bool(value) and all(isinstance(v, str) and len(v) == 1 for v in value)
+            assert not spread, f"seat {seat} context is a list of characters: {value!r}"
 
 
 def test_write_kinds_deep_merge_rather_than_replace(cartridges: Path, skill_index) -> None:
