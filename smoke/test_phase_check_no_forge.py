@@ -2,8 +2,7 @@
 
 - **Git-only behaviours.** Each behaviour the lander and the phase roll-up rely on that is only about git (push after
   merge, re-merge, roll-up, resume from task commits) names, in `plan.GIT_ONLY_BEHAVIOURS`, smoke tests that carry no
-  `forge` mark. A behaviour whose test L1 has not landed yet sits in `plan.GIT_ONLY_PENDING`, which fails here once
-  the test exists, so the list cannot go stale.
+  `forge` mark.
 - **No Forgejo.** Only the session's `forge` fixture starts a Forgejo container, and no test of this run without the
   `forge` mark requests it, directly or through another fixture. A run that deselects the forge tests therefore
   leaves no container of the Forgejo image behind, because it never starts one; this is checked from the collected
@@ -35,12 +34,6 @@ def test_each_git_only_behaviour_has_a_test_without_the_forge_mark(behaviour):
     nodes = plan.GIT_ONLY_BEHAVIOURS[behaviour]
     assert nodes, f"{behaviour}: no test named"
     assert _missing(nodes) == [], f"{behaviour}: these name no test, or one marked {plan.FORGE_MARK}"
-
-
-@pytest.mark.parametrize("behaviour", sorted(plan.GIT_ONLY_PENDING))
-def test_a_pending_behaviour_fails_once_its_test_lands(behaviour):
-    landed = [node for node in plan.GIT_ONLY_PENDING[behaviour] if node not in _missing((node,))]
-    assert landed == [], f"{behaviour}: its test has landed; move it from GIT_ONLY_PENDING to GIT_ONLY_BEHAVIOURS"
 
 
 def test_only_the_forge_fixture_starts_forgejo_and_no_unmarked_test_of_this_run_requests_it(request):
