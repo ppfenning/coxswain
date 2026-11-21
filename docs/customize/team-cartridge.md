@@ -58,6 +58,12 @@ works as it always has. A marker naming any other level becomes a task check tha
 A command line may end `# new model only`: it runs at its level on the phase model, and the old model's flat list (below)
 leaves it out. This repository marks its root suite so: the phase model's initiative gate runs it before the pull
 request, and the old model runs it in CI, as it always has.
+A task line `cd <dir> && pytest ...` may end `# touched only`. On the phase model the task gate then runs it on the test
+files the task touched only: those it added or changed, and those whose imports reach a source it changed. A component
+with no such test is skipped. The line never runs whole, not even when the change cannot be mapped, because every task
+of a phase runs its task checks at the same time on one machine. The whole suite belongs to a wider level. The mark
+implies `# new model only`. This repository marks its three component suites this way, and its initiative section
+names them whole, so the old model's flat list still runs each suite once.
 
 Only the phase model reads the sections at their gates. There, each gate runs the cartridge's list first, then the
 repository's section, without repeating a command the cartridge already runs. The old model reads the file as one

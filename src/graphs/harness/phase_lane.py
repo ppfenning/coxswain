@@ -13,7 +13,9 @@ A worker claims a phase (`store_phases.claim_next`) and starts this lane under t
    of the machine's threads (`lane_plan.threads`), each in a worktree of its own cut from the phase tip at that moment;
 5. per task: the lifecycle graph in build-only mode (plan, build, handoff; never a review, which is the phase's), then
    the cheap checks in the task's worktree (the cartridge's and `.agent-checks`' task checks, narrowed to what the
-   change touches: unit tests, lint, the privacy check), with the task's own verification commands;
+   change touches: unit tests, lint, the privacy check), with the task's own verification commands. A task an earlier
+   attempt of this episode refused (its handoff found evidence missing, or its checks failed) is built with the reasons
+   in its ticket body (`lane_feedback`, from `store_phases.task_refusals`), since a build-only run has no fix loop;
 6. the roll-up, in order: the checks passed, their artifacts uploaded, the `checks` step row written; the phase's local
    lock taken; a task the tip's trailers already carry (a stale lane landed it) adopted instead of applied twice; the
    change applied cleanly onto the phase tip and committed with the trailers; the claim checked again; pushed; the
@@ -97,6 +99,7 @@ from typing import Any, cast
 from graphs._contract import ContractViolation
 from harness import (
     initiative_review,
+    lane_feedback,
     lane_merge,
     lane_plan,
     lane_progress,
@@ -500,7 +503,13 @@ def _build(lane: Lane, task: str, base: str, ident: str = "") -> tuple[Mapping[s
         lane.put([lane.row(task, "build", False, "failed", {"error": why[:500]}, started, ident=ident)])
         return None, why, started, tctx
     item = lane.items[task]
-    invocation = lifecycle_invocation(tctx, item, body=plan_context(item, lane.handoffs), fix_attempts=0)
+    with lane.store_lock:  # the task's refused attempts of this episode, whichever run made them
+        refused = store_phases.task_refusals(lane.conn, lane.claim.initiative, lane.claim.phase, task)
+    feedback = lane_feedback.refusal_feedback(refused)
+    if feedback:
+        lane.log(f"lane: {task} is built again with why its last attempt was refused")
+    invocation = lifecycle_invocation(tctx, item, body=lane_feedback.with_feedback(plan_context(item, lane.handoffs),
+                                                                                   feedback), fix_attempts=0)
     args = {**invocation.args, "run_id": f"{lane.ctx.run_id}:{ident or task}", "build_only": True}
     try:
         result = json.loads(json.dumps(lane.ctx.specs[LIFECYCLE].run(args, lane.ctx.runner), default=str))

@@ -24,12 +24,14 @@ from pathlib import Path
 from typing import Any
 
 from graphs.delivery.clean_gate import clean_checks, clean_refusal
+from harness.check_scope import TOUCHED_ONLY
 from harness.lane_workers import XDIST_VAR
 
 __all__ = [
     "HARNESS_FAULT_PREFIX",
     "LEVELS",
     "NEW_MODEL_ONLY",
+    "TOUCHED_ONLY",
     "all_passed",
     "check_feedback",
     "check_outcome",
@@ -171,6 +173,11 @@ _LEVEL_MARK = re.compile(r"^#\s*level:\s*(\S+)\s*$")
 # old model's flat list (`old_model_checks`). The entry carries `NEW_MODEL_ONLY`; bash reads the mark as a comment.
 _NEW_MODEL_MARK = re.compile(r"\s+#\s*new model only\s*$")
 NEW_MODEL_ONLY = "new_model_only"
+# A trailing `# touched only` on a task line `cd <dir> && pytest ...`: on the phase model the task gate runs it on the
+# test files the task touched alone (`check_scope.select_checks`), and not at all when there are none, never the whole
+# component: the whole suite is a wider level's. The entry carries `TOUCHED_ONLY` and `NEW_MODEL_ONLY` both, since the
+# old model has no wider level to leave a suite to: its flat list takes the suite from the widest section instead.
+_TOUCHED_MARK = re.compile(r"\s+#\s*touched only\s*$")
 
 
 def repo_checks(text: str) -> list[dict[str, Any]]:
@@ -184,7 +191,9 @@ def repo_checks(text: str) -> list[dict[str, Any]]:
     with no marker reads exactly as it always has. An entry of the phase or initiative level carries `level`; a task
     entry carries no such key. A marker naming any other level becomes one task check that fails and names the line,
     so a misspelt section is never silently dropped or run at the wrong level. A line may end `# new model only`
-    (`NEW_MODEL_ONLY`): it runs at its level on the phase model, and the old model's flat list leaves it out.
+    (`NEW_MODEL_ONLY`): it runs at its level on the phase model, and the old model's flat list leaves it out. A task
+    line may end `# touched only` (`TOUCHED_ONLY`, which implies `NEW_MODEL_ONLY`): the phase model's task gate runs it
+    on the tests the task touched alone. At another level the mark only keeps the line out of the old model's list.
 
     Blank lines and other lines starting with `#` are ignored. Each surviving line,
     stripped, becomes an entry whose `name` and `cmd` are the stripped line
@@ -207,10 +216,13 @@ def repo_checks(text: str) -> list[dict[str, Any]]:
             continue
         only = bool(_NEW_MODEL_MARK.search(line))
         text = _NEW_MODEL_MARK.sub("", line) if only else line
+        touched = bool(_TOUCHED_MARK.search(text))
+        text = _TOUCHED_MARK.sub("", text) if touched else text
         cmd, fix = _split_fix(text)
         tagged = {} if level == "task" else {"level": level}
         entries.setdefault((level, cmd), {"name": text, "cmd": cmd, **({"fix": fix} if fix else {}), **tagged,
-                                          **({NEW_MODEL_ONLY: True} if only else {})})
+                                          **({NEW_MODEL_ONLY: True} if only or touched else {}),
+                                          **({TOUCHED_ONLY: True} if touched else {})})
     return list(entries.values())
 
 
@@ -233,10 +245,11 @@ def old_model_checks(parsed: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]
     task lines, then the lines of the widest level the file names (initiative, else phase) whose command is not
     already listed. The levels nest, each a wider check than the one below, so the widest holds the narrower one's
     intent; running both would run a suite twice. A file with no marker gives its task lines, exactly as before
-    levels. Each entry is a task entry: no `level` key. A line marked `# new model only` (`NEW_MODEL_ONLY`) is left
-    out: the old model has its own gate for it (the root suite, CI's `unit (root)` job), so its list stays as it was."""
+    levels. Each entry is a task entry: no `level` key. A line marked `# new model only` (`NEW_MODEL_ONLY`), at any
+    level, is left out: the old model has its own gate for it (the root suite, CI's `unit (root)` job; the suite a
+    `# touched only` task line narrows, which the widest section names whole), so its list stays as it was."""
     widest = [c for c in for_level(parsed, "initiative") or for_level(parsed, "phase") if not c.get(NEW_MODEL_ONLY)]
-    task = for_level(parsed, "task")
+    task = [c for c in for_level(parsed, "task") if not c.get(NEW_MODEL_ONLY)]
     known = {c["cmd"] for c in task}
     return task + [{k: v for k, v in c.items() if k != "level"} for c in widest if c["cmd"] not in known]
 

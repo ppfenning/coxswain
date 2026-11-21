@@ -6,7 +6,8 @@ nothing: a second save of one result, a retried write after a lost connection an
 first write left.
 
 `steps_of_result` turns one lifecycle result, as the epic driver saves it, into its plan, build, review, adversary,
-arbitration and checks rows. It is pure: the run, the place and the time arrive as arguments. Only `put_step` and
+arbitration and checks rows, and a build-only result (the phase lane's task build) into a `handoff` row too, which keeps
+what an incomplete handoff found missing for the task's next build (`lane_feedback`). It is pure: the run, the place and the time arrive as arguments. Only `put_step` and
 `steps_for` touch the store.
 
 On today's model a fix-loop re-entry (`epic_build.refix_task`) is a second lifecycle run of the same task inside the
@@ -69,8 +70,11 @@ Scope = Literal["task", "phase"]
 # A task's own steps, and a phase's. review, adversary and arbitration are a task's on today's model, where each
 # task is reviewed in its own lane, and a phase's on the phase model.
 TASK_KINDS: tuple[str, ...] = (
-    "plan", "build", "checks", "checks-prestyle", "rollup", "collision", "review", "adversary", "arbitration",
+    "plan", "build", "handoff", "checks", "checks-prestyle", "rollup", "collision", "review", "adversary", "arbitration",
 )
+# What a `handoff` row keeps of the handoff's `missing` list: enough for the next build to answer, never a transcript.
+_HANDOFF_MISSING_MAX = 10
+_HANDOFF_ITEM_CHARS = 600
 PHASE_KINDS: tuple[str, ...] = ("smoke", "review", "adversary", "arbitration", "suite", "triage")
 
 STEP_COLUMNS: tuple[str, ...] = (
@@ -229,6 +233,22 @@ def _build(result: Mapping[str, object]) -> tuple[bool, str, JsonObject] | None:
     }
 
 
+def _handoff(result: Mapping[str, object]) -> tuple[bool, str, JsonObject] | None:
+    """A build-only run's handoff (the phase lane's task build, which has no fix loop): complete is ok, and an
+    incomplete one keeps what it said was missing, capped, so the task's next build is told why
+    (`lane_feedback.refusal_feedback`). An old-model result gives no row: its fix loop answers the handoff in the run."""
+    handoff = _mapping(result.get("handoff"))
+    if not handoff or result.get("build_only") is not True:
+        return None
+    complete = handoff.get("complete") is True
+    missing = [str(m)[:_HANDOFF_ITEM_CHARS] for m in _list(handoff.get("missing")) if str(m).strip()]
+    return complete, "complete" if complete else "incomplete", {
+        "complete": complete,
+        "blocking": handoff.get("blocking") is True,
+        "missing": cast("list[Json]", missing[:_HANDOFF_MISSING_MAX]),
+    }
+
+
 def _judge(result: Mapping[str, object], kind: str, counted: str) -> tuple[bool, str, JsonObject] | None:
     """A review or adversary answer: its verdict, approve is ok, and how many findings or objections it raised."""
     answer = _mapping(result.get(kind))
@@ -274,7 +294,7 @@ def steps_of_result(
     claim_epoch: int = 0,
     worker: str = "",
 ) -> tuple[StepRow, ...]:
-    """Pure. One lifecycle result's step rows, in plan, build, review, adversary, arbitration, checks order.
+    """Pure. One lifecycle result's step rows, in plan, build, handoff, review, adversary, arbitration, checks order.
 
     A step the result does not carry (no plan on a resumed task, no checks before they ran, no arbitration when the
     reviewers agreed) has no row. `result_json` holds only the step's verdict, counts and check names and exits:
@@ -290,6 +310,7 @@ def steps_of_result(
     graph = (
         ("plan", 0, _plan(result)),
         ("build", round_, _build(result)),
+        ("handoff", round_, _handoff(result)),
         ("review", round_, _judge(result, "review", "findings")),
         ("adversary", round_, _judge(result, "adversary", "objections")),
         ("arbitration", round_, _arbitration(result)),

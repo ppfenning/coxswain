@@ -1,4 +1,8 @@
-"""Pure scope selector: which `cd <dir> && pytest` checks a patch can affect; every other command passes through."""
+"""Pure scope selector: which `cd <dir> && pytest` checks a patch can affect; every other command passes through.
+
+A check marked `TOUCHED_ONLY` (`.agent-checks`' `# touched only`, the phase model's task gate) is never run whole: it
+runs on the tests the task touched (`touched_tests`), or not at all when there are none. Every other check is scoped as
+before, and may fall back to its whole component."""
 
 from __future__ import annotations
 
@@ -8,6 +12,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+TOUCHED_ONLY = "touched_only"
 _WHOLE = "whole"
 _ALWAYS_WHOLE = frozenset({"conftest.py", "pytest.ini"})
 
@@ -138,13 +143,58 @@ def _full(
     )
 
 
+def touched_tests(
+    component: str, changed_paths: Collection[str], added_tests: Collection[str], test_reach: Mapping[str, Any]
+) -> list[str]:
+    """Pure. The test files under `component`, relative to it, that a task touched: each it added or changed, and each
+    whose imports reach a Python source it changed (in any component). A deleted test is not one: `test_reach` maps
+    the files the tree holds. Never the whole component; [] when the task touched no test of it."""
+    changed = set(changed_paths)
+    sources = {p for p in changed if p.endswith(".py") and not is_test_file(p)}
+    reached = {t for t, srcs in test_reach.items() if t in changed or set(srcs) & sources}
+    return sorted(_relative(t, component) for t in reached | set(added_tests) if _under(t, component))
+
+
 def select_checks(
     checks: Sequence[Check],
     changed_paths: Sequence[str],
     added_tests: Collection[str],
     import_map: Mapping[str, Any],
 ) -> ScopedChecks:
-    """Scope `checks` to what the patch can affect; `import_map` holds components, test_reach and unresolved."""
+    """Scope `checks` to what the patch can affect; `import_map` holds components, test_reach and unresolved.
+
+    A `TOUCHED_ONLY` check of a component runs on `touched_tests` alone, or is dropped when there are none; its
+    selection is under `touched` (component to files) and `touched_skipped`. Order is the checks' own."""
+    owner = {i: comp for i, c in enumerate(checks)
+             if c.get(TOUCHED_ONLY) and (comp := pytest_component(str(c.get("cmd", ""))))}
+    if not owner:
+        return _select(checks, changed_paths, added_tests, import_map)
+    plain_checks = [c for i, c in enumerate(checks) if i not in owner]
+    scoped = _select(plain_checks, changed_paths, added_tests, import_map)
+    files = {i: touched_tests(comp, changed_paths, added_tests, import_map["test_reach"]) for i, comp in owner.items()}
+    plain = iter(scoped.checks)  # `_select` keeps its checks' order and their names, dropping a skipped one
+    upcoming = next(plain, None)
+    kept: list[dict[str, Any]] = []
+    for i, c in enumerate(checks):
+        if i in owner:
+            kept += [{**c, "cmd": _narrowed_cmd(str(c["cmd"]), files[i])}] if files[i] else []
+        elif upcoming is not None and upcoming.get("name") == c.get("name"):
+            kept.append(upcoming)
+            upcoming = next(plain, None)
+    return ScopedChecks(tuple(kept), {
+        **scoped.selection,
+        "touched": {owner[i]: f for i, f in files.items() if f},
+        "touched_skipped": [owner[i] for i, f in files.items() if not f],
+    })
+
+
+def _select(
+    checks: Sequence[Check],
+    changed_paths: Sequence[str],
+    added_tests: Collection[str],
+    import_map: Mapping[str, Any],
+) -> ScopedChecks:
+    """The scoping of every check not `TOUCHED_ONLY`: narrowed, whole, or skipped, per component."""
     owners = [(pytest_component(c.get("cmd", "")), c) for c in checks]
     known = [comp for comp, _ in owners if comp]
     added = sorted(added_tests)
@@ -193,4 +243,8 @@ def render_selection(selection: Mapping[str, Any]) -> str:
 
     ran = ", ".join(label(c) for c in selection["components_run"])
     skipped = ", ".join(selection["components_skipped"])
-    return f"scoped checks: ran {ran}" + (f"; skipped {skipped}" if skipped else "")
+    touched = ", ".join(f"{c} ({len(files)} touched test file{'' if len(files) == 1 else 's'})"
+                        for c, files in selection.get("touched", {}).items())
+    untouched = ", ".join(selection.get("touched_skipped", []))
+    return (f"scoped checks: ran {ran}" + (f"; skipped {skipped}" if skipped else "")
+            + (f"; touched only: {touched}" if touched else "") + (f"; no touched tests in {untouched}" if untouched else ""))

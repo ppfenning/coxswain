@@ -51,6 +51,7 @@ __all__ = [
     "store_now",
     "suite_rows",
     "task_commits",
+    "task_refusals",
 ]
 
 PHASE_COLUMNS: tuple[str, ...] = (
@@ -480,6 +481,23 @@ def smoke_rows(conn: Connection, initiative: str, phase: str, run_id: str = "") 
     """Edge. The phase's `smoke` step rows, of every run or only `run_id`'s, as {run_id, round, ok, verdict,
     subject_sha, result_json (decoded), finished_at, worker}, oldest first."""
     return _kind_rows(conn, "smoke", initiative, phase, run_id)
+
+
+def task_refusals(conn: Connection, initiative: str, phase: str, task: str) -> list[Row]:
+    """Edge. The task's failed `handoff` and `checks` step rows of the phase's current episode, of every run: those
+    written after the last `reopened` round (`review_loop.REOPENED`; every one when the phase was never reopened), as
+    {run_id, step, kind, result_json (decoded), finished_at}, oldest first. What `lane_feedback.refusal_feedback`
+    reads, so a task built again is told why its last attempt was refused."""
+    p = conn.dialect.placeholder
+    columns = ("run_id", "step", "kind", "result_json", "finished_at")
+    rows = conn.query_all(
+        f"SELECT {', '.join(columns)} FROM step_results WHERE initiative = {p} AND phase = {p} AND task_id = {p} "
+        f"AND kind IN ({p}, {p}) AND ok = 0 AND finished_at > COALESCE((SELECT MAX(decided_at) FROM review_rounds "
+        f"WHERE initiative = {p} AND phase = {p} AND verdict = {p}), '') ORDER BY finished_at, run_id, step",
+        (initiative, phase, task, "handoff", "checks", initiative, initiative_review.rounds_phase(phase),
+         review_loop.REOPENED),
+    )
+    return [{**dict(zip(columns, r, strict=True)), "result_json": json_load(r[3])} for r in rows]
 
 
 def _kind_rows(conn: Connection, kind: str, initiative: str, phase: str, run_id: str) -> list[Row]:

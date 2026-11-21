@@ -27,6 +27,16 @@ step never builds on an unvalidated handoff.
   about it is not.** A check nobody ran, output nobody attached, a claim
   nobody tested. Buys the builder one more attempt; does not stop the line.
   Do not mark it blocking to signal that it matters.
+- **The harness's checks are not evidence to ask the builder for.** After
+  the handoff the harness runs the configured checks on the applied patch
+  and records their real output: lint, the privacy check, and the unit tests
+  of the files the task touched. Whole suites and the smoke are the harness's
+  too (on the phase model they run at the phase and initiative gates). So
+  never list as missing a lint or format run, or a run of a whole or "wider"
+  suite. Another build cannot add them, and they are measured anyway. Ask
+  only for evidence of the task's own claims: the test the plan named, a
+  `verify:` command's output, a fact the plan left `unknown:` for the builder
+  to measure.
 - **`brief` is small on purpose.** Distil what downstream actually needs into
   the few sentences it needs — the goal, the boundary, the one constraint that
   is easy to miss. A brief that repeats the whole upstream output has moved
