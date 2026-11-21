@@ -1,7 +1,9 @@
 """The phase worker's pure rules: lanes, capabilities, repository tokens, the launch, and `cox worker status` lines.
 The loop itself is glue, proven against a real store by smoke/test_worker_claims.py."""
 
-from agent_tools import worker, worker_cli
+import pytest
+
+from agent_tools import worker, worker_cli, worker_ports
 from harness import phase_pick
 
 NOW = "2026-11-20T10:00:00Z"
@@ -62,12 +64,31 @@ def test_status_says_who_holds_a_claim_and_when_one_has_lapsed():
     workers = [{"name": "w1", "state": "up", "lanes": 1, "capabilities_json": ["docker"], "beat_at": NOW}]
     assert worker_cli.status_lines(phases, workers, NOW) == [
         "ship/p1: claimed, epoch 2, 2 attempt(s), needs [docker]; held by w1 until 2026-11-20T10:00:30Z; run ship.p1-2",
-        "ship/p2: claimed, epoch 1, 1 attempt(s), needs []; lapsed (was w2), claimable",
+        "ship/p2: claimed, epoch 1, 1 attempt(s), needs []; lapsed at 2026-11-20T09:59:00Z, 60s ago (was w2's, epoch 1), "
+        "claimable",
         "ship/p3: ready, epoch 0, 1 attempt(s), needs [os:macos]; claimable from 2026-11-20T10:01:00Z",
         "",
         f"worker w1: up, 1 lane(s), [docker], beat {NOW}",
     ]
     assert worker_cli.status_lines([], [], NOW) == ["the phase queue is empty", "", "no worker has registered"]
+
+
+def test_status_shows_a_lapsed_claim_s_lost_run_and_whether_the_chair_marked_it():
+    row = {"initiative": "ship", "phase": "p1", "state": "claimed", "claim_epoch": 1, "attempts": 1, "claimed_by": "a",
+           "lease_until": "2026-11-20T09:59:28Z", "heartbeat_at": "2026-11-20T09:58:56Z", "requires_json": [],
+           "run_id": "ship.p1-1", "reason": ""}
+    assert worker_cli.claim_of(row, NOW) == {"holder": "a", "epoch": 1, "lease_until": "2026-11-20T09:59:28Z",
+                                             "run_id": "ship.p1-1", "lapsed": True, "lapsed_s": 32, "marked_lost": False}
+    (line, *_) = worker_cli.status_lines([row], [], NOW)
+    assert line == ("ship/p1: claimed, epoch 1, 1 attempt(s), needs []; lapsed at 2026-11-20T09:59:28Z, 32s ago "
+                    "(was a's, epoch 1); run ship.p1-1 lost, claimable")
+    marked = {**row, "reason": phase_pick.lost_reason(row)}
+    assert worker_cli.claim_of(marked, NOW)["marked_lost"] is True
+    assert worker_cli.status_lines([marked], [], NOW)[0].endswith("; run ship.p1-1 lost (the chair marked it), claimable")
+    held = {**row, "lease_until": "2026-11-20T10:00:20Z"}
+    assert worker_cli.claim_of(held, NOW) == {**worker_cli.claim_of(row, NOW), "lease_until": "2026-11-20T10:00:20Z",
+                                              "lapsed": False, "lapsed_s": None}
+    assert worker_cli.claim_of({**row, "state": "ready"}, NOW) is None
 
 
 def test_a_worker_s_store_url_bounds_every_call_inside_the_heartbeat_window():
@@ -139,6 +160,50 @@ def test_a_heartbeat_that_runs_long_and_fails_is_stopped_on_its_return():
         raise TimeoutError("statement timeout")
 
     assert _pass(leases, clock, slow) == [run]
+
+
+def test_a_worker_on_a_short_lease_beats_and_stops_on_its_own_timings():
+    short = phase_pick.Timings.of(48)  # a heartbeat every 8 s, a stop 36 s after the last good one
+    clock, leases = _Clock(), worker.Leases(timings=short)
+    run = worker.Running("ship.p1-1", 4242)
+    leases.add(_claim(), clock(), run)
+    assert leases.snapshot()[0].beat_due == 108.0
+    beats: list[float] = []
+    for t in (107.0, 108.0, 116.0):
+        clock.t = t
+        assert _pass(leases, clock, lambda claim: beats.append(clock.t) or True) == []
+    assert beats == [108.0, 116.0] and leases.snapshot()[0].last_ok == 116.0
+    for t in (124.0, 132.0):  # due, and t + 10 still ends before the stop at 116 + 28: sent, and it times out
+        clock.t = t
+        assert _pass(leases, clock, _timed_out) == []
+    clock.t = 140.0
+    assert _pass(leases, clock, _timed_out) == [run]  # 140 + 10 > 144: stop, 28 s after the last good heartbeat
+    assert leases.snapshot()[0].state == "expired"
+
+
+@pytest.mark.parametrize("lease_s", [0, 32, 40, 47, 601, 3600])
+def test_a_lease_outside_the_floor_and_the_cap_is_refused_with_exit_2_before_the_store_is_opened(
+        lease_s, monkeypatch, tmp_path, capsys):
+    import argparse
+
+    monkeypatch.setattr(worker_cli, "_workspace", lambda a: tmp_path)
+    monkeypatch.setattr(worker_ports, "build", lambda *a, **k: pytest.fail("the store was opened"))
+    a = argparse.Namespace(capability=None, lease_s=lease_s, name="w", lanes=None)
+    assert worker_cli.cmd_run(a) == 2
+    said = capsys.readouterr().out
+    assert said.startswith(f"worker: --lease-s {lease_s}: ") and "a lease runs from 48s to 600s" in said, said
+
+
+def test_the_lease_floor_and_cap_the_help_names_are_the_rules():
+    from agent_tools import cli
+
+    (arg,) = [a for a in cli._WORKER_ARGS if a.flags == ("--lease-s",)]
+    assert f"from {phase_pick.MIN_LEASE_S} to {phase_pick.MAX_LEASE_S}" in arg.kwargs["help"]
+
+
+def test_the_worker_bounds_each_statement_past_the_server_s_and_the_heartbeat_s_whole_call():
+    assert worker.STATEMENT_S == worker.STATEMENT_TIMEOUT_MS / 1000 + 1 == 6
+    assert worker.STATEMENT_S < phase_pick.HEARTBEAT_CALL_S
 
 
 def test_a_good_heartbeat_moves_the_clock_and_a_refused_one_stops_the_run_at_once():
@@ -246,3 +311,171 @@ def test_every_other_live_lane_of_the_phase_is_an_older_claims_and_is_stopped_be
             {"run": "ship.p1-3", "pid": 13, "state": "running"}]
     assert worker.stale_lanes(live, "ship.p1-3") == [worker.Running("ship.p1-1", 11), worker.Running("ship.p1-2", 12)]
     assert worker.stale_lanes([], "ship.p1-3") == []
+
+
+def test_an_ended_initiative_review_is_judged_by_its_round_and_suite_and_a_phase_by_its_tasks():
+    """D2: the claim's row kind picks the verdict; an initiative review has no tasks of its own to count."""
+    from harness import initiative_review
+    from harness.store_phases import Claim
+
+    review = Claim("ship", initiative_review.QUEUE_PHASE, 2, "2026-11-20T10:01:00Z",
+                   {"attempts": 1, "kind": initiative_review.KIND})
+    passed = initiative_review.SuiteSeen(True, "a" * 40)
+    approved = worker.lane_verdict(review, worker.LaneFacts((), (), (2, "approve"), None, "", passed))
+    assert (approved.kind, approved.outcome) == ("ack", "approved")
+    revised = worker.lane_verdict(review, worker.LaneFacts((), (), (1, "revise"), None, "dedupe"))
+    assert (revised.kind, revised.outcome, revised.reason) == (
+        "ack", "revised", "the initiative review's round 1 asked for revise-1: dedupe")
+    # A build row is `phase_pick.lane_verdict`'s, as before: its approve round acks it; with no round and its task not
+    # rolled up it is retried.
+    build = worker.lane_verdict(_claim(), worker.LaneFacts(("t1",), (), (2, "approve"), None, "", passed))
+    assert (build.kind, build.outcome) == ("ack", "approved")
+    assert worker.lane_verdict(_claim(), worker.LaneFacts(("t1",), (), None, None)).kind == "retry"
+
+
+def test_a_lane_that_gave_its_claim_up_after_a_good_check_costs_the_phase_no_attempt():
+    """A lane's lost mark after a good check: the store lost the claim, not the phase. A retry goes back refunded,
+    even on the last attempt, with the episode's count one up; what the store holds still decides an ack."""
+    lost = worker.LaneFacts(("t1",), (), None, None, lost="the claim could not be read: StoreDeadline: silent",
+                            checked=True)
+    retried = worker.lane_verdict(_claim(), lost)
+    assert (retried.kind, retried.refund) == ("retry", True)
+    assert retried.reason.startswith("the lane gave its claim up (the claim could not be read: StoreDeadline: silent)")
+    assert phase_pick.refunds_of(retried.reason) == (1, False)
+    last = worker.lane_verdict(_claim_attempts(phase_pick.MAX_ATTEMPTS), lost)
+    assert (last.kind, last.refund) == ("retry", True)
+    counted = worker.lane_verdict(_claim_attempts(phase_pick.MAX_ATTEMPTS), worker.LaneFacts(("t1",), (), None, None))
+    assert (counted.kind, counted.outcome) == ("quarantine", "failed")
+    approved = worker.lane_verdict(_claim(), worker.LaneFacts(("t1",), ("t1",), (1, "approve"), None, lost="gone",
+                                                              checked=True))
+    assert (approved.kind, approved.outcome) == ("ack", "approved")
+
+
+def test_a_lane_lost_at_its_first_check_counts_its_attempt():
+    """No check read the lease (a wrong password, pg_hba refusing the role, a store at another version): the fault
+    comes back on every retry, so the attempt counts and the phase runs out of them as any other would."""
+    first = worker.LaneFacts(("t1",), (), None, None, lost="the claim could not be read (OperationalError: password "
+                             "authentication failed), and no earlier check read its lease")
+    retried = worker.lane_verdict(_claim(), first)
+    assert (retried.kind, retried.refund) == ("retry", False)
+    assert retried.reason.startswith("the lane gave its claim up (the claim could not be read (OperationalError")
+    assert "counted, at its first check" in retried.reason and phase_pick.refunds_of(retried.reason) == (0, False)
+    last = worker.lane_verdict(_claim_attempts(phase_pick.MAX_ATTEMPTS), first)
+    assert (last.kind, last.outcome) == ("quarantine", "failed")
+
+
+def _released(claim, verdict, attempts):
+    """The claim the worker's next claim of the row reads after `settle` released it with `verdict`: its reason (the
+    refund tag carried) and its attempts, as `store_phases.release` and `claim_next` leave them."""
+    from harness.store_phases import Claim
+
+    reason = phase_pick.carry_refunds(str(claim.row.get("reason") or ""), verdict.reason)
+    return Claim("ship", "p1", claim.epoch + 1, "2026-11-20T10:01:00Z",
+                 {"attempts": attempts - (1 if verdict.refund else 0) + 1, "reason": reason})
+
+
+def test_the_fourth_lost_lane_of_an_episode_counts_its_attempt():
+    lost = worker.LaneFacts(("t1",), (), None, None, lost="the claim could not be read: StoreDeadline: silent",
+                            checked=True)
+    claim = _claim()
+    for n in range(1, phase_pick.LOST_REFUNDS + 1):
+        found = worker.lane_verdict(claim, lost)
+        assert (found.kind, found.refund, phase_pick.refunds_of(found.reason)) == ("retry", True, (n, False))
+        claim = _released(claim, found, worker.attempts_of(claim))
+    assert worker.attempts_of(claim) == 1  # three losses, none counted
+    fourth = worker.lane_verdict(claim, lost)
+    assert (fourth.kind, fourth.refund) == ("retry", False)
+    assert "counted, after 3 refunded this episode" in fourth.reason
+    assert phase_pick.refunds_of(fourth.reason) == (phase_pick.LOST_REFUNDS, False)
+    claim = _released(claim, fourth, worker.attempts_of(claim))
+    claim = _released(claim, worker.lane_verdict(claim, lost), worker.attempts_of(claim))
+    assert (worker.lane_verdict(claim, lost).kind, worker.attempts_of(claim)) == ("quarantine", phase_pick.MAX_ATTEMPTS)
+
+
+def _claim_attempts(attempts: int):
+    from harness.store_phases import Claim
+
+    return Claim("ship", "p1", 1, "2026-11-20T10:01:00Z", {"attempts": attempts})
+
+
+class _FakeConn:
+    def __init__(self, how: str) -> None:
+        self.how = how
+        self.closed = False
+
+    def limit(self, _s: float) -> _FakeConn:
+        return self
+
+    def within(self, _s: float):
+        import contextlib
+
+        return contextlib.nullcontext(self)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _opens(monkeypatch, tmp_path, scoped_wait_s: float = 0.0) -> list[str]:
+    import time
+
+    from agent_tools import run_store
+    from harness import store_migrate, store_scoped
+
+    opened: list[str] = []
+
+    def migrating(_url: str, _now: str) -> _FakeConn:
+        opened.append("open_store")
+        return _FakeConn("open_store")
+
+    def scoped(_url: str) -> _FakeConn:
+        time.sleep(scoped_wait_s)
+        opened.append("open_scoped")
+        return _FakeConn("open_scoped")
+
+    monkeypatch.setattr(run_store, "store_url_for", lambda _d: "postgresql://w@127.0.0.1:1/cox")
+    monkeypatch.setattr(store_migrate, "open_store", migrating)
+    monkeypatch.setattr(store_scoped, "open_scoped", scoped)
+    return opened
+
+
+def test_only_the_main_store_s_first_open_migrates_and_every_reopen_is_scoped(monkeypatch, tmp_path):
+    opened = _opens(monkeypatch, tmp_path)
+    main = worker_ports.Store(tmp_path)
+    assert main.call(lambda c: c.how) == "open_store"
+
+    def fail(_c):
+        raise OSError("the store restarted")
+
+    with pytest.raises(OSError):
+        main.call(fail)
+    assert main.call(lambda c: c.how) == "open_scoped"  # a reopen mid-claim never migrates
+    beats = worker_ports.Store(tmp_path, call_s=phase_pick.HEARTBEAT_CALL_S, migrate=False)
+    assert beats.call(lambda c: c.how) == "open_scoped"
+    assert opened == ["open_store", "open_scoped", "open_scoped"]
+
+
+def test_a_heartbeat_s_reopen_on_a_silent_store_ends_within_the_call_s_bound(monkeypatch, tmp_path):
+    import time
+
+    from harness.store_dialect import StoreDeadline
+
+    _opens(monkeypatch, tmp_path, scoped_wait_s=5.0)
+    beats = worker_ports.Store(tmp_path, call_s=0.5, migrate=False)
+    started = time.monotonic()
+    with pytest.raises(StoreDeadline):
+        beats.call(lambda c: c.how)
+    assert time.monotonic() - started < 1.5
+
+
+def test_the_lane_s_lost_mark_is_read_once_by_the_worker(tmp_path):
+    from harness.phase_lane import lost_path, write_lost
+
+    path = lost_path(tmp_path, "ship.p1-1")
+    assert worker_ports._take_lost(path) == ("", False)  # a lane that kept its claim writes none
+    write_lost(path, "the claim could not be read:\n StoreDeadline: silent", lambda line: None, checked=True)
+    assert worker_ports._take_lost(path) == ("the claim could not be read: StoreDeadline: silent", True)
+    assert not path.exists() and worker_ports._take_lost(path) == ("", False)
+    write_lost(path, "no earlier check read its lease", lambda line: None)
+    assert worker_ports._take_lost(path) == ("no earlier check read its lease", False)
+    path.write_text("an older lane's plain mark\n", encoding="utf-8")  # says nothing of a check: counted
+    assert worker_ports._take_lost(path) == ("an older lane's plain mark", False)

@@ -16,7 +16,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
 
-from harness import phase_pick, review_loop
+from harness import initiative_review, phase_pick, review_loop
 from harness.store_dialect import Cell, Connection, Json, insert_ignore, json_load, json_text, upsert
 from harness.store_steps import put_round, put_step, round_row
 from harness.store_types import StepRow
@@ -33,6 +33,7 @@ __all__ = [
     "held",
     "host_threads",
     "last_round",
+    "lease_left",
     "list_rows",
     "list_workers",
     "live_claims",
@@ -44,6 +45,7 @@ __all__ = [
     "set_run",
     "smoke_rows",
     "store_now",
+    "suite_rows",
     "task_commits",
 ]
 
@@ -125,10 +127,17 @@ def _apply(conn: Connection, change: Mapping[str, object], by: str, now: str) ->
     older worker parked `built` (L1, before the lane reviewed its own phase), and counts an attempt: that worker's
     park gives its claim's attempt back, so without it an old worker and this chair would claim, park and requeue the
     row forever; with it each round costs one and the row runs out (`exhaust`). A `review` that carries `band` and `seq`
-    moves the row there too (the chair's order pass, `chair_phase_queue.placements`). `withdraw`
+    moves the row there too (the chair's order pass, `chair_phase_queue.placements`). `rereview` makes claimable again
+    an initiative review its lane finished `revised` (D2, `initiative_review`), once the revision phase it asked for has
+    merged: the same episode, so no round is closed and the rounds already held count towards its cap. `withdraw`
     takes a waiting or ready row out of the queue (state `cancelled`: its phase is held, closed or over budget), never
     a claimed one. `exhaust` finishes as failed a row whose claims ran out while nobody holds it
-    (`phase_pick.exhausted`, in SQL). Each is conditional on the state it moves from, so a repeat changes nothing."""
+    (`phase_pick.exhausted`, in SQL). `mark_lost` writes the chair's "run lost" mark (`phase_pick.lost_reason`) as the
+    reason of a claim whose lease lapsed with nobody taking it over: only the reason, only of the epoch the chair saw,
+    only while it is still lapsed, so a worker that claims meanwhile is never touched. `tell_gave_up` marks told the
+    lost-lane refund tag of a ready row whose episode spent its refunds (`phase_pick.gave_up_alarm`): only while the
+    row's reason is still the one the chair saw (`seen`), so a worker's claim or release meanwhile is never touched.
+    Each is conditional on the state it moves from, so a repeat changes nothing."""
     p = conn.dialect.placeholder
     op, initiative, phase = change["op"], change["initiative"], change["phase"]
     requires = json_text(list(cast("Sequence[str]", change.get("requires") or [])))
@@ -165,11 +174,30 @@ def _apply(conn: Connection, change: Mapping[str, object], by: str, now: str) ->
             (reason, now, *((change["band"], change["seq"]) if placed else ()), now, by, initiative, phase,
              change.get("epoch", 0)),
         ) == 1
+    if op == initiative_review.REREVIEW_OP:
+        return conn.execute(
+            f"UPDATE phase_queue SET state = 'ready', outcome = '', reason = {p}, ready_at = {p}, attempts = 0, "
+            f"updated_at = {p}, updated_by = {p} WHERE initiative = {p} AND phase = {p} AND state = 'finished' "
+            f"AND outcome = 'revised' AND claim_epoch = {p}",
+            (reason, now, now, by, initiative, phase, change.get("epoch", 0)),
+        ) == 1
     if op == "withdraw":
         return conn.execute(
             f"UPDATE phase_queue SET state = 'cancelled', reason = {p}, updated_at = {p}, updated_by = {p} "
             f"WHERE initiative = {p} AND phase = {p} AND state IN ('waiting', 'ready')",
             (reason, now, by, initiative, phase),
+        ) == 1
+    if op == "mark_lost":
+        return conn.execute(
+            f"UPDATE phase_queue SET reason = {p}, updated_at = {p}, updated_by = {p} WHERE initiative = {p} "
+            f"AND phase = {p} AND state = 'claimed' AND claim_epoch = {p} AND lease_until < {p} AND reason <> {p}",
+            (reason, now, by, initiative, phase, change.get("epoch", 0), now, reason),
+        ) == 1
+    if op == "tell_gave_up":
+        return conn.execute(
+            f"UPDATE phase_queue SET reason = {p}, updated_at = {p}, updated_by = {p} WHERE initiative = {p} "
+            f"AND phase = {p} AND state = 'ready' AND reason = {p}",
+            (reason, now, by, initiative, phase, change.get("seen") or ""),
         ) == 1
     if op == "exhaust":
         return conn.execute(
@@ -184,10 +212,12 @@ def _apply(conn: Connection, change: Mapping[str, object], by: str, now: str) ->
 def _close_episode(conn: Connection, initiative: str, phase: str, reason: str, by: str, now: str) -> None:
     """Edge. End the phase's review episode: a `reopened` row one round past its last (`review_loop.REOPENED`), so a
     lane of the reopened phase counts only the rounds after it (`review_loop.episode`). Nothing when the phase has no
-    round yet, or its last row already ends an episode."""
-    last = last_round(conn, initiative, phase)
+    round yet, or its last row already ends an episode. The initiative review's row (`initiative_review.QUEUE_PHASE`)
+    ends the initiative's own episode, whose rounds are under phase ''."""
+    rounds = initiative_review.rounds_phase(phase)
+    last = last_round(conn, initiative, rounds)
     if last is not None and last[1] != review_loop.REOPENED:
-        put_round(conn, round_row(initiative=initiative, phase=phase, round_=last[0] + 1, verdict=review_loop.REOPENED,
+        put_round(conn, round_row(initiative=initiative, phase=rounds, round_=last[0] + 1, verdict=review_loop.REOPENED,
                                   reason=reason, worker=by, decided_at=now))
 
 
@@ -200,14 +230,17 @@ def apply_changes(conn: Connection, changes: Sequence[Mapping[str, object]], by:
 
 # -- the worker's side --------------------------------------------------------------------------------------------
 
-def claim_next(conn: Connection, worker: str, capabilities: Sequence[str], free: int) -> Claim | None:
-    """Edge. Claim the next phase `worker` qualifies for, in one transaction; None when it has no free lane or none.
+def claim_next(conn: Connection, worker: str, capabilities: Sequence[str], free: int,
+               lease_s: int = phase_pick.LEASE_S) -> Claim | None:
+    """Edge. Claim the next phase `worker` qualifies for, in one transaction, on a `lease_s` lease; None when it has no
+    free lane or none.
 
     Claimable rows are read a page of `phase_pick.CANDIDATES` at a time in (band, seq) order, without a lock, and
     `phase_pick.choices` keeps those the worker meets; a page with none it meets is paged past, so phases nobody here
     can run never starve the rest. Each choice is then locked alone, `FOR UPDATE SKIP LOCKED` on Postgres (sqlite's
     BEGIN IMMEDIATE serialises instead), re-checked as claimable, and taken by one conditional UPDATE: the epoch goes
-    up by one and the attempt is counted. A row another worker holds locked, or claimed since the read, is skipped
+    up by one and the attempt is counted, and the chair's "run lost" mark of the claim before it, when the row carries
+    one, is cleared: it was that claim's, not this one's. A row another worker holds locked, or claimed since the read, is skipped
     for the next, so two claimers never wait on each other and never take the same row."""
     if free <= 0:
         return None
@@ -233,12 +266,13 @@ def claim_next(conn: Connection, worker: str, capabilities: Sequence[str], free:
                 )
                 if locked is None:
                     continue
-                until = phase_pick.lease(now)
+                until = phase_pick.lease(now, lease_s)
                 taken = conn.execute(
                     f"UPDATE phase_queue SET state = 'claimed', claimed_by = {p}, claim_epoch = claim_epoch + 1, "
                     f"run_id = '', claimed_at = {p}, heartbeat_at = {p}, lease_until = {p}, attempts = attempts + 1, "
+                    f"reason = CASE WHEN reason LIKE {p} THEN '' ELSE reason END, "
                     f"updated_at = {p}, updated_by = {p} WHERE initiative = {p} AND phase = {p} AND {claimable_sql}",
-                    (worker, now, now, until, now, worker, initiative, phase, *page_args),
+                    (worker, now, now, until, f"{phase_pick.RUN_LOST}:%", now, worker, initiative, phase, *page_args),
                 )
                 row = get_row(conn, initiative, phase) if taken == 1 else None
                 if row is not None:
@@ -254,13 +288,13 @@ def _fence(p: str) -> str:
             f"AND state = 'claimed' AND lease_until > {p}")
 
 
-def heartbeat(conn: Connection, claim: Claim, worker: str) -> str | None:
-    """Edge. Renew the claim's lease from the store's clock; the new lease, or None when the claim is gone (another
-    worker holds it, or it lapsed). A lapsed lease is never revived."""
+def heartbeat(conn: Connection, claim: Claim, worker: str, lease_s: int = phase_pick.LEASE_S) -> str | None:
+    """Edge. Renew the claim's lease, `lease_s` from the store's clock; the new lease, or None when the claim is gone
+    (another worker holds it, or it lapsed). A lapsed lease is never revived."""
     p = conn.dialect.placeholder
     with conn.transaction():
         now = store_now(conn)
-        until = phase_pick.lease(now)
+        until = phase_pick.lease(now, lease_s)
         changed = conn.execute(
             f"UPDATE phase_queue SET heartbeat_at = {p}, lease_until = {p} {_fence(p)}",
             (now, until, claim.initiative, claim.phase, worker, claim.epoch, now),
@@ -321,26 +355,40 @@ def live_claims(conn: Connection) -> list[Row]:
 
 # -- the lane's side: every write it makes is fenced on the claim its worker holds --------------------------------
 
-def held(conn: Connection, initiative: str, phase: str, worker: str, epoch: int, margin_s: int = 0) -> bool:
+def held(conn: Connection, initiative: str, phase: str, worker: str, epoch: int, margin_s: int | None = 0) -> bool:
     """Edge. Whether `worker` still holds the claim at `epoch` with at least `margin_s` seconds of its lease left, by
-    the store's clock. A plain read: it never waits on a lock another session holds on the row."""
+    the store's clock; with `margin_s` None, the margin the claim's own lease gives its lane (`phase_pick.margin_of`).
+    A plain read: it never waits on a row lock another session holds, but it does wait on a table lock that blocks
+    reads (ACCESS EXCLUSIVE: an ALTER TABLE, a VACUUM FULL, a REINDEX), as long as the session's lock bound allows."""
     now = store_now(conn)
-    return phase_pick.fenced(get_row(conn, initiative, phase), worker, epoch, phase_pick.lease(now, margin_s))
+    row = get_row(conn, initiative, phase)
+    margin = phase_pick.margin_of(row) if margin_s is None else margin_s
+    return phase_pick.fenced(row, worker, epoch, phase_pick.lease(now, margin))
+
+
+def lease_left(conn: Connection, initiative: str, phase: str, worker: str, epoch: int) -> tuple[int, int] | None:
+    """Edge. (seconds of lease left, the margin its lane stops at) by the store's clock while `worker` holds the claim
+    at `epoch` (`phase_pick.lease_left`, `phase_pick.margin_of`); None when it does not. A plain read, as `held`'s."""
+    now = store_now(conn)
+    row = get_row(conn, initiative, phase)
+    left = phase_pick.lease_left(row, worker, epoch, now)
+    return None if left is None else (left, phase_pick.margin_of(row))
 
 
 def put_steps_fenced(conn: Connection, rows: Sequence[StepRow], worker: str, epoch: int,
-                     rounds: Sequence[Mapping[str, object]] = ()) -> bool:
+                     rounds: Sequence[Mapping[str, object]] = (), *, claimed: str | None = None) -> bool:
     """Edge. Insert step rows and review rounds (`store_steps.put_round`; both insert-ignore, so a repeat changes
     nothing) only while `worker` holds the claim at `epoch`, in one transaction: a round is never written without the
     review step it rests on. False, with nothing written, when it does not. The claim row is read under a share lock
     (Postgres; sqlite serialises every writer), so a takeover cannot commit between the check and the insert. Each
     row's `finished_at` (a round's `decided_at`) is the store's time of this write, and its `started_at` too when the
-    row has none."""
+    row has none. `claimed` is the claimed row's phase when the rows are under another (the initiative review's rows
+    are the initiative's own, phase '', and its claim is `initiative_review.QUEUE_PHASE`'s); else the rows' own."""
     if not rows and not rounds:
         return True
     p = conn.dialect.placeholder
     first: Mapping[str, object] = rows[0] if rows else rounds[0]
-    initiative, phase = first["initiative"], first["phase"]
+    initiative, phase = first["initiative"], first["phase"] if claimed is None else claimed
     with conn.transaction():
         now = store_now(conn)
         found = conn.query_one(
@@ -417,16 +465,26 @@ def rollup_rows(conn: Connection, initiatives: Sequence[str]) -> list[Row]:
     return [dict(zip(columns, r, strict=True)) for r in rows]
 
 
+def suite_rows(conn: Connection, initiative: str, phase: str = initiative_review.ROUNDS_PHASE) -> list[Row]:
+    """Edge. The `suite` step rows of every run, of the initiative itself (phase '') unless `phase` names one, in the
+    shape `smoke_rows` gives, oldest first: what `initiative_review.suite_at` reads."""
+    return _kind_rows(conn, "suite", initiative, phase, "")
+
+
 def smoke_rows(conn: Connection, initiative: str, phase: str, run_id: str = "") -> list[Row]:
     """Edge. The phase's `smoke` step rows, of every run or only `run_id`'s, as {run_id, round, ok, verdict,
     subject_sha, result_json (decoded), finished_at, worker}, oldest first."""
+    return _kind_rows(conn, "smoke", initiative, phase, run_id)
+
+
+def _kind_rows(conn: Connection, kind: str, initiative: str, phase: str, run_id: str) -> list[Row]:
     p = conn.dialect.placeholder
     columns = ("run_id", "round", "ok", "verdict", "subject_sha", "result_json", "finished_at", "worker")
     own = f" AND run_id = {p}" if run_id else ""
     rows = conn.query_all(
-        f"SELECT {', '.join(columns)} FROM step_results WHERE kind = 'smoke' AND initiative = {p} AND phase = {p}{own} "
+        f"SELECT {', '.join(columns)} FROM step_results WHERE kind = {p} AND initiative = {p} AND phase = {p}{own} "
         f"ORDER BY finished_at, run_id, step",
-        (initiative, phase, *((run_id,) if run_id else ())),
+        (kind, initiative, phase, *((run_id,) if run_id else ())),
     )
     return [{**dict(zip(columns, r, strict=True)), "result_json": json_load(r[5])} for r in rows]
 

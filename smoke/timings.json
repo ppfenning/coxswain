@@ -31,6 +31,7 @@
 "smoke/test_edge_upgrade.py": 0.0,
 "smoke/test_forge_land.py": 0.0,
 "smoke/test_harness_launch.py": 10.3,
+"smoke/test_initiative_review.py": 45.5,
 "smoke/test_lake.py": 11.4,
 "smoke/test_lander_empty.py": 5.4,
 "smoke/test_lander_lanes.py": 32.2,
@@ -41,6 +42,7 @@
 "smoke/test_lane_merge.py": 49.6,
 "smoke/test_lane_model_stamp.py": 6.6,
 "smoke/test_local_image.py": 0.3,
+"smoke/test_lost_worker.py": 126.5,
 "smoke/test_operator_commands.py": 6.1,
 "smoke/test_phase_check_no_forge.py": 0.0,
 "smoke/test_phase_lane.py": 213.2,
@@ -53,6 +55,6 @@
 "smoke/test_unit_env_doctor.py": 3.1,
 "smoke/test_usage_window_ceiling.py": 0.9,
 "smoke/test_worker_caches.py": 4.2,
-"smoke/test_worker_claims.py": 187.4,
+"smoke/test_worker_claims.py": 151.5,
 "smoke/test_worker_role.py": 29.6
 }

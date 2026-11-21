@@ -282,3 +282,156 @@ def test_the_tick_quarantines_a_quarantined_phase_s_tasks_and_does_not_reopen_it
     settled = {**queue, "tasks": _tasks(("t1", "p1", "quarantined", ""))}
     again = plan_tick({**_tick_facts(initiatives=[]), "phase_queue": settled}, NOW)
     assert not [a for a in again if a["kind"] == "queue_phases"]
+
+
+def _lost(phase="p1", *, epoch=1, lease_until="2026-11-20T09:59:00Z", reason="", attempts=1):
+    return {**_stored(phase, state="claimed", epoch=epoch, attempts=attempts, lease_until=lease_until),
+            "claimed_by": "a", "run_id": f"ship.{phase}-{epoch}", "reason": reason}
+
+
+def test_a_lapsed_claim_is_planned_as_its_mark_carrying_its_notice_and_a_live_or_exhausted_one_never():
+    from harness import phase_pick
+
+    lost = _lost()
+    why = phase_pick.lost_reason(lost)
+    (action,) = chair_phase_queue.lost_runs([lost], STAMP)
+    assert action["kind"] == "queue_phases" and action["changes"] == [
+        {"op": "mark_lost", "initiative": "ship", "phase": "p1", "epoch": 1, "reason": why}]
+    assert action["notice"] == {"kind": "needs_chair", "initiative": "ship", "phase": "p1",
+                                "cause": chair_phase_queue.RUN_LOST_CAUSE, "claim_epoch": 1, "worker": "a",
+                                "run": "ship.p1-1", "reason": why, "command": ["cox", "worker", "status"]}
+    # Marked: nothing more for that claim. A later claim of the phase that is lost too is a new epoch.
+    assert chair_phase_queue.lost_runs([{**lost, "reason": why}], STAMP) == []
+    assert [a["notice"]["claim_epoch"] for a in chair_phase_queue.lost_runs([_lost(epoch=2)], STAMP)] == [2]
+    live = _lost(lease_until="2026-11-20T10:00:30Z")
+    exhausted = _lost(attempts=3)
+    assert chair_phase_queue.lost_runs([live, exhausted, _stored("p2")], STAMP) == []
+
+
+def test_the_tick_plans_a_lost_run_s_mark_apart_with_its_notice_and_no_notice_of_its_own():
+    lost = _lost()
+    queued = plan_tick({**_tick_facts(initiatives=[]), "phase_queue": _queue([lost])}, NOW)
+    (action,) = [a for a in queued if a["kind"] == "queue_phases"]
+    assert _ops(action["changes"]) == [("mark_lost", "ship", "p1")]
+    assert action["notice"]["reason"].startswith("run lost: a's claim at epoch 1")
+    assert not [a for a in queued if a.get("cause") == chair_phase_queue.RUN_LOST_CAUSE]  # told only once marked
+    marked = {**lost, "reason": action["changes"][0]["reason"]}
+    after = plan_tick({**_tick_facts(initiatives=[]), "phase_queue": _queue([marked])}, NOW)
+    assert not [a for a in after if a["kind"] == "queue_phases"]
+
+
+def _claimed_store(tmp_path, store_at):
+    """A store (the sqlite double) the chair's executor reaches, holding ship/p1 claimed by `a` at epoch 1."""
+    from harness import store_phases
+    from harness.store_migrate import open_store
+
+    url = f"sqlite:///{tmp_path / 'cox.db'}"
+    store_at(url)
+    conn = open_store(url, STAMP)
+    store_phases.apply_changes(conn, [{"op": "insert", "initiative": "ship", "phase": "p1", "requires": []}], "chair")
+    claim = store_phases.claim_next(conn, "a", [], 1)
+    store_phases.set_run(conn, claim, "a", "ship.p1-1")
+    return conn, claim
+
+
+def _execute(action, tmp_path):
+    from types import SimpleNamespace
+
+    from agent_tools.chair_exec_act import _queue_phases
+
+    return _queue_phases(action, SimpleNamespace(runs_dir=tmp_path))
+
+
+def _lapse(conn, until="2000-01-01T00:00:00Z"):
+    conn.execute("UPDATE phase_queue SET lease_until = ? WHERE initiative = 'ship' AND phase = 'p1'", (until,))
+
+
+def test_the_notice_is_told_only_when_the_mark_changed_the_row_and_once(tmp_path, store_at):
+    from harness import store_phases
+
+    conn, _ = _claimed_store(tmp_path, store_at)
+    try:
+        _lapse(conn)
+        (action,) = chair_phase_queue.lost_runs([store_phases.get_row(conn, "ship", "p1")], STAMP)
+        done = _execute(action, tmp_path)
+        assert done["status"] == "done" and done["needs_chair"] == action["notice"]
+        assert store_phases.get_row(conn, "ship", "p1")["reason"] == action["notice"]["reason"]
+        again = _execute(action, tmp_path)  # a repeat of the same mark changes nothing, and tells nothing
+        assert again["status"] == "done" and "needs_chair" not in again
+    finally:
+        conn.close()
+
+
+def test_no_notice_when_another_worker_claimed_the_phase_before_the_mark(tmp_path, store_at):
+    from harness import store_phases
+
+    conn, _ = _claimed_store(tmp_path, store_at)
+    try:
+        _lapse(conn)
+        (action,) = chair_phase_queue.lost_runs([store_phases.get_row(conn, "ship", "p1")], STAMP)
+        taken = store_phases.claim_next(conn, "b", [], 1)  # B re-claims between the tick's read and its write
+        assert taken is not None and taken.epoch == 2
+        done = _execute(action, tmp_path)
+        assert done["status"] == "done" and "needs_chair" not in done
+        row = store_phases.get_row(conn, "ship", "p1")
+        assert (row["claimed_by"], row["claim_epoch"], row["reason"]) == ("b", 2, "")
+    finally:
+        conn.close()
+
+
+def test_no_notice_for_a_live_claim_when_the_chair_s_clock_runs_ahead(tmp_path, store_at):
+    from harness import store_phases
+
+    conn, claim = _claimed_store(tmp_path, store_at)
+    try:
+        row = store_phases.get_row(conn, "ship", "p1")
+        ahead = "2099-01-01T00:00:00Z"  # the chair's clock, far past the lease by its own reckoning
+        (action,) = chair_phase_queue.lost_runs([row], ahead)
+        done = _execute(action, tmp_path)
+        assert done["status"] == "done" and "needs_chair" not in done
+        assert store_phases.get_row(conn, "ship", "p1")["reason"] == ""  # by the store's clock it is still the worker's
+        assert store_phases.held(conn, "ship", "p1", "a", claim.epoch)
+    finally:
+        conn.close()
+
+
+def _spent(reason_told=False, state="ready"):
+    from harness import phase_pick
+
+    why = phase_pick.with_refunds(f"{phase_pick.GAVE_UP} (silent); tasks left ready", phase_pick.LOST_REFUNDS,
+                                  told=reason_told)
+    return {**_stored("p1", state=state), "reason": why}
+
+
+def test_a_phase_whose_lost_lanes_spent_their_refunds_is_planned_as_its_told_mark_with_its_notice():
+    from harness import phase_pick
+
+    row = _spent()
+    (action,) = chair_phase_queue.gave_up_alarms([row])
+    told = phase_pick.with_refunds(row["reason"], phase_pick.LOST_REFUNDS, told=True)
+    assert action["changes"] == [{"op": "tell_gave_up", "initiative": "ship", "phase": "p1", "seen": row["reason"],
+                                  "reason": told}]
+    assert action["notice"] == {"kind": "needs_chair", "initiative": "ship", "phase": "p1",
+                                "cause": chair_phase_queue.GAVE_UP_CAUSE, "reason": row["reason"],
+                                "command": ["cox", "worker", "status"]}
+    assert chair_phase_queue.gave_up_alarms([_spent(reason_told=True), _spent(state="claimed"), _stored("p2")]) == []
+    queued = plan_tick({**_tick_facts(initiatives=[]), "phase_queue": _queue([row])}, NOW)
+    assert [a["changes"][0]["op"] for a in queued if a.get("notice")] == ["tell_gave_up"]
+    assert not [a for a in queued if a.get("cause") == chair_phase_queue.GAVE_UP_CAUSE]  # told only once marked
+
+
+def test_the_gave_up_notice_is_told_once(tmp_path, store_at):
+    from harness import phase_pick, store_phases
+
+    conn, claim = _claimed_store(tmp_path, store_at)
+    try:
+        why = phase_pick.with_refunds(f"{phase_pick.GAVE_UP} (silent); tasks left ready", phase_pick.LOST_REFUNDS)
+        assert store_phases.release(conn, claim, "a", why, 60, refund=True)
+        (action,) = chair_phase_queue.gave_up_alarms([store_phases.get_row(conn, "ship", "p1")])
+        done = _execute(action, tmp_path)
+        assert done["status"] == "done" and done["needs_chair"] == action["notice"]
+        again = _execute(action, tmp_path)  # a repeat of the same mark changes nothing, and tells nothing
+        assert again["status"] == "done" and "needs_chair" not in again
+        assert chair_phase_queue.gave_up_alarms([store_phases.get_row(conn, "ship", "p1")]) == []  # next tick: told
+    finally:
+        conn.close()

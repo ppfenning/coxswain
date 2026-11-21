@@ -29,6 +29,7 @@ from harness.lane_workers import XDIST_VAR
 __all__ = [
     "HARNESS_FAULT_PREFIX",
     "LEVELS",
+    "NEW_MODEL_ONLY",
     "all_passed",
     "check_feedback",
     "check_outcome",
@@ -166,6 +167,10 @@ def check_outcome(returncode: int | None, error: str | None) -> str:
 
 LEVELS: tuple[str, ...] = ("task", "phase", "initiative")
 _LEVEL_MARK = re.compile(r"^#\s*level:\s*(\S+)\s*$")
+# A trailing `# new model only` on a command line: the check runs at its level on the phase model alone, never in the
+# old model's flat list (`old_model_checks`). The entry carries `NEW_MODEL_ONLY`; bash reads the mark as a comment.
+_NEW_MODEL_MARK = re.compile(r"\s+#\s*new model only\s*$")
+NEW_MODEL_ONLY = "new_model_only"
 
 
 def repo_checks(text: str) -> list[dict[str, Any]]:
@@ -178,7 +183,8 @@ def repo_checks(text: str) -> list[dict[str, Any]]:
     the next such line, run at that level (`for_level`). Commands before the first marker are task checks, so a file
     with no marker reads exactly as it always has. An entry of the phase or initiative level carries `level`; a task
     entry carries no such key. A marker naming any other level becomes one task check that fails and names the line,
-    so a misspelt section is never silently dropped or run at the wrong level.
+    so a misspelt section is never silently dropped or run at the wrong level. A line may end `# new model only`
+    (`NEW_MODEL_ONLY`): it runs at its level on the phase model, and the old model's flat list leaves it out.
 
     Blank lines and other lines starting with `#` are ignored. Each surviving line,
     stripped, becomes an entry whose `name` and `cmd` are the stripped line
@@ -199,9 +205,12 @@ def repo_checks(text: str) -> list[dict[str, Any]]:
             continue
         if not line or line.startswith("#") or level not in LEVELS:
             continue
-        cmd, fix = _split_fix(line)
+        only = bool(_NEW_MODEL_MARK.search(line))
+        text = _NEW_MODEL_MARK.sub("", line) if only else line
+        cmd, fix = _split_fix(text)
         tagged = {} if level == "task" else {"level": level}
-        entries.setdefault((level, cmd), {"name": line, "cmd": cmd, **({"fix": fix} if fix else {}), **tagged})
+        entries.setdefault((level, cmd), {"name": text, "cmd": cmd, **({"fix": fix} if fix else {}), **tagged,
+                                          **({NEW_MODEL_ONLY: True} if only else {})})
     return list(entries.values())
 
 
@@ -224,8 +233,9 @@ def old_model_checks(parsed: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]
     task lines, then the lines of the widest level the file names (initiative, else phase) whose command is not
     already listed. The levels nest, each a wider check than the one below, so the widest holds the narrower one's
     intent; running both would run a suite twice. A file with no marker gives its task lines, exactly as before
-    levels. Each entry is a task entry: no `level` key."""
-    widest = for_level(parsed, "initiative") or for_level(parsed, "phase")
+    levels. Each entry is a task entry: no `level` key. A line marked `# new model only` (`NEW_MODEL_ONLY`) is left
+    out: the old model has its own gate for it (the root suite, CI's `unit (root)` job), so its list stays as it was."""
+    widest = [c for c in for_level(parsed, "initiative") or for_level(parsed, "phase") if not c.get(NEW_MODEL_ONLY)]
     task = for_level(parsed, "task")
     known = {c["cmd"] for c in task}
     return task + [{k: v for k, v in c.items() if k != "level"} for c in widest if c["cmd"] not in known]

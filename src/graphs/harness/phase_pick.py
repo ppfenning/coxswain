@@ -12,6 +12,18 @@ TERM grace and the KILL wait end by then, and it never starts a heartbeat that c
 lapse: no phase is run by two workers at once. A lapsed claim is simply
 claimable again; there is no sweeper. A phase that has had `MAX_ATTEMPTS` claims is never claimed again: the chair
 finishes it as failed (`exhausted`).
+
+The operator may give a worker another lease (`cox worker run --lease-s N`, `Timings.of`), from `MIN_LEASE_S` to
+`MAX_LEASE_S`: the heartbeat, the stop time and the lane's margin scale with it, a sixth, three quarters and a quarter
+of it, as 10, 45 and 15 are of 60. A claim carries its own lease's length (`lease_until` less `heartbeat_at`), so the
+lane reads its margin from the claim row (`margin_of`) and nothing has to pass the length to it.
+
+Every call these timings count on is bounded on the client's side as well as the server's
+(`store_dialect.Connection.within`), so a store gone silent costs a heartbeat `HEARTBEAT_CALL_S` and a lane's claim
+check `CHECK_CALL_S`, never the minute the kernel would wait. The check's server bounds are tighter still
+(`CHECK_SERVER_MS`), so a live store that is busy (a table lock a migration holds) answers it with an error first, and
+the lane checks again rather than give up a claim it still holds. The shortest lease is the one whose margin still
+holds what follows a good check: the rest of that check, one bounded push, and `SKEW_S` of slack (`lease_problem`).
 """
 
 from __future__ import annotations
@@ -25,38 +37,65 @@ from typing import Literal
 __all__ = [
     "BEAT_LOOP_S",
     "CANDIDATES",
+    "CHECK_CALL_S",
+    "CHECK_SERVER_MS",
+    "DEFAULT_TIMINGS",
+    "GAVE_UP",
     "HEARTBEAT_CALL_S",
     "HEARTBEAT_S",
     "KILL_WAIT_S",
     "LANE_MARGIN_S",
+    "LANE_SOCKET_S",
     "LANE_STALL_S",
     "LEASE_S",
+    "LOST_REFUNDS",
+    "MARGIN_FLOOR_S",
     "MAX_ATTEMPTS",
+    "MAX_LEASE_S",
+    "MIN_LEASE_S",
+    "PUSH_BOUND_S",
+    "RUN_LOST",
+    "SKEW_S",
     "STOP_AFTER_S",
     "STOP_GRACE_S",
     "SmokeSeen",
+    "Timings",
     "Verdict",
     "backoff_s",
     "bad_tokens",
+    "carry_refunds",
     "choices",
     "claimable",
     "exhausted",
     "fenced",
+    "gave_up_alarm",
     "lane_stalled",
     "lane_verdict",
+    "lapsed",
     "lease",
+    "lease_left",
+    "lease_problem",
+    "lost_reason",
+    "lost_refund",
+    "margin_of",
     "meets",
     "next_step",
+    "refunds_of",
     "refusal",
+    "seconds",
     "stamp_of",
     "stop_at",
     "verdict",
+    "with_refunds",
 ]
 
 HEARTBEAT_S = 10
 LEASE_S = 60
 STOP_AFTER_S = 45
-HEARTBEAT_CALL_S = 10  # the longest one heartbeat call can take: a 5 s connect plus a 5 s statement (`worker.bounded_url`)
+# The longest one heartbeat call can take, a reconnect included: the worker gives it that long and then shuts its
+# socket (`worker_ports.Store`, `store_dialect.Connection.within`, `store_dialect.open_within` for the reconnect); a
+# live store answers in a 5 s connect plus 5 s statements.
+HEARTBEAT_CALL_S = 10
 STOP_GRACE_S = 5  # TERM to KILL, for the launch and the harness alike
 KILL_WAIT_S = 2  # KILL to gone
 BEAT_LOOP_S = 1  # how often the heartbeat loop looks at its claims
@@ -68,6 +107,24 @@ LANE_MARGIN_S = LEASE_S - STOP_AFTER_S
 # A lane rewrites its progress mark every 2 s while it holds its claim; one whose mark has not moved for this long,
 # under a worker that is itself alive, is hung (stopped, deadlocked) and is stopped so its phase can be claimed again.
 LANE_STALL_S = 90
+# A push follows a claim check that found the margin left, so the margin must hold what can pass after the store read
+# its clock for that check: the rest of the check (`CHECK_CALL_S`, the fence's own bound on it), one bounded push
+# (`lane_rollup.REMOTE_TIMEOUT_S`), and `SKEW_S` for the lane's own scheduling and the store's clock reading. A check a
+# busy store answered with an error finds the margin from the last lease it read instead, timed on the lane's own
+# monotonic clock from before that read, which can only be earlier than the store's reading.
+PUSH_BOUND_S = 8
+CHECK_CALL_S = 3
+# The check's own statement and lock-wait bound on the server, a second under `CHECK_CALL_S`: a live store holding a
+# lock the check waits on (ALTER TABLE, VACUUM FULL, REINDEX) ends it with an error the lane can tell from silence.
+CHECK_SERVER_MS = 2_000
+SKEW_S = 1
+MARGIN_FLOOR_S = CHECK_CALL_S + PUSH_BOUND_S + SKEW_S
+MIN_LEASE_S = 4 * MARGIN_FLOOR_S  # 48 s, the shortest lease `lease_problem` accepts: a quarter of it is the floor
+MAX_LEASE_S = 600  # the longest: past ten minutes a dead worker's phase would wait too long for anyone to notice
+# The lane's other store connections (its row writes, its uploads) find a dead peer within about this
+# (`store_dialect.Connection.bound_socket`). Their statements get no client deadline: one may wait on a lock of a live
+# store, as before. A store gone silent is found by the fence's bounded check, which then abandons them all.
+LANE_SOCKET_S = 10
 _BACKOFF_BASE_S = 60
 _BACKOFF_CAP_S = 900
 
@@ -87,6 +144,12 @@ def _parse(stamp: str) -> datetime:
     return datetime.strptime(stamp, _STAMP).replace(tzinfo=UTC)
 
 
+def seconds(earlier: str, later: str) -> int:
+    """The whole seconds from stamp `earlier` to stamp `later` (negative when `later` is the earlier); ValueError when
+    either is not a stamp."""
+    return int((_parse(later) - _parse(earlier)).total_seconds())
+
+
 def lease(now: str, ttl_s: int = LEASE_S) -> str:
     """The stamp `ttl_s` seconds after `now`: when a claim taken or renewed at `now` lapses."""
     return (_parse(now) + timedelta(seconds=ttl_s)).strftime(_STAMP)
@@ -97,21 +160,78 @@ def backoff_s(attempts: int) -> int:
     return min(_BACKOFF_BASE_S * 2 ** max(attempts - 1, 0), _BACKOFF_CAP_S)
 
 
-def stop_at(last_ok: float) -> float:
+@dataclass(frozen=True)
+class Timings:
+    """One worker's lease and what follows from it: how often it renews, how long it may go without a good heartbeat
+    before its run is gone, and the margin its lanes stop at. The default is the operator's 60 s."""
+
+    lease_s: int = LEASE_S
+    heartbeat_s: int = HEARTBEAT_S
+    stop_after_s: int = STOP_AFTER_S
+
+    @property
+    def margin_s(self) -> int:
+        """How much of the lease a lane must still have: once less is left, its worker has gone `stop_after_s`."""
+        return self.lease_s - self.stop_after_s
+
+    @classmethod
+    def of(cls, lease_s: int) -> Timings:
+        """The timings of a `lease_s` lease, scaled as 60 s's are: a heartbeat every sixth, a stop at three quarters."""
+        return cls(lease_s, max(lease_s // 6, 1), lease_s - lease_s // 4)
+
+
+DEFAULT_TIMINGS = Timings()
+
+
+def lease_problem(lease_s: int) -> str:
+    """Why a worker may not run on a `lease_s` lease, or "" when it may: no longer than `MAX_LEASE_S`; its lanes' margin
+    must hold the rest of a claim check, one bounded push and the slack (`MARGIN_FLOOR_S`); and a heartbeat sent when
+    due must be able to finish, at its client-side bound, before the worker's stop time (`next_step`)."""
+    t = Timings.of(lease_s)
+    if lease_s > MAX_LEASE_S:
+        return f"a {lease_s}s lease is longer than the longest a worker takes ({MAX_LEASE_S}s)"
+    if t.margin_s < MARGIN_FLOOR_S:
+        return (f"a {lease_s}s lease leaves its lanes a {t.margin_s}s margin, less than a claim check ({CHECK_CALL_S}s), "
+                f"one bounded push ({PUSH_BOUND_S}s) and {SKEW_S}s of slack")
+    if t.heartbeat_s + HEARTBEAT_CALL_S > stop_at(0.0, t):
+        return f"a {lease_s}s lease leaves no time for a heartbeat ({HEARTBEAT_CALL_S}s) before the worker must stop"
+    return ""
+
+
+def lease_left(row: Row | None, worker: str, epoch: int, now: str) -> int | None:
+    """Pure. The whole seconds the claim's lease has left at `now` while `worker` holds it at `epoch` (`fenced`), else
+    None."""
+    if not fenced(row, worker, epoch, now) or row is None:
+        return None
+    return seconds(now, str(row.get("lease_until")))
+
+
+def margin_of(row: Row | None) -> int:
+    """The margin a lane of this claim stops at: a quarter of the claim's own lease (`lease_until` less `heartbeat_at`,
+    both written from one reading of the store's clock), or `LANE_MARGIN_S` when the row does not say one a worker
+    accepts (`lease_problem`)."""
+    try:
+        ttl = seconds(str((row or {}).get("heartbeat_at")), str((row or {}).get("lease_until")))
+    except ValueError:
+        return LANE_MARGIN_S
+    return Timings.of(ttl).margin_s if not lease_problem(ttl) else LANE_MARGIN_S
+
+
+def stop_at(last_ok: float, timings: Timings = DEFAULT_TIMINGS) -> float:
     """When, on the worker's own monotonic clock, it must start stopping a claim whose last good heartbeat (or, before
     the first, the moment it set out to claim) was `last_ok`: early enough that the TERM grace, the KILL wait and one
-    pass of the heartbeat loop all fit before `STOP_AFTER_S`, so the run is gone by then, 15 s inside the lease."""
-    return last_ok + STOP_AFTER_S - STOP_GRACE_S - KILL_WAIT_S - BEAT_LOOP_S
+    pass of the heartbeat loop all fit before `stop_after_s`, so the run is gone by then, `margin_s` inside the lease."""
+    return last_ok + timings.stop_after_s - STOP_GRACE_S - KILL_WAIT_S - BEAT_LOOP_S
 
 
 Step = Literal["wait", "beat", "stop"]
 
 
-def next_step(last_ok: float, now: float, due: float) -> Step:
+def next_step(last_ok: float, now: float, due: float, timings: Timings = DEFAULT_TIMINGS) -> Step:
     """What the heartbeat loop does for one claim at `now`: `stop` once `stop_at` has come, or when the heartbeat that
     is due could not finish before it (one call takes up to `HEARTBEAT_CALL_S`); `beat` when one is due and fits;
     else `wait`. Pure: both clocks are the worker's own monotonic clock."""
-    deadline = stop_at(last_ok)
+    deadline = stop_at(last_ok, timings)
     if now >= deadline:
         return "stop"
     if now < due:
@@ -141,6 +261,69 @@ def _attempts(row: Row) -> int:
 
 def _lapsed(row: Row, now: str) -> bool:
     return row.get("state") == "claimed" and str(row.get("lease_until") or "") < now
+
+
+def lapsed(row: Row, now: str) -> bool:
+    """A claimed row whose lease lapsed before `now`: its worker stopped renewing it, and nobody has claimed it since."""
+    return _lapsed(row, now)
+
+
+RUN_LOST = "run lost"  # how the chair's mark on a lapsed claim opens (`lost_reason`)
+
+
+def lost_reason(row: Row) -> str:
+    """The chair's "run lost" mark for a lapsed claim, as the row's reason: whose claim, its epoch, when it lapsed and
+    the run it started. The same row always gives the same text, so the mark is written once."""
+    run = str(row.get("run_id") or "")
+    return (f"{RUN_LOST}: {row.get('claimed_by')}'s claim at epoch {row.get('claim_epoch')} lapsed at "
+            f"{row.get('lease_until')}" + (f", leaving run {run}" if run else "") + "; claimable again")
+
+
+GAVE_UP = "the lane gave its claim up"  # how a retry of a lane that ended lost under a held claim opens its reason
+LOST_REFUNDS = 3  # the lost lanes an episode gives back; past them a lost lane counts its attempt (`lost_refund`)
+_REFUNDS = re.compile(r" \[lost lanes refunded: (\d+)(, the chair told)?\]$")
+
+
+def refunds_of(reason: str) -> tuple[int, bool]:
+    """Pure. How many lost lanes the phase's episode has had refunded, and whether the chair has told the operator the
+    cap was reached, from the tag at the end of the row's reason (`with_refunds`); (0, False) when it carries none. The
+    count lives on the row's reason, so a reopen, which writes the chair's own reason, starts the episode at 0."""
+    found = _REFUNDS.search(reason)
+    return (int(found.group(1)), found.group(2) is not None) if found else (0, False)
+
+
+def with_refunds(reason: str, refunds: int, told: bool = False) -> str:
+    """Pure. `reason` with its refund tag (`refunds_of`) set to `refunds` and `told`; no tag when `refunds` is 0."""
+    bare = _REFUNDS.sub("", reason)
+    if refunds <= 0:
+        return bare
+    return f"{bare} [lost lanes refunded: {refunds}{', the chair told' if told else ''}]"
+
+
+def carry_refunds(prior: str, reason: str) -> str:
+    """Pure. A retry's `reason` carrying the refund tag of the claim's `prior` reason, unless it has one of its own: so
+    a retry for any other cause (a refused launch) keeps the episode's count."""
+    if _REFUNDS.search(reason):
+        return reason
+    return with_refunds(reason, *refunds_of(prior))
+
+
+def lost_refund(prior: str, checked: bool) -> bool:
+    """Pure. Whether a lane that ended lost while its worker still holds the claim gives the attempt back, from the
+    claim's `prior` reason and whether any check of the lane's read its lease (`checked`). A loss at the first check
+    counts: the lane never reached the store (a wrong password, a refusing pg_hba, a store at another version), a
+    fault that would come back on every retry. A loss after a good check is the store's, not the phase's, and is
+    refunded, `LOST_REFUNDS` times an episode; after that it counts too, so a fault that keeps coming back still runs
+    the phase out of attempts (`exhausted`), and the chair has told the operator (`gave_up_alarm`)."""
+    return checked and refunds_of(prior)[0] < LOST_REFUNDS
+
+
+def gave_up_alarm(row: Row) -> bool:
+    """Pure. A ready row a lost lane gave back whose episode has spent its `LOST_REFUNDS` and whose operator has not
+    been told yet: the chair tells once and marks the tag told (`with_refunds`)."""
+    reason = str(row.get("reason") or "")
+    refunds, told = refunds_of(reason)
+    return row.get("state") == "ready" and reason.startswith(GAVE_UP) and refunds >= LOST_REFUNDS and not told
 
 
 def claimable(row: Row, now: str, max_attempts: int = MAX_ATTEMPTS) -> bool:

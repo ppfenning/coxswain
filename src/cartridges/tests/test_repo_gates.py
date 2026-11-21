@@ -58,7 +58,9 @@ def test_the_phase_level_is_the_smoke_without_the_forge_and_the_initiative_level
     sections = _sections()
     assert sections["phase"] == [f'{SMOKE_LINE} -m "not forge"']
     pytest_lines = [f"cd src/{name} && pytest -q -n auto" for name in ("tools", "graphs", "cartridges")]
-    assert sections["initiative"] == [*pytest_lines, SMOKE_LINE]
+    # D2: and the umbrella's own tests/, which the new model's suite runs before the pull request; the old model's
+    # flat list leaves the marked line out (`test_old_model_checks`).
+    assert sections["initiative"] == [*pytest_lines, SMOKE_LINE, "pytest -q -n auto  # new model only"]
 
 
 def ci_workflow() -> dict:

@@ -181,4 +181,6 @@ def test_this_repositorys_file_names_the_three_levels():
     assert [c["cmd"] for c in for_level(parsed, "phase")] == ['pytest -q -rs smoke -m "not forge"']
     assert [c["cmd"] for c in for_level(parsed, "initiative")] == [
         "cd src/tools && pytest -q -n auto", "cd src/graphs && pytest -q -n auto",
-        "cd src/cartridges && pytest -q -n auto", "pytest -q -rs smoke"]
+        "cd src/cartridges && pytest -q -n auto", "pytest -q -rs smoke", "pytest -q -n auto"]
+    # D2: the root suite is the new model's alone (`# new model only`); the old model runs it in CI's `unit (root)`.
+    assert [c["cmd"] for c in for_level(parsed, "initiative") if c.get("new_model_only")] == ["pytest -q -n auto"]

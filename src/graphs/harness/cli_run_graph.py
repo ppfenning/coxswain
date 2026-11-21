@@ -779,7 +779,7 @@ def _run_phase_lane(
 ) -> int:
     """Edge. `shell.py phase-lane`: build the one phase a worker claimed (`harness.phase_lane`), under its epoch."""
     from core.cartridge import test_database_setting
-    from harness import phase_lane
+    from harness import initiative_review, phase_lane, phase_pick
     from harness.checks import repo_checks
     from harness.cli_launch import _child_pids, _pgrep_children, lane_store_url, profile_storage_url
     from harness.epic import Ctx, resolve_default_ref
@@ -825,11 +825,17 @@ def _run_phase_lane(
     )
     url, _ = lane_store_url(profile_storage_url(provider, args.runs_dir))
     register_stack_dump(sys.stdout)
+    # The lane's sockets find a dead peer within LANE_SOCKET_S; a store gone silent is found by the fence's bounded
+    # check, which then abandons every connection of the lane's (`phase_lane.run_lane`).
+    bound = phase_pick.LANE_SOCKET_S
     code = phase_lane.run_lane(
-        ctx, claim, store.conn, lambda: open_scoped(url), list(initiative.get("items") or []),
+        ctx, claim, store.conn.bound_socket(bound), lambda: open_scoped(url).bound_socket(bound),
+        list(initiative.get("items") or []),
         default_ref, lambda line: print(line, flush=True),
         lambda: phase_lane.terminate_groups(_child_pids(pgrep=_pgrep_children)),
-        goal=phase_goal(initiative, phase),
+        goal=(initiative_review.initiative_goal(initiative) if phase == initiative_review.QUEUE_PHASE
+              else phase_goal(initiative, phase)),
+        stop_new_children=lambda: phase_lane.terminate_groups(_child_pids(pgrep=_pgrep_children), groups_only=True),
     )
     print(f"phase-lane {run_id}: {claim.initiative}/{claim.phase} exit {code}")
     return code

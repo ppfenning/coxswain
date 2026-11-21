@@ -22,11 +22,33 @@ from agent_tools import worker, worker_ports
 from harness import phase_pick, repo_cache, worktree
 
 
-def _held(row: Mapping[str, object], now: str) -> str:
+def claim_of(row: Mapping[str, object], now: str) -> dict[str, object] | None:
+    """Pure. A claimed row's claim as of the store's `now`: who holds it, at which epoch, until when, and the run it
+    started; and whether it lapsed (nobody renewed it and nobody has claimed it since), with how many seconds ago and
+    whether the chair has marked its run lost (`phase_pick.lost_reason`). None for a row nobody claims."""
+    if row.get("state") != "claimed":
+        return None
     epoch = row.get("claim_epoch")
-    worker_name = str(row.get("claimed_by") or "")
-    live = phase_pick.fenced(row, worker_name, epoch if isinstance(epoch, int) else -1, now)
-    return f"held by {worker_name} until {row.get('lease_until')}" if live else f"lapsed (was {worker_name}), claimable"
+    holder, until = str(row.get("claimed_by") or ""), str(row.get("lease_until") or "")
+    lapsed = not phase_pick.fenced(row, holder, epoch if isinstance(epoch, int) else -1, now)
+    try:
+        ago: int | None = phase_pick.seconds(until, now) if lapsed else None
+    except ValueError:
+        ago = None
+    marked = lapsed and str(row.get("reason") or "") == phase_pick.lost_reason(row)
+    return {"holder": holder, "epoch": epoch, "lease_until": until, "run_id": str(row.get("run_id") or ""),
+            "lapsed": lapsed, "lapsed_s": ago, "marked_lost": marked}
+
+
+def _held(row: Mapping[str, object], now: str) -> str:
+    claim = claim_of(row, now) or {}
+    if not claim.get("lapsed"):
+        return f"held by {claim.get('holder')} until {claim.get('lease_until')}"
+    ago = f", {claim['lapsed_s']}s ago" if isinstance(claim.get("lapsed_s"), int) else ""
+    run = f"; run {claim['run_id']} lost" if claim.get("run_id") else ""
+    marked = " (the chair marked it)" if claim.get("marked_lost") else ""
+    was = f"was {claim.get('holder')}'s, epoch {claim.get('epoch')}"
+    return f"lapsed at {claim.get('lease_until')}{ago} ({was}){run}{marked}, claimable"
 
 
 def status_lines(phases: Sequence[Mapping[str, object]], workers: Sequence[Mapping[str, object]], now: str) -> list[str]:
@@ -44,7 +66,7 @@ def status_lines(phases: Sequence[Mapping[str, object]], workers: Sequence[Mappi
         lines.append(
             f"{row.get('initiative')}/{row.get('phase')}: {state}, epoch {row.get('claim_epoch')}, "
             f"{row.get('attempts')} attempt(s), needs [{requires}]" + (f"; {where}" if where else "")
-            + (f"; run {row.get('run_id')}" if row.get("run_id") else "")
+            + (f"; run {row.get('run_id')}" if row.get("run_id") and not (claim_of(row, now) or {}).get("lapsed") else "")
         )
     if not phases:
         lines.append("the phase queue is empty")
@@ -82,10 +104,17 @@ def _run(a: argparse.Namespace, *, once: bool) -> int:
     if bad:
         print(f"worker: not a capability token (lowercase `name` or `key:value`): {', '.join(bad)}")
         return 2
+    given = getattr(a, "lease_s", None)
+    lease_s = given if isinstance(given, int) else phase_pick.LEASE_S
+    if problem := phase_pick.lease_problem(lease_s):
+        print(f"worker: --lease-s {lease_s}: {problem}; a lease runs from {phase_pick.MIN_LEASE_S}s to "
+              f"{phase_pick.MAX_LEASE_S}s")
+        return 2
     name = a.name or socket.gethostname()
-    ports, store = worker_ports.build(ws, name=name, declared=list(a.capability or []), lanes=a.lanes, version=_version())
+    ports, store = worker_ports.build(ws, name=name, declared=list(a.capability or []), lanes=a.lanes, version=_version(),
+                                      lease_s=lease_s)
     if not once:
-        print(f"worker: {name} on {ws}; heartbeat every {phase_pick.HEARTBEAT_S}s, lease {phase_pick.LEASE_S}s", flush=True)
+        print(f"worker: {name} on {ws}; heartbeat every {ports.timings.heartbeat_s}s, lease {lease_s}s", flush=True)
     # SIGTERM (a service manager's stop) is handled as SIGINT is: stop every run, confirm it is gone, give claims back.
     signal.signal(signal.SIGTERM, signal.default_int_handler)
     try:
@@ -112,7 +141,8 @@ def cmd_status(a: argparse.Namespace) -> int:
     finally:
         store.close()
     if a.json:
-        print(json.dumps({"now": now, "phases": phases, "workers": workers}, indent=2, default=str))
+        shown = [{**row, "claim": claim_of(row, now)} for row in phases]
+        print(json.dumps({"now": now, "phases": shown, "workers": workers}, indent=2, default=str))
     else:
         print("\n".join(status_lines(phases, workers, now)))
     return 0

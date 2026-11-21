@@ -8,7 +8,7 @@ check or a store call can hold up the next claim, never a heartbeat.
 
 A claim's clock starts when the worker sets out to claim it. A claim whose heartbeat is refused (another worker holds
 it, or it lapsed) is `lost`; one with no good heartbeat for 45 s is `expired`, which is before its 60 s lease can
-lapse. Either way the heartbeat thread stops its run at once (the launch and the harness, by process group, until
+lapse. A worker given another lease (`--lease-s`, 48 s to 600 s, `phase_pick.Timings`) scales all three. Either way the heartbeat thread stops its run at once (the launch and the harness, by process group, until
 they are gone) and the main loop drops it without a write: it is no longer this worker's to write. So no phase is
 ever run by two workers at once.
 
@@ -23,12 +23,12 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from agent_tools import lane_prereqs
-from harness import phase_pick
+from harness import initiative_review, phase_pick
 
 if TYPE_CHECKING:
     from harness.store_phases import Claim
@@ -38,6 +38,7 @@ DOCTOR_EVERY_S = 600.0  # how often the lane checks run again, so `docker` follo
 STATEMENT_TIMEOUT_MS = 5_000  # a worker's store call: well inside the 45 s it may go without a heartbeat
 LOCK_TIMEOUT_MS = 3_000
 CONNECT_TIMEOUT_S = 5
+STATEMENT_S = STATEMENT_TIMEOUT_MS / 1000 + 1  # the client's own bound on one statement, past the server's
 
 # `cox route launch` exits 2 with one of these when a gate refused the launch, not because the phase is broken.
 REFUSALS = (
@@ -137,6 +138,39 @@ class LaneFacts:
     last_round: tuple[int, str] | None
     smoke: phase_pick.SmokeSeen | None
     reason: str = ""
+    suite: initiative_review.SuiteSeen | None = None  # an initiative review's: the suite at the tip its round reviewed
+    lost: str = ""  # why the lane gave its claim up (its lost mark, `phase_lane.lost_path`), "" when it did not
+    checked: bool = False  # whether a check of that lane read its lease before the loss (the lost mark says)
+
+
+def lane_verdict(claim: Claim, facts: LaneFacts) -> phase_pick.Verdict:
+    """The ack or nack for a claim whose lane ended: an initiative review's by its round and suite
+    (`initiative_review.lane_verdict`), any other phase's by its tasks, round and smoke (`phase_pick.lane_verdict`).
+
+    A lane that gave its claim up (`facts.lost`) while this worker still holds it (`settle` writes nothing otherwise)
+    after a good check lost it to the store, not to the phase: its attempt is not counted, up to
+    `phase_pick.LOST_REFUNDS` times an episode (`phase_pick.lost_refund`). What the store holds still decides an ack
+    or a real failure; any retry, including one the attempts would otherwise have ended, goes back with the attempt
+    refunded (`phase_pick.refusal`) and the episode's count one up on the row's reason. A loss at the first check, or
+    one past the cap, counts as any other attempt, and its retry's reason still says the lane gave its claim up."""
+    prior = str(claim.row.get("reason") or "")
+    refunds = phase_pick.refunds_of(prior)[0]
+    refund = bool(facts.lost) and phase_pick.lost_refund(prior, facts.checked)
+    attempts = attempts_of(claim) - (1 if refund else 0)
+    if claim.row.get("kind") == initiative_review.KIND:
+        found = initiative_review.lane_verdict(facts.last_round, facts.suite, attempts, reason=facts.reason)
+    else:
+        found = phase_pick.lane_verdict(facts.tasks, facts.rolled_up, facts.last_round, attempts,
+                                        smoke=facts.smoke, reason=facts.reason)
+    if not facts.lost or found.kind != "retry":
+        return found
+    if refund:
+        why = f"{phase_pick.GAVE_UP} ({facts.lost}); {found.reason}"
+        return phase_pick.refusal(phase_pick.with_refunds(why, refunds + 1), attempts_of(claim))
+    counted = ("at its first check, before it read its lease" if not facts.checked
+               else f"after {refunds} refunded this episode")
+    why = f"{phase_pick.GAVE_UP} ({facts.lost}); counted, {counted}; {found.reason}"
+    return replace(found, reason=phase_pick.with_refunds(why, *phase_pick.refunds_of(prior)))
 
 
 def lane_facts(task_rows: Sequence[Mapping[str, object]], rollups: Sequence[Mapping[str, object]], phase: str,
@@ -204,10 +238,11 @@ class Leases:
 
     entries: dict[str, Held] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
+    timings: phase_pick.Timings = phase_pick.DEFAULT_TIMINGS
 
     def add(self, claim: Claim, started: float, run: Run | None = None) -> None:
         with self.lock:
-            self.entries[key_of(claim)] = Held(claim, started, started + phase_pick.HEARTBEAT_S, run)
+            self.entries[key_of(claim)] = Held(claim, started, started + self.timings.heartbeat_s, run)
 
     def set_run(self, claim: Claim, run: Run) -> None:
         with self.lock:
@@ -249,18 +284,19 @@ def beat(leases: Leases, heartbeat: Callable[[Claim], bool], request_stop: Reque
     mark `lost` one whose heartbeat is refused, and `expired` one whose stop time has come or whose due heartbeat
     could run past it. A marked claim's run is handed to `request_stop`, which returns at once (`stopper`), so a
     slow stop never holds up another claim's heartbeat. A heartbeat that raises (the store did not answer within its
-    bound) leaves the claim held until its stop time."""
+    bound) leaves the claim held until its stop time. Every time here is the leases' own (`Leases.timings`)."""
+    timings = leases.timings
     for held in leases.snapshot():
         if held.state != "held":
             continue
-        step = phase_pick.next_step(held.last_ok, now(), held.beat_due)
+        step = phase_pick.next_step(held.last_ok, now(), held.beat_due, timings)
         if step == "wait":
             continue
         ok_at, due = None, held.beat_due
         state: State = "expired" if step == "stop" else "held"
         if step == "beat":
             at = now()
-            due = at + phase_pick.HEARTBEAT_S
+            due = at + timings.heartbeat_s
             try:
                 renewed = heartbeat(held.claim)
             except Exception as exc:  # the store did not answer within its bound: the stop time decides
@@ -268,7 +304,7 @@ def beat(leases: Leases, heartbeat: Callable[[Claim], bool], request_stop: Reque
                 renewed = None
             ok_at = at if renewed is True else None  # the time it was sent: the lease runs from no later than that
             state = "lost" if renewed is False else "held"
-            if state == "held" and ok_at is None and now() >= phase_pick.stop_at(held.last_ok):
+            if state == "held" and ok_at is None and now() >= phase_pick.stop_at(held.last_ok, timings):
                 state = "expired"
         run = _record_beat(leases, held.claim, ok_at, due, state)
         if state != "held" and run is not False:
@@ -327,6 +363,7 @@ class Ports:
     monotonic: Callable[[], float]
     sleep: Callable[[float], None]
     log: Callable[[str], None]
+    timings: phase_pick.Timings = phase_pick.DEFAULT_TIMINGS  # the lease it claims on and the heartbeat and stop it keeps
 
 
 def settle(ports: Ports, leases: Leases, claim: Claim, verdict: phase_pick.Verdict) -> None:
@@ -335,7 +372,8 @@ def settle(ports: Ports, leases: Leases, claim: Claim, verdict: phase_pick.Verdi
     if leases.take(claim) is None:
         ports.log(f"worker: {key_of(claim)} is no longer held; nothing written")
         return
-    if verdict.kind == "retry":
+    if verdict.kind == "retry":  # any retry keeps the episode's lost-lane refund count (`phase_pick.carry_refunds`)
+        verdict = replace(verdict, reason=phase_pick.carry_refunds(str(claim.row.get("reason") or ""), verdict.reason))
         done = ports.release(claim, verdict.reason, verdict.wait_s, verdict.refund)
         said = f"released for a retry in {verdict.wait_s}s{' (no attempt counted)' if verdict.refund else ''}: {verdict.reason}"
     else:
@@ -368,9 +406,7 @@ def reap(ports: Ports, leases: Leases) -> None:
                 else:
                     settle(ports, leases, claim, phase_pick.verdict([], attempts_of(claim), launch_error=f"the launch exited {code}: {last}"))
         elif isinstance(held.run, Running) and not ports.alive(held.run):
-            facts = ports.lane_facts(claim, held.run.run_id)
-            settle(ports, leases, claim, phase_pick.lane_verdict(facts.tasks, facts.rolled_up, facts.last_round,
-                                                                 attempts_of(claim), smoke=facts.smoke, reason=facts.reason))
+            settle(ports, leases, claim, lane_verdict(claim, ports.lane_facts(claim, held.run.run_id)))
         elif isinstance(held.run, Running):
             mark, stalled = phase_pick.lane_stalled(held.mark, ports.lane_mark(held.run), ports.monotonic())
             leases.see(claim, mark)
@@ -407,7 +443,7 @@ def run(ports: Ports, *, once: bool = False) -> int:
     """The loop. With `once`, one claim pass, then until every run it started has ended and been settled.
     An interrupt (SIGINT, or SIGTERM made one by the CLI) stops every run this worker started, confirms each is gone,
     and gives each claim it still holds back without costing an attempt."""
-    leases = Leases()
+    leases = Leases(timings=ports.timings)
     stop_beats = ports.heartbeats(leases)
     claimed = False
     try:
