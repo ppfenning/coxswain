@@ -65,6 +65,21 @@ def test_an_action_planned_by_both_the_listed_tick_and_a_worker_is_doubled():
     assert any("planned twice: 1x housekeeping" in p for p in verdict.problems)
 
 
+def test_what_the_listed_tick_still_plans_and_no_worker_does_is_stranded_even_when_the_counts_add_up():
+    """C6: the old model's land slot had no worker. The listed tick planned its lands, the counts added up, and parity
+    said match; but the cutover stops the tick, so those lands would never run."""
+    alone = parity.Reading(Counter({"land_phase": 2, "fetch_exit": 1, "launch_epic": 1}))
+    listed = parity.Reading(Counter({"land_phase": 2, "fetch_exit": 1}))
+    verdict = parity.judge(alone, listed, _readings(launch={"launch_epic": 1}))
+    assert not verdict.ok
+    assert verdict.problems == (
+        "the tick, every kind listed, still plans 1x fetch_exit, 2x land_phase, which no worker plans: once the tick is "
+        "stopped nothing would",
+    )
+    owned = parity.judge(alone, NONE, _readings(watch={"land_phase": 2, "fetch_exit": 1}, launch={"launch_epic": 1}))
+    assert owned.ok
+
+
 def test_a_worker_planning_more_than_the_tick_alone_is_named():
     workers = _readings(housekeeping={"housekeeping": 2}, quarantine={"request_triage": 1}, launch={"launch_decompose": 1})
     verdict = parity.judge(ALONE, NONE, workers)

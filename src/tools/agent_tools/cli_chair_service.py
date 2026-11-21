@@ -158,6 +158,7 @@ def _chair_worker(a: argparse.Namespace) -> int:
         runs_dir, profile, session, pid, host, a.dry_run, chair_report.echo_line,
         _profile_path(a), work_state.work_state_mode(provider),
         worker_epoch=lambda: held.epoch if held.epoch is not None else -1, record_store=record_store,
+        worker_lands=a.kind == "watch",
     )
     missing = _chair_unwired_sources(deps)
     if missing:

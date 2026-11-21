@@ -686,14 +686,15 @@ def _takes_cache(read: Callable[..., list[dict]], cache: object) -> Callable[...
 def _chair_run_deps(
     runs_dir: Path, profile: dict, session: str, pid: int, host: str, dry_run: bool, echo: Callable[[str], None],
     profile_path: Path, mode: str, worker_epoch: Callable[[], int] | None = None,
-    record_store: Callable[[list[str]], tuple[int, str]] | None = None,
+    record_store: Callable[[list[str]], tuple[int, str]] | None = None, worker_lands: bool = False,
 ) -> chair_run.RunDeps:
     """Every source has an edge reader; `_ChairUnwired` stays for a source that loses one. A dry run never beats the lease.
 
     `worker_epoch` builds the deps a queue worker (`cox chair worker`) gathers and performs with: its actions are fenced
     and recorded under its own kind lease's epoch, `beat` only clears the tick's read caches and never touches the
-    chair's lease, and it starts no land sink, so it never collects the tick's land results. `record_store` replaces
-    the store write of each action's row (the worker's is fenced on its kind lease)."""
+    chair's lease, and it starts no thread land: its lands are detached processes in the tick's land state dir, which
+    every worker reads for the facts and only the land slot's owner (`worker_lands`, the watch worker) starts and
+    collects. `record_store` replaces the store write of each action's row (the worker's is fenced on its kind lease)."""
     holder = chair.lease_holder(session, pid, host)
     ws = runs_dir.parent
     home = os.path.expanduser("~")
@@ -1241,21 +1242,32 @@ def _chair_run_deps(
         sink = chair_run.land_sink(lambda: chair.renew_lease(runs_dir, session, pid, host), released=lambda: chair.honour_release_request(runs_dir, session, pid, host))
         from agent_tools import chair_land_sink
 
-        def spawn_land(argv: list[str]) -> int:
-            return subprocess.Popen(
-                argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True
-            ).pid
-
         lands = chair_land_sink.ProcessLands(
             runs_dir / "chair-lands", sink,
             lambda action, code, output: chair_exec.land_outcome(action, exec_deps, code, output),
-            land_limit.repo_land_limit, spawn_land, chair.pid_alive, host, time.time,
+            land_limit.repo_land_limit, _spawn_detached, chair.pid_alive, host, time.time,
         )
         exec_deps = dataclasses.replace(exec_deps, lands=lands)
         facts_deps = dataclasses.replace(facts_deps, landing=lands.landing)
         stop_lands = sink.stop  # the thread sink only: a land process is never signalled
         # Land processes outlive the chair and a new chair adopts them from the state dir; only thread lands die with it.
         lands_in_flight = lambda: bool(lands.held_here())  # noqa: E731
+    elif not dry_run:
+        # A queue worker (C6). Every worker reads the same land state dir as the tick, so a launch worker sees a repo
+        # that is landing; only the watch worker, which owns the land slot, starts and collects lands (`worker_lands`),
+        # adopting the ones a tick started before the cutover. A land runs as its own detached process, so a 45-minute
+        # land never holds a pass open. The fallback sink beats nothing: the worker's lease is its own loop's.
+        from agent_tools import chair_land_sink
+
+        sink = chair_run.land_sink(lambda: None)
+        lands = chair_land_sink.ProcessLands(
+            runs_dir / "chair-lands", sink,
+            lambda action, code, output: chair_exec.land_outcome(action, exec_deps, code, output),
+            land_limit.repo_land_limit, _spawn_detached, chair.pid_alive, host, time.time,
+        )
+        facts_deps = dataclasses.replace(facts_deps, landing=lands.landing)
+        if worker_lands:
+            exec_deps = dataclasses.replace(exec_deps, lands=lands)
     # A dry run never releases a real lease, so it passes no release check.
     release_requested = None if dry_run else (lambda: chair.honour_release_request(runs_dir, session, pid, host))
     checkout_state = lambda: chair_restart.read_checkout_state(chair_restart.checkout_root(), _chair_git)  # noqa: E731
@@ -1340,6 +1352,13 @@ def _chair_run_deps(
         store_reads=lambda: chair_tick_cache.merged_counts(reader_cache.tick_counts(), actions_cache.tick_counts()),
         queue_leases=None if dry_run else queue_leases,
     )
+
+
+def _spawn_detached(argv: list[str]) -> int:
+    """Edge. A land process in its own session, so it outlives the chair or worker that started it."""
+    return subprocess.Popen(
+        argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True
+    ).pid
 
 
 def _landing_records(runs_dir: Path) -> list[dict]:

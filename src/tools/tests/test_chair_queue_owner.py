@@ -257,3 +257,37 @@ def test_a_quarantine_reaching_the_chair_is_the_triages_but_the_same_text_from_e
         assert launch_slot_kind({"kind": kind, "task_id": "t", "initiative": "i"}, []) == "quarantine"  # type: ignore[arg-type]
     for kind in ("relaunch", "retry", "rescue", "rebuild_quarantined", "launch_epic", "pull", "rebase_phase"):
         assert launch_slot_kind({"kind": kind, "initiative": "i"}, []) == "launch"  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("name", sorted(_SCENARIOS))
+def test_with_every_kind_listed_the_tick_plans_nothing_so_no_slot_is_left_without_an_owner(name: str):
+    """C6: the cutover stops the tick. Every slot of its layout is a worker's, so with all five kinds listed (and their
+    workers live) the stopped tick would have planned nothing, and the workers plan everything it did."""
+    facts, now = _SCENARIOS[name]
+    on = _queued(facts, frozenset(chair_kinds.QUEUE_KINDS))
+    assert plan_tick(on, now) == []
+    workers = [a for kind in chair_kinds.QUEUE_KINDS for a in (planned_pass(kind, on, now, 1, dry_run=False) or [])]
+    assert _bag(workers) == _bag(plan_tick(facts, now)) - _bag(_held_for_triage(plan_tick(facts, now), frozenset(chair_kinds.QUEUE_KINDS)))
+
+
+_LAND_SLOT = {
+    "land and watch": ["land_phase", "land_phase"],
+    "carries and rebases": ["carry_phase"],
+    "closes": ["close_initiative", "close_initiative", "finish_task", "close_merged_task"],
+    "lost and unfetched runs": ["fetch_exit"],
+}
+
+
+@pytest.mark.parametrize("name", sorted(_LAND_SLOT))
+def test_the_old_models_land_slot_is_the_watch_workers(name: str):
+    """C6: lands, fetch exits, carries and closes of `lane_model: task` work are planned by the watch worker, and by the
+    tick only while it plans watch: a task-model initiative launched after the cutover is still landed and closed."""
+    facts, now = _SCENARIOS[name]
+    slot = _LAND_SLOT[name]
+    watch = [a["kind"] for a in planned_pass("watch", _queued(facts, frozenset({"watch"})), now, 1, dry_run=False) or []]
+    assert [k for k in watch if k in slot] == slot
+    others = frozenset(chair_kinds.QUEUE_KINDS) - {"watch"}
+    on = _queued(facts, others)
+    assert [a["kind"] for a in plan_tick(on, now) if a["kind"] in slot] == slot
+    for kind in others:
+        assert not [a for a in planned_pass(kind, on, now, 1, dry_run=False) or [] if a["kind"] in slot], kind

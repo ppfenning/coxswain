@@ -7,8 +7,9 @@ Three readings of the same store, every one a dry run that takes no lease and pe
 - `listed`: the same tick with every kind listed, which must plan none of a worker's actions;
 - `workers`: each `cox chair worker --kind <k> --once --dry-run` with every kind listed.
 
-The verdict: each worker plans only actions the lone tick planned, the listed tick plans none of them, and the workers'
-counts plus the listed tick's equal the lone tick's, so nothing is lost and nothing is planned twice. Actions are
+The verdict: each worker plans only actions the lone tick planned, the listed tick plans nothing at all (it is stopped
+at the cutover, so what it still plans would strand), and the workers' counts plus the listed tick's equal the lone
+tick's, so nothing is lost and nothing is planned twice. Actions are
 compared by kind and count, as C5's smoke test (`smoke/test_chair_queue_parity.py`) compares them: the tick's `would:`
 segment names each action, and a worker's pass line counts them. The `needs_chair` lines are set aside on both sides:
 the listed tick raises one `queue_unowned` per kind, since no worker runs during the comparison.
@@ -84,6 +85,14 @@ def judge(alone: Reading, listed: Reading, workers: Mapping[str, Reading]) -> Ve
                 f"{kind}: plans more than the tick alone: "
                 + ", ".join(f"{a} {planned.counts[a]} > {alone.counts.get(a, 0)}" for a in extra)
             )
+    # The cutover stops the tick, so whatever it still plans with every kind listed is planned by no one after the stop
+    # (C6: the old model's land slot was such a gap until it went to `watch`).
+    stranded = sorted(a for a in listed.counts if not any(a in w.counts for w in workers.values()))
+    if stranded:
+        problems.append(
+            "the tick, every kind listed, still plans " + ", ".join(f"{listed.counts[a]}x {a}" for a in stranded)
+            + ", which no worker plans: once the tick is stopped nothing would"
+        )
     total: Counter[str] = Counter(listed.counts)
     for reading in workers.values():
         total.update(reading.counts)

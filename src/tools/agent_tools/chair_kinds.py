@@ -4,6 +4,10 @@ Pure. The profile key `chair.queues` lists the kinds that have moved to their ow
 (`cox chair worker --kind K`); the default is empty, so the tick plans every kind as before. The kinds that can move
 are `housekeeping` and `watch` (C3), `quarantine` and `decompose` (C4), and `launch` (C5).
 
+`watch` owns the red-main revert and, since C6, the old model's land slot: its lands, the fetch of an exited remote
+run, the deferred-land deadlock line, its carries and its closes. Every slot of the tick has a kind, so with all five
+listed the tick plans nothing but the queue alarms, and old-model (`lane_model: task`, the default) work still lands.
+
 `launch` is the single owner of every run the chair starts (C5): the old model's launch_epic, relaunch, retry, rescue
 and decompose launches, and the phase queue's `queue_phases`. Whoever holds the launch slot (the tick, or the one
 worker holding `chair:launch`) plans the launch cap from one set of facts and performs it in one process, so two
@@ -72,7 +76,8 @@ QUEUE_KINDS = ("housekeeping", "watch", "quarantine", "decompose", "launch")
 # `min_gap` seconds however busy its tables are, and at least every `poll` seconds when they are quiet.
 WAKE_TABLES: Mapping[str, frozenset[str]] = {
     "housekeeping": frozenset({"work_items", "runs"}),
-    "watch": frozenset({"landing_records", "land_queue"}),
+    # A land is due when a task is approved (`work_items`); a fetch, a carry or a close when a run exits (`runs`).
+    "watch": frozenset({"landing_records", "land_queue", "work_items", "runs"}),
     # A phase that finishes moves its `phase_queue` row (state, outcome) and its tasks' `work_items` rows; either wakes
     # the triage. On the phase model that move is the event, so no `run_exited` courier line is needed.
     "quarantine": frozenset({"work_items", "runs", "phase_queue"}),

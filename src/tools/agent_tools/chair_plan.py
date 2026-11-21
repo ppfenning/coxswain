@@ -1466,7 +1466,9 @@ def plan_housekeeping_kind(basis: TickBasis, launch: LaunchPlan) -> Housekeeping
 
 # Each slot of the tick's layout, in the tick's order, named by the kind that plans it. A kind a queue worker runs
 # (`chair_kinds`) is dropped from the tick's list by its name here, and `plan_kind` returns exactly that kind's slots, so
-# the two together always plan what the tick alone did.
+# the two together always plan what the tick alone did. Every slot names a kind a worker can run: the old model's land
+# slot (lands, fetch exits, the deferred-land deadlock, carries, closes) is `watch`'s, beside the red-main revert, so
+# with every kind listed the tick plans nothing but the queue alarms and old-model work still lands (C6).
 Segment = tuple[str, list[Action]]
 
 # Recovery's decisions that start no run: a triage request, a hold and its announcement. They ride in the launch slot,
@@ -1502,16 +1504,16 @@ def _holder_segments(raw_facts: Facts, now: datetime | None, held: frozenset[str
     housekeeping = plan_housekeeping_kind(basis, launch)
     segments: list[Segment] = [
         ("watch", watch.reverts),
-        ("land", land.lands),
-        ("land", land.fetch_exits),
+        ("watch", land.lands),
+        ("watch", land.fetch_exits),
         ("housekeeping", housekeeping.stale),
         ("housekeeping", housekeeping.tune),
         ("housekeeping", housekeeping.stall),
         ("housekeeping", housekeeping.idle_stall),
         ("housekeeping", housekeeping.idle_ready),
         ("quarantine", quarantine.releases),  # a release starts no run
-        ("land", land.deadlock_chair),
-        ("land", land.carries),
+        ("watch", land.deadlock_chair),
+        ("watch", land.carries),
         *_launch_slot(launch.launches, quarantine.recovered),
         # phase-model initiatives: the queue a worker claims from, never a launch
         ("launch", plan_phase_queue(basis.facts, now.strftime("%Y-%m-%dT%H:%M:%SZ") if now is not None else "", basis.gated)),
@@ -1527,7 +1529,7 @@ def _holder_segments(raw_facts: Facts, now: datetime | None, held: frozenset[str
         ("launch", launch.waiting_actions),
         ("launch", launch.stuck_heads),
         ("launch", launch.unlaunched),
-        ("land", land.closes),
+        ("watch", land.closes),
         ("launch", launch.stopped),
         ("launch", launch.schedule_update),
     ]
