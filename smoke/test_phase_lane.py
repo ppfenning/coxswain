@@ -33,15 +33,24 @@ psycopg = pytest.importorskip("psycopg")
 INITIATIVE, PHASE, BRANCH, INIT = "ship", "p1", "epic/ship/p1", "init/ship"
 LEASE_S = 60  # harness.phase_pick.LEASE_S
 ROLE_ENV, PASSWORD_ENV = "COX_WORKER_STORE_ROLE", "COX_WORKER_STORE_PASSWORD"
-WAIT_CMD = 'for f in $(git diff --name-only "$COX_LANE_BASE" HEAD -- waits); do sleep "$(cat "$f")"; done'
+# The task's cheap check: it marks the task running, then sleeps the seconds its `waits/<task>` file holds, or, when
+# that file holds `await:<other>`, waits (at most 120 s, then fails) until the other task's check has marked it
+# running. A barrier, not a clock: a task that awaits another rolls up only once both are running at the same time.
+WAIT_CMD = (
+    'for f in $(git diff --name-only "$COX_LANE_BASE" HEAD -- waits); do t=$(basename "$f"); v=$(cat "$f"); '
+    'touch "{marks}/running-$t"; case "$v" in await:*) o=${{v#await:}}; i=0; '
+    'while [ ! -e "{marks}/running-$o" ] && [ $i -lt 240 ]; do sleep 0.5; i=$((i+1)); done; '
+    '[ -e "{marks}/running-$o" ] || exit 1;; *) sleep "$v";; esac; done'
+)
+THREADS = 6  # the test worker's hosts.threads: at least two task threads per lane at the default three lanes
 REVIEW_ROLES = ("review_charter", "review_adversary", "review_arbitrate", "validate_chunk", "validate_phase")
 
 
-def _patch(task: str, wait_s: int) -> str:
+def _patch(task: str, wait_s: int | str) -> str:
     return plan.new_file_patch(f"notes/{task}.txt", task) + plan.new_file_patch(f"waits/{task}", str(wait_s))
 
 
-def _answers(waits: dict[str, int]) -> dict[str, object]:
+def _answers(waits: dict[str, int | str]) -> dict[str, object]:
     """Plan and build only, each task its own build (`build@<task>`): no reviewer is scripted."""
     out: dict[str, object] = {"plan": {"steps": ["write the file"], "files_expected": [], "out_of_scope": []}}
     for task, wait_s in waits.items():
@@ -146,11 +155,13 @@ def lane_machine(launchable, repo) -> Iterator[tuple]:
     chair tick, `init/ship` on origin, and a scoped store role for this test's worker, dropped at the end. Yields
     (sandbox, repo, worker name, the worker's environment, the sha `init/ship` started at)."""
     sandbox = launchable.sandbox
+    marks = sandbox.home / "marks"
+    marks.mkdir()
     path = launchable.cartridges / TEAM / "cartridge.yaml"
     cartridge = json.loads(path.read_text(encoding="utf-8"))
     cartridge["policy"] = {"dispatch": {"lane_model": "phase", "lane_prereqs": False}}
     cartridge["landing_areas"]["checks"] = [{"name": "lane-probe", "cmd": f"command -v {plan.LANE_PROBE}"},
-                                            {"name": "wait", "cmd": WAIT_CMD}]
+                                            {"name": "wait", "cmd": WAIT_CMD.format(marks=marks)}]
     path.write_text(json.dumps(cartridge, indent=2) + "\n", encoding="utf-8")
     sandbox.write(f"work/{INITIATIVE}/initiative.md",
                   plan.work_item_text({"id": INITIATIVE, "title": "Ship", "repo": "~/src/app"}, "Ship three notes."))
@@ -162,13 +173,17 @@ def lane_machine(launchable, repo) -> Iterator[tuple]:
     assert filled.returncode == 0, filled.stdout + filled.stderr
     sandbox.git(repo.path, "push", "--quiet", "origin", f"main:refs/heads/{INIT}")
     init_sha = sandbox.git(repo.origin, "rev-parse", INIT)
-    launchable.scripted(_answers({"t1": 1, "t2": 8, "t3": 1}))
+    launchable.scripted(_answers({"t1": "await:t2", "t2": 8, "t3": 1}))
     tick = sandbox.cox("chair", "run", "--once", timeout=180)
     assert tick.returncode == 0 and "launch_epic" not in tick.stdout, tick.stdout + tick.stderr
     assert _row(sandbox)["state"] == "ready", tick.stdout
 
     name = f"smoke-{urlsplit(sandbox.store_url).path.rsplit('_', 1)[-1]}"
     login = "cox_w_" + name.replace("-", "_")
+    # The operator's thread budget for this worker's machine, so the lane's share of it does not hang on the cores
+    # of whatever runs the test (a 4-core runner at three lanes gets one thread, and builds the tasks one by one).
+    _owner(sandbox, "INSERT INTO hosts (name, ssh, capacity, state, beat_at, versions_json, updated_at, updated_by, "
+                    "threads) VALUES (%s, '', 1, 'up', '', '{}', '', 'smoke', %s)", args=(name, THREADS))
     try:
         made = sandbox.cox("setup", "store", "worker-role", name)
         assert made.returncode == 0, made.stdout + made.stderr
@@ -238,9 +253,13 @@ def test_three_tasks_build_in_parallel_each_pushed_as_it_lands_and_the_approved_
     steps = {(s["task_id"], s["kind"]): s for s in _steps(sandbox, run_id)}
     assert {k for k in steps if k[1] == "rollup"} == {("t1", "rollup"), ("t2", "rollup"), ("t3", "rollup")}
     assert {steps[(c["task"], "rollup")]["subject_sha"] for c in commits} == {c["sha"] for c in commits}
-    span = {t: (steps[(t, "build")]["started_at"], steps[(t, "rollup")]["finished_at"]) for t in ("t1", "t2", "t3")}
-    assert span["t1"][0] < span["t2"][1] and span["t2"][0] < span["t1"][1], span  # t1 and t2 overlapped
-    assert span["t3"][0] >= max(span["t1"][1], span["t2"][1]), span  # t3 started after both rolled up
+    # t1 and t2 ran at once: t1's check passes only once t2's check is running (the `await:t2` barrier), so its roll-up
+    # proves the overlap; and the lane started t2 before t1 rolled up, in the lane's own order of events.
+    log = _run_log(sandbox, run_id)
+    assert log.index("lane: building t2") < log.index("lane: t1 rolled up"), log
+    # t3 started only after both rolled up.
+    assert log.index("lane: t2 rolled up") < log.index("lane: building t3"), log
+    assert log.index("lane: t1 rolled up") < log.index("lane: building t3"), log
     roles = _owner(sandbox, "SELECT DISTINCT role FROM node_calls WHERE run_id LIKE %s", args=(f"{run_id}%",))[0]
     assert not {r[0] for r in roles} & set(REVIEW_ROLES), roles
     assert f"the lane writes as cox_w_{name.replace('-', '_')}, scoped" in _run_log(sandbox, run_id)
