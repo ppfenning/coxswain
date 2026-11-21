@@ -8,7 +8,7 @@ first write left.
 `steps_of_result` turns one lifecycle result, as the epic driver saves it, into its plan, build, review, adversary,
 arbitration and checks rows, and a build-only result (the phase lane's task build) into a `handoff` row too, which keeps
 what an incomplete handoff found missing for the task's next build (`lane_feedback`); a `checks` row keeps the capped
-end of each failed check's output for it (`_tail`), dropped where its log held a secret (`artifacts.withhold_tails`). It is pure: the run, the place and the time arrive as arguments. Only `put_step` and
+end of each failed check's output for it (`_tail`), scrubbed on every save (`artifacts.scrub_tails`). It is pure: the run, the place and the time arrive as arguments. Only `put_step` and
 `steps_for` touch the store.
 
 On today's model a fix-loop re-entry (`epic_build.refix_task`) is a second lifecycle run of the same task inside the
@@ -48,9 +48,11 @@ from harness.store_dialect import Connection, Json, JsonObject, insert_ignore, j
 from harness.store_types import StepRow
 
 __all__ = [
+    "FAULT_OUTCOMES",
     "PHASE_KINDS",
     "ROUND_COLUMNS",
     "STEP_COLUMNS",
+    "TAIL_KEPT_CHECKS",
     "TASK_KINDS",
     "belongs",
     "collision_steps",
@@ -78,10 +80,10 @@ _HANDOFF_MISSING_MAX = 10
 _HANDOFF_ITEM_CHARS = 600
 # What a `checks` row keeps of a failed check's output, for the task's next build (`lane_feedback`): the last lines of
 # its excerpt, on at most this many failing checks. Never a whole log: that is the step's artifact.
-_TAIL_KEPT_CHECKS = 3
+TAIL_KEPT_CHECKS = 3
 _TAIL_KEPT_LINES = 40
 _TAIL_KEPT_CHARS = 2000
-_FAULTS = frozenset({"timed_out", "unrunnable"})  # `checks.quarantine_reason`'s harness faults: not the change's
+FAULT_OUTCOMES = frozenset({"timed_out", "unrunnable"})  # `checks.quarantine_reason`'s harness faults: not the change's
 PHASE_KINDS: tuple[str, ...] = ("smoke", "review", "adversary", "arbitration", "suite", "triage")
 
 STEP_COLUMNS: tuple[str, ...] = (
@@ -282,8 +284,8 @@ def _checks(result: Mapping[str, object], run_id: str) -> tuple[bool, str, JsonO
     ran = stamped or top
     if not ran:
         return None
-    refused = [i for i, c in enumerate(ran) if c.get("passed") is not True and str(c.get("outcome") or "") not in _FAULTS]
-    kept = set(refused[:_TAIL_KEPT_CHECKS])
+    refused = [i for i, c in enumerate(ran) if c.get("passed") is not True and str(c.get("outcome") or "") not in FAULT_OUTCOMES]
+    kept = set(refused[:TAIL_KEPT_CHECKS])
     each: list[Json] = [
         {"name": str(c.get("name") or ""), "passed": c.get("passed") is True, "exit_code": _json(c.get("exit_code")),
          "outcome": str(c.get("outcome") or ""), **({"output_tail": tail} if i in kept and (tail := _tail(c)) else {})}

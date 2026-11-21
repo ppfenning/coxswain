@@ -119,20 +119,56 @@ def test_only_three_failed_checks_carry_their_output_and_a_passed_or_timed_out_o
     assert "- check `types-3` failed (exit 1)" in text  # still named, without its output
 
 
-def test_a_check_whose_log_held_a_secret_is_named_without_its_output(tmp_path, lane_store):
+TOKEN = "s3cr3t-forgejo-token-value"
+STORE_URL = "postgresql://cox:hunter22pw@localhost:5432/cox"
+SCRUBBED_URL = "postgresql://***@localhost:5432/cox"
+
+
+def _secret_check() -> dict:
+    """A failed check whose output printed a token from the lane's environment and a store URL with its password."""
+    return {**_types_check(5), "excerpt": f"auth failed with {TOKEN}\nconnecting to {STORE_URL}\n{PYRIGHT[0]}"}
+
+
+def test_with_no_artifacts_root_a_check_s_tail_is_scrubbed_before_the_store_and_the_prompt(
+        tmp_path, lane_store, monkeypatch):
+    monkeypatch.setenv("FORGEJO_TOKEN", TOKEN)  # the lane's real environment, which `tail_secrets` reads
+    conn = open_store(lane_store, AT)
+    try:
+        claim, log = _claim(conn), []
+        first = _lane(tmp_path, lane_store, conn, claim, "ship-p1-1",
+                      ScriptedRunner({"plan": PLAN, "build": BUILD, "handoff": COMPLETE}), log)
+        assert first.ctx.artifacts is None  # the default: nothing is uploaded, so nothing is marked
+        result, _, _, _ = phase_lane._build(first, "t1", _base(tmp_path))
+        assert result is not None
+        rows = phase_lane._rows_of(first, with_checks(result, [_secret_check()], "ship-p1-1"), "t1", "")
+        assert TOKEN in next(r for r in rows if r["kind"] == "checks")["result_json"]["checks"][0]["output_tail"]
+        assert first.put(rows)
+        (stored,) = [r for r in store_phases.task_attempt_rows(conn, "ship", "p1", "t1") if r["kind"] == "checks"]
+        tail = stored["result_json"]["checks"][0]["output_tail"]
+        assert "auth failed with ***" in tail and SCRUBBED_URL in tail and PYRIGHT[0] in tail
+        assert TOKEN not in tail and "hunter22pw" not in tail
+
+        again = ScriptedRunner({"plan": PLAN, "build": BUILD, "handoff": COMPLETE})
+        phase_lane._build(_lane(tmp_path, lane_store, conn, claim, "ship-p1-2", again, log), "t1", _base(tmp_path))
+        prompt = next(c["prompt"] for c in again.calls if c["role"] == "build")
+        assert PYRIGHT[0] in prompt and SCRUBBED_URL in prompt
+        assert TOKEN not in prompt and "hunter22pw" not in prompt
+    finally:
+        conn.close()
+
+
+def test_with_a_root_the_uploaded_log_and_the_row_s_tail_are_scrubbed_alike(tmp_path, lane_store):
     pytest.importorskip("pyarrow")
     from harness.artifacts import artifacts_root, step_artifacts
 
-    token = "s3cr3t-forgejo-token-value"
-    check = {**_types_check(5), "excerpt": f"auth failed with {token}\n{PYRIGHT[0]}"}
+    check = _secret_check()
     log = tmp_path / "runs" / "r1" / "checks" / "p1" / "t1" / "1.log"
     log.parent.mkdir(parents=True)
     log.write_text(check["excerpt"] + "\n", encoding="utf-8")
-    root = artifacts_root({"artifacts_url": f"file://{tmp_path / 'artifacts'}"}, {"FORGEJO_TOKEN": token},
+    root = artifacts_root({"artifacts_url": f"file://{tmp_path / 'artifacts'}"}, {"FORGEJO_TOKEN": TOKEN},
                           tmp_path / "runs")
     result = with_checks({"run_id": "r1:t1"}, [check], "r1")
     rows = steps_of_result(result, run_id="r1", initiative="ship", phase="p1", task="t1", at=AT)
-    assert token in rows[0]["result_json"]["checks"][0]["output_tail"]  # what the row would have kept
     conn = open_store(lane_store, AT)
     try:
         (stored,) = step_artifacts(root, conn, rows, result, runs_dir=tmp_path / "runs", run_id="r1", phase="p1",
@@ -140,10 +176,9 @@ def test_a_check_whose_log_held_a_secret_is_named_without_its_output(tmp_path, l
     finally:
         conn.close()
     assert stored["artifacts_json"][0]["scrubbed"] is True
-    entry = stored["result_json"]["checks"][0]
-    assert "output_tail" not in entry and entry["output_withheld"] is True
     text = lane_feedback.refusal_feedback([stored])
-    assert token not in text and PYRIGHT[0] not in text and "its log held a secret" in text
+    assert PYRIGHT[0] in text and "auth failed with ***" in text and SCRUBBED_URL in text
+    assert TOKEN not in text and "hunter22pw" not in text
 
 
 # -- the step row ------------------------------------------------------------------------------------------------------

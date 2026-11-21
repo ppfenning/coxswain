@@ -111,7 +111,7 @@ from harness import (
     review_loop,
     store_phases,
 )
-from harness.artifacts import mark_missing, step_artifacts
+from harness.artifacts import mark_missing, scrub_tails, step_artifacts, tail_secrets
 from harness.check_gate import repo_gate_lock, tree_gate_checks
 from harness.checks import run_checks
 from harness.digest import build_digest
@@ -463,6 +463,10 @@ class Lane:
                                             task=rows[0]["task_id"])
                 except Exception as exc:  # the rows are still written, marked, as every failed upload's are
                     listed = tuple(mark_missing(r, f"{type(exc).__name__}: {exc}"[:500]) for r in rows)
+        # Every path, uploaded or not: no check's kept output reaches the store unscrubbed. Scrubbing is idempotent,
+        # so a row `step_artifacts` already scrubbed comes through as it was.
+        secrets = tail_secrets(self.ctx.artifacts)
+        listed = tuple(scrub_tails(r, secrets) for r in listed)
         with self.store_lock:
             written = store_phases.put_steps_fenced(self.conn, listed, c.worker, c.epoch, rounds, claimed=c.phase)
         if not written:

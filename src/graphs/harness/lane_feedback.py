@@ -8,7 +8,7 @@ missing evidence). So the lane reads the task's attempts of the phase's current 
 which the plan and the build both read, as the old model's fix loop hands a rebuild the standing critique inside one
 run. The handoff's own `missing` items reach the builder verbatim, in the fix loop's words
 (`lifecycle_propose._handoff_critique`, `_critique`). A failed check reaches it with the end of its output, as the
-`checks` row kept it (`store_steps._tail`: up to three checks, 2,000 characters each), so the builder sees the very
+`checks` row kept it (`store_steps._tail`: up to three checks, 2,000 characters each, scrubbed), so the builder sees the very
 errors (E1: `check_types`' two pyright errors, which a name and an exit code alone did not name).
 
 Only the latest verdict on the work counts: the last handoff, or the last checks that judged the change. If it passed,
@@ -23,10 +23,9 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from graphs.delivery.lifecycle_propose import _critique, _handoff_critique
+from harness.store_steps import FAULT_OUTCOMES, TAIL_KEPT_CHECKS
 
 HEADING = "## Your last attempt was refused"
-_FAULTS = frozenset({"timed_out", "unrunnable"})  # `checks.quarantine_reason`'s harness faults: not the change's
-_SHOWN_CHECKS, _SHOWN_CHARS = 3, 2000  # the failed checks whose output a build is shown, and how much of each
 
 
 def _mapping(value: object) -> Mapping[str, Any]:
@@ -45,7 +44,7 @@ def _handoff_missing(row: Mapping[str, Any]) -> list[str]:
 def _failed_checks(row: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     checks = _mapping(row.get("result_json")).get("checks")
     listed = [_mapping(c) for c in checks] if isinstance(checks, list) else []
-    return [c for c in listed if c.get("passed") is not True and str(c.get("outcome") or "") not in _FAULTS]
+    return [c for c in listed if c.get("passed") is not True and str(c.get("outcome") or "") not in FAULT_OUTCOMES]
 
 
 def _judged(row: Mapping[str, Any]) -> bool:
@@ -54,7 +53,7 @@ def _judged(row: Mapping[str, Any]) -> bool:
         return True
     checks = _mapping(row.get("result_json")).get("checks")
     listed = [_mapping(c) for c in checks] if isinstance(checks, list) else []
-    return row.get("kind") == "checks" and any(str(c.get("outcome") or "") not in _FAULTS for c in listed)
+    return row.get("kind") == "checks" and any(str(c.get("outcome") or "") not in FAULT_OUTCOMES for c in listed)
 
 
 def _refuses(row: Mapping[str, Any]) -> bool:
@@ -69,16 +68,12 @@ def _fenced(text: str) -> str:
 
 
 def _check_line(check: Mapping[str, Any], *, shown: bool) -> str:
-    """One failed check: what it is, then the end of its output as its row kept it (`store_steps._tail`), so the build
-    sees the very errors to fix; a note instead where its log held a secret (`artifacts.withhold_tails`)."""
+    """One failed check: what it is, then the end of its output as its row kept it (`store_steps._tail`, capped and
+    scrubbed before it was stored: `artifacts.scrub_tails`), so the build sees the very errors to fix."""
     line = (f"- check `{check.get('name')}` failed (exit {check.get('exit_code')}): run it in your session and change "
             "what it reports, then attach the command and its real output")
-    tail = str(check.get("output_tail") or "").strip()[-_SHOWN_CHARS:] if shown else ""
-    if tail:
-        return f"{line}. The end of its output:\n{_fenced(tail)}"
-    if check.get("output_withheld") is True:
-        return f"{line}. Its output is not shown here: its log held a secret"
-    return line
+    tail = str(check.get("output_tail") or "").strip() if shown else ""
+    return f"{line}. The end of its output:\n{_fenced(tail)}" if tail else line
 
 
 def _order(row: Mapping[str, Any]) -> tuple[str, str, bool, int]:
@@ -109,7 +104,8 @@ def refusal_feedback(rows: Sequence[Mapping[str, Any]]) -> str:
         "from the phase tip. Answer every one of them in this build: a change, or a command you ran with its real "
         "output. A build that leaves one standing is refused again.",
         *said,
-        *(_check_line(c, shown=n < _SHOWN_CHECKS) for n, c in enumerate(failed)),
+        # One run can hold two checks rows (an attempt's, then its rebuild's): its rows' cap holds for the whole text.
+        *(_check_line(c, shown=n < TAIL_KEPT_CHECKS) for n, c in enumerate(failed)),
     ])
 
 
