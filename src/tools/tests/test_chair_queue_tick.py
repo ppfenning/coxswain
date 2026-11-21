@@ -138,3 +138,43 @@ def test_the_reader_remembers_a_lease_row_it_has_seen_and_times_how_long_the_rea
     later = reader()
     assert later.failing_s == 75.0  # timed from the first failed read (5 s to 80 s)
     assert reader.held("watch") is True  # unknown, and a worker has been seen: the tick leaves it alone
+
+
+def _break_store(runs: Path) -> None:
+    store = run_store.sqlite_path(run_store.store_url_for(runs))
+    for suffix in ("", "-wal", "-shm"):
+        Path(f"{store}{suffix}").unlink(missing_ok=True)
+    Path(store).write_text("not a database", encoding="utf-8")
+
+
+def test_a_lease_row_once_seen_is_remembered_by_a_restarted_tick_through_the_marker_file(tmp_path: Path):
+    runs = _runs(tmp_path)
+    conn = open_store(run_store.store_url_for(runs), "2026-11-20T00:00:00Z")
+    try:
+        kl.acquire(conn, "chair:quarantine", "worker-a", 60)
+    finally:
+        conn.close()
+    assert not chair_read_queues.seen_marker(runs).exists()
+    assert chair_read_queues.QueueLeasesReader(runs, lambda: 0.0)().seen
+    assert chair_read_queues.seen_marker(runs).exists()
+    _break_store(runs)
+    restarted = chair_read_queues.QueueLeasesReader(runs, lambda: 0.0)  # a new process: nothing in memory
+    read = restarted()
+    assert (read.leases, read.seen) == (None, True)
+    assert restarted.held("decompose") is True  # unknown, and a worker has been seen here: the tick leaves it alone
+
+
+def test_with_no_marker_a_restarted_tick_on_a_broken_store_has_seen_no_worker(tmp_path: Path):
+    runs = _runs(tmp_path)
+    _break_store(runs)
+    reader = chair_read_queues.QueueLeasesReader(runs, lambda: 0.0)
+    assert reader().seen is False and reader.held("quarantine") is False
+    assert not chair_read_queues.seen_marker(runs).exists()
+
+
+def test_marking_seen_twice_changes_nothing_and_an_unwritable_runs_dir_is_said_not_raised(tmp_path: Path):
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    assert chair_read_queues.mark_seen(runs) and chair_read_queues.mark_seen(runs)
+    assert chair_read_queues.seen_marker(runs).read_bytes() == b""
+    assert chair_read_queues.mark_seen(tmp_path / "no-such-dir") is False

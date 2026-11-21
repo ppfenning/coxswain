@@ -792,7 +792,7 @@ def tick_timed(
             planned, plan_s = _planned(deps, facts, now, gate, clock)
         # A worker can still take a kind while this tick performs (a revert waits on checks): mark each action of a kind
         # a worker could run, and perform asks for that kind's lease again just before it (`chair_exec.Deps.queue_held`).
-        planned = TickPlan(tag_queue_kinds(planned.actions, facts, now), planned.held_for_ci)
+        planned = TickPlan(tag_queue_kinds(planned.actions, facts, now, gate), planned.held_for_ci)
     deps.reason_state.lines = chair_report.unlaunched_lines(planned.actions, now)
     deps.reason_state.items = [{"initiative": a.get("initiative"), "reason": a.get("reason")} for a in planned.actions if a.get("kind") == "unlaunched"]
     acting = not dry_run and all(a.get("kind") != "standby" for a in planned.actions)

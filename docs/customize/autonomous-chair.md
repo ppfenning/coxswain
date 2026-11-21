@@ -426,20 +426,29 @@ To keep logs longer, set `log_retention_days` in the routing profile. Every
 machine needs it applied together, since an older `cox` refuses a key it
 does not know.
 
-### Queue workers (housekeeping and watch)
+### Queue workers
 
-Two kinds of the tick's work can run as their own process instead:
-housekeeping (stale tickets, lane tuning, stalled runs, idle lanes, lapsed
-logins, and the periodic sweep above) and the watch (reverting a landed commit
-whose main CI went red). The tick stays the default.
+Four kinds of the tick's work can run as their own process instead:
+
+- housekeeping: stale tickets, lane tuning, stalled runs, idle lanes, lapsed
+  logins, and the periodic sweep above;
+- the watch: reverting a landed commit whose main CI went red;
+- quarantine: the triage of a failed task (a triage request, a hold for a
+  person, or a `needs chair` line), restored approvals, widened tickets, held
+  files, repeated failures and review PRs;
+- decompose: launching a decompose for a new intake, and the reports of empty
+  and stalled decomposes.
+
+Launches, relaunches, retries and rescues stay on the tick. The tick stays the
+default.
 
 ```yaml
 chair:
-  queues: [housekeeping, watch]
+  queues: [housekeeping, watch, quarantine, decompose]
 ```
 
 With a kind listed, the tick no longer plans it, and
-`cox chair worker --kind housekeeping` (or `--kind watch`) does. A worker holds
+`cox chair worker --kind <kind>` does. A worker holds
 the store lease `chair:<kind>`, timed by the store's clock, so a second copy of
 one kind stands by, tries again every 10 seconds, and takes over within a
 minute of the first one stopping. A worker that has just taken the lease waits
@@ -447,13 +456,19 @@ minute of the first one stopping. A worker that has just taken the lease waits
 
 The tick leaves a kind alone while a worker holds its lease, whatever the
 tick's own profile says, and checks the leases again just before it performs.
-When it cannot read the leases at all, it leaves both kinds alone for that tick
-rather than risk doing them twice. When a listed kind has had no live worker
+When it cannot read the leases at all, and a worker could be running, it
+leaves every queue kind alone for that tick rather than risk doing one twice. A
+worker could be running when the profile lists a kind, or when a `chair:<kind>`
+lease row has ever been seen on this machine. The tick records that in
+`<runs_dir>/chair-queue-lease-seen`, so a restarted tick still knows it. When a listed kind has had no live worker
 for over a minute, the tick raises one `needs chair` line, `queue_unowned
 <kind>`, and the notifier pushes it once.
 
-A worker wakes on a write to a table its kind reads (`work_items` and `runs` for
-housekeeping; `landing_records` and `land_queue` for the watch). It passes at
+A worker wakes on a write to a table its kind reads: `work_items` and `runs` for
+housekeeping; `landing_records` and `land_queue` for the watch; and
+`work_items`, `runs` and `phase_queue` for quarantine and decompose. A phase
+that finishes moves its `phase_queue` row, which wakes the triage within
+seconds, so no `run_exited` courier line is needed for it. It passes at
 most once per `--min-gap` seconds (default 30), and at least every `--poll`
 seconds (default 60) when nothing is written. Host and worker beats do not wake
 it. While the profile does not list its kind, a worker stays idle.

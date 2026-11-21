@@ -1,5 +1,6 @@
-"""C3: at any moment exactly one of the tick and a kind's queue worker plans that kind, and the two together plan what
-the tick alone did.
+"""C3, C4: at any moment exactly one of the tick and a kind's queue worker plans that kind, and the two together plan
+what the tick alone did. The movable kinds are housekeeping, watch, quarantine and decompose, and every subset of them
+is checked.
 
 Every scenario of the C1 split (`test_chair_plan_kinds._SCENARIOS`) is planned three ways from the same facts: by the
 tick with no queues, by the tick with each subset of the movable kinds queued (or held by a live worker lease), and by
@@ -14,7 +15,7 @@ from collections import Counter
 import pytest
 
 from agent_tools import chair_kinds
-from agent_tools.chair_plan import plan_kind, plan_tick
+from agent_tools.chair_plan import launch_slot_kind, plan_kind, plan_tick, tag_queue_kinds
 from agent_tools.chair_queue import planned_pass
 from agent_tools.chair_types import Action, Facts
 from tests.test_chair_plan_kinds import _NOW as _KINDS_NOW
@@ -124,3 +125,59 @@ def test_a_listed_kind_with_no_worker_puts_one_needs_chair_on_the_tick():
     facts = {**_facts(), "chair_queues": ["watch"], "queue_leases": {}, "queue_lease_now": _LEASE_NOW}
     causes = [a.get("cause") for a in plan_tick(facts, _KINDS_NOW) if a["kind"] == "needs_chair"]  # type: ignore[arg-type]
     assert causes.count("queue_unowned watch") == 1
+
+
+# C4: quarantine and decompose.
+
+_TRIAGE = "triage, a hold and a retry beside a decompose"
+
+
+def test_with_quarantine_and_decompose_queued_the_tick_makes_no_triage_and_launches_no_decompose():
+    facts, now = _SCENARIOS[_TRIAGE]
+    on = _queued(facts, frozenset({"quarantine", "decompose"}))
+    alone = [a["kind"] for a in plan_tick(facts, now)]
+    left = [a["kind"] for a in plan_tick(on, now)]
+    assert {"request_triage", "hold_task", "launch_decompose", "retry"} <= set(alone)
+    assert {"request_triage", "hold_task", "launch_decompose"}.isdisjoint(left)
+    assert "retry" in left  # a retry starts a run: it stays with launch until C5
+    assert [a["kind"] for a in plan_kind("quarantine", on, now)] == ["request_triage", "hold_task"]
+    assert [a["kind"] for a in plan_kind("decompose", on, now)] == ["launch_decompose"]
+
+
+def _strip(actions: list[Action]) -> list[Action]:
+    return [{k: v for k, v in a.items() if k != "queue_kind"} for a in actions]  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("name", sorted(_SCENARIOS))
+@pytest.mark.parametrize("kinds", _SUBSETS, ids=lambda k: "+".join(sorted(k)) or "none")
+def test_each_action_the_tick_keeps_is_tagged_with_the_kind_whose_worker_would_plan_it(name: str, kinds: frozenset[str]):
+    """The tag comes from the slot that planned the action: per kind, the tick's tagged actions are exactly what that
+    kind's worker would plan, and none names a kind the tick skipped."""
+    facts, now = _SCENARIOS[name]
+    on = _queued(facts, kinds)
+    planned = plan_tick(on, now)
+    tagged = tag_queue_kinds(planned, on, now)
+    assert _strip(tagged) == planned
+    for kind in chair_kinds.QUEUE_KINDS:
+        mine = [a for a in tagged if a.get("queue_kind") == kind]
+        assert _bag(_strip(mine)) == (Counter() if kind in kinds else _bag(plan_kind(kind, on, now))), kind
+
+
+def test_a_plan_that_does_not_line_up_is_tagged_only_where_its_text_names_one_kind():
+    facts, now = _SCENARIOS[_TRIAGE]
+    planned = plan_tick(facts, now)
+    triage = next(a for a in planned if a["kind"] == "request_triage")
+    unknown = {"kind": "needs_chair", "initiative": "zz", "cause": "c", "epoch": triage.get("epoch")}
+    tagged = tag_queue_kinds([unknown, triage], facts, now)  # type: ignore[list-item]
+    assert [a.get("queue_kind") for a in tagged] == [None, "quarantine"]
+
+
+def test_a_quarantine_reaching_the_chair_is_the_triages_but_the_same_text_from_elsewhere_is_the_launchs():
+    reach = {"kind": "needs_chair", "initiative": "q", "task_id": "q-t", "cause": "scope"}
+    assert launch_slot_kind(reach, [reach]) == "quarantine"  # type: ignore[arg-type]
+    assert launch_slot_kind(reach, []) == "launch"  # type: ignore[arg-type]
+    assert launch_slot_kind({"kind": "launch_decompose", "intake_ids": ["n1"]}, []) == "decompose"  # type: ignore[arg-type]
+    for kind in ("request_triage", "hold_task", "announce_hold"):
+        assert launch_slot_kind({"kind": kind, "task_id": "t", "initiative": "i"}, []) == "quarantine"  # type: ignore[arg-type]
+    for kind in ("relaunch", "retry", "rescue", "rebuild_quarantined", "launch_epic", "pull", "rebase_phase"):
+        assert launch_slot_kind({"kind": kind, "initiative": "i"}, []) == "launch"  # type: ignore[arg-type]
