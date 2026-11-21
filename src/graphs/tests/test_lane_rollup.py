@@ -54,7 +54,9 @@ def test_rolled_up_commits_are_read_back_as_the_phases_progress(tmp_path):
     assert lane_rollup.fetch(repo, "ship.p1-2", "epic/ship/p9") == (None, "")
 
 
-def test_a_push_that_is_not_a_fast_forward_is_refused(tmp_path):
+def test_our_push_tells_a_branch_that_moved_from_an_origin_it_could_not_reach(tmp_path):
+    """The assumption `push_outcome` rests on: git says `[rejected]` when origin's branch moved, and does not when
+    origin cannot be reached. Our code reads that; git's fast-forward rule itself is not under test."""
     repo, base = _repo(tmp_path)
     first, second = tmp_path / "first", tmp_path / "second"
     for path in (first, second):
@@ -63,9 +65,24 @@ def test_a_push_that_is_not_a_fast_forward_is_refused(tmp_path):
         sha, why = lane_rollup.apply_and_commit(path, _diff(repo, base, f"{task}.txt", task),
                                                 lane_rollup.message("ship", "p1", task, "r", task))
         assert sha is not None, why
-    assert lane_rollup.push(first, "epic/ship/p1")[0]
-    pushed, detail = lane_rollup.push(second, "epic/ship/p1")
-    assert not pushed and "rejected" in detail
+    assert lane_rollup.push(first, "epic/ship/p1")[0] == "pushed"
+    assert lane_rollup.push(second, "epic/ship/p1")[0] == "rejected"
+    _git(repo, "remote", "set-url", "origin", str(tmp_path / "gone.git"))
+    assert lane_rollup.push(second, "epic/ship/p1")[0] == "error"
+
+
+def test_a_runs_private_refs_are_dropped_and_an_earlier_runs_leftovers_swept(tmp_path):
+    repo, base = _repo(tmp_path)
+    for run in ("ship.p1-1", "ship.p1-2", "ship.p2-1"):
+        assert lane_rollup.fetch(repo, run, "main")[0] == base
+    _git(repo, "branch", "agents/ship.p1-1/t1", base)
+    left = tmp_path / "worktrees" / "ship.p1-1" / "p1" / "t1"
+    lane_rollup.open_phase_worktree(repo, left, base)
+    assert lane_rollup.sweep(repo, tmp_path / "worktrees", "ship.p1", "ship.p1-2") == ["ship.p1-1"]
+    lane_rollup.drop_refs(repo, "ship.p1-2")
+    refs = _git(repo, "for-each-ref", "--format=%(refname)", "refs/coxswain/", "refs/heads/agents/").split()
+    assert refs == ["refs/coxswain/lanes/ship.p2-1/main"]  # another phase's run is left alone
+    assert not left.exists() and str(left) not in _git(repo, "worktree", "list")
 
 
 def test_a_change_that_does_not_apply_commits_nothing_and_leaves_the_worktree_clean(tmp_path):

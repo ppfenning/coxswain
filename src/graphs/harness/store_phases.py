@@ -33,15 +33,18 @@ __all__ = [
     "held",
     "host_threads",
     "last_round",
+    "last_rounds",
     "list_rows",
     "list_workers",
     "live_claims",
+    "park",
     "put_steps_fenced",
     "register",
     "release",
     "rollup_rows",
     "set_run",
     "store_now",
+    "task_commits",
 ]
 
 PHASE_COLUMNS: tuple[str, ...] = (
@@ -139,6 +142,12 @@ def _apply(conn: Connection, change: Mapping[str, object], by: str, now: str) ->
             f"WHERE initiative = {p} AND phase = {p} AND state IN ('finished', 'cancelled') AND claim_epoch = {p}",
             (reason, requires, change.get("band", 1), change.get("seq", 0), now, now, by,
              initiative, phase, change.get("epoch", 0)),
+        ) == 1
+    if op == "review":
+        return conn.execute(
+            f"UPDATE phase_queue SET state = 'ready', reason = {p}, ready_at = {p}, attempts = 0, updated_at = {p}, "
+            f"updated_by = {p} WHERE initiative = {p} AND phase = {p} AND state = 'built' AND claim_epoch = {p}",
+            (reason, now, now, by, initiative, phase, change.get("epoch", 0)),
         ) == 1
     if op == "withdraw":
         return conn.execute(
@@ -257,6 +266,20 @@ def finish(conn: Connection, claim: Claim, worker: str, outcome: str, reason: st
         ) == 1
 
 
+def park(conn: Connection, claim: Claim, worker: str, reason: str) -> bool:
+    """Edge. Every task of the phase rolled up and no review round has judged it: the row becomes `built`, which no
+    claim takes (`phase_pick.claimable`), until the chair queues it again once a round is written (`_apply`'s
+    `review`). The claim's attempt is given back: the build succeeded. False when the claim is gone."""
+    p = conn.dialect.placeholder
+    with conn.transaction():
+        now = store_now(conn)
+        return conn.execute(
+            f"UPDATE phase_queue SET state = 'built', lease_until = '', reason = {p}, attempts = attempts - 1, "
+            f"updated_at = {p}, updated_by = {p} {_fence(p)}",
+            (reason, now, worker, claim.initiative, claim.phase, worker, claim.epoch, now),
+        ) == 1
+
+
 def release(conn: Connection, claim: Claim, worker: str, reason: str, wait_s: int, *, refund: bool = False) -> bool:
     """Edge. The retryable nack: give the claim back as `ready`, claimable again `wait_s` seconds from now. The
     attempt stays counted (the claim counted it) unless `refund`: a refused launch, or a worker told to stop, costs
@@ -324,6 +347,35 @@ def last_round(conn: Connection, initiative: str, phase: str) -> tuple[int, str]
         (initiative, phase),
     )
     return None if found is None else (int(str(found[0])), str(found[1]))
+
+
+def last_rounds(conn: Connection, initiatives: Sequence[str]) -> list[Row]:
+    """Edge. The last review round of each phase of the named initiatives, as {initiative, phase, round, verdict}."""
+    if not initiatives:
+        return []
+    p = conn.dialect.placeholder
+    rows = conn.query_all(
+        f"SELECT initiative, phase, round, verdict FROM review_rounds WHERE phase <> '' "
+        f"AND initiative IN ({', '.join(p for _ in initiatives)}) ORDER BY initiative, phase, round",
+        tuple(initiatives),
+    )
+    last = {(str(r[0]), str(r[1])): r for r in rows}
+    return [{"initiative": r[0], "phase": r[1], "round": r[2], "verdict": r[3]} for r in last.values()]
+
+
+def task_commits(conn: Connection, initiatives: Sequence[str]) -> list[Row]:
+    """Edge. The task rows of the named initiatives as the chair's approvals read them: {initiative, task_id, phase,
+    state, merged_commit ('' for none)}."""
+    if not initiatives:
+        return []
+    p = conn.dialect.placeholder
+    columns = ("initiative", "task_id", "phase", "state", "merged_commit")
+    rows = conn.query_all(
+        f"SELECT {', '.join(columns)} FROM work_items WHERE kind = 'task' "
+        f"AND initiative IN ({', '.join(p for _ in initiatives)}) ORDER BY initiative, task_id",
+        tuple(initiatives),
+    )
+    return [{**dict(zip(columns, r, strict=True)), "merged_commit": r[4] or ""} for r in rows]
 
 
 def host_threads(conn: Connection, name: str) -> int:

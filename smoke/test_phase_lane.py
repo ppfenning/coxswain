@@ -9,7 +9,7 @@ review call would fail the run. `init/ship` is pushed to origin first, as the la
 
 The lane writes as the worker's scoped store role (`cox setup store worker-role`), named for this test since roles are
 server-wide, and dropped at the end. Where the tests stand in for L6, the phase review loop that does not exist yet,
-they write its round row as the store's owner ("the scripted round") and make the phase claimable at once.
+they write its round row as the store's owner ("the scripted round"), and the chair queues the parked phase again.
 """
 
 from __future__ import annotations
@@ -77,12 +77,6 @@ def _row(sandbox) -> dict:
 
 def _store_now(sandbox) -> str:
     return _owner(sandbox, "SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")[0][0][0]
-
-
-def _claimable_now(sandbox) -> None:
-    """The phase claimable at once, where a backoff or the review wait would hold it (the test does not wait it out)."""
-    _owner(sandbox, "UPDATE phase_queue SET ready_at = to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') "
-                    "WHERE initiative = %s AND phase = %s AND state = 'ready'", args=(INITIATIVE, PHASE))
 
 
 def _until(check, timeout: float, what: str):
@@ -187,6 +181,34 @@ def lane_machine(launchable, repo) -> Iterator[tuple]:
                         f"THEN EXECUTE 'DROP OWNED BY {login}'; EXECUTE 'DROP ROLE {login}'; END IF; END$$")
 
 
+def _approve_round(sandbox, head: str) -> None:
+    """The scripted round, as L6 will write it: the phase review approved. The chair's next tick queues the parked
+    phase again."""
+    _owner(sandbox, "INSERT INTO review_rounds VALUES (%s, %s, 1, %s, 'approve', '', '{}', '', 'smoke', 'smoke', 0, 0, '')",
+           args=(INITIATIVE, PHASE, head))
+    tick = sandbox.cox("chair", "run", "--once", timeout=180)
+    assert tick.returncode == 0, tick.stdout + tick.stderr
+    assert _row(sandbox)["state"] == "ready", (tick.stdout, _row(sandbox))
+
+
+def _lane_refs(sandbox, repo) -> list[str]:
+    return sandbox.git(repo.path, "for-each-ref", "--format=%(refname)", "refs/coxswain/").split()
+
+
+def _freeze_lane_and_lose_its_worker(sandbox, worker: Worker) -> tuple[str, int]:
+    """Kill the worker (nobody renews the claim) and freeze its lane's process group where it stands."""
+    run_id = _row(sandbox)["run_id"]
+    lane = _lane_pid(sandbox, run_id)
+    os.killpg(lane, signal.SIGSTOP)
+    worker.kill()
+    return run_id, lane
+
+
+def _thaw(lane: int) -> None:
+    with __import__("contextlib").suppress(ProcessLookupError):
+        os.killpg(lane, signal.SIGCONT)
+
+
 def test_three_tasks_build_in_parallel_each_pushed_as_it_lands_and_the_approved_round_approves_them(lane_machine):
     sandbox, repo, name, env, init_sha, _ = lane_machine
     worker = Worker(sandbox, env, "once", "--name", name)
@@ -199,8 +221,10 @@ def test_three_tasks_build_in_parallel_each_pushed_as_it_lands_and_the_approved_
         out = worker.finished(timeout=300)
     finally:
         worker.kill()
-    run_id = _row(sandbox)["run_id"]
-    assert "every task rolled up; waiting for the phase review" in out, out
+    row = _row(sandbox)
+    run_id = row["run_id"]
+    assert "parked as built" in out, out
+    assert (row["state"], row["claim_epoch"], row["attempts"]) == ("built", 1, 0), row  # parked, never relaunched
 
     commits = _commits(sandbox, repo.origin)
     assert [(c["initiative"], c["phase"], c["task"], c["run"], c["kind"]) for c in commits][2:] == [
@@ -208,6 +232,8 @@ def test_three_tasks_build_in_parallel_each_pushed_as_it_lands_and_the_approved_
     assert sorted(c["task"] for c in commits) == ["t1", "t2", "t3"] and len(commits) == 3, commits
     assert all(len(c["parents"].split()) == 1 for c in commits)  # linear: no merge commits
     assert sandbox.git(repo.origin, "rev-parse", INIT) == init_sha  # one merge owner: the lane never moves init/ship
+    assert _lane_refs(sandbox, repo) == []  # the run's private refs are gone with it
+    assert not (sandbox.workspace / "runs" / f"{run_id}.lane-beat").exists()
 
     steps = {(s["task_id"], s["kind"]): s for s in _steps(sandbox, run_id)}
     assert {k for k in steps if k[1] == "rollup"} == {("t1", "rollup"), ("t2", "rollup"), ("t3", "rollup")}
@@ -219,11 +245,9 @@ def test_three_tasks_build_in_parallel_each_pushed_as_it_lands_and_the_approved_
     assert not {r[0] for r in roles} & set(REVIEW_ROLES), roles
     assert f"the lane writes as cox_w_{name.replace('-', '_')}, scoped" in _run_log(sandbox, run_id)
 
-    # The scripted round, as L6 will write it: the phase review approved. The next claim finishes the phase approved
-    # without building anything, and the chair approves each task at its roll-up commit.
-    _owner(sandbox, "INSERT INTO review_rounds VALUES (%s, %s, 1, %s, 'approve', '', '{}', '', 'smoke', 'smoke', 0, 0, '')",
-           args=(INITIATIVE, PHASE, commits[-1]["sha"]))
-    _claimable_now(sandbox)
+    # The round is written; the chair queues the phase again; the next claim finishes it approved without building,
+    # and the chair approves each task at its roll-up commit, both writes at once.
+    _approve_round(sandbox, commits[-1]["sha"])
     again = Worker(sandbox, env, "once", "--name", name).finished()
     assert "finished approved" in again, again
     row = _row(sandbox)
@@ -240,7 +264,10 @@ def test_three_tasks_build_in_parallel_each_pushed_as_it_lands_and_the_approved_
     assert sandbox.git(repo.origin, "rev-parse", INIT) == init_sha
 
 
-def test_a_lane_killed_after_two_roll_ups_is_resumed_by_the_next_claim_and_the_stale_lane_writes_nothing(lane_machine):
+def test_a_frozen_lane_is_stopped_by_the_next_claim_which_builds_only_what_is_missing(lane_machine):
+    """The worker dies after two roll-ups and its lane freezes mid-check. Once the lease lapses, the next claim on this
+    machine stops the frozen lane (it does not refuse its own launch for as long as that lives), sweeps what it left,
+    and builds t3 alone; the frozen lane wrote nothing after it froze."""
     sandbox, repo, name, env, init_sha, launchable = lane_machine
     launchable.scripted(_answers({"t1": 1, "t2": 1, "t3": 600}))  # t3's check outlasts everything below
     first = Worker(sandbox, env, "once", "--name", name)
@@ -248,47 +275,113 @@ def test_a_lane_killed_after_two_roll_ups_is_resumed_by_the_next_claim_and_the_s
         _until(lambda: {s["task_id"] for s in _steps(sandbox) if s["kind"] == "rollup"} == {"t1", "t2"}
                and [s for s in _steps(sandbox) if (s["task_id"], s["kind"]) == ("t3", "build")], 240,
                "two roll-ups and t3's build")
-        stale_run = _row(sandbox)["run_id"]
-        lane = _lane_pid(sandbox, stale_run)
-        first.kill()  # the worker is gone: nobody renews the claim
-        os.killpg(lane, signal.SIGSTOP)  # and its lane is frozen mid-check, still holding its pid
-    except BaseException:
+        stale_run, lane = _freeze_lane_and_lose_its_worker(sandbox, first)
+    finally:
         first.kill()
-        raise
     try:
         held = _row(sandbox)
+        frozen_at = _store_now(sandbox)
         _until(lambda: _store_now(sandbox) > held["lease_until"], LEASE_S + 30, "the lease to lapse by the store's clock")
-        assert len(_commits(sandbox, repo.origin)) == 2
-
-        # A new claim while the stale lane still lives on this machine: its launch is refused and gives the claim back.
-        refused = Worker(sandbox, env, "once", "--name", name).finished()
-        assert "(no attempt counted)" in refused, refused
-        assert (_row(sandbox)["state"], _row(sandbox)["claim_epoch"]) == ("ready", 2)
-
-        # The stale lane wakes into a claim it no longer holds: it stops, and writes and pushes nothing.
-        woke_at = _store_now(sandbox)
-        os.killpg(lane, signal.SIGCONT)
-        _until(lambda: not _alive(lane), 90, "the stale lane to stop")
-        assert "lane: stopping:" in _run_log(sandbox, stale_run), _run_log(sandbox, stale_run)
-        assert not [s for s in _steps(sandbox, stale_run) if s["finished_at"] >= woke_at], _steps(sandbox, stale_run)
-        assert len(_commits(sandbox, repo.origin)) == 2
+        launchable.scripted(_answers({"t1": 1, "t2": 1, "t3": 1}))
+        resumed = Worker(sandbox, env, "once", "--name", name).finished()
+        assert f"stopping {stale_run} (pid {lane}), a lane of an older claim" in resumed, resumed
+        assert not _alive(lane)
     finally:
-        with __import__("contextlib").suppress(ProcessLookupError):
-            os.killpg(lane, signal.SIGCONT)
-            os.killpg(lane, signal.SIGKILL)
-
-    # The next claim resumes from the trailers on origin and builds t3 alone.
-    launchable.scripted(_answers({"t1": 1, "t2": 1, "t3": 1}))
-    _claimable_now(sandbox)
-    resumed = Worker(sandbox, env, "once", "--name", name).finished()
+        _thaw(lane)
     row = _row(sandbox)
-    assert (row["claim_epoch"], row["state"]) == (3, "ready"), (row, resumed)
-    assert "every task rolled up; waiting for the phase review" in resumed, resumed
+    assert (row["claim_epoch"], row["state"]) == (2, "built"), (row, resumed)
+    assert f"swept what {stale_run} left behind" in _run_log(sandbox, row["run_id"])
     built = [s["task_id"] for s in _steps(sandbox, row["run_id"]) if s["kind"] == "build"]
     assert built == ["t3"], _steps(sandbox, row["run_id"])
     commits = _commits(sandbox, repo.origin)
     assert [(c["task"], c["run"]) for c in commits][2:] == [("t3", row["run_id"])] and len(commits) == 3, commits
-    assert sorted(c["task"] for c in commits[:2]) == ["t1", "t2"] and {c["run"] for c in commits[:2]} == {stale_run}
-    stale = {(s["task_id"], s["kind"]) for s in _steps(sandbox, stale_run)}
-    assert ("t3", "checks") not in stale and ("t3", "rollup") not in stale, stale
+    assert {c["run"] for c in commits[:2]} == {stale_run}
+    assert not [s for s in _steps(sandbox, stale_run) if s["finished_at"] > frozen_at], _steps(sandbox, stale_run)
+    assert _lane_refs(sandbox, repo) == [] and not (launchable.worktrees / stale_run).exists()
+    assert sandbox.git(repo.origin, "rev-parse", INIT) == init_sha
+
+
+PRE_PUSH = """#!/bin/sh
+# Smoke: hold t3's roll-up push for a few seconds, after the lane checked its claim and before git sends the refs.
+while read -r _ sha _ _; do
+  if git log -1 --format=%B "$sha" | grep -qx 'Cox-Task: t3' && [ ! -e {marker} ]; then touch {marker}; sleep 5; fi
+done
+exit 0
+"""
+
+
+def test_a_lane_frozen_between_its_claim_check_and_its_push_writes_no_row_and_the_next_claim_adopts_the_push(lane_machine):
+    """The window no claim check can close: the lane checked its claim, then froze before git sent the refs. Its
+    claim lapses and it wakes with the push done behind its back: it writes no row for it and stops. The next claim
+    finds t3's commit on origin, records its roll-up, and builds nothing twice."""
+    sandbox, repo, name, env, init_sha, _ = lane_machine
+    marker = sandbox.home / "pushing-t3"
+    hook = repo.path / ".git" / "hooks" / "pre-push"
+    hook.write_text(PRE_PUSH.format(marker=marker), encoding="utf-8")
+    hook.chmod(0o755)
+    first = Worker(sandbox, env, "once", "--name", name)
+    try:
+        _until(marker.exists, 240, "t3's push to start")
+        stale_run, lane = _freeze_lane_and_lose_its_worker(sandbox, first)
+    finally:
+        first.kill()
+    try:
+        held = _row(sandbox)
+        _until(lambda: _store_now(sandbox) > held["lease_until"], LEASE_S + 30, "the lease to lapse by the store's clock")
+        woke_at = _store_now(sandbox)
+        _thaw(lane)
+        _until(lambda: not _alive(lane), 60, "the woken lane to stop")
+    finally:
+        _thaw(lane)
+    log = _run_log(sandbox, stale_run)
+    assert "lane: stopping:" in log, log
+    commits = _commits(sandbox, repo.origin)
+    assert [c["task"] for c in commits][2:] == ["t3"] and {c["run"] for c in commits} == {stale_run}, commits
+    stale = _steps(sandbox, stale_run)
+    assert not [s for s in stale if s["finished_at"] >= woke_at] and ("t3", "rollup") not in {
+        (s["task_id"], s["kind"]) for s in stale}, stale
+
+    hook.unlink()
+    resumed = Worker(sandbox, env, "once", "--name", name).finished()
+    row = _row(sandbox)
+    assert (row["claim_epoch"], row["state"]) == (2, "built"), (row, resumed)
+    mine = {(s["task_id"], s["kind"]): s for s in _steps(sandbox, row["run_id"])}
+    assert ("t3", "build") not in mine and mine[("t3", "rollup")]["subject_sha"] == commits[-1]["sha"], mine
+    assert len(_commits(sandbox, repo.origin)) == 3
+    assert sandbox.git(repo.origin, "rev-parse", INIT) == init_sha
+
+
+def test_a_refused_push_is_reconciled_and_the_healthy_holder_keeps_its_claim(lane_machine):
+    """While t2 is in its check, another lane's commit of t2 lands on origin (a stale lane, played by the test). The
+    holder's push of t2 is refused: it checks its claim (still its own), fetches, adopts the commit already there as
+    t2's roll-up, and goes on to t3 on top of it. Nothing loses the claim, and no attempt is spent."""
+    sandbox, repo, name, env, init_sha, launchable = lane_machine
+    launchable.scripted(_answers({"t1": 1, "t2": 25, "t3": 1}))
+    worker = Worker(sandbox, env, "once", "--name", name)
+    try:
+        _until(lambda: [s for s in _steps(sandbox) if (s["task_id"], s["kind"]) == ("t1", "rollup")], 240, "t1's roll-up")
+        other = sandbox.home / "other"
+        sandbox.git(repo.path.parent, "clone", "--quiet", "--branch", BRANCH, str(repo.origin), str(other))
+        for path, text in ((other / "notes" / "t2.txt", "t2\n"), (other / "waits" / "t2", "25\n")):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        sandbox.git(other, "add", "-A")
+        sandbox.git(other, "commit", "--quiet", "-m",
+                    f"epic {INITIATIVE}.p1-9: t2\n\nAdd note t2\n\nCox-Initiative: {INITIATIVE}\nCox-Phase: {PHASE}\n"
+                    f"Cox-Task: t2\nCox-Run: {INITIATIVE}.p1-9\nCox-Kind: task\n")
+        sandbox.git(other, "push", "--quiet", "origin", f"HEAD:refs/heads/{BRANCH}")
+        theirs = sandbox.git(other, "rev-parse", "HEAD")
+        out = worker.finished(timeout=300)
+    finally:
+        worker.kill()
+    row = _row(sandbox)
+    assert (row["state"], row["claim_epoch"], row["attempts"]) == ("built", 1, 0), (row, out)
+    log = _run_log(sandbox, row["run_id"])
+    assert "t2's push of" in log and "came back rejected" in log and "next: adopt" in log, log
+    assert "lane: stopping:" not in log, log
+    commits = _commits(sandbox, repo.origin)
+    assert [(c["task"], c["run"]) for c in commits] == [
+        ("t1", row["run_id"]), ("t2", f"{INITIATIVE}.p1-9"), ("t3", row["run_id"])], commits
+    steps = {(s["task_id"], s["kind"]): s for s in _steps(sandbox, row["run_id"])}
+    assert steps[("t2", "rollup")]["subject_sha"] == theirs, steps
     assert sandbox.git(repo.origin, "rev-parse", INIT) == init_sha

@@ -99,3 +99,33 @@ def test_the_exit_says_lost_before_failed_before_built():
     assert phase_lane.exit_code(False, ["t1"]) == phase_lane.EXIT_FAILED
     assert phase_lane.exit_code(False, []) == phase_lane.EXIT_BUILT
     assert phase_lane.lanes_of({"COX_LANE_CAPACITY": "3"}) == 3 and phase_lane.lanes_of({}) == 1
+
+
+def test_a_push_that_did_not_land_is_reconciled_and_only_a_lost_claim_stops_the_lane():
+    move = lane_rollup.next_move
+    assert move(False, "o", "ours", "tip", False, 1) == "lost"
+    assert move(True, "ours", "ours", "tip", True, 1) == "done"  # it arrived though the answer did not
+    assert move(True, "theirs", "ours", "tip", True, 1) == "adopt"  # a stale lane landed this task
+    assert move(True, "moved", "ours", "tip", False, 1) == "reapply"  # another task landed meanwhile
+    assert move(True, "tip", "ours", "tip", False, 1) == "retry"  # origin did not move: the network failed
+    assert move(True, None, "ours", "tip", False, 2) == "retry"  # nor could origin be read
+    assert move(True, "moved", "ours", "tip", False, 3) == "fail"  # past three tries the task fails alone
+    assert move(True, "tip", "ours", "tip", False, 3) == "fail"
+
+
+def test_a_push_is_rejected_only_when_origin_moved_and_a_killed_push_is_an_error():
+    assert lane_rollup.push_outcome(0, "") == "pushed"
+    assert lane_rollup.push_outcome(1, "!\tHEAD:refs/heads/x\t[rejected] (fetch first)") == "rejected"
+    assert lane_rollup.push_outcome(128, "fatal: unable to access: Could not resolve host") == "error"
+    assert lane_rollup.push_outcome(None, "[rejected]") == "error"  # killed for running over: nothing is known
+
+
+def test_a_new_lane_sweeps_only_the_phases_other_runs():
+    names = ["ship.p1-1", "ship.p1-2", "ship.p1-3", "ship.p10-1", "ship.p2-1", "other"]
+    assert lane_rollup.stale_runs(names, "ship.p1", "ship.p1-3") == ["ship.p1-1", "ship.p1-2"]
+
+
+def test_the_lanes_progress_mark_sits_beside_its_pidfile(tmp_path):
+    path = phase_lane.beat_path(tmp_path, "ship.p1-2")
+    phase_lane.write_beat(path, 7)
+    assert path == tmp_path / "ship.p1-2.lane-beat" and path.read_text() == "7\n"

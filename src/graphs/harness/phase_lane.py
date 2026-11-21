@@ -16,16 +16,30 @@ A worker claims a phase (`store_phases.claim_next`) and starts this lane under t
    change touches: unit tests, lint, the privacy check), with the task's own verification commands;
 6. the roll-up, in order: the checks passed, their artifacts uploaded, the `checks` step row written; the phase's local
    lock taken; the change applied cleanly onto the phase tip (a conflict fails the task: resolving one is L5's) and
-   committed with the trailers; the claim checked again; pushed; the `rollup` step row written with the commit.
+   committed with the trailers; the claim checked again; pushed; the claim checked once more; the `rollup` step row
+   written with the commit. A push that does not land is reconciled, not taken for a lost claim
+   (`lane_rollup.next_move`): the claim is checked and origin fetched; a commit of this task another lane landed is
+   adopted (and any roll-up row it left out written), a branch that moved has the change re-applied onto it, a push
+   that failed to arrive is tried again; past three tries only that task fails.
 
-Every step row is written only while the claim is held (`store_phases.put_steps_fenced`, one transaction under a share
-lock on the claim row), and every push only after the claim was checked and as a fast-forward, so a lane that lost its
-claim (a stop-then-continue, a worker gone quiet) writes nothing and pushes nothing. The lane stops itself, its agents
-and checks with it, once its claim is lost or its lease is within `phase_pick.LANE_MARGIN_S` of lapsing by the store's
-clock: by then its worker has gone the 45 s it may go without a heartbeat, so the lane is gone before the lease lapses
-and another lane can be started. The lane takes no `leases` row (the claim is its lease), opens the store through
-`store_scoped.open_scoped` as the worker's scoped role, and never writes `work_items`, the initiative branch or the
-landing record; the chair turns the roll-ups into approved tasks when the phase is approved.
+**What is fenced, and what is left.** Every step row is written only while the claim is held, by the store's clock
+(`store_phases.put_steps_fenced`: one transaction, under a share lock on the claim row), so a lane that lost its claim
+writes no row, ever. The lane stops itself, its agents and checks with it (their process groups), once its claim is
+lost or its lease is within `phase_pick.LANE_MARGIN_S` (15 s) of lapsing: by then its worker has gone the 45 s it may
+go without a heartbeat. A push follows a claim check that found at least that margin and is bounded to
+`lane_rollup.REMOTE_TIMEOUT_S` (8 s), so a lane that keeps running cannot push once its lease has lapsed. What no check
+can close is a lane frozen (stopped, swapped out, its machine suspended) between its last check and the moment git
+sends the refs: it may wake after another lane holds the claim. Then the push is a plain fast-forward: if the new
+holder pushed first it is refused; if not, it lands one commit, which is a whole roll-up of a task built on the phase
+tip and carries its trailers, and the new holder adopts it (above) rather than building it twice. The stale lane
+writes no row for it (the check after the push fails), and the bound on the push means a wake long after the check
+kills a push still in flight. So the most a stale lane can do is land, once, a commit the phase would have had anyway.
+
+On one machine the worker also stops any older lane of the phase before it starts a new one, and stops a lane whose
+progress mark (`runs/<run>.lane-beat`, rewritten by the fence's thread after each good check) stops moving, so a lane
+frozen under a live worker cannot hold its phase forever. The lane takes no `leases` row (the claim is its lease),
+opens the store through `store_scoped.open_scoped` as the worker's scoped role, and never writes `work_items`, the
+initiative branch or the landing record; the chair turns the roll-ups into approved tasks when the phase is approved.
 
 The rules are pure (`lane_plan`, `lane_progress`, `lane_rollup.message`, and the helpers here marked pure); the rest is
 the edge.
@@ -36,6 +50,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shutil
 import signal
 import threading
 from collections.abc import Callable, Mapping, Sequence
@@ -46,7 +61,7 @@ from typing import Any, cast
 
 from graphs._contract import ContractViolation
 from harness import lane_plan, lane_progress, lane_rollup, phase_pick, store_phases
-from harness.artifacts import step_artifacts
+from harness.artifacts import mark_missing, step_artifacts
 from harness.epic_branches import LIFECYCLE
 from harness.epic_build import build_task, drop_lane, lifecycle_invocation, settle_pool, verify_of
 from harness.epic_context import Ctx, git_in
@@ -66,6 +81,7 @@ __all__ = [
     "LaneClaim",
     "TaskCtx",
     "base_candidates",
+    "beat_path",
     "exit_code",
     "lane_url",
     "lanes_of",
@@ -75,6 +91,7 @@ __all__ = [
     "task_dag",
     "terminate_groups",
     "threads_for",
+    "write_beat",
 ]
 
 EXIT_BUILT = 0  # every task rolled up, or nothing was left to build
@@ -161,8 +178,8 @@ class Fence:
     still holds the claim, and stopping is the safe side."""
 
     def __init__(self, open_conn: Callable[[], Connection], claim: LaneClaim, log: Callable[[str], None],
-                 on_lost: Callable[[], None]) -> None:
-        self._open, self._claim, self._log, self._on_lost = open_conn, claim, log, on_lost
+                 on_lost: Callable[[], None], beat: Callable[[int], None] = lambda _n: None) -> None:
+        self._open, self._claim, self._log, self._on_lost, self._beat = open_conn, claim, log, on_lost, beat
         self._conn: Connection | None = None
         self._lock = threading.Lock()
         self._halt = threading.Event()
@@ -197,9 +214,19 @@ class Fence:
         self._on_lost()
 
     def start(self) -> None:
+        """The watch thread: a claim check every `WATCH_S`, and after each good one the progress mark the worker
+        watches (`beat`), so a lane that stops checking stops marking too."""
+
         def loop() -> None:
-            while not self._halt.wait(WATCH_S) and self.check():
-                pass
+            count = 0
+            while True:
+                count += 1
+                try:
+                    self._beat(count)
+                except OSError as exc:  # a mark that cannot be written ages, and the worker stops the lane: say why
+                    self._log(f"lane: the progress mark could not be written: {exc}")
+                if self._halt.wait(WATCH_S) or not self.check():
+                    return
 
         self._thread = threading.Thread(target=loop, name="lane-fence", daemon=True)
         self._thread.start()
@@ -225,9 +252,14 @@ class Lane:
     fence: Fence
     phase_worktree: Path
     branch: str
+    base_sha: str
     items: Mapping[str, Mapping[str, Any]]
     log: Callable[[str], None]
+    open_conn: Callable[[], Connection]
     store_lock: threading.Lock = field(default_factory=threading.Lock)
+    # Uploads go through a connection of their own, so a slow bucket never holds the row writes a roll-up waits on.
+    artifacts_lock: threading.Lock = field(default_factory=threading.Lock)
+    artifacts_conn: Connection | None = None
     handoffs: dict[str, Mapping[str, Any]] = field(default_factory=dict[str, Mapping[str, Any]])
     halted: threading.Event = field(default_factory=threading.Event)
 
@@ -242,12 +274,18 @@ class Lane:
         c = self.claim
         if self.fence.lost.is_set():
             return False
+        listed = tuple(rows)
+        if result is not None and rows and self.ctx.artifacts is not None:
+            with self.artifacts_lock:
+                try:
+                    if self.artifacts_conn is None:
+                        self.artifacts_conn = self.open_conn()
+                    listed = step_artifacts(self.ctx.artifacts, self.artifacts_conn, rows, result,
+                                            runs_dir=self.ctx.runs_dir, run_id=self.ctx.run_id, phase=c.phase,
+                                            task=rows[0]["task_id"])
+                except Exception as exc:  # the rows are still written, marked, as every failed upload's are
+                    listed = tuple(mark_missing(r, f"{type(exc).__name__}: {exc}"[:500]) for r in rows)
         with self.store_lock:
-            listed = (
-                step_artifacts(self.ctx.artifacts, self.conn, rows, result, runs_dir=self.ctx.runs_dir,
-                               run_id=self.ctx.run_id, phase=c.phase, task=rows[0]["task_id"])
-                if result is not None and rows else tuple(rows)
-            )
             written = store_phases.put_steps_fenced(self.conn, listed, c.worker, c.epoch)
         if not written:
             self.fence.lose("a step row was refused: the claim is gone")
@@ -262,6 +300,12 @@ class Lane:
 
     def stopping(self) -> bool:
         return self.fence.lost.is_set() or self.halted.is_set()
+
+    def close(self) -> None:
+        with self.artifacts_lock:
+            if self.artifacts_conn is not None:
+                self.artifacts_conn.close()
+                self.artifacts_conn = None
 
 
 def _rows_of(lane: Lane, result: Mapping[str, object], task: str, started: str) -> tuple[StepRow, ...]:
@@ -302,35 +346,74 @@ def _cleanup(lane: Lane, tctx: TaskCtx, task: str) -> None:
         git_in("-C", str(tctx.repo), "branch", "-D", tctx.scratch_branch(task))
 
 
-def _roll_up(lane: Lane, task: str, base: str, tctx: TaskCtx, started: str) -> tuple[bool, str]:
-    """Edge. The roll-up under the phase's local lock: apply, commit, check the claim, push, then the `rollup` row."""
+def _origin_progress(lane: Lane, tip: str) -> dict[str, str]:
+    """Edge. The tasks origin's phase branch at `tip` holds, each with its commit; and a `rollup` row written, as
+    recovered, for each of them another lane landed without one (`missing_rollups`)."""
     c = lane.claim
-    worktree = tctx.task_worktree(c.phase, task)
+    ok, text = lane_rollup.log_since(lane.ctx.repo, lane.base_sha, tip)
+    if not ok:
+        return {}
+    done = lane_progress.read(text, c.initiative, c.phase).done
+    with lane.store_lock:
+        stored = store_phases.rollup_rows(lane.conn, [c.initiative])
+    recovered = missing_rollups(done, stored, c.phase)
+    if recovered:
+        start = lane.now()
+        lane.put([lane.row(t, "rollup", True, "recovered", {"recovered": True}, start, sha)
+                  for t, sha in recovered.items()])
+    return done
+
+
+def _roll_up(lane: Lane, task: str, base: str, tctx: TaskCtx, started: str) -> tuple[bool, str]:
+    """Edge. The roll-up under the phase's local lock: apply, commit, check the claim, push, check it again, then the
+    `rollup` row. A push that does not land goes to `lane_rollup.next_move`; only a lost claim stops the lane."""
+    c = lane.claim
+    ok, diff = lane_rollup.change(tctx.task_worktree(c.phase, task), base)
+    if not ok:
+        return False, f"the task's change could not be read: {diff[:300]}"
+    text = lane_rollup.message(c.initiative, c.phase, task, lane.ctx.run_id, str(lane.items[task].get("title") or task))
     with lane_rollup.phase_lock(lane.ctx.repo, c.initiative, c.phase):
-        if lane.stopping():
-            return False, "the lane is stopping"
-        ok, diff = lane_rollup.change(worktree, base)
-        if not ok:
-            return False, f"the task's change could not be read: {diff[:300]}"
-        tip = lane_rollup.head(lane.phase_worktree)
-        title = str(lane.items[task].get("title") or task)
-        sha, why = lane_rollup.apply_and_commit(
-            lane.phase_worktree, diff, lane_rollup.message(c.initiative, c.phase, task, lane.ctx.run_id, title),
-        )
-        if sha is None:
-            lane.put([lane.row(task, "rollup", False, "conflict", {"reason": why[:500], "tip": tip}, started)])
-            return False, why
-        if not lane.fence.check():
+        attempt = 0
+        while True:
+            attempt += 1
+            if lane.stopping():
+                return False, "the lane is stopping"
+            tip = lane_rollup.head(lane.phase_worktree)
+            sha, why = lane_rollup.apply_and_commit(lane.phase_worktree, diff, text)
+            if sha is None:
+                lane.put([lane.row(task, "rollup", False, "conflict", {"reason": why[:500], "tip": tip}, started)])
+                return False, why
+            if not lane.fence.check():
+                lane_rollup.reset_to(lane.phase_worktree, tip)
+                return False, "the claim was lost before the push"
+            outcome, said = lane_rollup.push(lane.phase_worktree, lane.branch)
+            if outcome == "pushed":
+                if not lane.fence.check():
+                    return False, f"{sha[:12]} was pushed, but the claim was lost meanwhile: the next claim records it"
+                lane.log(f"lane: {task} rolled up as {sha[:12]} on {lane.branch}")
+                lane.put([lane.row(task, "rollup", True, "pushed", {"base": base, "parent": tip}, started, sha)])
+                return True, sha
+            held = lane.fence.check()
+            origin, fetch_why = lane_rollup.fetch(lane.ctx.repo, lane.ctx.run_id, lane.branch) if held else (None, "")
+            on_origin = _origin_progress(lane, origin) if origin else {}
+            move = lane_rollup.next_move(held, origin, sha, tip, task in on_origin, attempt)
+            lane.log(f"lane: {task}'s push of {sha[:12]} came back {outcome} ({' '.join(said.split())[:200]}"
+                     f"{'; ' + fetch_why[:200] if fetch_why else ''}); next: {move}")
+            if move == "done":
+                lane.put([lane.row(task, "rollup", True, "pushed", {"base": base, "parent": tip}, started, sha)])
+                return True, sha
+            if move == "adopt":
+                lane_rollup.reset_to(lane.phase_worktree, str(origin))
+                return True, on_origin[task]
+            if move == "reapply":
+                lane_rollup.reset_to(lane.phase_worktree, str(origin))
+                continue
             lane_rollup.reset_to(lane.phase_worktree, tip)
-            return False, "the claim was lost before the push"
-        pushed, detail = lane_rollup.push(lane.phase_worktree, lane.branch)
-        if not pushed:
-            lane_rollup.reset_to(lane.phase_worktree, tip)
-            lane.fence.lose(f"origin refused the push of {lane.branch}: {detail[:300]}")
-            return False, f"the push was refused: {detail[:300]}"
-        lane.log(f"lane: {task} rolled up as {sha[:12]} on {lane.branch}")
-        lane.put([lane.row(task, "rollup", True, "pushed", {"base": base, "parent": tip}, started, sha)])
-    return True, sha
+            if move == "retry":
+                continue
+            if move == "lost":
+                return False, "the claim was lost after a push that did not land"
+            return False, f"the push did not land in {attempt} tries: {' '.join(said.split())[:300]}"
 
 
 def _task(lane: Lane, task: str, base: str) -> tuple[bool, str]:
@@ -406,23 +489,31 @@ def _base(lane_repo: Path, run_id: str, candidates: Sequence[str]) -> tuple[str,
 def run_lane(ctx: Ctx, claim: LaneClaim, conn: Connection, open_conn: Callable[[], Connection],
              items: Sequence[Mapping[str, Any]], base: str, log: Callable[[str], None],
              stop_children: Callable[[], None]) -> int:
-    """Edge. Run the claimed phase as the module docstring says; the exit code (`EXIT_*`)."""
-    fence = Fence(open_conn, claim, log, stop_children)
-    if not fence.check():
-        return EXIT_LOST
-    fence.start()
+    """Edge. Run the claimed phase as the module docstring says; the exit code (`EXIT_*`). On every way out the run's
+    worktrees, its private refs and its progress mark are removed."""
+    mark = beat_path(ctx.runs_dir, ctx.run_id)
+    fence = Fence(open_conn, claim, log, stop_children, lambda n: write_beat(mark, n))
     phase_worktree = ctx.worktree_root / ctx.run_id / claim.phase / "_phase"
     try:
-        return _run(ctx, claim, conn, fence, items, base, log, phase_worktree)
+        if not fence.check():
+            return EXIT_LOST
+        fence.start()
+        swept = lane_rollup.sweep(ctx.repo, ctx.worktree_root, ctx.run_id.rpartition("-")[0], ctx.run_id)
+        if swept:
+            log(f"lane: swept what {', '.join(swept)} left behind")
+        return _run(ctx, claim, conn, fence, items, base, log, phase_worktree, open_conn)
     finally:
         fence.stop()
         settle_pool(ctx, keep_worktrees=False)
         if phase_worktree.exists():
             remove_worktree(ctx.repo, phase_worktree)
+        shutil.rmtree(ctx.worktree_root / ctx.run_id, ignore_errors=True)
+        lane_rollup.drop_refs(ctx.repo, ctx.run_id)
+        mark.unlink(missing_ok=True)
 
 
 def _run(ctx: Ctx, claim: LaneClaim, conn: Connection, fence: Fence, items: Sequence[Mapping[str, Any]], base: str,
-         log: Callable[[str], None], phase_worktree: Path) -> int:
+         log: Callable[[str], None], phase_worktree: Path, open_conn: Callable[[], Connection]) -> int:
     tasks = phase_tasks(items, claim.phase)
     row = store_phases.get_row(conn, claim.initiative, claim.phase) or {}
     from harness.landing_store import get_record
@@ -447,30 +538,42 @@ def _run(ctx: Ctx, claim: LaneClaim, conn: Connection, fence: Fence, items: Sequ
     progress = lane_progress.read(text, claim.initiative, claim.phase)
     for sha in progress.ignored:
         log(f"lane: {sha[:12]} on {branch} is not a task commit of {claim.initiative}/{claim.phase}; ignored")
-    lane = Lane(ctx, claim, conn, fence, phase_worktree, branch, {str(t["id"]): t for t in tasks}, log)
-    recovered = missing_rollups(progress.done, store_phases.rollup_rows(conn, [claim.initiative]), claim.phase)
-    if recovered:
-        start = lane.now()
-        lane.put([lane.row(t, "rollup", True, "recovered", {"recovered": True}, start, sha) for t, sha in recovered.items()])
-    order = [str(t["id"]) for t in tasks]
-    nxt = lane_progress.resume_plan(order, list(progress.done), store_phases.last_round(conn, claim.initiative, claim.phase),
-                                    progress.revisions)
-    log(f"lane: {claim.initiative}/{claim.phase} on {branch} from {base_branch}: "
-        f"{len(progress.done)} of {len(order)} task(s) on the branch; next: {nxt.action}"
-        + (f" {', '.join(nxt.tasks)}" if nxt.tasks else ""))
-    if nxt.action != "build":
-        return EXIT_BUILT
-    ok, detail = lane_rollup.open_phase_worktree(ctx.repo, phase_worktree, tip)
-    if not ok:
-        log(f"lane: the phase worktree could not be opened at {tip[:12]}: {detail[:300]}")
-        return EXIT_FAILED
-    dag = task_dag(tasks)
-    failed = _schedule(lane, dag, list(progress.done), ctx.max_parallel)
+    lane = Lane(ctx, claim, conn, fence, phase_worktree, branch, base_sha, {str(t["id"]): t for t in tasks}, log,
+                open_conn)
+    try:
+        _origin_progress(lane, tip)
+        order = [str(t["id"]) for t in tasks]
+        nxt = lane_progress.resume_plan(order, list(progress.done),
+                                        store_phases.last_round(conn, claim.initiative, claim.phase), progress.revisions)
+        log(f"lane: {claim.initiative}/{claim.phase} on {branch} from {base_branch}: "
+            f"{len(progress.done)} of {len(order)} task(s) on the branch; next: {nxt.action}"
+            + (f" {', '.join(nxt.tasks)}" if nxt.tasks else ""))
+        if nxt.action != "build":
+            return EXIT_BUILT
+        ok, detail = lane_rollup.open_phase_worktree(ctx.repo, phase_worktree, tip)
+        if not ok:
+            log(f"lane: the phase worktree could not be opened at {tip[:12]}: {detail[:300]}")
+            return EXIT_FAILED
+        failed = _schedule(lane, task_dag(tasks), list(progress.done), ctx.max_parallel)
+    finally:
+        lane.close()
     for task, why in sorted(failed.items()):
         log(f"lane: {task} not rolled up: {' '.join(why.split())[:300]}")
     if fence.lost.is_set():
         log(f"lane: the claim was lost ({fence.why}); nothing more was written or pushed")
     return exit_code(fence.lost.is_set(), sorted(failed))
+
+
+def beat_path(runs_dir: Path, run_id: str) -> Path:
+    """Pure. The lane's progress mark, beside its pidfile: the worker reads it (`worker.lane_stalled`)."""
+    return runs_dir / f"{run_id}.lane-beat"
+
+
+def write_beat(path: Path, count: int) -> None:
+    """Edge. Rewrite the progress mark with `count`, whole or not at all."""
+    part = path.with_name(path.name + ".part")
+    part.write_text(f"{count}\n", encoding="utf-8")
+    os.replace(part, path)
 
 
 def terminate_groups(pids: Sequence[int]) -> None:

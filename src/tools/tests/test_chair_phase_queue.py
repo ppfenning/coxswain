@@ -194,27 +194,55 @@ def test_the_idle_count_leaves_out_a_phase_initiative_a_worker_is_running():
     assert less_phase_ready(inputs, [live, _unstarted("b")])["ready"] == 1
 
 
-def test_a_phase_finished_approved_approves_its_open_tasks_at_their_roll_up_commits():
+def _tasks(*specs) -> list[dict]:
+    return [{"initiative": "ship", "task_id": t, "phase": p, "state": s, "merged_commit": m} for t, p, s, m in specs]
+
+
+def _rollups(*specs) -> list[dict]:
+    return [{"initiative": "ship", "phase": p, "task_id": t, "subject_sha": sha} for t, p, sha in specs]
+
+
+def test_a_phase_finished_approved_approves_its_tasks_at_their_last_roll_up_commits():
     stored = [_stored("p1", state="finished", outcome="approved"), _stored("p2", state="finished", outcome="quarantined")]
-    tasks = [{"initiative": "ship", "task_id": t, "phase": p, "state": s}
-             for t, p, s in (("t2", "p1", "ready"), ("t1", "p1", "approved"), ("t3", "p1", "ready"), ("t4", "p2", "ready"))]
-    rollups = [{"initiative": "ship", "task_id": "t2", "subject_sha": "old"}, {"initiative": "ship", "task_id": "t2", "subject_sha": "b2"},
-               {"initiative": "ship", "task_id": "t1", "subject_sha": "a1"}, {"initiative": "ship", "task_id": "t4", "subject_sha": "d4"}]
-    # t1 is approved already, t3 has no commit on the branch, and p2's review quarantined it: only t2 moves, at its last
+    tasks = _tasks(("t2", "p1", "ready", ""), ("t1", "p1", "approved", "a1"), ("t3", "p1", "ready", ""),
+                   ("t5", "p1", "approved", ""), ("t6", "p1", "done", ""), ("t4", "p2", "ready", ""))
+    rollups = _rollups(("t2", "p1", "old"), ("t2", "p1", "b2"), ("t1", "p1", "a1"), ("t5", "p1", "e5"),
+                       ("t6", "p1", "f6"), ("t4", "p2", "d4"))
+    # t1 is approved at its commit already, t3 has none on the branch, t6 is done, and p2's review quarantined it.
+    # t5 was left approved with no merged_commit: it is approved again, at its commit.
     assert chair_phase_queue.approvals(stored, tasks, rollups) == [
         {"initiative": "ship", "phase": "p1", "task_id": "t2", "commit": "b2"},
+        {"initiative": "ship", "phase": "p1", "task_id": "t5", "commit": "e5"},
     ]
+
+
+def test_a_commit_is_the_roll_up_of_the_tasks_own_phase():
+    stored = [_stored("p1", state="finished", outcome="approved")]
+    rollups = _rollups(("t1", "p2", "other-phase"))
+    assert chair_phase_queue.approvals(stored, _tasks(("t1", "p1", "ready", "")), rollups) == []
 
 
 def test_the_tick_approves_an_approved_phases_tasks_and_does_not_reopen_it_meanwhile():
     initiatives = [_phase_initiative("ship", ("p1", [_task("t1", "p1")]))]
     queue = {**_queue([_stored("p1", state="finished", outcome="approved")]),
-             "tasks": [{"initiative": "ship", "task_id": "t1", "phase": "p1", "state": "ready"}],
-             "rollups": [{"initiative": "ship", "task_id": "t1", "subject_sha": "a1"}]}
+             "tasks": _tasks(("t1", "p1", "ready", "")), "rollups": _rollups(("t1", "p1", "a1"))}
     planned = plan_tick({**_tick_facts(initiatives=initiatives), "phase_queue": queue}, NOW)
     (approve,) = [a for a in planned if a["kind"] == "approve_phase_tasks"]
     assert approve["approvals"] == [{"initiative": "ship", "phase": "p1", "task_id": "t1", "commit": "a1"}]
     assert not [a for a in planned if a["kind"] == "queue_phases"]
-    settled = {**queue, "tasks": [{"initiative": "ship", "task_id": "t1", "phase": "p1", "state": "approved"}]}
+    settled = {**queue, "tasks": _tasks(("t1", "p1", "approved", "a1"))}
     again = plan_tick({**_tick_facts(initiatives=initiatives), "phase_queue": settled}, NOW)
     assert not [a for a in again if a["kind"] == "approve_phase_tasks"]
+
+
+def test_a_built_phase_is_queued_again_only_once_its_review_round_is_written():
+    want = chair_phase_queue.rows([_phase_initiative("ship", ("p1", [_task("t1", "p1")]))], True)
+    built = _stored("p1", state="built", epoch=4)
+    assert chair_phase_queue.changes(want, [built], STAMP) == []  # parked: never relaunched while it waits
+    (review,) = chair_phase_queue.changes(want, [built], STAMP, reviewed={("ship", "p1")})
+    assert (review["op"], review["phase"], review["epoch"]) == ("review", "p1", 4)
+    queue = {**_queue([built]), "rounds": [{"initiative": "ship", "phase": "p1", "round": 1, "verdict": "approve"}]}
+    initiatives = [_phase_initiative("ship", ("p1", [_task("t1", "p1")]))]
+    (action,) = [a for a in plan_tick({**_tick_facts(initiatives=initiatives), "phase_queue": queue}, NOW)
+                 if a["kind"] == "queue_phases"]
+    assert _ops(action["changes"]) == [("review", "ship", "p1")]

@@ -70,6 +70,7 @@ _SPAWNERS = frozenset({"run", "Popen", "check_output", "call", "check_call"})
 ALLOWED_UNTIMED = {
     ("tools/agent_tools/bounded_run.py", "popen_runner"): "the Popen whose communicate() carries the timeout",
     ("tools/agent_tools/chair_land_proc.py", "_run"): "the land's Popen; communicate(timeout=spec.timeout_s) bounds it",
+    ("graphs/harness/lane_rollup.py", "_remote"): "a call to origin; communicate(timeout=timeout_s) bounds it, and its group is killed past it",
     ("tools/agent_tools/cli_route_launch.py", "_route_launch"): "a detached background run, never waited on here",
     ("tools/agent_tools/cli_route_launch.py", "_run_decompose_for_result"): "Popen waited with _DECOMPOSE_TIMEOUT_S, killed past it",
     ("tools/agent_tools/cli_courier.py", "_spawn"): "a detached child in its own session, never waited on",

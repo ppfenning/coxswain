@@ -33,9 +33,19 @@ def test_a_lane_verdict_comes_from_the_review_round_then_from_the_roll_ups():
     assert (approved.kind, approved.outcome) == ("ack", "approved")
     assert phase_pick.lane_verdict(["t1"], ["t1"], (1, "quarantine"), 1).outcome == "quarantined"
     waiting = phase_pick.lane_verdict(["t1", "t2"], ["t1", "t2"], None, 2)
-    assert (waiting.kind, waiting.refund, waiting.wait_s) == ("retry", True, phase_pick.REVIEW_WAIT_S)
+    assert (waiting.kind, waiting.reason) == ("built", "every task rolled up; waiting for the phase review")
     left = phase_pick.lane_verdict(["t1", "t2"], ["t1"], None, 1)
     assert (left.kind, left.refund, left.reason) == ("retry", False, "tasks not rolled up: t2")
     spent = phase_pick.lane_verdict(["t1", "t2"], ["t1"], None, phase_pick.MAX_ATTEMPTS)
     assert (spent.kind, spent.outcome) == ("quarantine", "failed")
     assert phase_pick.lane_verdict([], [], None, 1).reason == "the phase has no tasks in the store"
+
+
+def test_a_lane_whose_progress_mark_stands_still_is_stalled_and_one_that_moves_is_not():
+    seen, stalled = phase_pick.lane_stalled(None, "", 100.0)
+    assert (seen, stalled) == (("", 100.0), False)  # no mark yet: the clock starts at the first read
+    seen, stalled = phase_pick.lane_stalled(seen, "1", 150.0)
+    assert (seen, stalled) == (("1", 150.0), False)
+    assert phase_pick.lane_stalled(seen, "1", 150.0 + phase_pick.LANE_STALL_S - 1)[1] is False
+    assert phase_pick.lane_stalled(seen, "1", 150.0 + phase_pick.LANE_STALL_S)[1] is True
+    assert phase_pick.lane_stalled(("", 0.0), "", phase_pick.LANE_STALL_S)[1] is True  # a lane that never marked

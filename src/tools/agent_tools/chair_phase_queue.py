@@ -120,8 +120,11 @@ def _key(row: Row) -> Key:
 
 
 def changes(wanted_rows: Sequence[Row], stored: Sequence[Row], now: str, holds: Collection[str] = (),
-            held_phases: Collection[Key] = (), closed: Collection[str] = (), stopped: bool = False) -> list[dict[str, object]]:
+            held_phases: Collection[Key] = (), closed: Collection[str] = (), stopped: bool = False,
+            reviewed: Collection[Key] = ()) -> list[dict[str, object]]:
     """What the store needs so it holds `wanted_rows`, at the tick's `now`:
+    - `review` for a `built` row (every task rolled up, parked for its review) once its phase has a review round in
+      `reviewed`: claimable again, so the next claim acts on the round, and never before, so nothing relaunches it;
     - `insert` for a phase with no row; `update` for a waiting or ready row whose requirements or order moved;
     - `reopen` for a finished (approved or quarantined) or withdrawn row whose phase is wanted again;
     - `withdraw` for a waiting or ready row whose phase is withheld (`withheld`);
@@ -146,25 +149,32 @@ def changes(wanted_rows: Sequence[Row], stored: Sequence[Row], now: str, holds: 
         if phase_pick.exhausted(row, now):
             out.append({"op": "exhaust", "initiative": key[0], "phase": key[1],
                         "reason": f"{row.get('attempts')} claims and none finished it; the operator decides"})
+        elif row.get("state") == "built" and key in reviewed:
+            out.append({"op": "review", "initiative": key[0], "phase": key[1], "epoch": row.get("claim_epoch", 0),
+                        "reason": "its review round is written"})
         elif row.get("state") in ("waiting", "ready") and (why := withheld(key, holds, held_phases, closed, stopped)):
             out.append({"op": "withdraw", "initiative": key[0], "phase": key[1], "reason": why})
     return out
 
 
-_SETTLED = frozenset({"approved", "done", "dropped"})
+_DONE = frozenset({"done", "dropped"})
 
 
 def approvals(stored: Sequence[Row], tasks: Sequence[Row], rollups: Sequence[Row]) -> list[dict[str, str]]:
-    """The tasks to approve: each task of a phase whose row finished approved that is not yet approved, done or
-    dropped, with the commit its last roll-up put on the phase branch as its `merged_commit`. A task with no roll-up
-    commit is left alone: there is nothing on the branch to record."""
+    """The tasks to approve: each task of a phase whose row finished approved that is not approved at its last
+    roll-up commit yet (not approved, or approved with another or no `merged_commit`), and not done or dropped, with
+    that commit. Commits are keyed by initiative, phase and task, so a task id two phases share never takes the
+    other's. A task with no roll-up commit is left alone: there is nothing on the branch to record."""
     approved = {_key(r) for r in stored if r.get("state") == "finished" and r.get("outcome") == "approved"}
-    commits = {(str(r.get("initiative")), str(r.get("task_id"))): str(r.get("subject_sha")) for r in rollups}
+    commits = {(str(r.get("initiative")), str(r.get("phase")), str(r.get("task_id"))): str(r.get("subject_sha"))
+               for r in rollups}
     out: list[dict[str, str]] = []
     for task in sorted(tasks, key=lambda t: (str(t.get("initiative")), str(t.get("phase")), str(t.get("task_id")))):
         initiative, phase, task_id = str(task.get("initiative")), str(task.get("phase")), str(task.get("task_id"))
-        commit = commits.get((initiative, task_id), "")
-        if (initiative, phase) in approved and task.get("state") not in _SETTLED and commit:
+        commit = commits.get((initiative, phase, task_id), "")
+        state, merged = task.get("state"), str(task.get("merged_commit") or "")
+        settled = state in _DONE or (state == "approved" and merged == commit)
+        if (initiative, phase) in approved and commit and not settled:
             out.append({"initiative": initiative, "phase": phase, "task_id": task_id, "commit": commit})
     return out
 
@@ -185,7 +195,8 @@ def plan(facts: Facts, now: str, holds: Collection[str] = ()) -> list[Action]:
     pending = {(a["initiative"], a["phase"]) for a in approve}
     wanted = [w for w in rows(facts.get("initiatives") or [], queue["lane_prereqs"], held, held_phases, closed, stopped)
               if _key(w) not in pending]
-    found = changes(wanted, queue["rows"], now, held, held_phases, closed, stopped)
+    reviewed = {_key(r) for r in queue.get("rounds") or []}
+    found = changes(wanted, queue["rows"], now, held, held_phases, closed, stopped, reviewed)
     out: list[Action] = []
     if approve:
         names = ", ".join(f"{a['initiative']}/{a['task_id']}@{a['commit'][:12]}" for a in approve)

@@ -306,3 +306,55 @@ def test_the_rollups_and_the_last_review_round_of_a_phase_are_read_back(conn):
 
 def test_a_machine_with_no_thread_budget_reads_zero(conn):
     assert store_phases.host_threads(conn, "nobody") == 0
+
+
+def test_a_built_phase_is_parked_unclaimable_until_the_chair_queues_it_for_its_review(conn):
+    store_phases.apply_changes(conn, [_change()], "chair-loop")
+    claim = store_phases.claim_next(conn, "w1", [], 1)
+    assert store_phases.park(conn, claim, "w1", "every task rolled up")
+    row = store_phases.get_row(conn, "ship", "p1")
+    assert (row["state"], row["attempts"], row["lease_until"]) == ("built", 0, "")
+    assert not store_phases.park(conn, claim, "w1", "again")  # parked once: the claim is no longer held
+    assert store_phases.claim_next(conn, "w2", [], 1) is None  # nothing claims a built phase
+    review = {"op": "review", "initiative": "ship", "phase": "p1", "epoch": claim.epoch, "reason": "round written"}
+    assert store_phases.apply_changes(conn, [{**review, "epoch": claim.epoch + 1}], "chair-loop") == 0  # not the row seen
+    assert store_phases.apply_changes(conn, [review], "chair-loop") == 1
+    assert store_phases.apply_changes(conn, [review], "chair-loop") == 0  # a repeat changes nothing
+    assert store_phases.claim_next(conn, "w2", [], 1).epoch == claim.epoch + 1
+
+
+def _round(conn, phase, number, verdict):
+    p = conn.dialect.placeholder
+    conn.execute(f"INSERT INTO review_rounds VALUES ({', '.join([p] * 13)})",
+                 ("ship", phase, number, "h", verdict, "", "{}", "", "r", "w1", 1, 0.0, AT))
+
+
+def _task_row(conn, task, state="ready"):
+    from harness.store_queue import upsert
+
+    upsert(conn, {"initiative": "ship", "task_id": task, "kind": "task", "phase": "p1", "state": state, "needs": [],
+                  "title": task, "surfaces": {}, "body": "", "extra": {}, "updated_at": AT, "updated_by": "t"})
+
+
+def test_each_phases_last_round_and_the_tasks_commits_are_read_for_the_chair(conn):
+    _round(conn, "p1", 1, "revise")
+    _round(conn, "p1", 2, "approve")
+    _round(conn, "p2", 1, "quarantine")
+    assert sorted((r["phase"], r["round"], r["verdict"]) for r in store_phases.last_rounds(conn, ["ship"])) == [
+        ("p1", 2, "approve"), ("p2", 1, "quarantine")]
+    for task in ("t1", "t2"):
+        _task_row(conn, task)
+    assert [(r["task_id"], r["state"], r["merged_commit"]) for r in store_phases.task_commits(conn, ["ship"])] == [
+        ("t1", "ready", ""), ("t2", "ready", "")]
+
+
+def test_a_task_is_approved_with_its_commit_in_one_transaction_or_not_at_all(conn):
+    from harness import store_api
+
+    _task_row(conn, "t1")
+    _task_row(conn, "t2", state="done")
+    assert store_api.approve_on(conn, "ship", "t1", "a1", "chair-loop", AT) == store_api.MergeRecorded(1)
+    assert store_api.approve_on(conn, "ship", "t1", "a1", "chair-loop", AT) == store_api.MergeRecorded(0)  # a repeat
+    assert isinstance(store_api.approve_on(conn, "ship", "nope", "b2", "chair-loop", AT), store_api.StateRefused)
+    rows = {r["task_id"]: (r["state"], r["merged_commit"]) for r in store_phases.task_commits(conn, ["ship"])}
+    assert rows["t1"] == ("approved", "a1")

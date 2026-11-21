@@ -212,3 +212,10 @@ def test_a_lanes_facts_are_the_phases_open_tasks_its_roll_ups_in_any_run_and_its
     rollups = [{"phase": "p1", "task_id": "t1"}, {"phase": "p1", "task_id": "t1"}, {"phase": "p2", "task_id": "t9"}]
     facts = worker.lane_facts(rows, rollups, "p1", (1, "revise"))
     assert facts == worker.LaneFacts(("t1", "t2"), ("t1",), (1, "revise"))
+
+
+def test_every_other_live_lane_of_the_phase_is_an_older_claims_and_is_stopped_before_the_new_one_starts():
+    live = [{"run": "ship.p1-1", "pid": 11, "state": "running"}, {"run": "ship.p1-2", "pid": 12, "state": "fenced"},
+            {"run": "ship.p1-3", "pid": 13, "state": "running"}]
+    assert worker.stale_lanes(live, "ship.p1-3") == [worker.Running("ship.p1-1", 11), worker.Running("ship.p1-2", 12)]
+    assert worker.stale_lanes([], "ship.p1-3") == []
