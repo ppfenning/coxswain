@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
-from agent_tools import courier, forge, lander, repo_path, route, run_store, work_state
+from agent_tools import courier, forge, lander, lander_hold, repo_path, route, run_store, work_state
 from agent_tools.forge import ForgeModule
 from agent_tools.store_url import read_provider_profile
 from core.jsontypes import is_mapping
@@ -423,7 +423,7 @@ def resolve_conflict(ask: lander.ConflictAsk) -> Resolved | str:
     Not wired yet: the merge agent is L5's `merge_tasks` seat (#1309), which has not landed. Until it does, every
     conflict is refused with `NO_MERGE_AGENT`, which the lander turns into a hold with needs_chair: nothing is merged
     that nobody resolved, and the old model's rectify path is untouched."""
-    return lander.NO_MERGE_AGENT
+    return lander_hold.NO_MERGE_AGENT
 
 
 def initiatives_in(ws: Path) -> list[str]:

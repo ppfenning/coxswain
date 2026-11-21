@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_tools import lander, lander_adopt, lander_ports
+from agent_tools import lander, lander_adopt, lander_cli, lander_hold, lander_ports
 from core import landing_record as lr
 from harness import landing_git as lg
 from harness import landing_ops as ops
@@ -21,6 +21,7 @@ from harness import landing_store as ls
 from tests.test_lander import World, run, task
 
 T0 = "2026-11-20T00:00:00Z"
+GOLDEN = Path(__file__).parent / "fixtures" / "lander_old_model_collision.json"
 P1_TEXT, P2_TEXT = "one\nTWO from p1\nthree\n", "one\nTWO from p2\nthree\n"
 BOTH = "one\nTWO from p1 and p2\nthree\n"
 
@@ -79,16 +80,105 @@ def test_an_old_model_record_is_written_exactly_as_before_and_a_new_one_adds_onl
 
 
 def test_a_merge_hold_carries_its_phase_and_tip_and_only_a_new_tip_lifts_it():
-    hold = lander.merge_hold("p2", "a" * 40, "conflict in shared.txt: no", T0)
-    assert hold["reason"].startswith(lander.MERGE_HOLD + "p2 at aaaaaaaaaaaa")
+    hold = lander_hold.merge_hold("p2", "a" * 40, "conflict in shared.txt: no", T0)
+    assert hold["reason"].startswith(lander_hold.MERGE_HOLD + "p2 at aaaaaaaaaaaa")
+    assert (hold["cause"], hold["attempts"], hold["last_attempt"]) == ("refused", 1, T0)
     held: lr.LandingRecord = {"initiative": "i", "held": hold}
-    assert lander.merge_held(held)
-    assert not lander.merge_held({"initiative": "i", "held": {"reason": "origin lacks it", "since": T0}})
-    assert not lander.merge_held({"initiative": "i"})
-    assert not lander.hold_lifted(held, "a" * 40)
-    assert not lander.hold_lifted(held, None)
-    assert lander.hold_lifted(held, "c" * 40)
-    assert not lander.hold_lifted({"initiative": "i", "held": {"reason": "other", "tip": "a" * 40}}, "c" * 40)
+    assert lander_hold.merge_held(held)
+    assert not lander_hold.merge_held({"initiative": "i", "held": {"reason": "origin lacks it", "since": T0}})
+    assert not lander_hold.merge_held({"initiative": "i"})
+    assert not lander_hold.hold_lifted(held, "a" * 40)
+    assert not lander_hold.hold_lifted(held, None)
+    assert lander_hold.hold_lifted(held, "c" * 40)
+    assert not lander_hold.hold_lifted({"initiative": "i", "held": {"reason": "other", "tip": "a" * 40}}, "c" * 40)
+
+
+@pytest.mark.parametrize(("cause", "unsettled", "detail", "want"), [
+    ("conflict", "refused", "conflict in a: the two edits contradict", "refused"),
+    ("conflict", "refused", f"conflict in a: {lander_hold.NO_MERGE_AGENT}", "no_merge_agent"),
+    ("conflict", "raised", "conflict in a: the resolver failed: RuntimeError: x", "resolver_error"),
+    ("conflict", "fault", "conflict in a: the resolved merge could not be committed", "harness_fault"),
+    ("checks_failed", "", "red", "checks_failed"),
+    ("guard", "", "would drop abc", "guard"),
+])
+def test_a_merge_hold_records_why_it_was_held(cause, unsettled, detail, want):
+    assert lander_hold.merge_cause(cause, unsettled, detail) == want
+
+
+def _at(seconds: int) -> str:
+    return ops.later(T0, seconds)
+
+
+@pytest.mark.parametrize(("cause", "attempts", "wait", "due"), [
+    ("resolver_error", 1, 599, False), ("resolver_error", 1, 600, True),
+    ("resolver_error", 2, 1199, False), ("resolver_error", 2, 1200, True),
+    ("harness_fault", 3, 2400, True), ("harness_fault", 4, 10**6, False),  # MERGE_RETRIES spent: never on its own
+    ("no_merge_agent", 1, 3599, False), ("no_merge_agent", 1, 3600, True), ("no_merge_agent", 50, 3600, True),
+    ("refused", 1, 10**6, False), ("checks_failed", 1, 10**6, False), ("guard", 1, 10**6, False),
+])
+def test_only_a_resolver_error_a_harness_fault_or_no_agent_is_retried_and_only_after_its_backoff(cause, attempts, wait, due):
+    hold = lander_hold.merge_hold("p2", "a" * 40, "x", T0, cause, attempts)
+    assert lander_hold.retry_due(hold, _at(wait)) is due
+
+
+def test_a_released_hold_is_due_at_once_and_a_hold_with_no_cause_never_on_its_own():
+    hold = lander_hold.merge_hold("p2", "a" * 40, "x", T0, "checks_failed")
+    assert lander_hold.retry_due({**hold, "released": True}, T0)
+    unrecorded = {"reason": hold["reason"], "since": T0, "phase": "p2", "tip": "a" * 40}  # made before causes were
+    assert not lander_hold.retry_due(unrecorded, _at(10**6))
+    assert not lander_hold.retry_due({"reason": "a drift", "since": T0, "released": True}, T0), "only a merge hold"
+    assert lander_hold.MERGE_RETRIES == 3 and lander_hold.retry_delay("resolver_error", 3) == 2400
+
+
+def test_the_count_carries_on_at_the_same_phase_and_tip_and_starts_again_at_a_new_one():
+    first = lander_hold.next_hold(None, "p2", "a" * 40, "boom", T0, "resolver_error")
+    assert (first["attempts"], first["since"]) == (1, T0)
+    second = lander_hold.next_hold(first, "p2", "a" * 40, "boom", _at(600), "resolver_error")
+    assert (second["attempts"], second["since"], second["last_attempt"]) == (2, T0, _at(600))
+    assert lander_hold.next_hold(second, "p2", "b" * 40, "boom", _at(700), "resolver_error")["attempts"] == 1
+    assert lander_hold.next_hold(second, "p3", "a" * 40, "boom", _at(700), "resolver_error")["attempts"] == 1
+
+
+def test_the_chair_is_told_a_first_hold_a_new_reason_a_released_retry_and_retries_spent_never_a_repeat():
+    hold = lambda n, cause="resolver_error": lander_hold.merge_hold("p2", "a" * 40, "x", T0, cause, n)  # noqa: E731
+    assert lander_hold.told_now(None, hold(1), False)
+    assert lander_hold.told_now(hold(1), hold(2), False)
+    assert not lander_hold.told_now(hold(1), hold(2), True)
+    assert lander_hold.told_now({**hold(1, "refused"), "released": True}, hold(2, "refused"), True)
+    assert lander_hold.told_now(hold(3), hold(4), True), "the last automatic retry failed: told"
+    assert not lander_hold.told_now(hold(5, "no_merge_agent"), hold(6, "no_merge_agent"), True)
+
+
+def test_release_marks_only_a_merge_hold_and_says_why_not_otherwise():
+    hold = lander_hold.merge_hold("p2", "a" * 40, "x", T0, "checks_failed", 2)
+    released, said = lander_hold.release({"initiative": "i", "held": hold})
+    assert released is not None and released["held"] == {**hold, "released": True}
+    assert "phase p2 is released" in said and "checks_failed, 2 attempt(s)" in said
+    assert lander_hold.release(released)[0] is None and "already released" in lander_hold.release(released)[1]
+    assert lander_hold.release({"initiative": "i"}) == (None, "i is not held")
+    drift, why = lander_hold.release({"initiative": "i", "held": {"reason": "origin lacks abc", "since": T0}})
+    assert drift is None and "not by a merge: origin lacks abc" in why
+
+
+def test_reconciliation_keeps_a_drift_beside_a_merge_hold_and_a_cleared_drift_takes_only_itself():
+    hold = lander_hold.merge_hold("p2", "a" * 40, "x", T0, "refused")
+    assert lander_hold.reconciled_hold({"reason": "plain", "since": T0}, "d", T0) is None, "not a merge hold"
+    assert lander_hold.reconciled_hold(hold, None, T0) == (hold, False)
+    kept, news = lander_hold.reconciled_hold(hold, "origin lacks abc", T0) or (None, False)
+    assert news and kept == {**hold, "drift": "origin lacks abc"}
+    assert lander_hold.reconciled_hold(kept, "origin lacks abc", T0) == (kept, False)
+    assert lander_hold.reconciled_hold(kept, None, T0) == (hold, True)
+    assert lander_hold.without_merge_hold(kept, _at(5)) == {"reason": "origin lacks abc", "since": _at(5)}
+    assert lander_hold.without_merge_hold(hold, T0) is None
+
+
+def test_strays_are_the_paths_besides_the_conflicted_ones_that_a_resolver_staged_or_changed():
+    before = {"a.txt": "1 x 1;1 y 2;1 z 3;", "b.txt": "1 b 0;"}
+    assert lg.strays(["a.txt"], before, {"a.txt": "1 m 0;", "b.txt": "1 b 0;"}, []) == []
+    assert lg.strays(["a.txt"], before, {"a.txt": "1 m 0;", "b.txt": "1 c 0;"}, []) == ["b.txt"]
+    assert lg.strays(["a.txt"], before, {"a.txt": "1 m 0;", "b.txt": "1 b 0;", "new.txt": "1 n 0;"}, []) == ["new.txt"]
+    assert lg.strays(["a.txt"], before, {"a.txt": "1 m 0;"}, []) == ["b.txt"], "a removal is a change"
+    assert lg.strays(["a.txt"], before, {**before, "a.txt": "1 m 0;"}, ["a.txt", "b.txt"]) == ["b.txt"]
 
 
 def test_a_resolvers_answer_must_cover_exactly_the_conflicted_files_and_leave_no_marker():
@@ -281,7 +371,7 @@ def test_a_merge_the_agent_cannot_settle_holds_the_initiative_tells_the_chair_on
     p1_merged = models.on_origin("init/n")
     assert p1_merged != before and out[1].status == "failed"
     held = models.record("n")["held"]
-    assert held["reason"].startswith(f"{lander.MERGE_HOLD}p2 at {p2[:12]}: conflict in shared.txt")
+    assert held["reason"].startswith(f"{lander_hold.MERGE_HOLD}p2 at {p2[:12]}: conflict in shared.txt")
     assert "the two edits contradict each other" in held["reason"] and (held["phase"], held["tip"]) == ("p2", p2)
     assert [(topic, n["phase"]) for topic, n in models.notes] == [("needs_chair", "p2")]
     assert models.rectified == [], "the new model files no rectify task"
@@ -297,7 +387,7 @@ def test_a_fix_pushed_to_the_phase_lifts_the_hold_and_the_merge_is_tried_again(m
     _collide(models)
     models.agent.refuse = "no"
     lander.run_once(models.ports, phase_cap=5)
-    assert lander.merge_held(models.record("n"))
+    assert lander_hold.merge_held(models.record("n"))
     models.agent.refuse = None
     fixed = models.lane("n", "p2", "p2-note.txt", "fixed\n")
     models.clock += 4000
@@ -321,35 +411,98 @@ def test_a_resolution_that_fails_the_level_checks_holds_and_the_branch_stays(mod
     assert [n["phase"] for topic, n in models.notes if topic == "needs_chair"] == ["p2"]
 
 
-def _old_collision(world: World) -> list[lander.Outcome]:
+def _prime_rerere(repo: Path, ours: str, theirs: str, resolved: str) -> None:
+    """Turn rerere on in `repo` and record a resolution of merging `theirs` into `ours`, in a worktree of its own that
+    is then removed: the rr-cache remembers it, no ref moves."""
+    run(repo, "config", "rerere.enabled", "true")
+    side = repo.parent / "rerere-prime"
+    run(repo, "worktree", "add", "-q", "--detach", str(side), ours)
+    subprocess.run(["git", "-C", str(side), "merge", "--no-edit", theirs], capture_output=True, text=True)
+    (side / "shared.txt").write_text(resolved)
+    run(side, "add", "shared.txt")
+    run(side, "commit", "-qm", "a resolution rerere records")
+    run(repo, "worktree", "remove", "--force", str(side))
+    assert list((repo / ".git" / "rr-cache").iterdir()), "rerere recorded the resolution"
+
+
+def _old_collision(world: World, rerere: bool = False) -> list[lander.Outcome]:
     world.start("o", [task("a", "p1"), task("b", "p2")])
     world.build("o", "p1", "shared.txt", P1_TEXT)
     world.build("o", "p2", "shared.txt", P2_TEXT)
+    if rerere:
+        _prime_rerere(world.repo, "epic/o/p2", "epic/o/p1", BOTH)
     return lander.run_once(world.ports)
 
 
-def test_the_old_model_is_exactly_as_before_whatever_merge_agent_is_wired(tmp_path: Path, monkeypatch) -> None:
-    """The same old-model collision, once with the lander's default ports and once with a merge agent that would
-    resolve anything: the same outcomes, the same record, the same commits, and the agent never asked."""
-    for var in ("GIT_AUTHOR_DATE", "GIT_COMMITTER_DATE"):  # one clock for both repositories, so their shas compare
+def _as_golden(world: World, outcomes: list[lander.Outcome], tmp: Path) -> dict:
+    """What the golden copy pins, read the way it was captured (main's code, before D1, the same collision)."""
+    def norm(value: object) -> object:
+        text = json.dumps(value)
+        for root in {str(tmp), str(tmp.resolve())}:
+            text = text.replace(root, "<tmp>")
+        return json.loads(text)
+    return {
+        "outcomes": norm([[o.status, o.item, o.detail, list(o.events)] for o in outcomes]),
+        "record": norm({**world.record("o"), "repo": ""}),
+        "rectified": norm([list(r) for r in world.rectified]),
+        "notes": norm([[topic, note] for topic, note in world.notes]),
+        "refs": run(world.repo, "for-each-ref", "--format=%(refname) %(objectname)").splitlines(),
+        "p2_shared": run(world.repo, "show", "epic/o/p2:shared.txt"),
+    }
+
+
+@pytest.mark.parametrize(("wired", "rerere"), [(False, False), (True, False), (True, True)],
+                         ids=["default-ports", "merge-agent-wired", "merge-agent-wired-and-rerere-primed"])
+def test_the_old_model_is_exactly_as_before(tmp_path: Path, monkeypatch, wired: bool, rerere: bool) -> None:
+    """The old-model collision against a golden copy of what main's lander did before D1 (captured once by running
+    main's code on this same collision, `fixtures/lander_old_model_collision.json`): the same outcomes, record,
+    rectify task, notices, refs and conflicted file. With a merge agent wired, it is never asked; with rerere on and a
+    resolution of this very conflict recorded, the conflict is still committed with its markers, as it was."""
+    for var in ("GIT_AUTHOR_DATE", "GIT_COMMITTER_DATE"):  # the clock the golden copy was captured on
         monkeypatch.setenv(var, "2026-11-20T00:00:00Z")
-    for name in ("plain", "wired"):
-        (tmp_path / name).mkdir()
-    plain, wired = World(tmp_path / "plain"), World(tmp_path / "wired")
+    world = World(tmp_path)
     agent = Agent()
-    wired.ports = replace(wired.ports, resolve_conflict=agent)
-    outcomes = [_old_collision(w) for w in (plain, wired)]
+    if wired:
+        world.ports = replace(world.ports, resolve_conflict=agent)
+    outcomes = _old_collision(world, rerere)
     assert agent.asked == []
-    assert [(o.status, o.detail, o.events) for o in outcomes[0]] == [(o.status, o.detail, o.events) for o in outcomes[1]]
-    same = lambda w: json.dumps({**w.record("o"), "repo": ""}, sort_keys=True)  # noqa: E731
-    assert same(plain) == same(wired)
-    record = plain.record("o")
-    assert "lane_model" not in record and all("resolved_by" not in e for e in record["phases"].values())
-    assert [r[:2] for r in plain.rectified] == [r[:2] for r in wired.rectified] == [("o", "p2")]
-    for world in (plain, wired):
-        assert "<<<<<<<" in run(world.repo, "show", "epic/o/p2:shared.txt"), "the conflict is committed for the rectify task"
-    refs = lambda w: run(w.repo, "for-each-ref", "--format=%(refname) %(objectname)")  # noqa: E731
-    assert refs(plain) == refs(wired)
+    assert _as_golden(world, outcomes, tmp_path) == json.loads(GOLDEN.read_text(encoding="utf-8"))
+    assert "lane_model" not in world.record("o")
+
+
+@pytest.fixture
+def world(tmp_path: Path) -> World:
+    return World(tmp_path)
+
+
+def test_the_batch_check_merges_with_rerere_off(world: World) -> None:
+    """`_check_together` merges with rerere off, as every lander merge does: a resolution recorded for a conflict
+    must not make a batch merge look settled, and the batch check records none."""
+    for name, text in (("left", P1_TEXT), ("right", P2_TEXT)):
+        run(world.repo, "branch", name, "main")
+        commit_on(world.repo, name, text)
+    _prime_rerere(world.repo, "right", "left", BOTH)
+    cache = world.repo / ".git" / "rr-cache"
+    recorded = sorted(p.name for p in cache.iterdir())
+    ok, why = lander._check_together(world.ports, world.repo, "main", ["left", "right"])
+    assert not ok and "right does not merge with the rest of the batch" in why
+    assert sorted(p.name for p in cache.iterdir()) == recorded, "nothing recorded: rerere was off"
+    run(world.repo, "config", "rerere.enabled", "true")
+    for name, text in (("up", "one\nTWO up\nthree\n"), ("down", "one\nTWO down\nthree\n")):  # a conflict never seen
+        run(world.repo, "branch", name, "main")
+        commit_on(world.repo, name, text)
+    ok, _ = lander._check_together(world.ports, world.repo, "main", ["up", "down"])
+    assert not ok and sorted(p.name for p in cache.iterdir()) == recorded, "a new conflict is not recorded either"
+
+
+def commit_on(repo: Path, branch: str, text: str) -> str:
+    side = repo.parent / f"side-{branch}"
+    run(repo, "worktree", "add", "-q", str(side), branch)
+    (side / "shared.txt").write_text(text)
+    run(side, "commit", "-qam", f"{branch}: edit the line")
+    tip = run(side, "rev-parse", "HEAD")
+    run(repo, "worktree", "remove", "--force", str(side))
+    return tip
 
 
 def test_one_pass_sends_an_old_model_conflict_to_rectify_and_a_new_model_one_to_the_merge_agent(models: Models) -> None:
@@ -374,3 +527,243 @@ def test_adopt_stamps_the_initiatives_lane_model_on_the_record_it_makes(models: 
     assert models.record("n")["lane_model"] == "phase"
     assert "lane_model" not in models.record("o")
     assert ls.get_record(models.conn, "o") == models.record("o")
+
+
+# -- the merge hold's exits: a new tip, the automatic retry, an operator's release ---------------------------------------
+
+class Flaky(Agent):
+    """An agent that raises `fails` times, then answers."""
+
+    def __init__(self, fails: int) -> None:
+        super().__init__()
+        self.fails = fails
+
+    def __call__(self, ask: lander.ConflictAsk) -> lg.Resolved | str:
+        answer = super().__call__(ask)
+        if self.fails > 0:
+            self.fails -= 1
+            raise RuntimeError("the harness lost the agent")
+        return answer
+
+
+def _pass(models: Models, seconds: int = 0) -> list[lander.Outcome]:
+    models.clock += seconds
+    return lander.run_once(models.ports, phase_cap=5)
+
+
+def _told(models: Models) -> list[str]:
+    return [n["reason"] for topic, n in models.notes if topic == "needs_chair"]
+
+
+def test_a_resolver_that_raises_is_retried_with_backoff_and_merges_once_it_answers(models: Models) -> None:
+    _collide(models)
+    models.agent = Flaky(fails=2)
+    models.ports = replace(models.ports, resolve_conflict=models.agent)
+    _pass(models)
+    held = models.record("n")["held"]
+    assert (held["cause"], held["attempts"]) == ("resolver_error", 1) and "RuntimeError" in held["reason"]
+    _pass(models, 300)  # inside the first backoff (600 s): not tried
+    assert len(models.agent.asked) == 1
+    _pass(models, 400)
+    assert len(models.agent.asked) == 2 and models.record("n")["held"]["attempts"] == 2
+    assert models.record("n")["held"]["since"] == held["since"], "one hold, counted on"
+    _pass(models, 1300)
+    assert len(models.agent.asked) == 3
+    record = models.record("n")
+    assert record.get("held") is None and record["phases"]["p2"]["state"] == "merged" and not record.get("retried")
+    assert len(_told(models)) == 1, "a retry that fails the same way is not told again"
+
+
+def test_a_resolver_that_keeps_raising_stops_after_its_retries_and_the_chair_is_told_they_are_spent(models: Models) -> None:
+    _collide(models)
+    models.agent = Flaky(fails=100)
+    models.ports = replace(models.ports, resolve_conflict=models.agent)
+    for wait in (0, 600, 1200, 2400, 9000, 9000):
+        _pass(models, wait)
+    held = models.record("n")["held"]
+    assert len(models.agent.asked) == lander_hold.MERGE_RETRIES + 1 == held["attempts"]
+    assert not lander_hold.retry_due(held, models.now())
+    told = _told(models)
+    assert len(told) == 2 and "its automatic retries are spent" in told[1]
+
+
+def test_a_harness_fault_committing_the_answer_is_retried(models: Models) -> None:
+    _collide(models)
+
+    def lock_the_index(ask: lander.ConflictAsk) -> lg.Resolved:
+        git_dir = run(ask.scratch, "rev-parse", "--absolute-git-dir")
+        (Path(git_dir) / "index.lock").write_text("")  # git cannot stage the answer: the harness's fault, not the agent's
+        return lg.Resolved(dict.fromkeys(ask.paths, BOTH), "a")
+
+    models.ports = replace(models.ports, resolve_conflict=lock_the_index)
+    _pass(models)
+    held = models.record("n")["held"]
+    assert held["cause"] == "harness_fault" and "could not be staged" in held["reason"]
+    models.ports = replace(models.ports, resolve_conflict=models.agent)
+    _pass(models, 600)
+    assert models.record("n").get("held") is None and models.record("n")["phases"]["p2"]["state"] == "merged"
+
+
+def test_no_merge_agent_yet_is_retried_hourly_and_merges_once_a_merge_agent_is_wired(models: Models) -> None:
+    """L5 lands: a conflict held only because no merge agent was wired is merged on the next retry, not stuck."""
+    _collide(models)
+    models.ports = replace(models.ports, resolve_conflict=lander._no_merge_agent)  # the lander as it is before L5
+    _pass(models)
+    held = models.record("n")["held"]
+    assert held["cause"] == "no_merge_agent" and lander_hold.NO_MERGE_AGENT in held["reason"]
+    for _ in range(3):  # unbounded: however long the wait, it is tried again
+        _pass(models, 3601)
+    assert models.record("n")["held"]["attempts"] == 4 and len(_told(models)) == 1, "told once"
+    models.ports = replace(models.ports, resolve_conflict=models.agent)  # L5 wired
+    _pass(models, 3601)
+    assert models.record("n").get("held") is None and models.record("n")["phases"]["p2"]["state"] == "merged"
+    assert len(models.agent.asked) == 1
+
+
+@pytest.mark.parametrize("cause", ["refused", "checks_failed"])
+def test_a_refusal_or_a_failed_level_check_waits_for_a_person_who_can_release_it(models: Models, cause: str) -> None:
+    _collide(models)
+    if cause == "refused":
+        models.agent.refuse = "the two edits contradict each other"
+    else:
+        models.check_result["phase"] = (False, "tests/test_x.py::test_y FAILED")
+    _pass(models)
+    held = models.record("n")["held"]
+    assert held["cause"] == cause
+    _pass(models, 20000)
+    assert len(models.agent.asked) == 1 and models.record("n")["held"] == held, "never retried on its own"
+    released, said = lander.release_merge_hold(models.ports, "n")
+    assert released and "released" in said and models.record("n")["held"]["released"] is True
+    models.agent.refuse = None
+    models.check_result.pop("phase", None)
+    out = _pass(models)
+    assert any("an operator released it" in e for e in out_events(models, out))
+    assert len(models.agent.asked) == 2 and models.record("n").get("held") is None
+    assert models.record("n")["phases"]["p2"]["state"] == "merged"
+
+
+def out_events(models: Models, out: list[lander.Outcome]) -> list[str]:
+    return [*models.logged, *(e for o in out for e in o.events)]
+
+
+def test_a_released_merge_that_fails_again_holds_again_counted_and_told(models: Models) -> None:
+    _collide(models)
+    models.agent.refuse = "no"
+    _pass(models)
+    assert lander.release_merge_hold(models.ports, "n")[0]
+    _pass(models)
+    held = models.record("n")["held"]
+    assert (held["attempts"], held.get("released")) == (2, None) and len(models.agent.asked) == 2
+    assert len(_told(models)) == 2, "the operator who released it hears how it went"
+
+
+def test_release_refuses_what_is_not_a_merge_hold(models: Models) -> None:
+    assert lander.release_merge_hold(models.ports, "ghost") == (False, "ghost has no landing record")
+    record = models.start_new("n", [task("a", "p1")])
+    assert lander.release_merge_hold(models.ports, "n") == (False, "n is not held")
+    ls.put_record(models.conn, {**record, "held": {"reason": "origin lacks abc", "since": T0}})
+    released, why = lander.release_merge_hold(models.ports, "n")
+    assert not released and "not by a merge" in why
+
+
+def test_cox_lander_release_runs_the_release(models: Models, monkeypatch, capsys) -> None:
+    _collide(models)
+    models.agent.refuse = "no"
+    _pass(models)
+    monkeypatch.setattr(lander_cli, "_workspace", lambda a: (Path("."), {}))
+    monkeypatch.setattr(lander_ports, "build", lambda ws, profile: replace(models.ports, conn=_Unclosed(models.conn)))
+    args = lander_cli.argparse.Namespace(initiative="n", profile=None)
+    assert lander_cli.cmd_release(args) == 0 and "phase p2 is released" in capsys.readouterr().out
+    assert lander_cli.cmd_release(args) == 1 and "already released" in capsys.readouterr().out
+
+
+class _Unclosed:
+    """The store connection, with `close` a no-op: the test reads the store after the command closes it."""
+
+    def __init__(self, conn) -> None:
+        self._conn = conn
+
+    def __getattr__(self, name: str):
+        return getattr(self._conn, name)
+
+    def close(self) -> None:
+        return None
+
+
+def test_a_drift_reconciliation_finds_is_kept_beside_the_merge_hold_and_clearing_it_keeps_the_hold(
+        models: Models, monkeypatch) -> None:
+    _, p2 = _collide(models)
+    models.agent.refuse = "no"
+    _pass(models)
+    merge = models.record("n")["held"]
+    found: list[str | None] = ["origin's init/n lacks phase p1's merge abc"]
+    monkeypatch.setattr(lander, "_judge", lambda ports, repo, initiative: lander.Judgement(reason=found[0]))
+    events = lander.reconcile(models.ports, "n")
+    held = models.record("n")["held"]
+    assert held == {**merge, "drift": found[0]} and "beside its merge hold" in events[-1]
+    assert _told(models)[-1] == f"held: {found[0]}"
+    assert lander.reconcile(models.ports, "n") == [] and len(_told(models)) == 2, "an unchanged drift is not told twice"
+    assert found[0] in lander.held_note(models.record("n"))
+    found[0] = None
+    events = lander.reconcile(models.ports, "n")
+    assert models.record("n")["held"] == merge, "the drift cleared; the merge hold, with its phase and tip, stays"
+    assert "the merge hold stays" in events[-1] and len(_told(models)) == 2
+    assert lander.reconcile(models.ports, "n") == []
+    _pass(models, 20000)
+    assert len(models.agent.asked) == 1, "the merge agent is not asked again: the hold never lifted"
+    assert models.record("n")["held"]["tip"] == p2
+
+
+def test_a_merge_hold_lifted_by_a_new_tip_leaves_a_drift_kept_beside_it(models: Models, monkeypatch) -> None:
+    _collide(models)
+    models.agent.refuse = "no"
+    _pass(models)
+    monkeypatch.setattr(lander, "_judge", lambda ports, repo, initiative: lander.Judgement(reason="a drift"))
+    lander.reconcile(models.ports, "n")
+    models.lane("n", "p2", "p2-note.txt", "fixed\n")
+    events = lander.sweep(models.ports)
+    assert models.record("n")["held"]["reason"] == "a drift" and not lander_hold.merge_held(models.record("n"))
+    assert any("stays held: a drift" in e for e in events)
+
+
+# -- the scratch the agent answers in: nothing but the conflicted paths may change ----------------------------------------
+
+def test_a_resolver_that_stages_or_changes_another_file_is_refused(tmp_path: Path) -> None:
+    repo, old = _two_sides(tmp_path)
+    (repo / "g.txt").write_text("g\n")
+    run(repo, "add", "g.txt")
+    run(repo, "commit", "-qm", "g")
+    old = run(repo, "rev-parse", "main")
+
+    def sneaky(edit: str):
+        def resolve(scratch: Path, paths: tuple[str, ...]) -> lg.Resolved:
+            if edit == "modify":
+                (scratch / "g.txt").write_text("changed\n")
+            elif edit == "stage":
+                (scratch / "h.txt").write_text("new\n")
+                run(scratch, "add", "h.txt")
+            elif edit == "commit":
+                run(scratch, "add", "-A")
+                run(scratch, "commit", "-qm", "the agent committed it itself")
+            return lg.Resolved({"f.txt": "one\nboth\n"}, "a")
+        return resolve
+
+    for edit, why in (("modify", "touched files that did not conflict: g.txt"),
+                      ("stage", "touched files that did not conflict: h.txt"),
+                      ("commit", "moved the merge it was given")):
+        merged = lg.merge_into(repo, branch="main", source="side", message="m", resolve=sneaky(edit))
+        assert (merged.status, merged.unsettled) == ("conflict", "refused") and why in merged.detail, (edit, merged)
+        assert run(repo, "rev-parse", "main") == old
+    clean = lg.merge_into(repo, branch="main", source="side", message="m", resolve=sneaky("none"))
+    assert clean.status == "merged" and run(repo, "show", "main:g.txt") == "g", "the merge's own changes are kept"
+
+
+def test_a_resolver_that_raises_or_refuses_says_which(tmp_path: Path) -> None:
+    repo, _ = _two_sides(tmp_path)
+    assert lg.merge_into(repo, branch="main", source="side", message="m", resolve=lambda s, p: "no").unsettled == "refused"
+
+    def broken(scratch, paths):
+        raise RuntimeError("x")
+
+    assert lg.merge_into(repo, branch="main", source="side", message="m", resolve=broken).unsettled == "raised"
+    assert lg.merge_into(repo, branch="main", source="side", message="m").unsettled == "", "no resolver asked"

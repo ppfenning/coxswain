@@ -16,7 +16,7 @@ the lane model its landing record was made under (`lane_model`, absent meaning t
 - the new model (`phase`): each phase is merged from origin's copy of its branch (`merge_source`), and a conflict is
   handed to the merge agent (`conflict_route`, `Ports.resolve_conflict`) in the merge's own scratch worktree. Its answer
   meets the same guard and level checks as any merge; only when it cannot settle the merge does the initiative hold,
-  and the chair is told (`MERGE_HOLD`). The phase lane never merges into the initiative branch: the lander is the
+  and the chair is told (`lander_hold`). The phase lane never merges into the initiative branch: the lander is the
   only merger.
 
 Everything it does can be run again: each step reads what is already true (the record, the branch, the forge) before
@@ -33,7 +33,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal, Protocol, TypedDict
 
-from agent_tools import lander_empty
+from agent_tools import lander_empty, lander_hold
 from core import landing_record as lr
 from core.jsontypes import is_mapping
 from core.landing import (
@@ -136,11 +136,8 @@ class ConflictAsk:
     paths: tuple[str, ...]
 
 
-NO_MERGE_AGENT = "no merge agent yet: this lander has no merge agent wired, so a conflict on the new model holds"
-
-
 def _no_merge_agent(ask: ConflictAsk) -> lg.Resolved | str:
-    return NO_MERGE_AGENT
+    return lander_hold.NO_MERGE_AGENT
 
 
 @dataclass
@@ -182,9 +179,9 @@ class Outcome:
 
 ConflictRoute = Literal["merge_agent", "rectify_task"]
 MergeSource = Literal["origin", "local"]
-# The prefix of the hold a new-model phase merge sets when the merge agent cannot settle it. Reconciliation leaves it;
-# the sweep lifts it once origin's branch of that phase moves (a fix was pushed), or a person lifts it.
-MERGE_HOLD = "the lander could not merge new-model phase "
+# A new-model phase merge that cannot be made holds the initiative with a merge hold (`lander_hold`: `MERGE_HOLD`,
+# `merge_hold`, `merge_held`, `hold_lifted`). Reconciliation keeps it; the sweep lifts it once origin's branch of that
+# phase moves, an operator releases it, or its automatic retry comes due.
 
 
 def conflict_route(lane_model: str) -> ConflictRoute:
@@ -214,24 +211,6 @@ def level_gate(lane_model: str) -> str:
     (the cartridge's `level_checks`); the new model runs `PHASE_GATE`, the same gate with the phase-level section of
     the merged tree's `.agent-checks` added (`checks.for_level(..., "phase")`), the smoke its lane ran on the phase."""
     return PHASE_GATE if lr.lane_model_of(lane_model) == lr.NEW_MODEL else "level"
-
-
-def merge_hold(phase: str, tip: str, detail: str, now: str) -> lr.Hold:
-    """Pure. The hold a new-model phase merge sets when it cannot be made: the merge agent could not settle its
-    conflict, or the merge (resolved or clean) failed the guard or the level checks. The reason, the phase and the tip."""
-    return {"reason": f"{MERGE_HOLD}{phase} at {tip[:12]}: {detail}", "since": now, "phase": phase, "tip": tip}
-
-
-def merge_held(record: lr.LandingRecord) -> bool:
-    """Pure. Whether the record is held by a merge hold (`merge_hold`), which only the sweep or a person lifts."""
-    return str((record.get("held") or {}).get("reason") or "").startswith(MERGE_HOLD)
-
-
-def hold_lifted(record: lr.LandingRecord, origin_tip: str | None) -> bool:
-    """Pure. Whether a merge hold is lifted: origin's branch of the held phase is at another tip than the one the
-    merge agent could not merge (a fix was pushed; the next merge tries it). A phase branch origin lacks lifts nothing."""
-    held = record.get("held") or {}
-    return merge_held(record) and bool(origin_tip) and origin_tip != str(held.get("tip") or "")
 
 
 @dataclass(frozen=True)
@@ -778,6 +757,7 @@ def merge_phase(ports: Ports, initiative: str, phase: str) -> Outcome:
             return Outcome("failed", ident, done.detail, tuple(_hold_phase(ports, record, phase, done, tip)))
         return Outcome("failed", ident, done.detail, tuple(_send_back(ports, record, phase, done)))
     events = [*adopted, f"phase {phase} of {initiative} merged into {record_text(record, 'branch')}"]
+    _forget_retry(ports, initiative)
     if done.resolved_by:
         events.append(f"phase {phase} of {initiative}: its conflict in {record_text(record, 'branch')} was resolved by {done.resolved_by}")
     for task in done.merged_tasks:
@@ -848,18 +828,28 @@ def _resolver(ports: Ports, record: lr.LandingRecord, phase: str, source: str) -
 
 def _hold_phase(ports: Ports, record: lr.LandingRecord, phase: str, done: ops.PhaseMerge, tip: str) -> list[str]:
     """A new-model phase merge the merge agent could not settle (or whose answer failed the guard or the level
-    checks): no rectify task, no commit on the phase branch, which is the lane's. The initiative holds, with why, and
-    the chair is told once per reason (`held_after`); the sweep lifts the hold once origin's phase branch moves."""
+    checks): no rectify task, no commit on the phase branch, which is the lane's. The initiative holds, with why, its
+    cause and how many times this merge was tried (`lander_hold.next_hold`). The chair is told when that is news
+    (`lander_hold.told_now`); the sweep lifts the hold (`_lift_merge_hold`)."""
     initiative = record_text(record, "initiative")
     current = ls.get_record(ports.conn, initiative) or record
-    hold = merge_hold(phase, tip, done.detail, ports.now())
+    held = _held(current)
+    prior = held if lander_hold.is_merge_hold(held) else current.get("retried")
+    cause = lander_hold.merge_cause(done.cause, done.unsettled, done.detail)
+    hold = lander_hold.next_hold(prior, phase, tip, done.detail, ports.now(), cause)
+    if held and not lander_hold.is_merge_hold(held):
+        hold = {**hold, "drift": str(held.get("reason") or "")}  # a drift hold set meanwhile is kept beside it
+    elif held and held.get("drift"):
+        hold = {**hold, "drift": str(held.get("drift"))}
     reason = str(hold.get("reason") or "")
-    _, news = held_after(_held(current), reason, ports.now())
-    said = f"phase {phase} of {initiative} is held: {reason}"
+    same = prior is not None and reason_key(reason) == reason_key(str(prior.get("reason") or ""))
+    news = lander_hold.told_now(prior, hold, same)
+    said = f"phase {phase} of {initiative} is held ({cause}, attempt {hold.get('attempts')}): {reason}"
+    ls.put_record(ports.conn, {**current, "held": hold, "retried": None, "updated_at": ports.now()})
     if not news:
         return [said]
-    ls.put_record(ports.conn, {**current, "held": hold, "updated_at": ports.now()})
-    ports.notify("needs_chair", {"initiative": initiative, "phase": phase, "reason": f"held: {reason}"})
+    spent = " (its automatic retries are spent)" if lander_hold.retries_spent(hold) else ""
+    ports.notify("needs_chair", {"initiative": initiative, "phase": phase, "reason": f"held: {reason}{spent}"})
     return [said, f"{initiative}: the chair has been told"]
 
 
@@ -1036,7 +1026,9 @@ def _held(record: lr.LandingRecord) -> lr.Hold | None:
 
 def held_note(record: lr.LandingRecord) -> str:
     """Pure. Why a held initiative waits, for its queue item."""
-    return f"{record.get('initiative')} is held: {(_held(record) or {}).get('reason') or 'its record and its branch disagree'}"
+    hold = _held(record) or {}
+    drift = f"; and {hold.get('drift')}" if hold.get("drift") else ""
+    return f"{record.get('initiative')} is held: {hold.get('reason') or 'its record and its branch disagree'}{drift}"
 
 
 def _poll_checks(ports: Ports, repo: Path, initiative: str, branch: str) -> tuple[str, str]:
@@ -1372,21 +1364,55 @@ def sweep(ports: Ports, initiatives: Collection[str] | None = None) -> list[str]
 
 
 def _lift_merge_hold(ports: Ports, record: lr.LandingRecord) -> list[str]:
-    """Edge. Lift a merge hold (`hold_lifted`) once origin's branch of its phase has moved: the merge is tried again,
-    and the merge agent asked again only about the new tip. Any other record is left as it is, and read nothing for."""
-    if not merge_held(record):
+    """Edge. Lift a merge hold so the merge is tried again: once origin's branch of its phase has moved
+    (`lander_hold.hold_lifted`, a fresh count), or once an operator released it or its automatic retry is due
+    (`lander_hold.retry_due`, the count kept on `retried`). A drift kept beside it stays as a hold of its own. Any
+    other record is left as it is, and read nothing for."""
+    if not lander_hold.merge_held(record):
         return []
-    initiative, phase = record_text(record, "initiative"), str((record.get("held") or {}).get("phase") or "")
+    hold = _held(record) or {}
+    initiative, phase = record_text(record, "initiative"), str(hold.get("phase") or "")
     try:
         repo = ports_repo(ports, record)
     except LookupError:
         return []
+    now = ports.now()
     tip = _origin_phase_tips(repo, initiative, [phase]).get(phase) if phase else None
-    if not hold_lifted(record, tip):
+    moved = lander_hold.hold_lifted(record, tip)
+    if not moved and not lander_hold.retry_due(hold, now):
         return []
     current = ls.get_record(ports.conn, initiative) or record
-    ls.put_record(ports.conn, {**current, "held": None, "updated_at": ports.now()})
-    return [f"sweep: {initiative}: {ops.phase_branch(initiative, phase)} moved on origin to {str(tip)[:12]}; the merge hold is lifted"]
+    left = lander_hold.without_merge_hold(_held(current), now)
+    ls.put_record(ports.conn, {**current, "held": left, "retried": None if moved else _held(current), "updated_at": now})
+    branch = ops.phase_branch(initiative, phase)
+    if moved:
+        why = f"{branch} moved on origin to {str(tip)[:12]}"
+    elif hold.get("released") is True:
+        why = "an operator released it"
+    else:
+        why = f"its retry is due ({hold.get('cause')}, attempt {hold.get('attempts')})"
+    kept = f"; {initiative} stays held: {left.get('reason')}" if left else ""
+    return [f"sweep: {initiative}: {why}; the merge hold is lifted and phase {phase} is tried again{kept}"]
+
+
+def _forget_retry(ports: Ports, initiative: str) -> None:
+    """Edge. A phase merged: the count a lifted merge hold left for its retry is no longer anyone's."""
+    current = ls.get_record(ports.conn, initiative)
+    if current is not None and current.get("retried"):
+        ls.put_record(ports.conn, {**current, "retried": None, "updated_at": ports.now()})
+
+
+def release_merge_hold(ports: Ports, initiative: str) -> tuple[bool, str]:
+    """Edge. `cox lander release`: release the initiative's merge hold for the next pass, whatever its cause or count
+    (`lander_hold.release`). (released, what to say)."""
+    record = ls.get_record(ports.conn, initiative)
+    if record is None:
+        return False, f"{initiative} has no landing record"
+    released, said = lander_hold.release(record)
+    if released is None:
+        return False, said
+    ls.put_record(ports.conn, {**released, "updated_at": ports.now()})
+    return True, said
 
 
 def stale_items[R: Row](items: Sequence[R], now: str, limit: int = QUEUE_ALARM_SECONDS) -> list[R]:
@@ -1477,7 +1503,8 @@ def _check_together(ports: Ports, repo: Path, parent_ref: str, branches: Sequenc
     """Merge every member onto the parent in a scratch tree and run the gate checks there, once, for the batch."""
     def check(tree: Path) -> tuple[bool, str]:
         for branch in branches:
-            ok, out = lg.git(tree, *lg.IDENTITY, "merge", "--no-ff", "--no-edit", "-m", f"batch: {branch}", branch)
+            # rerere off, as on every merge the lander makes: a recorded resolution must not make a batch look clean.
+            ok, out = lg.git(tree, *lg.IDENTITY, *lg.NO_RERERE, "merge", "--no-ff", "--no-edit", "-m", f"batch: {branch}", branch)
             if not ok:
                 lg.git(tree, "merge", "--abort")
                 return False, f"{branch} does not merge with the rest of the batch: {out.splitlines()[0] if out else 'conflict'}"
@@ -1733,8 +1760,9 @@ def reconcile(ports: Ports, initiative: str) -> list[str]:
         if not judged.judged:
             return events
         current = ls.get_record(ports.conn, initiative) or record
-        if judged.reason is None and merge_held(current):
-            return events  # a merge hold is not the record and the branch disagreeing: it is the sweep's to lift
+        kept = lander_hold.reconciled_hold(_held(current), judged.reason, ports.now())
+        if kept is not None:  # a merge hold is the sweep's to lift: a drift is kept beside it, never in its place
+            return events + _drift_beside(ports, current, kept, judged.reason)
         held, news = held_after(_held(current), judged.reason, ports.now())
         if news:
             ls.put_record(ports.conn, {**current, "held": held, "updated_at": ports.now()})
@@ -1746,6 +1774,19 @@ def reconcile(ports: Ports, initiative: str) -> list[str]:
         return events
     finally:
         store_lease.release(ports.conn, ops.branch_lease(initiative), ports.worker, int(lease.epoch or 0))
+
+
+def _drift_beside(ports: Ports, record: lr.LandingRecord, kept: tuple[lr.Hold | None, bool], reason: str | None) -> list[str]:
+    """Edge. Write a merge hold with reconciliation's drift kept beside it, or cleared from it; tell a new drift."""
+    hold, news = kept
+    if not news:
+        return []
+    initiative = record_text(record, "initiative")
+    ls.put_record(ports.conn, {**record, "held": hold, "updated_at": ports.now()})
+    if reason is None:
+        return [f"reconcile: {initiative}: the record and origin's {record_text(record, 'branch')} agree again; the merge hold stays"]
+    ports.notify("needs_chair", {"initiative": initiative, "reason": f"held: {reason}"})
+    return [f"reconcile: {initiative} is held: {reason} (beside its merge hold)"]
 
 
 # -- the pass -----------------------------------------------------------------------------------------------------

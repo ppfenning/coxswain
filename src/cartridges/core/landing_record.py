@@ -102,6 +102,11 @@ class Hold(TypedDict, total=False):
     since: str
     phase: str  # a merge hold (the new model's merge agent could not merge a phase): the phase
     tip: str  # and the tip of its branch on origin that it could not merge; a new tip lifts the hold
+    cause: str  # a merge hold: why (`refused`, `no_merge_agent`, `resolver_error`, `harness_fault`, `checks_failed`, `guard`)
+    attempts: int  # a merge hold: how many merges of this phase at this tip were tried and held
+    last_attempt: str  # a merge hold: when the last of them was held; the automatic retry backs off from it
+    released: bool  # a merge hold an operator released (`cox lander release`): the next pass tries the merge again
+    drift: str  # a merge hold that reconciliation also found a drift on: the drift's reason, kept beside the hold
 
 
 class LandingRecord(TypedDict, total=False):
@@ -125,6 +130,7 @@ class LandingRecord(TypedDict, total=False):
     error: str
     landed_pr: str
     held: Hold | None  # set by the lander's reconcile; absent or None means not held
+    retried: Hold | None  # a merge hold the sweep lifted to try again: its count, which the next hold counts on
     lane_model: str  # `phase` (the new model) when stamped so at creation; absent, or anything else, is the old model
 
 

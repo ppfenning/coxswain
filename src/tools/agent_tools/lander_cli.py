@@ -321,6 +321,21 @@ def cmd_adopt(a: argparse.Namespace) -> int:
     return 1 if stopped else 0
 
 
+def cmd_release(a: argparse.Namespace) -> int:
+    """Releases one initiative's merge hold for the next pass; exit 1 when there is none to release."""
+    found = _workspace(a)
+    if found is None:
+        return 2
+    ws, profile = found
+    ports = lander_ports.build(ws, profile)
+    try:
+        released, said = lander.release_merge_hold(ports, a.initiative)
+    finally:
+        ports.conn.close()
+    print(f"lander: {said}" if not released else said)
+    return 0 if released else 1
+
+
 def cmd_backlog(a: argparse.Namespace) -> int:
     """Dry run unless `--apply`; with `--apply` it refuses until the forge says the pull request merged."""
     from agent_tools import lander_backlog

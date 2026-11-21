@@ -1,0 +1,73 @@
+{
+ "notes": [],
+ "outcomes": [
+  [
+   "done",
+   "phase_merge:o:p1",
+   "phase p1 of o merged into init/o",
+   [
+    "phase p1 of o merged into init/o"
+   ]
+  ],
+  [
+   "failed",
+   "phase_merge:o:p2",
+   "conflict in shared.txt",
+   [
+    "phase p2 of o sent back to build: rectify task p2-rectify-1 (conflict in shared.txt)"
+   ]
+  ]
+ ],
+ "p2_shared": "one\n<<<<<<< HEAD\nTWO from p2\n=======\nTWO from p1\n>>>>>>> 0667656c329d62724c078c6aadaadd9d7d737148\nthree",
+ "record": {
+  "adopted": false,
+  "base_sha": "c145b479a316b02269e5df5aae81b5161940c0c0",
+  "branch": "init/o",
+  "created_at": "2026-11-12T10:00:01Z",
+  "epic": null,
+  "initiative": "o",
+  "land_at": "initiative",
+  "parent": "main",
+  "phases": {
+   "p1": {
+    "error": "",
+    "merge_sha": "0667656c329d62724c078c6aadaadd9d7d737148",
+    "state": "merged",
+    "tasks": [
+     "a"
+    ],
+    "tip": "98eebb763b49bf7284b5c574f1734c643601d8df",
+    "updated_at": "2026-11-12T10:00:09Z"
+   },
+   "p2": {
+    "cause": "conflict",
+    "conflict_paths": [
+     "shared.txt"
+    ],
+    "error": "conflict in shared.txt",
+    "state": "conflicted",
+    "updated_at": "2026-11-12T10:00:12Z"
+   }
+  },
+  "pr": null,
+  "repo": "",
+  "stack_base": null,
+  "state": "building",
+  "updated_at": "2026-11-12T10:00:12Z",
+  "waves": {}
+ },
+ "rectified": [
+  [
+   "o",
+   "p2",
+   "Rectify phase p2: resolve its merge with init/o",
+   "The work of phase `p2` is already built, reviewed and on this phase's branch, and the tip of `init/o` has been merged into it. Start from this tree. Change only what the problem below needs: do not rebuild, rewrite or remove work that is already here.\n\n**Problem**\n\nMerging `init/o` into this phase conflicted. The files below hold conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`), with both sides present:\n\n- `shared.txt`\n\n**Wanted**\n\nResolve each conflict so both sides' intent holds, remove every marker, and keep the checks passing.\n\n**Checks**\n\nNo conflict marker is left in the tree, and the phase's checks pass."
+  ]
+ ],
+ "refs": [
+  "refs/heads/epic/o/p1 98eebb763b49bf7284b5c574f1734c643601d8df",
+  "refs/heads/epic/o/p2 f7987931f5ed8bc3e11e3c5705b5d40ccdda742f",
+  "refs/heads/init/o 0667656c329d62724c078c6aadaadd9d7d737148",
+  "refs/heads/main c145b479a316b02269e5df5aae81b5161940c0c0"
+ ]
+}

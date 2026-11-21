@@ -50,6 +50,7 @@ class PhaseMerge:
     merged_tasks: tuple[str, ...] = field(default_factory=tuple)
     assembled: bool = False  # every phase of the initiative is now merged
     resolved_by: str = ""  # who resolved the merge's conflict (`resolve`, the new model only); "" for a clean merge
+    unsettled: str = ""  # a conflict `resolve` was asked about and did not settle: why (`lg.Unsettled`)
 
     @property
     def ok(self) -> bool:
@@ -258,7 +259,8 @@ def _merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: 
                             cause=cause)
     ls.put_record(conn, updated)
     ls.fail(conn, ident, worker, now=now, error=merged.detail)
-    return PhaseMerge("conflicted", initiative, phase, tip=merged.merged, paths=merged.paths, detail=merged.detail, cause=cause)
+    return PhaseMerge("conflicted", initiative, phase, tip=merged.merged, paths=merged.paths, detail=merged.detail, cause=cause,
+                      unsettled=merged.unsettled)
 
 
 # -- rectify tasks: what the lander and the epic file when a merge conflicts or fails its checks -----------------

@@ -17,6 +17,7 @@ import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from harness import bounded_proc
 from harness.worktree import registry_lock
@@ -41,6 +42,9 @@ class Resolved:
 
 # The scratch worktree holding the conflicted merge, and the conflicted paths -> the merged files, or why not.
 Resolve = Callable[[Path, tuple[str, ...]], Resolved | str]
+# Why a resolver left a conflict unsettled: it said no, or its answer did not settle it (`refused`); it raised
+# (`raised`); or the harness could not commit what it answered (`fault`). "" when no resolver was asked.
+Unsettled = Literal["", "refused", "raised", "fault"]
 
 
 @dataclass(frozen=True)
@@ -54,6 +58,7 @@ class Merge:
     paths: tuple[str, ...] = field(default_factory=tuple)  # conflicted paths
     detail: str = ""
     resolved_by: str = ""  # a conflict a resolver settled: its note; "" for a clean merge
+    unsettled: Unsettled = ""  # a conflict a resolver was asked about and did not settle: why (`Unsettled`)
 
     @property
     def ok(self) -> bool:
@@ -139,22 +144,64 @@ def answer_problem(files: Mapping[str, str], conflicted: Sequence[str]) -> str |
     return None
 
 
-def _settle(scratch: Path, paths: tuple[str, ...], resolve: Resolve) -> tuple[str | None, str]:
+def strays(conflicted: Sequence[str], before: Mapping[str, str], after: Mapping[str, str],
+           modified: Sequence[str]) -> list[str]:
+    """Pure. The paths other than `conflicted` whose index entry changed between `before` and `after` (path -> its
+    `ls-files --stage` entries), or that are modified in the worktree: what a resolver touched that it was not asked
+    about. Empty when only the conflicted paths moved."""
+    mine = set(conflicted)
+    staged = {p for p in set(before) | set(after) if p not in mine and before.get(p) != after.get(p)}
+    return sorted(staged | {p for p in modified if p not in mine})
+
+
+def _index(scratch: Path) -> tuple[dict[str, str], list[str]] | None:
+    """Edge. The scratch's index (path -> its stage entries) and the tracked paths modified in its worktree."""
+    listed, entries = git(scratch, "ls-files", "--stage", "-z")
+    diffed, modified = git(scratch, "diff", "--name-only", "-z")
+    if not (listed and diffed):
+        return None
+    index: dict[str, str] = {}
+    for entry in entries.split("\0"):
+        meta, tab, path = entry.partition("\t")
+        if tab:
+            index[path] = f"{index.get(path, '')}{meta};"
+    return index, [p for p in modified.split("\0") if p]
+
+
+def _merging(scratch: Path) -> tuple[str | None, str | None]:
+    return rev(scratch, "HEAD"), rev(scratch, "MERGE_HEAD")
+
+
+def _settle(scratch: Path, paths: tuple[str, ...], resolve: Resolve) -> tuple[str | None, str, Unsettled]:
     """Edge. Ask `resolve` about the conflicted merge in `scratch`, then write and commit its answer there.
-    (its note, "") once committed; (None, why not) when it did not settle the conflict or could not be committed."""
+    (its note, "", "") once committed; (None, why not, `Unsettled`) when it did not settle the conflict or could not
+    be committed. Before the commit the scratch must still be the merge the resolver was given, and its index and
+    worktree must differ from that merge only in the conflicted paths: anything else it staged or changed is refused."""
+    before, merging = _index(scratch), _merging(scratch)
+    if before is None:
+        return None, "the conflicted merge's index could not be read", "fault"
     try:
         answer = resolve(scratch, paths)
     except Exception as exc:  # a resolver that breaks leaves a conflict, never a half-merged scratch
-        return None, f"the resolver failed: {type(exc).__name__}: {exc}"
+        return None, f"the resolver failed: {type(exc).__name__}: {exc}", "raised"
     if isinstance(answer, str):
-        return None, answer
+        return None, answer, "refused"
     if problem := answer_problem(answer.files, paths):
-        return None, problem
+        return None, problem, "refused"
+    if _merging(scratch) != merging:
+        return None, "the resolver moved the merge it was given (HEAD or MERGE_HEAD changed); refused", "refused"
     for path, text in answer.files.items():
         (scratch / path).write_text(text, encoding="utf-8")
     added, out = git(scratch, "add", "--", *paths)
-    committed, out = git(scratch, *IDENTITY, *NO_RERERE, "commit", "--no-verify", "--no-edit") if added else (False, out)
-    return (answer.note or "resolved", "") if committed else (None, f"the resolved merge could not be committed: {out}")
+    if not added:
+        return None, f"the resolved merge could not be staged: {out}", "fault"
+    after = _index(scratch)
+    if after is None:
+        return None, "the resolved merge's index could not be read", "fault"
+    if touched := strays(paths, before[0], after[0], after[1]):
+        return None, f"the resolution touched files that did not conflict: {', '.join(touched)}; refused", "refused"
+    committed, out = git(scratch, *IDENTITY, *NO_RERERE, "commit", "--no-verify", "--no-edit")
+    return (answer.note or "resolved", "", "") if committed else (None, f"the resolved merge could not be committed: {out}", "fault")
 
 
 def merge_into(repo: Path | str, *, branch: str, source: str, message: str, recorded: Sequence[str] = (),
@@ -185,11 +232,14 @@ def merge_into(repo: Path | str, *, branch: str, source: str, message: str, reco
         if not ok:
             _, unmerged = git(scratch, "diff", "--name-only", "--diff-filter=U")
             paths = tuple(p for p in unmerged.splitlines() if p)
-            note, why = _settle(scratch, paths, resolve) if paths and resolve is not None else (None, "")
+            unsettled: Unsettled = ""
+            note, why = None, ""
+            if paths and resolve is not None:
+                note, why, unsettled = _settle(scratch, paths, resolve)
             if note is None:
                 git(scratch, "merge", "--abort")
                 if paths:
-                    return Merge("conflict", tip=old, merged=incoming, paths=paths,
+                    return Merge("conflict", tip=old, merged=incoming, paths=paths, unsettled=unsettled,
                                  detail=f"conflict in {', '.join(paths)}" + (f": {why}" if why else ""))
                 return Merge("error", tip=old, merged=incoming, detail=out)
             resolved_by = note

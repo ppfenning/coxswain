@@ -8,7 +8,7 @@ same file, so the second phase's merge into the initiative branch conflicts:
   phases are built on another clone, as the phase lane builds them on a worker, and pushed to origin: the lander's
   clone has no copy of them until it fetches. Its conflict goes to the merge agent. No merge agent is wired yet (L5,
   #1309), so the port refuses, and the initiative holds with needs_chair: nothing is merged that nobody resolved, no
-  rectify task is filed, and the lander never writes the phase branch.
+  rectify task is filed, and the lander never writes the phase branch. `cox lander release` tries it again.
 - `legacy` is on the old model (no `lane_model`). Its conflict is committed, markers and all, on the phase branch,
   and a rectify task is filed, exactly as before D1.
 """
@@ -93,6 +93,7 @@ def test_one_pass_holds_a_new_model_conflict_for_the_merge_agent_and_sends_an_ol
     held = _record(sandbox, "fresh")["held"]
     assert held["reason"].startswith(f"the lander could not merge new-model phase p2 at {new_tips['p2'][:12]}: conflict in shared.txt")
     assert "no merge agent yet" in held["reason"] and (held["phase"], held["tip"]) == ("p2", new_tips["p2"]), held
+    assert (held["cause"], held["attempts"]) == ("no_merge_agent", 1), "retried hourly until a merge agent is wired"
     assert not (sandbox.workspace / "work" / "fresh" / "p2" / "p2-rectify.md").exists(), "no rectify task on the new model"
     assert _origin_has(sandbox, fresh_origin, "refs/heads/epic/fresh/p2") == new_tips["p2"], "the lander never writes it"
     merged = _origin_has(sandbox, fresh_origin, "refs/heads/init/fresh")
@@ -110,3 +111,15 @@ def test_one_pass_holds_a_new_model_conflict_for_the_merge_agent_and_sends_an_ol
     assert _record(sandbox, "fresh")["held"] == held, "a held merge is not tried again"
     inbox = sandbox.cox("courier", "inbox", "--label", "chair")
     assert inbox.stdout.count("the lander could not merge new-model phase p2") == 1, "and the chair is told once"
+
+    # An operator releases the hold (`cox lander release`): the next pass tries the merge again, and says how it went.
+    refused = sandbox.cox("lander", "release", "legacy")
+    assert refused.returncode == 1 and "legacy is not held" in refused.stdout, refused.stdout + refused.stderr
+    released = sandbox.cox("lander", "release", "fresh")
+    assert released.returncode == 0 and "the merge hold on phase p2 is released" in released.stdout, released.stdout + released.stderr
+    retried = sandbox.cox("lander", "once")
+    assert "an operator released it" in retried.stdout, retried.stdout + retried.stderr
+    again_held = _record(sandbox, "fresh")["held"]
+    assert (again_held["attempts"], again_held["tip"], again_held.get("released")) == (2, new_tips["p2"], None), again_held
+    inbox = sandbox.cox("courier", "inbox", "--label", "chair")
+    assert inbox.stdout.count("the lander could not merge new-model phase p2") == 2, "the release's answer is told"
