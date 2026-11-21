@@ -20,6 +20,7 @@ import shlex
 import signal
 import subprocess
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -178,6 +179,52 @@ NEW_MODEL_ONLY = "new_model_only"
 # component: the whole suite is a wider level's. The entry carries `TOUCHED_ONLY` and `NEW_MODEL_ONLY` both, since the
 # old model has no wider level to leave a suite to: its flat list takes the suite from the widest section instead.
 _TOUCHED_MARK = re.compile(r"\s+#\s*touched only\s*$")
+# A trailing `# timeout: <seconds>` on a command line: the check's own `timeout` (`check_timeout`), which `run_checks`
+# and the touched-only scoping (`check_scope.TOUCHED_TIMEOUT_S`) honour over their defaults; a value that is not a
+# positive whole number of seconds becomes a failing task check that names the line.
+_TIMEOUT_MARK = re.compile(r"\s+#\s*timeout:\s*(\S*)\s*$")
+# A `# fix: <command>` on a command line: the fix the build runs before the gate; it takes the rest of the line.
+_FIX_MARK = re.compile(r"\s+#\s*fix:\s*(\S.*)$")
+# The marks `_marks` peels off a line's end, in any order (and `# fix:`, which takes the rest of what is left).
+_END_MARKS = ((NEW_MODEL_ONLY, _NEW_MODEL_MARK), (TOUCHED_ONLY, _TOUCHED_MARK), ("timeout", _TIMEOUT_MARK))
+# A mark anywhere in a line: one still inside a command or a fix once the peel stops is a misplaced mark.
+_ANY_MARK = re.compile(r"\s#\s*(?:new model only|touched only|timeout:|fix:)")
+
+
+@dataclass(frozen=True)
+class _Marks:
+    """A `.agent-checks` command line with its trailing marks peeled (`_marks`): the command bash runs, the check's
+    name (the command and its `# fix:`, as written), the fix command, each other mark found (its value, "" when it
+    has none), and why the line cannot be read ("" when it can)."""
+
+    cmd: str
+    name: str
+    fix: str
+    found: dict[str, str]
+    bad: str
+
+
+def _marks(line: str) -> _Marks:
+    """Pure. Peel `line`'s trailing marks in any order: `# new model only`, `# touched only` and `# timeout: N` off the
+    end, and `# fix: <command>`, which runs to the end of what is left. A mark given twice, or a mark still inside the
+    command or the fix once the peel stops, is a bad line, never a silent change to what the check does."""
+    text, fix_span, found = line, "", dict[str, str]()
+    while True:
+        hit = next(((key, m) for key, mark in _END_MARKS if (m := mark.search(text))), None)
+        if hit is None and not fix_span and (m := _FIX_MARK.search(text)):
+            fix_span, text = text[m.start():], text[: m.start()].rstrip()
+            continue
+        if hit is None:
+            break
+        key, m = hit
+        if key in found:
+            return _Marks(text, text, "", found, f"the mark {m.group(0).strip()!r} is given twice")
+        found[key], text = (m.group(1) if m.groups() else ""), text[: m.start()]
+    fix = _FIX_MARK.search(fix_span)
+    fix_cmd = fix.group(1).strip() if fix else ""
+    if stray := _ANY_MARK.search(text) or _ANY_MARK.search(fix_cmd):
+        return _Marks(text, text, fix_cmd, found, f"misplaced mark {stray.group(0).strip()!r}")
+    return _Marks(text, text + fix_span, fix_cmd, found, "")
 
 
 def repo_checks(text: str) -> list[dict[str, Any]]:
@@ -194,6 +241,10 @@ def repo_checks(text: str) -> list[dict[str, Any]]:
     (`NEW_MODEL_ONLY`): it runs at its level on the phase model, and the old model's flat list leaves it out. A task
     line may end `# touched only` (`TOUCHED_ONLY`, which implies `NEW_MODEL_ONLY`): the phase model's task gate runs it
     on the tests the task touched alone. At another level the mark only keeps the line out of the old model's list.
+    A line may end `# timeout: <seconds>`: the entry carries that `timeout`, the line's own limit in place of the
+    runner's default, and the mark is in neither its `cmd` nor its `name`. The trailing marks may come in any order
+    (`_marks`). A timeout that is not a positive whole number, a mark given twice, or a mark left inside the command
+    or the fix becomes one task check that fails and names the line.
 
     Blank lines and other lines starting with `#` are ignored. Each surviving line,
     stripped, becomes an entry whose `name` and `cmd` are the stripped line
@@ -214,21 +265,38 @@ def repo_checks(text: str) -> list[dict[str, Any]]:
             continue
         if not line or line.startswith("#") or level not in LEVELS:
             continue
-        only = bool(_NEW_MODEL_MARK.search(line))
-        text = _NEW_MODEL_MARK.sub("", line) if only else line
-        touched = bool(_TOUCHED_MARK.search(text))
-        text = _TOUCHED_MARK.sub("", text) if touched else text
-        cmd, fix = _split_fix(text)
+        peeled = _marks(line)
+        limit = peeled.found.get("timeout")
+        if peeled.bad:
+            entries.setdefault(("task", f"#{number}"), _bad_line(number, peeled.bad))
+            continue
+        if limit is not None and not (re.fullmatch(r"[0-9]+", limit) and int(limit) > 0):
+            entries.setdefault(("task", f"#{number}"), _bad_timeout(number, limit))
+            continue
+        only, touched = NEW_MODEL_ONLY in peeled.found, TOUCHED_ONLY in peeled.found
         tagged = {} if level == "task" else {"level": level}
-        entries.setdefault((level, cmd), {"name": text, "cmd": cmd, **({"fix": fix} if fix else {}), **tagged,
-                                          **({NEW_MODEL_ONLY: True} if only or touched else {}),
-                                          **({TOUCHED_ONLY: True} if touched else {})})
+        entries.setdefault((level, peeled.cmd), {"name": peeled.name, "cmd": peeled.cmd,
+                                                 **({"fix": peeled.fix} if peeled.fix else {}), **tagged,
+                                                 **({"timeout": int(limit)} if limit is not None else {}),
+                                                 **({NEW_MODEL_ONLY: True} if only or touched else {}),
+                                                 **({TOUCHED_ONLY: True} if touched else {})})
     return list(entries.values())
 
 
 def _bad_level(number: int, level: str) -> dict[str, Any]:
     """The failing task check an unknown `# level:` marker becomes; its own lines are not run at any level."""
     said = f".agent-checks line {number}: unknown level {level!r}, expected one of {', '.join(LEVELS)}"
+    return {"name": said, "cmd": f"echo {shlex.quote(said)} >&2; exit 2"}
+
+
+def _bad_timeout(number: int, value: str) -> dict[str, Any]:
+    """The failing task check a `# timeout:` mark with a bad value becomes; its own line is not run at any level."""
+    return _bad_line(number, f"bad timeout {value!r}, expected a positive whole number of seconds")
+
+
+def _bad_line(number: int, why: str) -> dict[str, Any]:
+    """The failing task check a command line whose marks do not read becomes; the line is not run at any level."""
+    said = f".agent-checks line {number}: {why}"
     return {"name": said, "cmd": f"echo {shlex.quote(said)} >&2; exit 2"}
 
 
@@ -254,14 +322,8 @@ def old_model_checks(parsed: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]
     return task + [{k: v for k, v in c.items() if k != "level"} for c in widest if c["cmd"] not in known]
 
 
-_FIX_MARK = re.compile(r"\s+#\s*fix:\s*(\S.*)$")
 
 
-def _split_fix(line: str) -> tuple[str, str]:
-    """A `.agent-checks` line as (command, fix command). `cmd  # fix: other` names `other` as the check's fix, and the
-    comment never reaches the gate's shell; any other trailing comment stays part of the line."""
-    mark = _FIX_MARK.search(line)
-    return (line[: mark.start()].rstrip(), mark.group(1).strip()) if mark else (line, "")
 
 
 def fixable_checks(checks: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:

@@ -30,7 +30,10 @@ python .github/check_types.py
 # The smoke suite without the forge (docs/smoke.md, "The phase check needs no forge"): real cox from this tree against
 # real git and a throwaway Postgres container, and no Forgejo. With no docker on PATH it skips and says why (-rs); a
 # docker whose daemon does not answer fails unless the host sets COX_SMOKE_SKIP_BROKEN_DOCKER=1.
-pytest -q -rs smoke -m "not forge"
+# Serially, under its own timeout (`# timeout:`): the suite is CI's three ~170 s shards end to end, past the runner's
+# 600 s default (E1, 2026-11-21: a harness fault on a worker, which a retry of the same command repeats). It stays
+# serial: one session, one build of this tree, and no worker count the lane's own cap does not set.
+pytest -q -rs smoke -m "not forge"  # timeout: 2400
 
 # level: initiative
 # The full suite, which gates the new model's one pull request (D2: the initiative review's `suite` step, run on the
@@ -38,9 +41,10 @@ pytest -q -rs smoke -m "not forge"
 # suite with the forge tests, and the umbrella's own tests/. An old-model run reads this file as one flat list, its
 # task lines and then these (checks.old_model_checks): exactly the seven commands it ran before levels. The root suite
 # is marked `# new model only`, so that list leaves it out: the old model runs it in CI's `unit (root)` job, as it
-# always has.
-cd src/tools && pytest -q -n auto
-cd src/graphs && pytest -q -n auto
-cd src/cartridges && pytest -q -n auto
-pytest -q -rs smoke
-pytest -q -n auto  # new model only
+# always has. Each line has its own timeout, wider than the runner's 600 s default: the whole smoke suite, forge tests
+# and all, runs serially here, as the old model's list has always run it, so its command stays as it was.
+cd src/tools && pytest -q -n auto  # timeout: 1800
+cd src/graphs && pytest -q -n auto  # timeout: 1800
+cd src/cartridges && pytest -q -n auto  # timeout: 1800
+pytest -q -rs smoke  # timeout: 3600
+pytest -q -n auto  # timeout: 1800  # new model only
