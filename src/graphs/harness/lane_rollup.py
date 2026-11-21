@@ -4,7 +4,7 @@ what a run leaves in the repository.
 A task rolls up as exactly one commit on the phase branch, linear, never a merge: its change (the task worktree's tree
 against the tip it was cut from) is applied cleanly onto the phase tip and committed with the `Cox-*` trailers
 (`message`, plan §1.4), then pushed. The push is a plain fast-forward, never forced. A change that does not apply
-cleanly is reported as such: resolving it is the merge agent's (L5), not this module's.
+cleanly is reported as such (`did_not_apply`): resolving it is the merge agent's (`lane_merge`, L5), not this module's.
 
 **Every call that reaches origin is bounded** to `REMOTE_TIMEOUT_S`, well inside the lane's claim margin
 (`phase_pick.LANE_MARGIN_S`), with git's own transport timeouts set beneath it and the command's whole process group
@@ -42,12 +42,15 @@ from harness.lane_progress import LOG_ARGS
 from harness.worktree import registry_lock
 
 __all__ = [
-    "REMOTE_TIMEOUT_S", "apply_and_commit", "branch_name", "change", "drop_refs", "fetch", "head", "log_since",
+    "REMOTE_TIMEOUT_S", "apply_and_commit", "branch_name", "change", "did_not_apply", "drop_refs", "fetch", "head",
+    "log_since",
     "message", "next_move", "open_phase_worktree", "phase_lock", "private_ref", "push", "push_outcome", "reset_to",
     "stale_runs", "sweep", "sweep_runs",
 ]
 
 _TIMEOUT_S = 120  # a local git command
+_REAP_S = 2  # collecting a command killed for running over its bound
+_NOT_APPLIED = "the change does not apply cleanly"
 REMOTE_TIMEOUT_S = 8  # a call that reaches origin: well inside phase_pick.LANE_MARGIN_S (15 s)
 # git's own transport bounds beneath REMOTE_TIMEOUT_S: an ssh that cannot connect or stops answering, an http
 # transfer that stalls.
@@ -121,6 +124,12 @@ def next_move(held: bool, origin_tip: str | None, ours: str, parent: str, landed
     return "retry"
 
 
+def did_not_apply(why: str) -> bool:
+    """Pure. Whether `apply_and_commit`'s reason says the change did not apply onto the tip (a collision, the merge
+    agent's), rather than that the commit failed."""
+    return why.startswith(_NOT_APPLIED)
+
+
 def stale_runs(names: Iterable[str], prefix: str, own: str) -> list[str]:
     """Pure. Of the run ids `names` (as they appear in ref and directory names), those of the phase (`<prefix>-<n>`)
     other than `own`, sorted: the runs a new lane of the phase sweeps up after."""
@@ -150,7 +159,7 @@ def _remote(*args: str, cwd: Path, timeout_s: float = REMOTE_TIMEOUT_S) -> tuple
     except subprocess.TimeoutExpired:
         with suppress(ProcessLookupError):
             os.killpg(proc.pid, signal.SIGKILL)
-        proc.communicate()
+        _reap(proc)
         return None, "", f"git {args[0]} timed out after {timeout_s}s and was killed"
     except BaseException:
         with suppress(ProcessLookupError):
@@ -158,6 +167,20 @@ def _remote(*args: str, cwd: Path, timeout_s: float = REMOTE_TIMEOUT_S) -> tuple
         proc.wait()
         raise
     return proc.returncode, out, err.strip()
+
+
+def _reap(proc: subprocess.Popen[str]) -> None:
+    """Edge. Collect a killed command, bounded to `_REAP_S`: a grandchild that left the group can hold its pipes open
+    past the kill, and the lane must not wait on it. Its pipes are closed then; the process is reaped if it can be."""
+    try:
+        proc.communicate(timeout=_REAP_S)
+    except subprocess.TimeoutExpired:
+        for pipe in (proc.stdout, proc.stderr):
+            with suppress(OSError):
+                if pipe is not None:
+                    pipe.close()
+        with suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=_REAP_S)
 
 
 def _private(run_id: str, name: str) -> str:
@@ -220,7 +243,7 @@ def apply_and_commit(phase_worktree: Path, diff: str, text: str) -> tuple[str | 
         ok, _, err = _git("apply", "--index", "--whitespace=nowarn", "-", cwd=phase_worktree, stdin=diff)
         if not ok:
             reset_to(phase_worktree, before)
-            return None, f"the change does not apply cleanly onto the phase tip {before[:12]}: {err[:500]}"
+            return None, f"{_NOT_APPLIED} onto the phase tip {before[:12]}: {err[:500]}"
     ok, _, err = _git(*IDENTITY, "commit", "-q", "--allow-empty", "--no-verify", "-F", "-", cwd=phase_worktree,
                       stdin=text)
     if not ok:
