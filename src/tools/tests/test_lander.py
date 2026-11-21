@@ -89,6 +89,7 @@ class Forge:
 
     def merge(self, repo, step):
         self.calls.append(("merge", step["branch"]))
+        self.steps = [*getattr(self, "steps", []), dict(step)]
         self.person_merges(repo, step["branch"], squash=step.get("squash", True))
         return True, ""
 

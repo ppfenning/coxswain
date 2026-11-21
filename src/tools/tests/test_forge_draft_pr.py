@@ -160,6 +160,25 @@ def test_forgejo_draft_prefixes_the_title_once(monkeypatch, repo):
     assert forge_forgejo.mark_draft(repo, head="feat")[0] and again.writes() == []
 
 
+@pytest.mark.parametrize(("title", "prefix"), [("WIP: T", "WIP:"), ("wip: T", "wip:"), ("[WIP] T", "[WIP]"),
+                                               ("[wip] T", "[wip]"), ("T", ""), ("WIPE T", ""), ("T [WIP]", "")])
+def test_forgejo_reads_each_of_its_draft_prefixes(title, prefix):
+    assert (forge_forgejo.draft_prefix(title), forge_forgejo.is_draft_title(title)) == (prefix, bool(prefix))
+
+
+def test_forgejo_ready_drops_a_bracketed_draft_prefix(monkeypatch, repo):
+    api = _api(monkeypatch, [_pull(4, "[WIP] Old")])
+    assert forge_forgejo.mark_ready(repo, head="feat")[0]
+    assert api.writes() == [("PATCH", f"{PULL_API}/4", {"title": "Old"})]
+
+
+def test_forgejo_draft_and_update_keep_a_bracketed_draft_as_it_is(monkeypatch, repo):
+    api = _api(monkeypatch, [_pull(4, "[WIP] Old")])
+    assert forge_forgejo.mark_draft(repo, head="feat")[0]
+    forge_forgejo.update_pr(repo, "New", "Body", head="feat")
+    assert api.writes() == [("PATCH", f"{PULL_API}/4", {"title": "[WIP] New", "body": "Body"})]
+
+
 @pytest.mark.parametrize("call", [
     lambda repo: forge_forgejo.update_pr(repo, "T", "B", head="feat"),
     lambda repo: forge_forgejo.mark_ready(repo, head="feat"),

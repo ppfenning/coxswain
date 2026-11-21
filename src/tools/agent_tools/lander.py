@@ -614,8 +614,11 @@ def merge_phase(ports: Ports, initiative: str, phase: str) -> Outcome:
     def publish(branch: str) -> str | None:
         # Every merge is pushed, whatever `push_initiative` says, and before it is recorded (`ops.after_push`): origin's
         # copy is the one every lane builds on. The forge pushes first (Forgejo's wait for the server to show the
-        # branch is kept); a forge that keeps the branch local (the local forge) is followed by a plain git push.
-        why = publish_initiative(ports, repo, branch)
+        # branch is kept); a forge that keeps the branch local (the local forge) is followed by a plain git push. An
+        # open new-model pull request is made a draft first, under the same lease: refused, nothing is pushed.
+        refused, drafted = lander_pr.draft_before_push(ports, repo, initiative)
+        why = refused or publish_initiative(ports, repo, branch)
+        pushed_note.extend(drafted if why is None else [])
         if why is None and lg.git(repo, "remote", "get-url", "origin")[0]:
             tip = lg.rev(repo, f"refs/heads/{branch}") or ""
             pushed_note.append(f"{branch} pushed to origin at {tip[:12]} before phase {phase} was recorded merged")
@@ -873,9 +876,11 @@ def land_initiative(ports: Ports, initiative: str, *, merge: bool = True, refres
         if unheld:
             return close("waiting", unheld, events)
         # Into an epic branch an initiative merges with a merge commit, so the layers above it retarget cleanly; the
-        # squash happens once, from the epic branch to its parent.
-        ok, detail = ports.forge.merge(repo, {"kind": "merge", "squash": not stacked, "delete_branch": True, "branch": branch,
-                                             "default_branch": parent, "subject": str((record.get("pr") or {}).get("title") or initiative)})
+        # squash happens once, from the epic branch to its parent. On the new model the merge is pinned to the head the
+        # suite passed at (`head_sha`): the forge refuses it once the head is anything else.
+        merging: dict[str, object] = {"kind": "merge", "squash": not stacked, "delete_branch": True, "branch": branch,
+                                      "default_branch": parent, "subject": str((record.get("pr") or {}).get("title") or initiative)}
+        ok, detail = ports.forge.merge(repo, {**merging, "head_sha": gate.tip} if gate is not None and gate.tip else merging)
         if not ok:
             return close("failed", f"merge of {url} failed: {detail}", events)
         events.append(f"merged {url} into {parent}")

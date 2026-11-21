@@ -34,7 +34,9 @@ _SCP_REMOTE = re.compile(r"^(?P<user>[^@/:\s]+)@(?P<host>[^:/\s]+):(?P<path>.+)$
 # What forge_github's merge_state says for a PR that can and cannot merge; Forgejo has no finer status.
 MERGEABLE, CONFLICTED, UNSETTLED = "CLEAN", "DIRTY", "UNKNOWN"
 # Forgejo marks a pull request as a work in progress by a title prefix; removing it makes the PR ready.
-DRAFT_PREFIX = "WIP: "
+DRAFT_PREFIX = "WIP: "  # the prefix a draft is given
+# Every prefix Forgejo reads as a draft (its default `WORK_IN_PROGRESS_PREFIXES`), matched without regard to case.
+DRAFT_PREFIXES = ("WIP:", "[WIP]")
 PAGE_SIZE = 50
 # A guard on the page loop: a server that ignores `page` would otherwise repeat page one forever.
 MAX_PAGES = 20
@@ -209,8 +211,14 @@ def read_merge_state(target: Target, env: Mapping[str, str], pr: int) -> str:
     return parse_merge_state(body)
 
 
-def squash_merge(target: Target, env: Mapping[str, str], pr: int) -> tuple[bool, str]:
-    return parse_merge_response(*_call(target, env, "POST", f"/pulls/{pr}/merge", {"Do": "squash"}))
+def merge_body(head_sha: str = "") -> dict[str, str]:
+    """The squash merge's request body; `head_sha` pins it (`head_commit_id`): Forgejo refuses the merge when the pull
+    request's head is any other commit."""
+    return {"Do": "squash", "head_commit_id": head_sha} if head_sha else {"Do": "squash"}
+
+
+def squash_merge(target: Target, env: Mapping[str, str], pr: int, head_sha: str = "") -> tuple[bool, str]:
+    return parse_merge_response(*_call(target, env, "POST", f"/pulls/{pr}/merge", merge_body(head_sha)))
 
 
 def delete_branch(target: Target, env: Mapping[str, str], branch: str) -> tuple[bool, str]:
@@ -313,8 +321,13 @@ def open_pr(repo: Path, title: str, body: str, *, head: str | None = None, base:
         return False, str(exc)
 
 
+def draft_prefix(title: str) -> str:
+    """The draft prefix `title` starts with, as the title writes it (`WIP:`, `[WIP]`, any case); '' when none."""
+    return next((title[:len(p)] for p in DRAFT_PREFIXES if title.upper().startswith(p)), "")
+
+
 def is_draft_title(title: str) -> bool:
-    return title.upper().startswith(DRAFT_PREFIX.strip().upper())
+    return bool(draft_prefix(title))
 
 
 def _open_pull(repo: Path, head: str) -> tuple[Target, int, str]:
@@ -343,7 +356,7 @@ def update_pr(repo: Path, title: str, body: str, *, head: str) -> tuple[bool, st
     """Edit the title and body of the open PR from `head`. A draft stays a draft: its prefix is kept."""
     try:
         target, number, current = _open_pull(repo, head)
-        keep = DRAFT_PREFIX if is_draft_title(current) and not is_draft_title(title) else ""
+        keep = f"{draft_prefix(current)} " if is_draft_title(current) and not is_draft_title(title) else ""
         return _patch_pull(target, number, {"title": f"{keep}{title}", "body": body})
     except ForgeError as exc:
         return False, str(exc)
@@ -355,7 +368,7 @@ def mark_ready(repo: Path, *, head: str) -> tuple[bool, str]:
         target, number, current = _open_pull(repo, head)
         if not is_draft_title(current):
             return True, f"pull request {number} is already ready"
-        return _patch_pull(target, number, {"title": current[len(DRAFT_PREFIX.strip()):].lstrip()})
+        return _patch_pull(target, number, {"title": current[len(draft_prefix(current)):].lstrip()})
     except ForgeError as exc:
         return False, str(exc)
 
@@ -378,7 +391,8 @@ def merge_state(pr: int, *, repo: Path | str | None = None) -> str:
 
 
 def merge(repo: Path, step: dict) -> tuple[bool, str]:
-    """Squash-merge the PR of `step["branch"]`, delete its branch, then update the local default branch.
+    """Squash-merge the PR of `step["branch"]`, delete its branch, then update the local default branch. `step["head_sha"]`,
+    when set, pins the merge to that head (`merge_body`).
 
     Once Forgejo merges, the PR has merged, so a failed delete or local update is reported in the detail and the result stays ok.
     """
@@ -389,7 +403,7 @@ def merge(repo: Path, step: dict) -> tuple[bool, str]:
             return False, found
         if not found:
             return False, f"no open pull request for {step['branch']}"
-        merged, detail = squash_merge(target, os.environ, found[0])
+        merged, detail = squash_merge(target, os.environ, found[0], str(step.get("head_sha") or ""))
     except ForgeError as exc:
         return False, str(exc)
     if not merged:

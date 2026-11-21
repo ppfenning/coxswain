@@ -27,7 +27,35 @@ from core.landing import TemplateError, initiative_pr_reference, initiative_pr_t
 from harness import landing_git as lg
 from harness import landing_store as ls
 
-__all__ = ["gate_tip", "mark_open_pr", "open_at", "pr_body", "pr_text", "push_and_open"]
+__all__ = ["draft_before_push", "gate_tip", "mark_open_pr", "open_at", "pr_body", "pr_text", "push_and_open"]
+
+
+def draft_before_push(ports: Ports, repo: Path, initiative: str) -> tuple[str | None, list[str]]:
+    """Edge, called under the initiative's branch lease right before a push that moves the head of its open new-model
+    pull request (a phase merge, a refresh). The pull request is made a draft and the record keeps `pr.stale`, so the
+    forge refuses to merge it from the moment the new head is visible until a suite passes there (`mark_open_pr` marks
+    it ready). (why the push is refused, or None; events). None when the push may go: an old-model record, no open
+    pull request, or the draft taken. Refused when the forge would not take the draft: a head pushed without it could
+    be merged untested. A refusal is counted with `mark_pr`'s (`lander_review.mark_refused`), so one that keeps coming
+    is told once."""
+    record = ls.get_record(ports.conn, initiative)
+    if record is None or lr.record_lane_model(record) != lr.NEW_MODEL or record.get("state") == "landed":
+        return None, []
+    pr = record.get("pr") or {}
+    if not pr.get("url"):
+        return None, []
+    branch = record_text(record, "branch")
+    ok, why = ports.forge.mark_draft(repo, branch)
+    if not ok:
+        told = lander_review.mark_refused(ports.conn, record, "draft", why, ports.now(), ports.notify)
+        return (f"push of {branch} refused: its open pull request could not be made a draft first ({why}); "
+                "a head pushed without it could be merged before a suite passed there"), told
+    if pr.get("stale") and not pr.get("mark_refused"):
+        return None, []
+    ls.put_record(ports.conn, {**record, "pr": {**lander_review.without_refusals(pr), "stale": True}, "updated_at": ports.now()})
+    head = lg.rev(repo, f"refs/heads/{branch}") or ""
+    return None, [] if pr.get("stale") else [f"{initiative}: the pull request is a draft: its head {head[:12]} has no passing suite"]
+
 
 def pr_body(meta: LandMeta, record: lr.LandingRecord, tasks: Sequence[Row], reference: str | None) -> str:
     """The one pull request's body: the initiative, a block per phase with its tasks, and the issue line."""
@@ -71,12 +99,18 @@ def open_at(ports: Ports, record: lr.LandingRecord, tasks: Sequence[Row], meta: 
         return push_and_open(ports, record, tasks, meta, repo, refs, note, approved)
     if step.push and (dropped := lg.missing_from(repo, branch, lr.recorded_shas(record))):
         return Outcome("failed", ident, f"refused to push {branch}: it lacks recorded commit(s) {', '.join(s[:12] for s in dropped)}")
+    refused, drafted = draft_before_push(ports, repo, initiative) if step.push else (None, [])
+    if refused:
+        if local and origin and local != origin:  # nothing was pushed: back to origin's copy, so the next pass refreshes again
+            lg.git(repo, "update-ref", "-m", "lander: the draft was refused; nothing was pushed", f"refs/heads/{branch}", origin, local)
+        return Outcome("waiting", ident, refused, tuple(drafted))
     if step.push and (refused := publish_initiative(ports, repo, branch)):
-        return Outcome("waiting", ident, refused)
+        return Outcome("waiting", ident, refused, tuple(drafted))
     if not step.push and local and origin and local != origin:
         lg.git(repo, "update-ref", "-m", "lander: origin moved; the next pass fetches it", f"refs/heads/{branch}", origin, local)
     tip = str((local if step.push else origin) or approved)
-    return Outcome("waiting", ident, step.reason, tuple(lander_review.moved(ports.conn, record, step, tip, ports.now(), ports.notify)))
+    moved = lander_review.moved(ports.conn, record, step, tip, ports.now(), ports.notify)
+    return Outcome("waiting", ident, step.reason, (*drafted, *moved))
 
 
 def pr_text(meta: LandMeta, record: lr.LandingRecord, tasks: Sequence[Row], parent: str) -> tuple[str, str] | str:
@@ -101,7 +135,8 @@ def mark_open_pr(ports: Ports, initiative: str, gate: lander_review.Decision, he
     text = pr_text(ports.meta(initiative), record, ports.tasks(initiative), record_text(record, "parent"))
     if isinstance(text, str):
         return [f"{initiative}: the pull request's body cannot be made: {text}"]
-    return lander_review.mark_pr(ports.conn, ports.forge, ports_repo(ports, record), record, fresh, text, ports.now())
+    return lander_review.mark_pr(ports.conn, ports.forge, ports_repo(ports, record), record, fresh, text, ports.now(),
+                                 ports.notify)
 
 
 def push_and_open(ports: Ports, record: lr.LandingRecord, tasks: Sequence[Row], meta: LandMeta, repo: Path,
@@ -127,13 +162,17 @@ def push_and_open(ports: Ports, record: lr.LandingRecord, tasks: Sequence[Row], 
         first = existing[0]
         url = str(first.get("url") or first.get("number")) if is_mapping(first) else str(first)
         events = [f"found the open pull request for {branch}: {url}"]
+        created = False
     else:
         ok, url = ports.forge.open_pr(repo, title, base_body + (f"\n{note}\n" if note else ""), head=branch, base=parent)
         if not ok:
             return Outcome("failed", ident, f"pull request for {branch} was not opened: {url}")
         events = [f"opened the pull request for {initiative}: {url}"]
-    pr: lr.PullRequest = {"url": url, "title": title, "head": branch, "base": parent}
-    if passed:  # the new model: where the suite passed is kept, and its moves are counted afresh
+        created = True
+    # A pull request found open keeps what the record says of it (a draft stays stale until `mark_open_pr` marks it
+    # ready) and its moves; only one opened here starts fresh, at the tip the suite passed at.
+    pr: lr.PullRequest = {**(record.get("pr") or {}), "url": url, "title": title, "head": branch, "base": parent}
+    if passed and created:  # the new model: where the suite passed is kept, and its moves are counted afresh
         fresh, review_tip = lander_review.opened(record, passed)
         pr, record = {**pr, **fresh}, {**record, "review_tip": review_tip}
     updated = lr.with_state({**record, "state": "assembled"} if record.get("state") != "pr_open" else record, "pr_open", ports.now(), pr=pr)

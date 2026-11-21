@@ -56,3 +56,34 @@ def test_a_rebase_merge_still_deletes_the_remote_branch(monkeypatch, tmp_path):
     assert ok is True
     assert DELETE in calls
     assert "remote branch pr/i--p deleted" in detail
+
+
+def test_a_step_pinned_to_a_head_passes_match_head_commit(monkeypatch, tmp_path):
+    # The boundary: gh's flag that makes GitHub refuse the merge once the pull request's head is any other commit.
+    calls = _gh(monkeypatch)
+    assert forge_github.merge(tmp_path, {**STEP, "head_sha": "a" * 40})[0] is True
+    assert calls[0] == [*MERGE, "--squash", "--match-head-commit", "a" * 40]
+
+
+def test_a_step_without_a_head_sends_no_pin(monkeypatch, tmp_path):
+    calls = _gh(monkeypatch)
+    forge_github.merge(tmp_path, {**STEP, "head_sha": ""})
+    assert calls[0] == [*MERGE, "--squash"]
+    assert forge_github.match_head({}) == []
+
+
+def test_a_merge_gh_refuses_at_a_moved_head_fails(monkeypatch, tmp_path):
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(list(argv))
+        if "--match-head-commit" in argv:  # GitHub's answer when the head is no longer the pinned commit
+            return SimpleNamespace(returncode=1, stdout="", stderr="GraphQL: Head branch was modified. Review and try the merge again.")
+        if argv[:3] == ["gh", "pr", "view"]:
+            return SimpleNamespace(returncode=0, stdout='{"state": "OPEN"}', stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(forge_github.subprocess, "run", run)
+    ok, detail = forge_github.merge(tmp_path, {**STEP, "head_sha": "a" * 40, "delete_branch": True})
+    assert ok is False and "Head branch was modified" in detail
+    assert DELETE not in calls, "a refused merge deletes nothing"

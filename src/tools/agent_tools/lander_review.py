@@ -37,13 +37,18 @@ the head is recorded on `review_tip` and the chair reopens the review there, the
 keep going to origin as they always did (a refresh is pushed, a phase merge lands): the worker runs the suite at
 origin's tip, so the head must be there first. What changes is that a head with no passing suite cannot land:
 
-- the lander's own merge (`gate: full`) waits on `pr_gate`, as the opening did, and right before the merge reads the
-  head again (`head_moved`);
+- the lander's own merge (`gate: full`) waits on `pr_gate`, as the opening did, right before the merge reads the
+  head again (`head_moved`), and is pinned to the sha the suite passed at (`head_sha`: the forge refuses any other);
 - everything else that could merge it (a person on the forge, `cox pr land`, a batch) is refused by the forge itself:
   the pull request is a draft while its head is stale, and ready again once a suite passes there (`freshness`,
   `mark_pr`). A draft is what GitHub and Forgejo both refuse to merge without any rule set on the repository, where a
   required commit status works only once the repository's ruleset requires it, and is skipped by an admin's bypass;
 - the body names the sha the suite last passed at and, while the head is ahead of it, says so (`pr_status`).
+
+Every push the lander makes that moves the head (a phase merge's, a refresh's) marks the pull request a draft first,
+under the branch's lease (`lander_pr.draft_before_push`), and is refused when the forge refuses the draft; refusals
+in a row are counted, and the chair is told once (`mark_refused`). A push made outside the lander is caught on the
+next pass, which reads the head (`settle`) and marks it then.
 
 The pull request is stale on the record (`pr.stale`, with `pr.passed` the sha the suite last passed at and `pr.at` the
 head the body last named). `MOVE_LIMIT` holds here too: the count starts again when the pull request opens, so the
@@ -68,10 +73,12 @@ from harness.store_dialect import Connection
 
 Gate = Literal["open", "wait", "hold"]
 
-__all__ = ["MOVE_LIMIT", "Decision", "DraftForge", "Freshness", "Gate", "Refresh", "decide", "freshness", "head_moved",
-           "mark_pr", "moved", "opened", "pr_gate", "pr_note", "pr_status", "refresh_step", "settle"]
+__all__ = ["MARK_TELL_AFTER", "MOVE_LIMIT", "Decision", "DraftForge", "Freshness", "Gate", "Refresh", "decide",
+           "freshness", "head_moved", "mark_pr", "mark_refused", "mark_told", "moved", "opened", "pr_gate", "pr_note",
+           "pr_status", "refresh_step", "settle", "without_refusals"]
 
 MOVE_LIMIT = 3  # tip moves in a row between a passing suite and the pull request before the gate holds it
+MARK_TELL_AFTER = 3  # draft or ready marks the forge refuses in a row before the chair is told, once
 
 
 @dataclass(frozen=True)
@@ -311,12 +318,44 @@ class DraftForge(Protocol):
     def update_pr(self, repo: Path, title: str, body: str, *, head: str) -> tuple[bool, str]: ...
 
 
+def mark_told(refused: int, limit: int = MARK_TELL_AFTER) -> bool:
+    """Pure. Whether the chair is told of a refused mark: only at the `limit`-th refusal in a row, so a forge that
+    keeps refusing is told once, and a mark that is taken (the count starts again) can be told again later."""
+    return refused == limit
+
+
+def without_refusals(pr: lr.PullRequest) -> lr.PullRequest:
+    """Pure. The pull request once the forge took a mark: no refusals in a row."""
+    kept: lr.PullRequest = {**pr}
+    kept.pop("mark_refused", None)
+    return kept
+
+
+def mark_refused(conn: Connection, record: lr.LandingRecord, mark: str, why: str, now: str,
+                 notify: Callable[[str, Mapping[str, object]], None]) -> list[str]:
+    """Edge. One more `mark` (`draft`, `ready`) the forge refused, counted in a row on the record (`pr.mark_refused`).
+    The mark is asked again next pass either way; at the `MARK_TELL_AFTER`-th refusal in a row the chair is told,
+    once (`mark_told`). The events it reports."""
+    initiative = str(record.get("initiative") or "")
+    current = ls.get_record(conn, initiative) or record
+    pr = current.get("pr") or {}
+    refused = int(pr.get("mark_refused") or 0) + 1
+    ls.put_record(conn, {**current, "pr": {**pr, "mark_refused": refused}, "updated_at": now})
+    if not mark_told(refused):
+        return []
+    notify("needs_chair", {"initiative": initiative, "reason": f"the forge refused to mark the pull request {mark} "
+                                                               f"{refused} times in a row: {why}"})
+    return [f"{initiative}: the chair has been told the pull request cannot be marked {mark}"]
+
+
 def mark_pr(conn: Connection, forge: DraftForge, repo: Path, record: lr.LandingRecord, fresh: Freshness,
-            text: tuple[str, str], now: str) -> list[str]:
+            text: tuple[str, str], now: str,
+            notify: Callable[[str, Mapping[str, object]], None] = lambda kind, fields: None) -> list[str]:
     """Edge. Bring the open pull request into line with `fresh`: a draft while its head is stale, ready once the suite
     passed there (`mark`), then its body (`text`: the title and the body without `fresh.note`) naming the sha the
     suite last passed at. The record keeps `stale` only once the forge took the mark, so a refused mark is asked again
-    next pass; the lander's own merge waits on `pr_gate` whatever the forge said. The events it reports."""
+    next pass, and the chair is told once it has been refused `MARK_TELL_AFTER` times in a row (`mark_refused`); the
+    lander's own merge waits on `pr_gate` whatever the forge said. The events it reports."""
     initiative, branch = str(record.get("initiative") or ""), str(record.get("branch") or "")
     current = ls.get_record(conn, initiative) or record
     pr = current.get("pr") or {}
@@ -328,8 +367,9 @@ def mark_pr(conn: Connection, forge: DraftForge, repo: Path, record: lr.LandingR
         ok, why = (forge.mark_draft if fresh.mark == "draft" else forge.mark_ready)(repo, branch)
         if not ok:
             return [f"{initiative}: the pull request could not be marked {fresh.mark} ({why}); the lander's own merge "
-                    f"still waits for a suite at {fresh.head[:12]}"]
-        stale = fresh.stale
+                    f"still waits for a suite at {fresh.head[:12]}",
+                    *mark_refused(conn, current, fresh.mark, why, now, notify)]
+        stale, pr = fresh.stale, without_refusals(pr)
         events.append(f"{initiative}: the pull request is a draft: its head {fresh.head[:12]} has no passing suite"
                       if fresh.stale else f"{initiative}: the pull request is ready: the suite passed at its head {fresh.head[:12]}")
     title, body = text
