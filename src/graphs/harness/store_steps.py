@@ -28,6 +28,9 @@ Where today's lanes write them (`epic_records.record_steps`, which `save_task_re
   re-run on the edit take the attempt's `checks` key;
 - a rescue's review, adversary and arbitration, whatever their verdict (`epic_execute.rescue_task`).
 
+A phase's review round, once decided, is a `review_rounds` row (`round_row`, `put_round`), written with its review's
+step rows in one fenced transaction (`store_phases.put_steps_fenced`).
+
 Steps that run but get no row yet: a rescue's harness checks (`rescue_checks.verify_patch` returns evidence rows, not
 check results), the style-pass edit itself, and every phase-level step but the phase lane's smoke (`phase_lane._smoke`
 writes `phase/smoke/<round>`): suite and the phase validators.
@@ -44,11 +47,14 @@ from harness.store_types import StepRow
 
 __all__ = [
     "PHASE_KINDS",
+    "ROUND_COLUMNS",
     "STEP_COLUMNS",
     "TASK_KINDS",
     "belongs",
+    "put_round",
     "put_step",
     "refix_of",
+    "round_row",
     "step_key",
     "step_row",
     "steps_for",
@@ -70,6 +76,13 @@ STEP_COLUMNS: tuple[str, ...] = (
     "claim_epoch", "started_at", "finished_at", "cost_usd", "result_json", "artifacts_json",
 )
 _KEY = ("run_id", "step")
+
+# A phase's review round (`review_rounds`), written once when its verdict exists; keyed by its number in the phase.
+ROUND_COLUMNS: tuple[str, ...] = (
+    "initiative", "phase", "round", "head_sha", "verdict", "reason", "revision_json", "evidence_step", "run_id",
+    "worker", "claim_epoch", "cost_usd", "decided_at",
+)
+_ROUND_KEY = ("initiative", "phase", "round")
 
 _REFIX = re.compile(r":refix(\d+)(?::|$)")
 
@@ -308,3 +321,38 @@ def steps_for(conn: Connection, run_id: str) -> list[StepRow]:
         for r in conn.query_all(sql, (run_id,))
     ]
     return sorted(rows, key=lambda row: row["step"])
+
+
+def round_row(
+    *,
+    initiative: str,
+    phase: str,
+    round_: int,
+    verdict: str,
+    reason: str = "",
+    head_sha: str = "",
+    revision: JsonObject | None = None,
+    evidence_step: str = "",
+    run_id: str = "",
+    worker: str = "",
+    claim_epoch: int = 0,
+    cost_usd: float = 0.0,
+    decided_at: str = "",
+) -> dict[str, object]:
+    """Pure. A `review_rounds` row: the round's verdict at `head_sha`, why, the revision task a revise asked for
+    (`review_loop.revision_task`), and the step that holds the review (`phase/review/<round>`). `decided_at` blank
+    is the store's time of the write (`store_phases.put_steps_fenced`)."""
+    if round_ < 1:
+        raise ValueError(f"review round {round_} is not a round: they count from 1")
+    return {
+        "initiative": initiative, "phase": phase, "round": round_, "head_sha": head_sha, "verdict": verdict,
+        "reason": reason, "revision_json": dict(revision or {}), "evidence_step": evidence_step, "run_id": run_id,
+        "worker": worker, "claim_epoch": claim_epoch, "cost_usd": cost_usd, "decided_at": decided_at,
+    }
+
+
+def put_round(conn: Connection, row: Mapping[str, object]) -> int:
+    """Edge. Insert one review round unless the phase already has that round; 1 when inserted, 0 on a repeat, which
+    leaves the round the first write decided."""
+    sql = insert_ignore(conn.dialect, "review_rounds", ROUND_COLUMNS, _ROUND_KEY)
+    return conn.execute(sql, [json_text(row[c]) if c.endswith("_json") else row[c] for c in ROUND_COLUMNS])

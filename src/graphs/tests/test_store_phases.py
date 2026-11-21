@@ -382,3 +382,60 @@ def test_a_task_is_approved_with_its_commit_in_one_transaction_or_not_at_all(con
     assert isinstance(store_api.approve_on(conn, "ship", "nope", "b2", "chair-loop", AT), store_api.StateRefused)
     rows = {r["task_id"]: (r["state"], r["merged_commit"]) for r in store_phases.task_commits(conn, ["ship"])}
     assert rows["t1"] == ("approved", "a1")
+
+
+def _review_round(number, verdict, reason="", revision=None):
+    from harness.store_steps import round_row
+
+    return round_row(initiative="ship", phase="p1", round_=number, verdict=verdict, reason=reason, head_sha="h1",
+                     revision=revision, evidence_step=f"phase/review/{number}", run_id="ship.p1-1", worker="w1",
+                     claim_epoch=1, cost_usd=0.25)
+
+
+def test_a_round_is_written_with_its_review_step_only_under_the_claim_and_once(conn):
+    from harness.store_steps import steps_for
+
+    store_phases.apply_changes(conn, [_change()], "chair-loop")
+    claim = store_phases.claim_next(conn, "w1", [], 1)
+    review = {**_step("t1", "rollup"), "step": "phase/review/1", "kind": "review", "task_id": "", "round": 1}
+    revision = {"id": "p1-rev-1", "kind": "revision"}
+    assert not store_phases.put_steps_fenced(conn, [review], "w2", claim.epoch, rounds=[_review_round(1, "revise")])
+    assert store_phases.review_rounds(conn, "ship", "p1") == []  # refused: neither the step nor the round
+    assert store_phases.put_steps_fenced(conn, [review], "w1", claim.epoch,
+                                         rounds=[_review_round(1, "revise", "dup", revision)])
+    assert not store_phases.put_steps_fenced(conn, [], "w1", claim.epoch + 1, rounds=[_review_round(2, "approve")])
+    assert store_phases.put_steps_fenced(conn, [], "w1", claim.epoch, rounds=[_review_round(1, "approve")])  # a repeat
+    (row,) = store_phases.review_rounds(conn, "ship", "p1")
+    assert {k: row[k] for k in ("round", "verdict", "reason", "head_sha", "revision_json", "cost_usd", "run_id")} == {
+        "round": 1, "verdict": "revise", "reason": "dup", "head_sha": "h1", "revision_json": revision,
+        "cost_usd": 0.25, "run_id": "ship.p1-1"}  # the first write's round stands
+    assert [s["step"] for s in steps_for(conn, "ship.p1-1")] == ["phase/review/1"]
+
+
+def test_a_reopen_ends_the_review_episode_once_and_a_withdrawn_phase_with_no_round_gets_none(conn):
+    store_phases.apply_changes(conn, [_change(), _change("p2", seq=1)], "chair-loop")
+    claim = store_phases.claim_next(conn, "w1", [], 1)
+    store_phases.put_steps_fenced(conn, [], "w1", claim.epoch, rounds=[_review_round(1, "revise"), _review_round(2, "approve")])
+    store_phases.finish(conn, claim, "w1", "approved", "the phase review approved it in round 2")
+    assert store_phases.apply_changes(conn, [_change(op="reopen", epoch=claim.epoch, reason="ready again")], "chair-loop") == 1
+    assert [(r["round"], r["verdict"], r["reason"]) for r in store_phases.review_rounds(conn, "ship", "p1")] == [
+        (1, "revise", ""), (2, "approve", ""), (3, "reopened", "ready again")]
+    assert store_phases.last_round(conn, "ship", "p1") == (3, "reopened")
+    assert store_phases.apply_changes(conn, [_change(op="reopen", epoch=claim.epoch)], "chair-loop") == 0
+    assert len(store_phases.review_rounds(conn, "ship", "p1")) == 3  # a repeat writes no second boundary
+    store_phases.apply_changes(conn, [_change("p2", op="withdraw", reason="held")], "chair-loop")
+    assert store_phases.apply_changes(conn, [_change("p2", op="reopen", epoch=0)], "chair-loop") == 1
+    assert store_phases.review_rounds(conn, "ship", "p2") == []
+
+
+def test_a_phase_an_older_worker_parked_built_is_queued_again_with_its_attempts_as_they_were(conn):
+    """(b) of L1's review: the requeue no longer gives the phase its attempts back, so a loop of them is bounded."""
+    store_phases.apply_changes(conn, [_change()], "chair-loop")
+    claim = store_phases.claim_next(conn, "w1", [], 1)
+    _set(conn, "p1", state="built", lease_until="", attempts=2)
+    review = {"op": "review", "initiative": "ship", "phase": "p1", "epoch": claim.epoch, "reason": "parked by L1"}
+    assert store_phases.apply_changes(conn, [{**review, "epoch": claim.epoch + 1}], "chair-loop") == 0
+    assert store_phases.apply_changes(conn, [review], "chair-loop") == 1
+    assert store_phases.apply_changes(conn, [review], "chair-loop") == 0
+    row = store_phases.get_row(conn, "ship", "p1")
+    assert (row["state"], row["attempts"]) == ("ready", 2)

@@ -16,9 +16,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
 
-from harness import phase_pick
+from harness import phase_pick, review_loop
 from harness.store_dialect import Cell, Connection, Json, insert_ignore, json_load, json_text, upsert
-from harness.store_steps import put_step
+from harness.store_steps import put_round, put_step, round_row
 from harness.store_types import StepRow
 
 __all__ = [
@@ -41,6 +41,7 @@ __all__ = [
     "put_steps_fenced",
     "register",
     "release",
+    "review_rounds",
     "rollup_rows",
     "set_run",
     "smoke_rows",
@@ -119,10 +120,12 @@ def _apply(conn: Connection, change: Mapping[str, object], by: str, now: str) ->
     """`insert` adds a ready row and leaves an existing one alone. `update` rewrites a waiting or ready row's
     requirements and order, never a claimed one's. `reopen` makes a finished or withdrawn row ready again, only while
     it is still the row the chair saw (same epoch), claimable at once with its attempts back at 0: work that came back
-    is a new episode, and the last one's claims must not fail it before it runs. `withdraw` takes a waiting or ready row out of the queue (state
-    `cancelled`: its phase is held, closed or over budget), never a claimed one. `exhaust` finishes as failed a row
-    whose claims ran out while nobody holds it (`phase_pick.exhausted`, in SQL). Each is conditional on the state it
-    moves from, so a repeat changes nothing."""
+    is a new episode, and the last one's claims must not fail it before it runs, nor its review rounds finish it, so the
+    reopen also ends the last episode in `review_rounds` (`_close_episode`). `review` makes claimable again a row an
+    older worker parked `built` (L1, before the lane reviewed its own phase), its attempts as they were. `withdraw`
+    takes a waiting or ready row out of the queue (state `cancelled`: its phase is held, closed or over budget), never
+    a claimed one. `exhaust` finishes as failed a row whose claims ran out while nobody holds it
+    (`phase_pick.exhausted`, in SQL). Each is conditional on the state it moves from, so a repeat changes nothing."""
     p = conn.dialect.placeholder
     op, initiative, phase = change["op"], change["initiative"], change["phase"]
     requires = json_text(list(cast("Sequence[str]", change.get("requires") or [])))
@@ -137,16 +140,19 @@ def _apply(conn: Connection, change: Mapping[str, object], by: str, now: str) ->
             (requires, change.get("band", 1), change.get("seq", 0), change.get("repo") or "", now, by, initiative, phase),
         ) == 1
     if op == "reopen":
-        return conn.execute(
+        reopened = conn.execute(
             f"UPDATE phase_queue SET state = 'ready', outcome = '', reason = {p}, requires_json = {p}, band = {p}, "
             f"seq = {p}, ready_at = {p}, attempts = 0, updated_at = {p}, updated_by = {p} "
             f"WHERE initiative = {p} AND phase = {p} AND state IN ('finished', 'cancelled') AND claim_epoch = {p}",
             (reason, requires, change.get("band", 1), change.get("seq", 0), now, now, by,
              initiative, phase, change.get("epoch", 0)),
         ) == 1
+        if reopened:
+            _close_episode(conn, str(initiative), str(phase), str(reason), by, now)
+        return reopened
     if op == "review":
         return conn.execute(
-            f"UPDATE phase_queue SET state = 'ready', reason = {p}, ready_at = {p}, attempts = 0, updated_at = {p}, "
+            f"UPDATE phase_queue SET state = 'ready', reason = {p}, ready_at = {p}, updated_at = {p}, "
             f"updated_by = {p} WHERE initiative = {p} AND phase = {p} AND state = 'built' AND claim_epoch = {p}",
             (reason, now, now, by, initiative, phase, change.get("epoch", 0)),
         ) == 1
@@ -164,6 +170,16 @@ def _apply(conn: Connection, change: Mapping[str, object], by: str, now: str) ->
             (reason, now, by, initiative, phase, phase_pick.MAX_ATTEMPTS, now),
         ) == 1
     raise ValueError(f"unknown phase queue change {op!r}")
+
+
+def _close_episode(conn: Connection, initiative: str, phase: str, reason: str, by: str, now: str) -> None:
+    """Edge. End the phase's review episode: a `reopened` row one round past its last (`review_loop.REOPENED`), so a
+    lane of the reopened phase counts only the rounds after it (`review_loop.episode`). Nothing when the phase has no
+    round yet, or its last row already ends an episode."""
+    last = last_round(conn, initiative, phase)
+    if last is not None and last[1] != review_loop.REOPENED:
+        put_round(conn, round_row(initiative=initiative, phase=phase, round_=last[0] + 1, verdict=review_loop.REOPENED,
+                                  reason=reason, worker=by, decided_at=now))
 
 
 def apply_changes(conn: Connection, changes: Sequence[Mapping[str, object]], by: str) -> int:
@@ -317,15 +333,19 @@ def held(conn: Connection, initiative: str, phase: str, worker: str, epoch: int,
     return phase_pick.fenced(get_row(conn, initiative, phase), worker, epoch, phase_pick.lease(now, margin_s))
 
 
-def put_steps_fenced(conn: Connection, rows: Sequence[StepRow], worker: str, epoch: int) -> bool:
-    """Edge. Insert step rows (insert-ignore, so a repeat changes nothing) only while `worker` holds the claim at
-    `epoch`, in one transaction; False, with nothing written, when it does not. The claim row is read under a share
-    lock (Postgres; sqlite serialises every writer), so a takeover cannot commit between the check and the insert.
-    Each row's `finished_at` is the store's time of this write, and its `started_at` too when the row has none."""
-    if not rows:
+def put_steps_fenced(conn: Connection, rows: Sequence[StepRow], worker: str, epoch: int,
+                     rounds: Sequence[Mapping[str, object]] = ()) -> bool:
+    """Edge. Insert step rows and review rounds (`store_steps.put_round`; both insert-ignore, so a repeat changes
+    nothing) only while `worker` holds the claim at `epoch`, in one transaction: a round is never written without the
+    review step it rests on. False, with nothing written, when it does not. The claim row is read under a share lock
+    (Postgres; sqlite serialises every writer), so a takeover cannot commit between the check and the insert. Each
+    row's `finished_at` (a round's `decided_at`) is the store's time of this write, and its `started_at` too when the
+    row has none."""
+    if not rows and not rounds:
         return True
     p = conn.dialect.placeholder
-    initiative, phase = rows[0]["initiative"], rows[0]["phase"]
+    first: Mapping[str, object] = rows[0] if rows else rounds[0]
+    initiative, phase = first["initiative"], first["phase"]
     with conn.transaction():
         now = store_now(conn)
         found = conn.query_one(
@@ -337,6 +357,8 @@ def put_steps_fenced(conn: Connection, rows: Sequence[StepRow], worker: str, epo
             return False
         for row in rows:
             put_step(conn, cast(StepRow, {**row, "finished_at": now, "started_at": row["started_at"] or now}))
+        for round_ in rounds:
+            put_round(conn, {**round_, "decided_at": now})
     return True
 
 
@@ -362,6 +384,18 @@ def last_rounds(conn: Connection, initiatives: Sequence[str]) -> list[Row]:
     )
     last = {(str(r[0]), str(r[1])): r for r in rows}
     return [{"initiative": r[0], "phase": r[1], "round": r[2], "verdict": r[3]} for r in last.values()]
+
+
+def review_rounds(conn: Connection, initiative: str, phase: str) -> list[Row]:
+    """Edge. Every review round of the phase, every episode's, oldest first, as {round, verdict, reason, head_sha,
+    revision_json (decoded), cost_usd, run_id}: what `review_loop.rounds_of` reads."""
+    p = conn.dialect.placeholder
+    columns = ("round", "verdict", "reason", "head_sha", "revision_json", "cost_usd", "run_id")
+    rows = conn.query_all(
+        f"SELECT {', '.join(columns)} FROM review_rounds WHERE initiative = {p} AND phase = {p} ORDER BY round",
+        (initiative, phase),
+    )
+    return [{**dict(zip(columns, r, strict=True)), "revision_json": json_load(r[4])} for r in rows]
 
 
 def task_commits(conn: Connection, initiatives: Sequence[str]) -> list[Row]:
