@@ -6924,7 +6924,7 @@ records <code>runner: scripted</code>, so a run whose approvals were canned answ
 <tr>
 <td><code>test_dash_feed.py</code></td>
 <td><code>cox dash --once</code>, <code>cox dash --feed</code></td>
-<td>The snapshot towpath reads is schema 1, with the run, the history, the queued initiative and its ready task, and the board. A second <code>--feed</code> prints what the first one publishes, computes nothing of its own while the first holds the lock, and takes over once the first exits. <code>--feed --once</code> is refused.</td>
+<td>The snapshot towpath reads is schema 1, with the run, the history, the queued initiative and its ready task, and the board. A second <code>--feed</code> prints what the first one publishes, computes nothing of its own while the first holds the lock, and takes over once the first exits. <code>--feed --once</code> is refused. E3: until <code>cox lake sync</code> runs, the budget block reads the store alone and says so on stderr; after it, an ended run's calls come from the lake (deleted from the store, the month's spend still counts them) and only the running run's from the store.</td>
 </tr>
 <tr>
 <td><code>test_contract_host_cli.py</code></td>
