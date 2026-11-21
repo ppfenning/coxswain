@@ -11,20 +11,27 @@ import pytest
 from harness.artifacts import (
     ERROR_FIELD,
     ArtifactConflict,
+    ArtifactCorrupt,
     ArtifactsRoot,
+    Prepared,
     Source,
     artifacts_root,
     attach,
     decide,
     entry,
     key,
+    locate,
     mark_missing,
+    prepared,
+    probe,
+    probe_key,
     put_object,
     scrub,
     secret_values,
     sources,
     step_artifacts,
     upload,
+    verified,
 )
 from harness.epic import Ctx
 from harness.epic_records import record_steps
@@ -277,16 +284,57 @@ def test_a_rebuild_with_another_patch_writes_another_key_and_is_never_locked_out
     assert keys_of(by_step(first)["task/t1/build"]) != keys_of(by_step(second)["task/t1/build"])
 
 
-def test_uploads_are_scrubbed_and_listed_by_what_was_written(tmp_path):
+def test_uploads_are_scrubbed_flagged_and_listed_by_what_was_written(tmp_path):
     pytest.importorskip("pyarrow")
     from pyarrow.fs import LocalFileSystem
 
     secret_root = ArtifactsRoot(LocalFileSystem(), str(tmp_path / "a"), "file://a", ("placeholder-secret",))
     rows, _ = upload(secret_root, "ship-1", rows_of(),
-                     (Source("task/t1/build", "patch.diff", "text/x-diff", text="token placeholder-secret\n"),))
+                     (Source("task/t1/checks", "01-env.log", "text/plain", text="token placeholder-secret\n"),
+                      Source("task/t1/checks", "02-clean.log", "text/plain", text="passed\n")))
+    dirty, clean = by_step(rows)["task/t1/checks"]["artifacts_json"]
+    data = (tmp_path / "a" / dirty["key"]).read_bytes()
+    assert data == b"token ***\n" and dirty["sha256"] == hashlib.sha256(data).hexdigest()
+    assert dirty["scrubbed"] is True and "scrubbed" not in clean
+
+
+PATCH_WITH_URL = "--- a/conftest.py\n+++ b/conftest.py\n@@ -0,0 +1 @@\n+URL = 'postgresql://cox:cox@localhost/cox_test'\n"
+
+
+def test_the_patch_is_stored_byte_for_byte_even_when_it_holds_a_url_with_a_password_or_a_secret(tmp_path):
+    pytest.importorskip("pyarrow")
+    from pyarrow.fs import LocalFileSystem
+
+    patch = PATCH_WITH_URL + "+TOKEN = 'placeholder-secret'\n"
+    secret_root = ArtifactsRoot(LocalFileSystem(), str(tmp_path / "a"), "file://a", ("placeholder-secret",))
+    rows, error = upload(secret_root, "ship-1", rows_of(), (Source("task/t1/build", "patch.diff", "text/x-diff", text=patch),))
     item = by_step(rows)["task/t1/build"]["artifacts_json"][0]
-    data = (tmp_path / "a" / item["key"]).read_bytes()
-    assert data == b"token ***\n" and item["sha256"] == hashlib.sha256(data).hexdigest()
+    assert error is None and (tmp_path / "a" / item["key"]).read_bytes() == patch.encode()
+    assert item["sha256"] == hashlib.sha256(patch.encode()).hexdigest() and "scrubbed" not in item
+    assert item["holds_secret"] is True  # stored raw, and marked: the scrub would have changed it
+
+
+def test_a_patch_the_scrub_would_leave_alone_carries_no_mark(root):
+    rows, _ = upload(root, "ship-1", rows_of(), (Source("task/t1/build", "patch.diff", "text/x-diff", text=PATCH),))
+    item = by_step(rows)["task/t1/build"]["artifacts_json"][0]
+    assert "holds_secret" not in item and "scrubbed" not in item
+
+
+def test_prepared_keeps_a_patch_as_written_marks_one_holding_a_secret_and_says_when_it_scrubbed_anything_else():
+    data = PATCH_WITH_URL.encode()
+    assert prepared("text/x-diff", data, ()) == Prepared(data, holds_secret=True)
+    assert prepared("text/x-diff", PATCH.encode(), ("placeholder-secret",)) == Prepared(PATCH.encode())
+    ready = prepared("text/plain", data, ())
+    assert ready.scrubbed and not ready.holds_secret
+    assert b"cox:cox@" not in ready.data and b"postgresql://***@localhost/cox_test" in ready.data
+    assert prepared("text/plain", b"passed\n", ("placeholder-secret",)) == Prepared(b"passed\n")
+    assert prepared("application/x-ndjson", b"placeholder-secret", ("placeholder-secret",)) == Prepared(b"***", scrubbed=True)
+
+
+def test_an_entry_carries_each_mark_only_when_it_holds():
+    assert set(entry("k", b"x", "text/plain")) == {"key", "bytes", "sha256", "media"}
+    assert entry("k", b"x", "text/plain", scrubbed=True)["scrubbed"] is True
+    assert entry("k", b"x", "text/x-diff", holds_secret=True)["holds_secret"] is True
 
 
 def test_a_broken_root_stops_the_uploads_and_marks_each_row_that_had_artifacts(tmp_path):
@@ -381,3 +429,87 @@ def test_a_broken_bucket_still_writes_every_row_and_marks_those_that_carried_art
         assert stored[step]["artifacts_json"] == [] and stored[step]["result_json"][ERROR_FIELD], stored[step]
     for step in ("task/t1/plan", "task/t1/review"):
         assert stored[step]["artifacts_json"] == [] and ERROR_FIELD not in stored[step]["result_json"], stored[step]
+
+
+# --- reading back: pick and verified are pure; locate and probe run against a real local root ---------------------
+
+ITEM = {"key": f"v1/runs/ship-1/task__t1__build/patch.diff@{SHA[:12]}", "bytes": len(PATCH), "sha256": SHA,
+        "media": "text/x-diff"}
+
+
+def test_verified_passes_the_bytes_the_row_records_and_refuses_any_other():
+    assert verified(ITEM, PATCH.encode()) == PATCH.encode()
+    with pytest.raises(ArtifactCorrupt):
+        verified(ITEM, PATCH.encode() + b"x")
+    with pytest.raises(ArtifactCorrupt):
+        verified(ITEM, PATCH.upper().encode())  # same size, another digest
+
+
+def test_locate_reads_back_what_upload_wrote_from_the_rows_alone(root, tmp_path):
+    log = _write(tmp_path / "1.log", b"passed\n")
+    rows, _ = upload(root, "ship-1", rows_of(), (Source("task/t1/build", "patch.diff", "text/x-diff", text=PATCH),
+                                                 Source("task/t1/checks", "01-unit-tests.log", "text/plain", path=log)))
+    log.unlink()  # the local copy is gone: the rows and the root are all a reader has
+    patch, = by_step(rows)["task/t1/build"]["artifacts_json"]
+    check_log, = by_step(rows)["task/t1/checks"]["artifacts_json"]
+    assert locate(root, patch) == PATCH.encode()
+    assert locate(root, check_log) == b"passed\n"
+
+
+def test_an_object_gone_from_the_root_is_a_failed_read_never_empty_bytes(root, tmp_path):
+    rows, _ = upload(root, "ship-1", rows_of(), (Source("task/t1/build", "patch.diff", "text/x-diff", text=PATCH),))
+    item = by_step(rows)["task/t1/build"]["artifacts_json"][0]
+    (tmp_path / "artifacts" / item["key"]).unlink()
+    with pytest.raises(FileNotFoundError):
+        locate(root, item)
+
+
+def test_an_object_changed_after_its_row_was_written_is_refused_on_read(root, tmp_path):
+    rows, _ = upload(root, "ship-1", rows_of(), (Source("task/t1/build", "patch.diff", "text/x-diff", text=PATCH),))
+    item = by_step(rows)["task/t1/build"]["artifacts_json"][0]
+    path = tmp_path / "artifacts" / item["key"]
+    path.chmod(0o644)
+    path.write_bytes(PATCH.upper().encode())
+    with pytest.raises(ArtifactCorrupt):
+        locate(root, item)
+
+
+def test_the_probe_key_sits_beside_the_runs_and_refuses_a_path():
+    assert probe_key("doctor-h-1") == "v1/probe/doctor-h-1"
+    with pytest.raises(ValueError):
+        probe_key("../runs")
+
+
+def test_the_probe_writes_reads_back_and_removes_its_object_and_its_emptied_folder(root, tmp_path):
+    assert probe(root, "doctor-h-1") is None
+    assert not (tmp_path / "artifacts" / "v1" / "probe").exists()
+    assert probe(root, "doctor-h-1") is None  # repeatable: nothing is left to collide with
+
+
+def test_another_doctors_probe_object_keeps_the_folder(root, tmp_path):
+    other = tmp_path / "artifacts" / "v1" / "probe" / "doctor-other-1"
+    other.parent.mkdir(parents=True)
+    other.write_bytes(b"theirs")
+    assert probe(root, "doctor-h-1") is None
+    assert sorted(p.name for p in other.parent.iterdir()) == ["doctor-other-1"]
+
+
+def test_a_token_no_key_can_hold_is_a_failed_write_not_a_crash(root):
+    assert probe(root, "doctor-bad host/1") == ("write", "ValueError")
+
+
+def test_the_probe_says_the_write_failed_on_a_root_it_cannot_write_or_link_in(tmp_path):
+    pytest.importorskip("pyarrow")
+    from pyarrow.fs import LocalFileSystem
+
+    blocker = _write(tmp_path / "blocker", b"a file where the root's folder should be")
+    broken = ArtifactsRoot(LocalFileSystem(), str(blocker / "root"), "file://blocker/root")
+    stage, what = probe(broken, "doctor-h-1") or ("", "")
+    assert stage == "write" and what and "blocker" not in what
+
+    def no_links(src: str, dst: str) -> None:
+        raise PermissionError(1, "Operation not permitted")  # what SMB answers a hard link with
+
+    linkless = ArtifactsRoot(LocalFileSystem(), str(tmp_path / "smb"), "file://smb")
+    assert probe(linkless, "doctor-h-1", link=no_links) == ("write", "PermissionError")
+

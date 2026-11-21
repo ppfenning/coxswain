@@ -9,16 +9,19 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-__all__ = ["ERROR_FIELD", "lines", "listing"]
+__all__ = ["ERROR_FIELD", "MARKS", "lines", "listing"]
 
 ERROR_FIELD = "artifacts_error"  # harness.artifacts.ERROR_FIELD, copied so this module imports no harness code
+# harness.artifacts.SCRUBBED_FIELD and HOLDS_SECRET_FIELD, each with the words its line ends with.
+MARKS = {"scrubbed": "scrubbed", "holds_secret": "HOLDS A SECRET (stored raw)"}
 
 
 def _items(step: str, row: Mapping[str, object]) -> list[dict[str, object]]:
     items = row.get("artifacts_json")
     found: list[dict[str, object]] = [
         {"step": step, "key": str(i["key"]), "bytes": i.get("bytes"), "sha256": str(i.get("sha256") or ""),
-         "media": str(i.get("media") or "")}
+         "media": str(i.get("media") or ""),
+         **{mark: True for mark in MARKS if i.get(mark) is True}}
         for i in (items if isinstance(items, list) else [])
         if isinstance(i, Mapping) and i.get("key")
     ]
@@ -36,9 +39,11 @@ def listing(rows: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
 
 
 def lines(run_id: str, entries: Sequence[Mapping[str, object]]) -> list[str]:
-    """Pure. The human form: one `<key>  <bytes> B  <sha256 prefix>` line per artifact, a `MISSING` line per mark, or
-    why there are none."""
+    """Pure. The human form: one `<key>  <bytes> B  <sha256 prefix>` line per artifact, ending `  scrubbed` when the
+    secret scrub changed it and `  HOLDS A SECRET (stored raw)` on a patch it would have changed, a `MISSING` line per mark, or why there are none."""
     if not entries:
         return [f"{run_id}: no artifacts recorded (no step rows list any; is artifacts_url set?)"]
     return [f"{e['step']}: MISSING artifacts: {e['error']}" if e.get("missing")
-            else f"{e['key']}  {e['bytes']} B  {str(e['sha256'])[:12]}" for e in entries]
+            else f"{e['key']}  {e['bytes']} B  {str(e['sha256'])[:12]}" + "".join(
+                f"  {said}" for mark, said in MARKS.items() if e.get(mark))
+            for e in entries]
