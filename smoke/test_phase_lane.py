@@ -4,12 +4,13 @@ bare origin, the real `cox worker` and `cox chair`; the scripted runner stands i
 
 The phase has three tasks: t1 and t2 independent, t3 needing both. Each build adds `notes/<task>.txt` and a file under
 `waits/` holding the seconds the task's cheap check sleeps, so the test decides how long each task takes: t1 is quick,
-t2 slower, so t1's roll-up is seen before t3 can start. The scripted answers carry no review role at all: a task-level
-review call would fail the run. `init/ship` is pushed to origin first, as the lander would have it, and must not move.
+t2 slower, so t1's roll-up is seen before t3 can start. The one review role scripted is the phase's (`review_phase`,
+approving): the lane reviews the phase once its smoke passed (L6), and a task-level review call would fail the run.
+`init/ship` is pushed to origin first, as the lander would have it, and must not move.
 
 The lane writes as the worker's scoped store role (`cox setup store worker-role`), named for this test since roles are
-server-wide, and dropped at the end. Where the tests stand in for L6, the phase review loop that does not exist yet,
-they write its round row as the store's owner ("the scripted round"), and the chair queues the parked phase again.
+server-wide, and dropped at the end. The review loop's own cases (a revision, a quarantine, the budget, a reopened
+phase) are `test_phase_review.py`'s.
 """
 
 from __future__ import annotations
@@ -44,16 +45,18 @@ WAIT_CMD = (
     '[ -e "{marks}/running-$o" ] || exit 1;; *) sleep "$v";; esac; done'
 )
 THREADS = 6  # the test worker's hosts.threads: at least two task threads per lane at the default three lanes
-REVIEW_ROLES = ("review_charter", "review_adversary", "review_arbitrate", "validate_chunk", "validate_phase")
+APPROVE = {"verdict": "approve", "findings": [], "rationale": "the goal is met and nothing is spare"}
 
 
 def _patch(task: str, wait_s: int | str) -> str:
     return plan.new_file_patch(f"notes/{task}.txt", task) + plan.new_file_patch(f"waits/{task}", str(wait_s))
 
 
-def _answers(waits: dict[str, int | str]) -> dict[str, object]:
-    """Plan and build only, each task its own build (`build@<task>`): no reviewer is scripted."""
-    out: dict[str, object] = {"plan": {"steps": ["write the file"], "files_expected": [], "out_of_scope": []}}
+def _answers(waits: dict[str, int | str], review: object = APPROVE) -> dict[str, object]:
+    """Plan and build, each task its own build (`build@<task>`), and the phase's reviewer (`review`, for every round):
+    no task-level reviewer is scripted."""
+    out: dict[str, object] = {"plan": {"steps": ["write the file"], "files_expected": [], "out_of_scope": []},
+                              **({"review_phase": review} if review is not None else {})}
     for task, wait_s in waits.items():
         files = [f"notes/{task}.txt", f"waits/{task}"]
         out[f"build@{task}"] = {"patch": _patch(task, wait_s), "summary": "built", "files_touched": files,
@@ -197,14 +200,23 @@ def lane_machine(launchable, repo) -> Iterator[tuple]:
                         f"THEN EXECUTE 'DROP OWNED BY {login}'; EXECUTE 'DROP ROLE {login}'; END IF; END$$")
 
 
-def _approve_round(sandbox, head: str) -> None:
-    """The scripted round, as L6 will write it: the phase review approved. The chair's next tick queues the parked
-    phase again."""
-    _owner(sandbox, "INSERT INTO review_rounds VALUES (%s, %s, 1, %s, 'approve', '', '{}', '', 'smoke', 'smoke', 0, 0, '')",
-           args=(INITIATIVE, PHASE, head))
+def _reviews(sandbox, run_id: str) -> list[str]:
+    """Every review step the run wrote (review, adversary, arbitration), by key: a phase's is `phase/review/<round>`,
+    a task's would be `task/<task>/review`. The scripted runner records no model calls, so the steps are the record;
+    and a task-level review call would fail the run, since no task reviewer is scripted."""
+    rows = _owner(sandbox, "SELECT step FROM step_results WHERE run_id = %s AND kind IN ('review', 'adversary', "
+                           "'arbitration') ORDER BY round, step", args=(run_id,))[0]
+    return [r[0] for r in rows]
+
+
+def _approve_tasks(sandbox) -> list[list]:
+    """One chair tick: it approves each task of the approved phase at its roll-up commit; the tasks' rows after."""
     tick = sandbox.cox("chair", "run", "--once", timeout=180)
     assert tick.returncode == 0, tick.stdout + tick.stderr
-    assert _row(sandbox)["state"] == "ready", (tick.stdout, _row(sandbox))
+    acted = _owner(sandbox, "SELECT status FROM chair_actions WHERE kind = 'approve_phase_tasks'")[0]
+    assert acted and {a[0] for a in acted} == {"done"}, acted
+    return _owner(sandbox, "SELECT task_id, state, merged_commit FROM work_items WHERE initiative = %s AND kind = 'task' "
+                           "ORDER BY task_id", args=(INITIATIVE,))[0]
 
 
 _CLONE_TRACE = re.compile(r"lane: clone (?P<url>\S+): mirror (?P<mirror>\w+), mirror fetched (?P<fetched>\d+) object\(s\); "
@@ -244,7 +256,6 @@ def _thaw(lane: int) -> None:
 
 def test_three_tasks_build_in_parallel_each_pushed_as_it_lands_and_the_approved_round_approves_them(lane_machine):
     sandbox, repo, name, env, init_sha, launchable = lane_machine
-    tips_before = sandbox.git(repo.origin, "for-each-ref", "--format=%(objectname)").split()
     held_before = _objects_since(sandbox, repo.origin, [])
     worker = Worker(sandbox, env, "once", "--name", name)
     try:
@@ -271,8 +282,9 @@ def test_three_tasks_build_in_parallel_each_pushed_as_it_lands_and_the_approved_
         worker.kill()
     row = _row(sandbox)
     run_id = row["run_id"]
-    assert "parked as built" in out, out
-    assert (row["state"], row["claim_epoch"], row["attempts"]) == ("built", 1, 0), row  # parked, never relaunched
+    # L6: the lane reviewed its own phase once the smoke passed, and the worker finished the claim on that round.
+    assert "parked as built" not in out and "finished approved: the phase review approved it in round 1" in out, out
+    assert (row["state"], row["outcome"], row["claim_epoch"], row["attempts"]) == ("finished", "approved", 1, 1), row
 
     commits = _commits(sandbox, repo.origin)
     assert [(c["initiative"], c["phase"], c["task"], c["run"], c["kind"]) for c in commits][2:] == [
@@ -299,32 +311,14 @@ def test_three_tasks_build_in_parallel_each_pushed_as_it_lands_and_the_approved_
     # t3 started only after both rolled up.
     assert log.index("lane: t2 rolled up") < log.index("lane: building t3"), log
     assert log.index("lane: t1 rolled up") < log.index("lane: building t3"), log
-    roles = _owner(sandbox, "SELECT DISTINCT role FROM node_calls WHERE run_id LIKE %s", args=(f"{run_id}%",))[0]
-    assert not {r[0] for r in roles} & set(REVIEW_ROLES), roles
+    # Reviewed once, as a phase: one `review` row for round 1 at the tip, one phase reviewer call, no task's review.
+    assert (steps[("", "review")]["step"], steps[("", "review")]["subject_sha"]) == ("phase/review/1", commits[-1]["sha"])
+    assert _reviews(sandbox, run_id) == ["phase/review/1"]
     assert f"the lane writes as cox_w_{name.replace('-', '_')}, scoped" in _run_log(sandbox, run_id)
 
-    # The round is written; the chair queues the phase again; the next claim finishes it approved without building,
-    # and the chair approves each task at its roll-up commit, both writes at once.
-    _approve_round(sandbox, commits[-1]["sha"])
-    again = Worker(sandbox, env, "once", "--name", name).finished()
-    assert "finished approved" in again, again
-    row = _row(sandbox)
-    assert (row["state"], row["outcome"], row["claim_epoch"]) == ("finished", "approved", 2), row
-    # The second lane on this machine fetched only what origin gained since the first one's clone: its roll-ups.
-    warm = _clone_trace(sandbox, row["run_id"])
-    assert (warm["mirror"], warm["how"], warm["received"]) == ("refreshed", "borrowed from the mirror", "0"), warm
-    gained, whole = _objects_since(sandbox, repo.origin, tips_before), _objects_since(sandbox, repo.origin, [])
-    assert int(warm["fetched"]) == gained == whole - held_before, (warm, gained, whole)  # not the whole of origin again
-    assert not (launchable.worktrees / row["run_id"]).exists()
-    assert not [s for s in _steps(sandbox, row["run_id"]) if s["kind"] in ("build", "rollup")]
-    tick = sandbox.cox("chair", "run", "--once", timeout=180)
-    assert tick.returncode == 0, tick.stdout + tick.stderr
-    acted = _owner(sandbox, "SELECT status FROM chair_actions WHERE kind = 'approve_phase_tasks'")[0]
-    assert acted and {a[0] for a in acted} == {"done"}, acted
-    tasks = _owner(sandbox, "SELECT task_id, state, merged_commit FROM work_items WHERE initiative = %s AND kind = 'task' "
-                            "ORDER BY task_id", args=(INITIATIVE,))[0]
+    # The chair approves each task at its roll-up commit, both writes at once.
     by_task = {c["task"]: c["sha"] for c in commits}
-    assert tasks == [[t, "approved", by_task[t]] for t in ("t1", "t2", "t3")], tasks
+    assert _approve_tasks(sandbox) == [[t, "approved", by_task[t]] for t in ("t1", "t2", "t3")]
     assert sandbox.git(repo.origin, "rev-parse", INIT) == init_sha
 
 
@@ -353,7 +347,7 @@ def test_a_frozen_lane_is_stopped_by_the_next_claim_which_builds_only_what_is_mi
     finally:
         _thaw(lane)
     row = _row(sandbox)
-    assert (row["claim_epoch"], row["state"]) == (2, "built"), (row, resumed)
+    assert (row["claim_epoch"], row["state"], row["outcome"]) == (2, "finished", "approved"), (row, resumed)
     assert f"swept what {stale_run} left behind" in _run_log(sandbox, row["run_id"])
     built = [s["task_id"] for s in _steps(sandbox, row["run_id"]) if s["kind"] == "build"]
     assert built == ["t3"], _steps(sandbox, row["run_id"])
@@ -408,7 +402,7 @@ def test_a_lane_frozen_between_its_claim_check_and_its_push_writes_no_row_and_th
     hook.unlink()
     resumed = Worker(sandbox, env, "once", "--name", name).finished()
     row = _row(sandbox)
-    assert (row["claim_epoch"], row["state"]) == (2, "built"), (row, resumed)
+    assert (row["claim_epoch"], row["state"], row["outcome"]) == (2, "finished", "approved"), (row, resumed)
     mine = {(s["task_id"], s["kind"]): s for s in _steps(sandbox, row["run_id"])}
     assert ("t3", "build") not in mine and mine[("t3", "rollup")]["subject_sha"] == commits[-1]["sha"], mine
     assert len(_commits(sandbox, repo.origin)) == 3
@@ -439,7 +433,7 @@ def test_a_refused_push_is_reconciled_and_the_healthy_holder_keeps_its_claim(lan
     finally:
         worker.kill()
     row = _row(sandbox)
-    assert (row["state"], row["claim_epoch"], row["attempts"]) == ("built", 1, 0), (row, out)
+    assert (row["state"], row["outcome"], row["claim_epoch"], row["attempts"]) == ("finished", "approved", 1, 1), (row, out)
     log = _run_log(sandbox, row["run_id"])
     assert "t2's push of" in log and "came back rejected" in log and "next: adopt" in log, log
     assert "lane: stopping:" not in log, log
@@ -462,8 +456,9 @@ SMOKE_CMD = ('echo "$PWD" >> {marks}/smoke-ran && touch .smoke-ran && '
 def test_a_phase_whose_tasks_pass_alone_but_whose_wiring_is_broken_fails_its_smoke_before_any_review(lane_machine):
     """Each task passes its own checks, one of which proves the smoke has run nowhere yet and left no marker in the
     task's tree. Once all three have rolled up, the lane runs the phase level once, in the phase worktree at the tip;
-    it fails, so the `smoke` row comes after every roll-up, no review role is ever called, and the worker does not park the
-    phase `built`: it finishes `failed` with the smoke's failure as its reason, since a retry would only repeat it."""
+    it fails, so the `smoke` row comes after every roll-up, no review role is ever called (the phase reviewer is
+    scripted, and never asked), and the worker finishes the phase `failed` with the smoke's failure as its reason,
+    since a retry would only repeat it."""
     sandbox, repo, name, env, init_sha, launchable = lane_machine
     marks = sandbox.home / "marks"
     (repo.path / ".agent-checks").write_text(f"# level: phase\n{SMOKE_CMD.format(marks=marks)}\n", encoding="utf-8")
@@ -479,7 +474,7 @@ def test_a_phase_whose_tasks_pass_alone_but_whose_wiring_is_broken_fails_its_smo
 
     row = _row(sandbox)
     run_id = row["run_id"]
-    assert "parked as built" not in out and "finished failed: the phase smoke failed" in out, out
+    assert "finished failed: the phase smoke failed" in out, out
     # A real failure is not retried: the same commands on the same tip would fail again. Finished for the operator.
     assert (row["state"], row["outcome"], row["claim_epoch"], row["attempts"]) == ("finished", "failed", 1, 1), row
     assert row["reason"].startswith("the phase smoke failed: configured check failed: ") and "wiring broken" in row["reason"], row
@@ -502,8 +497,7 @@ def test_a_phase_whose_tasks_pass_alone_but_whose_wiring_is_broken_fails_its_smo
     assert (marks / "smoke-env").read_text(encoding="utf-8").splitlines() == [
         str(repo.path / ".venv" / "bin" / plan.LANE_PROBE), str(shared_venv)]
     assert {s["task_id"] for s in steps if s["kind"] == "checks" and s["ok"]} == {"t1", "t2", "t3"}, steps
-    roles = _owner(sandbox, "SELECT DISTINCT role FROM node_calls WHERE run_id LIKE %s", args=(f"{run_id}%",))[0]
-    assert not {r[0] for r in roles} & set(REVIEW_ROLES), roles
+    assert _reviews(sandbox, run_id) == []  # the phase reviewer is scripted, and never asked
     assert not _owner(sandbox, "SELECT 1 FROM review_rounds WHERE initiative = %s", args=(INITIATIVE,))[0]
     assert f"lane: the phase smoke at {commits[-1]['sha'][:12]} failed" in _run_log(sandbox, run_id)
     assert sandbox.git(repo.origin, "rev-parse", INIT) == init_sha

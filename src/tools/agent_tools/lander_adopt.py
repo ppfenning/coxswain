@@ -6,7 +6,7 @@ task's stored `merged_commit` and from branch ancestry, never from run records, 
 For each task, in this order:
 
     its work is already on the parent (same commit, or the same patch)  ->  done
-    approved, its commit on its phase branch                            ->  kept
+    approved, its commit on its phase branch, here or on origin         ->  kept
     approved, its commit not on the phase branch but in this clone      ->  carried: merged into the phase branch
     approved, its commit nowhere in this clone                          ->  back to ready, with the reason
 
@@ -14,7 +14,9 @@ Then the initiative: its branch is kept (`pr/<id>` from an earlier release) or c
 made, and every built phase is merged in dependency order. Nothing is ever deleted, reset or rebased here, so no
 recorded commit can be lost: one that is not merged stays on the branch it was on.
 
-`plan` only reads. `apply` performs a plan. The dry run is `plan` alone.
+`plan` only reads. `apply` performs a plan. The dry run is `plan` alone. Before either, `refresh` fetches origin's
+phase branches of the initiative into their remote-tracking refs only: origin holds the code, so a task is judged
+against origin's copy as well as this clone's, and no local branch or work tree is touched.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from pathlib import Path
 from agent_tools import lander
 from core import landing_record as lr
 from core.landing import TemplateError, initiative_branch_name, is_initiative, pr_branch_name, resolve_land_at
+from harness import bounded_proc
 from harness import landing_git as lg
 from harness import landing_ops as ops
 from harness import landing_store as ls
@@ -77,12 +80,45 @@ def find_task(repo: Path, task: lander.Row, phase_branch: str, parent_ref: str) 
     tip = lg.rev(repo, f"refs/heads/{phase_branch}")
     if commit and tip and lg.is_ancestor(repo, commit, tip):
         return TaskFinding(ident, phase, "keep", "", commit)
+    origin_tip = lg.rev(repo, f"refs/remotes/origin/{phase_branch}")
+    if commit and origin_tip and lg.is_ancestor(repo, commit, origin_tip):
+        # The phase merge fetches origin's phase branch before it merges, so origin's copy is the one merged.
+        return TaskFinding(ident, phase, "keep", f"it is on origin's {phase_branch}", commit)
     if commit and lg.rev(repo, commit):
         return TaskFinding(ident, phase, "carry", f"{commit[:12]} is not on {phase_branch}; it is merged into it", commit)
     if not commit and tip:
         return TaskFinding(ident, phase, "keep", "no commit is recorded; the phase branch is taken as it stands")
     missing = f"commit {commit[:12]} is not in this clone" if commit else f"no commit is recorded and {phase_branch} does not exist"
     return TaskFinding(ident, phase, "ready", f"{missing}; the approval cannot be found, so the task builds again")
+
+
+FETCH_TIMEOUT_S = 120.0
+
+
+def phase_refspec(initiative: str) -> str:
+    """Pure. Origin's phase branches of `initiative` onto their remote-tracking refs, and nothing else."""
+    branches = ops.phase_branch(initiative, "*")
+    return f"+refs/heads/{branches}:refs/remotes/origin/{branches}"
+
+
+def refresh(ports: lander.Ports, initiative: str, timeout: float = FETCH_TIMEOUT_S) -> list[str]:
+    """Edge. Fetch origin's phase branches of `initiative` into `refs/remotes/origin/epic/<initiative>/*`, bounded by
+    `timeout`. No local branch, work tree or tag moves. A repo that is not known, or has no origin, has nothing to
+    fetch. A failed fetch is reported, never raised: the plan is made against the clone as it stands."""
+    try:
+        repo = lander.ports_repo(ports, {"initiative": initiative,
+                                         "repo": str((ports.meta(initiative).get("initiative") or {}).get("repo") or "")})
+    except LookupError:
+        return []  # `plan` says why it skips
+    if lg.rev(repo, "HEAD") is None or not lg.git(repo, "remote", "get-url", "origin")[0]:
+        return []
+    done = bounded_proc.completed(["git", "-C", str(repo), "fetch", "--no-tags", "--quiet", "--no-write-fetch-head",
+                                   "origin", phase_refspec(initiative)], timeout=timeout, capture_output=True, text=True)
+    if done.returncode == 0:
+        return []
+    said = (done.stderr or done.stdout or f"exit {done.returncode}").strip().splitlines()
+    return [f"{initiative}: origin's phase branches could not be fetched ({said[0] if said else 'no output'}); "
+            "planned against this clone as it stands"]
 
 
 def _after(tasks: Sequence[lander.Row], findings: Sequence[TaskFinding]) -> list[dict[str, object]]:

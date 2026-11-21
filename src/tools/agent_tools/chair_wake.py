@@ -14,8 +14,11 @@ INTAKE = "intake"  # courier has no intake event: a plain entry, with no `event`
 CHAT_DIRECTIVE = "chat_directive"  # a courier event name, matched on the entry's `event`
 
 
-# A phase's review round is what lets the chair queue a parked (`built`) phase again: the tick runs on its commit.
-STORE_WAKE_TABLES = frozenset({"review_rounds"})
+# A phase the worker finished, approved or quarantined by its lane's review, is what the chair acts on next: it
+# approves or quarantines the phase's tasks (`chair_phase_queue`). The lane's review round no longer wakes it: the
+# lane reviews its own phase, so no parked phase waits on a round (L6). The chair's own `queue_phases` write wakes it
+# once more too, and that tick plans nothing; a heartbeat wakes nobody (`store_ddl_0021.BEATS`).
+STORE_WAKE_TABLES = frozenset({"phase_queue"})
 
 Entry = Mapping[str, object]
 

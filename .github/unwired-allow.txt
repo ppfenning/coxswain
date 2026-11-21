@@ -6,6 +6,7 @@
 # Graphs: harness/registry.py walks the graphs package with pkgutil and imports every module that has a SPEC.
 src/graphs/graphs/ops/epic_reconcile.py::epic_reconcile  # graph module, discovered by harness/registry.py's package walk
 src/graphs/graphs/ops/retro_propose.py::retro_propose  # graph module, discovered by harness/registry.py's package walk
+src/graphs/graphs/delivery/phase_review.py::phase_review  # graph module, discovered by harness/registry.py's package walk; the phase lane runs it as `phase-review`
 
 # Migrations: harness/store_migrate.default_modules walks the harness package for store_ddl_NNNN and calls each one's
 # `statements(dialect)` through the module object.

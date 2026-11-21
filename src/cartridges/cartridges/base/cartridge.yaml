@@ -46,6 +46,8 @@ roles:
     - validate_chunk    # did this task actually satisfy its own description
     - validate_phase    # do these tasks TOGETHER accomplish the phase's goal —
                         # never the phase's owner: that is self-review
+    - review_phase      # review a whole phase branch: does it meet its goal, does it
+                        # carry fat (the phase lane's review; else review_charter)
     - merge_tasks       # merge two parallel tasks that edited the same code, on the
                         # worker, before the later one is rebuilt (phase lanes)
     - retro             # read the run record and say what should change

@@ -628,7 +628,6 @@ class PhaseQueueFacts(TypedDict):
     closed: list[str]  # the initiatives whose store row is done or dropped
     tasks: NotRequired[list[dict[str, object]]]  # the phase initiatives' task rows, with state and merged_commit
     rollups: NotRequired[list[dict[str, object]]]  # their roll-up step rows (`store_phases.rollup_rows`), oldest first
-    rounds: NotRequired[list[dict[str, object]]]  # each of their phases' last review round (`store_phases.last_rounds`)
 
 
 class Facts(TypedDict):

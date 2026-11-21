@@ -1746,7 +1746,7 @@ def _consult_prescreen(runner: NodeRunner, request: Mapping[str, Any]) -> tuple[
     The depth is computed in shadow and in on alike; `_charter_judgment` decides which one acts on it.
     """
     consult = getattr(runner, "consult", None)
-    consulted = consult("review_charter", request) if callable(consult) else None
+    consulted = consult(str(request.get("role") or "review_charter"), request) if callable(consult) else None
     if consulted is None:
         return None
     answer, setting = consulted
@@ -1770,6 +1770,7 @@ def _review_round(
     tier: int,
     attempt: int,
     task_id: Any = None,
+    charter_role: str = "review_charter",
 ) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, Any] | str | None, str, bool, bool]:
     """One full round of review, and the verdict it reaches.
 
@@ -1782,6 +1783,10 @@ def _review_round(
     sixth is true only when BOTH did, which the caller quarantines rather than
     sends back to build — a reviewer that abstains is not a verdict to rebuild
     against.
+
+    `charter_role` is the role that fills the first reviewer's seat: the
+    charter reviewer here, the phase reviewer in `phase-review`, which reads a
+    phase branch against its base under the same rules.
     """
     # The call declares its role and hints; the resolver picks the model tier.
     patch = str(build.get("patch") or "")
@@ -1799,10 +1804,10 @@ def _review_round(
     )
     # The pre-screen lowers only the charter reviewer's hints, and only in mode "on". The adversary
     # keeps today's hints: its job is to disagree with the approve the pre-screen is confident about.
-    prescreen = _consult_prescreen(runner, {"role": "review_charter", "prompt": charter_prompt})
+    prescreen = _consult_prescreen(runner, {"role": charter_role, "prompt": charter_prompt})
     review, charter_abstained = _reviewer_answer(
         runner,
-        role="review_charter",
+        role=charter_role,
         hints=_hints(patch, attempt=attempt, judgment=_charter_judgment(prescreen)),
         schema=REVIEW_SCHEMA,
         context=context,

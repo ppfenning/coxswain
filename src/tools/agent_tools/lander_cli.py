@@ -310,8 +310,9 @@ def cmd_adopt(a: argparse.Namespace) -> int:
         for line in lander_adopt.left_alone(named, landing_store.list_records(ports.conn)):
             print(line)
         for initiative in lander_adopt.candidates(ports, named):
+            fetched = lander_adopt.refresh(ports, initiative)
             plan = lander_adopt.plan(ports, initiative)
-            lines = lander_adopt.apply(ports, plan, send_back) if a.apply else plan.lines()
+            lines = [*fetched, *(lander_adopt.apply(ports, plan, send_back) if a.apply else plan.lines())]
             stopped = stopped or any(": stopped: " in line for line in lines)
             print("\n".join(lines))
         if not a.apply:

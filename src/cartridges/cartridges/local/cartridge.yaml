@@ -42,6 +42,7 @@ skills:
   # epic-swarm's validators, plus retro and the dispatcher
   validate_chunk:   local-skills:validate-chunk      # did the task satisfy its own description
   validate_phase:   local-skills:validate-phase      # do the tasks TOGETHER meet the phase goal
+  review_phase:     local-skills:review-phase        # a phase branch: does it meet its goal, does it carry fat
   merge_tasks:      local-skills:merge-tasks         # merge two parallel tasks that collided on the roll-up
   retro:            local-skills:retro-runs          # read the run record, propose what changes
   dispatch:         local-skills:dispatch-graphs     # pick what runs next, and why
