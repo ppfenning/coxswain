@@ -1616,19 +1616,16 @@ WORKER_COMMANDS = [
         "agent_tools.cli:_worker_status", False, (), defaults={"profile": None},
     ),
     commands.Command(
-        "checkout", "worker", "clone a repository here, borrowing objects from this machine's git mirror",
-        (
+        "checkout", "worker", "clone a repository here, borrowing objects from this machine's git mirror", (
             commands.Arg(("url",), {"help": "the repository's clone URL; the mirror under the cache directory is per URL"}),
             commands.Arg(("dest",), {"help": "the folder to clone into: absent or empty, or already a clone of URL"}),
             commands.Arg(("--branch",), {"help": "check out a new branch of this name (default: the remote's default branch)"}),
             commands.Arg(("--base",), {"help": "the commit or ref to check out or to start --branch at"}),
             commands.Arg(("--json",), {"action": "store_true", "help": "print what the clone did and cost as JSON"}),
         ),
-        "agent_tools.cli:_worker_checkout", False, (),
-        description=(
+        "agent_tools.cli:_worker_checkout", False, (), description=(
             "The mirror is $COX_CACHE_DIR/git, else $XDG_CACHE_HOME/coxswain/git, else ~/.cache/coxswain/git.\n"
-            "Deleting it costs only time: a clone never keeps borrowing from it."
-        ),
+            "Deleting it costs only time: a clone never keeps borrowing from it."),
     ),
 ]
 
