@@ -138,3 +138,79 @@ def test_the_reader_remembers_a_lease_row_it_has_seen_and_times_how_long_the_rea
     later = reader()
     assert later.failing_s == 75.0  # timed from the first failed read (5 s to 80 s)
     assert reader.held("watch") is True  # unknown, and a worker has been seen: the tick leaves it alone
+
+
+def _break_store(runs: Path) -> None:
+    store = run_store.sqlite_path(run_store.store_url_for(runs))
+    for suffix in ("", "-wal", "-shm"):
+        Path(f"{store}{suffix}").unlink(missing_ok=True)
+    Path(store).write_text("not a database", encoding="utf-8")
+
+
+def test_a_lease_row_once_seen_is_remembered_by_a_restarted_tick_through_the_marker_file(tmp_path: Path):
+    runs = _runs(tmp_path)
+    conn = open_store(run_store.store_url_for(runs), "2026-11-20T00:00:00Z")
+    try:
+        kl.acquire(conn, "chair:quarantine", "worker-a", 60)
+    finally:
+        conn.close()
+    assert not chair_read_queues.seen_marker(runs).exists()
+    assert chair_read_queues.QueueLeasesReader(runs, lambda: 0.0)().seen
+    assert chair_read_queues.seen_marker(runs).exists()
+    _break_store(runs)
+    restarted = chair_read_queues.QueueLeasesReader(runs, lambda: 0.0)  # a new process: nothing in memory
+    read = restarted()
+    assert (read.leases, read.seen) == (None, True)
+    assert restarted.held("decompose") is True  # unknown, and a worker has been seen here: the tick leaves it alone
+
+
+def test_with_no_marker_a_restarted_tick_on_a_broken_store_has_seen_no_worker(tmp_path: Path):
+    runs = _runs(tmp_path)
+    _break_store(runs)
+    reader = chair_read_queues.QueueLeasesReader(runs, lambda: 0.0)
+    assert reader().seen is False and reader.held("quarantine") is False
+    assert not chair_read_queues.seen_marker(runs).exists()
+
+
+def test_marking_seen_twice_changes_nothing_and_an_unwritable_runs_dir_is_said_not_raised(tmp_path: Path):
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    assert chair_read_queues.mark_seen(runs) and chair_read_queues.mark_seen(runs)
+    assert chair_read_queues.seen_marker(runs).read_bytes() == b""
+    assert chair_read_queues.mark_seen(tmp_path / "no-such-dir") is False
+
+
+def test_a_quarantine_lease_taken_mid_perform_skips_the_triage_and_the_relaunch_pair_after_it(tmp_path: Path):
+    runs = _runs(tmp_path)
+    conn = open_store(run_store.store_url_for(runs), "2026-11-20T00:00:00Z")
+    taken: list[str] = []
+
+    recorded: list = []
+
+    def record(action):  # once the tick's first action is recorded, a quarantine worker takes its kind
+        recorded.append(action)
+        if not taken:
+            assert kl.acquire(conn, "chair:quarantine", "worker-q", 60) == 1
+            taken.append("quarantine")
+
+    reader = chair_read_queues.QueueLeasesReader(runs, lambda: 0.0)
+    deps = Deps(**{**_deps(recorded, queue_held=reader.held).__dict__, "record": record})
+    actions = [
+        {"kind": "stale_to_draft", "initiative": "a", "epoch": 0},
+        {"kind": "request_triage", "initiative": "i", "task_id": "t1", "key": "k", "cause": "code", "epoch": 0, "queue_kind": "quarantine"},
+        {"kind": "clear_branches", "initiative": "i", "repo": "r", "epoch": 0},
+        {"kind": "relaunch", "initiative": "i", "repo": "r", "epoch": 0},
+        {"kind": "launch_epic", "initiative": "i", "repo": "r", "epoch": 0},
+        {"kind": "clear_branches", "initiative": "j", "repo": "r", "epoch": 0},
+    ]
+    try:
+        results = perform(actions, deps, lambda: 0, False)  # type: ignore[arg-type]
+    finally:
+        conn.close()
+    statuses = [(r["action"]["kind"], r["action"].get("initiative"), r["status"]) for r in results]
+    assert taken == ["quarantine"]
+    assert [s for s in statuses if s[1] == "i"] == [
+        ("request_triage", "i", "skipped"), ("clear_branches", "i", "skipped"), ("relaunch", "i", "skipped"),
+        ("launch_epic", "i", "skipped"),
+    ], statuses
+    assert ("clear_branches", "j", "done") in statuses  # another initiative's pair is untouched

@@ -1217,7 +1217,7 @@ def _chair_run_deps(
         mark_handled=None if dry_run else (lambda key: _mark_handled_key(runs_dir, key)),
         # The same reader the facts use, so a miss records the fingerprint the next tick's facts compare against.
         intake_fingerprint=intake_fingerprint,
-        # C3: the tick asks before each housekeeping or watch action whether a queue worker now holds that kind. A
+        # C3, C4: the tick asks before each action of a queue kind whether a queue worker now holds that kind. A
         # worker's own deps ask nothing (its fence is its lease).
         queue_held=None if dry_run or worker_epoch is not None else queue_leases.held,
     )

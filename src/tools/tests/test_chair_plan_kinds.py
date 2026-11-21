@@ -142,6 +142,21 @@ _SCENARIOS: dict[str, tuple[Facts, datetime]] = {
         ),
         _NOW,
     ),
+    # C4: the triage a quarantine worker makes, beside a retry (which starts a run, so it stays the launch's) and a
+    # decompose launch from a new intake (the decompose worker's).
+    "triage, a hold and a retry beside a decompose": (
+        _facts(
+            initiatives=[_started("q"), _started("h")],
+            run_exited={"q": True, "h": True},
+            quarantines=[
+                {"task_id": "q-t", "initiative": "q", "cause": "code", "harness_failures": 0, "run": "q-3", "failures": 1},
+                {"task_id": "h-t", "initiative": "h", "cause": "review", "harness_failures": 0, "run": "h-2", "failures": 5},
+                {"task_id": "k-t", "initiative": "k", "cause": "harness", "harness_failures": 1, "has_patch": False, "rescue_failed": False},
+            ],
+            intake=["n1"],
+        ),
+        _NOW,
+    ),
     "land and watch": (_facts(approved=[_approved("t1"), _approved("t2", "y")], landed_main=[_RED_MAIN], initiatives=[_started("x")]), _NOW),
     "hard stop": (
         _facts(
@@ -245,6 +260,7 @@ def _markers(facts: Facts, now: datetime) -> set[str]:
 _REACHES: dict[str, set[str]] = {
     "launch fills free lanes": {"launch_epic", "relaunch"},
     "quarantine": {"cause:scope"},
+    "triage, a hold and a retry beside a decompose": {"request_triage", "hold_task", "retry", "launch_decompose"},
     "land and watch": {"land_phase", "revert_land"},
     "hard stop": {"land_phase", "revert_land", "unlaunched"},
     "housekeeping ages": {"stale_to_draft", "stalled_usr1"},
