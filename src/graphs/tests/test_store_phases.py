@@ -435,6 +435,22 @@ def test_a_phase_an_older_worker_parked_built_is_queued_again_at_the_cost_of_an_
     assert (row["state"], row["attempts"]) == ("ready", 2)
 
 
+def test_a_review_that_carries_a_place_moves_the_row_there_and_one_without_keeps_its_own(conn):
+    """C5's order pass places a `built` row as its review makes it ready, so it never keeps an old seq that a new row
+    numbered from 0 also takes. A review with no place (an older chair's) leaves band and seq as they were."""
+    store_phases.apply_changes(conn, [_change(band=1, seq=7)], "chair-loop")
+    claim = store_phases.claim_next(conn, "w1", [], 1)
+    _set(conn, "p1", state="built", lease_until="", attempts=1)
+    review = {"op": "review", "initiative": "ship", "phase": "p1", "epoch": claim.epoch, "reason": "parked by L1"}
+    assert store_phases.apply_changes(conn, [{**review, "band": 0, "seq": 3}], "chair-loop") == 1
+    row = store_phases.get_row(conn, "ship", "p1")
+    assert (row["state"], row["band"], row["seq"]) == ("ready", 0, 3)
+    _set(conn, "p1", state="built", lease_until="")
+    assert store_phases.apply_changes(conn, [review], "chair-loop") == 1
+    row = store_phases.get_row(conn, "ship", "p1")
+    assert (row["state"], row["band"], row["seq"]) == ("ready", 0, 3)
+
+
 def _old_park(conn, claim):
     """An L1 worker's park, as it shipped: `built`, the claim's attempt given back."""
     p = conn.dialect.placeholder

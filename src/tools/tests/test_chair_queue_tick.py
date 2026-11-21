@@ -38,7 +38,7 @@ def test_the_tick_marks_each_action_a_worker_could_run_with_its_kind_and_nothing
     tagged = tag_queue_kinds(plan_tick(facts, _NOW), facts, _NOW)
     kinds = {(a["kind"], a.get("queue_kind")) for a in tagged}
     assert {("revert_land", "watch"), ("stale_to_draft", "housekeeping"), ("housekeeping", "housekeeping")} <= kinds
-    assert ("launch_epic", None) in kinds
+    assert ("launch_epic", "launch") in kinds  # C5: launch is a queue kind
 
 
 def test_a_lease_taken_while_the_tick_performs_skips_the_ticks_later_actions_of_that_kind(tmp_path: Path):

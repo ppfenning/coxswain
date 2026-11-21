@@ -543,7 +543,8 @@ def decompose_streak_facts(
     runs_for: Callable[[str], Sequence[DecomposeRun]],
     cutoff_for: Callable[[str], datetime | None] | None = None,
 ) -> dict[str, DecomposeStreak]:
-    """Intake path to its streak, for only the paths whose trailing empty runs reach the limit.
+    """Intake path to its streak, for only the paths whose trailing missed runs reach the limit: runs that wrote no task
+    items, or whose tasks collided (each run's `collisions`, the initiative's `collision` step rows, C5).
 
     `cutoff_for` gives an intake's last release or requeue time; runs launched before it are not counted."""
     since: Callable[[str], datetime | None] = cutoff_for or (lambda path: None)

@@ -1,5 +1,6 @@
-"""C4: a decompose launch a queue worker makes goes past the loop guard beside the tick's live lock only while the store
-says the worker's `chair:decompose` lease is held, by its holder at its epoch; a lost or stale lease is refused.
+"""C4, C5: a launch a queue worker makes goes past the loop guard beside the tick's live lock only while the store says
+the worker's `chair:launch` lease is held, by its holder at its epoch; a lost or stale lease is refused. Since C5 every
+graph the chair launches (decompose, epic, rescue) is the launch kind's, so no other kind's lease covers one.
 
 The rule is pure (`chair_kinds.launch_refusal`); the lease is a real one in the sqlite store, and the guard is the
 command's own (`cli_land._leader_guard_or_refuse`) over a real live lock written to the runs directory."""
@@ -26,7 +27,7 @@ from harness import store_chair_lease as kl
 from harness.store_migrate import open_store
 
 REFUSED = "refusing: the landing loop is held by tick (live); pass --force to override"
-PROOF = chair_kinds.QueueProof("chair:decompose", "decompose-w", 3)
+PROOF = chair_kinds.QueueProof("chair:launch", "launch-w", 3)
 
 
 def test_the_lock_letting_a_launch_through_needs_no_proof():
@@ -38,19 +39,25 @@ def test_a_launch_the_lock_refuses_goes_on_only_under_a_held_lease_of_its_own_gr
     assert chair_kinds.launch_refusal(REFUSED, "decompose", None, held=True) == REFUSED
     assert chair_kinds.launch_refusal(REFUSED, "decompose", PROOF, held=True) is None
     lost = chair_kinds.launch_refusal(REFUSED, "decompose", PROOF, held=False)
-    assert lost == f"{REFUSED}; chair:decompose is not held by decompose-w at epoch 3 by the store's clock"
+    assert lost == f"{REFUSED}; chair:launch is not held by launch-w at epoch 3 by the store's clock"
     other = chair_kinds.QueueProof("chair:watch", "watch-w", 3)
     assert chair_kinds.launch_refusal(REFUSED, "decompose", other, held=True) == f"{REFUSED}; chair:watch does not cover a decompose launch"
-    assert chair_kinds.launch_refusal(REFUSED, "epic", PROOF, held=True) == f"{REFUSED}; chair:decompose does not cover a epic launch"
+    for graph in ("epic", "rescue"):
+        assert chair_kinds.launch_refusal(REFUSED, graph, PROOF, held=True) is None
+        assert chair_kinds.launch_refusal(REFUSED, graph, other, held=True) == f"{REFUSED}; chair:watch does not cover a {graph} launch"
+    decompose_lease = chair_kinds.QueueProof("chair:decompose", "decompose-w", 3)  # C4's: no longer a launcher
+    assert chair_kinds.launch_refusal(REFUSED, "decompose", decompose_lease, held=True) == (
+        f"{REFUSED}; chair:decompose does not cover a decompose launch"
+    )
 
 
 def test_the_proof_rides_as_three_flags_and_reads_back_only_whole():
     argv = chair_kinds.proof_argv(PROOF)
-    assert argv == ["--queue-lease", "chair:decompose", "--queue-holder", "decompose-w", "--queue-epoch", "3"]
-    whole = argparse.Namespace(queue_lease="chair:decompose", queue_holder="decompose-w", queue_epoch=3)
+    assert argv == ["--queue-lease", "chair:launch", "--queue-holder", "launch-w", "--queue-epoch", "3"]
+    whole = argparse.Namespace(queue_lease="chair:launch", queue_holder="launch-w", queue_epoch=3)
     assert _queue_proof(whole) == (PROOF, "")
     assert _queue_proof(argparse.Namespace()) == (None, "")
-    partial = argparse.Namespace(queue_lease="chair:decompose", queue_holder=None, queue_epoch=3)
+    partial = argparse.Namespace(queue_lease="chair:launch", queue_holder=None, queue_epoch=3)
     assert _queue_proof(partial)[1] == "routing: --queue-lease, --queue-holder and --queue-epoch go together"
 
 
@@ -64,7 +71,7 @@ def _runs(tmp_path: Path) -> Path:
 def _acquire(runs: Path, holder: str, ttl: int = 60) -> int:
     conn = open_store(run_store.store_url_for(runs), "2026-11-20T00:00:00Z")
     try:
-        epoch = kl.acquire(conn, "chair:decompose", holder, ttl)
+        epoch = kl.acquire(conn, "chair:launch", holder, ttl)
         assert epoch is not None
         return epoch
     finally:
@@ -73,11 +80,11 @@ def _acquire(runs: Path, holder: str, ttl: int = 60) -> int:
 
 def test_the_store_answers_for_the_holder_at_its_epoch_only(tmp_path: Path):
     runs = _runs(tmp_path)
-    epoch = _acquire(runs, "decompose-w")
-    assert chair_read_queues.queue_lease_holds(runs, chair_kinds.QueueProof("chair:decompose", "decompose-w", epoch))
-    assert not chair_read_queues.queue_lease_holds(runs, chair_kinds.QueueProof("chair:decompose", "decompose-w", epoch + 1))
-    assert not chair_read_queues.queue_lease_holds(runs, chair_kinds.QueueProof("chair:decompose", "someone-else", epoch))
-    assert not chair_read_queues.queue_lease_holds(runs, chair_kinds.QueueProof("chair:watch", "decompose-w", epoch))
+    epoch = _acquire(runs, "launch-w")
+    assert chair_read_queues.queue_lease_holds(runs, chair_kinds.QueueProof("chair:launch", "launch-w", epoch))
+    assert not chair_read_queues.queue_lease_holds(runs, chair_kinds.QueueProof("chair:launch", "launch-w", epoch + 1))
+    assert not chair_read_queues.queue_lease_holds(runs, chair_kinds.QueueProof("chair:launch", "someone-else", epoch))
+    assert not chair_read_queues.queue_lease_holds(runs, chair_kinds.QueueProof("chair:watch", "launch-w", epoch))
 
 
 def test_a_broken_store_reads_as_not_held(tmp_path: Path):
@@ -99,10 +106,10 @@ def _live_tick_lock(runs: Path) -> None:
 def test_beside_the_ticks_live_lock_a_worker_launch_goes_on_under_its_held_lease(tmp_path: Path, capsys):
     runs = _runs(tmp_path)
     _live_tick_lock(runs)
-    epoch = _acquire(runs, "decompose-w")
-    held = chair_kinds.QueueProof("chair:decompose", "decompose-w", epoch)
+    epoch = _acquire(runs, "launch-w")
+    held = chair_kinds.QueueProof("chair:launch", "launch-w", epoch)
     assert _leader_guard_or_refuse(runs, "worker", False, explicit_label="worker", queue_proof=("decompose", held)) is None
-    assert "decompose launch under chair:decompose at epoch" in capsys.readouterr().out
+    assert "decompose launch under chair:launch at epoch" in capsys.readouterr().out
     assert chair.read(runs)["session"] == "tick"  # the lock is the tick's still: the launch never claims it
 
 
@@ -110,20 +117,20 @@ def test_beside_the_ticks_live_lock_a_worker_launch_goes_on_under_its_held_lease
 def test_beside_the_ticks_live_lock_a_worker_launch_without_a_held_lease_is_refused(tmp_path: Path, capsys, why: str):
     runs = _runs(tmp_path)
     _live_tick_lock(runs)
-    epoch = _acquire(runs, "decompose-w")
+    epoch = _acquire(runs, "launch-w")
     if why == "lease lost":  # another worker took the lease over; the first one's epoch is now stale
         conn = open_store(run_store.store_url_for(runs), "2026-11-20T00:00:00Z")
         try:
-            assert kl.release(conn, "chair:decompose", "decompose-w", epoch)
+            assert kl.release(conn, "chair:launch", "launch-w", epoch)
         finally:
             conn.close()
-        _acquire(runs, "decompose-x")
-    proof = None if why == "no proof" else chair_kinds.QueueProof("chair:decompose", "decompose-w", epoch - (why == "stale epoch"))
+        _acquire(runs, "launch-x")
+    proof = None if why == "no proof" else chair_kinds.QueueProof("chair:launch", "launch-w", epoch - (why == "stale epoch"))
     rc = _leader_guard_or_refuse(runs, "worker", False, explicit_label="worker", queue_proof=("decompose", proof) if proof else None)
     assert rc == 2
     out = capsys.readouterr().out
     assert out.startswith("refusing: the landing loop is held by tick (live)")
-    assert ("is not held by decompose-w" in out) == (why != "no proof")
+    assert ("is not held by launch-w" in out) == (why != "no proof")
 
 
 def _launch_deps(argvs: list, proof: chair_kinds.QueueProof | None) -> Deps:
@@ -148,9 +155,40 @@ def test_a_workers_decompose_launch_carries_its_lease_and_one_with_no_lease_is_f
     assert argvs == [] and results[0]["status"] == "fenced"
 
 
+def test_a_workers_epic_launch_and_relaunch_carry_its_lease_too():
+    for kind in ("launch_epic", "retry"):
+        action = {"kind": kind, "initiative": "ship", "epoch": 1}
+        argvs: list = []
+        perform([action], _launch_deps(argvs, PROOF), lambda: 1, False)  # type: ignore[list-item]
+        assert argvs and argvs[0][:4] == ["cox", "route", "launch", "epic"], argvs
+        assert argvs[0][-6:] == chair_kinds.proof_argv(PROOF), kind
+
+
 def test_the_ticks_own_launches_carry_no_proof():
     action = {"kind": "launch_decompose", "intake_ids": ["intake/x.md"], "epoch": 1}
     argvs: list = []
     deps = _launch_deps(argvs, PROOF)
     perform([action], Deps(**{**deps.__dict__, "queue_proof": None}), lambda: 1, False)  # type: ignore[list-item]
     assert "--queue-lease" not in argvs[0]
+
+
+def test_a_launch_that_hangs_is_bounded_and_its_timeout_is_a_failed_launch():
+    """A hung `cox route launch` must not hold the launch kind forever while the beat renews the lease: the door kills
+    it on `local_timeout` (the local argv bound) and reports exit 124, which the launch records as failed, so the
+    pass ends and the next one re-plans from the facts."""
+    from agent_tools.chair_exec_edge import local_timeout
+    from agent_tools.chair_exec_land import LOCAL_ARGV_TIMEOUT_S, TIMED_OUT
+
+    def hung(argvs: list):
+        def run(argv: list) -> tuple[int, str]:
+            argvs.append(argv)
+            return TIMED_OUT, "cox: timed out after 900.0s\n"  # what `run_argv_split` reports for a child it killed
+        return run
+
+    for kind, extra in (("launch_decompose", {"intake_ids": ["intake/x.md"]}), ("launch_epic", {"initiative": "ship"})):
+        argvs: list = []
+        deps = _launch_deps(argvs, PROOF)
+        deps = type(deps)(**{**deps.__dict__, "run": hung(argvs)})
+        [result] = perform([{"kind": kind, "epoch": 1, **extra}], deps, lambda: 1, False)  # type: ignore[list-item]
+        assert result["status"] == "failed" and "timed out" in result["reason"], result
+        assert local_timeout(argvs[0]) == LOCAL_ARGV_TIMEOUT_S

@@ -617,6 +617,7 @@ def intake_file(
     epic: str = "",
     priority: int | str = "",
     target_release: str = "",
+    kind: str = "",
 ) -> dict:
     """Content for `route file --intake` (spec §3):
     `intake/<date>-<slug>.md`, same frontmatter shape as the initiative
@@ -626,7 +627,8 @@ def intake_file(
     Under `ids="sequence"` the file is `intake/<id>.md` with the id from `allocate`; a failed allocation raises, never slugifies.
     A non-empty `after` is written last as an `after: [a, b]` list; empty leaves the file as it was.
     A `stage` ("draft" or "ready") is written as `stage: <value>` after `repo`; None writes no line.
-    A non-empty `epic`, `priority` (a bare integer) and `target_release` follow `stage` in that order; empty writes no line.
+    A non-empty `epic`, `priority` (a bare integer), `target_release` and `kind` (`core.intake.KINDS`) follow `stage` in
+    that order; empty writes no line.
     """
     text = body if body else title
     staged = [
@@ -634,6 +636,7 @@ def intake_file(
         *([("epic", epic)] if epic else []),
         *([("priority", _Raw(str(int(priority))))] if priority not in ("", None) else []),
         *([("target_release", target_release)] if target_release else []),
+        *([("kind", kind)] if kind else []),
     ]
     # A pulled file keeps its old form. Sync reads a frontmatter `issue` as the item's own mirror issue, so a pull
     # must not write the source issue number there; `route_sync._issue_steps` would skip `issue_create` for it.

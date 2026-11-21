@@ -297,7 +297,7 @@ def _route_file(a: argparse.Namespace) -> int:
     if after and not a.intake:
         print("routing: --after needs --intake, since only a queued intake waits")
         return 2
-    for flag, noun in (("epic", "an epic"), ("priority", "a priority"), ("target_release", "a target release")):
+    for flag, noun in (("epic", "an epic"), ("priority", "a priority"), ("target_release", "a target release"), ("kind", "a kind")):
         if getattr(a, flag, None) is not None and not a.intake:
             print(f"routing: --{flag.replace('_', '-')} needs --intake, since only an intake carries {noun}")
             return 2
@@ -335,12 +335,13 @@ def _route_file(a: argparse.Namespace) -> int:
     try:
         if a.intake:
             refusals = intake_fields.validate(
-                repo, a.epic, a.priority, a.target_release, _known_repo_names(profile, rows, repo), _known_epic_ids(rows)
+                repo, a.epic, a.priority, a.target_release, _known_repo_names(profile, rows, repo), _known_epic_ids(rows),
+                kind=getattr(a, "kind", None),
             )
             if refusals:
                 print("\n".join(f"routing: {line}" for line in refusals))
                 return 2
-            fields = intake_fields.normalise(repo, a.epic, a.priority, a.target_release)
+            fields = intake_fields.normalise(repo, a.epic, a.priority, a.target_release, kind=getattr(a, "kind", None))
             # `route.intake_file` writes the title when there is no body, and the launch reads what was written.
             heal = route_reach.launch_reach_heal(body or a.title, {})
             if _reach_refused(heal.refusal, heal.notes):
@@ -352,7 +353,8 @@ def _route_file(a: argparse.Namespace) -> int:
             date = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
             mapping = route.intake_file(a.title, body, repo, date, link=link, ids=profile.get("ids", "slug"), after=after,
                                        stage=_filing_stage(a, profile), epic=fields.get("epic", ""),
-                                       priority=fields.get("priority", ""), target_release=fields.get("target_release", ""))
+                                       priority=fields.get("priority", ""), target_release=fields.get("target_release", ""),
+                                       kind=str(fields.get("kind", "")))
         else:
             mapping = route.initiative_files(a.title, body, repo, phase=a.phase)
     except ValueError as exc:

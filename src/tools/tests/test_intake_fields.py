@@ -75,3 +75,14 @@ def test_normalise_types_strips_v_and_drops_empties() -> None:
     }
     assert normalise("api", "", None, "") == {"repo": "api"}
     assert normalise("api", None, 0, None) == {"repo": "api", "priority": 0}
+
+
+@pytest.mark.parametrize("kind", ["hotfix", "bug", "feature", "idea", "Hotfix", ""])
+def test_a_known_intake_kind_is_accepted_and_written_in_lowercase(kind: str) -> None:
+    assert validate("app", None, None, None, {"app"}, set(), kind=kind) == []
+    assert normalise("app", None, None, None, kind=kind).get("kind", "") == kind.lower()
+
+
+def test_an_unknown_intake_kind_is_refused_with_the_valid_kinds() -> None:
+    [line] = validate("app", None, None, None, {"app"}, set(), kind="urgent")
+    assert line.startswith("kind 'urgent' is not known; valid kinds: idea, feature, bug, hotfix")
