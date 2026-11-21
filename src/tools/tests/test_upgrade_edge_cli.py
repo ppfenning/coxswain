@@ -17,6 +17,9 @@ MANIFEST = f'[coxswain]\nversion = "2026.11.8"\nrepo = "{SLUG}"\n\n[providers.cl
 BASE_LISTING = "src/graphs/harness/store_ddl_0001.py\nsrc/graphs/harness/store_ddl_0002.py\nsrc/graphs/harness/cli.py\n"
 COX = "/opt/example/bin/cox"
 DOCTOR = ["cox", "setup", "doctor", "--json"]
+CURRENT_UNIT = "[Service]\nExecStart=/c chair run\nKillMode=process\n"
+LEGACY_UNIT = "[Service]\nExecStart=/c chair run\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n"
+RELOAD = ["systemctl", "--user", "daemon-reload"]
 
 
 class World:
@@ -37,6 +40,8 @@ class World:
         self.moves: list[tuple[str | None, bool]] = []
         self.move_exits: dict[str, int] = {}  # a failing move still moved the checkout unless `stuck`
         self.stuck = False
+        self.reload_exit = 0
+        self.stale = False  # systemd's loaded units are older than their files (a failed reload)
 
     def run(self, argv: list, cwd: str | None = None) -> tuple[int, str]:
         self.calls.append(list(argv))
@@ -65,6 +70,11 @@ class World:
         if argv[:3] == ["systemctl", "--user", "try-restart"]:
             self.restarted = True
             return 0, ""
+        if argv == ["systemctl", "--user", "daemon-reload"]:
+            self.stale = self.reload_exit != 0
+            return self.reload_exit, ""
+        if argv[:5] == ["systemctl", "--user", "show", "-p", "NeedDaemonReload"]:
+            return 0, "".join(f"NeedDaemonReload={'yes' if self.stale else 'no'}\n" for _ in argv[5:])
         if argv == DOCTOR:
             rows = [{"check": "store", "ok": self.head not in self.doctor_fails_at, "detail": "store FAIL"},
                     {"check": "claude token", "ok": self.head not in self.advisory_fails_at, "detail": "no token file"},
@@ -92,7 +102,7 @@ def world(tmp_path: Path, monkeypatch) -> World:
     unit_dir = home / ".config" / "systemd" / "user"
     unit_dir.mkdir(parents=True)
     for name in ("coxswain-chair.service", "coxswain-lander.service"):
-        (unit_dir / name).write_text("[Service]\n")
+        (unit_dir / name).write_text(CURRENT_UNIT)  # a unit written by this version: nothing to refresh
     root = tmp_path / "installs"
     (root / "coxswain" / ".git").mkdir(parents=True)
     (root / "coxswain" / "manifest.toml").write_text(MANIFEST)
@@ -125,6 +135,56 @@ def test_edge_moves_to_the_newest_green_commit_not_the_tip_then_restarts_both_un
     assert world.calls.index(world.restarts()[0]) < world.calls.index(DOCTOR)
     assert _record(tmp_path) | {"at": "t"} == {"at": "t", "previous": C, "chosen": B, "outcome": "upgraded", "detail": ""}
     assert f"upgraded {C[:12]} -> {B[:12]}" in out
+
+
+def _units(tmp_path: Path) -> Path:
+    return tmp_path / "home" / ".config" / "systemd" / "user"
+
+
+def test_an_upgrade_gives_a_unit_installed_before_kill_mode_the_setting_and_reloads_before_it_restarts(
+    world: World, tmp_path: Path, capsys
+):
+    (_units(tmp_path) / "coxswain-chair.service").write_text(LEGACY_UNIT)
+    (_units(tmp_path) / "coxswain-chair@.service").write_text(LEGACY_UNIT.replace("chair run", "chair worker --kind %i"))
+    assert _upgrade(tmp_path) == 0
+    for name in ("coxswain-chair.service", "coxswain-chair@.service"):
+        text = (_units(tmp_path) / name).read_text()
+        assert text.count("KillMode=process") == 1 and "WantedBy=default.target" in text and "ExecStart=/c chair" in text
+    assert (_units(tmp_path) / "coxswain-lander.service").read_text() == CURRENT_UNIT  # not the chair's: untouched
+    assert world.calls.count(RELOAD) == 1
+    assert world.calls.index(RELOAD) < world.calls.index(world.restarts()[0])
+    assert "set KillMode=process in coxswain-chair.service, coxswain-chair@.service" in capsys.readouterr().out
+
+
+def test_a_failed_reload_restarts_nothing_so_no_land_in_flight_is_killed(world: World, tmp_path: Path, capsys):
+    (_units(tmp_path) / "coxswain-chair.service").write_text(LEGACY_UNIT)
+    world.reload_exit = 1
+    assert _upgrade(tmp_path) != 0
+    assert world.restarts() == []
+    assert "not restarting" in capsys.readouterr().out
+
+
+def test_an_upgrade_that_moves_nothing_still_refreshes_the_unit_and_restarts_nothing(world: World, tmp_path: Path):
+    (_units(tmp_path) / "coxswain-chair.service").write_text(LEGACY_UNIT)
+    world.head = B
+    assert _upgrade(tmp_path) == 0
+    assert "KillMode=process" in (_units(tmp_path) / "coxswain-chair.service").read_text()
+    assert world.calls.count(RELOAD) == 1 and world.restarts() == []
+
+
+def test_a_release_upgrade_refreshes_the_unit_too(world: World, tmp_path: Path):
+    (tmp_path / "profile.yaml").write_text("team: example\n")
+    (_units(tmp_path) / "coxswain-chair.service").write_text(LEGACY_UNIT)
+    assert _upgrade(tmp_path) == 0
+    assert "KillMode=process" in (_units(tmp_path) / "coxswain-chair.service").read_text()
+    assert world.calls == [RELOAD]
+
+
+def test_a_dry_run_refreshes_nothing(world: World, tmp_path: Path):
+    (_units(tmp_path) / "coxswain-chair.service").write_text(LEGACY_UNIT)
+    _upgrade(tmp_path, "--dry-run")
+    assert (_units(tmp_path) / "coxswain-chair.service").read_text() == LEGACY_UNIT
+    assert RELOAD not in world.calls
 
 
 def test_edge_at_the_newest_green_commit_moves_nothing_restarts_nothing_and_writes_no_record(world: World, tmp_path: Path, capsys):
@@ -230,7 +290,9 @@ def test_to_on_an_edge_machine_is_the_explicit_path_with_no_ci_lookup(world: Wor
 def test_a_stable_machine_upgrades_exactly_as_before(world: World, tmp_path: Path):
     (tmp_path / "profile.yaml").write_text("team: example\n")
     assert _upgrade(tmp_path) == 0
-    assert world.moves == [(None, False)] and world.calls == []
+    # The one call is the unit refresh's read-only question; the units are current, so nothing is written or reloaded.
+    assert world.moves == [(None, False)]
+    assert world.calls == [["systemctl", "--user", "show", "-p", "NeedDaemonReload", "coxswain-chair.service"]]
 
 
 def test_the_scheduled_upgrade_does_nothing_on_a_stable_machine(world: World, tmp_path: Path, capsys):

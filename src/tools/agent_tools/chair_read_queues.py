@@ -13,7 +13,7 @@ from agent_tools.chair_types import QueueLeases
 from core.jsontypes import is_mapping
 
 __all__ = [
-    "SEEN_MARKER", "QueueLeasesReader", "mark_seen", "queue_lease_holds", "queues_keeping_last_good", "read_chair_queues",
+    "NOW_SQL", "SEEN_MARKER", "QueueLeasesReader", "mark_seen", "queue_lease_holds", "queues_keeping_last_good", "read_chair_queues",
     "read_queue_leases", "seen_marker", "store_stamp",
 ]
 
@@ -71,7 +71,7 @@ def store_stamp(raw: object) -> str:
     return datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-_NOW_SQL = {  # the bind token tells the engine apart, as everywhere in run_store
+NOW_SQL = {  # the bind token tells the engine apart, as everywhere in run_store
     "%s": "SELECT CAST(CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AS TEXT) AS now",
     "?": "SELECT CURRENT_TIMESTAMP AS now",
 }
@@ -88,7 +88,7 @@ def read_queue_leases(runs_dir: Path) -> tuple[dict[str, str] | None, str]:
         try:
             sql = run_store.sql_for("SELECT name, expires_at FROM leases WHERE name LIKE {p}", token)
             rows = conn.execute(sql, (f"{chair_kinds.LEASE_PREFIX}%",)).fetchall()
-            now = conn.execute(_NOW_SQL[token]).fetchone()["now"]
+            now = conn.execute(NOW_SQL[token]).fetchone()["now"]
         finally:
             conn.close()
     except Exception:  # unknown, not empty: the tick then leaves every queue kind alone this tick

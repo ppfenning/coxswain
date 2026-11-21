@@ -38,7 +38,9 @@ def test_the_first_pass_is_due_at_once_and_says_so():
 def test_a_notification_on_a_table_the_kind_reads_is_kept_and_one_on_another_is_dropped():
     loop = heard(Loop(last_pass=0.0), "housekeeping", frozenset({"work_items", "land_queue", "hosts"}))
     assert loop.woke == {"work_items"}  # a host beat is not a reason to gather again
-    assert heard(Loop(last_pass=0.0), "watch", frozenset({"work_items"})).woke == frozenset()
+    assert heard(Loop(last_pass=0.0), "watch", frozenset({"hosts", "phase_queue"})).woke == frozenset()
+    # C6: watch owns the land slot, so an approval (`work_items`) or a run's exit (`runs`) is a reason to land or fetch.
+    assert heard(Loop(last_pass=0.0), "watch", frozenset({"work_items", "runs"})).woke == {"work_items", "runs"}
     assert heard(loop, "housekeeping", frozenset({"runs"})).woke == {"work_items", "runs"}
 
 

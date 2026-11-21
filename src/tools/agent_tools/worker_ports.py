@@ -23,7 +23,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
 
-from agent_tools import bounded_run, chair, epic, lane_prereqs, repo_path, route, run_store, worker
+from agent_tools import bounded_run, chair, epic, lane_prereqs, repo_path, route, run_store, unit_children, worker
 from agent_tools.chair_read_run_id import next_run_id, taken_names
 from harness import initiative_review, phase_pick, store_phases
 from harness.store_dialect import Connection, Json
@@ -269,6 +269,7 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
                                         start_new_session=True)
         except OSError as exc:
             return f"the launch did not spawn: {type(exc).__name__}: {exc}"
+        unit_children.detached(proc.pid)  # the lane's launcher outlives this worker's exit
         with launchers_lock:
             launchers[proc.pid] = proc
         log(f"worker: launching {run_id} for {claim.initiative}/{claim.phase}")

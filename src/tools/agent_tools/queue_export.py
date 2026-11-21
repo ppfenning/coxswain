@@ -508,11 +508,22 @@ def export_files(
     With `hashes`, a hand-edited file has its text saved under `runs/.hand-edits` and is then rewritten, or is left
     untouched and logged when the save fails; one merely behind this workspace's own baseline is rewritten silently.
     Both kinds are listed in `runs/.export-held.json`, replacing the last list, so a file no longer edited drops out
-    of it. Files of a `protected` initiative are never deleted."""
+    of it. Files of a `protected` initiative are never deleted.
+
+    Under the workspace lock (`workspace_lock`); a lock held past its bound raises `WorkspaceBusy`."""
+    from agent_tools import workspace_lock
+
     skipped = skipped_ids(rows)
     if len(skipped) == len(rows):
         return Export([], skipped)
     workspace = Path(workspace)
+    with workspace_lock.held(workspace, "export"):
+        return _export(workspace, rows, skipped, hashes, protected)
+
+
+def _export(
+    workspace: Path, rows: list[Row], skipped: list[str], hashes: Hashes | None, protected: frozenset[str]
+) -> Export:
     on_disk = _read_files(workspace)
     writes, deletes = plan_export(rows, on_disk, protected=protected)
     exported = export_rows(rows)

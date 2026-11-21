@@ -4,6 +4,10 @@ Pure. The profile key `chair.queues` lists the kinds that have moved to their ow
 (`cox chair worker --kind K`); the default is empty, so the tick plans every kind as before. The kinds that can move
 are `housekeeping` and `watch` (C3), `quarantine` and `decompose` (C4), and `launch` (C5).
 
+`watch` owns the red-main revert and, since C6, the old model's land slot: its lands, the fetch of an exited remote
+run, the deferred-land deadlock line, its carries and its closes. Every slot of the tick has a kind, so with all five
+listed the tick plans nothing but the queue alarms, and old-model (`lane_model: task`, the default) work still lands.
+
 `launch` is the single owner of every run the chair starts (C5): the old model's launch_epic, relaunch, retry, rescue
 and decompose launches, and the phase queue's `queue_phases`. Whoever holds the launch slot (the tick, or the one
 worker holding `chair:launch`) plans the launch cap from one set of facts and performs it in one process, so two
@@ -19,7 +23,9 @@ Who plans a kind, decided from the same facts on both sides:
   than the lease's time to live; on the default, with no worker in sight, a failed read changes nothing;
 - a worker acts only for a kind its profile lists, and only while it holds that kind's lease;
 - a kind the profile lists whose lease has been dead for longer than its time to live has no owner: the tick says so
-  with one needs_chair (`unowned_actions`), which the notifier pushes once while it stands.
+  with one needs_chair (`unowned_actions`), which the notifier pushes once while it stands. Once no tick holds the
+  chair lease (after the cutover, C6), the first live worker in `QUEUE_KINDS` order says it for every other kind
+  (`watcher`), so a dead worker, the housekeeping one included, is always reported by someone.
 
 The facts carry the leases as `queue_leases` (kind to `expires_at`, None when unreadable), the store's clock at that
 read as `queue_lease_now` (so every comparison is on the store's clock, never a machine's), whether a worker lease row
@@ -34,6 +40,7 @@ from datetime import UTC, datetime
 from typing import cast
 
 from agent_tools.chair_types import Action, ActionKind, Facts
+from core.jsontypes import is_mapping
 
 __all__ = [
     "BATCHED_KINDS",
@@ -52,9 +59,12 @@ __all__ = [
     "proof_argv",
     "queued_kinds",
     "tick_skips",
+    "tick_watching",
     "unowned_actions",
     "unowned_kinds",
     "unreadable_actions",
+    "watcher",
+    "watcher_actions",
     "worker_acts",
 ]
 
@@ -66,7 +76,8 @@ QUEUE_KINDS = ("housekeeping", "watch", "quarantine", "decompose", "launch")
 # `min_gap` seconds however busy its tables are, and at least every `poll` seconds when they are quiet.
 WAKE_TABLES: Mapping[str, frozenset[str]] = {
     "housekeeping": frozenset({"work_items", "runs"}),
-    "watch": frozenset({"landing_records", "land_queue"}),
+    # A land is due when a task is approved (`work_items`); a fetch, a carry or a close when a run exits (`runs`).
+    "watch": frozenset({"landing_records", "land_queue", "work_items", "runs"}),
     # A phase that finishes moves its `phase_queue` row (state, outcome) and its tasks' `work_items` rows; either wakes
     # the triage. On the phase model that move is the event, so no `run_exited` courier line is needed.
     "quarantine": frozenset({"work_items", "runs", "phase_queue"}),
@@ -165,8 +176,11 @@ def unowned_kinds(facts: Facts, ttl: int = LEASE_TTL_SECONDS) -> frozenset[str]:
 
 
 def unreadable_actions(facts: Facts, ttl: int = LEASE_TTL_SECONDS) -> list[Action]:
-    """One needs_chair while the tick fails closed on unreadable worker leases for longer than `ttl`: housekeeping and
-    the watch are then planned by no one until the store answers. Pushed once while it stands, as `unowned_actions`."""
+    """One needs_chair while the worker leases have been unreadable for longer than `ttl` and a worker could be running:
+    the tick then leaves every kind alone (it fails closed), and a worker cannot tell whether it still holds its own, so
+    nothing may be acting until the store answers. Pushed once while it stands, as `unowned_actions`. The tick's facts
+    carry how long the read has failed; a worker's facts carry the failure but not its length, so a worker that sees
+    one says so at once (`watcher_actions`)."""
     if _leases(facts) is not None or not _workers_matter(facts) or float(facts.get("queue_leases_failing_s", 0.0)) <= ttl:
         return []
     return [{
@@ -178,19 +192,67 @@ def unreadable_actions(facts: Facts, ttl: int = LEASE_TTL_SECONDS) -> list[Actio
     }]
 
 
-def unowned_actions(facts: Facts) -> list[Action]:
-    """One needs_chair per listed kind with no live worker. It stands each tick, so the status line names it, and the
-    notifier pushes its key once while it stands (`notify_core.due`)."""
+def unowned_actions(facts: Facts, exclude: frozenset[str] = frozenset()) -> list[Action]:
+    """One needs_chair per listed kind with no live worker, but those in `exclude` (a worker never reports its own
+    kind: it is running). It stands each pass, so the status line names it, and the notifier pushes its key once while
+    it stands (`notify_core.due`)."""
     return [
         {
-            "kind": ActionKind.NEEDS_CHAIR, "initiative": "chair-queue", "cause": f"{UNOWNED_CAUSE} {kind}",
+            # The lease as the task: the record's key is (ts, holder, kind, target) and the target is the task first,
+            # so the alarms of one pass are a row each, not one row for whichever kind came first.
+            "kind": ActionKind.NEEDS_CHAIR, "initiative": "chair-queue", "task_id": lease_name(kind),
+            "cause": f"{UNOWNED_CAUSE} {kind}",
             "reason": (
                 f"chair.queues lists {kind} but no worker has held {lease_name(kind)} for over {LEASE_TTL_SECONDS}s, so "
                 f"nothing plans it: start `cox chair worker --kind {kind}`, or take {kind} out of chair.queues"
             ),
         }
-        for kind in sorted(unowned_kinds(facts))
+        for kind in sorted(unowned_kinds(facts) - exclude)
     ]
+
+
+def tick_watching(facts: Facts) -> bool:
+    """Whether a tick holds the chair lease now: live, not released, and not a session's informal hold (a session plans
+    no tick). While one does, the tick raises the queue alarms (`chair_plan.plan_tick_held`) and no worker raises
+    them a second time. Facts without the chair lease read as no tick."""
+    lease = facts.get("lease")
+    if not is_mapping(lease):
+        return False
+    return not (lease.get("released", True) or lease.get("stale", True) or lease.get("session_held", False))
+
+
+def watcher(kind: str, facts: Facts) -> bool:
+    """Pure. Whether the worker of `kind`, holding its lease, raises the queue alarms this pass (C6).
+
+    The queue alarms (`unowned_actions`, `unreadable_actions`) were the tick's alone, and the cutover stops the tick.
+    So once no tick holds the chair lease, one worker raises them: the first kind of `QUEUE_KINDS` that is listed and
+    either holds a live lease or is this worker (which holds its own while it passes). Housekeeping raises them while
+    it runs. With housekeeping dead, the watch worker raises them, and its first alarm is that housekeeping has no
+    owner; and so on down the list. The next live worker takes over from a dead watcher within one lease time to live,
+    so no one dead process silences them. With the tick and every worker dead, the chair watchdog's timer still says
+    so (`chair_watchdog.queues_down`).
+
+    When the leases cannot be read no worker can tell which of them is first, so each one raises the alarm: a
+    duplicate push is better than none."""
+    if tick_watching(facts):
+        return False
+    queued = queued_kinds(list(facts.get("chair_queues") or ()))
+    if kind not in queued:
+        return False
+    leases = _leases(facts)
+    if leases is None:
+        return True
+    live = live_kinds(leases, facts.get("queue_lease_now", "")) | {kind}
+    return next(k for k in QUEUE_KINDS if k in queued and k in live) == kind
+
+
+def watcher_actions(kind: str, facts: Facts) -> list[Action]:
+    """Pure. The queue alarms the worker of `kind` raises this pass: none unless it is the watcher (`watcher`). The
+    watcher raises one `queue_unowned` per other listed kind with no live worker, and the unreadable alarm once the
+    leases have failed to read for longer than their time to live (by the worker's own reader, as the tick's)."""
+    if not watcher(kind, facts):
+        return []
+    return [*unowned_actions(facts, exclude=frozenset({kind})), *unreadable_actions(facts)]
 
 
 # The launches a queue worker makes, by graph, and the kind lease each is made under. `cox route launch <graph>` started

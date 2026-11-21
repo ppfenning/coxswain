@@ -399,7 +399,12 @@ def _upgrade_on_channel(a: argparse.Namespace) -> int:
         return 0
     if channel == "edge" and not a.to:
         return _upgrade_edge(a)
-    return _upgrade_move(a)
+    code = _upgrade_move(a)
+    # The release path restarts nothing; the unit files still get this version's KillMode before the operator does.
+    refused = _edge_refresh_units() if code == 0 and not a.dry_run else None
+    if refused is not None:
+        print(f"upgrade: warning: {refused}")
+    return code
 
 
 def _upgrade_channel(a: argparse.Namespace) -> str | None:
@@ -516,18 +521,68 @@ def _edge_added_migrations(checkout: Path, head: str, target: str) -> _AddedMigr
 
 
 def _edge_units() -> list[str]:
-    """Edge. The chair and lander user units this machine has a file for, in that order."""
+    """Edge. The chair and lander user units this machine has a file for, in that order, then the five queue workers'
+    instances while their template is installed (C6). The upgrade restarts the running ones, and the doctor's `units
+    start` row judges every one that was active before it: after the cutover, the five workers and the lander (the
+    tick's unit is disabled then, so it was not running and is not judged)."""
     from agent_tools import lander_cli
+    from agent_tools.cli_chair_units import queue_unit_names
 
     home = Path.home()
-    return [path.name for path in (chair_service.unit_path(home), lander_cli.unit_path(home)) if path.exists()]
+    files = [path.name for path in (chair_service.unit_path(home), lander_cli.unit_path(home)) if path.exists()]
+    return [*files, *queue_unit_names(home)]
+
+
+def _edge_refresh_units() -> str | None:
+    """Edge. Give the chair's unit files on this machine, the tick's and the queue workers' template, the setting this
+    version writes (`chair_service.with_kill_mode`), and daemon-reload when one changed. A unit installed before
+    `KillMode=process` kept the default, control-group, under which a restart kills every land in flight; and
+    `cox chair service --install` is not run again on an upgrade. Only that line is touched, so the rest of the file
+    stays whatever it was installed with. None when nothing changed or the reload worked, else why not."""
+    from agent_tools import chair_queue_units
+    from agent_tools.cli_chair_units import queue_unit_names
+
+    home = Path.home()
+    changed = []
+    present = [path for path in (chair_service.unit_path(home), chair_queue_units.template_path(home)) if path.exists()]
+    for path in present:
+        text = _read_text_or_none(path)
+        refreshed = chair_service.with_kill_mode(text) if text is not None else None
+        if refreshed is None or refreshed == text:
+            continue
+        try:
+            path.write_text(refreshed, encoding="utf-8")
+        except OSError as exc:
+            return f"could not set {chair_service.KILL_MODE_LINE} in {path}: {exc}"
+        changed.append(path.name)
+    if changed:
+        print(f"edge: set {chair_service.KILL_MODE_LINE} in {', '.join(changed)}")
+    elif not _edge_reload_pending([chair_service.UNIT_NAME] * chair_service.unit_path(home).exists() + queue_unit_names(home)):
+        return None
+    code, out = _edge_run(["systemctl", "--user", "daemon-reload"])
+    return None if code == 0 else f"systemctl --user daemon-reload exited {code}: {out.strip()}"
+
+
+def _edge_reload_pending(units: list[str]) -> bool:
+    """Edge. Whether systemd still runs an older text of any of `units` than their files hold (`NeedDaemonReload`):
+    a refresh whose reload failed, on this run or an earlier one, leaves the file right and the loaded unit not."""
+    if not units:
+        return False
+    _code, out = _edge_run(["systemctl", "--user", "show", "-p", "NeedDaemonReload", *units])
+    return any(line.strip() == "NeedDaemonReload=yes" for line in out.splitlines())
 
 
 def _edge_restart(units: list[str]) -> str | None:
     """Edge. `try-restart` restarts only the units that are running, so a unit stopped on purpose stays stopped.
-    None on success or with no unit, else why it failed."""
+    None on success or with no unit, else why it failed.
+
+    The unit files get `KillMode=process` first (`_edge_refresh_units`), so the restart leaves the lands in flight
+    running. When that fails nothing is restarted: a restart then would kill them."""
     if not units:
         return None
+    refused = _edge_refresh_units()
+    if refused is not None:
+        return f"not restarting {' '.join(units)}: {refused}"
     code, out = _edge_run(["systemctl", "--user", "try-restart", *units])
     return None if code == 0 else f"systemctl --user try-restart {' '.join(units)} exited {code}: {out.strip()}"
 
@@ -598,6 +653,10 @@ def _upgrade_edge(a: argparse.Namespace) -> int:
     verdict = upgrade_edge.decide(head, target, first_parent, last)
     if verdict != upgrade_edge.MOVE:
         print(upgrade_edge.verdict_line(verdict, head, target, last))
+        # Nothing restarts on this path, but the next stop of a unit would kill its lands without the setting.
+        refused = None if a.dry_run else _edge_refresh_units()
+        if refused is not None:
+            print(f"edge: warning: {refused}")
         if upgrade_edge.needs_resync(verdict, _edge_venv_check(checkout)):
             return _edge_resync(a, head)
         return 0
