@@ -6859,7 +6859,57 @@ its own checks on top with a root <code>.agent-checks</code> file. See
 <h2 id="checks-by-gate">Checks by gate</h2>
 <p>Three lists hold checks, one per gate. <code>landing_areas.checks</code> holds the task checks. <code>landing_areas.level_checks</code> holds the checks for the level gate. <code>landing_areas.ticket_checks</code> holds the checks for the ticket gate.</p>
 <p>All three use the <code>{name, cmd}</code> shape, with names unique inside each list. The two new lists are optional. A cartridge that omits them has no level or ticket checks, and <code>checks</code> reads as it always has.</p>
-<p>An integration suite that needs exclusive use of a resource belongs in <code>level_checks</code> or <code>ticket_checks</code>, because those run once for the level or ticket and not beside every task. The harness reads the two new lists in separate changes.</p>
+<p>An integration suite that needs exclusive use of a resource belongs in <code>level_checks</code> or <code>ticket_checks</code>, because those run once for the level or ticket and not beside every task.</p>
+<p>The three gates are three levels of checking:</p>
+<table>
+<thead>
+<tr>
+<th>Gate</th>
+<th>Level</th>
+<th>Runs</th>
+<th>Cartridge list</th>
+<th><code>.agent-checks</code> section</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>task</code></td>
+<td>task</td>
+<td>a task's cheap checks, narrowed to what its change touches, in its own worktree</td>
+<td><code>checks</code></td>
+<td>before the first marker, or <code># level: task</code></td>
+</tr>
+<tr>
+<td><code>level</code></td>
+<td>phase</td>
+<td>the phase's smoke, once every task has rolled up, in the phase worktree at the tip</td>
+<td><code>level_checks</code></td>
+<td><code># level: phase</code></td>
+</tr>
+<tr>
+<td><code>ticket</code></td>
+<td>initiative</td>
+<td>the full suite, before the initiative's one pull request</td>
+<td><code>ticket_checks</code></td>
+<td><code># level: initiative</code></td>
+</tr>
+</tbody>
+</table>
+<p>A repository names all three in one <code>.agent-checks</code> file. A line <code># level: phase</code> or <code># level: initiative</code> starts a
+section that runs until the next marker. Everything before the first marker is task checks, so a file with no marker
+works as it always has. A marker naming any other level becomes a task check that fails and names the line.</p>
+<p>Only the phase model reads the sections at their gates. There, each gate runs the cartridge's list first, then the
+repository's section, without repeating a command the cartridge already runs. The old model reads the file as one
+list of task checks: the task lines, then the lines of the widest level the file names (initiative, else phase), each
+command once. So an initiative already on the old model checks what it checked before levels. Its lander, <code>cox runs
+land</code> and the chair's carry do the same. The lander's gate for a phase-model initiative arrives with the phase-model
+lander.</p>
+<p>On the phase model, a phase whose smoke fails gets no review and is not parked <code>built</code>. A failing check finishes the
+phase <code>failed</code> at once, with the failure as its reason, because a retry would run the same commands on the same
+commit. A smoke that could not run (a harness fault) goes back to the queue once. A second harness fault on the same
+commit finishes the phase <code>failed</code>. Either way the operator decides what happens next. A pass counts as evidence
+that a later lane on the same commit may reuse only when it checked something: a pass made only of skipped tests is
+run again.</p>
 <h2 id="landing-granularity">Landing granularity</h2>
 <p><code>landing_areas.land_at</code> sets where landing happens: <code>ticket</code>, <code>level</code> or <code>task</code>.
 The default is <code>ticket</code>, one pull request per initiative. The approval gate

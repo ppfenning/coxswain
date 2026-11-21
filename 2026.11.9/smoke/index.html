@@ -7143,7 +7143,7 @@ unit environment file.</p>
 </ul>
 <p>macOS launchd stays an operator check: the suite runs on Linux and starts no launchd agent.</p>
 <h2 id="the-phase-check-needs-no-forge">The phase check needs no forge</h2>
-<p>A phase and an initiative check different amounts of the suite (L2 gives each level its own <code>.agent-checks</code> lines):</p>
+<p>A phase and an initiative check different amounts of the suite (each is a section of <code>.agent-checks</code>, <code># level: phase</code> and <code># level: initiative</code>):</p>
 <table>
 <thead>
 <tr>
@@ -7175,8 +7175,8 @@ facts:</p>
   smoke tests that exist and carry no <code>forge</code> mark;</li>
 <li>only the <code>forge</code> fixture calls <code>plan.forgejo_run_argv</code>, and no test of the run without the <code>forge</code> mark has <code>forge</code>
   in its fixture closure. A run that deselects the forge tests therefore starts no container of the Forgejo image.
-  Under <code>COX_SMOKE_SHARD</code> this covers the files of the shard that holds the meta-test; the unsharded phase command
-  covers them all.</li>
+  It reads every item the run's <code>-m</code> selected, which the conftest keeps before <code>COX_SMOKE_SHARD</code> drops the other
+  shards' files, so the shard that holds the meta-test checks every file, as the unsharded phase command does.</li>
 </ul>
 <h2 id="where-it-runs">Where it runs</h2>
 <ul>
@@ -7196,7 +7196,10 @@ facts:</p>
   <code>COX_SMOKE_TIMINGS=smoke/timings.json pytest -q -rs -p smoke.timings -m "not forge" smoke</code>. A test's seconds are its
   setup, call and teardown, less the session fixtures it set up, which every shard pays once whatever it holds. A run
   on a few files rewrites only theirs; a file whose every test was deselected weighs 0.</li>
-<li><strong>Lane checks.</strong> <code>.agent-checks</code> runs <code>pytest -q -rs smoke</code> after the component suites. A lane host with docker
+<li><strong>Lane checks.</strong> On the phase model, <code>.agent-checks</code> runs <code>pytest -q -rs smoke -m "not forge"</code> at the phase level
+  (<code># level: phase</code>). It runs once per phase, in the phase worktree, after every task has rolled up, and never in a
+  task's own checks. The whole <code>pytest -q -rs smoke</code> is in its initiative level. An old-model task reads the file as
+  one flat list, as before levels, and so still runs <code>pytest -q -rs smoke</code> in its own checks. A lane host with docker
   runs it against its own container. A host with no docker on PATH skips it and prints the reason. A host whose
   <code>docker</code> is on PATH but whose daemon does not answer fails, because that is a host fault a skip would hide. Set
   <code>COX_SMOKE_SKIP_BROKEN_DOCKER=1</code> on such a host to skip there instead.</li>
