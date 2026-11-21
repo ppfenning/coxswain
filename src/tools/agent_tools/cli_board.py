@@ -218,14 +218,9 @@ def _merging_into(runs_dir: Path | None):
         _MERGE_RUNS_DIR.reset(token)
 
 
-def _merge_initiative_tickets(initiative_dir: Path) -> list[dict]:
-    """`route.merge_same_phase` on the tickets under `initiative_dir`, each merge sent to the store before its files.
-    The store is `runs/` under the profile's `workspace_dir` (`_merging_into`), and only for that workspace's own
-    `work/<initiative>`. A refused merge writes no file; the rest are merged without it (`_settle_merges`).
-    Without a store the files are written as before, each after the unrecorded warning `write_filed_item` prints.
-    The returned list drops the `dropped` entries; each item carries `file` for `route.launch_blockers`.
-    """
-    root = initiative_dir.resolve()  # absolute, so the export baselines below are not skipped
+def _read_tickets(root: Path) -> tuple[list[Path], list[str], list[dict]]:
+    """Edge. `(paths, texts, items)` of the tickets under the initiative directory `root`, each item as
+    `route.merge_same_phase` and `route.launch_blockers` read it (`file` is `<phase>/<task>.md`)."""
     paths = sorted(root.glob("*/*.md"))
     texts = [path.read_text(encoding="utf-8") for path in paths]
     items = [
@@ -243,6 +238,24 @@ def _merge_initiative_tickets(initiative_dir: Path) -> list[dict]:
         for path, text in zip(paths, texts)
         for fields, body in [route.parse_frontmatter(text)]
     ]
+    return paths, texts, items
+
+
+def initiative_tickets(initiative_dir: Path) -> list[dict]:
+    """Edge. The tickets under `initiative_dir` as `_merge_initiative_tickets` returns them, with nothing merged and
+    nothing written: a worker's launch reads its view of the store this way, since merging tickets is the chair's."""
+    return [item for item in _read_tickets(initiative_dir)[2] if item.get("state") != "dropped"]
+
+
+def _merge_initiative_tickets(initiative_dir: Path) -> list[dict]:
+    """`route.merge_same_phase` on the tickets under `initiative_dir`, each merge sent to the store before its files.
+    The store is `runs/` under the profile's `workspace_dir` (`_merging_into`), and only for that workspace's own
+    `work/<initiative>`. A refused merge writes no file; the rest are merged without it (`_settle_merges`).
+    Without a store the files are written as before, each after the unrecorded warning `write_filed_item` prints.
+    The returned list drops the `dropped` entries; each item carries `file` for `route.launch_blockers`.
+    """
+    root = initiative_dir.resolve()  # absolute, so the export baselines below are not skipped
+    paths, texts, items = _read_tickets(root)
     sources = {item["id"]: (path, text) for path, text, item in zip(paths, texts, items)}
     runs_dir = _MERGE_RUNS_DIR.get()
     mode = _store_mode(runs_dir, root)

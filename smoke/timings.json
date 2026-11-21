@@ -59,5 +59,6 @@
 "smoke/test_usage_window_ceiling.py": 0.9,
 "smoke/test_worker_caches.py": 4.2,
 "smoke/test_worker_claims.py": 243.7,
+"smoke/test_worker_empty_workspace.py": 37.4,
 "smoke/test_worker_role.py": 29.6
 }

@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 import yaml
 
 from agent_tools.cli_board import _launch_rows_then_export, _merge_initiative_tickets, _merging_into
+from agent_tools.cli_board import initiative_tickets as _initiative_tickets
 from agent_tools.cli_common import _now_iso, _profile_path, _read_text_or_none, _stored_work_items, workspace_git_on
 from agent_tools.cli_lake import _lake_provider
 from agent_tools.cli_land import (
@@ -194,22 +195,37 @@ def _route_launch(a: argparse.Namespace) -> int:
     stub_written = None  # the initiative.md a decompose launch created, named in the report if the launch then dies
     via_rows = False  # a decompose that runs to completion here and writes its plan as store rows
     rows_when_detached = False  # the same decompose asked for with --detach: it is run in the background, rows and all
+    view_work, view_repo = None, ""  # a worker's launch: the `work/` of its view of the store (`worker_view`), and its repo
     if a.graph == "epic":
         initiative_id = launch_dir.name
-        launch_land_at = _phase_land_at({}, profile, runs_dir.parent / "work", initiative_id)  # initiative.md, else cartridge, else ticket
         mode = work_state.work_state_mode(_lake_provider(a)[0])
-        if mode == "store":
-            # The chair is the machine the chair lease names; a lane host reads rows but never exports, since only the chair commits.
-            lease = chair_read_lease.read_lease(runs_dir, datetime.datetime.now(datetime.UTC))
-            is_chair = route.is_chair_machine(lease["host"], socket.gethostname())
-            rows_code, rows_lines = _launch_rows_then_export(runs_dir, initiative_id, a.repo, is_chair, land_at=launch_land_at)
-            for line in rows_lines:
-                print(line)
-            if rows_code:
-                return rows_code
-        # The merge result, not a reread: a refused merge never wrote its files.
-        with _merging_into(runs_dir):
-            merged = _merge_initiative_tickets(launch_dir)
+        if lane_worker is not None:
+            # Workers keep no state: the lane reads the initiative as the store holds it, on every machine, and never
+            # this machine's `work/`, which only the chair's export writes. Nothing is filled, exported or merged here.
+            from agent_tools import worker_view
+
+            launch_dir, view_repo, refusal = worker_view.read_stub(
+                runs_dir, initiative_id, getattr(a, "run_id", None) or route.phase_run_prefix(initiative_id, phase))
+            if launch_dir is None:
+                print(refusal)
+                return 2
+            view_work = launch_dir.parent
+        launch_land_at = _phase_land_at({}, profile, view_work or runs_dir.parent / "work", initiative_id)  # initiative.md, else cartridge, else ticket
+        if view_work is not None:
+            merged = _initiative_tickets(launch_dir)
+        else:
+            if mode == "store":
+                # The chair is the machine the chair lease names; a lane host reads rows but never exports, since only the chair commits.
+                lease = chair_read_lease.read_lease(runs_dir, datetime.datetime.now(datetime.UTC))
+                is_chair = route.is_chair_machine(lease["host"], socket.gethostname())
+                rows_code, rows_lines = _launch_rows_then_export(runs_dir, initiative_id, a.repo, is_chair, land_at=launch_land_at)
+                for line in rows_lines:
+                    print(line)
+                if rows_code:
+                    return rows_code
+            # The merge result, not a reread: a refused merge never wrote its files.
+            with _merging_into(runs_dir):
+                merged = _merge_initiative_tickets(launch_dir)
         known_phases = sorted({str(item["phase"]) for item in merged})
         # A worker's claim of an initiative review names the reserved phase of the initiative itself (D2).
         from harness import initiative_review
@@ -276,7 +292,7 @@ def _route_launch(a: argparse.Namespace) -> int:
             print(f"routing: no initiative.md at {initiative_md}")
             return 2
         fields, _ = route.parse_frontmatter(text)
-        repo = a.repo or fields.get("repo")
+        repo = a.repo or view_repo or fields.get("repo")
         if not repo:
             print(f"routing: no --repo given and no repo: in {initiative_md}")
             return 2
@@ -322,7 +338,8 @@ def _route_launch(a: argparse.Namespace) -> int:
             # setting itself through this same branch; only an explicit `--base` is lost there, so `_dropped_ceilings` refuses it.
             base_flag = getattr(a, "base", None)
             if not base_flag:
-                base_flag, refusal = _initiative_target_branch(profile, Path(local_repo), runs_dir.parent, initiative_dir.name)
+                base_flag, refusal = _initiative_target_branch(
+                    profile, Path(local_repo), runs_dir.parent, initiative_dir.name, work_dir=view_work)
                 if refusal:
                     print(f"routing: {refusal}")
                     return 2
