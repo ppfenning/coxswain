@@ -516,11 +516,16 @@ def _edge_added_migrations(checkout: Path, head: str, target: str) -> _AddedMigr
 
 
 def _edge_units() -> list[str]:
-    """Edge. The chair and lander user units this machine has a file for, in that order."""
+    """Edge. The chair and lander user units this machine has a file for, in that order, then the five queue workers'
+    instances while their template is installed (C6). The upgrade restarts the running ones, and the doctor's `units
+    start` row judges every one that was active before it: after the cutover, the five workers and the lander (the
+    tick's unit is disabled then, so it was not running and is not judged)."""
     from agent_tools import lander_cli
+    from agent_tools.cli_chair_units import queue_unit_names
 
     home = Path.home()
-    return [path.name for path in (chair_service.unit_path(home), lander_cli.unit_path(home)) if path.exists()]
+    files = [path.name for path in (chair_service.unit_path(home), lander_cli.unit_path(home)) if path.exists()]
+    return [*files, *queue_unit_names(home)]
 
 
 def _edge_restart(units: list[str]) -> str | None:

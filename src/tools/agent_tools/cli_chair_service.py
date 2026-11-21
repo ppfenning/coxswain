@@ -398,9 +398,19 @@ def _chair_service_host_status(a: argparse.Namespace, runs_dir: Path) -> int:
 
 
 def _chair_service(a: argparse.Namespace) -> int:
-    """Edge for the unit text in `chair_service`. Never runs systemctl; `--install` wins when both flags are given."""
+    """Edge for the unit text in `chair_service`. Never runs systemctl but with `--queues` (`cli_chair_units`), the
+    cutover's swap; `--install` wins over `--status` when both are given."""
     path = chair_service.unit_path(Path.home())
     host = getattr(a, "host", None)
+    queues, uninstall = getattr(a, "queues", False), getattr(a, "uninstall", False)
+    if queues or uninstall:
+        if not queues or host or not (a.install or uninstall):
+            print("chair service: --queues goes with --install or --uninstall, on this machine (no --host); "
+                  "--uninstall is only the queue units' rollback")
+            return 2
+        from agent_tools import cli_chair_units
+
+        return cli_chair_units.chair_service_queues(a)
     if a.install and host:
         profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
         if refuse_rc is not None:

@@ -95,6 +95,7 @@ _PARTS = (
     "agent_tools.cli_host",
     "agent_tools.cli_chair",
     "agent_tools.cli_chair_service",
+    "agent_tools.cli_chair_units",
     "agent_tools.cli_install",
     "agent_tools.cli_setup_store",
     "agent_tools.cli_doctor",
@@ -1163,9 +1164,43 @@ CHAIR_COMMANDS = [
         ),
     ),
     commands.Command(
-        "service", "chair", "write or show the systemd user unit that keeps `cox chair run` alive",
+        "status", "chair", "who runs the chair's work: the chair lease, each queue kind's worker lease, and their units",
+        (
+            commands.Arg(("--profile",), {"help": "the routing profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
+        ),
+        "agent_tools.cli:_chair_status", False, (),
+        defaults={"profile": None},
+        description=(
+            "Prints chair.queues, the chair lease and each kind's lease (chair:<kind>) with its holder, epoch, the age of\n"
+            "its last beat and its expiry, all on the store's clock, then the state of the tick's and the workers' units.\n"
+            "Exits 0 when every listed kind has a live worker, 1 when one does not, 2 when the store cannot be read."
+        ),
+    ),
+    commands.Command(
+        "parity", "chair", "plan the tick and every queue worker dry against one store and compare them kind by kind",
+        (
+            commands.Arg(("--store-url",), {"required": True, "help": "the store to plan against: a throwaway restored from a dump, never the live one"}),
+            commands.Arg(("--profile",), {"help": "the routing profile to copy (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
+            commands.Arg(("--timeout",), {"type": float, "default": 300.0, "help": "seconds each dry run may take (default: 300)"}),
+            commands.Arg(("--workspace",), {"help": "the workspace the dry runs read (default: an empty scratch one, so nothing lands in the live workspace's runs directory)"}),
+        ),
+        "agent_tools.cli:_chair_parity", False, (),
+        defaults={"profile": None},
+        description=(
+            "Section 5.3 step 3 of the cutover. Runs `cox chair run --once --dry-run --as-holder` with chair.queues: []\n"
+            "and with every kind listed, and `cox chair worker --kind K --once --dry-run` for each kind, all against\n"
+            "--store-url through a copy of the profile. None takes a lease or performs anything. Exits 0 when the\n"
+            "workers together plan what the tick alone planned, 1 on a mismatch, 2 when a run could not be read.\n"
+            "It refuses the store the profile itself names."
+        ),
+    ),
+    commands.Command(
+        "service", "chair", "write or show the systemd user unit that keeps `cox chair run` alive, or swap in the queue workers' units",
         (
             commands.Arg(("--install",), {"action": "store_true", "help": "write the unit file and print the systemctl lines to run; runs nothing itself"}),
+            commands.Arg(("--queues",), {"action": "store_true", "help": "with --install, install and start one unit per queue kind and disable the tick's; with --uninstall, the reverse (the rollback)"}),
+            commands.Arg(("--uninstall",), {"action": "store_true", "help": "with --queues, stop and remove the queue units and start the tick's unit again"}),
+            commands.Arg(("--dry-run",), {"action": "store_true", "help": "with --queues, print the files and the systemctl or launchctl steps; write and run nothing"}),
             commands.Arg(("--status",), {"action": "store_true", "help": "print the unit file, or say there is none"}),
             commands.Arg(("--label",), {"help": "the chair's holder label (default: $COX_SESSION_LABEL, else unlabeled)"}),
             commands.Arg(("--interval",), {"type": int, "default": 60, "help": "seconds between ticks (default: 60)"}),
@@ -1177,8 +1212,14 @@ CHAIR_COMMANDS = [
         "agent_tools.cli:_chair_service", False, (),
         description=(
             "--install writes ~/.config/systemd/user/coxswain-chair.service and prints the systemctl lines.\n"
-            "It does not run systemctl."
+            "It does not run systemctl.\n"
+            "--install --queues is the cutover's one command: it writes the queue workers' units (the systemd template\n"
+            "coxswain-chair@.service, or one launchd agent per kind), starts all five, and disables the tick's unit.\n"
+            "It refuses unless chair.queues lists every kind. --uninstall --queues is the rollback: it stops and removes\n"
+            "them and starts the tick's unit again, and refuses while chair.queues lists any kind. Both run systemctl or\n"
+            "launchctl, and both can run again safely."
         ),
+        exclusive=("--install", "--uninstall"),
     ),
     commands.Command(
         "ask", "chair", "put a question with its options to the operator on the courier bus",
