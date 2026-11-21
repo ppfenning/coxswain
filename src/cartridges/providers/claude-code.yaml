@@ -155,6 +155,9 @@ role_budget_usd:
                            # seat reads every file the diff touched, in full. In the
                            # operator's words: "those may need to have a different buffer level, as
                            # docstrings and full line reads may require higher context."
+  # Unmeasured (new with L5): like style_pass it reads whole files, every one the two colliding
+  # tasks share, and it writes each back in full. A failed merge costs a rebuild, a build's $1.50.
+  merge_tasks: 1.20
   # A sweep node replaces twenty narrow ones, so its ceiling is measured
   # against the sweep, not against a narrow task.
   sweep_plan:  1.50
@@ -213,6 +216,7 @@ defaults:
   validate_chunk:  reason
   validate_phase:  judge
   review_phase:    reason
+  merge_tasks:     reason
 
 # System one is off by default. The local kNN backend was removed on 2026-09-25:
 # measured offline over this workspace's decisions, it could not reach the graduation
@@ -249,6 +253,9 @@ tools:
   # test shape, and it never needs to run anything. The harness applies its
   # patch the same way it applies a build's.
   style_pass:       [Read, Write, Edit, Grep, Glob]
+  # Reads the tree around the conflict; returns each merged file's whole text, which the harness
+  # writes into a scratch worktree of its own. It edits nothing itself.
+  merge_tasks:      [Read, Grep, Glob]
 
   # NOT handoff, validate_chunk or validate_phase. Those judge the artifact
   # they are handed — a patch, a task record — against what the next step

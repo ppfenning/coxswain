@@ -43,3 +43,4 @@ defaults:
   validate_chunk:  reason
   validate_phase:  judge
   review_phase:    judge
+  merge_tasks:     reason
