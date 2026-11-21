@@ -21,6 +21,8 @@ class DecomposeRun:
     refusal_line: str | None  # first "approved but not executed" log line, None when the run printed none
     launched_at: datetime | None = None  # timezone-aware; None when the store row gave no readable time
     collisions: tuple[str, ...] = ()  # the collisions its tasks hit, each `<phase>/<task>~<other>: <files>`
+    exited: bool = True  # False while its `runs` row has no end (`chair_read_exits.row_exited`)
+    ended_at: datetime | None = None  # timezone-aware; None when it has not ended or the row gave no readable time
 
 
 def missed(run: DecomposeRun) -> bool:

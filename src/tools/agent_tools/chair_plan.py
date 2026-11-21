@@ -21,6 +21,7 @@ from agent_tools import (
     lane_prereqs,
 )
 from agent_tools.chair_carry import plan_carry
+from agent_tools.chair_decompose_flight import QUEUED_AFTER_ROWS_CAUSE
 from agent_tools.chair_decompose_miss import DecomposeMiss, escalation_reason, is_skipped, needs_escalation
 from agent_tools.chair_decompose_streak import stalled_reason
 from agent_tools.chair_idle_ready import plan_idle_ready
@@ -682,6 +683,27 @@ def _decompose_gate(facts: Facts) -> tuple[frozenset[str], list[Action]]:
     return frozenset(streaks), actions
 
 
+
+
+def _queued_after_rows_needs_chair(facts: Facts) -> list[Action]:
+    """One needs_chair per intake whose decompose run wrote task items while the intake row stayed queued, told once per
+    `<intake>|<run>`. The in-flight gate holds such an intake for good, so a person must say whether its rows stand;
+    nothing here marks the intake."""
+    reported = set(facts.get("decompose_queued_after_rows_reported", []))
+    return [
+        {
+            "kind": ActionKind.NEEDS_CHAIR,
+            "intake": path,
+            "run": run,
+            "cause": QUEUED_AFTER_ROWS_CAUSE,
+            "reason": (f"decompose run {run} of {path} wrote task items, but the intake row is still queued, so no "
+                       "decompose of it launches again; check its rows, then requeue the intake or mark it decomposed"),
+        }
+        for path, run in sorted(facts.get("decompose_queued_after_rows", {}).items())
+        if f"{path}|{run}" not in reported
+    ]
+
+
 # The tick length the miss backoff counts in: chair_run.DEFAULT_INTERVAL, the service's default. A longer real interval
 # only makes the backoff shorter in ticks; it never makes a skipped intake launch more often than once per window.
 MISS_TICK_SECONDS = 60
@@ -1218,16 +1240,20 @@ class DecomposePlan:
     stalled_needs_chair: list[Action]
     # A skipped intake stays in facts["intake"] (so no pull is planned), but plan_fill never launches it.
     stalled_intake: frozenset[str]
+    # An intake whose decompose is still in flight, on any machine: it stays queued, but no second one launches.
+    in_flight_intake: frozenset[str] = frozenset()
 
 
 def plan_decompose_kind(basis: TickBasis) -> DecomposePlan:
-    """Empty decomposes and stalled or missed intakes are reported to the chair; the stalled ones launch nothing."""
+    """Empty decomposes and stalled or missed intakes are reported to the chair; the stalled ones launch nothing, nor
+    does an intake whose decompose is still in flight (`facts["decompose_in_flight"]`), whichever worker reads it."""
     streak_stalled, streak_needs_chair = _decompose_gate(basis.facts)
     missed_intake, miss_needs_chair = _decompose_miss_gate(basis.facts, basis.now)
     return DecomposePlan(
         empty_needs_chair=_empty_decompose_needs_chair_actions(basis.facts),
-        stalled_needs_chair=[*streak_needs_chair, *miss_needs_chair],
+        stalled_needs_chair=[*streak_needs_chair, *miss_needs_chair, *_queued_after_rows_needs_chair(basis.facts)],
         stalled_intake=streak_stalled | missed_intake,
+        in_flight_intake=frozenset(basis.facts.get("decompose_in_flight", {})),
     )
 
 
@@ -1321,7 +1347,7 @@ class LaunchGates:
 def launch_gates(land: LandPlan, decompose: DecomposePlan, quarantine: QuarantinePlan) -> LaunchGates:
     return LaunchGates(
         lands=tuple(land.lands),
-        stalled_intake=decompose.stalled_intake,
+        stalled_intake=decompose.stalled_intake | decompose.in_flight_intake,
         recovered=tuple(quarantine.recovered),
         recover_actions=tuple(quarantine.recover_actions),
         not_exited=quarantine.not_exited,
