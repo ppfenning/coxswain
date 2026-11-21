@@ -1,5 +1,6 @@
 from agent_tools import chair_cap, route
 from agent_tools.settings_plan import _CHAIR_READS, Plan, PlanError, plan_set
+from core.cartridge import load
 
 OLD = "policy:\n  dispatch:\n    max_in_flight: 2\n"
 NEW = "policy:\n  dispatch:\n    max_in_flight: 4\n"
@@ -243,41 +244,41 @@ def test_cartridge_unchanged_value_gives_no_diff():
 CAST = (
     "name: example-team\n"
     "cast:\n"
-    "  nova:    {skills: [a, b],  # bound\n"
+    "  recon:   {skills: [a, b],  # bound\n"
     '            context: "recon \u2014 notes"}\n'
-    "  lewis:   {skills: [r]}  # reviewer\n"
+    "  reviewer: {skills: [r]}  # reviewer\n"
     "# end\n"
 )
 
 
 def test_seat_value_is_replaced_in_place_and_every_other_byte_stays():
-    result = plan_set("cartridge", "crew.nova.skills", "[x]", CAST, _valid)
+    result = plan_set("cartridge", "crew.recon.skills", "[x]", CAST, _valid)
     assert result.new_text == CAST.replace("[a, b]", "[x]")
 
 
 def test_seat_value_with_non_ascii_text_is_written_as_typed():
-    result = plan_set("cartridge", "crew.nova.context", "caf\u00e9 \u2014 ok", CAST, _valid)
+    result = plan_set("cartridge", "crew.recon.context", "caf\u00e9 \u2014 ok", CAST, _valid)
     assert result.new_text == CAST.replace('"recon \u2014 notes"', "caf\u00e9 \u2014 ok")
 
 
 def test_seat_value_with_a_comma_is_quoted_for_the_flow_mapping():
-    result = plan_set("cartridge", "crew.nova.context", "a, b", CAST, _valid)
+    result = plan_set("cartridge", "crew.recon.context", "a, b", CAST, _valid)
     assert result.new_text == CAST.replace('"recon \u2014 notes"', "'a, b'")
 
 
 def test_new_seat_key_is_added_before_the_closing_brace():
-    result = plan_set("cartridge", "crew.lewis.enabled", "false", CAST, _valid)
+    result = plan_set("cartridge", "crew.reviewer.enabled", "false", CAST, _valid)
     assert result.new_text == CAST.replace("{skills: [r]}", "{skills: [r], enabled: false}")
 
 
 def test_new_nested_seat_key_adds_the_missing_levels_inside_the_braces():
-    result = plan_set("cartridge", "crew.lewis.extra.flag", "true", CAST, _valid)
+    result = plan_set("cartridge", "crew.reviewer.extra.flag", "true", CAST, _valid)
     assert result.new_text == CAST.replace("{skills: [r]}", "{skills: [r], extra: {flag: true}}")
 
 
 def test_new_key_in_an_empty_flow_mapping():
-    result = plan_set("cartridge", "crew.nova.enabled", "false", "cast:\n  nova: {}\n", _valid)
-    assert result.new_text == "cast:\n  nova: {enabled: false}\n"
+    result = plan_set("cartridge", "crew.recon.enabled", "false", "cast:\n  recon: {}\n", _valid)
+    assert result.new_text == "cast:\n  recon: {enabled: false}\n"
 
 
 def test_comment_ending_the_changed_line_is_kept():
@@ -286,14 +287,14 @@ def test_comment_ending_the_changed_line_is_kept():
 
 
 def test_block_list_value_is_replaced_by_one_line_when_it_holds_no_comment():
-    text = "cast:\n  nova:\n    skills:\n      - a\n      - b\n  sky: {skills: []}\n"
-    result = plan_set("cartridge", "crew.nova.skills", "[x]", text, _valid)
-    assert result.new_text == "cast:\n  nova:\n    skills: [x]\n  sky: {skills: []}\n"
+    text = "cast:\n  recon:\n    skills:\n      - a\n      - b\n  triage: {skills: []}\n"
+    result = plan_set("cartridge", "crew.recon.skills", "[x]", text, _valid)
+    assert result.new_text == "cast:\n  recon:\n    skills: [x]\n  triage: {skills: []}\n"
 
 
 def test_block_list_value_holding_a_comment_is_refused():
-    text = "cast:\n  nova:\n    skills:\n      - a  # keep\n      - b\n"
-    result = plan_set("cartridge", "crew.nova.skills", "[x]", text, _valid)
+    text = "cast:\n  recon:\n    skills:\n      - a  # keep\n      - b\n"
+    result = plan_set("cartridge", "crew.recon.skills", "[x]", text, _valid)
     assert result == PlanError("skills spans lines and holds a comment, so it cannot be rewritten without losing it")
 
 
@@ -315,10 +316,27 @@ def test_two_missing_segments_are_added_as_nested_lines_at_the_end():
 
 
 def test_string_that_yaml_reads_as_another_type_is_quoted():
-    result = plan_set("cartridge", "crew.nova.context", "'yes'", "cast:\n  nova: {skills: []}\n", _valid)
-    assert result.new_text == "cast:\n  nova: {skills: [], context: 'yes'}\n"
+    result = plan_set("cartridge", "crew.recon.context", "'yes'", "cast:\n  recon: {skills: []}\n", _valid)
+    assert result.new_text == "cast:\n  recon: {skills: [], context: 'yes'}\n"
 
 
 def test_quoted_top_level_key_is_found_and_not_repeated():
     result = plan_set("cartridge", "epic_threshold", "4", '"epic_threshold": 3  # keep\n', _valid)
     assert result.new_text == '"epic_threshold": 4  # keep\n'
+
+
+def test_a_seat_set_by_its_function_name_updates_the_old_name_the_file_binds(tmp_path):
+    text = (
+        "team: acme\n"
+        "version: 1\n"
+        "roles: {required: [], optional: []}\n"
+        "crew:\n"
+        "  lewis: {skills: []}\n"
+    )
+    result = plan_set("cartridge", "crew.reviewer.skills", "[acme-skills:review]", text, _valid)
+    assert isinstance(result, Plan)
+    assert result.new_text == text.replace("lewis: {skills: []}", "lewis: {skills: ['acme-skills:review']}")
+    (tmp_path / "acme").mkdir()
+    (tmp_path / "acme" / "cartridge.yaml").write_text(result.new_text, encoding="utf-8")
+    resolved = load("acme", tmp_path, skill_index={"acme-skills:review": ["/fake/review/SKILL.md"]})
+    assert resolved["crew"] == {"reviewer": {"skills": ["acme-skills:review"]}}

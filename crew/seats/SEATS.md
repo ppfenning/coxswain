@@ -8,8 +8,8 @@ Each seat is three layers, and only the first lives here:
 
 | Layer | What it is | Where it lives |
 |---|---|---|
-| **Seat** | surface, write authority, tiering, brief discipline, voice | this repository, `seats/*.md` |
-| **Role binding** | which skills this seat routes to *for a given team* | `src/cartridges`, a team cartridge's `cast:` block |
+| **Seat** | surface, write authority, tiering, brief discipline | this repository, `seats/*.md`; the voices in the table below |
+| **Role binding** | which skills this seat routes to *for a given team* | `src/cartridges`, a team cartridge's `crew:` block |
 | **Rendering** | the file a harness actually loads | generated into `~/.claude/agents/` by `install.sh` |
 
 ## Rules every seat obeys
@@ -31,9 +31,64 @@ Each seat is three layers, and only the first lives here:
 
 ## The roster
 
-| Seat | Voice | Surface | Write authority |
-|---|---|---|---|
-| **Model steward** | none declared | model choice — owns which model each role runs on, read off the run stats; not daniel, who changes skills and workflows | proposes, never applies; one weekly pull request to the provider profile |
+Seats are named by function. The file stem, the frontmatter `name:` and the
+key a cartridge's `crew:` block binds are all the function name.
+
+| Seat | Surface | Write authority |
+|---|---|---|
+| **recon** | codebase sweeps, log analysis, research, readiness audits | none |
+| **triage** | alerts, failures, root cause, blast radius | none |
+| **reviewer** | reads the diff, never the builder's account of it | none, and no merge |
+| **builder** | worktree, branch, tests, one pull request | code on its own branch |
+| **ops** | CI, PR health, deploys, local tooling | its own PR branches |
+| **planner** | the board: epics, phases, item bodies, dates, reconciliation | proposes; the chair writes |
+| **writer** | docs, RFCs, outward-facing replies; routes plans and recaps to `visual-plan` and `visual-recap` | drafts only |
+| **retro** | reads the run records and proposes what should change: skills, workflows, spend, model choice, hygiene | none; every change is a PR |
+
+## The voices
+
+Voice is decoration (rule 4), and this table is the only place it lives. A
+voice session reads the seat's voice and spoken name from here; no seat
+prompt, cartridge or code path depends on either. Every seat that has a voice
+has a row, and `check_seats.py` fails a seat that has none.
+
+| Seat | Voice | Spoken name |
+|---|---|---|
+| recon | `af_nova` | Nova |
+| triage | `af_sky` | Sky |
+| reviewer | `bm_lewis` | Lewis |
+| builder | `af_sarah` | Sarah |
+| ops | `am_michael` | Michael |
+| planner | `bf_emma` | Emma |
+| writer | `am_echo` | Echo |
+| retro | `bm_daniel` | Daniel |
+
+The voices ship with [Kokoro](https://github.com/remsky/Kokoro-FastAPI); none is
+required.
+
+## Old names (deprecated)
+
+The seats used to be named after people. For one release a cartridge's
+`crew:` (or `cast:`) block may still bind an old name: the cartridge loader
+resolves it to the seat below and names the layer in the resolved
+cartridge's `deprecations` list. A retired seat's binding is ignored, with a
+deprecation naming where its work went. No old name is rendered into
+`~/.claude/agents`; `install.sh` removes the links it left there. The
+aliases go in the next release.
+
+| Old name | Seat |
+|---|---|
+| sarah | builder |
+| lewis | reviewer |
+| nova | recon |
+| michael | ops |
+| emma | planner |
+| echo | writer |
+| daniel | retro |
+| sky | triage |
+| model-steward | retired: model choice is retro's |
+| alice | retired: writer routes plans and recaps to `visual-plan` and `visual-recap` |
+| liam | retired: courier events are typed |
 
 ## The brief every seat writes
 

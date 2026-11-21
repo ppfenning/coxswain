@@ -16,9 +16,13 @@ A worker claims a phase (`store_phases.claim_next`) and starts this lane under t
    the cheap checks in the task's worktree (the cartridge's and `.agent-checks`' task checks, narrowed to what the
    change touches: unit tests, lint, the privacy check), with the task's own verification commands;
 6. the roll-up, in order: the checks passed, their artifacts uploaded, the `checks` step row written; the phase's local
-   lock taken; the change applied cleanly onto the phase tip (a conflict fails the task: resolving one is L5's) and
-   committed with the trailers; the claim checked again; pushed; the claim checked once more; the `rollup` step row
-   written with the commit. A push that does not land is reconciled, not taken for a lost claim
+   lock taken; a task the tip's trailers already carry (a stale lane landed it) adopted instead of applied twice; the
+   change applied cleanly onto the phase tip and committed with the trailers; the claim checked again; pushed; the
+   claim checked once more; the `rollup` step row written with the commit. A change that does not apply cleanly goes
+   to the local merge agent (`lane_merge`, L5), still under the lock: merged, keeping every line each side added, and
+   checked and passing for each side (its cheap checks, at least one, and its `verify` commands), it is the task's one
+   commit, with `Cox-Merged-With`; else the task is built again on the new tip. Either way a `collision` row names the
+   tasks and the files. A push that does not land is reconciled, not taken for a lost claim
    (`lane_rollup.next_move`): the claim is checked and origin fetched; a commit of this task another lane landed is
    adopted (and any roll-up row it left out written), a branch that moved has the change re-applied onto it, a push
    that failed to arrive is tried again; past three tries only that task fails.
@@ -66,13 +70,22 @@ from pathlib import Path
 from typing import Any, cast
 
 from graphs._contract import ContractViolation
-from harness import lane_plan, lane_progress, lane_rollup, lane_smoke, phase_pick, repo_cache, store_phases
+from harness import lane_merge, lane_plan, lane_progress, lane_rollup, lane_smoke, phase_pick, repo_cache, store_phases
 from harness.artifacts import mark_missing, step_artifacts
 from harness.check_gate import repo_gate_lock
 from harness.checks import run_checks
 from harness.epic_branches import LIFECYCLE, checks_env
-from harness.epic_build import LANE_BASE_VAR, build_task, drop_lane, lifecycle_invocation, settle_pool, verify_of
+from harness.epic_build import (
+    LANE_BASE_VAR,
+    build_task,
+    drop_lane,
+    lifecycle_invocation,
+    settle_pool,
+    task_checks,
+    verify_of,
+)
 from harness.epic_context import Ctx, git_in
+from harness.epic_types import as_list
 from harness.handoff import plan_context
 from harness.lane_workers import LANE_CAPACITY_VAR
 from harness.store_dialect import Connection, JsonObject
@@ -317,9 +330,10 @@ class Lane:
         return written
 
     def row(self, task: str, kind: str, ok: bool, verdict: str, result: JsonObject, started: str,
-            sha: str = "") -> StepRow:
+            sha: str = "", ident: str = "") -> StepRow:
+        """A task step row of this run; `ident` keys a step the task runs a second time (a rebuild) apart."""
         c = self.claim
-        return step_row(run_id=self.ctx.run_id, step=step_key("task", task, kind, 0), initiative=c.initiative,
+        return step_row(run_id=self.ctx.run_id, step=step_key("task", ident or task, kind, 0), initiative=c.initiative,
                         phase=c.phase, task_id=task, kind=kind, round_=0, ok=ok, verdict=verdict, result=result,
                         finished_at="", started_at=started, subject_sha=sha, worker=c.worker, claim_epoch=c.epoch)
 
@@ -333,34 +347,36 @@ class Lane:
                 self.artifacts_conn = None
 
 
-def _rows_of(lane: Lane, result: Mapping[str, object], task: str, started: str) -> tuple[StepRow, ...]:
+def _rows_of(lane: Lane, result: Mapping[str, object], task: str, started: str, ident: str = "") -> tuple[StepRow, ...]:
     c = lane.claim
     rows = steps_of_result(result, run_id=lane.ctx.run_id, initiative=c.initiative, phase=c.phase, task=task, at="",
                            claim_epoch=c.epoch, worker=c.worker)
-    return tuple(cast(StepRow, {**r, "started_at": started}) for r in rows)
+    return tuple(cast(StepRow, {**r, **({"step": step_key("task", ident, r["kind"], r["round"])} if ident else {}),
+                                "started_at": started}) for r in rows)
 
 
-def _build(lane: Lane, task: str, base: str) -> tuple[Mapping[str, object] | None, str, str, TaskCtx]:
-    """Edge. The task's build-only lifecycle run, with its plan and build rows written: (result, why not, start)."""
+def _build(lane: Lane, task: str, base: str, ident: str = "") -> tuple[Mapping[str, object] | None, str, str, TaskCtx]:
+    """Edge. The task's build-only lifecycle run, with its plan and build rows written: (result, why not, start). A
+    rebuild after a collision passes `ident` (`<task>-rebuild`), which keys its graph run and its rows."""
     started = lane.now()
     tctx = TaskCtx.of(lane.shared or lane.ctx, base)
     shared, why = _share_base(lane, task, base)
     if not shared:
-        lane.put([lane.row(task, "build", False, "failed", {"error": why[:500]}, started)])
+        lane.put([lane.row(task, "build", False, "failed", {"error": why[:500]}, started, ident=ident)])
         return None, why, started, tctx
     item = lane.items[task]
     invocation = lifecycle_invocation(tctx, item, body=plan_context(item, lane.handoffs), fix_attempts=0)
-    args = {**invocation.args, "run_id": f"{lane.ctx.run_id}:{task}", "build_only": True}
+    args = {**invocation.args, "run_id": f"{lane.ctx.run_id}:{ident or task}", "build_only": True}
     try:
         result = json.loads(json.dumps(lane.ctx.specs[LIFECYCLE].run(args, lane.ctx.runner), default=str))
     except LimitStop as exc:
         lane.halted.set()
-        lane.put([lane.row(task, "build", False, "stopped", {"error": str(exc)[:500]}, started)])
+        lane.put([lane.row(task, "build", False, "stopped", {"error": str(exc)[:500]}, started, ident=ident)])
         return None, f"the account's limit stopped the build: {exc}", started, tctx
     except (ContractViolation, RunnerError) as exc:
-        lane.put([lane.row(task, "build", False, "failed", {"error": str(exc)[:500]}, started)])
+        lane.put([lane.row(task, "build", False, "failed", {"error": str(exc)[:500]}, started, ident=ident)])
         return None, f"the build failed: {exc}", started, tctx
-    rows = _rows_of(lane, result, task, started)
+    rows = _rows_of(lane, result, task, started, ident)
     lane.put(rows, result)
     stopped = result.get("build_stopped")
     return (None if stopped else result), str(stopped or ""), started, tctx
@@ -406,14 +422,80 @@ def _origin_progress(lane: Lane, tip: str) -> dict[str, str]:
     return done
 
 
-def _roll_up(lane: Lane, task: str, base: str, tctx: TaskCtx, started: str) -> tuple[bool, str]:
+def _tip_tasks(lane: Lane, tip: str) -> dict[str, str]:
+    """Edge. The phase's tasks the commits from the phase's base to `tip` carry in their trailers, each with its
+    commit (`lane_progress.read`); empty when the log cannot be read."""
+    ok, text = lane_rollup.log_since(lane.ctx.repo, lane.base_sha, tip)
+    return dict(lane_progress.read(text, lane.claim.initiative, lane.claim.phase).done) if ok else {}
+
+
+def _collide(lane: Lane, task: str, base: str, tip: str, diff: str) -> lane_merge.Merge | None:
+    """Edge. The task's change does not apply onto the phase tip: merge it with what landed there (`lane_merge.resolve`)
+    in a scratch worktree of the checkout the tasks build in, holding both sides, with the `merge_tasks` seat, then
+    every colliding task's and this task's cheap checks and `verify` commands on the result. The claim is checked again after the merge, which may take minutes, and
+    the `collision` row written: None when the claim was lost meanwhile, else what the merge came to. Called under the
+    phase's local lock."""
+    c, home = lane.claim, lane.shared or lane.ctx
+    started = lane.now()
+    scratch = lane.ctx.worktree_root / lane.ctx.run_id / c.phase / f"@merge-{task}"
+    titles = {t: str(item.get("title") or t) for t, item in lane.items.items()}
+
+    def ask(prompt: str) -> Mapping[str, object]:
+        if lane_merge.ROLE not in lane.ctx.bound:
+            return {"resolved": False, "summary": f"no {lane_merge.ROLE} seat is bound"}
+        try:
+            return lane.ctx.runner.run(role=lane_merge.ROLE, tier="standard", schema=lane_merge.SCHEMA, task=task,
+                                       prompt=prompt, context=as_list(lane.ctx.cartridge.get("context")))
+        except LimitStop as exc:
+            lane.halted.set()
+            return {"resolved": False, "summary": f"the account's limit stopped the merge: {exc}"}
+        except (ContractViolation, RunnerError) as exc:
+            return {"resolved": False, "summary": f"the merge agent failed: {exc}"}
+
+    def check(worktree: Path, since: str, side: str) -> tuple[lane_merge.Results, lane_merge.Results]:
+        return task_checks(TaskCtx.of(home, since), worktree, phase=c.phase, label=f"@merge-{side}",
+                           verify=verify_of(lane.items, side))
+
+    shared, why = _share_base(lane, f"@merge-{task}", tip)
+    opened, detail = lane_rollup.open_phase_worktree(home.repo, scratch, tip) if shared else (False, why)
+    try:
+        if opened:
+            link_venv(home.repo, scratch)
+            merged = lane_merge.resolve(scratch, base, tip, diff, task=task, title=titles[task], titles=titles,
+                                        ask=ask, check=check)
+        else:
+            merged = lane_merge.Merge("rebuild", "", "", (), why=f"no scratch worktree for the merge: {detail[:300]}")
+    finally:
+        if scratch.exists():
+            remove_worktree(home.repo, scratch)
+    if not lane.fence.check():
+        return None
+    lane.log(f"lane: {task} collided with {merged.other or 'the phase tip'} on {', '.join(merged.files) or 'no file'}"
+             f"; next: {merged.outcome}{' (' + merged.why[:300] + ')' if merged.why else ''}")
+    failing: JsonObject = {t: [str(r.get("name")) for r in results if r.get("passed") is not True] or
+                           ([] if results else ["(no check ran)"]) for t, results in merged.checks.items()}
+    result: JsonObject = {**lane_merge.collision_row(task, merged.other, merged.files), "other_commit": merged.other_sha,
+                          "others": [*merged.others], "tip": tip, "why": merged.why[:500], "failed_checks": failing}
+    if not lane.put([lane.row(task, "collision", merged.outcome == "commit", merged.outcome, result, started, tip)]):
+        return None
+    return merged
+
+
+Rolled = tuple[bool | None, str]  # (rolled up, the commit or why not); None asks for a rebuild on the tip it names
+
+
+def _roll_up(lane: Lane, task: str, base: str, tctx: TaskCtx, started: str, merge: bool = True) -> Rolled:
     """Edge. The roll-up under the phase's local lock: apply, commit, check the claim, push, check it again, then the
-    `rollup` row. A push that does not land goes to `lane_rollup.next_move`; only a lost claim stops the lane."""
+    `rollup` row. A task the tip already carries (a stale lane landed it) is adopted, not applied twice. A change that
+    does not apply goes to the merge agent once (`_collide`, unless `merge` is off): merged, it is committed with
+    `Cox-Merged-With` and pushed like any roll-up; not, the task asks for a rebuild. A push that does not land goes to
+    `lane_rollup.next_move`; only a lost claim stops the lane."""
     c = lane.claim
     ok, diff = lane_rollup.change(tctx.task_worktree(c.phase, task), base)
     if not ok:
         return False, f"the task's change could not be read: {diff[:300]}"
-    text = lane_rollup.message(c.initiative, c.phase, task, lane.ctx.run_id, str(lane.items[task].get("title") or task))
+    title = str(lane.items[task].get("title") or task)
+    text = lane_rollup.message(c.initiative, c.phase, task, lane.ctx.run_id, title)
     with lane_rollup.phase_lock((lane.shared or lane.ctx).repo, c.initiative, c.phase):
         attempt = 0
         while True:
@@ -421,7 +503,21 @@ def _roll_up(lane: Lane, task: str, base: str, tctx: TaskCtx, started: str) -> t
             if lane.stopping():
                 return False, "the lane is stopping"
             tip = lane_rollup.head(lane.phase_worktree)
+            if task in (on_tip := _tip_tasks(lane, tip)):
+                _origin_progress(lane, tip)  # its `rollup` row, as recovered, when the lane that landed it wrote none
+                lane.log(f"lane: {task} is already on {lane.branch} as {on_tip[task][:12]}; adopted, not applied again")
+                return True, on_tip[task]
             sha, why = lane_rollup.apply_and_commit(lane.phase_worktree, diff, text)
+            if sha is None and merge and lane_rollup.did_not_apply(why):
+                merge = False  # one merge per roll-up: a merged change that will not apply either is a conflict
+                merged = _collide(lane, task, base, tip, diff)
+                if merged is None:
+                    return False, "the claim was lost during the merge"
+                if merged.outcome == "rebuild":
+                    return None, tip
+                diff = merged.change
+                text = lane_rollup.message(c.initiative, c.phase, task, lane.ctx.run_id, title, merged_with=merged.other)
+                sha, why = lane_rollup.apply_and_commit(lane.phase_worktree, diff, text)
             if sha is None:
                 lane.put([lane.row(task, "rollup", False, "conflict", {"reason": why[:500], "tip": tip}, started)])
                 return False, why
@@ -459,21 +555,35 @@ def _roll_up(lane: Lane, task: str, base: str, tctx: TaskCtx, started: str) -> t
 
 
 def _task(lane: Lane, task: str, base: str) -> tuple[bool, str]:
-    """Edge. One task, start to roll-up, on a thread of the lane's pool: (rolled up, the commit or why not)."""
+    """Edge. One task, start to roll-up, on a thread of the lane's pool: (rolled up, the commit or why not). A task
+    whose collision the merge agent could not land is built once more, on the phase tip it collided on, and that
+    roll-up gets no second merge."""
+    rolled, detail = _attempt(lane, task, base)
+    if rolled is None:
+        with lane_rollup.phase_lock((lane.shared or lane.ctx).repo, lane.claim.initiative, lane.claim.phase):
+            tip = lane_rollup.head(lane.phase_worktree) or detail  # the tip now: another task may have landed since
+        lane.log(f"lane: rebuilding {task} on {tip[:12]}")
+        rolled, detail = _attempt(lane, task, tip, rebuild=True)
+    return bool(rolled), detail
+
+
+def _attempt(lane: Lane, task: str, base: str, rebuild: bool = False) -> Rolled:
+    """Edge. Build the task on `base`, check it, roll it up; a rebuild's build and checks rows keyed `<task>-rebuild`."""
     if lane.stopping():
         return False, "the lane is stopping"
-    result, why, started, tctx = _build(lane, task, base)
+    ident = f"{task}-rebuild" if rebuild else ""
+    result, why, started, tctx = _build(lane, task, base, ident)
     try:
         if result is None:
             return False, why
         phase = lane.claim.phase
         record = build_task(tctx, phase=phase, task=task, result=result, verify=verify_of(lane.items, task))
         checked = json.loads(json.dumps(with_checks(result, record.get("checks") or [], lane.ctx.run_id), default=str))
-        if not lane.put(_rows_of(lane, checked, task, started), checked):
+        if not lane.put(_rows_of(lane, checked, task, started, ident), checked):
             return False, "the claim was lost"
         if quarantined := record.get("quarantine"):
             return False, str(quarantined)
-        rolled, detail = _roll_up(lane, task, base, tctx, started)
+        rolled, detail = _roll_up(lane, task, base, tctx, started, merge=not rebuild)
         if rolled and isinstance(result.get("handoff"), Mapping):
             lane.handoffs[task] = cast(Mapping[str, Any], result["handoff"])
         return rolled, detail

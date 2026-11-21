@@ -46,6 +46,8 @@ roles:
     - validate_chunk    # did this task actually satisfy its own description
     - validate_phase    # do these tasks TOGETHER accomplish the phase's goal —
                         # never the phase's owner: that is self-review
+    - merge_tasks       # merge two parallel tasks that edited the same code, on the
+                        # worker, before the later one is rebuilt (phase lanes)
     - retro             # read the run record and say what should change
     - dispatch          # pick which graphs to run next, and why
     - route             # decide if a request is harness work, size it, launch it, report on it
@@ -61,11 +63,13 @@ roles:
 # nothing team-specific.
 #
 #   crew:
-#     nova:   {skills: [...], context: "one line on what this team means by it"}
-#     sarah:  {skills: [...]}
+#     recon:    {skills: [...], context: "one line on what this team means by it"}
+#     builder:  {skills: [...]}
 #
 # `cast` is accepted as a deprecated alias for `crew` this release; a layer
-# that uses it is named in the resolved cartridge's `deprecations` list.
+# that uses it is named in the resolved cartridge's `deprecations` list. So is
+# a seat's old person name (sarah, lewis, nova, ...): it resolves to the
+# function-named seat for this release only (crew/seats/SEATS.md lists them).
 #
 # Base binds nothing: it has no skills of its own to bind.
 crew: {}
