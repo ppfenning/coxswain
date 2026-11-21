@@ -63,19 +63,29 @@ def start_record(conn: Connection, repo: Path | str, *, initiative: str, branch:
     """The initiative's landing record, made on first use: cut the branch from the parent and record where.
 
     A record that exists is returned as it is: the parent no longer floats, the branch is never cut twice, and its
-    `lane_model` (the initiative's, stamped at creation) never changes. (record, why not)."""
+    `lane_model` (the initiative's, stamped at creation) never changes. The new record is inserted only if no row
+    has appeared meanwhile (`ls.insert_record`): a writer that raced this one, and may already have merged a phase
+    into its record, keeps it, and this call returns that record. (record, why not)."""
     found = ls.get_record(conn, initiative)
     if found is not None:
-        tip, _, why = lg.ensure_branch(repo, str(found["branch"]), str(found.get("base_sha") or parent_ref))
-        return (found, "") if tip else (None, why)
+        return _existing(repo, found, parent_ref)
     tip, created, why = lg.ensure_branch(repo, branch, parent_ref)
     if tip is None:
         return None, why
     base = tip if created else (_merge_base(repo, branch, parent_ref) or tip)
     record = lr.new_record(initiative, repo=str(repo), branch=branch, parent=parent, base_sha=base, now=now,
                            land_at=land_at, epic=epic, stack_base=stack_base, adopted=adopted, lane_model=lane_model)
-    ls.put_record(conn, record)
-    return record, ""
+    if ls.insert_record(conn, record):
+        return record, ""
+    raced = ls.get_record(conn, initiative)
+    return (None, f"{initiative}'s landing record was written and then removed meanwhile") if raced is None \
+        else _existing(repo, raced, parent_ref)
+
+
+def _existing(repo: Path | str, found: lr.LandingRecord, parent_ref: str) -> tuple[lr.LandingRecord | None, str]:
+    """A record that exists, as `start_record` returns it: its branch made sure of where it was cut."""
+    tip, _, why = lg.ensure_branch(repo, str(found["branch"]), str(found.get("base_sha") or parent_ref))
+    return (found, "") if tip else (None, why)
 
 
 def _merge_base(repo: Path | str, branch: str, parent_ref: str) -> str | None:

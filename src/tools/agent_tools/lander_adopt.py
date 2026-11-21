@@ -284,6 +284,7 @@ def candidates(ports: lander.Ports, initiatives: Sequence[str]) -> list[str]:
 
 RECORD_KEY = "record:"  # the lander_notices key prefix of a phase-model initiative whose record is left to a person
 WITHDRAWN = "cancelled"  # a phase-queue row the chair took out of the queue (its phase held, closed or over budget)
+RECORD_RETRY_SECONDS = 3600  # a record left alone for a reason the chair was told is tried again this often
 
 
 def record_now(lane_model: object, phase_rows: Sequence[Mapping[str, object]],
@@ -291,12 +292,23 @@ def record_now(lane_model: object, phase_rows: Sequence[Mapping[str, object]],
     """Pure. Whether the lander makes an initiative's landing record on its own now. The old model's epic run makes it
     as the run starts; the new model has no run, so the moment is the chair queuing its first phase: the initiative is
     on the phase model, one of its phase-queue rows is a phase (an initiative review is not) the chair has not
-    withdrawn, and it has no landing-record row, readable or not (`present_skip`). Made then, the record is there
-    before a lane cuts any phase, so each phase is cut from the initiative branch and the record's base is the parent
-    at the start of the work, as the old model's is."""
+    withdrawn, and it has no landing-record row, readable or not (`present_skip`).
+
+    Nothing orders this pass before a worker's claim, so a lane may cut its phase before the record exists. It then
+    cuts from the parent (`phase_lane.base_candidates`), where the record's branch is cut from too, and the merge
+    is the same: the divergence is a parent that moved in between, which the merge of the phase carries."""
     return (lr.lane_model_of(lane_model) == lr.NEW_MODEL and present_skip(found) is None
             and any(str(r.get("kind") or "") != initiative_review.KIND and str(r.get("state") or "") != WITHDRAWN
                     for r in phase_rows))
+
+
+def retry_due(since: str, now: str, seconds: int = RECORD_RETRY_SECONDS) -> bool:
+    """Pure. Whether an initiative whose record was left alone at `since` is planned again at `now`. Until then its
+    branches are not fetched nor its plan made again on every pass; a stamp that does not read is due at once."""
+    try:
+        return ops.later(since, seconds) <= now
+    except ValueError:
+        return True
 
 
 def left_to_a_person(found: Plan) -> str | None:
@@ -317,37 +329,60 @@ def _never_send_back(initiative: str, task: str, why: str) -> str:
     return "the lander sends no task back on its own"  # `left_to_a_person` keeps every such plan from `apply`
 
 
+def _planned(ports: lander.Ports, initiative: str, phase_rows: Sequence[Mapping[str, object]]) -> Plan | None:
+    """The plan of an initiative that wants a record (`record_now`), against origin's phase branches; None when it
+    wants none. Raises what reading the initiative raises."""
+    own = ports.meta(initiative).get("initiative") or {}
+    if not record_now(own.get("lane_model"), phase_rows, None):
+        return None
+    found = plan(ports, initiative)
+    if found.skip:
+        return found
+    for line in refresh(ports, initiative):
+        ports.log(line)
+    return plan(ports, initiative)  # again, now against origin's phase branches
+
+
 def record_phase_initiatives(ports: lander.Ports) -> list[str]:
     """Edge. Make the landing record of each phase-model initiative that wants one (`record_now`) through adopt's own
     path (`refresh`, `plan`, `apply`), so a record is made one way, stamped `lane_model: phase`, and never twice: an
-    initiative with a record is no candidate, and `start_record` returns a record that exists. No phase is merged
+    initiative with a record is no candidate, and `start_record` inserts only where no row is. No phase is merged
     here: the pass's sweep queues every built phase of the new record and its lane merges it, as for any record. The
     new branch is pushed, so a lane on another machine cuts its phase from it.
 
-    A plan that would move approved work, or that adopt skips, is left alone and told once per reason (the chair too,
-    for the former) through `lander_notices`; that memory is forgotten once the record is made."""
+    An initiative that cannot be read, that adopt skips, or whose plan would move approved work stops only itself: it
+    is left alone, the chair is told once per reason through `lander_notices`, and it is planned again only once
+    `retry_due`. The memory is forgotten once the initiative has a record, whoever made it."""
     rows: dict[str, list[store_phases.Row]] = {}
     for row in store_phases.list_rows(ports.conn):
         rows.setdefault(str(row.get("initiative") or ""), []).append(row)
-    told = ls.told(ports.conn, RECORD_KEY)
+    told = ls.told_since(ports.conn, RECORD_KEY)
+    table = ls.list_records(ports.conn)
+    wanting = unrecorded(sorted(i for i in rows if i), table)
     events: list[str] = []
-    for initiative in unrecorded(sorted(i for i in rows if i), ls.list_records(ports.conn)):
-        own = ports.meta(initiative).get("initiative") or {}
-        if not record_now(own.get("lane_model"), rows[initiative], None):
-            continue
-        found = plan(ports, initiative)
-        fetched = [] if found.skip else refresh(ports, initiative)
-        found = found if found.skip else plan(ports, initiative)  # again, now against origin's phase branches
+    for key in told:
+        if key.removeprefix(RECORD_KEY) not in wanting:
+            ls.forget(ports.conn, key)  # recorded since (an operator's adopt), or no longer queued
+    for initiative in wanting:
         key = f"{RECORD_KEY}{initiative}"
-        why = left_to_a_person(found)
-        if why is not None:
-            if told.get(key) != why:
-                ls.remember(ports.conn, key, why, ports.now())
-                if not found.skip:
-                    ports.notify("needs_chair", {"initiative": initiative, "reason": why})
-                events += [*fetched, f"{initiative}: no landing record is made on its own: {why}"]
+        reason, since = told.get(key, ("", ""))
+        if since and not retry_due(since, ports.now()):
             continue
-        events += [*fetched, *apply(ports, replace(found, merge=()), _never_send_back, adopted=False)]
+        try:
+            found = _planned(ports, initiative, rows[initiative])
+        except Exception as exc:  # one initiative whose files or tasks cannot be read: only it waits
+            found, why = None, f"it cannot be read: {type(exc).__name__}: {exc}"
+        else:
+            why = None if found is None else left_to_a_person(found)
+        if why is not None:
+            ls.remember(ports.conn, key, why, ports.now())
+            if why != reason:
+                ports.notify("needs_chair", {"initiative": initiative, "reason": why})
+                events.append(f"{initiative}: no landing record is made on its own: {why}")
+            continue
+        if found is None:
+            continue
+        events += apply(ports, replace(found, merge=()), _never_send_back, adopted=False)
         record = ls.get_record(ports.conn, initiative)
         if record is not None and not found.landed:
             pushed = publish_initiative(ports, lander.ports_repo(ports, record), lander.record_text(record, "branch"))

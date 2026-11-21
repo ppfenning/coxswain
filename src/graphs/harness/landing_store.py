@@ -11,7 +11,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from core.landing_record import LandingRecord, Listing, Unreadable, listing, read_row
-from harness.store_dialect import Connection, json_text, upsert
+from harness.store_dialect import Connection, insert_ignore, json_text, upsert
 
 PHASE_MERGE = "phase_merge"
 INITIATIVE_LAND = "initiative_land"
@@ -63,14 +63,25 @@ def has_record(conn: Connection, initiative: str) -> bool:
     return conn.query_one(f"SELECT 1 FROM landing_records WHERE initiative = {p}", (initiative,)) is not None
 
 
-def put_record(conn: Connection, record: Mapping[str, Any]) -> None:
-    """Write the whole record. `created_at` is kept from the first write."""
-    row = (
+def _record_row(record: Mapping[str, Any]) -> tuple[str, ...]:
+    return (
         str(record["initiative"]), str(record.get("repo") or ""), str(record.get("state") or "building"),
         json_text(dict(record)), str(record.get("created_at") or record.get("updated_at") or ""),
         str(record.get("updated_at") or ""),
     )
-    conn.execute(upsert(conn.dialect, "landing_records", _RECORD_COLUMNS, ("initiative",)), row)
+
+
+def put_record(conn: Connection, record: Mapping[str, Any]) -> None:
+    """Write the whole record. `created_at` is kept from the first write."""
+    conn.execute(upsert(conn.dialect, "landing_records", _RECORD_COLUMNS, ("initiative",)), _record_row(record))
+
+
+def insert_record(conn: Connection, record: Mapping[str, Any]) -> bool:
+    """Write a new record only when the initiative has no row: True when this call wrote it. Two writers that make
+    the same initiative's first record at once (the lander's pass and `cox lander adopt --apply`) never overwrite
+    each other: the second finds the row and keeps it, whatever the first has written into it since."""
+    return conn.execute(insert_ignore(conn.dialect, "landing_records", _RECORD_COLUMNS, ("initiative",)),
+                        _record_row(record)) == 1
 
 
 def list_records(conn: Connection, states: Sequence[str] | None = None) -> Listing:
@@ -91,6 +102,12 @@ def told(conn: Connection, prefix: str) -> dict[str, str]:
     """Every notice whose key starts with `prefix`: key -> the reason it was told with."""
     rows = conn.query_all("SELECT key, reason FROM lander_notices ORDER BY key")
     return {str(key): str(reason) for key, reason in rows if str(key).startswith(prefix)}
+
+
+def told_since(conn: Connection, prefix: str) -> dict[str, tuple[str, str]]:
+    """`told`, with when each was last remembered: key -> (reason, since)."""
+    rows = conn.query_all("SELECT key, reason, since FROM lander_notices ORDER BY key")
+    return {str(key): (str(reason), str(since or "")) for key, reason, since in rows if str(key).startswith(prefix)}
 
 
 def remember(conn: Connection, key: str, reason: str, now: str) -> None:

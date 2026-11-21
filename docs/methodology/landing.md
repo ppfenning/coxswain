@@ -353,7 +353,10 @@ makes it, through adopt's own path, on its first pass after the chair queues one
 `lane_model: phase`, its branch is pushed so the lanes cut their phases from it, and the pass's sweep queues any phase
 already built. The lander never does unasked what only adopt should do: when adopting would send an approved task back
 to ready or carry a commit onto its phase branch, it makes no record and tells the chair once to run
-`cox lander adopt --apply` after checking the work.
+`cox lander adopt --apply` after checking the work. An initiative it cannot read, or that adopt skips (its repository
+is not on this machine, say), is left alone the same way: the chair is told once, the rest of the pass goes on, and it
+is tried again hourly. Either writer inserts the record only where none is, so an adopt racing the lander keeps its
+record.
 
 ### At task
 

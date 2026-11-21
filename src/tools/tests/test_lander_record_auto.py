@@ -145,3 +145,48 @@ def test_approved_work_origin_does_not_hold_is_left_to_a_person_and_the_chair_is
     [(topic, note)] = models.notes
     assert topic == "needs_chair" and note["reason"].startswith("adopting it would move approved work: a (back to ready)")
     assert sum("no landing record is made on its own" in line for line in models.logged) == 1
+
+
+@pytest.mark.parametrize(("since", "now", "due"), [
+    ("2026-11-12T10:00:00Z", "2026-11-12T10:59:59Z", False),
+    ("2026-11-12T10:00:00Z", "2026-11-12T11:00:00Z", True),
+    ("not a stamp", "2026-11-12T10:00:00Z", True),
+])
+def test_an_initiative_left_alone_is_planned_again_only_once_its_retry_is_due(since, now, due):
+    assert lander_adopt.retry_due(since, now) is due
+
+
+def test_an_initiative_that_cannot_be_read_stops_only_itself_and_the_chair_is_told_once(models: Models):
+    _phase_model(models, "bad", [task("a", "p1")])
+    _phase_model(models, "good", [task("a", "p1")])
+    _queued(models, "bad", "p1")
+    _queued(models, "good", "p1")
+    read = models.ports.meta
+
+    def meta(initiative: str) -> dict:
+        if initiative == "bad":
+            raise OSError("work/bad/initiative.md: permission denied")
+        return read(initiative)
+
+    models.ports = replace(models.ports, meta=meta)
+    for _ in range(2):
+        lander.run_once(models.ports)
+    assert _records(models) == ["good"]
+    assert [n["reason"] for _, n in models.notes] == ["it cannot be read: OSError: work/bad/initiative.md: permission denied"]
+
+
+def test_a_skip_is_told_to_the_chair_once_and_not_planned_again_until_its_retry_is_due(models: Models):
+    _phase_model(models, "n", [task("a", "p1")])
+    _queued(models, "n", "p1")
+    missing = models.repo.parent / "moved-away"
+    models.ports = replace(models.ports, repo=lambda record: missing)
+    lander.run_once(models.ports)
+    [(topic, note)] = models.notes
+    assert topic == "needs_chair" and note["reason"] == f"its repository is not at {missing}"
+    models.ports = replace(models.ports, repo=lambda record: models.repo)  # the operator puts it back
+    lander.run_once(models.ports)
+    assert _records(models) == [], "not planned again before its retry is due"
+    models.clock += lander_adopt.RECORD_RETRY_SECONDS
+    lander.run_once(models.ports)
+    assert _records(models) == ["n"] and len(models.notes) == 1
+    assert ls.told(models.conn, lander_adopt.RECORD_KEY) == {}, "the memory is forgotten once the record is made"
