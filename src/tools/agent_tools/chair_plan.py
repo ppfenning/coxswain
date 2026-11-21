@@ -1556,7 +1556,7 @@ def _plan_as_holder(
     # this tick means the lanes are not idle. The hard stop means no launch on purpose, so only the land and
     # repeated-failure checks stand. The alarm reads every kind's slots, a worker's too: an idle line a housekeeping
     # worker sends is still the chair's idle line, so the tick does not raise a second one. The alarm is housekeeping's
-    # (C6): a housekeeping worker raises it, and the tick only while it plans housekeeping (`_tick_alarms`).
+    # (C6): a housekeeping worker raises it (`plan_kind`), and the tick only while it plans housekeeping.
     alarms = _stall_alarms(basis, launch, planned, now) if "housekeeping" not in skip else []
     kept = [(kind, a) for kind, actions in segments if kind not in skip for a in actions]
     return [

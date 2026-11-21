@@ -182,3 +182,12 @@ def test_a_push_that_raises_is_a_note_on_the_pass_line_not_a_failed_pass():
     ports = chair_queue.Ports(**{**ports.__dict__, "notify": boom, "echo": lines.append})
     assert chair_queue.run("watch", ports, chair_queue.Timing(poll=60, settle=0), once=True, dry_run=False) == 0
     assert any("notify failed: OSError: no route" in line for line in lines)
+
+
+def test_a_pass_that_lost_its_lease_pushes_nothing():
+    facts = _facts(frozenset({"housekeeping"}))
+    pushed: list = []
+    ports = _ports(facts, pushed)
+    ports = chair_queue.Ports(**{**ports.__dict__, "holds": lambda e: False})
+    assert chair_queue.run("housekeeping", ports, chair_queue.Timing(poll=60, settle=0), once=True, dry_run=False) == 0
+    assert pushed == []

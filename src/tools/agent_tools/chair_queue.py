@@ -343,7 +343,9 @@ def _pass(kind: str, ports: Ports, held: Held, reason: str, dry_run: bool, beat:
         else:
             results = perform_fenced(actions, holds, lambda a: ports.perform_one(a, current))
         line = pass_line(kind, reason, actions, results, dry_run, now)
-        line = f"{line} | lease lost: the rest fenced" if any(r["status"] == "fenced" for r in results) else line
+        if any(r["status"] == "fenced" for r in results):
+            # No push from a pass that lost its lease: the kind is another worker's now, and so may the watch be.
+            return f"{line} | lease lost: the rest fenced"
         return _with_note(line, _push(kind, ports, facts, actions, dry_run))
     finally:
         stop.set()

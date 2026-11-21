@@ -126,7 +126,9 @@ def test_with_housekeeping_queued_the_tick_plans_no_housekeeping(sandbox):
     _queue(sandbox)
     after = sandbox.cox("chair", "run", "--once", "--dry-run", timeout=180)
     assert after.returncode == 0, after.stdout + after.stderr
-    assert "housekeeping" not in _would(after.stdout), after.stdout
+    # No housekeeping action; its `queue_unowned` alarm names the lease (`needs_chair:chair:housekeeping`), not the kind.
+    planned = [w.strip() for w in _would(after.stdout).removeprefix("would:").split(",") if w.strip()]
+    assert not any(w.startswith("housekeeping:") for w in planned), after.stdout
     # The worker's own dry run plans exactly what the tick no longer does.
     dry = sandbox.cox("chair", "worker", "--kind", "housekeeping", "--once", "--dry-run", timeout=180)
     assert dry.returncode == 0, dry.stdout + dry.stderr
