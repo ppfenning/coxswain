@@ -110,10 +110,11 @@ def _work(sandbox, clone: Path) -> None:
     assert filled.returncode == 0, filled.stdout + filled.stderr
 
 
-def _machine(launchable: Launchable, clone: Path) -> Iterator[tuple]:
-    """The sandbox as one phase-model machine whose lander makes the landing record (`cox lander adopt`) and merges each
-    phase as it is approved; a scoped store role for this test's worker, dropped at the end. Yields (sandbox, worker
-    name, the worker's environment)."""
+def _machine(launchable: Launchable, clone: Path, *, adopt: bool = True) -> Iterator[tuple]:
+    """The sandbox as one phase-model machine whose lander merges each phase as it is approved; a scoped store role for
+    this test's worker, dropped at the end. With `adopt`, the landing record is made first by `cox lander adopt` and
+    its branch pushed by hand; without, nothing makes it before the chair queues the phases, so the lander's own pass
+    must (`test_lander_record_auto`). Yields (sandbox, worker name, the worker's environment)."""
     sandbox = launchable.sandbox
     path = launchable.cartridges / TEAM / "cartridge.yaml"
     cartridge = json.loads(path.read_text(encoding="utf-8"))
@@ -122,11 +123,12 @@ def _machine(launchable: Launchable, clone: Path) -> Iterator[tuple]:
     path.write_text(json.dumps(cartridge, indent=2) + "\n", encoding="utf-8")
     _gate(sandbox, "ticket")  # a person merges the pull request: it stays open for the test to read
     _work(sandbox, clone)
-    adopted = sandbox.cox("lander", "adopt", "--apply", INITIATIVE)
-    assert adopted.returncode == 0 and f"{INITIATIVE}: record made" in adopted.stdout, adopted.stdout + adopted.stderr
-    assert _record(sandbox, INITIATIVE)["lane_model"] == "phase"
-    if not _origin_tip(sandbox, clone, INIT):
-        sandbox.git(clone, "push", "--quiet", "origin", f"{INIT}:refs/heads/{INIT}")
+    if adopt:
+        adopted = sandbox.cox("lander", "adopt", "--apply", INITIATIVE)
+        assert adopted.returncode == 0 and f"{INITIATIVE}: record made" in adopted.stdout, adopted.stdout + adopted.stderr
+        assert _record(sandbox, INITIATIVE)["lane_model"] == "phase"
+        if not _origin_tip(sandbox, clone, INIT):
+            sandbox.git(clone, "push", "--quiet", "origin", f"{INIT}:refs/heads/{INIT}")
     out = _tick(sandbox)
     assert "launch_epic" not in out and _phase_row(sandbox, "p1")["state"] == "ready", out
 
