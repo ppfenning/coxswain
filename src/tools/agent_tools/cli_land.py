@@ -16,10 +16,10 @@ import threading
 import time
 from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import yaml
 
-from agent_tools import chair_kinds, chair_read_queues
 from agent_tools.cli_common import _profile_path, _read_text_or_none
 from agent_tools.cli_lake import _lake_provider, _lake_real_run
 from agent_tools.cli_land_facts import (
@@ -121,6 +121,9 @@ from agent_tools.cli_runs_fetch import (
 )
 from agent_tools.cli_stats import _resolve_profile_or_refuse
 from agent_tools.cli_usage import _resolved_gate_level
+
+if TYPE_CHECKING:  # the chair modules stay unloaded for `cox route chair status` (test_cli_startup)
+    from agent_tools import chair_kinds
 
 
 def _runs_review(a: argparse.Namespace) -> int:
@@ -1278,6 +1281,8 @@ def _leader_guard_or_refuse(
     holder = chair.resolve_holder_label(record, state, os.environ, socket.gethostname(), explicit_label) or holder
     line = chair.guard(record, holder, state)
     if line is not None and record is not None and queue_proof is not None:
+        from agent_tools import chair_kinds, chair_read_queues  # lazy: see the TYPE_CHECKING import
+
         graph, proof = queue_proof
         line = chair_kinds.launch_refusal(line, graph, proof, chair_read_queues.queue_lease_holds(runs_dir, proof))
         if line is None:

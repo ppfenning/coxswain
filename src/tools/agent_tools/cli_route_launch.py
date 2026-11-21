@@ -13,10 +13,10 @@ import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import yaml
 
-from agent_tools import chair_kinds
 from agent_tools.cli_board import _launch_rows_then_export, _merge_initiative_tickets, _merging_into
 from agent_tools.cli_common import _now_iso, _profile_path, _read_text_or_none, _stored_work_items, workspace_git_on
 from agent_tools.cli_lake import _lake_provider
@@ -60,6 +60,9 @@ from agent_tools.cli_runs import _leader_heartbeat_minutes, _waiting_lines
 from agent_tools.cli_runs_fetch import _holder_label, _lane_host_candidates, _profile_lane_hosts, _remote_edge
 from agent_tools.cli_stats import _resolve_profile_or_refuse
 from agent_tools.cli_usage import _usage_assessment
+
+if TYPE_CHECKING:  # the chair modules stay unloaded for `cox route chair status` (test_cli_startup)
+    from agent_tools import chair_kinds
 
 
 def _recorded_chair_model(runs_dir: Path) -> str:
@@ -140,6 +143,8 @@ def lane_capacity_env(env: Mapping[str, str], capacity: int) -> dict[str, str]:
 def _queue_proof(a: argparse.Namespace) -> tuple[chair_kinds.QueueProof | None, str]:
     """Pure. The kind lease a queue worker's launch names (`--queue-lease`, `--queue-holder`, `--queue-epoch`), or
     none; the second value is the refusal when only some of the three are given."""
+    from agent_tools import chair_kinds  # lazy: see the TYPE_CHECKING import
+
     lease, holder, epoch = getattr(a, "queue_lease", None), getattr(a, "queue_holder", None), getattr(a, "queue_epoch", None)
     if lease is None and holder is None and epoch is None:
         return None, ""
