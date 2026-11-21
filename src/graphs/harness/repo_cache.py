@@ -20,6 +20,7 @@ Every function here is pure: the edge (`harness.worktree`) runs the argv this mo
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from collections.abc import Mapping
 from pathlib import Path
@@ -29,10 +30,12 @@ __all__ = [
     "CACHE_ENV",
     "MIRROR_REFSPECS",
     "MirrorStep",
+    "absolute_url",
     "cache_root",
     "checkout_argv",
     "clone_argv",
     "discard_mirror",
+    "lane_clone_dir",
     "lane_env",
     "lock_file",
     "mirror_dir",
@@ -90,6 +93,21 @@ def lock_file(root: Path, url: str) -> Path:
 def uv_cache(root: Path) -> Path:
     """The uv cache every lane of this worker shares."""
     return root / "uv"
+
+
+def lane_clone_dir(worktree_root: Path, run_id: str) -> Path:
+    """A phase lane's own clone: beside its worktrees, under `<worktree_root>/<run>`, which the lane removes on every
+    way out and a later lane of the phase sweeps when a killed one could not. Not under the runs folder, whose every
+    file the dashboard feed reads as an input."""
+    return worktree_root / run_id / "_repo"
+
+
+def absolute_url(url: str, base: Path) -> str:
+    """`url` as a clone made anywhere reaches it: a relative path remote is resolved from `base`, the checkout that
+    names it; a URL with a scheme, an scp-style `host:path` and an absolute path are kept as they are."""
+    if "://" in url or Path(url).is_absolute() or ":" in url.split("/", 1)[0]:
+        return url
+    return os.path.normpath(base / url)
 
 
 def lane_env(env: Mapping[str, str], root: Path) -> dict[str, str]:

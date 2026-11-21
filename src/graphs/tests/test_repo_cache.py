@@ -98,3 +98,13 @@ def test_trace_line_names_both_costs():
     line = rc.trace_line("u", "refreshed", 3, 0, True)
     assert line == "clone u: mirror refreshed, mirror fetched 3 object(s); borrowed from the mirror, received 0 object(s)"
     assert "plain clone" in rc.trace_line("u", "unavailable", 0, 9, False)
+
+
+def test_a_lanes_own_clone_sits_under_its_run_beside_its_worktrees():
+    assert rc.lane_clone_dir(Path("/w"), "ship-p1-3") == Path("/w/ship-p1-3/_repo")
+
+
+def test_absolute_url_resolves_only_a_relative_path_remote():
+    assert rc.absolute_url("../origin.git", Path("/src/app")) == "/src/origin.git"
+    for kept in ("/srv/origin.git", "file:///srv/o.git", "https://forge/o/app.git", "git@forge:o/app.git"):
+        assert rc.absolute_url(kept, Path("/src/app")) == kept
