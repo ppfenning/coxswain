@@ -108,7 +108,7 @@ jobs:
       # Real `cox`, installed from this checkout, against real git and the service's Postgres; nothing is stubbed.
       # REQUIRED turns a missing uv or Postgres into a failure, not a skip.
       - name: smoke
-        run: uv run pytest -q -rs -m "not forge" --durations=0 --durations-min=0.5 smoke
+        run: uv run pytest -q -rs -m "not forge" smoke
         env:
           COX_SMOKE_POSTGRES_URL: postgresql://postgres:smoke@localhost:${{ job.services.postgres.ports['5432'] }}/postgres
           COX_SMOKE_REQUIRED: "1"
