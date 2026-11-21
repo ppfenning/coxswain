@@ -144,7 +144,7 @@ SPEC = GraphSpec(
     run=run,
     summary="review a phase branch against its base, with the phase smoke as evidence: approve, revise or quarantine",
     needs=(
-        Need("phase", flag="--phase", help="the phase under review"),
+        Need("phase", flag="--review-phase", help="the phase under review"),
         Need("goal", flag="--goal", kind="text_or_path", required=False, help="the phase's goal, or a path to it"),
         Need("patch", flag="--patch", kind="text_or_path", help="the phase branch's diff against its base, or a path"),
         Need("smoke", flag="--smoke", kind="json_file", required=False,

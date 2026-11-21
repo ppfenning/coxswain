@@ -768,6 +768,7 @@ SMOKE_SKILLS = {
     "plan": "smoke-skills:plan",
     "build": "smoke-skills:build",
     "review_charter": "smoke-skills:review",
+    "review_phase": "smoke-skills:review-phase",  # the phase lane's reviewer (L6)
     "work_state_arm": "smoke-skills:work-state",
     "work_item_arm": "smoke-skills:work-item",
     "validate_chunk": "smoke-skills:validate-chunk",
