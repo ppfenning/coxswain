@@ -32,7 +32,7 @@ import re
 import shutil
 import signal
 import subprocess
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Literal
@@ -43,8 +43,8 @@ from harness.worktree import registry_lock
 
 __all__ = [
     "REMOTE_TIMEOUT_S", "apply_and_commit", "branch_name", "change", "drop_refs", "fetch", "head", "log_since",
-    "message", "next_move", "open_phase_worktree", "phase_lock", "push", "push_outcome", "reset_to", "stale_runs",
-    "sweep",
+    "message", "next_move", "open_phase_worktree", "phase_lock", "private_ref", "push", "push_outcome", "reset_to",
+    "stale_runs", "sweep", "sweep_runs",
 ]
 
 _TIMEOUT_S = 120  # a local git command
@@ -253,6 +253,13 @@ def sweep(repo: Path, worktree_root: Path, prefix: str, own: str) -> list[str]:
     names = {r.split("/")[3] for r in refs.split() if r.count("/") >= 4} if ok else set[str]()
     dirs = {p.name for p in worktree_root.iterdir() if p.is_dir()} if worktree_root.is_dir() else set[str]()
     runs = stale_runs(names | dirs, prefix, own)
+    sweep_runs(repo, worktree_root, runs)
+    return runs
+
+
+def sweep_runs(repo: Path, worktree_root: Path, runs: Sequence[str]) -> None:
+    """Edge. Remove what each of `runs`, none of them live, left: its private refs and scratch branches in `repo`, and
+    its folder under `worktree_root` (its worktrees, and its own clone when it had one)."""
     for run in runs:
         drop_refs(repo, run)
         ok, branches, _ = _git("for-each-ref", "--format=%(refname:short)", f"refs/heads/agents/{run}/", cwd=repo)
@@ -263,7 +270,11 @@ def sweep(repo: Path, worktree_root: Path, prefix: str, own: str) -> list[str]:
                 _git("worktree", "prune", cwd=repo)
         for branch in branches.split() if ok else []:
             _git("branch", "-D", branch, cwd=repo)
-    return runs
+
+
+def private_ref(run_id: str, name: str) -> str:
+    """Pure. A ref private to the run (`refs/coxswain/lanes/<run>/<name>`), which `drop_refs` and `sweep` remove."""
+    return _private(run_id, name)
 
 
 @contextmanager

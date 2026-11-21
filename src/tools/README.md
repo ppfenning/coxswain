@@ -154,12 +154,12 @@ cox route chair converse ask KIND [SUBJECT] [--profile PROFILE] [--sender SENDER
 cox route chair converse state [--profile PROFILE]   print the directives in force, the epics the chair last saw, and recent events
 cox route sync [--profile PROFILE] [--item ITEM] [--project PROJECT] [--workspace WORKSPACE] [--dry-run] [--prune-out-of-scope]   mirror the work store onto the profile's tracker
 cox route launch epic [--profile PROFILE] --initiative INITIATIVE [--repo REPO] [--fix-attempts FIX_ATTEMPTS] [--base BASE] [--dry-run] [--run-id RUN_ID] [--on ON] [--local] [--include-blocked] [--phase PHASE] [--lane-worker LANE_WORKER] [--claim-epoch CLAIM_EPOCH] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the run of one filed initiative (the epic graph; epic is its historical name)
-cox route launch decompose [--profile PROFILE] --idea PATH --initiative-id INITIATIVE_ID [--task-ids ordinal] [--local] [--detach] [--dry-run] [--run-id RUN_ID] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the decompose graph against an idea
+cox route launch decompose [--profile PROFILE] --idea PATH --initiative-id INITIATIVE_ID [--task-ids ordinal] [--local] [--detach] [--dry-run] [--queue-lease QUEUE_LEASE] [--queue-holder QUEUE_HOLDER] [--queue-epoch QUEUE_EPOCH] [--run-id RUN_ID] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the decompose graph against an idea
 cox route launch rescue [--profile PROFILE] --initiative INITIATIVE --task TASK [--repo REPO] [--base BASE] [--dry-run] [--run-id RUN_ID] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the rescue graph against a task
 cox route launch cos [--profile PROFILE] [--dry-run] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the cos graph
 cox route launch sweep --idea IDEA --initiative-id INITIATIVE_ID [--label LABEL] [--dry-run]   launch the sweep graph against an idea
 cox chair run [--once] [--interval INTERVAL] [--dry-run] [--as-holder] [--max-overruns MAX_OVERRUNS] [--label LABEL] [--profile PROFILE]   beat, gather, plan, perform and report every tick until interrupted
-cox chair worker --kind KIND [--once] [--dry-run] [--poll POLL] [--min-gap MIN_GAP] [--settle SETTLE] [--label LABEL] [--profile PROFILE]   run one kind of the chair's work (housekeeping or watch) as its own process
+cox chair worker --kind KIND [--once] [--dry-run] [--poll POLL] [--min-gap MIN_GAP] [--settle SETTLE] [--label LABEL] [--profile PROFILE]   run one kind of the chair's work (housekeeping, watch, quarantine or decompose) as its own process
 cox chair service [--install] [--status] [--label LABEL] [--interval INTERVAL] [--environment-file ENVIRONMENT_FILE] [--profile PROFILE] [--host HOST] [--apply]   write or show the systemd user unit that keeps `cox chair run` alive
 cox chair ask QUESTION [--option OPTION] [--context CONTEXT] [--label LABEL] [--profile PROFILE]   put a question with its options to the operator on the courier bus
 cox chair attach [--profile PROFILE] [--lend-routine] [--recall-routine]   say whether a live chair loop holds the lease; exit 0 if so, 1 if not
@@ -176,6 +176,7 @@ cox lander service [--install] [--status] [--interval INTERVAL] [--environment-f
 cox worker run [--name NAME] [--capability TOKEN] [--lanes LANES] [--profile PROFILE]   claim and run phases until interrupted
 cox worker once [--name NAME] [--capability TOKEN] [--lanes LANES] [--profile PROFILE]   one claim pass, then run what it claimed to its end
 cox worker status [--json] [--profile PROFILE]   every queued phase with its claim, and every registered worker
+cox worker checkout URL DEST [--branch BRANCH] [--base BASE] [--json]   clone a repository here, borrowing objects from this machine's git mirror
 cox host add NAME --ssh SSH --capacity CAPACITY [--weight WEIGHT] [--capabilities CAPABILITIES]   add or update a host in the table
 cox host list   one line per host: state, capacity, beat age, login
 cox host drain NAME   stop launching on a host; its live lanes finish

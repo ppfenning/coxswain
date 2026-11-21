@@ -179,13 +179,14 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
         here = [lane.run for lane in run_store.live_lanes(runs_dir, now) if lane.host in (None, "", host, name)]
         return worker.old_model_runs(here, claimed)
 
-    def lane_facts(claim: Claim) -> worker.LaneFacts:
+    def lane_facts(claim: Claim, run_id: str) -> worker.LaneFacts:
         from harness.store_queue import read
 
         rows = store.call(lambda c: read(c, claim.initiative))
         rollups = store.call(lambda c: store_phases.rollup_rows(c, [claim.initiative]))
         last = store.call(lambda c: store_phases.last_round(c, claim.initiative, claim.phase))
-        return worker.lane_facts(rows, rollups, claim.phase, last)
+        smokes = store.call(lambda c: store_phases.smoke_rows(c, claim.initiative, claim.phase))
+        return worker.lane_facts(rows, rollups, claim.phase, last, smokes, run_id)
 
     def launch(claim: Claim, record: Callable[[str], bool]) -> worker.Started | str:
         names = [p.name for p in runs_dir.iterdir()] if runs_dir.is_dir() else []

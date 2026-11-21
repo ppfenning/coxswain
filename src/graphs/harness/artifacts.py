@@ -291,7 +291,7 @@ def _of_row(
         patch = str(_mapping(result.get("build")).get("patch") or "")
         if patch.strip():
             yield Source(step, "patch.diff", "text/x-diff", text=patch)
-    if kind == "checks":
+    if kind in ("checks", "smoke"):
         for number, check in enumerate(_ran_checks(result), 1):
             log = check.get("log")
             if isinstance(log, str) and log:

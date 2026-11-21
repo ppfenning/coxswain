@@ -6,20 +6,26 @@ import contextlib
 import fcntl
 import os
 import shutil
+import tempfile
 import threading
+import uuid
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
+from typing import NamedTuple
 
-from harness import bounded_proc
+from harness import bounded_proc, repo_cache
 
 __all__ = [
+    "Cloned",
     "apply_patch",
+    "clone_worktree",
     "create_worktree",
     "keep_worktree",
     "link_venv",
     "normalise_patch",
     "prune_registrations",
     "read_lock",
+    "refresh_mirror",
     "registry_lock",
     "release_stale_holders",
     "remove_worktree",
@@ -170,6 +176,194 @@ def create_worktree(repo: Path, worktree: Path, *, branch: str, base: str | None
     with registry_lock(repo):
         result = bounded_proc.completed(cmd, capture_output=True, text=True)
     return result.returncode == 0, (result.stderr or result.stdout).strip()
+
+
+class Cloned(NamedTuple):
+    """What `clone_worktree` did: whether `dest` holds the checkout, git's last word, and what the clone cost.
+
+    `mirror` is the mirror's state: created, rebuilt, refreshed, stale (its fetch failed; it was borrowed as it was),
+    unavailable (none could be made), or present (`dest` already held the clone, so nothing ran). `fetched` counts the
+    objects the mirror took from the remote, `received` those the clone took itself."""
+
+    ok: bool
+    detail: str
+    mirror: str
+    fetched: int
+    received: int
+    borrowed: bool
+
+    def trace(self, url: str) -> str:
+        return repo_cache.trace_line(url, self.mirror, self.fetched, self.received, self.borrowed)
+
+
+def _git(argv: Sequence[str], timeout: float | None = None) -> tuple[bool, str, str]:
+    """Run one git argv: (succeeded, stdout, git's last word)."""
+    done = bounded_proc.completed(list(argv), timeout, capture_output=True, text=True)
+    return done.returncode == 0, done.stdout.strip(), (done.stderr or done.stdout).strip()
+
+
+@contextlib.contextmanager
+def _flock(path: Path, mode: int) -> Iterator[None]:
+    """Hold an `flock` on `path` (made if missing). Each call opens the file anew, so threads exclude each other too."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, mode)
+        yield
+    finally:
+        os.close(fd)  # the only descriptor of this open file: closing it drops the flock
+
+
+def _objects(git_dir: Path) -> int:
+    """The objects `git_dir` holds itself (`repo_cache.object_count`); 0 when it cannot be read."""
+    ok, out, _ = _git(["git", "--git-dir", str(git_dir), "count-objects", "-v"])
+    return repo_cache.object_count(out) if ok else 0
+
+
+def _is_bare(path: Path) -> bool:
+    """Whether `path` is itself a bare repository. `--git-dir` stops git searching the folders above it."""
+    ok, out, _ = _git(["git", "--git-dir", str(path), "rev-parse", "--is-bare-repository"])
+    return ok and out == "true"
+
+
+def _discard(path: Path) -> None:
+    """Remove `path`, whatever it is; a missing one is fine."""
+    if path.is_symlink() or path.is_file():
+        path.unlink(missing_ok=True)
+    elif path.exists():
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def refresh_mirror(url: str, root: Path) -> tuple[str, int, str]:
+    """Edge. Bring `url`'s bare mirror under the cache `root` up to date, under its exclusive lock, and return
+    (state, objects fetched, git's last word). State is one of `Cloned.mirror`'s, never present.
+
+    Idempotent: a second call fetches only what the remote gained. A mirror is made in a scratch folder and renamed
+    into place, so a crash leaves no half-made mirror where a clone would borrow it; a scratch folder a crash left is
+    removed by the next holder of the lock. A path that is not a bare repository is rebuilt from nothing."""
+    mirror = repo_cache.mirror_dir(root, url)
+    try:
+        with _flock(repo_cache.lock_file(root, url), fcntl.LOCK_EX):
+            for scratch in mirror.parent.glob(f"{mirror.name}.tmp-*"):
+                _discard(scratch)
+            step = repo_cache.mirror_step(mirror.exists() or mirror.is_symlink(), _is_bare(mirror))
+            if step == "refresh":
+                before = _objects(mirror)
+                ok, _, detail = _git(repo_cache.mirror_fetch_argv(mirror, url))
+                return ("refreshed", max(0, _objects(mirror) - before), detail) if ok else ("stale", 0, detail)
+            if step == "rebuild":
+                _discard(mirror)
+            scratch = mirror.with_name(f"{mirror.name}.tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}")
+            ok, _, detail = _git(["git", "init", "--quiet", "--bare", str(scratch)])
+            if ok:
+                ok, _, detail = _git(repo_cache.mirror_fetch_argv(scratch, url))
+            if not ok:
+                _discard(scratch)
+                return "unavailable", 0, detail
+            fetched = _objects(scratch)
+            os.rename(scratch, mirror)
+            return ("created" if step == "create" else "rebuilt"), fetched, detail
+    except OSError as exc:  # an unwritable or vanished cache root: the clone goes on without a mirror
+        return "unavailable", 0, f"the mirror could not be used: {type(exc).__name__}: {exc}"
+
+
+def _clone_state(dest: Path, url: str) -> repo_cache.CloneState:
+    """What `dest` holds (`repo_cache.clone_state`), read through `--git-dir` so no folder above it is consulted."""
+    git_dir = dest / ".git"
+    if not git_dir.is_dir():
+        return repo_cache.clone_state(False, False, False, False, False, False)
+    _, origin, _ = _git(["git", "--git-dir", str(git_dir), "config", "--get", "remote.origin.url"])
+    head_ok, _, _ = _git(["git", "--git-dir", str(git_dir), "rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
+    return repo_cache.clone_state(True, (git_dir / repo_cache.IN_PROGRESS).exists(), origin == url,
+                                  (git_dir / "objects" / "info" / "alternates").exists(), head_ok,
+                                  (git_dir / "index").is_file())
+
+
+@contextlib.contextmanager
+def _template() -> Iterator[Path]:
+    """A git template folder holding only the `IN_PROGRESS` mark, for one clone (`repo_cache.clone_argv`)."""
+    with tempfile.TemporaryDirectory(prefix="cox-clone-template-") as folder:
+        (Path(folder) / repo_cache.IN_PROGRESS).write_text("a coxswain clone that has not finished\n", encoding="utf-8")
+        yield Path(folder)
+
+
+def _finished(dest: Path) -> None:
+    """Drop the `IN_PROGRESS` mark: the clone is repacked and checked out, so it is a whole checkout of its own."""
+    (dest / ".git" / repo_cache.IN_PROGRESS).unlink(missing_ok=True)
+
+
+def _mirror_sound(mirror: Path) -> bool:
+    """Whether the mirror's every ref reaches whole objects: run only after a borrowing clone failed, as evidence."""
+    ok, _, _ = _git(["git", "-C", str(mirror), "fsck", "--connectivity-only", "--no-progress"],
+                    bounded_proc.STEP_TIMEOUT_SECONDS)
+    return ok
+
+
+def _borrowing_clone(url: str, dest: Path, mirror: Path, branch: str | None, base: str | None,
+                     template: Path) -> tuple[bool, int, str]:
+    """Clone `url` into `dest` borrowing `mirror`'s objects, then stop borrowing: (ok, objects received, detail).
+    Run under the mirror's shared lock, so no refresh or gc of the mirror overlaps the borrow."""
+    ok, _, detail = _git(repo_cache.clone_argv(url, dest, mirror, template))
+    if not ok:
+        return False, 0, detail
+    git_dir = dest / ".git"
+    received = _objects(git_dir)  # before the repack: only what the remote sent, none of the mirror's
+    # `repack -a` without `-l` copies every borrowed object it reaches into the clone's own pack, as `--dissociate`
+    # does; only then is the alternates file dropped, and the clone no longer needs the mirror.
+    ok, _, detail = _git(["git", "-C", str(dest), "repack", "-a", "-d", "-q"], bounded_proc.STEP_TIMEOUT_SECONDS)
+    if not ok:
+        return False, received, detail
+    (git_dir / "objects" / "info" / "alternates").unlink(missing_ok=True)
+    ok, _, detail = _git(repo_cache.checkout_argv(dest, branch, base))
+    if ok:
+        _finished(dest)
+    return ok, received, detail
+
+
+def clone_worktree(url: str, dest: Path, *, cache_root: Path, branch: str | None = None,
+                   base: str | None = None) -> Cloned:
+    """Edge. Clone `url` into `dest` and check it out (`repo_cache.checkout_argv`), borrowing objects from the
+    worker's mirror so only what the mirror lacks comes from the remote.
+
+    The mirror is refreshed first (`refresh_mirror`), then borrowed under a shared lock, so lanes on one machine clone
+    at once while a refresh waits for them. The clone never keeps the borrow (`repo_cache`'s gc note). If the mirror is
+    missing, corrupt or unusable, `dest` is cleared and cloned plainly; a mirror shown to be bad (`discard_mirror`) is
+    removed, and the next call rebuilds it. A `dest` that already holds a finished clone of `url` is left as it is;
+    one a crash interrupted (`repo_cache.clone_state`) is cleared and cloned again."""
+    held = _clone_state(dest, url)
+    if held == "present":
+        return Cloned(True, f"{dest} already holds a clone of {url}", "present", 0, 0, False)
+    if held == "broken":
+        _discard(dest)  # ours, and unfinished: the mark says so
+    if held == "foreign" or dest.is_symlink() or dest.is_file() or (dest.is_dir() and any(dest.iterdir())):
+        return Cloned(False, f"{dest} already exists and is not a finished clone of {url} made here; it is left as it "
+                             "is: move it or choose another destination", "unused", 0, 0, False)
+    state, fetched, mirror_detail = refresh_mirror(url, cache_root)
+    mirror = repo_cache.mirror_dir(cache_root, url)
+    lock = repo_cache.lock_file(cache_root, url)
+    borrowed = False
+    with _template() as template:
+        if state != "unavailable":
+            try:
+                with _flock(lock, fcntl.LOCK_SH):
+                    borrowed, received, detail = _borrowing_clone(url, dest, mirror, branch, base, template)
+            except OSError as exc:
+                borrowed, received, detail = False, 0, f"{type(exc).__name__}: {exc}"
+            if borrowed:
+                return Cloned(True, detail, state, fetched, received, True)
+            mirror_detail = detail
+        _discard(dest)  # what the borrowing attempt made of a destination that was absent or empty
+        ok, _, detail = _git(repo_cache.clone_argv(url, dest, None, template))
+    received = _objects(dest / ".git") if ok else 0
+    if ok:
+        ok, _, detail = _git(repo_cache.checkout_argv(dest, branch, base))
+    if ok:
+        _finished(dest)
+    if state != "unavailable" and not borrowed and ok and repo_cache.discard_mirror(borrowed, ok, _mirror_sound(mirror)):
+        with contextlib.suppress(OSError), _flock(lock, fcntl.LOCK_EX):
+            _discard(mirror)
+    why = f"{detail}\n(mirror not used: {mirror_detail})" if mirror_detail else detail
+    return Cloned(ok, why.strip(), state, fetched, received, False)
 
 
 def link_venv(repo: Path, worktree: Path) -> bool:

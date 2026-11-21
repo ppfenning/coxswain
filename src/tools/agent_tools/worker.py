@@ -129,20 +129,39 @@ def stale_lanes(live: Sequence[Mapping[str, object]], own_run: str) -> list[Runn
 @dataclass(frozen=True)
 class LaneFacts:
     """What the store holds for a phase once its lane ended: its tasks (dropped ones left out), the tasks whose roll-up
-    put a commit on the phase branch in any run, and its last review round as (round, verdict)."""
+    put a commit on the phase branch in any run, its last review round as (round, verdict), and the phase smoke the
+    ended run wrote last, None when it wrote none."""
 
     tasks: tuple[str, ...]
     rolled_up: tuple[str, ...]
     last_round: tuple[int, str] | None
+    smoke: phase_pick.SmokeSeen | None
 
 
 def lane_facts(task_rows: Sequence[Mapping[str, object]], rollups: Sequence[Mapping[str, object]], phase: str,
-               last_round: tuple[int, str] | None) -> LaneFacts:
-    """The `LaneFacts` of `phase`, from its initiative's work-item rows and roll-up step rows."""
+               last_round: tuple[int, str] | None, smokes: Sequence[Mapping[str, object]], run_id: str) -> LaneFacts:
+    """The `LaneFacts` of `phase`, from its initiative's work-item rows and roll-up step rows, and the phase's `smoke`
+    step rows of every run, oldest first (`store_phases.smoke_rows`), of which the ended run is `run_id`."""
     tasks = sorted(str(r["task_id"]) for r in task_rows
                    if r.get("kind") == "task" and r.get("phase") == phase and r.get("state") != "dropped")
     rolled = sorted({str(r["task_id"]) for r in rollups if r.get("phase") == phase})
-    return LaneFacts(tuple(tasks), tuple(rolled), last_round)
+    own = [r for r in smokes if r.get("run_id") == run_id]
+    return LaneFacts(tuple(tasks), tuple(rolled), last_round, _smoke_of(own[-1], smokes) if own else None)
+
+
+def _fault(row: Mapping[str, object]) -> bool:
+    result = row.get("result_json")
+    return row.get("ok") not in (1, True) and isinstance(result, Mapping) and result.get("harness_fault") is True
+
+
+def _smoke_of(row: Mapping[str, object], smokes: Sequence[Mapping[str, object]]) -> phase_pick.SmokeSeen:
+    """A `smoke` step row as the worker reads it; a row with no reason says its verdict. A harness fault counts every
+    harness fault of the phase at the same tip, in any run."""
+    result = row.get("result_json")
+    reason = str(result.get("reason") or "") if isinstance(result, Mapping) else ""
+    faults = sum(1 for r in smokes if _fault(r) and r.get("subject_sha") == row.get("subject_sha")) if _fault(row) else 0
+    return phase_pick.SmokeSeen(row.get("ok") in (1, True),
+                                reason or f"the phase smoke was {row.get('verdict') or 'not recorded'}", faults)
 
 
 @dataclass(frozen=True)
@@ -295,7 +314,7 @@ class Ports:
     set_run: Callable[[Claim, str], bool]
     finish: Callable[[Claim, str, str], bool]
     release: Callable[[Claim, str, int, bool], bool]  # (claim, reason, wait_s, refund)
-    lane_facts: Callable[[Claim], LaneFacts]  # what the store holds for the claimed phase once its lane ended
+    lane_facts: Callable[[Claim, str], LaneFacts]  # what the store holds for the claimed phase once its run ended
     lane_mark: Callable[[Running], str]  # the lane's progress mark as it reads now, "" while there is none
     park: Callable[[Claim, str], bool]  # every task rolled up: parked as built until its review round
     launch: Callable[[Claim, Callable[[str], bool]], Started | str]  # the spawned launch, or why it did not spawn
@@ -351,8 +370,9 @@ def reap(ports: Ports, leases: Leases) -> None:
                 else:
                     settle(ports, leases, claim, phase_pick.verdict([], attempts_of(claim), launch_error=f"the launch exited {code}: {last}"))
         elif isinstance(held.run, Running) and not ports.alive(held.run):
-            facts = ports.lane_facts(claim)
-            settle(ports, leases, claim, phase_pick.lane_verdict(facts.tasks, facts.rolled_up, facts.last_round, attempts_of(claim)))
+            facts = ports.lane_facts(claim, held.run.run_id)
+            settle(ports, leases, claim, phase_pick.lane_verdict(facts.tasks, facts.rolled_up, facts.last_round,
+                                                                 attempts_of(claim), smoke=facts.smoke))
         elif isinstance(held.run, Running):
             mark, stalled = phase_pick.lane_stalled(held.mark, ports.lane_mark(held.run), ports.monotonic())
             leases.see(claim, mark)

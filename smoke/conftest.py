@@ -550,6 +550,8 @@ def launchable(sandbox: Sandbox, repo: Repo, tmp_path: Path) -> Launchable:
 # --- the sandbox forge ---------------------------------------------------------------------------------------------
 
 API_TIMEOUT_S = 15
+# Every item the run's `-m` selected, before `COX_SMOKE_SHARD` keeps one shard's files (`test_phase_check_no_forge.py`).
+SELECTED = pytest.StashKey[tuple[pytest.Item, ...]]()
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -559,7 +561,9 @@ def pytest_configure(config: pytest.Config) -> None:
 @pytest.hookimpl(trylast=True)  # after `-m` has deselected
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """With COX_SMOKE_SHARD=<k>/<n>, keep only the files `plan.shard_files` puts in shard k (CI's parallel smoke jobs),
-    each weighed by its seconds in the committed `smoke/timings.json`."""
+    each weighed by its seconds in the committed `smoke/timings.json`. The items `-m` left, before any shard drops
+    some, are kept in `config.stash[SELECTED]`, so a check over the whole run reads them in any shard."""
+    config.stash[SELECTED] = tuple(items)
     value = os.environ.get(plan.SHARD_ENV)
     if not value:
         return

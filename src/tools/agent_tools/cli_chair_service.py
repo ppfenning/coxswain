@@ -706,3 +706,8 @@ def _worker_once(a: argparse.Namespace) -> int:
 def _worker_status(a: argparse.Namespace) -> int:
     from agent_tools import worker_cli
     return worker_cli.cmd_status(a)
+
+
+def _worker_checkout(a: argparse.Namespace) -> int:
+    from agent_tools import worker_cli
+    return worker_cli.cmd_checkout(a)

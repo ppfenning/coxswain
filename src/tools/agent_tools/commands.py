@@ -27,7 +27,7 @@ class Command:
     group: str
     summary: str
     args: tuple[Arg, ...]
-    handler: Callable[[argparse.Namespace], int] | None
+    handler: Callable[[argparse.Namespace], int] | str | None  # a str is a "module:function" target, bound by cli._dispatch_table
     slash: bool
     examples: tuple[str, ...]
     subcommands: tuple[Command, ...] = ()
@@ -45,7 +45,7 @@ class Group:
     description: str
     epilog: str
     args: tuple[Arg, ...] = field(default_factory=tuple)
-    fn: Callable[[argparse.Namespace], int] | None = None
+    fn: Callable[[argparse.Namespace], int] | str | None = None  # as `Command.handler`
 
 
 def _bare_group(parser: argparse.ArgumentParser) -> Callable[[argparse.Namespace], int]:
@@ -103,12 +103,3 @@ def build_parser(
             gp.set_defaults(fn=g.fn)
         parsers[g.name] = gp
     return parsers
-
-
-# The `cox route launch decompose` flags a queue worker's launch carries its kind lease on (`chair_kinds.proof_argv`).
-# They live here, not in `cli.py` (at its size limit), because `cox --help` imports this module and no other.
-QUEUE_PROOF_ARGS = (
-    Arg(("--queue-lease",), {"help": "the kind lease a queue worker launches under (chair:decompose); with --queue-holder and --queue-epoch, the launch goes on beside the loop's live lock while the store says that lease is held"}),
-    Arg(("--queue-holder",), {"help": "the holder of --queue-lease"}),
-    Arg(("--queue-epoch",), {"type": int, "default": None, "help": "the epoch of --queue-lease"}),
-)

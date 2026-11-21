@@ -98,6 +98,17 @@ def test_the_exit_says_lost_before_failed_before_built():
     assert phase_lane.exit_code(True, ["t1"]) == phase_lane.EXIT_LOST
     assert phase_lane.exit_code(False, ["t1"]) == phase_lane.EXIT_FAILED
     assert phase_lane.exit_code(False, []) == phase_lane.EXIT_BUILT
+    assert phase_lane.exit_code(False, [], smoke_passed=False) == phase_lane.EXIT_FAILED
+    assert phase_lane.exit_code(True, [], smoke_passed=False) == phase_lane.EXIT_LOST
+
+
+def test_the_smoke_runs_only_when_every_task_rolled_up_and_before_the_round_it_precedes():
+    assert phase_lane.smoke_due({}, stopping=False)
+    assert not phase_lane.smoke_due({"t2": "the build failed"}, stopping=False)
+    assert not phase_lane.smoke_due({}, stopping=True)
+    assert phase_lane.smoke_round(lane_progress.Next("build", tasks=("t1",))) == 1
+    assert phase_lane.smoke_round(lane_progress.Next("review", round=1)) == 1
+    assert phase_lane.smoke_round(lane_progress.Next("review", round=3)) == 3  # after round 2's revision (L6)
     assert phase_lane.lanes_of({"COX_LANE_CAPACITY": "3"}) == 3 and phase_lane.lanes_of({}) == 1
 
 
