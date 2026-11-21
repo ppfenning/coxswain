@@ -78,6 +78,109 @@ def test_nothing_refused_gives_no_feedback_and_the_body_stays_as_it_was():
     assert lane_feedback.with_feedback("the body", "why") == "the body\n\nwhy"
 
 
+# -- a failed check's output -------------------------------------------------------------------------------------------
+
+TYPES = "python .github/check_types.py"
+PYRIGHT = ("src/graphs/harness/phase_lane.py:812:9 - error: Argument of type \"str | None\" cannot be assigned to "
+           "parameter \"base\" of type \"str\"", "src/graphs/harness/lane_feedback.py:40:5 - error: \"_mapping\" is "
+           "not defined", "2 errors, 0 warnings, 0 informations")
+
+
+def _types_check(noise: int = 200) -> dict:
+    """A failed `check_types` result as `checks.run_checks` keeps it: a long run of progress lines, then pyright's
+    errors, in both its output tail and its excerpt (the last lines, for output that is not pytest's)."""
+    output = "\n".join([*(f"checking module {n} of {noise}" for n in range(noise)), *PYRIGHT])
+    return {"name": TYPES, "cmd": TYPES, "passed": False, "exit_code": 1, "outcome": "failed",
+            "output_tail": output[-2000:], "excerpt": "\n".join(output.splitlines()[-40:]), "log": "checks/p1/t1/1.log"}
+
+
+def _checks_row(checks: list[dict], run_id: str = "r1") -> dict:
+    result = with_checks({"run_id": f"{run_id}:t1"}, checks, run_id)
+    return steps_of_result(result, run_id=run_id, initiative="ship", phase="p1", task="t1", at=AT)[0]
+
+
+def test_a_failed_check_s_errors_reach_the_feedback_from_its_row_capped():
+    row = _checks_row([_types_check()])
+    kept = row["result_json"]["checks"][0]["output_tail"]
+    assert kept.splitlines()[-3:] == list(PYRIGHT) and len(kept) <= 2000 and len(kept.splitlines()) <= 40
+    text = lane_feedback.refusal_feedback([row])
+    assert f"- check `{TYPES}` failed (exit 1)" in text and all(line in text for line in PYRIGHT)
+    assert "checking module 0 of" not in text  # the end of the output, never the whole log
+
+
+def test_only_three_failed_checks_carry_their_output_and_a_passed_or_timed_out_one_none():
+    many = [{**_types_check(5), "name": f"types-{n}", "excerpt": f"error in check {n}"} for n in range(4)]
+    timed_out = {"name": "suite", "passed": False, "exit_code": None, "outcome": "timed_out", "excerpt": "[timed out]"}
+    passed = {"name": "lint", "passed": True, "exit_code": 0, "outcome": "passed", "excerpt": "All checks passed!"}
+    row = _checks_row([passed, timed_out, *many])
+    assert ["output_tail" in c for c in row["result_json"]["checks"]] == [False, False, True, True, True, False]
+    text = lane_feedback.refusal_feedback([row])
+    assert all(f"error in check {n}" in text for n in range(3)) and "error in check 3" not in text
+    assert "- check `types-3` failed (exit 1)" in text  # still named, without its output
+
+
+TOKEN = "s3cr3t-forgejo-token-value"
+STORE_URL = "postgresql://cox:hunter22pw@localhost:5432/cox"
+SCRUBBED_URL = "postgresql://***@localhost:5432/cox"
+
+
+def _secret_check() -> dict:
+    """A failed check whose output printed a token from the lane's environment and a store URL with its password."""
+    return {**_types_check(5), "excerpt": f"auth failed with {TOKEN}\nconnecting to {STORE_URL}\n{PYRIGHT[0]}"}
+
+
+def test_with_no_artifacts_root_a_check_s_tail_is_scrubbed_before_the_store_and_the_prompt(
+        tmp_path, lane_store, monkeypatch):
+    monkeypatch.setenv("FORGEJO_TOKEN", TOKEN)  # the lane's real environment, which `tail_secrets` reads
+    conn = open_store(lane_store, AT)
+    try:
+        claim, log = _claim(conn), []
+        first = _lane(tmp_path, lane_store, conn, claim, "ship-p1-1",
+                      ScriptedRunner({"plan": PLAN, "build": BUILD, "handoff": COMPLETE}), log)
+        assert first.ctx.artifacts is None  # the default: nothing is uploaded, so nothing is marked
+        result, _, _, _ = phase_lane._build(first, "t1", _base(tmp_path))
+        assert result is not None
+        rows = phase_lane._rows_of(first, with_checks(result, [_secret_check()], "ship-p1-1"), "t1", "")
+        assert TOKEN in next(r for r in rows if r["kind"] == "checks")["result_json"]["checks"][0]["output_tail"]
+        assert first.put(rows)
+        (stored,) = [r for r in store_phases.task_attempt_rows(conn, "ship", "p1", "t1") if r["kind"] == "checks"]
+        tail = stored["result_json"]["checks"][0]["output_tail"]
+        assert "auth failed with ***" in tail and SCRUBBED_URL in tail and PYRIGHT[0] in tail
+        assert TOKEN not in tail and "hunter22pw" not in tail
+
+        again = ScriptedRunner({"plan": PLAN, "build": BUILD, "handoff": COMPLETE})
+        phase_lane._build(_lane(tmp_path, lane_store, conn, claim, "ship-p1-2", again, log), "t1", _base(tmp_path))
+        prompt = next(c["prompt"] for c in again.calls if c["role"] == "build")
+        assert PYRIGHT[0] in prompt and SCRUBBED_URL in prompt
+        assert TOKEN not in prompt and "hunter22pw" not in prompt
+    finally:
+        conn.close()
+
+
+def test_with_a_root_the_uploaded_log_and_the_row_s_tail_are_scrubbed_alike(tmp_path, lane_store):
+    pytest.importorskip("pyarrow")
+    from harness.artifacts import artifacts_root, step_artifacts
+
+    check = _secret_check()
+    log = tmp_path / "runs" / "r1" / "checks" / "p1" / "t1" / "1.log"
+    log.parent.mkdir(parents=True)
+    log.write_text(check["excerpt"] + "\n", encoding="utf-8")
+    root = artifacts_root({"artifacts_url": f"file://{tmp_path / 'artifacts'}"}, {"FORGEJO_TOKEN": TOKEN},
+                          tmp_path / "runs")
+    result = with_checks({"run_id": "r1:t1"}, [check], "r1")
+    rows = steps_of_result(result, run_id="r1", initiative="ship", phase="p1", task="t1", at=AT)
+    conn = open_store(lane_store, AT)
+    try:
+        (stored,) = step_artifacts(root, conn, rows, result, runs_dir=tmp_path / "runs", run_id="r1", phase="p1",
+                                   task="t1")
+    finally:
+        conn.close()
+    assert stored["artifacts_json"][0]["scrubbed"] is True
+    text = lane_feedback.refusal_feedback([stored])
+    assert PYRIGHT[0] in text and "auth failed with ***" in text and SCRUBBED_URL in text
+    assert TOKEN not in text and "hunter22pw" not in text
+
+
 # -- the step row ------------------------------------------------------------------------------------------------------
 
 def test_a_build_only_result_records_its_handoff_and_an_old_model_result_does_not():
@@ -160,6 +263,26 @@ def test_a_task_whose_last_build_s_handoff_was_refused_is_built_again_with_the_r
         third = ScriptedRunner({"plan": PLAN, "build": BUILD, "handoff": COMPLETE})
         phase_lane._build(_lane(tmp_path, lane_store, conn, claim, "ship-p1-3", third, log), "t1", _base(tmp_path))
         assert all(lane_feedback.HEADING not in c["prompt"] and MISSING not in c["prompt"] for c in third.calls)
+    finally:
+        conn.close()
+
+
+def test_a_task_its_checks_refused_is_built_again_with_the_check_s_errors(tmp_path, lane_store):
+    conn = open_store(lane_store, AT)
+    try:
+        claim, log = _claim(conn), []
+        first = _lane(tmp_path, lane_store, conn, claim, "ship-p1-1",
+                      ScriptedRunner({"plan": PLAN, "build": BUILD, "handoff": COMPLETE}), log)
+        result, why, _, _ = phase_lane._build(first, "t1", _base(tmp_path))
+        assert result is not None and why == ""
+        # The handoff passed and `check_types` refused the change, as in E1: the lane writes the checks row.
+        assert first.put(phase_lane._rows_of(first, with_checks(result, [_types_check()], "ship-p1-1"), "t1", ""))
+
+        again = ScriptedRunner({"plan": PLAN, "build": BUILD, "handoff": COMPLETE})
+        phase_lane._build(_lane(tmp_path, lane_store, conn, claim, "ship-p1-2", again, log), "t1", _base(tmp_path))
+        prompt = next(c["prompt"] for c in again.calls if c["role"] == "build")
+        assert lane_feedback.HEADING in prompt and f"- check `{TYPES}` failed (exit 1)" in prompt
+        assert all(line in prompt for line in PYRIGHT) and "checking module 0 of" not in prompt
     finally:
         conn.close()
 

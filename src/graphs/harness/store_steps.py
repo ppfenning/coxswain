@@ -7,7 +7,8 @@ first write left.
 
 `steps_of_result` turns one lifecycle result, as the epic driver saves it, into its plan, build, review, adversary,
 arbitration and checks rows, and a build-only result (the phase lane's task build) into a `handoff` row too, which keeps
-what an incomplete handoff found missing for the task's next build (`lane_feedback`). It is pure: the run, the place and the time arrive as arguments. Only `put_step` and
+what an incomplete handoff found missing for the task's next build (`lane_feedback`); a `checks` row keeps the capped
+end of each failed check's output for it (`_tail`), scrubbed on every save (`artifacts.scrub_tails`). It is pure: the run, the place and the time arrive as arguments. Only `put_step` and
 `steps_for` touch the store.
 
 On today's model a fix-loop re-entry (`epic_build.refix_task`) is a second lifecycle run of the same task inside the
@@ -47,9 +48,11 @@ from harness.store_dialect import Connection, Json, JsonObject, insert_ignore, j
 from harness.store_types import StepRow
 
 __all__ = [
+    "FAULT_OUTCOMES",
     "PHASE_KINDS",
     "ROUND_COLUMNS",
     "STEP_COLUMNS",
+    "TAIL_KEPT_CHECKS",
     "TASK_KINDS",
     "belongs",
     "collision_steps",
@@ -75,6 +78,12 @@ TASK_KINDS: tuple[str, ...] = (
 # What a `handoff` row keeps of the handoff's `missing` list: enough for the next build to answer, never a transcript.
 _HANDOFF_MISSING_MAX = 10
 _HANDOFF_ITEM_CHARS = 600
+# What a `checks` row keeps of a failed check's output, for the task's next build (`lane_feedback`): the last lines of
+# its excerpt, on at most this many failing checks. Never a whole log: that is the step's artifact.
+TAIL_KEPT_CHECKS = 3
+_TAIL_KEPT_LINES = 40
+_TAIL_KEPT_CHARS = 2000
+FAULT_OUTCOMES = frozenset({"timed_out", "unrunnable"})  # `checks.quarantine_reason`'s harness faults: not the change's
 PHASE_KINDS: tuple[str, ...] = ("smoke", "review", "adversary", "arbitration", "suite", "triage")
 
 STEP_COLUMNS: tuple[str, ...] = (
@@ -275,12 +284,22 @@ def _checks(result: Mapping[str, object], run_id: str) -> tuple[bool, str, JsonO
     ran = stamped or top
     if not ran:
         return None
+    refused = [i for i, c in enumerate(ran) if c.get("passed") is not True and str(c.get("outcome") or "") not in FAULT_OUTCOMES]
+    kept = set(refused[:TAIL_KEPT_CHECKS])
     each: list[Json] = [
         {"name": str(c.get("name") or ""), "passed": c.get("passed") is True, "exit_code": _json(c.get("exit_code")),
-         "outcome": str(c.get("outcome") or "")}
-        for c in ran
+         "outcome": str(c.get("outcome") or ""), **({"output_tail": tail} if i in kept and (tail := _tail(c)) else {})}
+        for i, c in enumerate(ran)
     ]
     return all(c.get("passed") is True for c in ran), "", {"checks": each}
+
+
+def _tail(check: Mapping[str, object]) -> str:
+    """The end of a failed check's output a `checks` row keeps: the last `_TAIL_KEPT_LINES` of its excerpt (a pytest
+    run's failures, else its last lines; `checks.output_excerpt`), else of its output tail, at most `_TAIL_KEPT_CHARS`.
+    What the task's next build is shown of why it was refused (`lane_feedback`)."""
+    text = str(check.get("excerpt") or "").strip() or str(check.get("output_tail") or "").strip()
+    return "\n".join(text.splitlines()[-_TAIL_KEPT_LINES:])[-_TAIL_KEPT_CHARS:]
 
 
 def steps_of_result(
@@ -297,8 +316,8 @@ def steps_of_result(
     """Pure. One lifecycle result's step rows, in plan, build, handoff, review, adversary, arbitration, checks order.
 
     A step the result does not carry (no plan on a resumed task, no checks before they ran, no arbitration when the
-    reviewers agreed) has no row. `result_json` holds only the step's verdict, counts and check names and exits:
-    never a patch or a log. Plan is round 0; every other step is the round of the result's fix loop.
+    reviewers agreed) has no row. `result_json` holds only the step's verdict, counts and check names and exits, and
+    the capped end of up to three failed checks' output (`_tail`): never a patch or a whole log. Plan is round 0; every other step is the round of the result's fix loop.
 
     Only the steps `run_id` performed: a result another run produced gives no plan, build or review rows, and checks
     another run ran give no checks row (see the module docstring)."""
