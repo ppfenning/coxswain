@@ -1,5 +1,3 @@
-import pytest
-
 from harness import store_ddl_0022
 from harness.store_ddl_0022 import ADDITIVE, INDEXES, statements
 from harness.store_dialect import POSTGRES, SQLITE, connect
@@ -43,18 +41,23 @@ def test_a_store_at_version_twenty_one_gains_both_indexes_recorded_as_additive(s
         c.close()
 
 
-def test_the_postgres_planner_answers_cost_since_and_the_newest_of_a_kind_from_the_new_indexes(store_url):
-    if not store_url.startswith("postgres"):
-        pytest.skip("EXPLAIN reads the Postgres planner")
+def _plan(c, sql: str, params: tuple[str, ...]) -> str:
+    """The planner's plan for `sql` as one text: EXPLAIN on Postgres, EXPLAIN QUERY PLAN on sqlite."""
+    if c.dialect.name == "sqlite":
+        return "\n".join(str(r[-1]) for r in c.query_all("EXPLAIN QUERY PLAN " + sql.replace("%s", "?"), params))
+    with c.transaction():
+        # A table this small is cheaper to scan than to probe; with scans priced out, the plan shows whether an
+        # index fits the predicate at all. Without these indexes both reads stay a scan or the primary key.
+        c.execute("SET LOCAL enable_seqscan = off")
+        return "\n".join(str(r[0]) for r in c.query_all("EXPLAIN " + sql, params))
+
+
+def test_the_planner_answers_cost_since_and_the_newest_of_a_kind_from_the_new_indexes(store_url):
     c = connect(store_url)
     try:
         assert migrate(c, NOW1, default_modules()) == LATEST
-        with c.transaction():
-            # A table this small is cheaper to scan than to probe; with scans priced out, the plan shows whether an
-            # index fits the predicate at all. Without these indexes both reads stay a scan or the primary key.
-            c.execute("SET LOCAL enable_seqscan = off")
-            cost = "\n".join(r[0] for r in c.query_all("EXPLAIN " + COST_SINCE, ("2026-11-19T00:00:00+00:00",)))
-            newest = "\n".join(r[0] for r in c.query_all("EXPLAIN " + LATEST_OF_KIND, ("meter",)))
+        cost = _plan(c, COST_SINCE, ("2026-11-19T00:00:00+00:00",))
+        newest = _plan(c, LATEST_OF_KIND, ("meter",))
         assert "ix_node_calls_ts" in cost, cost
         assert "ix_chair_actions_kind_ts" in newest, newest
     finally:
