@@ -274,3 +274,23 @@ def test_the_edge_runs_the_harness_in_the_directory_it_is_given(tmp_path):
     )
 
     assert (code, got) == (0, {"cwd": str(where)})
+
+
+@pytest.mark.parametrize(("stub_model", "stamped"), [("phase", "phase"), ("task", None), (None, None)])
+def test_a_hosted_run_stamps_the_lane_model_the_chairs_stub_carries_over_the_hosts_own(
+    tmp_path, monkeypatch, stub_model, stamped,
+):
+    # The host's run of a decompose the chair placed on it (2026-11-21): the chair wrote `work/<id>/initiative.md` under
+    # its own cartridge and copied it along with the intake. The host's cartridge names no lane model (`task`), so the
+    # initiative row carries `phase` only through the stub.
+    if stub_model is not None:
+        stub = tmp_path / "workspace" / "work" / "fix-thing" / "initiative.md"
+        stub.parent.mkdir(parents=True)
+        stub.write_text(route.initiative_text("fix-thing", "Fix thing", REPO, "intake/fix-thing.md", "Body\n", stub_model))
+
+    code, upserts, _harness_dir, _ws = _launch(tmp_path, monkeypatch, "store", [INTAKE], lambda *_a, **_k: (0, RESULT))
+
+    assert code == 0
+    head = next(r for r in upserts if r["kind"] == "initiative")
+    assert head["extra"].get("lane_model") == stamped
+    assert all("lane_model" not in r["extra"] for r in upserts if r["kind"] != "initiative")

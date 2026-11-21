@@ -677,6 +677,12 @@ class Facts(TypedDict):
     empty_decompose: list[EmptyDecomposeFacts]  # decomposed intakes whose ended decompose run left zero stored task items
     # An intake path, as it appears in `intake`, to its empty-decompose streak; only intakes at the limit. Absent means {}.
     decompose_streaks: NotRequired[dict[str, DecomposeStreak]]
+    # An intake path to why a decompose of it is still in flight (`chair_decompose_flight`); only those that are. Absent means {}.
+    decompose_in_flight: NotRequired[dict[str, str]]
+    # An intake path to the run that wrote its task items over SETTLE_S ago while the intake row stayed queued. Absent means {}.
+    decompose_queued_after_rows: NotRequired[dict[str, str]]
+    # `<intake path>|<run>` of each decompose_queued_after_rows needs_chair already in the action log. Absent means [].
+    decompose_queued_after_rows_reported: NotRequired[list[str]]
     # `<initiative>|<newest run id>` of each decompose_stalled needs_chair already in the action log. Absent means [].
     decompose_stalled_reported: NotRequired[list[str]]
     # An intake path to its run of decompose launches that found no idea file, read from the action log. Absent means {}.

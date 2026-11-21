@@ -120,13 +120,13 @@ def test_log_rewritten_by_a_running_decompose_is_read_again(store):
     cache = StampCache(16)
     assert mod.read_decompose_runs(store.root, "idea", cache) == [
         DecomposeRun("idea-1", False, None),
-        DecomposeRun("idea-2", True, OLD),
+        DecomposeRun("idea-2", True, OLD, exited=False),
     ]
 
     store.write(store.root / "idea-1.log", TWO + "more\n")
     store.write(store.root / "idea-2.log", f"{NEW}\n")
     after = mod.read_decompose_runs(store.root, "idea", cache)
-    assert after == [DecomposeRun("idea-1", True, None), DecomposeRun("idea-2", True, NEW)]
+    assert after == [DecomposeRun("idea-1", True, None), DecomposeRun("idea-2", True, NEW, exited=False)]
     assert store.reads == {"exit_rows": 1, "task_items": 1, "logs": 4}
     assert after == mod.read_decompose_runs(store.root, "idea")
 
@@ -148,7 +148,7 @@ def test_cached_result_equals_uncached_with_missing_logs_and_other_intakes(store
     uncached = mod.read_decompose_runs(store.root, "idea")
     assert mod.read_decompose_runs(store.root, "idea", cache) == uncached
     assert mod.read_decompose_runs(store.root, "idea", cache) == uncached
-    assert uncached == [DecomposeRun("idea-1", False, OLD), DecomposeRun("idea-2", True, None)]
+    assert uncached == [DecomposeRun("idea-1", False, OLD), DecomposeRun("idea-2", True, None, exited=False)]
 
 
 def test_a_pruned_run_leaves_the_cache(store):
