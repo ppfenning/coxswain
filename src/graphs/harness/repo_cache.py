@@ -1,10 +1,10 @@
-"""Pure. A worker's caches: where they live, what a lane's environment carries, and how a git mirror is fetched.
+"""Pure. A worker's git mirrors: where they live, how one is fetched, and the decisions about a mirror and a clone.
 
-A worker may keep caches, never state, so losing one costs only time. Two live under one cache root:
-
-- `git/<name>.git`, a bare mirror per repository. A new clone borrows its objects (`git clone --reference`), so it
-  fetches from the remote only what the mirror lacks; `harness.worktree.clone_worktree` is the edge that uses it.
-- `uv`, the uv cache every lane on the machine shares (`lane_env`), so a sync links what another lane downloaded.
+A worker may keep caches, never state, so losing one costs only time. Under the cache root, `git/<name>.git` is a
+bare mirror per repository. A new clone borrows its objects (`git clone --reference`), so it fetches from the remote
+only what the mirror lacks; `harness.worktree.clone_worktree` is the edge that uses it. There is no uv cache of our
+own: uv's default, `~/.cache/uv`, is already one cache every lane of the user shares, and a second would only start
+cold.
 
 **gc safety.** A clone that keeps borrowing through `objects/info/alternates` breaks when the mirror prunes an
 object it needs, or when the cache directory is deleted under it (the caveat in `git help gitrepository-layout`).
@@ -28,15 +28,18 @@ from typing import Literal
 
 __all__ = [
     "CACHE_ENV",
+    "LANE_CLONE",
     "MIRROR_REFSPECS",
+    "CloneState",
     "MirrorStep",
     "absolute_url",
     "cache_root",
     "checkout_argv",
     "clone_argv",
+    "clone_state",
+    "dead_clones",
     "discard_mirror",
     "lane_clone_dir",
-    "lane_env",
     "lock_file",
     "mirror_dir",
     "mirror_fetch_argv",
@@ -44,10 +47,11 @@ __all__ = [
     "mirror_step",
     "object_count",
     "trace_line",
-    "uv_cache",
 ]
 
-# The cache root a worker passes its lanes, so a lane finds the same mirrors and uv cache as the worker that started it.
+# The folder of a lane's own clone inside its run folder under the worktree root (`lane_clone_dir`).
+LANE_CLONE = "_repo"
+# An explicit cache root, for an operator who keeps it off the home disk; a lane inherits it from its worker.
 CACHE_ENV = "COX_CACHE_DIR"
 # What a mirror keeps of its remote: every branch and tag, forced, so a rewound branch is followed rather than refused.
 # Nothing else: `refs/pull/*` on a forge would bring every pull request's objects, which no lane is cut from.
@@ -90,16 +94,12 @@ def lock_file(root: Path, url: str) -> Path:
     return root / "git" / f"{mirror_name(url)}.lock"
 
 
-def uv_cache(root: Path) -> Path:
-    """The uv cache every lane of this worker shares."""
-    return root / "uv"
-
 
 def lane_clone_dir(worktree_root: Path, run_id: str) -> Path:
     """A phase lane's own clone: beside its worktrees, under `<worktree_root>/<run>`, which the lane removes on every
     way out and a later lane of the phase sweeps when a killed one could not. Not under the runs folder, whose every
     file the dashboard feed reads as an input."""
-    return worktree_root / run_id / "_repo"
+    return worktree_root / run_id / LANE_CLONE
 
 
 def absolute_url(url: str, base: Path) -> str:
@@ -109,11 +109,6 @@ def absolute_url(url: str, base: Path) -> str:
         return url
     return os.path.normpath(base / url)
 
-
-def lane_env(env: Mapping[str, str], root: Path) -> dict[str, str]:
-    """`env` as a lane starts with it: the cache root named, and a shared uv cache unless the operator already set one.
-    The same pattern as `smoke/plan.uv_env`: the cache is content-addressed, so sharing it only saves downloads."""
-    return {**env, CACHE_ENV: str(root), "UV_CACHE_DIR": env.get("UV_CACHE_DIR") or str(uv_cache(root))}
 
 
 def mirror_step(exists: bool, bare: bool) -> MirrorStep:
@@ -127,7 +122,9 @@ def mirror_step(exists: bool, bare: bool) -> MirrorStep:
 def mirror_fetch_argv(mirror: Path, url: str) -> list[str]:
     """Bring `mirror` up to `url`: every branch and tag, pruning what the remote deleted. Pruning is safe because no
     clone keeps borrowing (the module docstring), and gc runs inside the lock (`_IN_LOCK_GC`)."""
-    return ["git", "--git-dir", str(mirror), *_IN_LOCK_GC, "fetch", "--quiet", "--prune", "--no-write-fetch-head",
+    # `-C`, not `--git-dir`: `bounded_proc.git_subcommand` skips `-C` and `-c` only, and must read `fetch` here to
+    # give the slow (remote) bound; with `--git-dir` it read the path as the subcommand and gave a cold mirror 60 s.
+    return ["git", "-C", str(mirror), *_IN_LOCK_GC, "fetch", "--quiet", "--prune", "--no-write-fetch-head",
             url, *MIRROR_REFSPECS]
 
 
@@ -152,10 +149,30 @@ def object_count(count_objects_v: str) -> int:
     return sum(int(fields.get(key, "0") or 0) for key in ("count", "in-pack"))
 
 
-def discard_mirror(borrowed_ok: bool, plain_ok: bool) -> bool:
-    """Whether a mirror goes after a clone: only when the borrowing clone failed and a plain clone of the same URL then
-    worked, which shows the remote was fine and the mirror was not. A remote that is down keeps its mirror."""
-    return not borrowed_ok and plain_ok
+def discard_mirror(borrowed_ok: bool, plain_ok: bool, mirror_sound: bool) -> bool:
+    """Whether a mirror goes after a clone: only on evidence the mirror itself is bad. The borrowing clone failed, a
+    plain clone of the same URL then worked (so the remote was fine), and the mirror's own connectivity check failed.
+    A clone that failed for a local reason (a repack timeout, a full disk) leaves a sound mirror in place."""
+    return not borrowed_ok and plain_ok and not mirror_sound
+
+
+CloneState = Literal["absent", "present", "broken", "foreign"]
+
+
+def clone_state(holds_git: bool, origin_is_url: bool, borrowing: bool, head_ok: bool, has_index: bool) -> CloneState:
+    """What a destination holds before a clone into it. A clone a crash interrupted (still borrowing through its
+    alternates file, no valid HEAD, or never checked out, so no index) is `broken`, cleared and cloned again; only a
+    finished one is `present`. A repository of another remote is `foreign` and never touched."""
+    if not holds_git:
+        return "absent"
+    if not origin_is_url:
+        return "foreign"
+    return "present" if not borrowing and head_ok and has_index else "broken"
+
+
+def dead_clones(runs: Mapping[str, bool]) -> list[str]:
+    """Of the runs holding a lane clone, by whether each is alive, those whose clone a lane starting now removes."""
+    return sorted(run for run, alive in runs.items() if not alive)
 
 
 def trace_line(url: str, mirror: str, fetched: int, received: int, borrowed: bool) -> str:

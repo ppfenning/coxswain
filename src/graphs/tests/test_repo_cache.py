@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from harness import bounded_proc
 from harness import repo_cache as rc
 
 
@@ -30,28 +31,11 @@ def test_a_mirror_name_is_one_safe_path_part():
     assert rc.mirror_name("file:///").startswith("repo-")
 
 
-def test_mirror_lock_and_uv_cache_paths_sit_under_the_root():
+def test_mirror_and_lock_paths_sit_under_the_root():
     root = Path("/c")
     mirror, lock = rc.mirror_dir(root, "https://f/o/app"), rc.lock_file(root, "https://f/o/app")
     assert mirror.parent == lock.parent == root / "git"
     assert mirror.name.endswith(".git") and lock.name.endswith(".lock") and mirror.stem == lock.stem
-    assert rc.uv_cache(root) == root / "uv"
-
-
-def test_lane_env_names_the_cache_root_and_shares_a_uv_cache():
-    env = rc.lane_env({"PATH": "/bin"}, Path("/c"))
-    assert env == {"PATH": "/bin", "COX_CACHE_DIR": "/c", "UV_CACHE_DIR": "/c/uv"}
-
-
-def test_lane_env_keeps_a_uv_cache_the_operator_chose_and_leaves_its_input_alone():
-    given = {"UV_CACHE_DIR": "/mine"}
-    assert rc.lane_env(given, Path("/c"))["UV_CACHE_DIR"] == "/mine"
-    assert given == {"UV_CACHE_DIR": "/mine"}
-
-
-def test_lane_env_is_idempotent():
-    once = rc.lane_env({"PATH": "/bin"}, Path("/c"))
-    assert rc.lane_env(once, Path("/c")) == once
 
 
 def test_mirror_step():
@@ -62,10 +46,18 @@ def test_mirror_step():
 
 def test_the_mirror_fetches_branches_and_tags_forced_and_prunes_with_gc_inside_the_lock():
     argv = rc.mirror_fetch_argv(Path("/c/git/m.git"), "https://f/o/app")
-    assert argv[:3] == ["git", "--git-dir", "/c/git/m.git"]
+    assert argv[:3] == ["git", "-C", "/c/git/m.git"]
     assert argv[-3:] == ["https://f/o/app", "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"]
     assert "--prune" in argv and "gc.autoDetach=false" in argv
     assert not any("refs/pull" in part for part in argv)
+
+
+def test_the_mirror_fetch_and_the_clone_get_the_slow_remote_bound():
+    # bounded_proc reads the subcommand past `-C` and `-c` only: the argv must name `fetch` where it looks.
+    fetch = rc.mirror_fetch_argv(Path("/c/git/m.git"), "https://f/o/app")
+    assert bounded_proc.git_subcommand(fetch) == "fetch"
+    assert bounded_proc.default_timeout(fetch) == bounded_proc.GIT_SLOW_TIMEOUT_SECONDS
+    assert bounded_proc.default_timeout(rc.clone_argv("u", Path("/d"), Path("/m"))) == bounded_proc.GIT_SLOW_TIMEOUT_SECONDS
 
 
 def test_clone_argv_borrows_only_when_given_a_reference():
@@ -89,9 +81,24 @@ def test_object_count_adds_loose_and_packed_and_ignores_the_rest():
 
 
 def test_a_mirror_is_discarded_only_when_it_failed_and_the_remote_worked():
-    assert rc.discard_mirror(borrowed_ok=False, plain_ok=True)
-    assert not rc.discard_mirror(borrowed_ok=False, plain_ok=False)
-    assert not rc.discard_mirror(borrowed_ok=True, plain_ok=True)
+    assert rc.discard_mirror(borrowed_ok=False, plain_ok=True, mirror_sound=False)
+    assert not rc.discard_mirror(borrowed_ok=False, plain_ok=True, mirror_sound=True)  # a local failure: keep it
+    assert not rc.discard_mirror(borrowed_ok=False, plain_ok=False, mirror_sound=False)  # the remote is down
+    assert not rc.discard_mirror(borrowed_ok=True, plain_ok=True, mirror_sound=False)
+
+
+def test_clone_state_counts_only_a_finished_clone_as_present():
+    assert rc.clone_state(False, False, False, False, False) == "absent"
+    assert rc.clone_state(True, False, False, True, True) == "foreign"
+    assert rc.clone_state(True, True, False, True, True) == "present"
+    assert rc.clone_state(True, True, True, True, False) == "broken"  # killed between clone and repack
+    assert rc.clone_state(True, True, False, True, False) == "broken"  # killed between repack and checkout
+    assert rc.clone_state(True, True, False, False, False) == "broken"  # killed inside the clone
+
+
+def test_dead_clones():
+    assert rc.dead_clones({"a-1": True, "b-2": False, "a-3": False}) == ["a-3", "b-2"]
+    assert rc.dead_clones({}) == []
 
 
 def test_trace_line_names_both_costs():

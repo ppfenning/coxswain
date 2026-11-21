@@ -259,6 +259,13 @@ def test_three_tasks_build_in_parallel_each_pushed_as_it_lands_and_the_approved_
         assert sandbox.git(own, "remote") == "origin"
         assert sandbox.git(own, "remote", "get-url", "origin") == str(repo.origin)
         assert not (own / ".git" / "objects" / "info" / "alternates").exists()
+        # Only the roll-ups happen in the clone (its one extra worktree is the phase's); the tasks build in the shared
+        # checkout as before, where t2, still checking, holds its worktree.
+        listed = sandbox.git(own, "worktree", "list", "--porcelain").splitlines()
+        in_clone = [line for line in listed if line.startswith("worktree ")]
+        assert len(in_clone) == 2 and in_clone[1].endswith("/_phase"), in_clone
+        in_shared = sandbox.git(repo.path, "worktree", "list", "--porcelain")
+        assert in_shared.count("\nworktree ") >= 1, in_shared
         out = worker.finished(timeout=300)
     finally:
         worker.kill()

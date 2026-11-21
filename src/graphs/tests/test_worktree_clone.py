@@ -143,3 +143,25 @@ def test_a_dest_that_already_holds_the_clone_is_left_alone_and_another_is_refuse
     (other / "keep").write_text("mine\n", encoding="utf-8")
     refused = worktree.clone_worktree(url, other, cache_root=cache)
     assert not refused.ok and (other / "keep").read_text(encoding="utf-8") == "mine\n"
+
+
+def test_a_clone_a_crash_left_still_borrowing_is_cloned_again_not_reported_present(origin, tmp_path):
+    url, _ = origin
+    cache, dest = tmp_path / "cache", tmp_path / "lane"
+    worktree.refresh_mirror(url, cache)
+    # What a run killed between our clone and our repack leaves: the borrow still in place, nothing checked out.
+    _git("clone", "-q", "--no-checkout", "--no-local", "--reference", str(repo_cache.mirror_dir(cache, url)), url, str(dest))
+    assert _alternates(dest).exists()
+    cloned = worktree.clone_worktree(url, dest, cache_root=cache)
+    assert cloned.ok and cloned.mirror != "present" and cloned.borrowed, cloned
+    assert not _alternates(dest).exists() and (dest / "c").exists()
+    assert worktree.clone_worktree(url, dest, cache_root=cache).mirror == "present"  # now it is finished
+
+
+def test_a_repository_of_another_remote_is_never_cleared(origin, tmp_path):
+    url, _ = origin
+    dest = tmp_path / "lane"
+    _git("init", "-q", str(dest))
+    _git("remote", "add", "origin", "https://elsewhere.invalid/x.git", cwd=dest)
+    refused = worktree.clone_worktree(url, dest, cache_root=tmp_path / "cache")
+    assert not refused.ok and (dest / ".git").is_dir()

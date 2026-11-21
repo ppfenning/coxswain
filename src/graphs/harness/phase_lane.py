@@ -62,6 +62,7 @@ from typing import Any, cast
 from graphs._contract import ContractViolation
 from harness import lane_plan, lane_progress, lane_rollup, phase_pick, repo_cache, store_phases
 from harness.artifacts import mark_missing, step_artifacts
+from harness.cos import pid_alive
 from harness.epic_branches import LIFECYCLE
 from harness.epic_build import build_task, drop_lane, lifecycle_invocation, settle_pool, verify_of
 from harness.epic_context import Ctx, git_in
@@ -70,7 +71,7 @@ from harness.lane_workers import LANE_CAPACITY_VAR
 from harness.store_dialect import Connection, JsonObject
 from harness.store_steps import step_key, step_row, steps_of_result, with_checks
 from harness.store_types import StepRow
-from harness.worktree import clone_worktree, link_venv, remove_worktree
+from harness.worktree import clone_worktree, remove_worktree
 from runner.protocol import LimitStop, RunnerError
 
 __all__ = [
@@ -262,9 +263,10 @@ class Lane:
     artifacts_conn: Connection | None = None
     handoffs: dict[str, Mapping[str, Any]] = field(default_factory=dict[str, Mapping[str, Any]])
     halted: threading.Event = field(default_factory=threading.Event)
-    # The machine's shared checkout, whose git directory holds the phase's local lock: the lane builds in a clone of
-    # its own (`_own_clone`), and the lock must still be one file for every lane of the phase on this machine.
-    lock_repo: Path | None = None
+    # The shared checkout's context, when the lane rolls up in a clone of its own (`_own_clone`). Its git directory
+    # holds the phase's local lock, still one file for every lane of the phase on this machine, and the tasks build in
+    # it as before, so the warm pool and its synced venvs keep serving them.
+    shared: Ctx | None = None
 
     def now(self) -> str:
         with self.store_lock:
@@ -321,7 +323,11 @@ def _rows_of(lane: Lane, result: Mapping[str, object], task: str, started: str) 
 def _build(lane: Lane, task: str, base: str) -> tuple[Mapping[str, object] | None, str, str, TaskCtx]:
     """Edge. The task's build-only lifecycle run, with its plan and build rows written: (result, why not, start)."""
     started = lane.now()
-    tctx = TaskCtx.of(lane.ctx, base)
+    tctx = TaskCtx.of(lane.shared or lane.ctx, base)
+    shared, why = _share_base(lane, task, base)
+    if not shared:
+        lane.put([lane.row(task, "build", False, "failed", {"error": why[:500]}, started)])
+        return None, why, started, tctx
     item = lane.items[task]
     invocation = lifecycle_invocation(tctx, item, body=plan_context(item, lane.handoffs), fix_attempts=0)
     args = {**invocation.args, "run_id": f"{lane.ctx.run_id}:{task}", "build_only": True}
@@ -338,6 +344,18 @@ def _build(lane: Lane, task: str, base: str) -> tuple[Mapping[str, object] | Non
     lane.put(rows, result)
     stopped = result.get("build_stopped")
     return (None if stopped else result), str(stopped or ""), started, tctx
+
+
+def _share_base(lane: Lane, task: str, base: str) -> tuple[bool, str]:
+    """Edge. Make the task's base, a commit of the lane's clone, a commit of the shared checkout the task builds in:
+    a local fetch under a ref private to the run, which `drop_refs` removes at the end. Nothing to do without a clone."""
+    if lane.shared is None:
+        return True, ""
+    ref = lane_rollup.private_ref(lane.ctx.run_id, f"base/{task}")
+    ok, said = git_in("-C", str(lane.ctx.repo), "update-ref", ref, base)
+    if ok:
+        ok, said = git_in("-C", str(lane.shared.repo), "fetch", "--no-tags", "--quiet", str(lane.ctx.repo), f"+{ref}:{ref}")
+    return ok, "" if ok else f"the task's base {base[:12]} could not be brought into the shared checkout: {said[:300]}"
 
 
 def _cleanup(lane: Lane, tctx: TaskCtx, task: str) -> None:
@@ -375,7 +393,7 @@ def _roll_up(lane: Lane, task: str, base: str, tctx: TaskCtx, started: str) -> t
     if not ok:
         return False, f"the task's change could not be read: {diff[:300]}"
     text = lane_rollup.message(c.initiative, c.phase, task, lane.ctx.run_id, str(lane.items[task].get("title") or task))
-    with lane_rollup.phase_lock(lane.lock_repo or lane.ctx.repo, c.initiative, c.phase):
+    with lane_rollup.phase_lock((lane.shared or lane.ctx).repo, c.initiative, c.phase):
         attempt = 0
         while True:
             attempt += 1
@@ -493,9 +511,9 @@ def _own_clone(ctx: Ctx, log: Callable[[str], None]) -> Ctx:
     """Edge. The run's context on a clone of its own (`repo_cache.lane_clone_dir`), borrowed from this worker's git
     mirror so it fetches from origin only what the mirror lacks (`worktree.clone_worktree`). The clone's `origin` is
     the shared checkout's, so every fetch and push of the lane goes to origin; the mirror is never a remote, and the
-    clone keeps none of its objects borrowed. It runs the shared checkout's hooks and links its `.venv` (its task
-    worktrees then link the same one), and it runs without the warm pool, whose worktrees belong to the shared checkout
-    and outlive the run.
+    clone keeps none of its objects borrowed, and it runs the shared checkout's hooks. Only the roll-ups and pushes
+    happen in it; the tasks still build in the shared checkout (`Lane.shared`), with its warm pool. The clone's
+    context has no pool of its own: pooled worktrees belong to the shared checkout and outlive the run.
     The shared checkout, unchanged, when it names no origin or the clone fails: the lane still runs, slower."""
     ok, said = git_in("-C", str(ctx.repo), "remote", "get-url", "origin")
     if not ok or not said.strip():
@@ -510,12 +528,21 @@ def _own_clone(ctx: Ctx, log: Callable[[str], None]) -> Ctx:
         log(f"lane: its own clone failed, so the lane builds in the shared checkout: {cloned.detail[:300]}")
         shutil.rmtree(dest, ignore_errors=True)
         return ctx
-    link_venv(ctx.repo, dest)
     # The shared checkout's hooks still run on the lane's commits and pushes, as they did when the lane built there.
     found, hooks = git_in("-C", str(ctx.repo), "rev-parse", "--path-format=absolute", "--git-path", "hooks")
     if found and hooks.strip():
         git_in("-C", str(dest), "config", "core.hooksPath", hooks.strip())
     return replace(ctx, repo=dest, pool=None)
+
+
+def _sweep_dead_clones(ctx: Ctx) -> list[str]:
+    """Edge. Remove the run folder of every dead run that holds a lane clone, whatever its phase: a killed lane's
+    clone is a whole checkout, so it does not wait for the next lane of its own phase (`lane_rollup.sweep`). A run is
+    dead when its `<run>.pid` names no running process, as `epic_phase_branch` judges a holder."""
+    holders = (p.parent.name for p in ctx.worktree_root.glob(f"*/{repo_cache.LANE_CLONE}"))
+    dead = repo_cache.dead_clones({run: pid_alive(ctx.runs_dir / f"{run}.pid") for run in holders if run != ctx.run_id})
+    lane_rollup.sweep_runs(ctx.repo, ctx.worktree_root, dead)
+    return dead
 
 
 def run_lane(ctx: Ctx, claim: LaneClaim, conn: Connection, open_conn: Callable[[], Connection],
@@ -535,11 +562,15 @@ def run_lane(ctx: Ctx, claim: LaneClaim, conn: Connection, open_conn: Callable[[
         swept = lane_rollup.sweep(ctx.repo, ctx.worktree_root, ctx.run_id.rpartition("-")[0], ctx.run_id)
         if swept:
             log(f"lane: swept what {', '.join(swept)} left behind")
+        dead = _sweep_dead_clones(ctx)
+        if dead:
+            log(f"lane: removed the clones of dead runs {', '.join(dead)}")
         lane_ctx = _own_clone(ctx, log)
-        return _run(lane_ctx, claim, conn, fence, items, base, log, phase_worktree, open_conn, ctx.repo)
+        return _run(lane_ctx, claim, conn, fence, items, base, log, phase_worktree, open_conn,
+                    ctx if lane_ctx is not ctx else None)
     finally:
         fence.stop()
-        settle_pool(lane_ctx, keep_worktrees=False)
+        settle_pool(ctx, keep_worktrees=False)
         if phase_worktree.exists():
             remove_worktree(lane_ctx.repo, phase_worktree)
         shutil.rmtree(ctx.worktree_root / ctx.run_id, ignore_errors=True)
@@ -549,7 +580,7 @@ def run_lane(ctx: Ctx, claim: LaneClaim, conn: Connection, open_conn: Callable[[
 
 def _run(ctx: Ctx, claim: LaneClaim, conn: Connection, fence: Fence, items: Sequence[Mapping[str, Any]], base: str,
          log: Callable[[str], None], phase_worktree: Path, open_conn: Callable[[], Connection],
-         lock_repo: Path | None = None) -> int:
+         shared: Ctx | None = None) -> int:
     tasks = phase_tasks(items, claim.phase)
     row = store_phases.get_row(conn, claim.initiative, claim.phase) or {}
     from harness.landing_store import get_record
@@ -575,7 +606,7 @@ def _run(ctx: Ctx, claim: LaneClaim, conn: Connection, fence: Fence, items: Sequ
     for sha in progress.ignored:
         log(f"lane: {sha[:12]} on {branch} is not a task commit of {claim.initiative}/{claim.phase}; ignored")
     lane = Lane(ctx, claim, conn, fence, phase_worktree, branch, base_sha, {str(t["id"]): t for t in tasks}, log,
-                open_conn, lock_repo=lock_repo)
+                open_conn, shared=shared)
     try:
         _origin_progress(lane, tip)
         order = [str(t["id"]) for t in tasks]
