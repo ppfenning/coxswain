@@ -8,7 +8,8 @@ runner answers the `merge_tasks` seat as it answers every other.
 
 The phase and its machine are `smoke/test_phase_lane.py`'s (`lane_machine`): t1 and t2 independent, t3 needing both.
 Here `init/ship` also holds `app.py`, whose `greet` both t1 and t2 change: each adds a line right after the `def`. t1's
-check sleeps 1 s, t2's 3 s, so t1 rolls up first and t2 is the one that collides.
+check sleeps 1 s, t2's 3 s, so t1 rolls up first and t2 is the one that collides. Since L6 the lane reviews its own
+phase once its smoke passed, so the phase's reviewer is scripted to approve and each case ends `finished approved`.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import pytest
 
 from smoke import plan
 from smoke.test_phase_lane import (
+    APPROVE,
     BRANCH,
     INIT,
     INITIATIVE,
@@ -61,8 +63,8 @@ def _merge_answer(text: str) -> dict[str, object]:
 
 
 def _answers(merged: str, rebuild: dict[str, object] | None = None) -> dict[str, object]:
-    """Plan and build only, as the phase lane's smoke scripts them, plus the `merge_tasks` seat's answer for t2; with
-    `rebuild`, t2's second build (the rebuild on the new tip) answers that."""
+    """Plan, build and the phase's reviewer (approving), as the phase lane's smoke scripts them, plus the
+    `merge_tasks` seat's answer for t2; with `rebuild`, t2's second build (the rebuild on the new tip) answers that."""
     t2 = _build("t2", 3, _insert(DEF, T2_LINE))
     return {
         "plan": {"steps": ["edit greet"], "files_expected": [], "out_of_scope": []},
@@ -70,6 +72,7 @@ def _answers(merged: str, rebuild: dict[str, object] | None = None) -> dict[str,
         "build@t2": [t2, rebuild] if rebuild else t2,
         "build@t3": _build("t3", 1),
         "merge_tasks@t2": _merge_answer(merged),
+        "review_phase": APPROVE,
     }
 
 
@@ -99,7 +102,7 @@ def _finished(sandbox, env, name) -> tuple[dict, str]:
         worker.kill()
     row = _row(sandbox)
     log = _run_log(sandbox, row["run_id"])
-    assert (row["state"], row["attempts"]) == ("built", 0), (row, out, log)
+    assert (row["state"], row["outcome"], row["attempts"]) == ("finished", "approved", 1), (row, out, log)
     return row, log
 
 
@@ -200,7 +203,7 @@ def test_a_task_a_stale_lane_already_landed_on_the_tip_is_adopted_not_applied_tw
     row = _row(sandbox)
     run_id = row["run_id"]
     log = _run_log(sandbox, run_id)
-    assert (row["state"], row["attempts"]) == ("built", 0), (row, out, log)
+    assert (row["state"], row["outcome"], row["attempts"]) == ("finished", "approved", 1), (row, out, log)
     assert f"lane: t2 is already on {BRANCH} as {stale[:12]}; adopted, not applied again" in log, log
     commits = _commits(sandbox, repo.origin)
     assert [(c["task"], c["run"]) for c in commits] == [

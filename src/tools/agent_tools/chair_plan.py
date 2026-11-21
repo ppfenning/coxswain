@@ -1471,6 +1471,28 @@ def plan_housekeeping_kind(basis: TickBasis, launch: LaunchPlan) -> Housekeeping
 # the two together always plan what the tick alone did.
 Segment = tuple[str, list[Action]]
 
+# Recovery's decisions that start no run: a triage request, a hold and its announcement. They ride in the launch slot,
+# in the order recovery planned them, but they are the triage's (C4), so a `quarantine` worker makes them. A relaunch,
+# retry, rescue or rebuild starts a run and stays with launch (C5).
+_TRIAGE_KINDS = frozenset({ActionKind.REQUEST_TRIAGE, ActionKind.HOLD_TASK, ActionKind.ANNOUNCE_HOLD})
+
+
+def launch_slot_kind(action: Action, recovered: Sequence[Action]) -> str:
+    """Pure. The kind that plans one action of the launch slot. A decompose launch is `decompose`'s; a triage decision,
+    or a quarantine of recovery's (`recovered`) that reaches the chair for its task, is `quarantine`'s; the rest
+    (launches, relaunches, retries, rescues, rebases, a pull, recovery's other reports) are `launch`'s."""
+    kind = action.get("kind")
+    if kind == ActionKind.LAUNCH_DECOMPOSE:
+        return "decompose"
+    if kind in _TRIAGE_KINDS or (kind == ActionKind.NEEDS_CHAIR and "task_id" in action and action in recovered):
+        return "quarantine"
+    return "launch"
+
+
+def _launch_slot(launches: Sequence[Action], recovered: Sequence[Action]) -> list[Segment]:
+    """The launch slot, one segment per action in its own order, each named by `launch_slot_kind`."""
+    return [(launch_slot_kind(a, recovered), [a]) for a in launches]
+
 
 def _holder_segments(raw_facts: Facts, now: datetime | None, held: frozenset[str]) -> tuple[TickBasis, LaunchPlan, list[Segment]]:
     basis = tick_basis(raw_facts, now, held)
@@ -1492,7 +1514,7 @@ def _holder_segments(raw_facts: Facts, now: datetime | None, held: frozenset[str
         ("quarantine", quarantine.releases),  # a release starts no run
         ("land", land.deadlock_chair),
         ("land", land.carries),
-        ("launch", launch.launches),
+        *_launch_slot(launch.launches, quarantine.recovered),
         # phase-model initiatives: the queue a worker claims from, never a launch
         ("launch", plan_phase_queue(basis.facts, now.strftime("%Y-%m-%dT%H:%M:%SZ") if now is not None else "", basis.gated)),
         ("quarantine", quarantine.widen),
@@ -1516,10 +1538,20 @@ def _holder_segments(raw_facts: Facts, now: datetime | None, held: frozenset[str
     return basis, launch, [(kind, withhold_old_model(actions, phase_ids)) for kind, actions in segments]
 
 
+def _tagged(action: Action, kind: str, tag: bool) -> Action:
+    """The action marked `queue_kind` when `tag` is on and a queue worker could run its kind; else as it is."""
+    return {**action, "queue_kind": kind} if tag and kind in chair_kinds.QUEUE_KINDS else action
+
+
 def _plan_as_holder(
-    raw_facts: Facts, now: datetime | None, held: frozenset[str] = frozenset(), skip: frozenset[str] = frozenset()
+    raw_facts: Facts,
+    now: datetime | None,
+    held: frozenset[str] = frozenset(),
+    skip: frozenset[str] = frozenset(),
+    tag: bool = False,
 ) -> list[Action]:
-    """The holder's tick, without the slots of the kinds in `skip` (those a queue worker runs)."""
+    """The holder's tick, without the slots of the kinds in `skip` (those a queue worker runs). With `tag`, each action
+    of a kind a queue worker could run carries that kind as `queue_kind`, named by the slot that planned it."""
     basis, launch, segments = _holder_segments(raw_facts, now, held)
     planned = [a for _kind, actions in segments for a in actions]
     # H7.1: one alarm per stall the tick sees and one all-clear per raised stall that no longer stands; a launch planned
@@ -1527,7 +1559,35 @@ def _plan_as_holder(
     # repeated-failure checks stand. The alarm reads every kind's slots, a worker's too: an idle line a housekeeping
     # worker sends is still the chair's idle line, so the tick does not raise a second one.
     alarms = plan_stall_alarm(basis.facts, planned, now, launch_paused=launch.launch_paused) if now is not None else []
-    return [*(a for kind, actions in segments if kind not in skip for a in actions), *alarms]
+    kept = [(kind, a) for kind, actions in segments if kind not in skip for a in actions]
+    return [*(_tagged(a, kind, tag) for kind, a in triage_first(kept, _triaged_by_worker(segments, skip))), *alarms]
+
+
+# The triage decisions that change the state a relaunch reads: a triage request sends the task back to ready with its
+# flag, a hold moves it to blocked. A relaunch performed before either would build the initiative without it.
+_TRIAGE_BEFORE_RELAUNCH = frozenset({ActionKind.REQUEST_TRIAGE, ActionKind.HOLD_TASK})
+# What the tick holds back for an initiative whose triage a worker owns: a launch of it (a relaunch, or a first launch
+# of an initiative whose task failed before its runs were recorded) and the relaunch's paired branch clear.
+_HELD_FOR_TRIAGE = frozenset({ActionKind.RELAUNCH, ActionKind.LAUNCH_EPIC, ActionKind.CLEAR_BRANCHES})
+
+
+def _triaged_by_worker(segments: Sequence[Segment], skip: Collection[str]) -> frozenset[str]:
+    """The initiatives with a triage request or hold in a slot the tick skips (a queue worker makes it)."""
+    return frozenset(
+        action_text(a, "initiative")
+        for kind, actions in segments if kind in skip
+        for a in actions if a.get("kind") in _TRIAGE_BEFORE_RELAUNCH
+    )
+
+
+def triage_first(kept: Sequence[tuple[str, Action]], triaged: Collection[str]) -> list[tuple[str, Action]]:
+    """Pure. The tick's slots without the launch, relaunch and branch clear of each initiative in `triaged`.
+
+    The tick alone plans `request_triage`, `clear_branches`, `relaunch` for one initiative and performs them in that
+    order, so the relaunch picks the triaged task up. When a quarantine worker owns the triage, the tick cannot order
+    its launch after the worker's write, so it holds them back for this tick; the next tick, once the worker has
+    set the flag, plans no triage for that state and relaunches."""
+    return [(kind, a) for kind, a in kept if not (a.get("kind") in _HELD_FOR_TRIAGE and action_text(a, "initiative") in triaged)]
 
 
 def _parse_utc(ts: str | None) -> datetime | None:
@@ -1547,23 +1607,25 @@ def plan_housekeeping(facts: Facts, now: datetime) -> list[Action]:
     return [{"kind": ActionKind.HOUSEKEEPING, "reason": f"housekeeping due: last {facts['last_housekeeping_at'] if last else 'never'}"}]
 
 
-def plan_tick_held(facts: Facts, now: datetime | None = None, gate: CiGate = _UNPAUSED) -> TickPlan:
+def plan_tick_held(facts: Facts, now: datetime | None = None, gate: CiGate = _UNPAUSED, tag: bool = False) -> TickPlan:
     """now is the tick's clock; without it no housekeeping, check_login, probe_host or host_back is planned.
 
-    A kind `chair_kinds.tick_skips` names (a queue worker runs it) is not planned here; `plan_kind` plans it.
+    A kind `chair_kinds.tick_skips` names (a queue worker runs it) is not planned here; `plan_kind` plans it. With
+    `tag`, each action of a kind a queue worker could run carries that kind as `queue_kind` (`tag_queue_kinds`).
 
     While `gate.paused`, a started initiative that waits only on a land not yet completed gets no relaunch and is
     named in `held_for_ci`; the caller reports it. An unpaused gate, or a tick the lease gates, holds nothing."""
     lease = facts["lease"]
     gated = _lease_gate(lease)
     skip = chair_kinds.tick_skips(facts)
-    housekeeping = plan_housekeeping(facts, now) if now is not None and "housekeeping" not in skip else []
+    sweep = plan_housekeeping(facts, now) if now is not None and "housekeeping" not in skip else []
+    housekeeping = [_tagged(a, "housekeeping", tag) for a in sweep]
     login_checks = [*_login_check_actions(facts, now), *_probe_host_actions(facts, now)]
     held = _land_only_ids(facts["initiatives"], facts["approved"]) if gate.paused and gated is None else frozenset[str]()
-    holder = _withhold_blocked_hosts(_plan_as_holder(facts, now, held, skip), facts) if gated is None else []
+    holder = _withhold_blocked_hosts(_plan_as_holder(facts, now, held, skip, tag), facts) if gated is None else []
     # A lent lease plans the routine actions, then standby last, so the tick still reads as not acting.
     lent = gated is not None and gated[0]["kind"] == "standby" and lease.get("lent", False)
-    routine = _withhold_blocked_hosts(routine_only(_plan_as_holder(facts, now, skip=skip)), facts) if lent else []
+    routine = _withhold_blocked_hosts(routine_only(_plan_as_holder(facts, now, skip=skip, tag=tag)), facts) if lent else []
     # a listed kind no live worker holds, or worker leases unreadable for too long: nobody plans it, so say so
     unowned = [*chair_kinds.unowned_actions(facts), *chair_kinds.unreadable_actions(facts)]
     actions = [*holder, *housekeeping, *login_checks, *unowned] if gated is None else [*routine, *gated]
@@ -1587,20 +1649,23 @@ def plan_kind(kind: str, facts: Facts, now: datetime, held: frozenset[str] = fro
     return [*slots, *(plan_housekeeping(facts, now) if kind == "housekeeping" else [])]
 
 
-def tag_queue_kinds(actions: Sequence[Action], facts: Facts, now: datetime) -> list[Action]:
-    """The tick's actions with each one a queue worker could run marked `queue_kind` (housekeeping or watch), so its
-    perform can check that kind's lease again just before that action. An action is matched to `plan_kind`'s output
-    by everything but its lease epoch, one for one; the rest pass unmarked."""
-    owed = {kind: Counter(_unstamped(a) for a in plan_kind(kind, facts, now)) for kind in chair_kinds.QUEUE_KINDS}
-    tagged: list[Action] = []
-    for action in actions:
-        key = _unstamped(action)
-        kind = next((k for k, left in owed.items() if left[key] > 0), None)
-        if kind is not None:
-            owed[kind][key] -= 1
-        tagged.append({**action, "queue_kind": kind} if kind is not None else action)
+def tag_queue_kinds(actions: Sequence[Action], facts: Facts, now: datetime, gate: CiGate = _UNPAUSED) -> list[Action]:
+    """The tick's actions with each one a queue worker could run marked `queue_kind`, so its perform can check that
+    kind's lease again just before that action.
+
+    The kind comes from the slot that planned the action (`plan_tick_held` with `tag`), never from matching its text,
+    so two identical actions of two kinds each keep their own. `actions` is the same planner's output from the same
+    facts, so it lines up with the tagged plan one for one. A plan that does not line up raises `PlanMismatch`: the
+    caller then performs it untagged, which keeps every action with the tick."""
+    tagged = plan_tick_held(facts, now, gate, tag=True).actions
+    if [_untagged(a) for a in tagged] != list(actions):
+        raise PlanMismatch(f"the tick's {len(actions)} actions do not line up with the tagged plan's {len(tagged)}")
     return tagged
 
 
-def _unstamped(action: Action) -> str:
-    return repr(sorted((k, repr(v)) for k, v in action.items() if k != "epoch"))
+class PlanMismatch(ValueError):
+    """The actions handed to `tag_queue_kinds` are not the tick planner's output for the same facts."""
+
+
+def _untagged(action: Action) -> Action:
+    return {k: v for k, v in action.items() if k != "queue_kind"}  # type: ignore[return-value]

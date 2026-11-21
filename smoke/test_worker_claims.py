@@ -10,9 +10,9 @@ takes its lease away.
 
 Every `cox` here runs with an `ssh` first on PATH that records its argv and exits 1: nothing may reach a worker.
 
-The lane is L1's (`harness.phase_lane`): it takes no run lease, and a phase whose every task rolled up is parked
-`built` until its phase review (L6) writes a round, rather than finishing approved. Where a test needs it approved, it
-writes the review round itself as the store's owner (`_approve`), as L6 will, and the chair queues the phase again.
+The lane is `harness.phase_lane`: it takes no run lease, and once every task rolled up and the phase smoke passed it
+reviews its own phase (L6). The phase reviewer (`review_phase`) is scripted to approve, so a phase run to its end
+finishes `finished`/`approved` in one claim, and the review costs it an attempt.
 """
 
 from __future__ import annotations
@@ -174,17 +174,6 @@ class MostAtOnce:
         return self.most
 
 
-def _approve(sandbox, phase: str = "p1") -> None:
-    """The scripted round, as L6 will write it: the phase review approved. The chair's next tick queues the parked
-    phase again for a worker to finish."""
-    with psycopg.connect(sandbox.store_url, autocommit=True, connect_timeout=10) as conn:
-        conn.execute("INSERT INTO review_rounds VALUES (%s, %s, 1, '', 'approve', '', '{}', '', 'smoke', 'smoke', 0, 0, '')",
-                     (INITIATIVE, phase))
-    tick = sandbox.cox("chair", "run", "--once", timeout=180)
-    assert tick.returncode == 0, tick.stdout + tick.stderr
-    assert _row(sandbox, phase)["state"] == "ready", tick.stdout
-
-
 def _store_clock(sandbox) -> str:
     with psycopg.connect(sandbox.store_url, connect_timeout=10) as conn:
         row = conn.execute("SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')").fetchone()
@@ -204,10 +193,10 @@ def test_two_workers_at_once_claim_the_phase_once_and_one_runs_it_to_approval_wi
     assert len(claimed) == 1, outs
     (winner,) = claimed
     row = _row(sandbox)
-    # Built, and parked for its review without costing an attempt.
+    # Built, smoked and reviewed in the one claim: the phase review approved it, at the cost of one attempt.
     assert (row["state"], row["outcome"], row["claim_epoch"], row["attempts"], row["updated_by"]) == (
-        "built", "", 1, 0, winner), (row, outs)
-    assert "waiting for the phase review" in row["reason"], row
+        "finished", "approved", 1, 1, winner), (row, outs)
+    assert "finished approved: the phase review approved it in round 1" in outs[winner], outs
     assert row["run_id"] == f"{INITIATIVE}.p1-1", row
     assert sandbox.git(repo.origin, "show", f"epic/{INITIATIVE}/p1:{NOTE}") == "ok"
     assert {w["name"] for w in _status(sandbox)["workers"]} == {"w1", "w2"}
@@ -226,7 +215,7 @@ def test_a_macos_phase_is_claimed_only_by_a_worker_that_advertises_it(launchable
     mac = Worker(sandbox, "once", "--name", "mac-1", "--capability", "os:macos").finished()
     assert f"mac-1 claimed {INITIATIVE}/p1" in mac, mac
     row = _row(sandbox)
-    assert (row["claim_epoch"], row["updated_by"], row["state"]) == (1, "mac-1", "built"), (row, mac)
+    assert (row["claim_epoch"], row["updated_by"], row["state"], row["outcome"]) == (1, "mac-1", "finished", "approved"), (row, mac)
 
 
 def test_a_worker_with_one_lane_never_holds_two_claims(launchable, repo):
@@ -243,7 +232,7 @@ def test_a_worker_with_one_lane_never_holds_two_claims(launchable, repo):
     assert out.count("solo claimed") == 1, out
     assert max(held, default=0) <= 1, held
     rows = {p: _row(sandbox, p) for p in ("p1", "p2")}
-    assert sorted((r["state"], r["claim_epoch"]) for r in rows.values()) == [("built", 1), ("ready", 0)], rows
+    assert sorted((r["state"], r["claim_epoch"]) for r in rows.values()) == [("finished", 1), ("ready", 0)], rows
 
 
 def test_a_fleet_of_one_machine_takes_a_phase_initiative_from_queue_to_main(launchable, repo):
@@ -251,11 +240,8 @@ def test_a_fleet_of_one_machine_takes_a_phase_initiative_from_queue_to_main(laun
     lands: one machine, one pass of each."""
     sandbox, calls = _ssh_trap(launchable.sandbox)
     _queued(launchable, sandbox)
-    built = Worker(sandbox, "once", "--name", "solo").finished()
-    assert "parked as built" in built, built
-    _approve(sandbox)
     reviewed = Worker(sandbox, "once", "--name", "solo").finished()
-    assert "finished approved" in reviewed, reviewed
+    assert "finished approved: the phase review approved it in round 1" in reviewed, reviewed
     approving = sandbox.cox("chair", "run", "--once", timeout=180)
     assert approving.returncode == 0, approving.stdout + approving.stderr
     assert sandbox.store_row(INITIATIVE, "t1")["state"] == "approved"

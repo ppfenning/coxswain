@@ -1,8 +1,8 @@
 """Which of the chair's kinds of work a queue worker runs, and which the old tick loop still plans (C3).
 
 Pure. The profile key `chair.queues` lists the kinds that have moved to their own worker process
-(`cox chair worker --kind K`); the default is empty, so the tick plans every kind as before. Today the kinds that can
-move are `housekeeping` and `watch`; the rest stay on the tick until C4 and C5.
+(`cox chair worker --kind K`); the default is empty, so the tick plans every kind as before. The kinds that can move
+are `housekeeping` and `watch` (C3), and `quarantine` and `decompose` (C4); `launch` stays on the tick until C5.
 
 Who plans a kind, decided from the same facts on both sides:
 
@@ -24,12 +24,14 @@ has ever been seen (`queue_leases_seen`), and how long the read has been failing
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import cast
 
 from agent_tools.chair_types import Action, ActionKind, Facts
 
 __all__ = [
+    "LAUNCH_LEASES",
     "LEASE_PREFIX",
     "LEASE_TTL_SECONDS",
     "POLL_SECONDS",
@@ -37,8 +39,11 @@ __all__ = [
     "UNOWNED_CAUSE",
     "UNREADABLE_CAUSE",
     "WAKE_TABLES",
+    "QueueProof",
+    "launch_refusal",
     "lease_name",
     "live_kinds",
+    "proof_argv",
     "queued_kinds",
     "tick_skips",
     "unowned_actions",
@@ -47,7 +52,7 @@ __all__ = [
     "worker_acts",
 ]
 
-QUEUE_KINDS = ("housekeeping", "watch")
+QUEUE_KINDS = ("housekeeping", "watch", "quarantine", "decompose")
 
 # The tables whose write is a reason to plan a kind again now. Housekeeping reads hosts and workers too, but a host or
 # worker beat writes them every few seconds across a fleet, and each wake costs a full gather (with forge calls), so
@@ -56,10 +61,15 @@ QUEUE_KINDS = ("housekeeping", "watch")
 WAKE_TABLES: Mapping[str, frozenset[str]] = {
     "housekeeping": frozenset({"work_items", "runs"}),
     "watch": frozenset({"landing_records", "land_queue"}),
+    # A phase that finishes moves its `phase_queue` row (state, outcome) and its tasks' `work_items` rows; either wakes
+    # the triage. On the phase model that move is the event, so no `run_exited` courier line is needed.
+    "quarantine": frozenset({"work_items", "runs", "phase_queue"}),
+    # A new intake is a `work_items` row; a decompose run's exit is a `runs` row.
+    "decompose": frozenset({"work_items", "runs", "phase_queue"}),
 }
 
 # The fallback: a worker plans at least this often with no notification at all (the tick's own default interval).
-POLL_SECONDS: Mapping[str, float] = {"housekeeping": 60.0, "watch": 60.0}
+POLL_SECONDS: Mapping[str, float] = {"housekeeping": 60.0, "watch": 60.0, "quarantine": 60.0, "decompose": 60.0}
 
 # The leases amendment (2026-11-20): heartbeat 10 s, lease 60 s.
 LEASE_TTL_SECONDS = 60
@@ -168,3 +178,38 @@ def unowned_actions(facts: Facts) -> list[Action]:
         }
         for kind in sorted(unowned_kinds(facts))
     ]
+
+
+# The launches a queue worker makes, by graph, and the kind lease each is made under. `cox route launch <graph>` started
+# beside the loop's live lock (held under the tick's label) is accepted only while the store says that lease is held,
+# by that holder at that epoch: a worker that lost its lease, or a stale process naming an old epoch, is refused.
+LAUNCH_LEASES: Mapping[str, str] = {"decompose": lease_name("decompose")}
+
+
+@dataclass(frozen=True)
+class QueueProof:
+    """The kind lease a queue worker's launch is made under: the lease's name, its holder and its epoch."""
+
+    lease: str
+    holder: str
+    epoch: int
+
+
+def proof_argv(proof: QueueProof) -> list[str]:
+    """Pure. The `cox route launch` flags that carry `proof`."""
+    return ["--queue-lease", proof.lease, "--queue-holder", proof.holder, "--queue-epoch", str(proof.epoch)]
+
+
+def launch_refusal(refusal: str | None, graph: str, proof: QueueProof | None, held: bool) -> str | None:
+    """Pure. Whether a launch goes on: None to go on, else the line it is refused with.
+
+    `refusal` is the loop lock's own (`chair.guard`: another label's live lock), None when the lock lets it through.
+    A launch the lock refuses goes on only with a proof of the kind lease its graph is made under (`LAUNCH_LEASES`)
+    that the store says is `held`, by its holder at its epoch."""
+    if refusal is None or proof is None:
+        return refusal
+    if LAUNCH_LEASES.get(graph) != proof.lease:
+        return f"{refusal}; {proof.lease} does not cover a {graph} launch"
+    if not held:
+        return f"{refusal}; {proof.lease} is not held by {proof.holder} at epoch {proof.epoch} by the store's clock"
+    return None

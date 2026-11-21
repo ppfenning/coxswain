@@ -1084,6 +1084,7 @@ def perform(
     blocked: dict[str, Blocker] = {}  # repo -> the uncounted land or land_phase that blocks its later lands and deletes
     blocked_initiatives: dict[str, Blocker] = {}  # initiative -> its uncounted land_phase that skips its later lands
     uncleared: dict[str, str] = {}  # initiative -> status of its clear_branches that did not finish done, this tick
+    untriaged: dict[str, str] = {}  # initiative -> its triage or hold a queue worker took over mid-perform, this tick
     launched_hosts: set[str] = set()  # hosts a launch was attempted on this tick; "" is the loop's own machine
     if not dry_run:
         _ack_done_land_notices(deps)
@@ -1112,6 +1113,12 @@ def perform(
             result = make_result(action, "fenced", "planned under another lease epoch")
         elif (queued := _queue_held(action, deps)) is not None:
             result = make_result(action, "skipped", queued)
+            if action.get("kind") in ("request_triage", "hold_task"):
+                untriaged[initiative] = str(action.get("kind"))
+        elif action.get("kind") in ("clear_branches", "launch_epic") and initiative in untriaged:
+            # the worker's write comes first: a launch now would build the initiative without it (skipped, the
+            # clear also blocks its relaunch through `uncleared`)
+            result = make_result(action, "skipped", f"{untriaged[initiative]} for {initiative} went to a queue worker this tick")
         elif action.get("kind") == "relaunch" and initiative in uncleared:
             result = make_result(action, "skipped", f"clear_branches for {initiative} was {uncleared[initiative]} this tick")
         elif (

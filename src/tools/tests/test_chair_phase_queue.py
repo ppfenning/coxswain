@@ -235,14 +235,50 @@ def test_the_tick_approves_an_approved_phases_tasks_and_does_not_reopen_it_meanw
     assert not [a for a in again if a["kind"] == "approve_phase_tasks"]
 
 
-def test_a_built_phase_is_queued_again_only_once_its_review_round_is_written():
+def test_a_phase_an_older_worker_parked_built_is_queued_again_for_its_lane_to_review():
+    """L1's interim park is gone: a `built` row left by an older worker needs no review round to be claimable again."""
     want = chair_phase_queue.rows([_phase_initiative("ship", ("p1", [_task("t1", "p1")]))], True)
     built = _stored("p1", state="built", epoch=4)
-    assert chair_phase_queue.changes(want, [built], STAMP) == []  # parked: never relaunched while it waits
-    (review,) = chair_phase_queue.changes(want, [built], STAMP, reviewed={("ship", "p1")})
+    (review,) = chair_phase_queue.changes(want, [built], STAMP)
     assert (review["op"], review["phase"], review["epoch"]) == ("review", "p1", 4)
-    queue = {**_queue([built]), "rounds": [{"initiative": "ship", "phase": "p1", "round": 1, "verdict": "approve"}]}
     initiatives = [_phase_initiative("ship", ("p1", [_task("t1", "p1")]))]
-    (action,) = [a for a in plan_tick({**_tick_facts(initiatives=initiatives), "phase_queue": queue}, NOW)
+    (action,) = [a for a in plan_tick({**_tick_facts(initiatives=initiatives), "phase_queue": _queue([built])}, NOW)
                  if a["kind"] == "queue_phases"]
     assert _ops(action["changes"]) == [("review", "ship", "p1")]
+
+
+def test_a_built_row_an_old_worker_keeps_parking_is_exhausted_once_the_requeues_spend_its_attempts():
+    """The requeue costs an attempt in the store (`store_phases._apply`'s `review`): once they are spent, the row the
+    last requeue left ready is finished failed, not requeued or claimed again."""
+    from harness import phase_pick
+
+    want = chair_phase_queue.rows([_phase_initiative("ship", ("p1", [_task("t1", "p1")]))], True)
+    spent = _stored("p1", state="ready", epoch=3, attempts=phase_pick.MAX_ATTEMPTS)
+    (exhaust,) = chair_phase_queue.changes(want, [spent], STAMP)
+    assert (exhaust["op"], exhaust["phase"]) == ("exhaust", "p1")
+
+
+def test_a_phase_its_review_quarantined_quarantines_its_open_tasks_with_the_round_s_reason():
+    stored = {**_stored("p1", state="finished", outcome="quarantined"), "run_id": "ship.p1-7",
+              "reason": "the phase review quarantined it in round 3: revision budget spent"}
+    tasks = _tasks(("t1", "p1", "ready", ""), ("t2", "p1", "approved", "a2"), ("t3", "p1", "in_progress", ""),
+                   ("t4", "p2", "ready", ""), ("t5", "p1", "blocked", ""))
+    changes = chair_phase_queue.quarantines([stored], tasks)
+    assert [(c["op"], c["task_id"], c["from"]) for c in changes] == [
+        ("quarantine_task", "t1", "ready"), ("quarantine_task", "t3", "in_progress")]
+    assert changes[0]["mark_key"] == "quarantine_mark" and changes[0]["mark"] == {
+        "cause": "review", "reason": "the phase review quarantined it in round 3: revision budget spent",
+        "run": "ship.p1-7"}
+    assert chair_phase_queue.quarantines([{**stored, "outcome": "failed"}], tasks) == []  # a failed smoke is not one
+
+
+def test_the_tick_quarantines_a_quarantined_phase_s_tasks_and_does_not_reopen_it_meanwhile():
+    initiatives = [_phase_initiative("ship", ("p1", [_task("t1", "p1")]))]
+    stored = {**_stored("p1", state="finished", outcome="quarantined"), "reason": "goal missed", "run_id": "ship.p1-2"}
+    queue = {**_queue([stored]), "tasks": _tasks(("t1", "p1", "ready", ""))}
+    (action,) = [a for a in plan_tick({**_tick_facts(initiatives=initiatives), "phase_queue": queue}, NOW)
+                 if a["kind"] == "queue_phases"]
+    assert _ops(action["changes"]) == [("quarantine_task", "ship", "p1")]  # no reopen while its task waits
+    settled = {**queue, "tasks": _tasks(("t1", "p1", "quarantined", ""))}
+    again = plan_tick({**_tick_facts(initiatives=[]), "phase_queue": settled}, NOW)
+    assert not [a for a in again if a["kind"] == "queue_phases"]

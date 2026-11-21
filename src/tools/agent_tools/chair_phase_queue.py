@@ -15,8 +15,17 @@ docket, then the phase's place in it.
 
 A claimed row is the worker's and is never changed here. A withheld phase's ready row is withdrawn (`cancelled`) and
 comes back when it is wanted again. A finished row is reopened when its phase is ready again and it finished approved
-or quarantined: work came back to it. A row whose claims ran out while nobody held it is finished as failed
-(`exhaust`), and so is any phase that ran out of attempts: it stays finished for the operator.
+or quarantined: work came back to it, and the reopen starts a new review episode (`store_phases`). A row whose claims
+ran out while nobody held it is finished as failed (`exhaust`), and so is any phase that ran out of attempts: it stays
+finished for the operator. A row an older worker parked `built` (L1's interim, before the lane reviewed its own phase)
+is made claimable again, so its next lane reviews it; the requeue counts an attempt, since that worker's park gave
+its claim's back, so an old worker that keeps parking the row runs it out of attempts rather than looping.
+
+The phase lane reviews its own phase (L6, `harness.review_loop`), and the chair reacts to how the review finished it:
+- approved: each task is approved at its roll-up commit (`approvals`, through `store_api.approve_on`);
+- quarantined: each of its open tasks is quarantined with the review's reason (`quarantines`), marked with the cause
+  triage reads (`chair_phase_quarantine.MARK_KEY`), so the work goes to triage rather than straight back to a lane.
+Neither phase is wanted again while its tasks wait for that write.
 
 An initiative on the phase model is the worker's for its whole life: `withhold_old_model` drops every action of the
 old model (a launch, a relaunch, a branch clear, a fetch, a land, a signal to a run) that names one, so the two models
@@ -28,10 +37,11 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping, Sequence
 from typing import cast
 
+from agent_tools.chair_phase_quarantine import MARK_KEY
 from agent_tools.chair_types import Action, ActionKind, Facts, InitiativeFacts
 from agent_tools.lane_prereqs import DOCKER_CAPABILITY
 from agent_tools.queue_rows import launchable_by_tick
-from harness import phase_pick
+from harness import phase_pick, review_loop
 
 BAND = 1  # every phase today; band 0 is kept for hotfixes and bugs
 _SEQ_STRIDE = 1000  # phases per initiative the order leaves room for
@@ -120,11 +130,11 @@ def _key(row: Row) -> Key:
 
 
 def changes(wanted_rows: Sequence[Row], stored: Sequence[Row], now: str, holds: Collection[str] = (),
-            held_phases: Collection[Key] = (), closed: Collection[str] = (), stopped: bool = False,
-            reviewed: Collection[Key] = ()) -> list[dict[str, object]]:
+            held_phases: Collection[Key] = (), closed: Collection[str] = (), stopped: bool = False) -> list[dict[str, object]]:
     """What the store needs so it holds `wanted_rows`, at the tick's `now`:
-    - `review` for a `built` row (every task rolled up, parked for its review) once its phase has a review round in
-      `reviewed`: claimable again, so the next claim acts on the round, and never before, so nothing relaunches it;
+    - `review` for a `built` row (parked by an older worker, before the lane reviewed its own phase): claimable again,
+      at the cost of an attempt (the park gave its claim's back), so its next lane reviews it and an old worker that
+      parks it again and again exhausts it;
     - `insert` for a phase with no row; `update` for a waiting or ready row whose requirements or order moved;
     - `reopen` for a finished (approved or quarantined) or withdrawn row whose phase is wanted again;
     - `withdraw` for a waiting or ready row whose phase is withheld (`withheld`);
@@ -149,9 +159,9 @@ def changes(wanted_rows: Sequence[Row], stored: Sequence[Row], now: str, holds: 
         if phase_pick.exhausted(row, now):
             out.append({"op": "exhaust", "initiative": key[0], "phase": key[1],
                         "reason": f"{row.get('attempts')} claims and none finished it; the operator decides"})
-        elif row.get("state") == "built" and key in reviewed:
+        elif row.get("state") == "built":
             out.append({"op": "review", "initiative": key[0], "phase": key[1], "epoch": row.get("claim_epoch", 0),
-                        "reason": "its review round is written"})
+                        "reason": "parked built before the lane reviewed its own phase: its next lane reviews it (one attempt)"})
         elif row.get("state") in ("waiting", "ready") and (why := withheld(key, holds, held_phases, closed, stopped)):
             out.append({"op": "withdraw", "initiative": key[0], "phase": key[1], "reason": why})
     return out
@@ -179,12 +189,35 @@ def approvals(stored: Sequence[Row], tasks: Sequence[Row], rollups: Sequence[Row
     return out
 
 
+_OPEN = frozenset({"todo", "ready", "in_progress"})  # the task states a phase's quarantine moves
+
+
+def quarantines(stored: Sequence[Row], tasks: Sequence[Row]) -> list[dict[str, object]]:
+    """The `queue_phases` changes that quarantine each open task (todo, ready or in progress) of a phase whose row
+    finished quarantined: its review quarantined it, and the row's reason is the round's. Each moves from the state
+    read, and marks the task with the review's cause, that reason and the run that reviewed it, which triage reads. A
+    task approved, done, dropped, blocked or quarantined already is left as it is, so a repeat plans nothing; and a
+    phase finished quarantined because its tasks had stopped (`phase_pick.verdict`) has no open task to move."""
+    finished = {_key(r): r for r in stored if r.get("state") == "finished" and r.get("outcome") == "quarantined"}
+    out: list[dict[str, object]] = []
+    for task in sorted(tasks, key=lambda t: (str(t.get("initiative")), str(t.get("phase")), str(t.get("task_id")))):
+        row = finished.get((str(task.get("initiative")), str(task.get("phase"))))
+        if row is None or task.get("state") not in _OPEN:
+            continue
+        mark = {"cause": review_loop.REVIEW_CAUSE, "reason": str(row.get("reason") or ""), "run": str(row.get("run_id") or "")}
+        out.append({"op": review_loop.QUARANTINE_TASK, "initiative": str(task.get("initiative")),
+                    "phase": str(task.get("phase")), "task_id": str(task.get("task_id")), "from": str(task.get("state")),
+                    "mark_key": MARK_KEY, "mark": mark})
+    return out
+
+
 def plan(facts: Facts, now: str, holds: Collection[str] = ()) -> list[Action]:
     """One `approve_phase_tasks` action for the tasks of phases that finished approved (`approvals`), and one
-    `queue_phases` action with the tick's changes; either is left out when it has nothing. Without the stored rows
-    (`phase_queue` unread) nothing is planned. A phase whose tasks wait to be approved is not wanted again: its ready
-    tasks are what this tick approves, not work that came back. `holds` is the tick's held and deferred initiatives;
-    the facts add those stopped by their own failures and the tasks held for a person."""
+    `queue_phases` action with the tick's changes and the task quarantines of phases that finished quarantined
+    (`quarantines`); either is left out when it has nothing. Without the stored rows (`phase_queue` unread) nothing is
+    planned. A phase whose tasks wait to be approved or quarantined is not wanted again: its ready tasks are what this
+    tick settles, not work that came back. `holds` is the tick's held and deferred initiatives; the facts add those
+    stopped by their own failures and the tasks held for a person."""
     queue = facts.get("phase_queue")
     if queue is None or not queue["readable"]:
         return []
@@ -192,17 +225,17 @@ def plan(facts: Facts, now: str, holds: Collection[str] = ()) -> list[Action]:
     held_phases = frozenset((t["initiative"], t["phase"]) for t in facts.get("held_tasks") or [])
     closed, stopped = frozenset(queue["closed"]), bool(facts["limits"]["hard_stop"])
     approve = approvals(queue["rows"], queue.get("tasks") or [], queue.get("rollups") or [])
-    pending = {(a["initiative"], a["phase"]) for a in approve}
+    quarantine = quarantines(queue["rows"], queue.get("tasks") or [])
+    pending = {(a["initiative"], a["phase"]) for a in approve} | {_key(q) for q in quarantine}
     wanted = [w for w in rows(facts.get("initiatives") or [], queue["lane_prereqs"], held, held_phases, closed, stopped)
               if _key(w) not in pending]
-    reviewed = {_key(r) for r in queue.get("rounds") or []}
-    found = changes(wanted, queue["rows"], now, held, held_phases, closed, stopped, reviewed)
+    found = [*changes(wanted, queue["rows"], now, held, held_phases, closed, stopped), *quarantine]
     out: list[Action] = []
     if approve:
         names = ", ".join(f"{a['initiative']}/{a['task_id']}@{a['commit'][:12]}" for a in approve)
         out.append({"kind": ActionKind.APPROVE_PHASE_TASKS, "approvals": approve,
                     "reason": f"the phase review approved: {names}"})
     if found:
-        names = ", ".join(f"{c['initiative']}/{c['phase']} {c['op']}" for c in found)
+        names = ", ".join(f"{c['initiative']}/{c['phase']}{'/' + str(c['task_id']) if 'task_id' in c else ''} {c['op']}" for c in found)
         out.append({"kind": ActionKind.QUEUE_PHASES, "changes": found, "reason": f"phase queue: {names}"})
     return out

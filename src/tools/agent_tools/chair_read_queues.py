@@ -12,7 +12,29 @@ from agent_tools import chair_kinds, route, run_store
 from agent_tools.chair_types import QueueLeases
 from core.jsontypes import is_mapping
 
-__all__ = ["QueueLeasesReader", "queues_keeping_last_good", "read_chair_queues", "read_queue_leases", "store_stamp"]
+__all__ = [
+    "SEEN_MARKER", "QueueLeasesReader", "mark_seen", "queue_lease_holds", "queues_keeping_last_good", "read_chair_queues",
+    "read_queue_leases", "seen_marker", "store_stamp",
+]
+
+LEASE_CHECK_SECONDS = 5.0  # a lease check that has not answered by then reads as not held, never as held
+
+
+def queue_lease_holds(runs_dir: Path, proof: chair_kinds.QueueProof, seconds: float = LEASE_CHECK_SECONDS) -> bool:
+    """Edge. Whether the store says `proof`'s kind lease is held by its holder at its epoch, unexpired by the store's
+    clock (`store_chair_lease.holds`). A store that fails, hangs past `seconds` or is missing reads as not held."""
+    from agent_tools.chair_queue import bounded
+    from harness import store_chair_lease
+    from harness.store_dialect import connect
+
+    def check() -> bool:
+        conn = connect(run_store.store_url_for(runs_dir))
+        try:
+            return store_chair_lease.holds(conn, proof.lease, proof.holder, proof.epoch)
+        finally:
+            conn.close()
+
+    return bounded(check, seconds, False)
 
 
 def read_chair_queues(profile_path: Path) -> frozenset[str] | route.ProfileError:
@@ -75,14 +97,35 @@ def read_queue_leases(runs_dir: Path) -> tuple[dict[str, str] | None, str]:
     return leases, store_stamp(now)
 
 
+# Under the runs directory: present once any tick on this machine has seen a `chair:<kind>` lease row. A restarted tick
+# reads it, so a failed lease read still fails closed after a restart; nothing ever removes it but a person.
+SEEN_MARKER = "chair-queue-lease-seen"
+
+
+def seen_marker(runs_dir: Path) -> Path:
+    """Pure. The marker that says a worker lease row has been seen on this machine."""
+    return Path(runs_dir) / SEEN_MARKER
+
+
+def mark_seen(runs_dir: Path) -> bool:
+    """Edge. Write the marker (an empty file; writing it twice changes nothing). False when it could not be written: the
+    reader then still remembers it for the life of its process."""
+    try:
+        seen_marker(runs_dir).touch(exist_ok=True)
+    except OSError:
+        return False
+    return True
+
+
 class QueueLeasesReader:
     """Edge. `read_queue_leases` with what the tick needs to fail closed sensibly: whether a worker lease row has ever
-    been seen in this process, and since when (on `clock`, monotonic seconds) the read has been failing. The tick's
-    facts, its pre-perform re-read and its per-action check share one reader."""
+    been seen (in this process, or by any earlier one on this machine: `SEEN_MARKER`), and since when (on `clock`,
+    monotonic seconds) the read has been failing. The tick's facts, its pre-perform re-read and its per-action check
+    share one reader."""
 
     def __init__(self, runs_dir: Path, clock: Callable[[], float]) -> None:
         self._runs_dir, self._clock = runs_dir, clock
-        self._seen = False
+        self._seen = seen_marker(runs_dir).exists()
         self._failing_since: float | None = None
 
     def __call__(self) -> QueueLeases:
@@ -91,7 +134,9 @@ class QueueLeasesReader:
             at = self._clock()
             self._failing_since = at if self._failing_since is None else self._failing_since
             return QueueLeases(None, "", self._seen, at - self._failing_since)
-        self._seen = self._seen or bool(leases)
+        if leases and not self._seen:
+            mark_seen(self._runs_dir)
+            self._seen = True
         self._failing_since = None
         return QueueLeases(leases, now, self._seen, 0.0)
 

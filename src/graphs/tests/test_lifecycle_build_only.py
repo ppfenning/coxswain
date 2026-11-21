@@ -33,9 +33,15 @@ def test_parallel_tasks_each_get_their_own_build_answer_whatever_order_they_ask_
 def test_a_lane_verdict_comes_from_the_review_round_then_from_the_roll_ups():
     approved = phase_pick.lane_verdict(["t1"], [], (2, "approve"), 1, smoke=None)
     assert (approved.kind, approved.outcome) == ("ack", "approved")
-    assert phase_pick.lane_verdict(["t1"], ["t1"], (1, "quarantine"), 1, smoke=PASSED).outcome == "quarantined"
-    waiting = phase_pick.lane_verdict(["t1", "t2"], ["t1", "t2"], None, 2, smoke=PASSED)
-    assert (waiting.kind, waiting.reason) == ("built", "every task rolled up; waiting for the phase review")
+    quarantined = phase_pick.lane_verdict(["t1"], ["t1"], (1, "quarantine"), 1, smoke=PASSED, reason="goal missed")
+    assert (quarantined.outcome, quarantined.reason) == ("quarantined", "the phase review quarantined it in round 1: goal missed")
+    # L6: nothing is parked `built`; a lane whose review loop did not finish the phase is retried, its claim counted.
+    unreviewed = phase_pick.lane_verdict(["t1", "t2"], ["t1", "t2"], None, 2, smoke=PASSED)
+    assert (unreviewed.kind, unreviewed.refund) == ("retry", False) and "before its review finished" in unreviewed.reason
+    assert phase_pick.lane_verdict(["t1"], ["t1"], (1, "revise"), 2, smoke=PASSED).kind == "retry"
+    assert phase_pick.lane_verdict(["t1"], ["t1"], (2, "reopened"), 1, smoke=PASSED).kind == "retry"  # an old episode's
+    out = phase_pick.lane_verdict(["t1"], ["t1"], (1, "revise"), phase_pick.MAX_ATTEMPTS, smoke=PASSED)
+    assert (out.kind, out.outcome) == ("quarantine", "failed")
     left = phase_pick.lane_verdict(["t1", "t2"], ["t1"], None, 1, smoke=PASSED)
     assert (left.kind, left.refund, left.reason) == ("retry", False, "tasks not rolled up: t2")
     spent = phase_pick.lane_verdict(["t1", "t2"], ["t1"], None, phase_pick.MAX_ATTEMPTS, smoke=PASSED)
