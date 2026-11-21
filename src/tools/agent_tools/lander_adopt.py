@@ -23,13 +23,14 @@ against origin's copy as well as this clone's, and no local branch or work tree 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from agent_tools import lander
+from agent_tools.lander_base import publish_initiative
 from core import landing_record as lr
 from core.landing import TemplateError, initiative_branch_name, is_initiative, pr_branch_name, resolve_land_at
-from harness import bounded_proc
+from harness import bounded_proc, initiative_review, store_phases
 from harness import landing_git as lg
 from harness import landing_ops as ops
 from harness import landing_store as ls
@@ -194,11 +195,13 @@ def _default_branch(repo: Path) -> str:
     return "main" if lg.rev(repo, "refs/heads/main") else (lg.git(repo, "branch", "--show-current")[1] or "main")
 
 
-def apply(ports: lander.Ports, found: Plan, send_back: Callable[[str, str, str], str | None]) -> list[str]:
+def apply(ports: lander.Ports, found: Plan, send_back: Callable[[str, str, str], str | None], *,
+          adopted: bool = True) -> list[str]:
     """Perform a plan. Each step reads what is already so, and a step that fails stops the rest of this initiative.
 
     `send_back(initiative, task, reason)` moves an approved task whose work cannot be found back to ready; it returns
-    why it was refused, or None."""
+    why it was refused, or None. `adopted` is stamped on the record: False when the lander makes it in its normal flow
+    (`record_phase_initiatives`) rather than for an initiative in flight before the landing record existed."""
     initiative = found.initiative
     if found.skip:
         return found.lines()
@@ -227,7 +230,7 @@ def apply(ports: lander.Ports, found: Plan, send_back: Callable[[str, str, str],
                 return [*events, f"{initiative}: stopped: {finding.task} could not be carried onto {branch}: {detail}"]
             events.append(f"{initiative}: {finding.task} carried onto {branch}")
     record, why = ops.start_record(ports.conn, repo, initiative=initiative, branch=found.branch, parent=found.parent,
-                                   parent_ref=lander.parent_ref_of(repo, found.parent), now=ports.now(), adopted=True,
+                                   parent_ref=lander.parent_ref_of(repo, found.parent), now=ports.now(), adopted=adopted,
                                    lane_model=lr.lane_model_of(own.get("lane_model")))
     if record is None:
         return [*events, f"{initiative}: stopped: no record was made: {why}"]
@@ -275,3 +278,80 @@ def _rows(table: lr.Listing) -> dict[str, lr.LandingRecord | lr.Unreadable]:
 def candidates(ports: lander.Ports, initiatives: Sequence[str]) -> list[str]:
     """The initiatives with no landing record, in the order given (`unrecorded`)."""
     return unrecorded(initiatives, ls.list_records(ports.conn))
+
+
+# -- the new model's record, made in the lander's own pass ------------------------------------------------------------
+
+RECORD_KEY = "record:"  # the lander_notices key prefix of a phase-model initiative whose record is left to a person
+WITHDRAWN = "cancelled"  # a phase-queue row the chair took out of the queue (its phase held, closed or over budget)
+
+
+def record_now(lane_model: object, phase_rows: Sequence[Mapping[str, object]],
+               found: lr.LandingRecord | lr.Unreadable | None) -> bool:
+    """Pure. Whether the lander makes an initiative's landing record on its own now. The old model's epic run makes it
+    as the run starts; the new model has no run, so the moment is the chair queuing its first phase: the initiative is
+    on the phase model, one of its phase-queue rows is a phase (an initiative review is not) the chair has not
+    withdrawn, and it has no landing-record row, readable or not (`present_skip`). Made then, the record is there
+    before a lane cuts any phase, so each phase is cut from the initiative branch and the record's base is the parent
+    at the start of the work, as the old model's is."""
+    return (lr.lane_model_of(lane_model) == lr.NEW_MODEL and present_skip(found) is None
+            and any(str(r.get("kind") or "") != initiative_review.KIND and str(r.get("state") or "") != WITHDRAWN
+                    for r in phase_rows))
+
+
+def left_to_a_person(found: Plan) -> str | None:
+    """Pure. Why the lander does not adopt this plan on its own, or None when it does. It never sends an approved task
+    back to ready, nor carries a commit onto a phase branch, unasked: either means recorded work is not where the new
+    model leaves it (origin's phase branch), which a person checks before `cox lander adopt --apply` does it."""
+    if found.skip:
+        return found.skip
+    moved = [f"{f.task} ({'back to ready' if f.action == 'ready' else 'carried onto its phase branch'})"
+             for f in found.tasks if f.action in ("ready", "carry")]
+    if moved:
+        return (f"adopting it would move approved work: {', '.join(moved)}; check it, then run "
+                f"`cox lander adopt --apply {found.initiative}`")
+    return None
+
+
+def _never_send_back(initiative: str, task: str, why: str) -> str:
+    return "the lander sends no task back on its own"  # `left_to_a_person` keeps every such plan from `apply`
+
+
+def record_phase_initiatives(ports: lander.Ports) -> list[str]:
+    """Edge. Make the landing record of each phase-model initiative that wants one (`record_now`) through adopt's own
+    path (`refresh`, `plan`, `apply`), so a record is made one way, stamped `lane_model: phase`, and never twice: an
+    initiative with a record is no candidate, and `start_record` returns a record that exists. No phase is merged
+    here: the pass's sweep queues every built phase of the new record and its lane merges it, as for any record. The
+    new branch is pushed, so a lane on another machine cuts its phase from it.
+
+    A plan that would move approved work, or that adopt skips, is left alone and told once per reason (the chair too,
+    for the former) through `lander_notices`; that memory is forgotten once the record is made."""
+    rows: dict[str, list[store_phases.Row]] = {}
+    for row in store_phases.list_rows(ports.conn):
+        rows.setdefault(str(row.get("initiative") or ""), []).append(row)
+    told = ls.told(ports.conn, RECORD_KEY)
+    events: list[str] = []
+    for initiative in unrecorded(sorted(i for i in rows if i), ls.list_records(ports.conn)):
+        own = ports.meta(initiative).get("initiative") or {}
+        if not record_now(own.get("lane_model"), rows[initiative], None):
+            continue
+        found = plan(ports, initiative)
+        fetched = [] if found.skip else refresh(ports, initiative)
+        found = found if found.skip else plan(ports, initiative)  # again, now against origin's phase branches
+        key = f"{RECORD_KEY}{initiative}"
+        why = left_to_a_person(found)
+        if why is not None:
+            if told.get(key) != why:
+                ls.remember(ports.conn, key, why, ports.now())
+                if not found.skip:
+                    ports.notify("needs_chair", {"initiative": initiative, "reason": why})
+                events += [*fetched, f"{initiative}: no landing record is made on its own: {why}"]
+            continue
+        events += [*fetched, *apply(ports, replace(found, merge=()), _never_send_back, adopted=False)]
+        record = ls.get_record(ports.conn, initiative)
+        if record is not None and not found.landed:
+            pushed = publish_initiative(ports, lander.ports_repo(ports, record), lander.record_text(record, "branch"))
+            events += [f"{initiative}: {pushed}; a lane cuts its phase from the parent until origin has it"] if pushed else []
+        if key in told:
+            ls.forget(ports.conn, key)
+    return events

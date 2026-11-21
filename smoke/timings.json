@@ -38,6 +38,7 @@
 "smoke/test_lander_lanes.py": 32.2,
 "smoke/test_lander_models.py": 10.1,
 "smoke/test_lander_push.py": 10.2,
+"smoke/test_lander_record_auto.py": 22.8,
 "smoke/test_lander_unreadable_record.py": 8.5,
 "smoke/test_lane_env_check.py": 0.0,
 "smoke/test_lane_merge.py": 53.6,
