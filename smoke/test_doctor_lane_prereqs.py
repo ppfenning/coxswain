@@ -9,7 +9,9 @@ import json
 import stat
 from dataclasses import replace
 
-LANE_CHECKS = ("docker daemon", "smoke image postgres", "smoke image forgejo", "smoke image garage", "pg_dump", "gh")
+# The rows a stopped docker daemon decides. `pg_dump` and `gh` probe the host with their own short timeouts, so on a
+# loaded runner they can differ between two runs for reasons that have nothing to do with docker.
+LANE_CHECKS = ("docker daemon", "smoke image postgres", "smoke image forgejo", "smoke image garage")
 DOCKER_DOWN = "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?"
 
 
