@@ -597,8 +597,7 @@ def test_forge_users_are_the_unmarked_tests_whose_closure_holds_the_forge_fixtur
 
 
 def test_the_git_only_lists_cover_the_four_behaviours_once_each():
-    lists = (plan.GIT_ONLY_BEHAVIOURS, plan.GIT_ONLY_PENDING)
-    assert not plan.GIT_ONLY_BEHAVIOURS.keys() & plan.GIT_ONLY_PENDING.keys()
-    assert {"push after merge", "re-merge", "roll-up", "resume from task commits"} <= {b for named in lists for b in named}
-    assert all(plan.split_node_id(node)[0].startswith("smoke/") for named in lists for nodes in named.values() for node in nodes)
+    named = plan.GIT_ONLY_BEHAVIOURS
+    assert {"push after merge", "re-merge", "roll-up", "resume from task commits"} <= set(named)
+    assert all(plan.split_node_id(node)[0].startswith("smoke/") for nodes in named.values() for node in nodes)
 

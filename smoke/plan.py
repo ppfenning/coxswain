@@ -907,10 +907,6 @@ GIT_ONLY_BEHAVIOURS: Mapping[str, tuple[str, ...]] = {
     "re-merge": (
         "smoke/test_lander_push.py::test_a_phase_rebuilt_after_its_merge_is_merged_again_and_the_initiative_branch_carries_it",
     ),
-}
-# Behaviours whose tests L1 (#1299) adds. Each entry fails the meta-test once its test exists, so it moves into
-# GIT_ONLY_BEHAVIOURS the day L1 lands instead of going stale here. Empty once it has.
-GIT_ONLY_PENDING: Mapping[str, tuple[str, ...]] = {
     "roll-up": (
         "smoke/test_phase_lane.py::test_three_tasks_build_in_parallel_each_pushed_as_it_lands_and_the_approved_round_approves_them",
     ),

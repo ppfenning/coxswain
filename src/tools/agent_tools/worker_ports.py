@@ -179,18 +179,25 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
         here = [lane.run for lane in run_store.live_lanes(runs_dir, now) if lane.host in (None, "", host, name)]
         return worker.old_model_runs(here, claimed)
 
-    def task_states(initiative: str, phase: str) -> list[str]:
+    def lane_facts(claim: Claim) -> worker.LaneFacts:
         from harness.store_queue import read
 
-        rows = store.call(lambda c: read(c, initiative))
-        return [str(r["state"]) for r in rows if r.get("kind") == "task" and r.get("phase") == phase]
+        rows = store.call(lambda c: read(c, claim.initiative))
+        rollups = store.call(lambda c: store_phases.rollup_rows(c, [claim.initiative]))
+        last = store.call(lambda c: store_phases.last_round(c, claim.initiative, claim.phase))
+        return worker.lane_facts(rows, rollups, claim.phase, last)
 
     def launch(claim: Claim, record: Callable[[str], bool]) -> worker.Started | str:
         names = [p.name for p in runs_dir.iterdir()] if runs_dir.is_dir() else []
         run_id = next_run_id(route.phase_run_prefix(claim.initiative, claim.phase), taken_names(names, run_store.run_ids(runs_dir)))
         if not record(run_id):
             return "the claim was lost before its run started"
-        argv = worker.launch_argv(claim.initiative, claim.phase, run_id, worker.launch_label(chair.read(runs_dir), f"worker:{name}"))
+        for old in worker.stale_lanes(epic.live_runs(runs_dir, route.phase_run_prefix(claim.initiative, claim.phase)), run_id):
+            log(f"worker: stopping {old.run_id} (pid {old.pid}), a lane of an older claim of {claim.initiative}/{claim.phase}")
+            if not stop(old):
+                return f"the older lane {old.run_id} (pid {old.pid}) did not stop"
+        argv = worker.launch_argv(claim.initiative, claim.phase, run_id,
+                                  worker.launch_label(chair.read(runs_dir), f"worker:{name}"), name, claim.epoch)
         argv[0] = shutil.which("cox") or argv[0]
         launches_dir.mkdir(parents=True, exist_ok=True)
         try:
@@ -243,7 +250,9 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
             if (named := _pid_in(runs_dir / f"{run.run_id}.pid")) is not None:
                 pids.add(named)
         else:
-            pids.add(run.pid)
+            # The lane, and each child it started in a session of its own (a check), whose group the lane's own
+            # group signal does not reach: a lane killed while frozen leaves no check running on.
+            pids |= {run.pid, *_children(run.pid)}
         for pid in pids:
             _signal_group(pid, signal.SIGTERM)
         if _gone(lambda: any(_pid_alive(p) for p in pids), phase_pick.STOP_GRACE_S):
@@ -251,6 +260,14 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
         for pid in pids:
             _signal_group(pid, signal.SIGKILL)
         return _gone(lambda: any(_pid_alive(p) for p in pids), phase_pick.KILL_WAIT_S)
+
+    def lane_mark(run: worker.Running) -> str:
+        from harness.phase_lane import beat_path
+
+        try:
+            return beat_path(runs_dir, run.run_id).read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
 
     def heartbeats(leases: worker.Leases) -> Callable[[], None]:
         """A thread of its own, on a store connection of its own, renewing each lease when it is due."""
@@ -296,7 +313,9 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
         release=lambda claim, reason, wait_s, refund: store.call(
             lambda c: store_phases.release(c, claim, name, reason, wait_s, refund=refund)
         ),
-        task_states=task_states,
+        lane_facts=lane_facts,
+        lane_mark=lane_mark,
+        park=lambda claim, reason: store.call(lambda c: store_phases.park(c, claim, name, reason)),
         launch=launch,
         launched=launched,
         alive=alive,

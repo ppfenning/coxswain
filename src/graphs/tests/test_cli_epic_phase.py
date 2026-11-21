@@ -63,8 +63,8 @@ def test_the_parser_collects_phase_in_order_and_defaults_to_none() -> None:
 
 
 @pytest.mark.parametrize("graph", ["phase", "rescue", "sweep"])
-def test_phase_is_refused_on_any_graph_but_epic(graph, capsys) -> None:
+def test_phase_is_refused_on_any_graph_but_epic_and_the_phase_lane(graph, capsys) -> None:
     with pytest.raises(SystemExit) as raised:
         cli.main([graph, "--team", "t", "--phase", "a"])
     assert raised.value.code == 2
-    assert "--phase applies to the epic graph only" in capsys.readouterr().err
+    assert "--phase applies to the epic and phase-lane graphs only" in capsys.readouterr().err

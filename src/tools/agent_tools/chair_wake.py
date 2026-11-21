@@ -1,4 +1,5 @@
-"""Chair wake: end the wait between ticks early when a run exits, intake arrives or an operator directive lands on the bus."""
+"""Chair wake: end the wait between ticks early when a run exits, intake arrives or an operator directive lands on the bus,
+or, on a store with migration 0021's notifications, when a table the chair acts on is written (`STORE_WAKE_TABLES`)."""
 
 from __future__ import annotations
 
@@ -6,12 +7,15 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 
 from agent_tools.courier import parse_run_exited
 
-__all__ = ["new_wake_events", "wait_for_events", "wait_for_run_exit"]
+__all__ = ["STORE_WAKE_TABLES", "new_wake_events", "wait_for_events", "wait_for_run_exit"]
 
 RUN_EXITED = "run_exited"
 INTAKE = "intake"  # courier has no intake event: a plain entry, with no `event`, whose ref is `coxswain://intake/<id>`
 CHAT_DIRECTIVE = "chat_directive"  # a courier event name, matched on the entry's `event`
 
+
+# A phase's review round is what lets the chair queue a parked (`built`) phase again: the tick runs on its commit.
+STORE_WAKE_TABLES = frozenset({"review_rounds"})
 
 Entry = Mapping[str, object]
 
@@ -43,10 +47,13 @@ def wait_for_events(
     now: Callable[[], float],
     poll_seconds: float,
     kinds: Collection[str],
+    nap: Callable[[float], bool] | None = None,
 ) -> Callable[[float], bool]:
     """A wait(interval) that polls in `poll_seconds` steps: True on a new event of `kinds`, False when the interval elapses.
 
-    Every id it returned for is remembered, so one entry wakes the chair once, even if a later fetch fails.
+    Every id it returned for is remembered, so one entry wakes the chair once, even if a later fetch fails. With `nap`,
+    each step waits through it instead of `sleep`, and a nap that returns True (a store notification it watches for)
+    ends the wait at once, True.
     """
     returned: set[str] = set()  # the one piece of state; a wake is spent per id for the life of the wait
 
@@ -66,7 +73,10 @@ def wait_for_events(
             remaining = deadline - now()
             if remaining <= 0:
                 return False
-            sleep(min(poll_seconds, remaining))
+            if nap is None:
+                sleep(min(poll_seconds, remaining))
+            elif nap(min(poll_seconds, remaining)):
+                return True
 
     return wait
 
@@ -76,6 +86,8 @@ def wait_for_run_exit(
     sleep: Callable[[float], None],
     now: Callable[[], float],
     poll_seconds: float,
+    nap: Callable[[float], bool] | None = None,
 ) -> Callable[[float], bool]:
-    """A wait(interval) that returns True on a new run_exited id and False when the interval elapses."""
-    return wait_for_events(read_entries, sleep, now, poll_seconds, (RUN_EXITED,))
+    """A wait(interval) that returns True on a new run_exited id, or a `nap` that saw a store write, and False when
+    the interval elapses."""
+    return wait_for_events(read_entries, sleep, now, poll_seconds, (RUN_EXITED,), nap)

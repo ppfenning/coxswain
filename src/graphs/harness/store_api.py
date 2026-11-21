@@ -577,6 +577,35 @@ def phase_queue_rows(url: str) -> list[dict[str, object]] | Failed | NotAvailabl
     return _read(url, store_phases.list_rows)
 
 
+def phase_review_facts(url: str, initiatives: Sequence[str]) -> tuple[list[dict[str, object]], ...] | Failed | NotAvailable:
+    """What the chair's phase-queue planner reads besides the rows, in one connection: the roll-up step rows, the
+    task rows with their `merged_commit`, and each phase's last review round."""
+    return _read(url, lambda c: (store_phases.rollup_rows(c, initiatives), store_phases.task_commits(c, initiatives),
+                                 store_phases.last_rounds(c, initiatives)))
+
+
+class _Refused(Exception):
+    """Raised inside `approve_at` to roll its transaction back."""
+
+
+def approve_on(conn: Connection, initiative: str, task: str, commit: str, by: str, now: str) -> MergeRecorded | StateRefused:
+    """A task approved with `commit` as its `merged_commit`, both in one transaction: a store that refuses either
+    leaves the task as it was, so a repeat finds the same work to do. A repeat after success changes nothing."""
+    try:
+        with conn.transaction():
+            moved = set_state_on(conn, initiative, task, "approved", by, now)
+            if isinstance(moved, StateRefused):
+                raise _Refused(moved.detail)
+            return MergeRecorded(record_merge(conn, initiative, task, commit, now, by))
+    except (_Refused, ValueError) as exc:
+        return StateRefused(str(exc))
+
+
+def approve_at(url: str, initiative: str, task: str, commit: str, by: str, now: str) -> MergeRecorded | StateRefused | Failed | NotAvailable:
+    """`approve_on` against the store at `url`."""
+    return _write(url, now, lambda c: approve_on(c, initiative, task, commit, by, now))
+
+
 def apply_phase_changes(url: str, changes: Sequence[Mapping[str, object]], by: str, now: str) -> int | Failed | NotAvailable:
     """The chair's phase queue writes, in one transaction at the store's own time; the rows they changed."""
     return _write(url, now, lambda c: store_phases.apply_changes(c, changes, by))

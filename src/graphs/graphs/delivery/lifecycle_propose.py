@@ -1969,6 +1969,36 @@ def _infra_result(
     }
 
 
+def _build_only_result(
+    runner: NodeRunner, *, args: Mapping[str, Any], context: list[str], bound: Mapping[str, Any],
+    scope: Mapping[str, Any] | None, plan: Mapping[str, Any], build: Mapping[str, Any], facts: Mapping[str, Any],
+    frozen: bool, clean_finding: Any, ticket_text: str,
+) -> dict[str, Any]:
+    """The record of a build-only run (the phase lane's task build): plan, build and handoff, and no review of any
+    kind, since on the phase model a task is never reviewed alone; the phase is (L6). A build the graph could not get
+    into shape (`frozen`: truncated, invalid, stopped at a checkpoint) or that the clean check caught says why under
+    `build_stopped`, and gets no handoff. So does a handoff that stopped the line or found the change incomplete:
+    with no fix loop here, the lane builds the task again on its next claim."""
+    stopped = "the build could not be put into shape" if frozen else (
+        f"clean check: {clean_finding}" if clean_finding is not None else None
+    )
+    handoff: dict[str, Any] | None = None
+    if stopped is None and "handoff" in bound:
+        try:
+            handoff = _handoff(runner, context=context, ticket=ticket_text, plan=plan, build=build, facts=facts,
+                               ticket_id=args["ticket"])
+        except _NodeFailure as exc:
+            stopped = f"handoff: {exc}"
+        else:
+            if not handoff.get("complete"):
+                stopped = f"handoff incomplete: {handoff.get('missing') or handoff}"
+    return {
+        "run_id": args["run_id"], "date": args["date"], "ticket": args["ticket"], "scope": scope, "plan": dict(plan),
+        "build": dict(build), "handoff": handoff, "change_facts": dict(facts), "build_only": True,
+        "build_stopped": stopped, "proposals": [],
+    }
+
+
 def run(
     args: Mapping[str, Any], runner: NodeRunner, decision_source: DecisionSource | None = None
 ) -> dict[str, Any]:
@@ -2251,6 +2281,12 @@ def _run(
 
     facts = _change_facts(build)
     tier = review_tier(cartridge, change_facts=facts, surfaces=surfaces, patterns=patterns)
+
+    if args.get("build_only"):
+        return _build_only_result(
+            runner, args=args, context=context, bound=bound, scope=scope, plan=plan, build=build, facts=facts,
+            frozen=frozen, clean_finding=clean_finding, ticket_text=ticket_text,
+        )
 
     handoff: dict[str, Any] | None = None
     # Declared here, not beside `standing`: the first pass below appends to it.

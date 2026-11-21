@@ -96,7 +96,7 @@ def _object_store(profile: Mapping[str, Any]) -> Mapping[str, Any] | None:
 
 def _principal(graph: str, specs: Mapping[str, GraphSpec], *, docket: str | None) -> str:
     """The run's principal, named as the manifest names it. `epic` is the driver's own constant."""
-    if graph in ("epic", "rescue"):
+    if graph in ("epic", "rescue", "phase-lane"):
         from harness.epic import PRINCIPAL
 
         return PRINCIPAL
@@ -113,7 +113,7 @@ def _register_graph(conn: Any, specs: Mapping[str, GraphSpec], graph: str, now: 
     unknown: no graph in this repository declares a loaded graph object yet. A spec that
     carries one on `.graph` is registered; one that does not leaves the run's graph_id empty.
     """
-    spec = specs.get("lifecycle" if graph in ("phase", "epic", "rescue") else graph)
+    spec = specs.get("lifecycle" if graph in ("phase", "epic", "rescue", "phase-lane") else graph)
     loaded = getattr(spec, "graph", None)
     return None if loaded is None else register(conn, derive_definition(loaded), now)
 
@@ -126,14 +126,22 @@ def _begin_store_run(
     now: str,
     host: str,
 ) -> Store | None:
-    """Open the run-record store, register the graph and write the run row; None (after one line) if any of it fails."""
+    """Open the run-record store, register the graph and write the run row; None (after one line) if any of it fails.
+    A phase lane opens it through `open_scoped` as the worker's scoped role (`lane_store_url`), which never migrates."""
     provider = read_provider_profile(args.provider_profile)
     url = profile_storage_url(provider, args.runs_dir)
     conn = None
     try:
         if url == default_url(args.runs_dir):
             Path(args.runs_dir).mkdir(parents=True, exist_ok=True)
-        conn = open_store(url, now)
+        if args.graph == "phase-lane":
+            from harness.store_scoped import open_scoped
+
+            url, who = lane_store_url(url)
+            conn = open_scoped(url)
+            print(f"store: the lane writes as {who}, scoped; it takes no lease and never migrates", flush=True)
+        else:
+            conn = open_store(url, now)
         graph_id = _register_graph(conn, specs, args.graph, now)
         try:
             provider_profile = _provider_profile_scope(args.provider_profile)
@@ -162,6 +170,17 @@ def _begin_store_run(
         print(f"store: cannot use {url.split(':', 1)[0]} store: {' '.join(str(exc).split())}", file=sys.stderr)
         return None
     return store
+
+
+def lane_store_url(owner_url: str) -> tuple[str, str]:
+    """Edge. The URL a phase lane writes through and who it writes as: the worker's scoped role, when the unit's
+    environment names it and its password (`cox setup store worker-role`), else `owner_url` (`phase_lane.lane_url`)."""
+    from harness import store_roles
+    from harness.phase_lane import lane_url
+
+    env = os.environ
+    return lane_url(owner_url, env.get(store_roles.ROLE_ENV, ""), env.get(store_roles.PASSWORD_ENV, ""),
+                    store_roles.worker_url)
 
 
 def _refuse_start(store: Store, run_id: str, status: str, code: int) -> int:
@@ -388,7 +407,7 @@ def _stop_children_until_quiet(deadline_s: float = 30.0, poll_s: float = 0.1) ->
 
 # Exit code to the run row's status. 3 is epic.EXIT_PAUSED and 4 is the awaiting-land code; the
 # latter's constant does not exist in epic.py yet, so both stay literals here. Any other nonzero is "failed".
-_EXIT_RUN_STATUS = {0: "ok", 3: "paused", 4: "awaiting_land"}
+_EXIT_RUN_STATUS = {0: "ok", 3: "paused", 4: "awaiting_land", 5: "lost"}
 
 
 def _head_branch(cwd: str) -> str | None:
@@ -500,20 +519,26 @@ def _launch(
     if store is None:
         return 1
 
-    # One live run per prefix. A refusal is recorded as this run's end and stops it before any graph.
+    # One live run per prefix. A refusal is recorded as this run's end and stops it before any graph. A phase lane
+    # takes no lease: its worker's phase_queue claim is its lease, and every write it makes is fenced on that claim.
     name = run_lease.lease_name(run_id)
-    try:
-        lease = acquire(store.conn, name, run_id, started_at, _LEASE_TTL)
-    except Exception as exc:
-        print(f"lease: cannot acquire {name}: {' '.join(str(exc).split())}", file=sys.stderr)
-        return _refuse_start(store, run_id, "error", 1)
-    if not lease.ok:
-        print(f"run: {lease.holder} holds {name}; refusing to start {run_id}", file=sys.stderr)
-        return _refuse_start(store, run_id, "refused", 2)
+    lane = args.graph == "phase-lane"
+    if lane:
+        lease = None
+    else:
+        try:
+            lease = acquire(store.conn, name, run_id, started_at, _LEASE_TTL)
+        except Exception as exc:
+            print(f"lease: cannot acquire {name}: {' '.join(str(exc).split())}", file=sys.stderr)
+            return _refuse_start(store, run_id, "error", 1)
+        if not lease.ok:
+            print(f"run: {lease.holder} holds {name}; refusing to start {run_id}", file=sys.stderr)
+            return _refuse_start(store, run_id, "refused", 2)
     # Everything from here to the run's own `finally` can raise or take a SIGTERM: the started
     # marker, the heartbeat build and the setup. That exit still stamps the run and frees the
     # lease, or a relaunch would be refused by a run that is gone.
     heartbeat: run_lease.Heartbeat | None = None
+    epoch = None if lease is None else lease.epoch
     try:
         # `cox route launch` reads this line from the run log (its _LAUNCH_STARTED_MARKER); flushed because stdout is a file there.
         print(f"graph started: {run_id}", flush=True)
@@ -529,17 +554,18 @@ def _launch(
         # stores no progress and writes no file.
         reporting = threading.Event()
         progress_lock = threading.Lock()
-        heartbeat = run_lease.Heartbeat(
-            profile_storage_url(read_provider_profile(args.provider_profile), args.runs_dir),
-            name,
-            run_id,
-            lease.epoch,
-            clock=clock,
-            progress=lambda: (
-                _write_progress(tracker, run_id, progress_path, progress_lock) if reporting.is_set() else None
-            ),
-        )
-        heartbeat.start()
+        if epoch is not None:
+            heartbeat = run_lease.Heartbeat(
+                profile_storage_url(read_provider_profile(args.provider_profile), args.runs_dir),
+                name,
+                run_id,
+                epoch,
+                clock=clock,
+                progress=lambda: (
+                    _write_progress(tracker, run_id, progress_path, progress_lock) if reporting.is_set() else None
+                ),
+            )
+            heartbeat.start()
         runner = build_runner(
             scripted=args.scripted,
             provider_profile=args.provider_profile,
@@ -585,7 +611,8 @@ def _launch(
         _finish_store_run(store, run_id, datetime.now(UTC).isoformat(), "error")
         if _terminated(exc):
             _stop_children_until_quiet()
-        _end_lease(store, heartbeat, name, run_id, lease.epoch)
+        if epoch is not None:
+            _end_lease(store, heartbeat, name, run_id, epoch)
         store.conn.close()
         raise
 
@@ -603,7 +630,7 @@ def _launch(
                 runner=runner,
                 run_id=run_id,
                 store=store,
-                epoch=lease.epoch,
+                epoch=epoch,
                 lease_name=name,
                 report_out=report_out,
             )
@@ -616,7 +643,7 @@ def _launch(
             runner=runner,
             run_id=run_id,
             store=store,
-            epoch=lease.epoch,
+            epoch=epoch,
             lease_name=name,
         )
         status = _EXIT_RUN_STATUS.get(code, "failed")
@@ -631,7 +658,8 @@ def _launch(
         # successor never starts beside them. `main` repeats this wait; by then it finds none.
         if terminated:
             _stop_children_until_quiet()
-        _end_lease(store, heartbeat, name, run_id, lease.epoch)
+        if epoch is not None:
+            _end_lease(store, heartbeat, name, run_id, epoch)
         # Every exit below — success, a caught exception's `return 1`, or
         # anything left to raise past this point — prints the run's totals from
         # the store, which holds every call recorded so far. Guarded like
