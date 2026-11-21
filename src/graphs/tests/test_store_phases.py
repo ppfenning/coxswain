@@ -332,21 +332,6 @@ def test_a_machine_with_no_thread_budget_reads_zero(conn):
     assert store_phases.host_threads(conn, "nobody") == 0
 
 
-def test_a_built_phase_is_parked_unclaimable_until_the_chair_queues_it_for_its_review(conn):
-    store_phases.apply_changes(conn, [_change()], "chair-loop")
-    claim = store_phases.claim_next(conn, "w1", [], 1)
-    assert store_phases.park(conn, claim, "w1", "every task rolled up")
-    row = store_phases.get_row(conn, "ship", "p1")
-    assert (row["state"], row["attempts"], row["lease_until"]) == ("built", 0, "")
-    assert not store_phases.park(conn, claim, "w1", "again")  # parked once: the claim is no longer held
-    assert store_phases.claim_next(conn, "w2", [], 1) is None  # nothing claims a built phase
-    review = {"op": "review", "initiative": "ship", "phase": "p1", "epoch": claim.epoch, "reason": "round written"}
-    assert store_phases.apply_changes(conn, [{**review, "epoch": claim.epoch + 1}], "chair-loop") == 0  # not the row seen
-    assert store_phases.apply_changes(conn, [review], "chair-loop") == 1
-    assert store_phases.apply_changes(conn, [review], "chair-loop") == 0  # a repeat changes nothing
-    assert store_phases.claim_next(conn, "w2", [], 1).epoch == claim.epoch + 1
-
-
 def _round(conn, phase, number, verdict):
     p = conn.dialect.placeholder
     conn.execute(f"INSERT INTO review_rounds VALUES ({', '.join([p] * 13)})",

@@ -51,6 +51,7 @@ __all__ = [
     "STEP_COLUMNS",
     "TASK_KINDS",
     "belongs",
+    "phase_review_rows",
     "put_round",
     "put_step",
     "refix_of",
@@ -301,6 +302,36 @@ def steps_of_result(
             claim_epoch=claim_epoch,
         )
         for kind, n, step in found
+        if step is not None
+    )
+
+
+def phase_review_rows(
+    result: Mapping[str, object],
+    *,
+    run_id: str,
+    initiative: str,
+    phase: str,
+    round_: int,
+    subject_sha: str,
+    started_at: str = "",
+    claim_epoch: int = 0,
+    worker: str = "",
+) -> tuple[StepRow, ...]:
+    """Pure. A `phase-review` result's step rows for review round `round_`, keyed `phase/<kind>/<round>`: the review,
+    and the adversary and arbitration when they ran, each at `subject_sha`, the tip it reviewed. A round that decided
+    nothing (`harness_fault`) is one failed `review` row naming the fault, so the round shows it ran and why it gave
+    no verdict."""
+    fault = str(result.get("harness_fault") or "")
+    faulted: tuple[bool, str, JsonObject] = (False, "harness_fault", {"fault": fault[:500]})
+    found = (("review", faulted if fault else _judge(result, "review", "findings")),
+             ("adversary", None if fault else _judge(result, "adversary", "objections")),
+             ("arbitration", None if fault else _arbitration(result)))
+    return tuple(
+        step_row(run_id=run_id, step=step_key("phase", "", kind, round_), initiative=initiative, phase=phase, task_id="",
+                 kind=kind, round_=round_, ok=step[0], verdict=step[1], result=step[2], finished_at="",
+                 started_at=started_at, subject_sha=subject_sha, worker=worker, claim_epoch=claim_epoch)
+        for kind, step in found
         if step is not None
     )
 

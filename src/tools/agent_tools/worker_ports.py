@@ -184,9 +184,11 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
 
         rows = store.call(lambda c: read(c, claim.initiative))
         rollups = store.call(lambda c: store_phases.rollup_rows(c, [claim.initiative]))
-        last = store.call(lambda c: store_phases.last_round(c, claim.initiative, claim.phase))
+        rounds = store.call(lambda c: store_phases.review_rounds(c, claim.initiative, claim.phase))
+        last = (int(str(rounds[-1]["round"])), str(rounds[-1]["verdict"])) if rounds else None
         smokes = store.call(lambda c: store_phases.smoke_rows(c, claim.initiative, claim.phase))
-        return worker.lane_facts(rows, rollups, claim.phase, last, smokes, run_id)
+        return worker.lane_facts(rows, rollups, claim.phase, last, smokes, run_id,
+                                 str(rounds[-1]["reason"] or "") if rounds else "")
 
     def launch(claim: Claim, record: Callable[[str], bool]) -> worker.Started | str:
         names = [p.name for p in runs_dir.iterdir()] if runs_dir.is_dir() else []
@@ -316,7 +318,6 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
         ),
         lane_facts=lane_facts,
         lane_mark=lane_mark,
-        park=lambda claim, reason: store.call(lambda c: store_phases.park(c, claim, name, reason)),
         launch=launch,
         launched=launched,
         alive=alive,

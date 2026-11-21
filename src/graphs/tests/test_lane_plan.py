@@ -106,10 +106,19 @@ def test_the_smoke_runs_only_when_every_task_rolled_up_and_before_the_round_it_p
     assert phase_lane.smoke_due({}, stopping=False)
     assert not phase_lane.smoke_due({"t2": "the build failed"}, stopping=False)
     assert not phase_lane.smoke_due({}, stopping=True)
-    assert phase_lane.smoke_round(lane_progress.Next("build", tasks=("t1",))) == 1
-    assert phase_lane.smoke_round(lane_progress.Next("review", round=1)) == 1
-    assert phase_lane.smoke_round(lane_progress.Next("review", round=3)) == 3  # after round 2's revision (L6)
     assert phase_lane.lanes_of({"COX_LANE_CAPACITY": "3"}) == 3 and phase_lane.lanes_of({}) == 1
+
+
+def test_a_review_round_s_arguments_name_its_graph_run_the_goal_the_diff_the_smoke_and_the_episode_so_far():
+    from harness.review_loop import Round
+
+    claim = phase_lane.LaneClaim("ship", "p1", "w1", 3)
+    args = phase_lane.review_args("ship.p1-4", "2026-11-20", {"team": "t"}, claim, 2, "Ship notes.", ["t1: Add t1"],
+                                  "diff", {"verdict": "passed"}, (Round(1, "revise", "dup"),))
+    assert args == {
+        "run_id": "ship.p1-4:p1-review-2", "date": "2026-11-20", "cartridge": {"team": "t"}, "initiative": "ship",
+        "phase": "p1", "round": 2, "goal": "Ship notes.", "tasks": ["t1: Add t1"], "patch": "diff",
+        "smoke": {"verdict": "passed"}, "previous": [{"round": 1, "verdict": "revise", "reason": "dup"}]}
 
 
 def test_a_push_that_did_not_land_is_reconciled_and_only_a_lost_claim_stops_the_lane():

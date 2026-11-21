@@ -617,7 +617,7 @@ def _quarantine_task_on(conn: Connection, change: Mapping[str, object], by: str,
     if not isinstance(moved, StateSet):
         return 0
     row = next((r for r in queue_rows_on(conn, initiative, "task") if r["task_id"] == task), None)
-    extra = cast("Mapping[str, Json]", row["extra"]) if row is not None and isinstance(row["extra"], Mapping) else {}
+    extra: Mapping[str, Json] = cast("Mapping[str, Json]", row["extra"]) if row is not None and isinstance(row["extra"], Mapping) else {}
     mark = cast("Json", change.get("mark") or {})
     store_queue.upsert(conn, {"initiative": initiative, "task_id": task, "extra": {**extra, str(change["mark_key"]): mark}})
     return 1

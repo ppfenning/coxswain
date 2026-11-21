@@ -783,6 +783,7 @@ def _run_phase_lane(
     from harness.checks import repo_checks
     from harness.cli_launch import _child_pids, _pgrep_children, lane_store_url, profile_storage_url
     from harness.epic import Ctx, resolve_default_ref
+    from harness.epic_context import phase_goal
     from harness.lane_workers import lane_workers
     from harness.store_scoped import open_scoped
 
@@ -828,6 +829,7 @@ def _run_phase_lane(
         ctx, claim, store.conn, lambda: open_scoped(url), list(initiative.get("items") or []),
         default_ref, lambda line: print(line, flush=True),
         lambda: phase_lane.terminate_groups(_child_pids(pgrep=_pgrep_children)),
+        goal=phase_goal(initiative, phase),
     )
     print(f"phase-lane {run_id}: {claim.initiative}/{claim.phase} exit {code}")
     return code

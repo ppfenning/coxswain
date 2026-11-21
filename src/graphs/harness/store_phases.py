@@ -37,7 +37,6 @@ __all__ = [
     "list_rows",
     "list_workers",
     "live_claims",
-    "park",
     "put_steps_fenced",
     "register",
     "release",
@@ -280,20 +279,6 @@ def finish(conn: Connection, claim: Claim, worker: str, outcome: str, reason: st
             f"UPDATE phase_queue SET state = 'finished', outcome = {p}, reason = {p}, lease_until = '', "
             f"updated_at = {p}, updated_by = {p} {_fence(p)}",
             (outcome, reason, now, worker, claim.initiative, claim.phase, worker, claim.epoch, now),
-        ) == 1
-
-
-def park(conn: Connection, claim: Claim, worker: str, reason: str) -> bool:
-    """Edge. Every task of the phase rolled up and no review round has judged it: the row becomes `built`, which no
-    claim takes (`phase_pick.claimable`), until the chair queues it again once a round is written (`_apply`'s
-    `review`). The claim's attempt is given back: the build succeeded. False when the claim is gone."""
-    p = conn.dialect.placeholder
-    with conn.transaction():
-        now = store_now(conn)
-        return conn.execute(
-            f"UPDATE phase_queue SET state = 'built', lease_until = '', reason = {p}, attempts = attempts - 1, "
-            f"updated_at = {p}, updated_by = {p} {_fence(p)}",
-            (reason, now, worker, claim.initiative, claim.phase, worker, claim.epoch, now),
         ) == 1
 
 
