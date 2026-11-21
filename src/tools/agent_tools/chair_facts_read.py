@@ -37,6 +37,7 @@ from agent_tools.chair_types import (
     LimitsFacts,
     MergeQueueFacts,
     PhaseFacts,
+    PhaseQueueFacts,
     PhaseTasks,
     PidProbeFact,
     QuarantineFacts,
@@ -255,6 +256,7 @@ class FactsDeps:
     merge_queue: Callable[[], object] | None = None  # raw profile top-level merge_queue; absent means the queue is off
     stale_candidates: Callable[[datetime], Sequence[StaleCandidate]] | None = None  # chair_read_stale.read_stale_candidates; absent means no candidates
     stall_candidates: Callable[[datetime], Sequence[StallCandidate]] | None = None  # chair_read_stall.read_stall_candidates; absent means no candidates
+    artifacts_missing: Callable[[datetime], Sequence[Mapping[str, object]]] | None = None  # chair_read_artifacts.read_marked_steps; absent means none
     hosts: Callable[[], list[dict[str, object]]] = lambda: []  # run_store.hosts(runs_dir) rows, stored verbatim under login_hosts
     window_source: Callable[[], str] = lambda: "est"  # "meter" when `window` built from a fresh meter entry this tick
     weekly_source: Callable[[], str] = lambda: "est"  # "meter" when `weekly` built from a fresh meter entry this tick
@@ -277,6 +279,7 @@ class FactsDeps:
     phase_state: Callable[[], Sequence[Row]] = lambda: []  # per phase: its task ids and whether a phase land adds over main; absent means []
     phase_tasks: Callable[[], list[PhaseTasks]] = lambda: []  # per phase with an approved task, each task's state; absent means []
     phase_records: Callable[[list[ApprovedTask]], list[str]] | None = None  # approved tasks to the `<run>:<phase>` of theirs with a phase record; absent means unknown
+    phase_queue: Callable[[], PhaseQueueFacts | None] | None = None  # the stored phase queue and the lane gate; absent or None means unread, so nothing is queued
     branch_counts: Callable[[], Sequence[Row]] = lambda: []  # per phase branch: ahead, behind, tip against main; absent means []
     landing: Callable[[], Sequence[LandingFact]] | None = None  # WorkerLands.landing; absent means []
     tuning: Callable[[datetime], tuple[Sequence[Row], str | None]] = lambda now: ([], None)  # chair_read_tuning.read_tuning bound to its db, runs dir and current tiers; absent means no rows and no last tune

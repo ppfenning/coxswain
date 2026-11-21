@@ -56,7 +56,7 @@ from agent_tools.chair_read_land_heads import read_land_heads
 from agent_tools.chair_read_quarantined import quarantined_from_rows
 from agent_tools.chair_read_stranded import stranded_from_rows
 from agent_tools.chair_read_tuning import current_lanes, tuning_facts
-from agent_tools.chair_stall_alarm import resolve_settings, stall_facts, work_holds
+from agent_tools.chair_stall_alarm import missing_runs, resolve_settings, stall_facts, work_holds
 from agent_tools.chair_types import (
     DEFAULT_QUARANTINE_HOLD_AFTER,
     HELD_FILE_CAUSE,
@@ -1338,12 +1338,15 @@ def gather_facts(
         "stranded": stranded_facts(approved, list(deps.run_commits()), list(deps.phase_state())),
         "phase_branches": phase_branch_facts(list(deps.branch_counts())),
         "landing": list(deps.landing()) if deps.landing is not None else [],
-        "idle_stall": less_phase_ready(deps.idle_stall(now), initiatives),
+        # The whole docket, not `initiatives`: those leave out an initiative with a live run, and a phase initiative
+        # has one while a worker runs one of its phases, so its other ready tasks would read as idle work.
+        "idle_stall": less_phase_ready(deps.idle_stall(now), ready),
         "stall_alarm": stall_facts(
             resolve_settings(deps.stall_alarm() if deps.stall_alarm is not None else None),
             landing_records, [action_doc(row) for row in action_rows],
             stranded_alarm_facts(stranded, rows, live, {(t["initiative"], t["id"]) for t in planned_tasks(approved, initiatives) if t["run"]}),
             work_holds(rows) if rows else [], deps.host,
+            missing_runs(deps.artifacts_missing(now), now) if deps.artifacts_missing is not None else None,
         ),
         "tuning": tuning_facts(
             *deps.tuning(now),
@@ -1372,6 +1375,8 @@ def gather_facts(
         facts["host_load_ceiling"] = ceiling
     if deps.phase_records is not None:
         facts["phase_records"] = list(deps.phase_records(approved))
+    if deps.phase_queue is not None and (stored_queue := deps.phase_queue()) is not None:
+        facts["phase_queue"] = stored_queue
     if deps.live_phases is not None:
         facts["live_phases"] = [LivePhase(initiative=i, phase=p) for i, p in live_phase_pairs]
     if deps.tickets is not None:

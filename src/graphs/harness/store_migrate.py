@@ -43,6 +43,7 @@ __all__ = [
     "check_version",
     "default_modules",
     "exact_refusal",
+    "holds_tables",
     "migrate",
     "newer_descriptions",
     "newer_refusal",
@@ -50,6 +51,7 @@ __all__ = [
     "open_store_exact",
     "pending",
     "recorded_description",
+    "should_back_up",
 ]
 
 _WITHOUT_BACKUP = "COX_STORE_MIGRATE_WITHOUT_BACKUP"
@@ -108,6 +110,15 @@ def _has_version_table(conn: Connection) -> bool:
     return conn.query_one(sql) is not None
 
 
+def holds_tables(conn: Connection) -> bool:
+    """Edge, reads only. Whether the store's schema holds any table at all; a store just created holds none."""
+    if conn.dialect.name == "sqlite":
+        sql = "SELECT 1 FROM sqlite_master WHERE type = 'table' LIMIT 1"
+    else:
+        sql = "SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() LIMIT 1"
+    return conn.query_one(sql) is not None
+
+
 def _current_version(conn: Connection) -> int:
     if not _has_version_table(conn):
         return 0
@@ -152,6 +163,17 @@ _BLOCK_WORD = re.compile(r"\b(BEGIN|CASE|END)\b")  # what opens and closes a tri
 _TABLE = r"(?:\w+\.)?(\w+)"  # an optionally schema-qualified table name; group: the table
 _ALTER = re.compile(rf"^\s*ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?{_TABLE}\s+(\S.*)$", re.DOTALL)
 _CREATED = re.compile(rf"^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?{_TABLE}\s*\(")
+# A function's name as written, schema and all: `other.f` is not the `f` this migration created.
+_QUALIFIED = r"((?:\w+\.)?\w+)"
+_CREATED_FUNCTION = re.compile(rf"^\s*CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+{_QUALIFIED}\s*\(")
+# A REVOKE of EXECUTE from PUBLIC on a no-argument function: it only narrows who may call or attach a function, and
+# it is additive only for a function this migration creates, which no older build calls.
+_REVOKE_EXECUTE = re.compile(rf"^\s*REVOKE\s+EXECUTE\s+ON\s+FUNCTION\s+{_QUALIFIED}\s*\(\s*\)\s+FROM\s+PUBLIC\s*;?\s*$")
+# A trigger's events, between its timing and ON: `TRUNCATE` there names an event, not a statement that truncates.
+_TRIGGER_EVENTS = re.compile(
+    r"\b(BEFORE|AFTER|INSTEAD\s+OF)\s+(?:INSERT|DELETE|TRUNCATE|UPDATE(?:\s+OF\s+\w+(?:\s*,\s*\w+)*)?)"
+    r"(?:\s+OR\s+(?:INSERT|DELETE|TRUNCATE|UPDATE(?:\s+OF\s+\w+(?:\s*,\s*\w+)*)?))*\s+ON\b"
+)
 _UNIQUE_INDEX = re.compile(
     rf"^\s*CREATE\s+UNIQUE\s+INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?(?:{_TABLE}\s+)?ON\s+(?:ONLY\s+)?{_TABLE}\s*\(",
     re.DOTALL,
@@ -166,6 +188,7 @@ _KINDS = (
     ("update", re.compile(r"^\s*UPDATE\b")),
     ("trigger", re.compile(r"^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:TEMP(?:ORARY)?\s+)?TRIGGER\b")),
     ("function", re.compile(r"^\s*CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\b")),
+    ("revoke", re.compile(r"^\s*REVOKE\b")),
 )
 # Anywhere in a statement: each removes, renames or rewrites what older code reads and writes, or makes its write fail.
 _NEVER_ADDITIVE = (
@@ -271,9 +294,10 @@ def _alter_violations(i: int, code: str) -> list[str]:
 def additive_violations(statements: Sequence[str], exempt: Mapping[str, object]) -> tuple[str, ...]:
     """Pure. Why `statements`, one migration's, are not additive, one reason per offence; () when they only add.
     Additive means code older than the migration still reads and writes the store as before:
-    - every statement is a CREATE TABLE, CREATE INDEX, ALTER TABLE, INSERT, UPDATE, CREATE TRIGGER or CREATE
-      FUNCTION this check can read; anything else, or a name it cannot read, is a violation (it fails closed);
-    - no DROP, RENAME, ALTER COLUMN, DELETE, TRUNCATE or RAISE anywhere;
+    - every statement is a CREATE TABLE, CREATE INDEX, ALTER TABLE, INSERT, UPDATE, CREATE TRIGGER, CREATE
+      FUNCTION or REVOKE this check can read; anything else, or a name it cannot read, is a violation (it fails closed);
+    - no DROP, RENAME, ALTER COLUMN, DELETE, TRUNCATE or RAISE anywhere, except TRUNCATE as a trigger's event;
+    - a REVOKE only takes EXECUTE from PUBLIC on a no-argument function this migration creates;
     - an ALTER TABLE only adds columns, each without a constraint and, when NOT NULL, with a DEFAULT, or an older
       insert that omits it fails; a unique index only on a table this migration creates;
     - a trigger, a function or an UPDATE only when `exempt` (the module's `ADDITIVE_EXEMPT`) names its kind with a
@@ -281,6 +305,7 @@ def additive_violations(statements: Sequence[str], exempt: Mapping[str, object])
     String literals and comments are not read; quoted and schema-qualified table names are."""
     codes = [_code(sql) for sql in statements]
     created = {m.group(1) for code in codes if (m := _CREATED.match(code))}
+    functions = {m.group(1) for code in codes if (m := _CREATED_FUNCTION.match(code))}
     allowed = {k for k in EXEMPTABLE if isinstance(exempt.get(k), str) and str(exempt.get(k)).strip()}
     reasons = _exemption_violations(exempt)
     for i, code in enumerate(codes, start=1):
@@ -289,7 +314,8 @@ def additive_violations(statements: Sequence[str], exempt: Mapping[str, object])
             reasons.append(f"statement {i} has an escape-string literal (E'...'), which additive DDL does not support")
         if _several(code, kind):
             reasons.append(f"statement {i} holds several statements in one string; split them")
-        reasons += [f"statement {i} has {word}" for word, rx in _NEVER_ADDITIVE if rx.search(code)]
+        scanned = _TRIGGER_EVENTS.sub(r"\1 ON", code, count=1) if kind == "trigger" else code
+        reasons += [f"statement {i} has {word}" for word, rx in _NEVER_ADDITIVE if rx.search(scanned)]
         if _UPDATE.search(code) and "update" not in allowed:
             reasons.append(f"statement {i} has an UPDATE, which ADDITIVE_EXEMPT does not exempt")
         if kind is None:
@@ -308,6 +334,13 @@ def additive_violations(statements: Sequence[str], exempt: Mapping[str, object])
             reasons += _alter_violations(i, code)
         elif kind == "update" and _UPDATE.search(code) is None:
             reasons.append(f"statement {i} is an UPDATE this check cannot read")
+        elif kind == "revoke":
+            revoke = _REVOKE_EXECUTE.match(code)
+            if revoke is None:
+                reasons.append(f"statement {i} is a REVOKE this check cannot read")
+            elif revoke.group(1) not in functions:
+                name = revoke.group(1).lower()
+                reasons.append(f"statement {i} revokes EXECUTE on {name}, a function it did not create")
     return tuple(reasons)
 
 
@@ -450,6 +483,12 @@ def _pg_dump(url: str, dest: Path, safe_url: str) -> None:
         )
 
 
+def should_back_up(current: int, newest: int, has_tables: bool) -> bool:
+    """Pure. Whether opening a store at `current` backs it up before migrating to `newest`: only when a migration is
+    pending and the store holds something. A fresh store, at version 0 with no table, has nothing to back up."""
+    return current < newest and (current > 0 or has_tables)
+
+
 def _backup_before_migrate(conn: Connection, url: str, current: int, newest: int, now: str) -> None:
     """Write a backup of `url` unless the override skips it. Never calls `migrate`; the caller does that next."""
     if os.environ.get(_WITHOUT_BACKUP) == "1":
@@ -517,14 +556,14 @@ def migrate(conn: Connection, applied_at: str, modules: Sequence[ModuleType | st
 def open_store(url: str, now: str) -> Connection:
     """Connect, back up first when a migration is pending, bring the schema up to date, and return the connection.
 
-    `now` is the applied-at text. When the database is already at the newest known migration,
-    neither a backup file nor a subprocess is written or spawned.
+    `now` is the applied-at text. When the database is already at the newest known migration, or is fresh (version 0,
+    no table: `should_back_up`), neither a backup file nor a subprocess is written or spawned.
     """
     conn = connect(url)
     try:
         current = _current_version(conn)
         newest = len(_ordered(default_modules()))
-        if current < newest:
+        if should_back_up(current, newest, holds_tables(conn)):
             _backup_before_migrate(conn, url, current, newest, now)
         migrate(conn, now)
     except BaseException:

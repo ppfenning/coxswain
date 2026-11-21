@@ -23,7 +23,7 @@ from __future__ import annotations
 import importlib.metadata
 import importlib.util
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -99,11 +99,11 @@ def _storage_plugins() -> Mapping[str, Any]:
     return {entry.name: entry for entry in importlib.metadata.entry_points(group=STORAGE_ENTRY_POINT_GROUP)}
 
 
-def _plugin_for(scheme: str, plugins: Mapping[str, Any]) -> Any:
+def _plugin_for(scheme: str, plugins: Mapping[str, Any], label: str = "traces") -> Any:
     """The loadable registered under `scheme`, else the refusal that names the scheme and the group."""
     if scheme not in plugins:
         raise ValueError(
-            f"unknown traces URL scheme {scheme!r}: "
+            f"unknown {label} URL scheme {scheme!r}: "
             f"no plugin registered under the {STORAGE_ENTRY_POINT_GROUP} entry-point group"
         )
     return plugins[scheme]
@@ -114,29 +114,38 @@ def resolve_traces_root(
     runs_dir: Path,
     env: Mapping[str, str],
     object_store: Mapping[str, Any] | None = None,
+    *,
+    label: str = "traces",
+    s3_extra: Callable[[], Mapping[str, Any]] | None = None,
 ) -> TracesRoot:
+    """The filesystem and root path `url` names; `<runs_dir>/traces` when it is empty.
+
+    `label` names the setting in a refusal, so the artifacts root (`harness.artifacts`) reads as its own key.
+    `s3_extra` gives extra `S3FileSystem` options for an `s3://` URL, such as the artifacts root's bounded timeouts. It
+    is called only once the URL has passed every check, so a refused URL never needs pyarrow.
+    """
     if not url:
         return _local(str(runs_dir / "traces"))
     if not _SCHEME.match(url):
         return _local(url)
     if "@" in url:
-        raise ValueError(f"traces url must not carry credentials: {redact_url(url)}")
+        raise ValueError(f"{label} url must not carry credentials: {redact_url(url)}")
     parts = urlsplit(url)
     if parts.query or parts.fragment:
-        raise ValueError(f"traces url must not carry a query or fragment: {redact_url(url)}")
+        raise ValueError(f"{label} url must not carry a query or fragment: {redact_url(url)}")
     if parts.scheme == "file":
         if parts.netloc not in ("", "localhost"):
             raise ValueError(f"file url must name a local absolute path: {redact_url(url)}")
         return _local(unquote(parts.path))
     if parts.scheme == "s3":
         if not parts.netloc:
-            raise ValueError(f"traces url has no bucket: {redact_url(url)}")
+            raise ValueError(f"{label} url has no bucket: {redact_url(url)}")
         from pyarrow.fs import S3FileSystem
 
         prefix = parts.path.strip("/")
         path = f"{parts.netloc}/{prefix}" if prefix else parts.netloc
-        return TracesRoot(S3FileSystem(**_s3_options(env, object_store)), path)
-    fs, path = _plugin_for(parts.scheme, _storage_plugins()).load().filesystem(url, env, object_store)
+        return TracesRoot(S3FileSystem(**_s3_options(env, object_store), **(s3_extra() if s3_extra else {})), path)
+    fs, path = _plugin_for(parts.scheme, _storage_plugins(), label).load().filesystem(url, env, object_store)
     return TracesRoot(fs, path)
 
 

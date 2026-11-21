@@ -14,12 +14,14 @@ from harness.store_migrate import (
     additive_violations,
     check_version,
     default_modules,
+    holds_tables,
     migrate,
     newer_descriptions,
     newer_refusal,
     open_store,
     pending,
     recorded_description,
+    should_back_up,
 )
 
 NOW = "2026-09-24T00:00:00Z"
@@ -325,13 +327,14 @@ def test_open_store_on_a_file_leaves_the_store_at_the_newest_real_migration(tmp_
 
 
 class FakePG(Connection):
-    """A postgres-shaped connection that answers `_current_version` (as version 0) but refuses any write."""
+    """A postgres-shaped connection to a store at version 0 that holds a table, so a migration would back it up
+    first; it refuses any write."""
 
     def __init__(self):
         super().__init__(raw=None, dialect=POSTGRES, begin="BEGIN")
 
     def query_all(self, sql, params=()):
-        return []
+        return [] if "schema_version" in sql else [("runs",)]
 
     def execute(self, sql, params=()):
         raise AssertionError("must not write when the backup step failed")
@@ -343,24 +346,64 @@ class FakePG(Connection):
         pass
 
 
-def test_open_store_backs_up_the_sqlite_file_before_the_new_table_exists(tmp_path, monkeypatch):
+def at_version_one(url):
+    """A store at version 1 of the fake migrations, holding table t1: a store with something to back up."""
+    c = connect(url)
+    try:
+        migrate(c, NOW, [fake(1, ONE)])
+    finally:
+        c.close()
+
+
+@pytest.mark.parametrize(
+    ("current", "newest", "has_tables", "backs_up"),
+    [
+        (0, 2, False, False),  # fresh: nothing to back up
+        (0, 2, True, True),  # version 0 but holding a table
+        (1, 2, False, True),
+        (1, 2, True, True),
+        (2, 2, True, False),  # nothing pending
+        (3, 2, True, False),  # newer than the code
+    ],
+)
+def test_should_back_up_only_a_store_that_holds_something_and_has_a_migration_pending(current, newest, has_tables, backs_up):
+    assert should_back_up(current, newest, has_tables) is backs_up
+
+
+def test_holds_tables_is_false_on_a_fresh_store_and_true_once_one_table_exists(conn):
+    assert holds_tables(conn) is False
+    migrate(conn, NOW, [fake(1, ONE)])
+    assert holds_tables(conn) is True
+
+
+def test_open_store_on_a_fresh_store_writes_no_backup_file(tmp_path, monkeypatch):
     monkeypatch.setenv("COX_STORE_BACKUP_DIR", str(tmp_path / "backups"))
     monkeypatch.setattr(store_migrate, "default_modules", lambda: (fake(1, ONE),))
+    open_store(f"sqlite:///{tmp_path / 'x.db'}", NOW).close()
+    assert not (tmp_path / "backups").exists()
+
+
+def test_open_store_backs_up_the_sqlite_file_before_the_new_table_exists(tmp_path, monkeypatch):
+    monkeypatch.setenv("COX_STORE_BACKUP_DIR", str(tmp_path / "backups"))
     url = f"sqlite:///{tmp_path / 'x.db'}"
+    at_version_one(url)
+    monkeypatch.setattr(store_migrate, "default_modules", lambda: (fake(1, ONE), fake(2, TWO)))
     open_store(url, NOW).close()
     backups = list((tmp_path / "backups").glob("*.sqlite"))
-    assert len(backups) == 1
+    assert [b.name for b in backups] == ["store-v1-to-v2-20260924T000000Z.sqlite"]
     backup = sqlite3.connect(str(backups[0]))
     try:
-        assert backup.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall() == []
+        assert {r[0] for r in backup.execute("SELECT name FROM sqlite_master WHERE type = 'table'")} == {
+            "schema_version", "t1"}
     finally:
         backup.close()
 
 
 def test_open_store_with_nothing_pending_writes_no_backup_file(tmp_path, monkeypatch):
     monkeypatch.setenv("COX_STORE_BACKUP_DIR", str(tmp_path / "backups"))
-    monkeypatch.setattr(store_migrate, "default_modules", lambda: (fake(1, ONE),))
     url = f"sqlite:///{tmp_path / 'x.db'}"
+    at_version_one(url)
+    monkeypatch.setattr(store_migrate, "default_modules", lambda: (fake(1, ONE), fake(2, TWO)))
     open_store(url, NOW).close()
     after_first_open = list((tmp_path / "backups").glob("*"))
     assert len(after_first_open) == 1
@@ -379,6 +422,8 @@ def test_the_without_backup_override_skips_the_backup_and_prints_one_warning_lin
     monkeypatch.setenv("COX_STORE_MIGRATE_WITHOUT_BACKUP", "1")
     monkeypatch.setenv("COX_STORE_BACKUP_DIR", str(tmp_path / "backups"))
     url = f"sqlite:///{tmp_path / 'x.db'}"
+    at_version_one(url)
+    monkeypatch.setattr(store_migrate, "default_modules", lambda: (fake(1, ONE), fake(2, TWO)))
     open_store(url, NOW).close()
     assert not (tmp_path / "backups").exists()
     assert capsys.readouterr().err.count("\n") == 1
@@ -408,7 +453,25 @@ def test_every_default_module_statement_is_portable_and_has_no_foreign_key(modul
 
 # Every ADDITIVE_EXEMPT a default module declares, by version, with its reason. A module that adds one must add it here
 # too, so a reviewer reads the exemption and its reason in the diff.
-KNOWN_EXEMPTIONS: dict[int, dict[str, str]] = {}
+KNOWN_EXEMPTIONS: dict[int, dict[str, str]] = {
+    21: {
+        "trigger": (
+            "Each CREATE TRIGGER is an AFTER ... FOR EACH STATEMENT trigger. It fires once the statement's rows "
+            "are written, and Postgres ignores what a statement-level trigger returns, so it cannot skip, drop or"
+            " rewrite a row. Its function writes no row and takes no row lock: the only lock NOTIFY adds is "
+            "Postgres's short queue lock at commit, taken after every lock the writer holds, so it cannot "
+            "deadlock an older writer either. The one way it can fail an older writer is a full notify queue (a "
+            "listener that never drains): every writer to a watched table then fails at commit with 54000. The "
+            "default 8 GB queue makes that remote."
+        ),
+        "function": (
+            "cox_notify has no arguments, returns NULL, and runs one statement: pg_catalog.pg_notify('cox_store',"
+            " TG_TABLE_NAME). It reads and writes no table. It runs with the invoker's rights (no SECURITY "
+            "DEFINER), its search_path is pinned, and EXECUTE is revoked from PUBLIC so no other role can attach "
+            "it to a table."
+        ),
+    },
+}
 
 
 def test_every_additive_exemption_is_listed_here():
@@ -466,6 +529,15 @@ def test_additive_ddl_has_no_violation():
     pytest.param("CREATE UNIQUE INDEX ux_runs_host ON runs (host)", "unique index to runs", id="unique-index-old-table"),
     pytest.param("DELETE FROM runs", "has DELETE", id="delete"),
     pytest.param("TRUNCATE runs", "has TRUNCATE", id="truncate"),
+    pytest.param("CREATE TRIGGER t AFTER INSERT ON runs BEGIN DELETE FROM notes; END", "has DELETE",
+                 id="trigger-body-deletes"),
+    pytest.param("REVOKE EXECUTE ON FUNCTION note_run() FROM PUBLIC", "a function it did not create",
+                 id="revoke-on-an-older-function"),
+    pytest.param("REVOKE SELECT ON TABLE runs FROM PUBLIC", "a REVOKE this check cannot read", id="revoke-on-a-table"),
+    pytest.param("REVOKE EXECUTE ON FUNCTION f(int) FROM PUBLIC", "a REVOKE this check cannot read",
+                 id="revoke-with-arguments"),
+    pytest.param("REVOKE EXECUTE ON FUNCTION f() FROM cox_worker", "a REVOKE this check cannot read",
+                 id="revoke-from-a-role"),
     pytest.param("CREATE TRIGGER t BEFORE INSERT ON runs BEGIN SELECT RAISE(ABORT, 'no'); END", "has RAISE",
                  id="raising-trigger"),
     # Quoted and schema-qualified names are read, not skipped.
@@ -538,6 +610,27 @@ def test_a_trigger_or_function_body_may_hold_semicolons_and_is_still_scanned():
     assert additive_violations((NOTES, nested, atomic), {"trigger": WHY, "function": WHY}) == ()
     hidden = FUNCTION.replace("RETURN NEW;", "DELETE FROM notes; RETURN NEW;")
     assert additive_violations((NOTES, hidden), {"function": WHY}) == ("statement 2 has DELETE",)
+
+
+def test_truncate_as_a_trigger_event_and_a_revoke_on_its_own_new_function_are_additive():
+    trigger = ("CREATE TRIGGER t AFTER INSERT OR DELETE OR TRUNCATE OR UPDATE OF a, b ON runs "
+               "FOR EACH STATEMENT EXECUTE FUNCTION note_run()")
+    revoke = "REVOKE EXECUTE ON FUNCTION note_run() FROM PUBLIC"
+    assert additive_violations((NOTES, FUNCTION, revoke, trigger), {"trigger": WHY, "function": WHY}) == ()
+    # A revoke names the function as created, schema and all: another schema's `note_run` is not this one.
+    other = "REVOKE EXECUTE ON FUNCTION other.note_run() FROM PUBLIC"
+    assert additive_violations((NOTES, FUNCTION, other), {"function": WHY}) == (
+        "statement 3 revokes EXECUTE on other.note_run, a function it did not create",
+    )
+    qualified = FUNCTION.replace("FUNCTION note_run()", "FUNCTION public.note_run()")
+    assert additive_violations((NOTES, qualified, revoke), {"function": WHY}) == (
+        "statement 3 revokes EXECUTE on note_run, a function it did not create",
+    )
+    assert additive_violations((NOTES, qualified, revoke.replace("note_run", "public.note_run")),
+                               {"function": WHY}) == ()
+    # The event list is read only in its place: a TRUNCATE in a trigger's body still counts.
+    body = "CREATE TRIGGER t AFTER TRUNCATE ON runs BEGIN TRUNCATE notes; END"
+    assert additive_violations((NOTES, body), {"trigger": WHY}) == ("statement 2 has TRUNCATE",)
 
 
 def test_a_trigger_function_and_update_pass_only_when_exempted_with_a_reason():

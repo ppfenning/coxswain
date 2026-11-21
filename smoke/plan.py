@@ -76,15 +76,49 @@ PostgresSource = UseUrl | StartContainer | Skip | Fail
 
 # CI splits the non-forge suite across parallel jobs, one shard each (`COX_SMOKE_SHARD=<k>/<n>`). Shards are by file,
 # so a module's fixtures stay in one session, and every file lands in exactly one shard (`shard_files`). The split is
-# made from the folder's files, not from what one run collected, so a nested pytest that a smoke test starts on its own
-# file (it inherits the variable) keeps that file in the same shard as its parent.
+# made from the folder's files and the committed timings, not from what one run collected, so a nested pytest that a
+# smoke test starts on its own file (it inherits the variable) keeps that file in the same shard as its parent.
 SHARD_ENV = "COX_SMOKE_SHARD"
 _TEST_DEF = re.compile(r"^\s*(?:async\s+)?def test_", re.MULTILINE)
+# Each file's measured seconds in a serial `-m "not forge"` run, written by `-p smoke.timings` (docs/smoke.md).
+TIMINGS_FILE = "timings.json"
+TIMINGS_ENV = "COX_SMOKE_TIMINGS"
 
 
-def file_weights(sources: Mapping[str, str]) -> dict[str, int]:
-    """Each test file's weight for `shard_files`: the test functions its source defines (file -> source)."""
-    return {name: len(_TEST_DEF.findall(source)) for name, source in sources.items()}
+def file_weights(sources: Mapping[str, str], timings: Mapping[str, float] | None = None) -> dict[str, float]:
+    """Each test file's weight for `shard_files` (file -> source): its recorded seconds when `timings` has it, else the
+    test functions it defines times the mean recorded seconds per test function (1 s each when nothing is recorded),
+    so a new file weighs what a typical one of its size does. A recorded file no longer in `sources` is ignored."""
+    counts = {name: len(_TEST_DEF.findall(source)) for name, source in sources.items()}
+    recorded = {name: float(timings[name]) for name in counts if timings and name in timings}
+    tests = sum(counts[name] for name in recorded)
+    per_test = sum(recorded.values()) / tests if tests else 1.0
+    return {name: recorded.get(name, count * per_test) for name, count in counts.items()}
+
+
+def read_timings(text: str) -> dict[str, float]:
+    """The timings file's JSON (file -> seconds, each a number of at least 0); anything else is a ValueError."""
+    value = json.loads(text)
+    if not (isinstance(value, dict) and all(isinstance(s, int | float) and not isinstance(s, bool) and s >= 0
+                                            for s in value.values())):
+        raise ValueError(f"{TIMINGS_FILE} must map each smoke file to its seconds, a number of at least 0")
+    return {str(name): float(seconds) for name, seconds in value.items()}
+
+
+def file_seconds(durations: Iterable[tuple[str, float]], deselected: Iterable[str] = ()) -> dict[str, float]:
+    """Seconds per file from (test id, seconds) pairs, each a test's phases less the session fixtures they set up;
+    a file whose every test was deselected weighs 0, since it runs in no shard."""
+    totals = dict.fromkeys((test.split("::")[0] for test in deselected), 0.0)
+    for test, seconds in durations:
+        name = test.split("::")[0]
+        totals[name] = totals.get(name, 0.0) + max(seconds, 0.0)
+    return {name: round(seconds, 1) for name, seconds in sorted(totals.items())}
+
+
+def timings_text(old: Mapping[str, float], new: Mapping[str, float]) -> str:
+    """The timings file after a run: `old` with every file the run measured replaced by its new seconds, so a run on
+    a few files updates only those. Sorted, one file per line, so a regeneration diffs file by file."""
+    return json.dumps({**old, **new}, indent=0, sort_keys=True) + "\n"
 
 
 def parse_shard(value: str) -> tuple[int, int]:
@@ -95,12 +129,12 @@ def parse_shard(value: str) -> tuple[int, int]:
     return int(k), int(n)
 
 
-def shard_files(weights: Mapping[str, int], count: int) -> tuple[tuple[str, ...], ...]:
+def shard_files(weights: Mapping[str, float], count: int) -> tuple[tuple[str, ...], ...]:
     """`count` shards of the files in `weights` (file -> its weight), heaviest file first onto the lightest
     shard, ties broken by name and by shard number. A partition: each file is in exactly one shard, and the same
     files always split the same way."""
     shards: list[list[str]] = [[] for _ in range(count)]
-    loads = [0] * count
+    loads = [0.0] * count
     for name in sorted(weights, key=lambda name: (-weights[name], name)):
         lightest = min(range(count), key=lambda index: (loads[index], index))
         shards[lightest].append(name)
@@ -277,6 +311,15 @@ def stale_databases(names: Iterable[str], now: int, stale_after: int = STALE_AFT
         if match and now - int(match.group(1)) > stale_after:
             stale.append(name)
     return stale
+
+
+def template_name(session: str, created: int) -> str:
+    """The session's template database, created at `created` (epoch seconds): migrated once, then copied for each test
+    (`CREATE DATABASE ... TEMPLATE`). One per session, so two sessions on one server never copy, or drop, each other's.
+    It carries the session's prefix and its own creation time, like every test database, so the session's end drops
+    it and a killed session's is reaped by age (`stale_databases`). No test database ends in `_template`: each ends in
+    a hash."""
+    return f"{session_prefix(session)}{created}_template"
 
 
 def system_path_with(system_path: str, tool_dir: str | None) -> str:

@@ -16,7 +16,7 @@ from agent_tools.setup_migrate import cartridge_link_target
 from agent_tools.setup_migrate_hosts import ObservedHost, is_migrated
 from agent_tools.store_probe import OBJECT_STORE, POSTGRES, ProbeResult
 
-__all__ = ["checks", "editable_source", "exit_code", "extras_row", "freshness_rows", "home_rows", "lane_host_paths_row", "parquet_line", "render", "running_install_row", "store_rows", "unit_path_entries", "worker_role_rows"]
+__all__ = ["artifacts_rows", "checks", "editable_source", "exit_code", "extras_row", "freshness_rows", "home_rows", "lane_host_paths_row", "parquet_line", "render", "running_install_row", "store_rows", "unit_path_entries", "worker_role_rows"]
 
 _MISSING = object()
 _SKIPPED = "skipped: no profile"
@@ -776,6 +776,33 @@ def store_rows(mode: str, store_url: str, traces_url: str, probe_results: list[P
         host = _host_of(store_url) or "unnamed"
         return [_shared_row(True, f"shared store reachable: postgres host {host}, {_traces_phrase(traces_url)}")]
     return [_shared_row(False, "the store setting is neither files nor shared; set it to one of those")]
+
+
+ARTIFACTS_CHECK = "artifacts root"
+_ARTIFACTS_FIX = "check artifacts_url and, for s3://, the object_store block and its key variables"
+
+
+def _artifacts_place(url: str) -> str:
+    if url.lower().startswith("s3://"):
+        bucket = _authority(url)
+        return f"s3 bucket {bucket if _BUCKET.fullmatch(bucket) else 'unnamed'}"
+    return "local folder" if "://" not in url or url.lower().startswith("file://") else "plugin root"
+
+
+def artifacts_rows(url: str | None, bad_url: str | None, failed: tuple[str, str] | None) -> list[dict]:
+    """The "artifacts root" row, on a machine whose provider profile sets `artifacts_url`; none on any other. `bad_url`
+    is why the URL was refused, and `failed` is `harness.artifacts.probe`'s `(stage, what)`: the write, the read back
+    or the remove of a probe object that failed. A row names the bucket of an s3 root and never the rest of a URL."""
+    if not url:
+        return []
+    if bad_url is not None:
+        return [_shared_row(False, f"artifacts_url is refused: {bad_url}", check=ARTIFACTS_CHECK)]
+    where = _artifacts_place(url)
+    if failed is not None:
+        stage, what = failed
+        return [_shared_row(False, f"{where}: the probe object's {stage} failed ({what}); {_ARTIFACTS_FIX}",
+                            check=ARTIFACTS_CHECK)]
+    return [_shared_row(True, f"{where}: a probe object was written, read back and removed", check=ARTIFACTS_CHECK)]
 
 
 WORKER_ROLE_CHECK = "worker store role"

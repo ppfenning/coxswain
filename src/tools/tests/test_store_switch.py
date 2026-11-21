@@ -102,6 +102,25 @@ def test_default_copy_store_passes_json_flag(monkeypatch: pytest.MonkeyPatch):
     assert seen[0][seen[0].index("harness.store_copy") + 1 :] == ["--json", FILES_DB, SHARED_DB]
 
 
+def test_copy_env_allows_the_double_and_never_carries_the_sync_off_opt_in():
+    env = sw.copy_env({"PATH": "/bin", "COX_SQLITE_SYNC_OFF": "1"})
+    assert env == {"PATH": "/bin", "COXSWAIN_STORE_DOUBLE": "sqlite"}
+
+
+def test_default_copy_store_runs_the_copy_without_the_suites_sync_off_opt_in(monkeypatch: pytest.MonkeyPatch):
+    # This suite's conftest sets COX_SQLITE_SYNC_OFF=1; the real legacy store the copy opens must still sync.
+    assert sw.os.environ.get("COX_SQLITE_SYNC_OFF") == "1"
+    envs: list[dict[str, str]] = []
+
+    def fake_run(argv, **kwargs):
+        envs.append(kwargs["env"])
+        return subprocess.CompletedProcess(argv, 0, stdout=COPIER_JSON, stderr="")
+
+    monkeypatch.setattr(sw.subprocess, "run", fake_run)
+    sw.default_copy_store(FILES_DB, SHARED_DB)
+    assert "COX_SQLITE_SYNC_OFF" not in envs[0] and envs[0]["COXSWAIN_STORE_DOUBLE"] == "sqlite"
+
+
 def test_default_copy_store_still_raises_on_nonzero_exit(monkeypatch: pytest.MonkeyPatch):
     def fake_run(argv, **kwargs):
         return subprocess.CompletedProcess(argv, 1, stdout="", stderr=f"short table: {SHARED_DB}")

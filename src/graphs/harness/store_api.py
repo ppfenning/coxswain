@@ -15,11 +15,11 @@ from __future__ import annotations
 import functools
 import hashlib
 import sqlite3
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, cast, get_args
 
-from harness import store_lease, store_queue
+from harness import store_lease, store_phases, store_queue
 from harness.store_dialect import Cell, Connection, Json, JsonObject, StoreDriverMissing, json_load, json_text
 from harness.store_landed import mark_landed
 from harness.store_migrate import MigrationError, open_store
@@ -539,6 +539,11 @@ def run_task_ids(url: str, run_id: str) -> list[str] | Failed | NotAvailable:
     return _read(url, lambda c: run_task_ids_on(c, run_id))
 
 
+def step_rows(url: str, run_id: str) -> list[StepRow] | Failed | NotAvailable:
+    """Every `step_results` row of one run, read-only; `cox runs artifacts` lists the keys they name."""
+    return _read(url, lambda c: step_rows_on(c, run_id))
+
+
 def resolve_token(url: str, token: str) -> Resolved | Failed | NotAvailable | None:
     return _read(url, lambda c: resolve_on(c, token))
 
@@ -565,3 +570,13 @@ def export_hashes(url: str, now: str) -> dict[tuple[str, str], str] | Failed | N
 
 def set_export_hash(url: str, initiative: str, task: str, digest: str, now: str) -> Failed | NotAvailable | None:
     return _write(url, now, lambda c: set_export_hash_on(c, initiative, task, digest))
+
+
+def phase_queue_rows(url: str) -> list[dict[str, object]] | Failed | NotAvailable:
+    """Every `phase_queue` row, in claim order (`store_phases.list_rows`)."""
+    return _read(url, store_phases.list_rows)
+
+
+def apply_phase_changes(url: str, changes: Sequence[Mapping[str, object]], by: str, now: str) -> int | Failed | NotAvailable:
+    """The chair's phase queue writes, in one transaction at the store's own time; the rows they changed."""
+    return _write(url, now, lambda c: store_phases.apply_changes(c, changes, by))

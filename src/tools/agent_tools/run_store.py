@@ -50,7 +50,7 @@ def __getattr__(name: str) -> tuple[type[BaseException], ...]:
 
 
 __all__ = [
-    "LEASE_SNAPSHOT_S", "Lane", "ParquetCheck", "TracesUnavailable", "all_phase_manifests", "attempt_causes", "attempt_causes_for", "build_counts",
+    "LEASE_SNAPSHOT_S", "Lane", "ParquetCheck", "TracesUnavailable", "all_phase_manifests", "artifacts_root_for", "attempt_causes", "attempt_causes_for", "build_counts",
     "call_events", "call_from_row", "connect_readonly", "cost_since", "db_error_types", "efficiency_rows", "gate_call_rows",
     "harness_store_api", "hosts", "json_cell", "last_call_at", "latest_chair_meter", "lease", "lease_name_for", "lease_table_for", "live_lanes", "open_store", "parquet_readable", "phase_manifests", "phase_names", "remote_lanes", "resolve_run_id", "run_ids", "run_spans",
     "run_started", "runs_columns", "sql_for", "sqlite_path", "store_url_for", "store_usages", "summarize", "task_verdict_rows", "traces_root_for", "usage", "usages",
@@ -179,6 +179,16 @@ def _traces_root_for(runs_dir: str, routing_profile: str) -> TracesRoot:
     """Cached per process, like `_store_url_for`: a call's events are asked for once per call."""
     named = read_provider_profile(routing_profile).get("provider_profile")
     return profile_traces_root(read_provider_profile(named) if isinstance(named, str) and named else {}, runs_dir)
+
+
+def artifacts_root_for(runs_dir: Path) -> Any:
+    """Edge. The step artifacts root (`harness.artifacts.ArtifactsRoot`): the `artifacts_url` of the provider profile the
+    routing profile names, resolved as the save path resolves it; None when the profile sets none. A bad URL raises
+    ValueError. Not cached: the root holds the environment's secret values, read now."""
+    from harness.artifacts import artifacts_root  # the harness loads on use, as `harness_store_api` does
+
+    named = read_provider_profile(os.environ.get("AGENT_TOOLS_PROFILE") or _DEFAULT_PROFILE).get("provider_profile")
+    return artifacts_root(read_provider_profile(named) if isinstance(named, str) and named else {}, os.environ, runs_dir)
 
 
 def open_store(runs_dir: Path) -> tuple[Any, str] | None:

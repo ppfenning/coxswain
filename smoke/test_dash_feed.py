@@ -111,3 +111,48 @@ def test_a_second_feed_prints_what_the_first_computes_and_takes_over_when_it_exi
                 later = follower.snapshot()
             assert later["at"] > published[-1]["at"], "the follower never computed a snapshot of its own"
     assert sorted(p.name for p in (sandbox.workspace / "runs" / ".dash-feed").iterdir()) == ["feed.lock", "feed.snapshot"]
+
+
+# Two calls of an ended run and one of a run still going, all this month. `cox lake sync` takes the ended run's.
+_SPEND = """import sys, psycopg
+from datetime import UTC, datetime
+url, verb = sys.argv[1:3]
+now = datetime.now(UTC).isoformat()
+with psycopg.connect(url, autocommit=True) as conn:
+    if verb == "seed":
+        conn.execute("INSERT INTO runs (run_id, launched_at, ended_at) VALUES ('spent', %s, %s), ('going', %s, NULL)", (now, now, now))
+        for call, run, cost in (("c1", "spent", 1.25), ("c2", "spent", 0.5), ("c3", "going", 0.25)):
+            conn.execute("INSERT INTO node_calls (call_id, run_id, seq, ts, cost_usd, ok) VALUES (%s, %s, 1, %s, %s, 1)", (call, run, now, cost))
+    else:
+        conn.execute("DELETE FROM node_calls WHERE run_id = 'spent'")
+"""
+
+
+def _spend(sandbox, verb: str) -> None:
+    done = subprocess.run([str(sandbox.install.python), "-c", _SPEND, sandbox.store_url, verb], env=sandbox.env,
+                          capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+
+
+def _budget(sandbox) -> tuple[float, str]:
+    done = sandbox.cox("dash", "--once")
+    assert done.returncode == 0, done.stdout[-2000:] + done.stderr[-2000:]
+    return json.loads(done.stdout)["budget"]["spent_usd"], done.stderr
+
+
+def test_the_budget_reads_ended_runs_from_the_lake_once_it_is_synced_and_the_store_until_then(sandbox):
+    _spend(sandbox, "seed")
+    spent, stderr = _budget(sandbox)
+    assert spent == 2.0
+    assert "no lake catalog at" in stderr and "spend windows read the live store" in stderr, stderr
+
+    synced = sandbox.cox("lake", "sync", "--runs-dir", str(sandbox.workspace / "runs"), "--json")
+    assert synced.returncode == 0, synced.stdout + synced.stderr
+    assert {t["table"]: t["rows_appended"] for t in json.loads(synced.stdout)["tables"]}["node_calls"] == 2
+    spent, stderr = _budget(sandbox)
+    assert (spent, "live store" in stderr) == (2.0, False), stderr
+
+    # Only the lake still holds the ended run's 1.75: the budget keeps it, and reads the going run's 0.25 live.
+    _spend(sandbox, "delete")
+    spent, stderr = _budget(sandbox)
+    assert (spent, "live store" in stderr) == (2.0, False), stderr

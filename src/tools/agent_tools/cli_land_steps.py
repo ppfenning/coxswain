@@ -235,13 +235,9 @@ def _cherry_pick_generated(wt: Path, sha: str, umbrella: str | None, echo: Calla
         # A generated-only conflict is regenerated or it stops the land: it never reaches the add/add resolver.
         failure = _regenerate_generated_conflicts(wt, conflicted) if generated_only else None
         resolved = {} if generated_only else {name: resolve(name) for name in conflicted}
-        unresolvable = not generated_only and (not conflicted or any(text is None for text in resolved.values()))
-        if failure is not None or unresolvable:
+        if land.pick_must_abort(conflicted, resolved, failure):
             bounded_run.completed(["git", "-C", str(wt), "cherry-pick", "--abort"], capture_output=True, text=True)
-            # The conflicts line leads, so the land prints it as `cherry_pick: ... conflicts in: ...` (what
-            # `partial_land.conflicting_paths` reads); git's own "could not apply" line follows for `land_refusal`.
-            named = f"cherry-pick of {sha[:8]} conflicts in: {', '.join(sorted(conflicted))}" if conflicted else ""
-            return False, "\n".join(filter(None, [named, failure, cp.stderr.strip() or cp.stdout.strip()]))
+            return False, land.conflict_detail(f"cherry-pick of {sha[:8]}", conflicted, failure, cp.stderr.strip() or cp.stdout.strip())
         for name, text in resolved.items():
             (wt / name).write_text(text)
         staged = sorted(conflicted) if generated_only else sorted(resolved)
@@ -414,7 +410,7 @@ def _gather_failed(wt: Path, what: str, abort: list[str], result: subprocess.Com
     conflicted = bounded_run.completed(["git", "-C", str(wt), "diff", "--name-only", "--diff-filter=U"],
                                 capture_output=True, text=True).stdout.split()
     bounded_run.completed(["git", "-C", str(wt), *abort], capture_output=True, text=True)
-    return False, f"{what} conflicts in: {', '.join(conflicted)}" if conflicted else result.stderr.strip() or result.stdout.strip()
+    return False, land.conflict_detail(what, conflicted) or result.stderr.strip() or result.stdout.strip()
 
 
 def _execute_gather_step(repo: Path, step: dict) -> tuple[bool, str]:

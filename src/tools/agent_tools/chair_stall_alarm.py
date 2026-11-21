@@ -25,6 +25,12 @@ Four checks, each a fact the chair already has:
   progress pauses it (nothing is raised while busy) but does not end it, so a lane that dies before its first model
   call does not make a second spell. Once progress ends it, its alarm closes quietly, and the next spell starts at that
   progress, so its key is new.
+- **artifacts missing**: a run wrote step rows marked `result_json.artifacts_error` (`harness.artifacts`) in the last
+  `MISSING_WINDOW`: its step artifacts were not all uploaded. It raises `artifacts_missing:<run>` once per run, naming
+  the first error. A worker only marks its rows, since its scoped store role can write nothing else, so the chair raises
+  the alarm. It closes quietly once the run's rows are older than the window. The window is also a blind spot: a
+  run marked while the chair was down for longer than it is never alarmed, though `cox runs artifacts <run>` still
+  shows the run's `MISSING` lines.
 
 A stall raises one `stall_alarm` and, once its check no longer holds, one `stall_clear`, the all-clear. A same-failure
 stall is cleared only when its streak breaks: the action succeeds or fails another way. A streak that goes quiet
@@ -57,6 +63,10 @@ DEFAULT_STRANDED_MINUTES = 30.0
 DEFAULT_IDLE_MINUTES = 60.0
 IDLE_HELD, NO_CAPACITY = "idle_held", "no_capacity"  # the idle alarm's two keys, each raised as `<name>:<since>`
 IDLE_KEYS = frozenset({IDLE_HELD, NO_CAPACITY})
+ARTIFACTS_MISSING = "artifacts_missing"  # raised as `artifacts_missing:<run>`
+ARTIFACTS_ERROR_FIELD = "artifacts_error"  # harness.artifacts.ERROR_FIELD: the step row's result_json key
+MISSING_WINDOW = timedelta(hours=24)  # marked step rows older than this no longer hold their run's alarm open
+QUIET_KEYS = IDLE_KEYS | {ARTIFACTS_MISSING}  # stalls whose end is not news: their alarm closes unsaid
 STREAK_LIVE = timedelta(hours=1)  # a failure streak whose newest attempt is older than this has stopped being attempted
 RAISE, CLEAR = "stall_alarm", "stall_clear"
 ALARM_KINDS = frozenset({RAISE, CLEAR})
@@ -116,6 +126,14 @@ class OpenAlarm(TypedDict):
     subject: str
 
 
+class MissingRun(TypedDict):
+    """A run with step rows whose artifacts were not all uploaded: its initiative, the first error, and when."""
+
+    initiative: str
+    error: str
+    at: str
+
+
 class StallFacts(TypedDict):
     """What the checks read, gathered once per tick by `stall_facts`."""
 
@@ -131,11 +149,12 @@ class StallFacts(TypedDict):
     stranded: dict[str, str]  # stranded task with no live run -> when its row was first seen ("" when unknown)
     holds: list[HeldItem]  # the work held for a person in the store (`work_holds`)
     local_host: str  # the chair's own host name, whose hosts-table row says whether its own lanes count
+    artifacts_missing: NotRequired[dict[str, MissingRun]]  # run -> its marked step rows (`missing_runs`)
 
 
 class Stall(TypedDict):
     # what stalled, stable while it stands: `no_land`, `no_launch`, `stranded:<task>`, `repeat:<kind>:<target>:<digest>`,
-    # `idle_held:<since>`, `no_capacity:<since>`
+    # `idle_held:<since>`, `no_capacity:<since>`, `artifacts_missing:<run>`
     key: str
     since: str
     subject: str  # the initiative (or task) the courier entry points at
@@ -402,10 +421,12 @@ def stall_facts(
     stranded: Mapping[str, str] | None = None,
     holds: Sequence[HeldItem] = (),
     local_host: str = "",
+    artifacts_missing: Mapping[str, MissingRun] | None = None,
 ) -> StallFacts:
     """Everything the checks read: the landing records' land facts, the action rows' launches, first row, attempt
     heads, failure streaks, open alarms and told counts, `stranded`, each stranded task's first-seen time, `holds`,
-    the work held for a person (`work_holds`), and `local_host`, the chair's own host name."""
+    the work held for a person (`work_holds`), `local_host`, the chair's own host name, and `artifacts_missing`, the
+    runs whose step rows were marked (`missing_runs`)."""
     last_land, initiatives = land_facts(records)
     return {
         "settings": settings,
@@ -420,6 +441,7 @@ def stall_facts(
         "stranded": dict(stranded or {}),
         "holds": list(holds),
         "local_host": local_host,
+        "artifacts_missing": dict(artifacts_missing or {}),
     }
 
 
@@ -474,6 +496,31 @@ def stranded(facts: StallFacts, now: datetime) -> list[Stall]:
                       "detail": f"approved task {task} has been stranded with no live run for "
                                 f"{round((now - start).total_seconds() / 60)}m"})
     return found
+
+
+def missing_runs(rows: Sequence[Mapping[str, object]], now: datetime) -> dict[str, MissingRun]:
+    """The runs whose step rows carry `result_json.artifacts_error` and finished within `MISSING_WINDOW`, each with its
+    initiative and its earliest marked row's error and time. `rows` are step rows as the store reader gives them."""
+    found: dict[str, MissingRun] = {}
+    for row in sorted(rows, key=lambda r: str(r.get("finished_at") or "")):
+        result = row.get("result_json")
+        error = result.get(ARTIFACTS_ERROR_FIELD) if is_mapping(result) else None
+        at = parse_ts(row.get("finished_at"))
+        run = str(row.get("run_id") or "")
+        if not error or not run or at is None or now - at > MISSING_WINDOW or run in found:
+            continue
+        found[run] = {"initiative": str(row.get("initiative") or ""), "error": _one_line(error, "unknown error"),
+                      "at": str(row.get("finished_at"))}
+    return found
+
+
+def artifacts_missing(facts: StallFacts) -> list[Stall]:
+    """One stall per run whose step artifacts were not all uploaded, in run order."""
+    return [
+        {"key": f"{ARTIFACTS_MISSING}:{run}", "since": m["at"], "subject": m["initiative"] or run,
+         "detail": f"run {run} could not upload step artifacts; its step rows are marked: {m['error'][:_REASON_CHARS]}"}
+        for run, m in sorted((facts.get("artifacts_missing") or {}).items())
+    ]
 
 
 def told_spell(opened: Mapping[str, OpenAlarm], progress_at: str | None) -> Stall | None:
@@ -560,15 +607,16 @@ def repeats(facts: StallFacts, now: datetime) -> list[Stall]:
 
 
 def observe(facts: StallFacts, gate: Gate, now: datetime) -> list[Stall]:
-    """The stalls standing now, in a fixed order: no land, no launch, each stranded task, the idle spell, then each
-    repeated failure. Under the hard stop only the repeated failures stand; while the chair's idle-lanes line is raised,
+    """The stalls standing now, in a fixed order: no land, no launch, each stranded task, the idle spell, each repeated
+    failure, then each run with missing artifacts. Under the hard stop only the repeated failures stand; while the chair's idle-lanes line is raised,
     no launch does not."""
     found = [] if gate["paused"] else [
         no_land(facts, gate["held"], now),
         None if gate["idle_raised"] else no_launch(facts, gate["free_lanes"], gate["ready"], gate["subject"], now),
     ]
     held = [] if gate["paused"] else stranded(facts, now)
-    return [*(s for s in found if s is not None), *held, *idle_spell(facts, gate, now), *repeats(facts, now)]
+    return [*(s for s in found if s is not None), *held, *idle_spell(facts, gate, now), *repeats(facts, now),
+            *artifacts_missing(facts)]
 
 
 def repeat_ending(key: str, heads: Mapping[str, Head], now: datetime) -> str:
@@ -611,7 +659,7 @@ def plan_alarms(standing: Sequence[Stall], facts: StallFacts, now: datetime, pau
         repeat = key.startswith(f"{REPEAT}:")
         if paused and not repeat:
             continue
-        ending = repeat_ending(key, facts["heads"], now) if repeat else "quiet" if key.partition(":")[0] in IDLE_KEYS else "broken"
+        ending = repeat_ending(key, facts["heads"], now) if repeat else "quiet" if key.partition(":")[0] in QUIET_KEYS else "broken"
         if ending == "standing":
             continue
         quiet = ending == "quiet"

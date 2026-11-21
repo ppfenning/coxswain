@@ -10,6 +10,7 @@ Run it from the repository root: `pytest -q -rs smoke`.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import os
 import re
@@ -41,9 +42,17 @@ sys.path[:0] = [str(ROOT / "src" / name) for name in ("tools", "graphs", "cartri
 # tree (not from whatever checkout the runner's venv installed), since the fixtures poll the same endpoint it does.
 from agent_tools.forge_forgejo import parse_branch_tip  # noqa: E402
 
-# The harness backs a store up with `pg_dump` before it migrates one (`harness.store_migrate`), and a fresh smoke database
-# always migrates. Linux has it in /usr/bin; Homebrew puts it under /opt/homebrew, off the minimal PATH, so the folder
-# the caller's PATH finds it in is added after the system's, and nothing else from that PATH comes with it.
+# The suite's own imports come from this tree, or it does not load (tests/test_smoke_shell.py rebuilds the stale
+# checkout that once shadowed `core` and `harness` while only src/tools was put ahead).
+for _package, _folder in {"agent_tools": "tools", "harness": "graphs", "core": "cartridges"}.items():
+    _found = Path(importlib.import_module(_package).__file__).resolve()
+    if not _found.is_relative_to(ROOT / "src" / _folder):
+        raise RuntimeError(f"{_package} imported from {_found}, not from this tree's src/{_folder}")
+
+# The harness backs a store up with `pg_dump` before it migrates one that holds something (`harness.store_migrate`,
+# `should_back_up`); a fresh smoke database is not backed up, but test_store_backup_pg_dump.py migrates one that is.
+# Linux has pg_dump in /usr/bin; Homebrew puts it under /opt/homebrew, off the minimal PATH, so the folder the
+# caller's PATH finds it in is added after the system's, and nothing else from that PATH comes with it.
 PG_DUMP = shutil.which("pg_dump")
 SYSTEM_PATH = plan.system_path_with("/usr/local/bin:/usr/bin:/bin", str(Path(PG_DUMP).parent) if PG_DUMP else None)
 READY_TIMEOUT_S = 120
@@ -129,6 +138,10 @@ def install(tmp_path_factory: pytest.TempPathFactory) -> Install:
     return _install(tmp_path_factory, "install", "postgres,traces,lake")
 
 
+_SITE_PROBE = ("import sysconfig, agent_tools, harness, core; "
+               "print(sysconfig.get_paths()['purelib'], *(m.__file__ for m in (agent_tools, harness, core)), sep=chr(10))")
+
+
 def _install(tmp_path_factory: pytest.TempPathFactory, name: str, extras: str) -> Install:
     uv = shutil.which("uv")
     if uv is None:
@@ -142,10 +155,15 @@ def _install(tmp_path_factory: pytest.TempPathFactory, name: str, extras: str) -
     # install the previous build. The drift check below proves the install is this tree either way.
     _must([uv, "pip", "install", "--quiet", "--python", str(python), "--reinstall-package", "coxswain", f"{ROOT}[{extras}]"])
     env = _clean_env(root / "home", [str(venv / "bin")])
-    site = Path(_must([str(python), "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"], env=env).stdout.strip())
+    # #1184/#1185: child interpreters imported a venv's editable checkout of another tree. The packages the install's
+    # python imports under the install's environment must be the installed ones, the files the drift check compares.
+    site, *imported = _must([str(python), "-c", _SITE_PROBE], env=env).stdout.splitlines()
+    site = Path(site)
     drift = _install_drift(site)
     if drift:
         pytest.fail(f"the install is not this tree: {drift[:5]}", pytrace=False)
+    if elsewhere := [path for path in imported if not Path(path).is_relative_to(site)]:
+        pytest.fail(f"the install's python imports from outside its site-packages {site}: {elsewhere}", pytrace=False)
     return Install(root=root, python=python, bin=venv / "bin", site=site, env=env)
 
 
@@ -223,6 +241,10 @@ with psycopg.connect(url, autocommit=True) as conn:
             except errors.ObjectInUse:
                 continue
             print(name)
+    elif verb == "copy":  # `names` is the new database, then the template it copies
+        name, template = names
+        conn.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(name)))
+        conn.execute(sql.SQL("CREATE DATABASE {} TEMPLATE {}").format(sql.Identifier(name), sql.Identifier(template)))
     else:
         for name in names:
             conn.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(name)))
@@ -245,6 +267,10 @@ class SessionDatabases:
 
     def create(self, name: str) -> None:
         self._admin("create", name, must=True)
+
+    def copy(self, name: str, template: str) -> None:
+        """Create `name` as a copy of `template` (`CREATE DATABASE ... TEMPLATE`)."""
+        self._admin("copy", name, template, must=True)
 
     def drop(self, *names: str) -> None:
         if names:
@@ -277,21 +303,40 @@ def session_databases(postgres: str, install: Install) -> Iterator[SessionDataba
         databases.drop_prefix(plan.session_prefix(SESSION))
 
 
+# --- the session's store template ------------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def store_template(postgres: str, session_databases: SessionDatabases) -> Iterator[str]:
+    """The name of a database at the newest schema, made once per session the way every store is: the harness's own
+    store CLI opens it, which is what applies the migrations (`harness.store_migrate.open_store`). Each test's store
+    is a copy of it (`store_url`), so the migrations run once per session rather than once per test. It carries the
+    session's prefix and its own creation time, so it is dropped with the session's databases and, if the session is
+    killed, reaped by age like any of them. It depends on `session_databases`, so the reap runs before it exists."""
+    install = session_databases.install
+    name = plan.template_name(SESSION, int(time.time()))
+    session_databases.create(name)
+    try:
+        url = plan.with_database(postgres, name)
+        _must([str(install.python), "-m", "harness.store_cli", "--store-url", url, "host", "list"], env=install.env, cwd=install.root)
+        yield name
+    finally:
+        session_databases.drop(name)
+
+
 @pytest.fixture
-def store_url(postgres: str, session_databases: SessionDatabases, request: pytest.FixtureRequest) -> Iterator[str]:
-    """A fresh database for one test, at the newest schema. The harness's own store CLI opens it first, which is
-    what applies the migrations (`harness.store_migrate.open_store`). Its name starts with this session's id and its own
-    creation time, so another session sharing the server never drops it while it is young or in use."""
+def store_url(postgres: str, session_databases: SessionDatabases, store_template: str, request: pytest.FixtureRequest) -> Iterator[str]:
+    """A fresh database for one test, at the newest schema: a copy of the session's migrated `store_template`. Its
+    name starts with this session's id and its own creation time, so another session sharing the server never drops
+    it while it is young or in use."""
     if PG_DUMP is None:
         pytest.fail("pg_dump is not on PATH: the harness backs up every store it migrates with pg_dump, and each smoke "
                     "database is migrated when it opens. Install the PostgreSQL client tools and put pg_dump on PATH.",
                     pytrace=False)
-    install = session_databases.install
     name = plan.database_name(request.node.nodeid, SESSION, int(time.time()))
-    session_databases.create(name)
+    session_databases.copy(name, store_template)
     url = plan.with_database(postgres, name)
     try:
-        _must([str(install.python), "-m", "harness.store_cli", "--store-url", url, "host", "list"], env=install.env, cwd=install.root)
         yield url
     finally:
         session_databases.drop(name)
@@ -485,7 +530,8 @@ def pytest_configure(config: pytest.Config) -> None:
 
 @pytest.hookimpl(trylast=True)  # after `-m` has deselected
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """With COX_SMOKE_SHARD=<k>/<n>, keep only the files `plan.shard_files` puts in shard k (CI's parallel smoke jobs)."""
+    """With COX_SMOKE_SHARD=<k>/<n>, keep only the files `plan.shard_files` puts in shard k (CI's parallel smoke jobs),
+    each weighed by its seconds in the committed `smoke/timings.json`."""
     value = os.environ.get(plan.SHARD_ENV)
     if not value:
         return
@@ -496,7 +542,8 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     folder = Path(__file__).parent
     sources = {f"{folder.name}/{path.name}": path.read_text(encoding="utf-8") for path in folder.glob("test_*.py")}
     files = [item.nodeid.split("::")[0] for item in items]
-    keep = set(plan.shard_files(plan.file_weights(sources), n)[k - 1])
+    timings = plan.read_timings((folder / plan.TIMINGS_FILE).read_text(encoding="utf-8"))
+    keep = set(plan.shard_files(plan.file_weights(sources, timings), n)[k - 1])
     dropped = [item for item, name in zip(items, files, strict=True) if name not in keep]
     if dropped:
         config.hook.pytest_deselected(items=dropped)

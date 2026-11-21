@@ -59,17 +59,14 @@ def time_rounds(
     env: Mapping[str, str] | None,
     runs: int,
     cwd: Path | None = None,
-    *,
-    baseline_env: Mapping[str, str] | None = None,
 ) -> list[Round]:
     """`runs` rounds of `(cox seconds, baseline seconds)`: in each, a `python -c pass` spawn and then an `argv` spawn,
-    back to back, after one discarded warm-up of each. The baseline runs with `baseline_env`, by default `env`."""
-    base_env = env if baseline_env is None else baseline_env
-    _once(BASELINE_ARGV, base_env, cwd)
+    back to back, after one discarded warm-up of each."""
+    _once(BASELINE_ARGV, env, cwd)
     _once(argv, env, cwd)
     rounds: list[Round] = []
     for _ in range(runs):
-        baseline = _once(BASELINE_ARGV, base_env, cwd)
+        baseline = _once(BASELINE_ARGV, env, cwd)
         rounds.append((_once(argv, env, cwd), baseline))
     return rounds
 

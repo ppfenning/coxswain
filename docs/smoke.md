@@ -25,7 +25,8 @@ without mocks in `tests/test_smoke_plan.py`.
 - **`install`** (once per session): `cox` installed from this checkout, with `[postgres,traces,lake]`, into a venv of its own with `uv pip install`.
   The install is not editable. Before any test runs, the fixture compares every installed module, and every file
   `[tool.setuptools.package-data]` lists, with the tree. A stale build or another checkout therefore cannot stand in
-  for this one (#1184, #1185). The venv sits at `<install>/.venv`. A profile whose `harness_dir` is `<install>`
+  for this one (#1184, #1185), and the install's python, under the install's environment, must import `agent_tools`,
+  `harness` and `core` from that venv's site-packages. The venv sits at `<install>/.venv`. A profile whose `harness_dir` is `<install>`
   therefore makes every harness child that `cox` starts run the same install.
 - **`postgres`** (once per session): the server named by `COX_SMOKE_POSTGRES_URL`, or else a container started with
   `docker` on a random loopback port and removed at the end of the session. The image is `postgres:16` pinned by
@@ -39,16 +40,21 @@ without mocks in `tests/test_smoke_plan.py`.
     runs its smoke.
   - **Any other URL**: the run fails. Whoever set it meant that server, and a silent fallback would hide that it is
     down.
-- **`store_url`** (per test): a fresh database on that server. It is named `smoke_<session>_<created>_<stem>_<hash>`,
-  the session's id and the database's own creation time (epoch seconds) ahead of the test's name, so two sessions
-  sharing one server never pick the same name. It is created, and opened once by `harness.store_cli` so the schema migrations apply, under the
-  install's own sandboxed environment. The caller's `PYTHONPATH`, `PG*` variables and HOME do not reach it. It is
-  dropped after the test, and the `session_databases` fixture drops any still carrying the session's prefix at the
-  end of the session. When a session starts, that fixture also reaps every `smoke_` database created more than 2 hours
-  ago (`plan.STALE_AFTER_S`), which is how a killed session's databases go. The reap drops without `FORCE`, so
-  Postgres refuses to drop a database someone is still connected to, and the reap leaves it. The age is the
-  database's own, not its session's, so a session that runs for hours never ages its own databases. A name not shaped
-  `smoke_<12 hex>_<epoch>_` is left alone. Every name reaches SQL through `psycopg.sql.Identifier`.
+- **`session_databases`** (once per session): the session's handle on its server's databases. Every smoke database is
+  named `smoke_<session>_<created>_...`, the session's id and the database's own creation time (epoch seconds) first,
+  so two sessions sharing one server never pick the same name. When a session starts, this fixture reaps every
+  `smoke_` database created more than 2 hours ago (`plan.STALE_AFTER_S`), which is how a killed session's databases
+  go, its template among them. The reap drops without `FORCE`, so Postgres refuses to drop a database someone is still
+  connected to, and the reap leaves it. The age is the database's own, not its session's. A name not shaped
+  `smoke_<12 hex>_<epoch>_` is left alone. At the end of the session it drops every database still carrying the
+  session's prefix. Every name reaches SQL through `psycopg.sql.Identifier`.
+- **`store_template`** (once per session, after the reap): a database at the newest schema, named
+  `smoke_<session>_<created>_template` (`plan.template_name`). It is created and opened once by `harness.store_cli`,
+  so the schema migrations apply the way they do on any store, under the install's own sandboxed environment. The
+  caller's `PYTHONPATH`, `PG*` variables and HOME do not reach it. It is dropped at the end of the session.
+- **`store_url`** (per test): a fresh database on that server, `smoke_<session>_<created>_<stem>_<hash>`, a copy of
+  the template (`CREATE DATABASE ... TEMPLATE`), so the migrations run once per session and not once per test. It is
+  dropped after the test. The backup before a migration is proven on its own path, by `test_store_backup_pg_dump.py`.
 - **`sandbox`** (per test): a temporary home with a routing profile at `~/.config/agent-tools/profile.yaml`, a
   provider profile naming the test's store, a workspace with `work/` and `runs/`, and a git config. Every `cox` runs
   with HOME, the XDG roots and git's global config inside the sandbox, and with the install's `bin` first on PATH.
@@ -125,7 +131,7 @@ records `runner: scripted`, so a run whose approvals were canned answers never r
 | `test_operator_commands.py` (usage) | `cox usage assess` | With a `spend:` weekly ceiling of $10, the verdict is `go` with no spend. After one $12.50 node call is written through the store's own writer, it is `stop`, exit 4, at 125% of the ceiling. |
 | `test_operator_commands.py` (courier) | `cox courier send`, `inbox`, `ack` | A reference that does not resolve is refused. A sent `coxswain://task/t1` is listed for its label only, lives in the store's bus and not in `courier.jsonl`, and is gone from the inbox once acked. An unknown id is refused. |
 | `test_lake.py` | `cox lake sync`, `query`, `doctor` | The run in the store syncs into the Iceberg lake, `cox lake query` reads it back, and `cox lake doctor` reports the runs table's snapshot. |
-| `test_dash_feed.py` | `cox dash --once`, `cox dash --feed` | The snapshot towpath reads is schema 1, with the run, the history, the queued initiative and its ready task, and the board. A second `--feed` prints what the first one publishes, computes nothing of its own while the first holds the lock, and takes over once the first exits. `--feed --once` is refused. |
+| `test_dash_feed.py` | `cox dash --once`, `cox dash --feed` | The snapshot towpath reads is schema 1, with the run, the history, the queued initiative and its ready task, and the board. A second `--feed` prints what the first one publishes, computes nothing of its own while the first holds the lock, and takes over once the first exits. `--feed --once` is refused. E3: until `cox lake sync` runs, the budget block reads the store alone and says so on stderr; after it, an ended run's calls come from the lake (deleted from the store, the month's spend still counts them) and only the running run's from the store. |
 | `test_contract_host_cli.py` | `cox host add`, `capacity`, `drain`, `activate`, `remove`, `login` | Each write reaches `harness.store_cli host`, and the row read back through the store's own `host list` matches. A login is merged into the host's versions and leaves its beat alone. A refusal prints the store's reason. |
 
 **Bugs found while building these tests, each fixed in its own commit.** None showed in the unit tests, which replace
@@ -162,7 +168,6 @@ into a scratch copy of the tree and confirming that they fail.
 | `test_chair_tick_cache.py` | the chair's store readers to Postgres's change counters | A quiet tick that reads the store again, or a write that re-reads readers of other tables (H6). |
 | `test_chair_actions_window.py` | `cox chair run --dry-run` and the chair's wiring to a Postgres store holding 34,000 `chair_actions` rows | A quiet tick that reads the whole `chair_actions` window again, a row written behind the tail that the kept window misses, or an intake's decompose runs that differ when read from the tick's shared reads (H6). |
 | `test_unit_env_doctor.py` | a hand-run `cox setup doctor` to the units' env file | The object_store keys held only in the file the upgrade unit names (written by `cox upgrade --install-timer --environment-file`) and missing from the shell: the required rows fail and a good `cox upgrade` rolls back. Also a file value overriding one the shell already sets (the shell must win). Each test failed with the doctor's loading taken out. |
-| `test_sandbox.py` | the harness itself | A child interpreter importing another checkout. It also checks that `cox` resolves the profile the sandbox HOME names, and that every path `cox route context` reports is under the sandbox or the install. It does not prove that `cox` opens no other file; the environment the sandbox builds is what keeps the real home out of reach. |
 
 **A drift found while building this suite, now closed.** The chair's revert of a phase quarantines its tasks with
 `set-state <initiative> <task> quarantined` (`cli._quarantine_phase_with`). The store CLI refused that target with
@@ -205,11 +210,17 @@ macOS launchd stays an operator check: the suite runs on Linux and starts no lau
   Both set `COX_SMOKE_POSTGRES_URL` to the service and `COX_SMOKE_REQUIRED=1`, so a missing `uv`, Postgres or docker
   fails the job instead of skipping it. `smoke` is three parallel jobs, `smoke (1/3)` to `smoke (3/3)`, each with
   `COX_SMOKE_SHARD=<k>/3`. The conftest keeps the files `plan.shard_files` puts in shard k: whole files, heaviest
-  first onto the lightest shard by the test functions each defines, so each file lands in exactly one shard and each
-  shard installs `cox` once. The split comes from the folder's files, not from one run's collection, so a nested pytest
-  a smoke test starts on its own file (`test_imports_this_tree.py`) keeps that file in its parent's shard. `tests/test_workflows.py` checks that the matrix names every shard from 1 to n. Without the variable, the
+  first onto the lightest shard, so each file lands in exactly one shard and each shard installs `cox` once. A file
+  weighs its seconds in `smoke/timings.json`; a file with none recorded weighs its test functions at the recorded mean
+  per test function. The split comes from the folder's files and that committed file, not from one run's collection,
+  so a nested pytest on one file keeps that file in its parent's shard. `tests/test_workflows.py` checks that the
+  matrix names every shard from 1 to n. Without the variable, the
   suite runs whole. They run in parallel with the unit suites and the checks job; the required `test` check passes
   only when every one of those jobs succeeded.
+- **The timings.** Regenerate `smoke/timings.json` after adding or slowing a file, serially, as the shards run:
+  `COX_SMOKE_TIMINGS=smoke/timings.json pytest -q -rs -p smoke.timings -m "not forge" smoke`. A test's seconds are its
+  setup, call and teardown, less the session fixtures it set up, which every shard pays once whatever it holds. A run
+  on a few files rewrites only theirs; a file whose every test was deselected weighs 0.
 - **Lane checks.** `.agent-checks` runs `pytest -q -rs smoke` after the component suites. A lane host with docker
   runs it against its own container. A host with no docker on PATH skips it and prints the reason. A host whose
   `docker` is on PATH but whose daemon does not answer fails, because that is a host fault a skip would hide. Set

@@ -20,6 +20,7 @@ from core.jsontypes import is_list, is_mapping
 from core.landing import pr_branch_name
 from graphs._spec import GraphSpec
 from harness import pool_edge
+from harness.artifacts import ArtifactsRoot
 from harness.check_gate import gate_checks
 from harness.checks import check_timeout
 from harness.epic_types import PhaseRecord
@@ -157,6 +158,8 @@ class Ctx:
     lane_names: dict[tuple[str, str], str] = field(default_factory=dict[tuple[str, str], str], compare=False, repr=False)
     lane_drops: list[dict[str, object]] = field(default_factory=list[dict[str, object]], compare=False, repr=False)
     pool: PoolSetting | None = None
+    # The provider profile's `artifacts_url`, resolved once; None leaves every step's artifacts in the run folder only.
+    artifacts: ArtifactsRoot | None = None
     # Run-level and mutable: the lease each pooled task build holds, with the lock digest read when it was acquired.
     pool_leases: dict[tuple[str, str], tuple[pool_edge.Lease, str]] = field(
         default_factory=dict[tuple[str, str], tuple[pool_edge.Lease, str]], compare=False, repr=False

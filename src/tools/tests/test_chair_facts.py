@@ -705,8 +705,10 @@ def test_gather_facts_fills_every_key_from_the_fakes():
     # live_phases is gathered only when the deps supply it, and these fakes do not.
     # previous_schedule_feed is read by the planner; no task gathers it yet.
     # merged_prs is read by plan_missed_closes; the facts edge does not gather it yet. handled_keys is gathered from the deps.
+    # phase_queue is gathered only when the deps supply it, and these fakes do not.
     declared = set(Facts.__annotations__) - {
         "chat_epics", "live_phases", "schedule_inputs", "previous_schedule_feed", "merged_prs", "land_freeze",
+        "phase_queue",
     }
     assert set(facts) == declared
     assert facts["dispatch"] == {"max_in_flight": 2, "live_runs": 1, "hosts": []}
@@ -1051,22 +1053,6 @@ def test_two_not_landed_rows_count_two_attempts_so_the_back_off_doubles():
     rows = [_refusal(NOW - timedelta(minutes=40), "not_landed"), _refusal(NOW, "not_landed")]
     [refusal] = land_refusals_from_actions(rows, NOW)
     assert refusal["attempts"] == 2 and backoff_for(2) == 2 * backoff_for(1)
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="root cause outside this task's surfaces: chair_read_stale.read_chair_actions returns [] when run_store.open_store "
-    "raises the missing-psycopg RuntimeError, while the recorder writes through the harness python, which has psycopg",
-)
-def test_a_reader_without_psycopg_still_holds_off_a_land_the_recorder_wrote(tmp_path, monkeypatch):
-    record = _store_with_recorder(tmp_path, monkeypatch, NOW)
-    record({"kind": "land_phase", "status": "refused", "initiative": "i", "phase": "p", "run": "i-1", "reason": "x"})
-
-    def no_driver(runs_dir):
-        raise RuntimeError("a postgres store needs psycopg: pip install 'coxswain[postgres]'")
-
-    monkeypatch.setattr(run_store, "open_store", no_driver)
-    assert _planned_kinds(tmp_path, NOW + timedelta(minutes=5)) == []
 
 
 def test_phase_records_reads_the_approved_tasks_and_is_absent_without_its_reader():

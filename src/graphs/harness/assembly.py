@@ -34,6 +34,15 @@ def failure_cause(parent: str, previous: str, files: Iterable[str], *, output: s
     return f"merging {parent} after {previous} conflicted in: {listed}{RERERE_OFF_NOTE if rerere_off else ''}"
 
 
+ABORT, COMMIT_RESOLUTION = "abort", "commit_resolution"
+
+
+def conflict_step(unmerged: Iterable[str], merging: bool) -> str:
+    """Pure. What a merge that exited non-zero calls for: `COMMIT_RESOLUTION` when rerere staged a recorded resolution
+    and left the merge unfinished (no unmerged file, MERGE_HEAD still set); else `ABORT`, since no side is ever chosen."""
+    return COMMIT_RESOLUTION if merging and not list(unmerged) else ABORT
+
+
 def git(worktree: Path, *args: str) -> tuple[int, str]:
     result = bounded_proc.completed(["git", *IDENTITY, "-C", str(worktree), *args], capture_output=True, text=True)
     return result.returncode, (result.stdout + result.stderr).strip()
@@ -62,7 +71,7 @@ def assemble(repo: Path, worktree: Path, base_ref: str, parents: Iterable[str], 
         code, out = git(worktree, "merge", "--no-ff", "--no-edit", parent)
         if code != 0:
             files = _unmerged(worktree)
-            if files or not _merging(worktree):
+            if conflict_step(files, _merging(worktree)) == ABORT:
                 git(worktree, "merge", "--abort")
                 return AssemblyResult(False, "", failure_cause(parent, previous, files, output=out))
             # rerere staged a recorded resolution and left the merge unfinished: commit it.

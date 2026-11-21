@@ -72,6 +72,9 @@ cox runs detail RUN_ID [--runs-dir RUNS_DIR] [--json]   one run's timeline, obje
 cox runs stranded [--runs-dir RUNS_DIR] [--profile PROFILE] [--json]   every approved task record whose work item is not done, with its remedy
 cox runs cause RUN_ID TASK_ID ticket|code|harness|unknown [--note NOTE] [--runs-dir RUNS_DIR] [--profile PROFILE]   record why one run's attempt at a task was quarantined
 cox runs stop RUN_ID [--runs-dir RUNS_DIR] [--profile PROFILE] [--json]   stop a run's process, local or remote, and wait for it to exit
+cox runs artifacts RUN_ID [--runs-dir RUNS_DIR] [--json]   list the object-storage keys a run's step rows name (artifacts_url)
+cox runs show RUN_ID [--runs-dir RUNS_DIR]   print a run's transcripts: the run folder's, else the ones its step rows name in artifacts_url
+cox runs log RUN_ID [--runs-dir RUNS_DIR]   print a run's check logs: the run folder's, else the ones its step rows name in artifacts_url
 cox runs pause RUN_ID [--reason REASON] [--runs-dir RUNS_DIR] [--json]   mark a run paused in the store
 cox runs resume RUN_ID [--runs-dir RUNS_DIR] [--json]   mark a paused run resumed in the store
 cox runs move RUN_ID --to TO [--reason REASON] [--runs-dir RUNS_DIR] [--profile PROFILE] [--json]   stop a run at its node boundary and relaunch it on another host
@@ -169,6 +172,9 @@ cox lander status [--json] [--profile PROFILE]   every initiative in flight with
 cox lander adopt [INITIATIVE...] [--apply] [--profile PROFILE]   bring initiatives that were in flight before the landing record under it; a dry run unless --apply
 cox lander backlog --manifest MANIFEST --pr PR [--apply] [--profile PROFILE]   mark the tasks a hand-folded pull request carried as done, once it has merged; a dry run unless --apply
 cox lander service [--install] [--status] [--interval INTERVAL] [--environment-file ENVIRONMENT_FILE] [--profile PROFILE]   write or show the systemd user unit; never runs systemctl
+cox worker run [--name NAME] [--capability TOKEN] [--lanes LANES] [--profile PROFILE]   claim and run phases until interrupted
+cox worker once [--name NAME] [--capability TOKEN] [--lanes LANES] [--profile PROFILE]   one claim pass, then run what it claimed to its end
+cox worker status [--json] [--profile PROFILE]   every queued phase with its claim, and every registered worker
 cox host add NAME --ssh SSH --capacity CAPACITY [--weight WEIGHT] [--capabilities CAPABILITIES]   add or update a host in the table
 cox host list   one line per host: state, capacity, beat age, login
 cox host drain NAME   stop launching on a host; its live lanes finish

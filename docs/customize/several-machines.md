@@ -209,6 +209,44 @@ The profile names the environment variables that hold the key and secret.
 It never holds the values. A literal key in the profile is refused.
 `cox lake doctor` shows the endpoint and whether each variable is set.
 
+To keep each step's patch, check logs and transcripts in object storage as
+well as in the run folder, set `artifacts_url` the same way, for example
+`artifacts_url: s3://<bucket>/artifacts`. One machine can use
+`artifacts_url: file:///<folder>` instead. `cox runs artifacts <run>` lists
+the keys a run wrote. Without the key nothing is uploaded.
+
+`cox runs show <run>` prints a run's transcripts and `cox runs log <run>`
+its check logs. Each copy is read from the run folder when the folder holds
+it, and otherwise from the object the run's step rows name in
+`artifacts_url`, checked against the size and sha256 its row recorded. So a
+deleted or never-fetched folder reads wholly from the bucket, and a folder
+missing some files reads the rest from there. When a local copy and its
+stored object differ, a note on stderr says so. `cox setup doctor` has an
+`artifacts root` row on a machine that sets the key: it writes a probe
+object there, reads it back and removes it.
+
+Check logs and transcripts may contain secrets that a check printed or an
+agent read. Before upload, coxswain replaces two things with `***`. The
+first is the value of every environment variable whose name holds TOKEN,
+SECRET, PASSWORD, PASSWD or KEY. The second is the user and password part of
+every URL. Other secrets can still get through, so keep the artifacts bucket
+private to your machines and give them credentials scoped to that bucket.
+An item the scrub changed is marked `scrubbed: true` in its step row. The
+patch is never scrubbed: it is the change headed for git, stored byte for
+byte, so a test URL such as `postgresql://cox:cox@localhost/db` in it is kept.
+A patch the scrub would have changed is marked `holds_secret: true` instead,
+and `cox runs artifacts` ends its line with `HOLDS A SECRET (stored raw)`.
+
+`file://` artifacts need a filesystem with hard links. On SMB or some FUSE
+mounts every upload fails, and each step row records the failure in its
+`artifacts_error` field instead.
+
+The chair raises one `artifacts_missing` alarm for a run whose rows record
+that failure, but it only looks at rows from the last 24 hours. If the chair
+is down for longer than that, a run that failed to upload in the meantime is
+never alarmed. `cox runs artifacts <run>` still shows its `MISSING` lines, so
+after a long chair outage, check the runs that finished while it was down.
+
 ### A Garage server
 
 A single-node Garage on the tailnet needs one profile block. Replace `<host>`
@@ -223,6 +261,7 @@ object_store:
   path_style: true
 traces_url: s3://<bucket>/traces
 lake_url: s3://<bucket>/lake
+artifacts_url: s3://<bucket>/artifacts
 ```
 
 Garage 1.1 also needs two SDK settings. Without them the pyarrow S3 client

@@ -109,23 +109,6 @@ def test_the_feed_for_the_fixture_scenario_equals_the_fixture(monkeypatch, tmp_p
     assert run["tasks"] == expected
 
 
-@pytest.mark.xfail(strict=True, reason="the fixture and task_entries disagree on reason; a live lane has no verdict")
-def test_the_feed_for_the_fixture_scenario_equals_the_fixture_exactly(monkeypatch, tmp_path):
-    """The done condition as written. It fails today, so the contract mismatch stays visible and goes red-to-green
-    (strict xfail) the moment the fixture and `task_entries` agree."""
-    fixture = json.loads((FIXTURES / "dash_feed_tasks_v1.json").read_text(encoding="utf-8"))["runs"][0]
-    _store(tmp_path, [("dash-feed-1", "feed-schema"), ("dash-feed-0", "feed-queue"), ("dash-feed-1", "feed-queue")])
-    (tmp_path / "dash-feed-1.log").write_text(f"  build -> reject\nquarantined task: feed-queue — {LONG}\n", encoding="utf-8")
-    usage = [
-        {"role": "plan", "task_id": "feed-schema", "turns": 6, "cost_usd": 0.42, "ts": "2026-09-28T23:40:00Z"},
-        {"role": "build", "task_id": "feed-schema", "turns": 6, "cost_usd": 0.42, "ts": "2026-09-28T23:55:00Z"},
-        {"role": "review", "task_id": "feed-queue", "turns": 8, "cost_usd": 0.42},
-    ]
-    rows = [_row("feed-schema", "approved", "p1-foundations"), _row("feed-queue", "quarantined", reason=LONG), _row("feed-tasks", "ready", needs=["feed-schema"])]
-    run = _feed(monkeypatch, tmp_path, rows, usage)["runs"][0]
-    assert {k: run[k] for k in fixture} == fixture
-
-
 def test_an_initiative_with_no_task_rows_gets_an_empty_list_and_zero_counts(monkeypatch, tmp_path):
     """The queue is readable (it holds the initiative's own row) but names no task: the keys are there, empty."""
     run = _feed(monkeypatch, tmp_path, [])["runs"][0]

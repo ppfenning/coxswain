@@ -129,6 +129,11 @@ class StepRow(TypedDict):
     started_at: str
     finished_at: str
     cost_usd: float
+    # The step's verdict, counts and check names. With artifacts on (`harness.artifacts`), a step whose artifacts were
+    # not all written also carries `artifacts_error`: why, as one line. A row without the key is complete.
     result_json: JsonObject
+    # Every object in storage the step wrote, each `{key, bytes, sha256, media}`, and `scrubbed: true` on one whose
+    # bytes the secret scrub changed, or `holds_secret: true` on a patch (stored as written) it would have changed;
+    # nothing else.
     artifacts_json: list[JsonObject]
 

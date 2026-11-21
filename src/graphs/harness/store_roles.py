@@ -41,11 +41,12 @@ PASSWORD_ENV = "COX_WORKER_STORE_PASSWORD"
 _MAX_NAME = 63
 _ROLE = re.compile(r"[a-z_][a-z0-9_]*")
 
-# The claim columns of phase_queue: what a worker changes when it claims, beats, and finishes a phase. Not `band`,
-# `seq`, `requires_json`, `kind` or `budget_usd`, which are the chair's.
+# The claim columns of phase_queue: what a worker changes when it claims, beats, and finishes a phase, and `ready_at`,
+# which a retried phase's release pushes out by its backoff (`store_phases.release`). Not `band`, `seq`,
+# `requires_json`, `kind` or `budget_usd`, which are the chair's.
 CLAIM_COLUMNS = (
     "state", "outcome", "reason", "claimed_by", "claim_epoch", "run_id", "claimed_at", "heartbeat_at", "lease_until",
-    "attempts", "updated_at", "updated_by",
+    "attempts", "updated_at", "updated_by", "ready_at",
 )
 
 
@@ -71,7 +72,7 @@ RUN_RECORD_TABLES = (
 )
 
 # Read so a worker can see what it was asked to do, never written.
-READ_ONLY_TABLES = ("work_items", "hosts", "cartridge_snapshots", "landing_records", "schema_version", "store_cursor")
+READ_ONLY_TABLES = ("work_items", "hosts", "cartridge_snapshots", "landing_records", "schema_version")
 
 # The grant table. Anything not here gets nothing: land_queue, lander_notices, chair_actions, chair_queue,
 # courier_log, leases, id_sequence, and any table no one has decided about yet.

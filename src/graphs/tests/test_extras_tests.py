@@ -57,7 +57,6 @@ def test_a_backend_parametrized_fixture_marks_only_its_database_param():
         ("needs util-linux setsid to escape the group", "setsid"),
         ("root can write to any directory", "root"),
         ("running as a user that ignores file modes", "root"),
-        ("load-sensitive timing; set COX_RUN_LOAD_TESTS=1 to run", "load timing"),
         ("POSIX shells and process groups", "win32"),
         ("ripgrep not installed", "ripgrep"),
         ("the trigger statement is sqlite's; the exemption rule itself is dialect-free", "sqlite dialect"),

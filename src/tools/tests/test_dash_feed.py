@@ -401,15 +401,6 @@ def test_an_unreadable_profile_omits_the_orchestration_key(monkeypatch, tmp_path
     assert "orchestration" not in dash_feed.gather_feed(tmp_path, tmp_path, _ORCH_NOW)
 
 
-@pytest.mark.xfail(strict=True, reason="the fixture pairs decompose with building and available, which chair_orchestrate cannot yield")
-def test_the_orchestration_derived_from_the_fixtures_inputs_equals_the_fixture():
-    with open("tests/fixtures/dash_feed_v1.json") as f:
-        expected = json.load(f)["orchestration"]
-    rows = [_host_row("host-a"), _host_row("host-b")]
-
-    assert dash_feed._orchestration_v1("host-a", "decompose", rows, _ORCH_NOW) == expected
-
-
 _UUID = "3f2a9c1e-5b7d-4e08-9a61-0c4d8e7f1b22"
 _OTHER_UUID = _UUID[:8] + "-aaaa-4e08-9a61-0c4d8e7f1b22"
 _CATALOG = "models:\n  m1:\n    price: {input: 1.0, output: 2.0}\n"

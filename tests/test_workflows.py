@@ -154,8 +154,8 @@ def test_every_smoke_test_runs_in_exactly_one_of_ci_s_shards():
     assert all(split) and sorted(test for part in split for test in part) == sorted(whole)
     files = {f"smoke/{path.name}" for path in (CI.parents[2] / "smoke").glob("test_*.py")}
     assert {test.split("::")[0] for test in whole + _collected("forge")} == files
-    # A smoke test that runs pytest on its own file (test_imports_this_tree.py) inherits COX_SMOKE_SHARD: the nested
-    # run must keep that file, so each shard's files are kept when one is collected alone under that shard.
+    # A smoke test that runs pytest on its own file (test_imports_this_tree.py once did) inherits COX_SMOKE_SHARD: the
+    # nested run must keep that file, so each shard's files are kept when one is collected alone under that shard.
     for shard, part in zip(shards, split, strict=True):
         for name in sorted({test.split("::")[0] for test in part}):
             assert _collected("not forge", shard, name), f"{name} alone is dropped under {shard}"
