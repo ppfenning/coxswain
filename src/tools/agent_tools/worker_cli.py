@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import cast
 
 from agent_tools import worker, worker_ports
-from harness import phase_pick, repo_cache, worktree
+from harness import phase_pick, repo_cache, store_phases, worker_identity, worktree
 
 
 def claim_of(row: Mapping[str, object], now: str) -> dict[str, object] | None:
@@ -74,7 +74,8 @@ def status_lines(phases: Sequence[Mapping[str, object]], workers: Sequence[Mappi
     for row in workers:
         caps = row.get("capabilities_json")
         lines.append(f"worker {row.get('name')}: {row.get('state')}, {row.get('lanes')} lane(s), "
-                     f"[{', '.join(str(c) for c in caps) if isinstance(caps, list) else ''}], beat {row.get('beat_at')}")
+                     f"[{', '.join(str(c) for c in caps) if isinstance(caps, list) else ''}], beat {row.get('beat_at')}"
+                     + (f", machine {row.get('machine_id')}" if row.get("machine_id") else ""))
     if not workers:
         lines.append("no worker has registered")
     return lines
@@ -111,14 +112,21 @@ def _run(a: argparse.Namespace, *, once: bool) -> int:
               f"{phase_pick.MAX_LEASE_S}s")
         return 2
     name = a.name or socket.gethostname()
+    # Two machines on one default host name would share one worker: the row records the machine, and a live row of
+    # the name from another machine refuses this worker (`worker_identity.takeover`).
+    machine = worker_identity.machine_id(ws)
     ports, store = worker_ports.build(ws, name=name, declared=list(a.capability or []), lanes=a.lanes, version=_version(),
-                                      lease_s=lease_s)
+                                      machine_id=machine, lease_s=lease_s)
     if not once:
-        print(f"worker: {name} on {ws}; heartbeat every {ports.timings.heartbeat_s}s, lease {lease_s}s", flush=True)
+        print(f"worker: {name} on {ws} (machine {machine}); heartbeat every {ports.timings.heartbeat_s}s, "
+              f"lease {lease_s}s", flush=True)
     # SIGTERM (a service manager's stop) is handled as SIGINT is: stop every run, confirm it is gone, give claims back.
     signal.signal(signal.SIGTERM, signal.default_int_handler)
     try:
         return worker.run(ports, once=once)
+    except worker.NameTaken as exc:
+        print(str(exc), flush=True)
+        return 3
     finally:
         store.close()
 
@@ -146,6 +154,21 @@ def cmd_status(a: argparse.Namespace) -> int:
     else:
         print("\n".join(status_lines(phases, workers, now)))
     return 0
+
+
+def cmd_forget(a: argparse.Namespace) -> int:
+    """`cox worker forget NAME`: mark a dead worker's row stopping, so the next start of that name takes it over.
+    Exit 0 when the row is stopping afterwards (forgotten now, or already not up), 1 when nothing was changed."""
+    ws = _workspace(a)
+    if ws is None:
+        return 2
+    store = worker_ports.Store(ws / "runs")
+    try:
+        done = store.call(lambda c: store_phases.forget_worker(c, a.name, force=bool(a.force)))
+    finally:
+        store.close()
+    print(worker_identity.forget_note(a.name, done.verdict, done.prior))
+    return 0 if done.verdict in ("forget", "already") else 1
 
 
 def cmd_checkout(a: argparse.Namespace) -> int:

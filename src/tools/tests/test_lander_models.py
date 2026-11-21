@@ -13,11 +13,12 @@ from pathlib import Path
 
 import pytest
 
-from agent_tools import lander, lander_adopt, lander_cli, lander_hold, lander_ports
+from agent_tools import lander, lander_adopt, lander_cli, lander_hold, lander_ports, lander_release
 from core import landing_record as lr
 from harness import landing_git as lg
 from harness import landing_ops as ops
 from harness import landing_store as ls
+from harness import store_lease
 from tests.test_lander import ID, World, run, task
 
 T0 = "2026-11-20T00:00:00Z"
@@ -632,7 +633,7 @@ def test_a_refusal_or_a_failed_level_check_waits_for_a_person_who_can_release_it
     assert held["cause"] == cause
     _pass(models, 20000)
     assert len(models.agent.asked) == 1 and models.record("n")["held"] == held, "never retried on its own"
-    released, said = lander.release_merge_hold(models.ports, "n")
+    released, said = lander_release.release_merge_hold(models.ports, "n")
     assert released and "released" in said and models.record("n")["held"]["released"] is True
     models.agent.refuse = None
     models.check_result.pop("phase", None)
@@ -650,7 +651,7 @@ def test_a_released_merge_that_fails_again_holds_again_counted_and_told(models: 
     _collide(models)
     models.agent.refuse = "no"
     _pass(models)
-    assert lander.release_merge_hold(models.ports, "n")[0]
+    assert lander_release.release_merge_hold(models.ports, "n")[0]
     _pass(models)
     held = models.record("n")["held"]
     assert (held["attempts"], held.get("released")) == (2, None) and len(models.agent.asked) == 2
@@ -658,12 +659,30 @@ def test_a_released_merge_that_fails_again_holds_again_counted_and_told(models: 
 
 
 def test_release_refuses_what_is_not_a_merge_hold(models: Models) -> None:
-    assert lander.release_merge_hold(models.ports, "ghost") == (False, "ghost has no landing record")
+    assert lander_release.release_merge_hold(models.ports, "ghost") == (False, "ghost has no landing record")
     record = models.start_new("n", [task("a", "p1")])
-    assert lander.release_merge_hold(models.ports, "n") == (False, "n is not held")
+    assert lander_release.release_merge_hold(models.ports, "n") == (False, "n is not held")
     ls.put_record(models.conn, {**record, "held": {"reason": "origin lacks abc", "since": T0}})
-    released, why = lander.release_merge_hold(models.ports, "n")
+    released, why = lander_release.release_merge_hold(models.ports, "n")
     assert not released and "not by a merge" in why
+
+
+def test_release_waits_for_the_branch_lease_and_never_overwrites_a_writer_midway(models: Models) -> None:
+    _collide(models)
+    models.agent.refuse = "no"
+    _pass(models)
+    held = models.record("n")["held"]
+    lease = ops.branch_lease("n")
+    sweep = store_lease.acquire(models.conn, lease, "sweep-on-other-host", models.now(), ops.CLAIM_SECONDS)
+    assert sweep.ok
+    released, said = lander_release.release_merge_hold(models.ports, "n")
+    assert not released and "sweep-on-other-host is moving the branch of n" in said
+    assert models.record("n")["held"] == held, "nothing written while another writer holds the branch"
+    store_lease.release(models.conn, lease, "sweep-on-other-host", int(sweep.epoch or 0))
+    released, _ = lander_release.release_merge_hold(models.ports, "n")
+    assert released and models.record("n")["held"]["released"] is True
+    after = store_lease.acquire(models.conn, lease, "sweep-on-other-host", models.now(), ops.CLAIM_SECONDS)
+    assert after.ok, "the release gives the branch lease back"
 
 
 def test_cox_lander_release_runs_the_release(models: Models, monkeypatch, capsys) -> None:

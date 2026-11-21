@@ -40,6 +40,11 @@ LOCK_TIMEOUT_MS = 3_000
 CONNECT_TIMEOUT_S = 5
 STATEMENT_S = STATEMENT_TIMEOUT_MS / 1000 + 1  # the client's own bound on one statement, past the server's
 
+class NameTaken(Exception):
+    """Another machine's live worker is registered under this worker's name (`worker_identity.takeover`), or took the
+    row over: the worker stops rather than share one identity."""
+
+
 # `cox route launch` exits 2 with one of these when a gate refused the launch, not because the phase is broken.
 REFUSALS = (
     "is already running",  # a live run of this phase holds its `runs:<initiative>.<phase>` lease
@@ -442,7 +447,8 @@ def fill(ports: Ports, leases: Leases, caps: Sequence[str]) -> int:
 def run(ports: Ports, *, once: bool = False) -> int:
     """The loop. With `once`, one claim pass, then until every run it started has ended and been settled.
     An interrupt (SIGINT, or SIGTERM made one by the CLI) stops every run this worker started, confirms each is gone,
-    and gives each claim it still holds back without costing an attempt."""
+    and gives each claim it still holds back without costing an attempt. `NameTaken` (another machine's live worker
+    has this name, `ports.capabilities`) does the same, then is raised: the worker never runs under a shared name."""
     leases = Leases(timings=ports.timings)
     stop_beats = ports.heartbeats(leases)
     claimed = False
@@ -450,15 +456,19 @@ def run(ports: Ports, *, once: bool = False) -> int:
         while True:
             try:
                 reap(ports, leases)
+                # Every pass, `once` too after its claim: it is where a row another machine took over is noticed.
+                capabilities = ports.capabilities()
                 if not (once and claimed):
-                    fill(ports, leases, ports.capabilities())
+                    fill(ports, leases, capabilities)
                     claimed = True
+            except NameTaken:
+                raise
             except Exception as exc:  # a store call that timed out: the next pass reads everything again
                 ports.log(f"worker: pass failed: {type(exc).__name__}: {exc}")
             if once and claimed and not len(leases):
                 return 0
             ports.sleep(POLL_S)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, NameTaken) as exc:
         stop_beats()
         for held in leases.snapshot():
             gone = held.run is None or ports.stop(held.run)
@@ -466,6 +476,8 @@ def run(ports: Ports, *, once: bool = False) -> int:
                 settle(ports, leases, held.claim, phase_pick.Verdict("retry", "", "the worker was stopped", 0, refund=True))
             else:
                 ports.log(f"worker: the run of {key_of(held.claim)} did not stop; its claim is left to lapse")
+        if isinstance(exc, NameTaken):
+            raise
         return 0
     finally:
         stop_beats()

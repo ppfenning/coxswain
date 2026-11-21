@@ -16,7 +16,7 @@ from typing import Any
 from core import landing_record as lr
 from harness import landing_git as lg
 from harness import landing_store as ls
-from harness import store_lease
+from harness import lease_keeper, store_lease
 from harness.store_dialect import Connection
 
 CLAIM_SECONDS = 900  # a phase merge with its level checks; a dead worker's claim is taken again after this
@@ -159,7 +159,8 @@ def after_push(merge_status: str, push_warning: str | None) -> str:
 def merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: str, tasks: Sequence[Mapping[str, Any]],
                 worker: str, now: str, checks: lg.Checks | None = None, source: str | None = None,
                 claim_seconds: int = CLAIM_SECONDS, fetch: Callable[[str], str | None] | None = None,
-                publish: Callable[[str], str | None] | None = None, resolve: lg.Resolve | None = None) -> PhaseMerge:
+                publish: Callable[[str], str | None] | None = None, resolve: lg.Resolve | None = None,
+                clock: Callable[[], str] | None = None, beat_s: float | None = None) -> PhaseMerge:
     """Merge one built phase into its initiative branch, under the phase's queue item.
 
     `tasks` are the initiative's task rows (`id`, `phase`, `state`, `needs`). The phase must be built: every task
@@ -176,22 +177,34 @@ def merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: s
 
     `resolve` (the new model's merge agent, `lg.merge_into`) is given a conflict before it is one: the branch moves only
     if what it answers passes the same guard and `checks`, and the phase entry says who resolved it (`resolved_by`).
-    Without it a conflict is a conflict, as it always was."""
+    Without it a conflict is a conflict, as it always was.
+
+    The merge agent and the gate together can outlive `claim_seconds`, so the branch lease is renewed on a thread
+    (`lease_keeper.Keeper`, every `beat_s`, by `clock`) while the merge runs, and once more just before the merge is
+    pushed (or, with no `publish`, recorded): a renew the store refuses means another writer may hold the branch, so
+    the merge this call made is unwound and the item fails with nothing pushed. Without `clock` (the old model, and
+    the build run's own merge) there is no keeper: the lease is held for `claim_seconds` from `now`, as it always
+    was, and nothing is renewed or confirmed."""
     held = store_lease.acquire(conn, branch_lease(initiative), worker, now, claim_seconds)
     if not held.ok:
         return PhaseMerge("busy", initiative, phase, detail=f"{held.holder or 'another worker'} is moving the branch of {initiative}")
+    keeper = None if clock is None else lease_keeper.Keeper(
+        conn, branch_lease(initiative), worker, int(held.epoch or 0), ttl=claim_seconds, clock=clock, interval=beat_s,
+    ).start()
     try:
         return _merge_phase(conn, repo, initiative=initiative, phase=phase, tasks=tasks, worker=worker, now=now,
                             checks=checks, source=source, claim_seconds=claim_seconds, fetch=fetch, publish=publish,
-                            resolve=resolve)
+                            resolve=resolve, keep=keeper)
     finally:
+        if keeper is not None:
+            keeper.stop()
         store_lease.release(conn, branch_lease(initiative), worker, int(held.epoch or 0))
 
 
 def _merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: str, tasks: Sequence[Mapping[str, Any]],
                  worker: str, now: str, checks: lg.Checks | None, source: str | None, claim_seconds: int,
                  fetch: Callable[[str], str | None] | None, publish: Callable[[str], str | None] | None,
-                 resolve: lg.Resolve | None = None) -> PhaseMerge:
+                 resolve: lg.Resolve | None = None, keep: lease_keeper.Keeper | None = None) -> PhaseMerge:
     record = ls.get_record(conn, initiative)
     if record is None:
         return PhaseMerge("error", initiative, phase, detail=f"{initiative} has no landing record")
@@ -225,6 +238,14 @@ def _merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: 
     merged = lg.merge_into(repo, branch=branch, source=source or phase_branch(initiative, phase),
                            message=f"{initiative}: merge phase {phase}", recorded=lr.recorded_shas(record), checks=checks,
                            resolve=resolve)
+    if merged.ok and keep is not None and not keep.confirm():
+        # The branch lease lapsed or was taken while the merge ran: another writer may move the branch now, so this
+        # merge is neither pushed nor recorded. The local branch goes back to where it was; the sweep queues it again.
+        if merged.status == "merged" and before:
+            lg.git(repo, "update-ref", "-m", "lander: the branch lease was lost", f"refs/heads/{branch}", before, merged.tip)
+        detail = f"{keep.why or 'the branch lease could not be renewed'}; phase {phase} was not pushed or recorded merged"
+        ls.fail(conn, ident, worker, now=now, error=detail)
+        return PhaseMerge("error", initiative, phase, tip=merged.merged, detail=detail)
     if merged.ok and publish is not None:
         # Pushed before it is recorded: a phase recorded merged is on origin, where every host reads it.
         warning = publish(branch)

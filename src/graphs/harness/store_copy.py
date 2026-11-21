@@ -41,6 +41,7 @@ import harness.store_ddl_0018 as ddl18
 import harness.store_ddl_0019 as ddl19
 import harness.store_ddl_0020 as ddl20
 import harness.store_ddl_0021 as ddl21
+import harness.store_ddl_0023 as ddl23
 from harness.store_dialect import Connection, insert_ignore, upsert
 from harness.store_migrate import NotExactVersion, open_store_exact
 
@@ -107,6 +108,7 @@ def tables() -> tuple[Table, ...]:
         *ddl14.ADDED,
         *ddl15.ADDED,
         *ddl20.ADDED,
+        *ddl23.ADDED,
     )
     added = {t: tuple(c for u, c in alters if u == t) for t, _ in alters}
     return tuple(

@@ -471,6 +471,15 @@ KNOWN_EXEMPTIONS: dict[int, dict[str, str]] = {
             "it to a table."
         ),
     },
+    23: {
+        "trigger": (
+            "The one CREATE OR REPLACE TRIGGER replaces 0021's cox_notify trigger on workers with the same AFTER ... "
+            "FOR EACH STATEMENT trigger calling the same function, its UPDATE OF list one column longer (machine_id). "
+            "As 0021's, it fires once the statement's rows are written and Postgres ignores what it returns, so it "
+            "cannot skip, drop or rewrite an older writer's row; an older writer's statements fire it exactly as "
+            "before."
+        ),
+    },
 }
 
 

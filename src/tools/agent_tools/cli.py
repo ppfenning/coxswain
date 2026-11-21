@@ -26,6 +26,7 @@ from agent_tools.cli_tables_route import (
     PR_GROUP,
     ROUTE_COMMANDS,
     ROUTE_GROUP,
+    WORKER_FORGET,
 )
 from core import module_facade
 
@@ -1090,7 +1091,7 @@ WORKER_GROUP = commands.Group(
         "it qualifies for, runs it through the harness on this machine, and keeps its claim alive while it runs.\n"
         "Nothing reaches a worker over ssh: it pulls."
     ),
-    epilog="examples:\n  cox worker status\n  cox worker once\n  cox worker run --capability os:macos\n  cox worker checkout https://example.org/app.git ~/repos/app",
+    epilog="examples:\n  cox worker status\n  cox worker once\n  cox worker run --capability os:macos\n  cox worker checkout https://example.org/app.git ~/repos/app\n  cox worker forget devbox",
 )
 WORKER_COMMANDS = [
     commands.Command(
@@ -1118,6 +1119,7 @@ WORKER_COMMANDS = [
             "The mirror is $COX_CACHE_DIR/git, else $XDG_CACHE_HOME/coxswain/git, else ~/.cache/coxswain/git.\n"
             "Deleting it costs only time: a clone never keeps borrowing from it."),
     ),
+    WORKER_FORGET,
 ]
 
 CHAIR_GROUP = commands.Group(

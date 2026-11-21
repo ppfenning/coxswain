@@ -743,10 +743,13 @@ def merge_phase(ports: Ports, initiative: str, phase: str) -> Outcome:
         return why
 
     agent = conflict_route(model) == "merge_agent"
+    # The new model's merge (the agent, then the gate) can outlive the branch lease: it is renewed on this clock while
+    # the merge runs, and once more before the push (`ops.merge_phase`). The old model keeps the lease as of `now`.
     done = ops.merge_phase(ports.conn, repo, initiative=initiative, phase=phase, tasks=tasks, worker=ports.worker,
                            now=ports.now(), checks=_level_checks(ports, repo, record, phase, source),
                            fetch=lambda branch: ports.fetch(repo, branch), publish=publish, source=source,
-                           resolve=_resolver(ports, record, phase, source) if agent and source else None)
+                           resolve=_resolver(ports, record, phase, source) if agent and source else None,
+                           clock=ports.now if agent else None)
     if done.status in ("busy", "not_ready"):
         return Outcome("waiting", ident, done.detail)
     if done.status == "error":
@@ -1465,19 +1468,6 @@ def _forget_retry(ports: Ports, initiative: str) -> None:
     current = ls.get_record(ports.conn, initiative)
     if current is not None and current.get("retried"):
         ls.put_record(ports.conn, {**current, "retried": None, "updated_at": ports.now()})
-
-
-def release_merge_hold(ports: Ports, initiative: str) -> tuple[bool, str]:
-    """Edge. `cox lander release`: release the initiative's merge hold for the next pass, whatever its cause or count
-    (`lander_hold.release`). (released, what to say)."""
-    record = ls.get_record(ports.conn, initiative)
-    if record is None:
-        return False, f"{initiative} has no landing record"
-    released, said = lander_hold.release(record)
-    if released is None:
-        return False, said
-    ls.put_record(ports.conn, {**released, "updated_at": ports.now()})
-    return True, said
 
 
 def stale_items[R: Row](items: Sequence[R], now: str, limit: int = QUEUE_ALARM_SECONDS) -> list[R]:

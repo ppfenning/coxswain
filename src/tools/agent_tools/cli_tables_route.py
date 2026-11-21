@@ -1,4 +1,5 @@
-"""The command tables for filing and moving work: `mcp`, `courier`, `plan`, `epic`, `pr` and `route`.
+"""The command tables for filing and moving work: `mcp`, `courier`, `plan`, `epic`, `pr` and `route`, and two rows
+`cli` binds into other groups (`lander release`, `worker forget`).
 
 Data only, kept out of `agent_tools.cli` for H9 (docs/hardening.md). Each row names its handler as an
 `agent_tools.cli:...` string, so importing this module imports no command module; `cli` binds the rows
@@ -556,5 +557,24 @@ LANDER_RELEASE = commands.Command(
         "fault, no merge agent yet).\nA clean refusal and a failed level check are never retried on their own: "
         "release one here, and the next lander pass merges the phase again, the merge agent asked again. Only a "
         "merge hold is released; a record that disagrees with its branch is reconciliation's."
+    ),
+)
+
+WORKER_FORGET = commands.Command(
+    "forget", "worker", "mark a dead worker's row stopping, so the next start of its name takes it over",
+    (
+        commands.Arg(("name",), {"help": "the worker's name, as `cox worker status` lists it"}),
+        commands.Arg(("--force",), {"action": "store_true", "help": (
+            "forget it even though it records a machine and was beaten within 900 s, so it may still be running")}),
+        commands.Arg(("--profile",), {"help": "the routing profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
+    ),
+    "agent_tools.cli:_worker_forget", False, (), defaults={"profile": None},
+    description=(
+        "A worker name is one machine's at a time: a start is refused while another machine's live row holds the "
+        "name. A row an older build left `up` (it records no machine) is never taken over on its own, since that "
+        "build's beat says nothing about whether it still runs. Once you know that worker is gone, forget it here: "
+        "its row is marked `stopping`, and the next start of the name takes it over.\nA row that records a machine "
+        "and was beaten within 900 s may be a running worker, so it is refused without --force. A row not `up` is "
+        "left as it is."
     ),
 )

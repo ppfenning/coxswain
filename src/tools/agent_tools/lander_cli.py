@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypedDict
 
-from agent_tools import lander, lander_ports, unit_env
+from agent_tools import lander, lander_ports, lander_release, unit_env
 from core import landing_record as lr
 from core.jsontypes import is_mapping
 
@@ -330,7 +330,7 @@ def cmd_release(a: argparse.Namespace) -> int:
     ws, profile = found
     ports = lander_ports.build(ws, profile)
     try:
-        released, said = lander.release_merge_hold(ports, a.initiative)
+        released, said = lander_release.release_merge_hold(ports, a.initiative)
     finally:
         ports.conn.close()
     print(f"lander: {said}" if not released else said)

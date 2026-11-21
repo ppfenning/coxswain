@@ -16,7 +16,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
 
-from harness import initiative_review, phase_pick, review_loop
+from harness import initiative_review, phase_pick, review_loop, worker_identity
 from harness.store_dialect import Cell, Connection, Json, insert_ignore, json_load, json_text, upsert
 from harness.store_steps import put_round, put_step, round_row
 from harness.store_types import StepRow
@@ -25,9 +25,13 @@ __all__ = [
     "PHASE_COLUMNS",
     "WORKER_COLUMNS",
     "Claim",
+    "Forgotten",
+    "Registration",
     "apply_changes",
+    "beat_worker",
     "claim_next",
     "finish",
+    "forget_worker",
     "get_row",
     "heartbeat",
     "held",
@@ -56,6 +60,7 @@ PHASE_COLUMNS: tuple[str, ...] = (
 )
 WORKER_COLUMNS: tuple[str, ...] = (
     "name", "capabilities_json", "lanes", "threads", "state", "version", "doctor_json", "doctor_at", "started_at", "beat_at",
+    "machine_id",
 )
 _JSON_COLUMNS = frozenset({"requires_json", "capabilities_json", "doctor_json"})
 _MAX_PAGES = 64  # pages of candidates one claim reads before it gives up: 1024 claimable rows ahead of the first it meets
@@ -491,24 +496,91 @@ def _kind_rows(conn: Connection, kind: str, initiative: str, phase: str, run_id:
 
 # -- the registry -------------------------------------------------------------------------------------------------
 
+@dataclass(frozen=True)
+class Registration:
+    """What `register` did. `verdict` is `worker_identity.takeover`'s; `row` is the row written, None when refused;
+    `prior` is the row of the name as it stood before (None when there was none), so the caller can say whose it was."""
+
+    verdict: worker_identity.Verdict
+    row: Row | None
+    prior: Row | None
+
+    @property
+    def ok(self) -> bool:
+        return self.row is not None
+
+
 def register(conn: Connection, name: str, capabilities: Sequence[str], lanes: int, state: str, version: str,
-             doctor: Json) -> Row:
-    """Edge. Write the worker's own row: what it can run and how many lanes, stamped by the store's clock. `started_at`
-    is kept from the first write while the worker stays up, so a re-registration after a doctor run is a repeat."""
+             doctor: Json, *, machine_id: str) -> Registration:
+    """Edge. Write the worker's own row: what it can run and how many lanes, and the machine it runs on, stamped by
+    the store's clock. `started_at` is kept from the first write while the worker stays up, so a re-registration after
+    a doctor run is a repeat. Another machine's live row of the same name is never written over
+    (`worker_identity.takeover`): the registration is refused, with nothing written."""
+    p = conn.dialect.placeholder
+    # The row read is locked until the write commits (sqlite's BEGIN IMMEDIATE already serialises every writer), so
+    # nothing changes it between the decision and the write. A name with no row yet has nothing to lock: its first
+    # write is an insert-ignore, and the one of two concurrent registers that loses it decides again on the row the
+    # winner wrote.
+    lock = " FOR UPDATE" if conn.dialect.name == "postgres" else ""
+    read = f"SELECT {', '.join(WORKER_COLUMNS)} FROM workers WHERE name = {p}{lock}"
+    with conn.transaction():
+        now = store_now(conn)
+        for _ in range(2):
+            found = conn.query_one(read, (name,))
+            prior = None if found is None else _decode(WORKER_COLUMNS, found)
+            verdict = worker_identity.takeover(prior, machine_id, now)
+            if verdict not in worker_identity.TAKES:
+                return Registration(verdict, None, prior)
+            kept = verdict == "same" and prior is not None and prior["state"] == "up" and state == "up" and prior["started_at"]
+            row: Row = {
+                "name": name, "capabilities_json": sorted(set(capabilities)), "lanes": lanes, "threads": 0,
+                "state": state, "version": version, "doctor_json": doctor, "doctor_at": now,
+                "started_at": str(prior["started_at"]) if kept and prior is not None else now, "beat_at": now,
+                "machine_id": machine_id,
+            }
+            values = [json_text(row[c]) if c in _JSON_COLUMNS else row[c] for c in WORKER_COLUMNS]
+            if prior is None:
+                if conn.execute(insert_ignore(conn.dialect, "workers", WORKER_COLUMNS, ("name",)), values) == 1:
+                    return Registration(verdict, row, prior)
+                continue  # another register inserted the name first: decide again on its row, now locked
+            conn.execute(upsert(conn.dialect, "workers", WORKER_COLUMNS, ("name",)), values)
+            return Registration(verdict, row, prior)
+    raise RuntimeError(f"the workers row of {name} was inserted and then not found")
+
+
+@dataclass(frozen=True)
+class Forgotten:
+    """What `forget_worker` did: `worker_identity.forget`'s verdict, and the row as it stood before."""
+
+    verdict: worker_identity.ForgetVerdict
+    prior: Row | None
+
+
+def forget_worker(conn: Connection, name: str, *, force: bool = False) -> Forgotten:
+    """Edge. `cox worker forget`: mark the row of `name` stopping, so the next start of that name takes it over
+    (`worker_identity.takeover`'s `stopped`). Decided on the row as read, locked until the write commits; a row that
+    records a machine and was beaten recently is left alone unless `force` (`worker_identity.forget`)."""
+    p = conn.dialect.placeholder
+    lock = " FOR UPDATE" if conn.dialect.name == "postgres" else ""
+    with conn.transaction():
+        now = store_now(conn)
+        found = conn.query_one(f"SELECT {', '.join(WORKER_COLUMNS)} FROM workers WHERE name = {p}{lock}", (name,))
+        prior = None if found is None else _decode(WORKER_COLUMNS, found)
+        verdict = worker_identity.forget(prior, now, force)
+        if verdict == "forget":
+            conn.execute(f"UPDATE workers SET state = 'stopping' WHERE name = {p} AND state = 'up'", (name,))
+    return Forgotten(verdict, prior)
+
+
+def beat_worker(conn: Connection, name: str, machine_id: str) -> bool:
+    """Edge. Beat the worker's own row (`beat_at` only, `store_ddl_0021.BEATS`), so a running worker never looks
+    stale to `worker_identity.takeover`. False when the row of `name` is no longer this machine's: another machine
+    took it over."""
     p = conn.dialect.placeholder
     with conn.transaction():
         now = store_now(conn)
-        found = conn.query_one(f"SELECT state, started_at FROM workers WHERE name = {p}", (name,))
-        started = str(found[1]) if found is not None and found[0] == "up" and state == "up" and found[1] else now
-        row: Row = {
-            "name": name, "capabilities_json": sorted(set(capabilities)), "lanes": lanes, "threads": 0, "state": state,
-            "version": version, "doctor_json": doctor, "doctor_at": now, "started_at": started, "beat_at": now,
-        }
-        conn.execute(
-            upsert(conn.dialect, "workers", WORKER_COLUMNS, ("name",)),
-            [json_text(row[c]) if c in _JSON_COLUMNS else row[c] for c in WORKER_COLUMNS],
-        )
-    return row
+        return conn.execute(f"UPDATE workers SET beat_at = {p} WHERE name = {p} AND machine_id = {p}",
+                            (now, name, machine_id)) == 1
 
 
 def list_workers(conn: Connection) -> list[Row]:
