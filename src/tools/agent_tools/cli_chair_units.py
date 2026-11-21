@@ -21,7 +21,9 @@ from agent_tools.cli_lazy import bounded_run, chair_queue_units, chair_service
 if TYPE_CHECKING:
     from agent_tools.chair_queue_units import Step, UnitInputs
 
-__all__ = ["chair_parity", "chair_service_queues", "chair_status", "launchd_loaded", "queue_unit_names", "run_steps"]
+__all__ = [
+    "chair_parity", "chair_service_queues", "chair_status", "launchd_loaded", "queue_unit_names", "run_steps", "store_identity",
+]
 
 _QU_STEP_SECONDS = 60.0  # a systemctl or launchctl call that has not answered by then has failed
 
@@ -302,6 +304,27 @@ def _qu_run_cox(argv: Sequence[str], env: dict[str, str], timeout: float) -> tup
     return done.returncode, done.stdout + done.stderr
 
 
+_IDENTITY_SQL = "SELECT current_database() AS db, (SELECT system_identifier FROM pg_control_system()) AS sysid"
+
+
+def store_identity(url: str) -> tuple[str, ...] | str:
+    """Edge, read-only. What store `url` is (`chair_parity.StoreIdentity`): on Postgres the server's system identifier
+    and the database, read over a read-only connection; on sqlite the resolved file path. Else why it could not say."""
+    from agent_tools import store_dialect
+
+    if not store_dialect.is_postgres(url):
+        return ("sqlite", str(Path(url.removeprefix("sqlite:///") if url.startswith("sqlite:") else url).expanduser().resolve()))
+    try:
+        conn = store_dialect.connect_readonly_url(url)
+        try:
+            row = conn.execute(_IDENTITY_SQL).fetchone()
+        finally:
+            conn.close()
+    except Exception as exc:
+        return f"{type(exc).__name__}: {str(exc).strip().splitlines()[0] if str(exc).strip() else ''}"
+    return ("postgres", str(row["sysid"]), str(row["db"]))
+
+
 def chair_parity(a: argparse.Namespace, run_cox: CoxRunner = _qu_run_cox) -> int:
     """Edge. `cox chair parity --store-url URL` (`chair_parity`): every dry run against `URL` through a copy of the
     routing profile and its provider profile in a scratch directory, with a scratch workspace unless `--workspace` names
@@ -321,8 +344,11 @@ def chair_parity(a: argparse.Namespace, run_cox: CoxRunner = _qu_run_cox) -> int
     _profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
     if refuse_rc is not None or runs_dir is None:
         return refuse_rc if refuse_rc is not None else 2
-    if a.store_url.strip() == run_store.store_url_for(runs_dir).strip():
-        print("chair parity: refusing: --store-url is the store this profile uses; restore a dump into a throwaway store")
+    refusal = parity.store_refusal(store_identity(run_store.store_url_for(runs_dir)), store_identity(a.store_url))
+    given = Path(a.workspace).expanduser().resolve() if getattr(a, "workspace", None) else None
+    refusal = refusal or parity.workspace_refusal(runs_dir.parent.resolve(), given)
+    if refusal:
+        print(f"chair parity: refusing: {refusal}")
         return 2
     cox = shutil.which("cox")
     if cox is None:

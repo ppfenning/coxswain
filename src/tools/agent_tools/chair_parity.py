@@ -23,10 +23,27 @@ import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import PurePath
 
 from agent_tools.chair_kinds import QUEUE_KINDS
 
-__all__ = ["Reading", "Verdict", "judge", "scratch_profile", "tick_reading", "verdict_lines", "worker_reading"]
+__all__ = [
+    "Reading",
+    "StoreIdentity",
+    "Verdict",
+    "judge",
+    "scratch_profile",
+    "store_refusal",
+    "tick_reading",
+    "verdict_lines",
+    "worker_reading",
+    "workspace_refusal",
+]
+
+# What a store is, not how it is named: on Postgres the server's `system_identifier` (`pg_control_system()`, one per
+# cluster, so a replica or a restored copy on another server differs) and `current_database()`; on sqlite the resolved
+# file path. Two URLs that differ only by host spelling, port forwarding, a query string or a symlink are one store.
+StoreIdentity = tuple[str, ...]
 
 _WORKER_COUNT = re.compile(r"(\d+)x (\S+) dry_run")
 
@@ -144,3 +161,28 @@ def scratch_profile(text: str, provider_profile: str, workspace: str, kinds: Seq
         *kept, f"workspace_dir: {workspace}", f"provider_profile: {provider_profile}",
         "chair:", *chair, f"  queues: [{', '.join(kinds)}]",
     ]) + "\n"
+
+
+def store_refusal(live: StoreIdentity | str, target: StoreIdentity | str) -> str | None:
+    """Pure. Why parity may not run against `target`, or None. Each side is the store's identity, or the line saying
+    why it could not be read; an unreadable side refuses, since nothing then shows the target is not the live store."""
+    if isinstance(target, str):
+        return f"cannot tell what store --store-url is ({target}); refusing rather than risk the live one"
+    if isinstance(live, str):
+        return f"cannot read this profile's own store to tell it apart from --store-url ({live})"
+    if live == target:
+        return ("--store-url is the store this profile uses (the same "
+                + ("database on the same server" if live[0] == "postgres" else "file")
+                + "); restore a dump into a throwaway store")
+    return None
+
+
+def workspace_refusal(live: PurePath, given: PurePath | None) -> str | None:
+    """Pure. Why `--workspace` may not be used, or None: the profile's own workspace (or a directory inside it, such as
+    its runs directory), where the dry runs' read caches of the throwaway store would land beside the live ones. Both
+    paths are resolved by the caller."""
+    if given is None:
+        return None
+    if given == live or live in given.parents:
+        return f"--workspace {given} is this profile's own workspace; leave it out, and a scratch one is used"
+    return None

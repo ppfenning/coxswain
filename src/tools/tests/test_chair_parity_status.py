@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from pathlib import PurePosixPath
 from datetime import UTC, datetime
 
 from agent_tools import chair_parity as parity
@@ -152,3 +153,28 @@ def test_the_scratch_profile_points_at_the_scratch_store_and_workspace_and_lists
     assert read["team"] == "pat" and read["notify"] == {"ntfy": "https://ntfy.example/cox"}
     empty = route.parse_profile(parity.scratch_profile(PROFILE, "/p", "/w", ()))
     assert list(empty["chair"]["queues"]) == []
+
+
+def test_parity_refuses_the_live_store_by_identity_not_by_url_text():
+    """C6: two URLs that differ only by port or query string name one store, and are refused alike."""
+    live = ("postgres", "7710539535895343142", "cox")
+    assert parity.store_refusal(live, ("postgres", "7710539535895343142", "cox_restored")) is None
+    assert parity.store_refusal(live, ("postgres", "7310000000000000001", "cox")) is None  # another server's copy
+    same = parity.store_refusal(live, ("postgres", "7710539535895343142", "cox")) or ""
+    assert "same database on the same server" in same
+    assert "same file" in (parity.store_refusal(("sqlite", "/w/runs/cox.db"), ("sqlite", "/w/runs/cox.db")) or "")
+
+
+def test_parity_refuses_when_either_store_cannot_say_what_it_is():
+    live = ("postgres", "1", "cox")
+    assert "cannot tell what store --store-url is" in (parity.store_refusal(live, "OperationalError: refused") or "")
+    assert "cannot read this profile's own store" in (parity.store_refusal("OperationalError: refused", live) or "")
+
+
+def test_parity_refuses_the_live_workspace_and_anything_inside_it():
+    live = PurePosixPath("/home/u/workspace")
+    assert parity.workspace_refusal(live, None) is None
+    assert parity.workspace_refusal(live, PurePosixPath("/tmp/scratch")) is None
+    assert parity.workspace_refusal(live, PurePosixPath("/home/u/workspace-copy")) is None
+    assert "own workspace" in (parity.workspace_refusal(live, live) or "")
+    assert "own workspace" in (parity.workspace_refusal(live, live / "runs") or "")
