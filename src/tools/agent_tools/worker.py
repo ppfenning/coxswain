@@ -130,29 +130,38 @@ def stale_lanes(live: Sequence[Mapping[str, object]], own_run: str) -> list[Runn
 class LaneFacts:
     """What the store holds for a phase once its lane ended: its tasks (dropped ones left out), the tasks whose roll-up
     put a commit on the phase branch in any run, its last review round as (round, verdict), and the phase smoke the
-    ended run wrote last as (ok, reason), None when it wrote none."""
+    ended run wrote last, None when it wrote none."""
 
     tasks: tuple[str, ...]
     rolled_up: tuple[str, ...]
     last_round: tuple[int, str] | None
-    smoke: tuple[bool, str] | None
+    smoke: phase_pick.SmokeSeen | None
 
 
 def lane_facts(task_rows: Sequence[Mapping[str, object]], rollups: Sequence[Mapping[str, object]], phase: str,
-               last_round: tuple[int, str] | None, smokes: Sequence[Mapping[str, object]]) -> LaneFacts:
-    """The `LaneFacts` of `phase`, from its initiative's work-item rows and roll-up step rows, and the ended run's
-    `smoke` step rows, oldest first (`store_phases.smoke_rows`)."""
+               last_round: tuple[int, str] | None, smokes: Sequence[Mapping[str, object]], run_id: str) -> LaneFacts:
+    """The `LaneFacts` of `phase`, from its initiative's work-item rows and roll-up step rows, and the phase's `smoke`
+    step rows of every run, oldest first (`store_phases.smoke_rows`), of which the ended run is `run_id`."""
     tasks = sorted(str(r["task_id"]) for r in task_rows
                    if r.get("kind") == "task" and r.get("phase") == phase and r.get("state") != "dropped")
     rolled = sorted({str(r["task_id"]) for r in rollups if r.get("phase") == phase})
-    return LaneFacts(tuple(tasks), tuple(rolled), last_round, _smoke_of(smokes[-1]) if smokes else None)
+    own = [r for r in smokes if r.get("run_id") == run_id]
+    return LaneFacts(tuple(tasks), tuple(rolled), last_round, _smoke_of(own[-1], smokes) if own else None)
 
 
-def _smoke_of(row: Mapping[str, object]) -> tuple[bool, str]:
-    """A `smoke` step row as (ok, reason); a row with no reason says its verdict."""
+def _fault(row: Mapping[str, object]) -> bool:
+    result = row.get("result_json")
+    return row.get("ok") not in (1, True) and isinstance(result, Mapping) and result.get("harness_fault") is True
+
+
+def _smoke_of(row: Mapping[str, object], smokes: Sequence[Mapping[str, object]]) -> phase_pick.SmokeSeen:
+    """A `smoke` step row as the worker reads it; a row with no reason says its verdict. A harness fault counts every
+    harness fault of the phase at the same tip, in any run."""
     result = row.get("result_json")
     reason = str(result.get("reason") or "") if isinstance(result, Mapping) else ""
-    return row.get("ok") in (1, True), reason or f"the phase smoke was {row.get('verdict') or 'not recorded'}"
+    faults = sum(1 for r in smokes if _fault(r) and r.get("subject_sha") == row.get("subject_sha")) if _fault(row) else 0
+    return phase_pick.SmokeSeen(row.get("ok") in (1, True),
+                                reason or f"the phase smoke was {row.get('verdict') or 'not recorded'}", faults)
 
 
 @dataclass(frozen=True)

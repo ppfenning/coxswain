@@ -5,6 +5,11 @@ repository's `.agent-checks` task section. `level` is a phase's smoke, run once 
 `level_checks` and the `# level: phase` section. `ticket` is an initiative's full suite, run before its one pull
 request: the cartridge's `ticket_checks` and the `# level: initiative` section. A repo that sets neither new list and
 marks no section sees only the task gate, with the list `checks` holds today. The resolvers are pure.
+
+Only the phase model reads the sections at their gates (`Ctx.check_levels`, set by the phase lane). The old model's
+runs, the lander and `cox runs land` pass no `repo` here: they read the file as one flat task list
+(`checks.old_model_checks`), so an initiative already on the old model checks what it checked before levels. A
+new-model lander's gate is D1's.
 `repo_gate_lock` is the edge: level and ticket check runs take it so two runs against one repository never overlap.
 Task checks never take it.
 """
@@ -46,16 +51,6 @@ def gate_checks(landing_areas: Mapping[str, object], gate: str,
     known = {c.get("cmd") for c in listed}
     extra = [cast("dict[str, str]", c) for c in for_level(repo, GATE_LEVELS[gate]) if c.get("cmd") not in known]
     return listed + extra if extra else listed  # nothing added: the cartridge's own list, as before levels
-
-
-def local_gate_checks(landing_areas: Mapping[str, object], gate: str,
-                      repo: Sequence[Mapping[str, object]] = ()) -> list[dict[str, str]]:
-    """The entries of `gate` a land runs on this machine. With `land_checks: ci`, CI runs the repository's own suite
-    on the pull request, so the ticket gate leaves out the `# level: initiative` section and keeps only the
-    cartridge's `ticket_checks`; every other gate, and any other `land_checks`, is `gate_checks`."""
-    if gate == "ticket" and landing_areas.get("land_checks") == "ci":
-        return gate_checks(landing_areas, gate)
-    return gate_checks(landing_areas, gate, repo)
 
 
 def gate_commands(landing_areas: Mapping[str, object],

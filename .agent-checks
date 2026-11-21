@@ -27,10 +27,9 @@ python .github/check_types.py
 pytest -q -rs smoke -m "not forge"
 
 # level: initiative
-# The full suite: every unit suite whole, and the smoke suite with the forge tests. This repository's cartridge says
-# `land_checks: ci`, so a land leaves these to CI's required `test` check on the pull request rather than running
-# them again on the machine (check_gate.local_gate_checks).
-pytest -q -n auto
+# The full suite: the three component suites whole, and the smoke suite with the forge tests (the umbrella's own
+# tests/ run in CI's `unit (root)` job, as they always have). An old-model run reads this file as one flat list, its
+# task lines and then these (checks.old_model_checks): exactly the seven commands it ran before levels.
 cd src/tools && pytest -q -n auto
 cd src/graphs && pytest -q -n auto
 cd src/cartridges && pytest -q -n auto

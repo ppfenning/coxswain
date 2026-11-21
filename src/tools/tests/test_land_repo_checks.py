@@ -401,15 +401,14 @@ def test_the_land_facts_read_ticket_checks_from_the_cartridge_alone(tmp_path, mo
     assert cli._land_repo_facts(tmp_path, {}, "main")["ticket_checks"] == []
 
 
-def test_the_land_runs_the_task_section_as_its_checks_and_the_initiative_section_at_its_ticket_gate(tmp_path, monkeypatch):
-    (tmp_path / ".agent-checks").write_text("echo task\n# level: phase\necho smoke\n# level: initiative\necho suite\n")
+def test_the_land_reads_a_marked_file_as_the_old_model_does_one_flat_list_each_suite_once(tmp_path, monkeypatch):
+    """`cox runs land` is the old model's: its checks are the task lines and the widest level's, and its ticket gate is
+    the cartridge's alone, as before levels."""
+    (tmp_path / ".agent-checks").write_text("echo task\n# level: phase\necho smoke\n# level: initiative\necho task\necho suite\n")
     monkeypatch.setattr(cli, "_cartridge_landing", lambda repo, profile: ({"ticket_checks": _TICKET}, None))
     facts = cli._land_repo_facts(tmp_path, {}, "main")
-    assert [c["cmd"] for c in facts["checks"]] == ["echo task"]
-    assert [c["cmd"] for c in facts["ticket_checks"]] == [*(c["cmd"] for c in _TICKET), "echo suite"]
-    monkeypatch.setattr(cli, "_cartridge_landing", lambda repo, profile: ({"ticket_checks": _TICKET, "land_checks": "ci"}, None))
-    monkeypatch.setattr(cli, "_required_checks", lambda *args: ("test",))
-    assert cli._land_repo_facts(tmp_path, {}, "main")["ticket_checks"] == _TICKET  # CI runs the suite on the PR
+    assert [c["cmd"] for c in facts["checks"]] == ["echo task", "echo suite"]
+    assert facts["ticket_checks"] == _TICKET
 
 
 def test_the_dry_run_labels_the_ticket_gate_step():

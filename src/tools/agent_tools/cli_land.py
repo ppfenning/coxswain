@@ -413,8 +413,8 @@ def _land_repo_facts(repo: Path, profile: dict, default_branch: str | None = Non
     `harness.checks.repo_checks`, as the chair does), the files that say whether pytest belongs here, and
     `cartridge_error`, set when the cartridge could not be resolved and the checks are therefore short.
     `land_checks` is the cartridge's; only `ci` reads the forge, for `required_checks`."""
-    from harness.check_gate import local_gate_checks
-    from harness.checks import for_level, repo_checks
+    from harness.check_gate import gate_checks
+    from harness.checks import old_model_checks, repo_checks
     try:
         agent_checks = (repo / ".agent-checks").read_text(encoding="utf-8-sig")
     except (OSError, UnicodeDecodeError):
@@ -424,8 +424,8 @@ def _land_repo_facts(repo: Path, profile: dict, default_branch: str | None = Non
     parsed = repo_checks(agent_checks)
     facts = {"venv_python": (repo / ".venv" / "bin" / "python").exists(), "uv_lock": (repo / "uv.lock").exists(),
              "python_project": any((repo / name).exists() for name in land.PYTHON_PROJECT_FILES),
-             "checks": land.resolved_checks(cartridge_checks, for_level(parsed, "task")), "cartridge_error": cartridge_error,
-             "ticket_checks": local_gate_checks(landing, "ticket", parsed)}
+             "checks": land.resolved_checks(cartridge_checks, old_model_checks(parsed)), "cartridge_error": cartridge_error,
+             "ticket_checks": gate_checks(landing, "ticket")}
     land_checks = landing.get("land_checks")
     if land_checks is None:
         return facts

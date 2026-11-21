@@ -247,9 +247,10 @@ facts:
   `COX_SMOKE_TIMINGS=smoke/timings.json pytest -q -rs -p smoke.timings -m "not forge" smoke`. A test's seconds are its
   setup, call and teardown, less the session fixtures it set up, which every shard pays once whatever it holds. A run
   on a few files rewrites only theirs; a file whose every test was deselected weighs 0.
-- **Lane checks.** `.agent-checks` runs `pytest -q -rs smoke -m "not forge"` at the phase level (`# level: phase`),
-  once per phase in the phase worktree after every task has rolled up, and never in a task's own checks. The whole
-  `pytest -q -rs smoke` is in its initiative level, which this repository leaves to CI. A lane host with docker
+- **Lane checks.** On the phase model, `.agent-checks` runs `pytest -q -rs smoke -m "not forge"` at the phase level
+  (`# level: phase`). It runs once per phase, in the phase worktree, after every task has rolled up, and never in a
+  task's own checks. The whole `pytest -q -rs smoke` is in its initiative level. An old-model task reads the file as
+  one flat list, as before levels, and so still runs `pytest -q -rs smoke` in its own checks. A lane host with docker
   runs it against its own container. A host with no docker on PATH skips it and prints the reason. A host whose
   `docker` is on PATH but whose daemon does not answer fails, because that is a host fault a skip would hide. Set
   `COX_SMOKE_SKIP_BROKEN_DOCKER=1` on such a host to skip there instead.

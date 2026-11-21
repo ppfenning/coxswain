@@ -34,6 +34,7 @@ __all__ = [
     "MAX_ATTEMPTS",
     "STOP_AFTER_S",
     "STOP_GRACE_S",
+    "SmokeSeen",
     "Verdict",
     "backoff_s",
     "bad_tokens",
@@ -231,29 +232,46 @@ def verdict(task_states: Sequence[str], attempts: int, launch_error: str = "", m
     return Verdict("retry", "", why, backoff_s(attempts))
 
 
+@dataclass(frozen=True)
+class SmokeSeen:
+    """The phase smoke an ended lane wrote last, as the worker reads it: whether it passed, why not, and how many of
+    the phase's smokes at that tip were harness faults, this one included (0 when it is not one)."""
+
+    ok: bool
+    reason: str
+    faults: int = 0
+
+
 def lane_verdict(tasks: Collection[str], rolled_up: Collection[str], last_round: tuple[int, str] | None, attempts: int,
-                 max_attempts: int = MAX_ATTEMPTS, *, smoke: tuple[bool, str] | None) -> Verdict:
+                 max_attempts: int = MAX_ATTEMPTS, *, smoke: SmokeSeen | None) -> Verdict:
     """The ack or nack for a phase whose lane ended, from what the store holds for it: the phase's tasks (dropped ones
     left out), the tasks whose roll-up put a commit on the phase branch, its last review round, and the phase smoke
-    the ended lane wrote, as (ok, reason), or None when it wrote none (`lane_smoke`).
+    the ended lane wrote, or None when it wrote none (`lane_smoke`).
 
     The review round decides: approve is the ack, quarantine the permanent nack. With no round, a phase whose every
     task rolled up and whose smoke passed is `built`: it is parked, not claimable, until a review round is written for
-    it (the phase review loop is L6) and the chair queues it again. A failed smoke means no review and no park: the
-    phase goes back to the queue with the failure as its reason, and so does a lane that ended before its smoke ran
-    and a phase with tasks left. Each is retryable with backoff, and after `max_attempts` claims it has failed.
+    it (the phase review loop is L6) and the chair queues it again. A failed smoke means no review and no park:
+    - a real failure finishes the phase `failed` at once: a retry would run the same commands on the same tip;
+    - a harness fault (a check that could not run) goes back to the queue once, and a second at that tip is `failed`.
+    A lane that ended before its smoke ran, and a phase with tasks left, are retryable with backoff, and after
+    `max_attempts` claims the phase has failed.
 
-    A failed smoke is not quarantined: the chair reopens a quarantined phase whose tasks are still ready, which would
-    run the same smoke on the same tip without bound; a counted retry ends, as `failed`, for the operator."""
+    No failed smoke is quarantined: the chair reopens a quarantined phase whose tasks are still ready, which would
+    run the same smoke on the same tip without bound; `failed` stays finished, for the operator."""
     if last_round is not None and last_round[1] == "approve":
         return Verdict("ack", "approved", f"the phase review approved it in round {last_round[0]}")
     if last_round is not None and last_round[1] == "quarantine":
         return Verdict("quarantine", "quarantined", f"the phase review quarantined it in round {last_round[0]}")
     missing = sorted(set(tasks) - set(rolled_up))
-    if tasks and not missing and smoke is not None and smoke[0]:
+    if tasks and not missing and smoke is not None and smoke.ok:
         return Verdict("built", "", "every task rolled up; waiting for the phase review")
+    if tasks and not missing and smoke is not None and not smoke.faults:
+        return Verdict("quarantine", "failed", smoke.reason)
+    if tasks and not missing and smoke is not None and smoke.faults > 1:
+        return Verdict("quarantine", "failed", f"the phase smoke could not run {smoke.faults} times at this tip, "
+                                               f"the last: {smoke.reason}")
     if tasks and not missing:
-        why = smoke[1] if smoke is not None else "every task rolled up, but the lane ended before the phase smoke ran"
+        why = smoke.reason if smoke is not None else "every task rolled up, but the lane ended before the phase smoke ran"
     else:
         why = f"tasks not rolled up: {', '.join(missing)}" if tasks else "the phase has no tasks in the store"
     if attempts >= max_attempts:

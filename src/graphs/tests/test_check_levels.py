@@ -10,9 +10,10 @@ from pathlib import Path
 
 import pytest
 
-from harness.check_gate import GATE_LEVELS, GATES, gate_checks, gate_commands, local_gate_checks
-from harness.checks import LEVELS, for_level, repo_checks
+from harness.check_gate import GATE_LEVELS, GATES, gate_checks, gate_commands
+from harness.checks import LEVELS, for_level, old_model_checks, repo_checks
 from harness.epic import Ctx
+from harness.epic_branches import _merge_checks
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -56,11 +57,11 @@ CARTRIDGE = {"checks": [{"name": "unit", "cmd": "pytest -q"}], "level_checks": [
              "ticket_checks": [{"name": "e2e", "cmd": "make e2e"}]}
 
 
-def _ctx(tmp_path: Path, landing: dict, parsed: list) -> Ctx:
+def _ctx(tmp_path: Path, landing: dict, parsed: list, *, levels: bool = False) -> Ctx:
     return Ctx(repo=tmp_path, cartridge={"landing_areas": landing}, runner=None, specs={}, run_id="r1",
                date="2026-11-20", max_parallel=1, ledger_path=tmp_path / "ledger", provider_profile="p",
                runs_dir=tmp_path / "runs", worktree_root=tmp_path / "wt", assume=None, fix_attempts=None,
-               initiative_id="i", default_ref="main", repo_checks=parsed)
+               initiative_id="i", default_ref="main", repo_checks=parsed, check_levels=levels)
 
 
 # -- the old model, untouched -----------------------------------------------------------------------------------------
@@ -76,13 +77,47 @@ def test_an_unmarked_file_reaches_only_the_task_gate_and_every_gate_reads_as_the
     for landing in (CARTRIDGE, {"checks": CARTRIDGE["checks"]}, {}, {**CARTRIDGE, "land_checks": "ci"}):
         for gate in GATES:
             assert gate_checks(landing, gate, parsed if gate != "task" else ()) == gate_checks(landing, gate)
-            assert local_gate_checks(landing, gate, parsed if gate != "task" else ()) == gate_checks(landing, gate)
-        ctx = _ctx(tmp_path, dict(landing), parsed)
-        # Ctx.checks: the cartridge's, then every line of the file it does not already run, as before.
-        cartridge = list(landing.get("checks") or [])
-        assert ctx.checks == cartridge + [c for c in UNMARKED_PARSED if c["cmd"] not in {x["cmd"] for x in cartridge}]
-        assert ctx.level_checks == list(landing.get("level_checks") or [])
-        assert ctx.gate_commands == gate_commands(landing)  # what the runner was handed before levels
+        for levels in (False, True):  # an unmarked file reads the same on either model
+            ctx = _ctx(tmp_path, dict(landing), parsed, levels=levels)
+            # Ctx.checks: the cartridge's, then every line of the file it does not already run, as before.
+            cartridge = list(landing.get("checks") or [])
+            assert ctx.checks == cartridge + [c for c in UNMARKED_PARSED if c["cmd"] not in {x["cmd"] for x in cartridge}]
+            assert ctx.level_checks == list(landing.get("level_checks") or [])
+            assert ctx.gate_commands == gate_commands(landing)  # what the runner was handed before levels
+    assert old_model_checks(parsed) == UNMARKED_PARSED
+
+
+# What this repository's `.agent-checks` ran on main before levels: every command line, in order (origin/main at #1299).
+MAIN_COMMANDS = [
+    "cd src/tools && pytest -q -n auto", "cd src/graphs && pytest -q -n auto", "cd src/cartridges && pytest -q -n auto",
+    "pytest -q -rs smoke", "python .github/check_clean.py . --require-names", "python .github/check_unwired.py",
+    "python .github/check_types.py",
+]
+
+
+def _real() -> list:
+    return repo_checks((ROOT / ".agent-checks").read_text(encoding="utf-8-sig"))
+
+
+def test_an_old_model_run_of_this_repository_checks_exactly_what_main_checked(tmp_path):
+    """The marked file, on the old model: every task runs the same seven commands main ran (the full smoke among them,
+    in its fix loop), the level gate and the merge's check run nothing, and the runner's gate map is the cartridge's.
+    Only the order moves: the smoke, now an initiative line, comes after the task lines."""
+    landing = {"land_checks": "ci"}  # this repository's overlay
+    ctx = _ctx(tmp_path, landing, _real())
+    cmds = [str(c["cmd"]) for c in ctx.checks]
+    assert sorted(cmds) == sorted(MAIN_COMMANDS) and len(cmds) == len(MAIN_COMMANDS)
+    assert all("level" not in c for c in ctx.checks)
+    assert ctx.level_checks == [] and _merge_checks(ctx, "p1") is None
+    assert ctx.gate_commands == gate_commands(landing) == {}
+
+
+def test_the_old_model_reads_the_widest_level_and_never_runs_a_suite_twice():
+    widest = repo_checks("a\n# level: phase\ns\n# level: initiative\na\nall\n")
+    assert [c["cmd"] for c in old_model_checks(widest)] == ["a", "all"]
+    assert [c["cmd"] for c in old_model_checks(repo_checks("a\n# level: phase\ns\n"))] == ["a", "s"]
+    fixed = old_model_checks(repo_checks("# level: initiative\nfmt --check  # fix: fmt\n"))
+    assert fixed == [{"name": "fmt --check  # fix: fmt", "cmd": "fmt --check", "fix": "fmt"}]
 
 
 # -- the markers ------------------------------------------------------------------------------------------------------
@@ -131,28 +166,19 @@ def test_each_gate_runs_the_cartridges_list_then_its_levels_section_without_a_re
     assert gate_commands({}, repo_checks("lint\n")) == {}
 
 
-def test_land_checks_ci_leaves_the_initiative_section_to_ci_and_keeps_the_cartridges_ticket_checks():
-    parsed = repo_checks("# level: phase\nsmoke\n# level: initiative\nall\n")
-    ci = {**CARTRIDGE, "land_checks": "ci"}
-    assert [c["cmd"] for c in local_gate_checks(ci, "ticket", parsed)] == ["make e2e"]
-    assert [c["cmd"] for c in local_gate_checks(ci, "level", parsed)] == ["make it", "smoke"]
-    assert [c["cmd"] for c in local_gate_checks({**CARTRIDGE, "land_checks": "local"}, "ticket", parsed)] == ["make e2e", "all"]
-    assert gate_commands(ci, parsed)["ticket"] == ["make e2e", "all"]  # declared: CI runs it, and a reviewer is told
-
-
-def test_the_run_context_holds_each_level_to_its_gate(tmp_path):
+def test_the_phase_lanes_context_holds_each_level_to_its_gate(tmp_path):
     parsed = repo_checks("lint\n# level: phase\nsmoke\n# level: initiative\nall\n")
-    ctx = _ctx(tmp_path, {"checks": CARTRIDGE["checks"]}, parsed)
+    ctx = _ctx(tmp_path, {"checks": CARTRIDGE["checks"]}, parsed, levels=True)
     assert [c["cmd"] for c in ctx.checks] == ["pytest -q", "lint"]  # a task build never sees the smoke
     assert [c["cmd"] for c in ctx.level_checks] == ["smoke"]
     assert ctx.gate_commands == {"task": ["pytest -q"], "level": ["smoke"], "ticket": ["all"]}
 
 
 def test_this_repositorys_file_names_the_three_levels():
-    parsed = repo_checks((ROOT / ".agent-checks").read_text(encoding="utf-8-sig"))
+    parsed = _real()
     task = [c["cmd"] for c in for_level(parsed, "task")]
-    assert not [c for c in task if "smoke" in c]  # no task runs the smoke
+    assert not [c for c in task if "smoke" in c]  # no phase-model task runs the smoke
     assert [c["cmd"] for c in for_level(parsed, "phase")] == ['pytest -q -rs smoke -m "not forge"']
     assert [c["cmd"] for c in for_level(parsed, "initiative")] == [
-        "pytest -q -n auto", "cd src/tools && pytest -q -n auto", "cd src/graphs && pytest -q -n auto",
+        "cd src/tools && pytest -q -n auto", "cd src/graphs && pytest -q -n auto",
         "cd src/cartridges && pytest -q -n auto", "pytest -q -rs smoke"]

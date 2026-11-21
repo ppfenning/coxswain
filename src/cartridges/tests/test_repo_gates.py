@@ -58,7 +58,7 @@ def test_the_phase_level_is_the_smoke_without_the_forge_and_the_initiative_level
     sections = _sections()
     assert sections["phase"] == [f'{SMOKE_LINE} -m "not forge"']
     pytest_lines = [f"cd src/{name} && pytest -q -n auto" for name in ("tools", "graphs", "cartridges")]
-    assert sections["initiative"] == ["pytest -q -n auto", *pytest_lines, SMOKE_LINE]
+    assert sections["initiative"] == [*pytest_lines, SMOKE_LINE]
 
 
 def ci_workflow() -> dict:

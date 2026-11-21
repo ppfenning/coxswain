@@ -244,19 +244,13 @@ def fetch_branch(repo: Path, branch: str) -> str | None:
 
 
 def run_gate(repo: Path, tree: Path, gate: str, landing: Mapping[str, object], error: str | None) -> tuple[bool, str]:
-    """Edge. Run one gate's checks in `tree`: the cartridge's, then the section of `tree`'s own `.agent-checks` for the
-    gate's level (`check_gate.local_gate_checks`). A cartridge that does not resolve fails the gate: it would run fewer
-    checks."""
-    from harness.check_gate import local_gate_checks
-    from harness.checks import repo_checks, run_checks
+    """Edge. Run one gate's checks in `tree`. A cartridge that does not resolve fails the gate: it would run fewer checks."""
+    from harness.check_gate import gate_checks
+    from harness.checks import run_checks
 
     if error:
         return False, f"cartridge checks unavailable ({error})"
-    try:
-        agent_checks = (tree / ".agent-checks").read_text(encoding="utf-8-sig")
-    except (OSError, UnicodeDecodeError):
-        agent_checks = ""
-    checks = local_gate_checks(landing, gate, repo_checks(agent_checks))
+    checks = gate_checks(landing, gate)
     if not checks:
         return True, ""
     results = run_checks(tree, checks)

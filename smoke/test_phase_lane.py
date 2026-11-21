@@ -461,7 +461,7 @@ def test_a_phase_whose_tasks_pass_alone_but_whose_wiring_is_broken_fails_its_smo
     """Each task passes its own checks, one of which proves the smoke has run nowhere yet and left no marker in the
     task's tree. Once all three have rolled up, the lane runs the phase level once, in the phase worktree at the tip;
     it fails, so the `smoke` row is the last step, no review role is ever called, and the worker does not park the
-    phase `built`: it goes back to the queue with the smoke's failure as its reason, one attempt spent."""
+    phase `built`: it finishes `failed` with the smoke's failure as its reason, since a retry would only repeat it."""
     sandbox, repo, name, env, init_sha, launchable = lane_machine
     marks = sandbox.home / "marks"
     (repo.path / ".agent-checks").write_text(f"# level: phase\n{SMOKE_CMD.format(marks=marks)}\n", encoding="utf-8")
@@ -477,8 +477,9 @@ def test_a_phase_whose_tasks_pass_alone_but_whose_wiring_is_broken_fails_its_smo
 
     row = _row(sandbox)
     run_id = row["run_id"]
-    assert "parked as built" not in out and "released for a retry" in out, out
-    assert (row["state"], row["claim_epoch"], row["attempts"]) == ("ready", 1, 1), row
+    assert "parked as built" not in out and "finished failed: the phase smoke failed" in out, out
+    # A real failure is not retried: the same commands on the same tip would fail again. Finished for the operator.
+    assert (row["state"], row["outcome"], row["claim_epoch"], row["attempts"]) == ("finished", "failed", 1, 1), row
     assert row["reason"].startswith("the phase smoke failed: configured check failed: ") and "wiring broken" in row["reason"], row
 
     commits = _commits(sandbox, repo.origin)
