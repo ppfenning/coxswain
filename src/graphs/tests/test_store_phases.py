@@ -195,6 +195,46 @@ def test_a_live_row_with_no_machine_recorded_counts_as_another_machine_s(conn):
     assert store_phases.register(conn, "devbox", [], 1, "up", "2.0", {}, machine_id="laptop").verdict == "refused"
 
 
+def test_a_row_an_older_build_left_up_is_never_taken_over_however_old_its_beat(conn):
+    """An older build writes beat_at only when it registers, so an hours-old beat on a '' row may be a live worker."""
+    store_phases.register(conn, "devbox", [], 1, "up", "1.0", {}, machine_id="laptop")
+    _workers_set(conn, "devbox", machine_id="", beat_at=PAST, doctor_at=PAST, started_at=PAST)
+    assert store_phases.register(conn, "devbox", [], 1, "up", "2.0", {}, machine_id="desk").verdict == "refused"
+    _workers_set(conn, "devbox", state="stopping")  # its own clean stop
+    assert store_phases.register(conn, "devbox", [], 1, "up", "2.0", {}, machine_id="desk").verdict == "stopped"
+
+
+def test_two_machines_registering_one_new_name_at_once_give_one_winner(store_url, tmp_path):
+    url = f"sqlite:///{tmp_path / 'store.db'}" if store_url.startswith("sqlite") else store_url
+    open_store(url, AT).close()  # migrated once, before the race
+    gate = threading.Barrier(2)
+    results: dict[str, store_phases.Registration] = {}
+
+    def register(machine: str) -> None:
+        c = open_store(url, AT)
+        try:
+            gate.wait(timeout=10)
+            results[machine] = store_phases.register(c, "devbox", [], 1, "up", "1.0", {}, machine_id=machine)
+        finally:
+            c.close()
+
+    threads = [threading.Thread(target=register, args=(m,)) for m in ("laptop", "desk")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+    assert sorted(r.verdict for r in results.values()) == ["new", "refused"], results
+    (winner,) = [m for m, r in results.items() if r.ok]
+    (loser,) = [r for r in results.values() if not r.ok]
+    assert loser.prior is not None and loser.prior["machine_id"] == winner
+    c = open_store(url, AT)
+    try:
+        (row,) = store_phases.list_workers(c)
+        assert row["machine_id"] == winner
+    finally:
+        c.close()
+
+
 def test_a_worker_beats_only_its_own_machine_s_row(conn):
     assert store_phases.beat_worker(conn, "devbox", "laptop") is False, "no row yet"
     store_phases.register(conn, "devbox", [], 1, "up", "1.0", {}, machine_id="laptop")

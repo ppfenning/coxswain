@@ -6,8 +6,10 @@ row of the same name (`worker_identity.takeover`).
 
 Additive (`ADDITIVE = True`): one column with a default, so a build one migration older keeps opening, reading and
 writing a store at this version (`store_migrate.accepts`). Its upsert names only the columns it knows, so it leaves
-`machine_id` as it is, and a row it inserts gets ''. A row with '' counts as another machine's while it is live
-(`worker_identity.takeover`), so a worker of the older build is never taken over while it runs.
+`machine_id` as it is, and a row it inserts gets ''. An older build writes `beat_at` only when it registers, so the
+age of a '' row's beat says nothing about whether its worker still runs: `worker_identity.takeover` therefore never
+takes over a '' row while it says `up`, whatever its beat. Only the older worker's own clean stop (`stopping`) frees
+the name. Upgrade every machine that runs a worker of one name before starting any of them on the new build.
 
 On Postgres, 0021's statement trigger on `workers` fires on an UPDATE OF every column but the beat (`beat_at`), as
 the columns stood then. It is replaced, in place and under the same name, by one whose UPDATE OF list also names

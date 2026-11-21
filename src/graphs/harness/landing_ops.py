@@ -182,19 +182,22 @@ def merge_phase(conn: Connection, repo: Path | str, *, initiative: str, phase: s
     The merge agent and the gate together can outlive `claim_seconds`, so the branch lease is renewed on a thread
     (`lease_keeper.Keeper`, every `beat_s`, by `clock`) while the merge runs, and once more just before the merge is
     pushed (or, with no `publish`, recorded): a renew the store refuses means another writer may hold the branch, so
-    the merge this call made is unwound and the item fails with nothing pushed. Without `clock` the lease is renewed
-    as of `now`."""
+    the merge this call made is unwound and the item fails with nothing pushed. Without `clock` (the old model, and
+    the build run's own merge) there is no keeper: the lease is held for `claim_seconds` from `now`, as it always
+    was, and nothing is renewed or confirmed."""
     held = store_lease.acquire(conn, branch_lease(initiative), worker, now, claim_seconds)
     if not held.ok:
         return PhaseMerge("busy", initiative, phase, detail=f"{held.holder or 'another worker'} is moving the branch of {initiative}")
-    keeper = lease_keeper.Keeper(conn, branch_lease(initiative), worker, int(held.epoch or 0), ttl=claim_seconds,
-                                 clock=clock or (lambda: now), interval=beat_s).start()
+    keeper = None if clock is None else lease_keeper.Keeper(
+        conn, branch_lease(initiative), worker, int(held.epoch or 0), ttl=claim_seconds, clock=clock, interval=beat_s,
+    ).start()
     try:
         return _merge_phase(conn, repo, initiative=initiative, phase=phase, tasks=tasks, worker=worker, now=now,
                             checks=checks, source=source, claim_seconds=claim_seconds, fetch=fetch, publish=publish,
                             resolve=resolve, keep=keeper)
     finally:
-        keeper.stop()
+        if keeper is not None:
+            keeper.stop()
         store_lease.release(conn, branch_lease(initiative), worker, int(held.epoch or 0))
 
 

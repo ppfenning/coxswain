@@ -97,6 +97,8 @@ def test_a_store_at_twenty_gains_the_queue_and_a_repeat_changes_nothing(store_ur
         c.close()
 
 
+# Serial: `cox_store` is one channel per server, so another xdist worker's writes (its own schema) are heard too.
+@pytest.mark.serial
 def test_a_committed_write_wakes_the_listener_once_and_a_rolled_back_one_never(store_url):
     """The one boundary test: what the trigger does on a real Postgres, heard through `store_notify.listen`. Two
     statements on one table in one transaction are one notification, delivered at commit; a rollback delivers none."""

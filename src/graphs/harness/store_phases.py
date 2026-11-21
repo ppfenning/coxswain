@@ -515,25 +515,35 @@ def register(conn: Connection, name: str, capabilities: Sequence[str], lanes: in
     a doctor run is a repeat. Another machine's live row of the same name is never written over
     (`worker_identity.takeover`): the registration is refused, with nothing written."""
     p = conn.dialect.placeholder
+    # The row read is locked until the write commits (sqlite's BEGIN IMMEDIATE already serialises every writer), so
+    # nothing changes it between the decision and the write. A name with no row yet has nothing to lock: its first
+    # write is an insert-ignore, and the one of two concurrent registers that loses it decides again on the row the
+    # winner wrote.
+    lock = " FOR UPDATE" if conn.dialect.name == "postgres" else ""
+    read = f"SELECT {', '.join(WORKER_COLUMNS)} FROM workers WHERE name = {p}{lock}"
     with conn.transaction():
         now = store_now(conn)
-        found = conn.query_one(f"SELECT {', '.join(WORKER_COLUMNS)} FROM workers WHERE name = {p}", (name,))
-        prior = None if found is None else _decode(WORKER_COLUMNS, found)
-        verdict = worker_identity.takeover(prior, machine_id, now)
-        if verdict not in worker_identity.TAKES:
-            return Registration(verdict, None, prior)
-        kept = verdict == "same" and prior is not None and prior["state"] == "up" and state == "up" and prior["started_at"]
-        row: Row = {
-            "name": name, "capabilities_json": sorted(set(capabilities)), "lanes": lanes, "threads": 0, "state": state,
-            "version": version, "doctor_json": doctor, "doctor_at": now,
-            "started_at": str(prior["started_at"]) if kept and prior is not None else now, "beat_at": now,
-            "machine_id": machine_id,
-        }
-        conn.execute(
-            upsert(conn.dialect, "workers", WORKER_COLUMNS, ("name",)),
-            [json_text(row[c]) if c in _JSON_COLUMNS else row[c] for c in WORKER_COLUMNS],
-        )
-    return Registration(verdict, row, prior)
+        for _ in range(2):
+            found = conn.query_one(read, (name,))
+            prior = None if found is None else _decode(WORKER_COLUMNS, found)
+            verdict = worker_identity.takeover(prior, machine_id, now)
+            if verdict not in worker_identity.TAKES:
+                return Registration(verdict, None, prior)
+            kept = verdict == "same" and prior is not None and prior["state"] == "up" and state == "up" and prior["started_at"]
+            row: Row = {
+                "name": name, "capabilities_json": sorted(set(capabilities)), "lanes": lanes, "threads": 0,
+                "state": state, "version": version, "doctor_json": doctor, "doctor_at": now,
+                "started_at": str(prior["started_at"]) if kept and prior is not None else now, "beat_at": now,
+                "machine_id": machine_id,
+            }
+            values = [json_text(row[c]) if c in _JSON_COLUMNS else row[c] for c in WORKER_COLUMNS]
+            if prior is None:
+                if conn.execute(insert_ignore(conn.dialect, "workers", WORKER_COLUMNS, ("name",)), values) == 1:
+                    return Registration(verdict, row, prior)
+                continue  # another register inserted the name first: decide again on its row, now locked
+            conn.execute(upsert(conn.dialect, "workers", WORKER_COLUMNS, ("name",)), values)
+            return Registration(verdict, row, prior)
+    raise RuntimeError(f"the workers row of {name} was inserted and then not found")
 
 
 def beat_worker(conn: Connection, name: str, machine_id: str) -> bool:

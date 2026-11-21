@@ -1,4 +1,6 @@
 """Migration 0023: `workers.machine_id`, additive, and a row an older build writes keeps working beside it."""
+import pytest
+
 from harness import store_copy, store_ddl_0023, store_notify
 from harness.store_ddl_0023 import ADDED, ADDITIVE, statements
 from harness.store_dialect import POSTGRES, SQLITE, connect
@@ -53,6 +55,8 @@ def test_a_store_at_twenty_two_gains_the_column_and_an_older_build_s_insert_gets
         c.close()
 
 
+# Serial: `cox_store` is one channel per server, so another xdist worker's writes (its own schema) are heard too.
+@pytest.mark.serial
 def test_on_postgres_a_machine_change_wakes_the_listener_and_a_beat_does_not(store_url):
     """What the replaced trigger does on a real Postgres, heard through `store_notify.listen`."""
     if not store_url.startswith("postgres"):

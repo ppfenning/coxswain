@@ -456,8 +456,10 @@ def run(ports: Ports, *, once: bool = False) -> int:
         while True:
             try:
                 reap(ports, leases)
+                # Every pass, `once` too after its claim: it is where a row another machine took over is noticed.
+                capabilities = ports.capabilities()
                 if not (once and claimed):
-                    fill(ports, leases, ports.capabilities())
+                    fill(ports, leases, capabilities)
                     claimed = True
             except NameTaken:
                 raise

@@ -5,7 +5,8 @@ one `workers` row, one `claimed_by`, one `old_model_runs` host filter and L2's h
 `workers` row records the machine that wrote it (`machine_id`, 0023), and `store_phases.register` asks `takeover`
 before it writes: a live row of the same name from another machine is refused, and the worker does not start. A row
 whose machine stopped it, or whose beat has aged past `STALE_S`, is taken over, and the caller logs it. A running
-worker beats its row every `BEAT_S` (`store_phases.beat_worker`), so a live one never looks stale.
+worker beats its row every `BEAT_S` (`store_phases.beat_worker`), so a live one never looks stale. A row an older
+build wrote (no machine recorded) has no such beat, so it is never taken over while it says `up`.
 
 The machine is `/etc/machine-id` (or D-Bus's copy) on Linux and `IOPlatformUUID` from `ioreg` on macOS. Where
 neither answers, a random id is kept in the worker's workspace (`FALLBACK_FILE`), stable for as long as that file is.
@@ -41,14 +42,18 @@ _IOREG = re.compile(r'"IOPlatformUUID"\s*=\s*"([^"]+)"')
 
 def takeover(found: Mapping[str, object] | None, machine: str, now: str, stale_s: int = STALE_S) -> Verdict:
     """Pure. Whether `machine` may write the row `found` (the `workers` row of its name, as stored) at the store's
-    `now`. A row with no machine recorded (written before 0023, or by an older build) counts as another machine's: it
-    is refused while it is live, never taken over silently."""
+    `now`. A row with no machine recorded (written before 0023, or by an older build) is never taken over while it
+    says `up`, however old its beat: an older build writes `beat_at` only when it registers, so an old beat says
+    nothing about whether that worker is still running. Only its own clean stop (`stopping`) frees it."""
     if found is None:
         return "new"
-    if machine and str(found.get("machine_id") or "") == machine:
+    prior = str(found.get("machine_id") or "")
+    if machine and prior == machine:
         return "same"
     if found.get("state") != "up":
         return "stopped"
+    if not prior:
+        return "refused"
     beat = str(found.get("beat_at") or "")
     try:
         aged = phase_pick.seconds(beat, now) >= stale_s
@@ -62,6 +67,10 @@ def takeover_note(name: str, verdict: Verdict, found: Mapping[str, object] | Non
     row was new or its own."""
     prior = str((found or {}).get("machine_id") or "") or "an unrecorded machine"
     beat = str((found or {}).get("beat_at") or "never")
+    if verdict == "refused" and not (found or {}).get("machine_id"):
+        return (f"worker: {name} is registered as up by an older build that records no machine (beat {beat}), and "
+                f"this machine ({machine}) cannot tell whether that worker still runs: stop it cleanly on its own "
+                "machine (its row then says `stopping`), or give this worker a name of its own (`--name`)")
     if verdict == "refused":
         return (f"worker: {name} is registered and live from machine {prior} (beat {beat}), not this one ({machine}): "
                 "give this worker a name of its own (`--name`), or stop the other one")

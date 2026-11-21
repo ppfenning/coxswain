@@ -21,6 +21,11 @@ def row(machine="laptop", state="up", beat=FRESH):
     (row(), "desk", "refused"),
     (row(machine=""), "desk", "refused"),  # an older build's row: maybe another machine, live
     (row(machine=""), "", "refused"),  # an unknown machine is never "the same" as one
+    # An older build beats its row only when it registers: an hours-old beat on a '' row may be a live worker.
+    (row(machine="", beat=OLD), "desk", "refused"),
+    (row(machine="", beat="2000-01-01T00:00:00Z"), "desk", "refused"),
+    (row(machine="", beat=""), "desk", "refused"),
+    (row(machine="", state="stopping", beat=OLD), "desk", "stopped"),  # its own clean stop frees the name
     (row(state="stopping"), "desk", "stopped"),
     (row(beat=OLD), "desk", "stale"),
     (row(beat=""), "desk", "stale"),
@@ -41,7 +46,9 @@ def test_what_is_said_names_the_other_machine_and_how_to_fix_it():
     assert wi.takeover_note("devbox", "stale", row(beat=OLD), "desk") == (
         f"worker: devbox takes over the row machine laptop left (its last beat was {OLD})")
     assert "it was stopped" in wi.takeover_note("devbox", "stopped", row(state="stopping"), "desk")
-    assert "an unrecorded machine" in wi.takeover_note("devbox", "stale", row(machine="", beat=OLD), "desk")
+    assert "an unrecorded machine" in wi.takeover_note("devbox", "stopped", row(machine="", state="stopping"), "desk")
+    legacy = wi.takeover_note("devbox", "refused", row(machine="", beat=OLD), "desk")
+    assert "older build that records no machine" in legacy and "stop it cleanly" in legacy and "--name" in legacy
     assert wi.takeover_note("devbox", "same", row(), "laptop") == wi.takeover_note("devbox", "new", None, "desk") == ""
 
 
