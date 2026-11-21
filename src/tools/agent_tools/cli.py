@@ -1597,7 +1597,7 @@ WORKER_GROUP = commands.Group(
         "it qualifies for, runs it through the harness on this machine, and keeps its claim alive while it runs.\n"
         "Nothing reaches a worker over ssh: it pulls."
     ),
-    epilog="examples:\n  cox worker status\n  cox worker once\n  cox worker run --capability os:macos",
+    epilog="examples:\n  cox worker status\n  cox worker once\n  cox worker run --capability os:macos\n  cox worker checkout https://example.org/app.git ~/repos/app",
 )
 WORKER_COMMANDS = [
     commands.Command(
@@ -1612,6 +1612,21 @@ WORKER_COMMANDS = [
         "status", "worker", "every queued phase with its claim, and every registered worker",
         (commands.Arg(("--json",), {"action": "store_true", "help": "print the status as JSON"}), _PROFILE_ARG),
         "agent_tools.cli:_worker_status", False, (), defaults={"profile": None},
+    ),
+    commands.Command(
+        "checkout", "worker", "clone a repository here, borrowing objects from this machine's git mirror",
+        (
+            commands.Arg(("url",), {"help": "the repository's clone URL; the mirror under the cache directory is per URL"}),
+            commands.Arg(("dest",), {"help": "the folder to clone into: absent or empty, or already a clone of URL"}),
+            commands.Arg(("--branch",), {"help": "check out a new branch of this name (default: the remote's default branch)"}),
+            commands.Arg(("--base",), {"help": "the commit or ref to check out or to start --branch at"}),
+            commands.Arg(("--json",), {"action": "store_true", "help": "print what the clone did and cost as JSON"}),
+        ),
+        "agent_tools.cli:_worker_checkout", False, (),
+        description=(
+            "The mirror is $COX_CACHE_DIR/git, else $XDG_CACHE_HOME/coxswain/git, else ~/.cache/coxswain/git.\n"
+            "Deleting it costs only time: a clone never keeps borrowing from it."
+        ),
     ),
 ]
 

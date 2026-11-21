@@ -38,6 +38,7 @@
 "smoke/test_store_notify.py": 9.0,
 "smoke/test_unit_env_doctor.py": 3.1,
 "smoke/test_usage_window_ceiling.py": 0.9,
+"smoke/test_worker_caches.py": 4.2,
 "smoke/test_worker_claims.py": 187.4,
 "smoke/test_worker_role.py": 29.6
 }

@@ -175,6 +175,7 @@ cox lander service [--install] [--status] [--interval INTERVAL] [--environment-f
 cox worker run [--name NAME] [--capability TOKEN] [--lanes LANES] [--profile PROFILE]   claim and run phases until interrupted
 cox worker once [--name NAME] [--capability TOKEN] [--lanes LANES] [--profile PROFILE]   one claim pass, then run what it claimed to its end
 cox worker status [--json] [--profile PROFILE]   every queued phase with its claim, and every registered worker
+cox worker checkout URL DEST [--branch BRANCH] [--base BASE] [--json]   clone a repository here, borrowing objects from this machine's git mirror
 cox host add NAME --ssh SSH --capacity CAPACITY [--weight WEIGHT] [--capabilities CAPABILITIES]   add or update a host in the table
 cox host list   one line per host: state, capacity, beat age, login
 cox host drain NAME   stop launching on a host; its live lanes finish

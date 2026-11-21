@@ -23,7 +23,7 @@ from pathlib import Path
 
 from agent_tools import bounded_run, chair, epic, lane_prereqs, repo_path, route, run_store, worker
 from agent_tools.chair_read_run_id import next_run_id, taken_names
-from harness import phase_pick, store_phases
+from harness import phase_pick, repo_cache, store_phases
 from harness.store_dialect import Connection, Json
 from harness.store_phases import Claim
 
@@ -142,6 +142,7 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
     launches_dir = ws / "worker-launches"  # each launch's own output, beside the workspace's runs, not among them
     store = Store(runs_dir)
     home = os.path.expanduser("~")
+    lane_env = repo_cache.lane_env(os.environ, repo_cache.cache_root(os.environ, home))  # lanes share its caches
     host = socket.gethostname()
     registered: list[str] = []
     probed: list[list[dict[str, object]]] = []  # the last lane check's rows, one entry once it has run
@@ -202,8 +203,8 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
         launches_dir.mkdir(parents=True, exist_ok=True)
         try:
             with open(launches_dir / f"{run_id}.out", "wb") as out:
-                proc = subprocess.Popen(argv, cwd=ws, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
-                                        start_new_session=True)
+                proc = subprocess.Popen(argv, cwd=ws, env=lane_env, stdin=subprocess.DEVNULL, stdout=out,
+                                        stderr=subprocess.STDOUT, start_new_session=True)
         except OSError as exc:
             return f"the launch did not spawn: {type(exc).__name__}: {exc}"
         with launchers_lock:
