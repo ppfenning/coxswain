@@ -82,7 +82,19 @@ def _undo_conflict(workspace: Path, head: str) -> str:
 
 
 def pull_workspace(workspace: Path) -> str:
-    """Fast-forward the checkout from its upstream, carrying unstaged changes; a non-checkout or a branch with no upstream is a no-op."""
+    """Fast-forward the checkout from its upstream, carrying unstaged changes; a non-checkout or a branch with no upstream is a no-op.
+
+    Under the workspace lock (`workspace_lock`): a lock held past its bound skips the pull, and the skip is the reason."""
+    from agent_tools import workspace_lock
+
+    try:
+        with workspace_lock.held(workspace, "pull"):
+            return _pull(workspace)
+    except workspace_lock.WorkspaceBusy as busy:
+        return str(busy)
+
+
+def _pull(workspace: Path) -> str:
     line, target = _upstream(workspace, "pull")
     if target is None:
         return line

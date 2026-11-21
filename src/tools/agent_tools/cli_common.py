@@ -276,13 +276,17 @@ def _export_board(runs_dir: Path, workspace: Path, prune_stale: bool = False) ->
     So it fills the store from the files first: a decompose writes its tickets as files, and an export with no fill
     deleted them, on the chair's tick and on an epic launch alike (2026-10-06). A fill that cannot read the store
     raises before anything is written or deleted. `prune_stale` is for a workspace out of git: see `fill_workspace`."""
-    from agent_tools import store_fill  # imported here: cli loads a command module only when it runs
+    from agent_tools import store_fill, workspace_lock  # imported here: cli loads a command module only when it runs
 
-    # The argument is passed only when set, so a caller's stand-in for the plain fill keeps working.
-    store_fill.fill_workspace(workspace, prune_stale=True) if prune_stale else store_fill.fill_workspace(workspace)
-    # A file with no row is not necessarily orphaned: it may be a live decompose's, whose rows are not written yet.
-    live = chair_decompose_runs.live_decompose_initiatives(runs_dir)
-    return queue_export.export_files(workspace, run_store.read_queue(runs_dir), hashes=queue_export.store_hashes(runs_dir), protected=live).skipped
+    # One hold from the fill to the last write: a pull between them would bring a file the fill never read, and the
+    # export would delete it as a file with no row. A lock held past its bound raises `WorkspaceBusy`.
+    with workspace_lock.held(workspace, "export"):
+        # The argument is passed only when set, so a caller's stand-in for the plain fill keeps working.
+        store_fill.fill_workspace(workspace, prune_stale=True) if prune_stale else store_fill.fill_workspace(workspace)
+        # A file with no row is not necessarily orphaned: it may be a live decompose's, whose rows are not written yet.
+        live = chair_decompose_runs.live_decompose_initiatives(runs_dir)
+        rows = run_store.read_queue(runs_dir)
+        return queue_export.export_files(workspace, rows, hashes=queue_export.store_hashes(runs_dir), protected=live).skipped
 
 
 def workspace_git_on(profile: Mapping) -> bool:

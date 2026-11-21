@@ -72,15 +72,15 @@ def test_a_tick_leaves_its_reasons_for_the_server_and_a_dry_run_leaves_the_file_
     state = chair_run.ReasonState(items=[{"initiative": "add-a-thing", "reason": "no lane free on an eligible host"}])
     deps = SimpleNamespace(runs_dir=tmp_path, reason_state=state)
     now = datetime(2026, 11, 12, 10, tzinfo=UTC)
-    chair_run._publish_reasons(deps, True, now)
+    chair_run.publish_reasons(deps, True, now)
     assert not (tmp_path / mcp_ports.UNLAUNCHED_FILE).exists()
-    chair_run._publish_reasons(deps, False, now)
+    chair_run.publish_reasons(deps, False, now)
     held = (tmp_path / mcp_ports.UNLAUNCHED_FILE).read_text()
     assert mcp_ports.unlaunched_reasons(held, "add-a-thing")[0]["reason"] == "no lane free on an eligible host"
     state.items = []
-    chair_run._publish_reasons(deps, False, now)
+    chair_run.publish_reasons(deps, False, now)
     assert mcp_ports.unlaunched_reasons((tmp_path / mcp_ports.UNLAUNCHED_FILE).read_text(), "add-a-thing") == [], "the next tick replaces them"
-    chair_run._publish_reasons(SimpleNamespace(runs_dir=None, reason_state=state), False, now)
+    chair_run.publish_reasons(SimpleNamespace(runs_dir=None, reason_state=state), False, now)
 
 
 @pytest.fixture

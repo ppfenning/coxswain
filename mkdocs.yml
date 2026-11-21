@@ -92,6 +92,7 @@ nav:
       - Merge queue: customize/merge-queue.md
       - Several machines: customize/several-machines.md
       - Autonomous chair: customize/autonomous-chair.md
+      - Chair cutover: customize/chair-cutover.md
   - Components:
       - Components: components/index.md
       - Cartridges: components/cartridges/index.md

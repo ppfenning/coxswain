@@ -54,11 +54,48 @@ from agent_tools.notify_events import events_from_tick
 from core.jsontypes import is_dict, is_list
 
 __all__ = [
-    "CHAT_CONSUMER", "CHAT_REF", "DEFAULT_INTERVAL", "FACTS_BOUND_SECONDS", "LAND_BEAT_INTERVAL", "RELEASE_HOLD_OFF_SECONDS", "TAKEOVER_GRACE_SECONDS",
-    "ChatDeps", "GateState",
-    "LeaseRejected", "OverrunState", "ReasonState", "ReleaseState", "RestartState", "RunDeps", "TickOverrun",
-    "WorkerLands", "as_holder", "error_line", "finished_land", "land_sink", "next_gate_record", "no_lands_in_flight", "no_lands_to_stop", "overran",
-    "overrun_limit_hit", "overrun_line", "queue_facts", "run", "tick", "tick_timed", "unacked_chat",
+    "CHAT_CONSUMER",
+    "CHAT_REF",
+    "DEFAULT_INTERVAL",
+    "FACTS_BOUND_SECONDS",
+    "LAND_BEAT_INTERVAL",
+    "RELEASE_HOLD_OFF_SECONDS",
+    "TAKEOVER_GRACE_SECONDS",
+    "ChatDeps",
+    "GateState",
+    "LaneTick",
+    "LeaseRejected",
+    "OverrunState",
+    "ReasonState",
+    "ReleaseState",
+    "RestartState",
+    "RunDeps",
+    "TickOverrun",
+    "WorkerLands",
+    "as_holder",
+    "changed_row_ids",
+    "directive_step",
+    "error_line",
+    "export_note",
+    "finished_land",
+    "gate_now",
+    "land_sink",
+    "lane_checkout_step",
+    "next_gate_record",
+    "no_lands_in_flight",
+    "no_lands_to_stop",
+    "overran",
+    "overrun_limit_hit",
+    "overrun_line",
+    "publish_meter",
+    "publish_reasons",
+    "pull_step",
+    "queue_facts",
+    "run",
+    "settle_lane_sync",
+    "tick",
+    "tick_timed",
+    "unacked_chat",
 ]
 
 DEFAULT_INTERVAL = 60.0
@@ -321,7 +358,7 @@ def changed_row_ids(results: Sequence[Result]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(row_id for row_id in ids if row_id))
 
 
-def _export_note(export: Callable[[tuple[str, ...]], str], ids: tuple[str, ...]) -> str:
+def export_note(export: Callable[[tuple[str, ...]], str], ids: tuple[str, ...]) -> str:
     """Edge. The hook's note, or its failure as a line; a raising hook never leaves the tick."""
     try:
         return export(ids)
@@ -441,7 +478,7 @@ def as_holder(facts: Facts, force: bool = False) -> Facts:
     return {**facts, "lease": {**lease, "mine": True}} if won else facts
 
 
-def _publish_meter(deps: RunDeps, dry_run: bool, now: datetime) -> None:
+def publish_meter(deps: RunDeps, dry_run: bool, now: datetime) -> None:
     """Record the local meter reading as a `meter` action when it is fresh; nothing raised here leaves the tick."""
     if dry_run:
         return
@@ -457,7 +494,7 @@ def _publish_meter(deps: RunDeps, dry_run: bool, now: datetime) -> None:
         })
 
 
-def _pull_step(deps: RunDeps, dry_run: bool) -> str:
+def pull_step(deps: RunDeps, dry_run: bool) -> str:
     """Pull the workspace on a live tick and return the failure reason, "" when it pulled or did not run.
 
     A failure is recorded as a `pull_workspace` action only when it differs from the last one recorded.
@@ -494,10 +531,10 @@ def _named_by_checkout(action: Action) -> Action:
     return {**action, "cause": f"{action.get('cause', '')}: {path}"} if path else action
 
 
-def _lane_checkout_step(deps: RunDeps, dry_run: bool) -> LaneTick:
+def lane_checkout_step(deps: RunDeps, dry_run: bool) -> LaneTick:
     """What this tick does with the lane checkout sync; nothing on a dry run or with no sync wired.
 
-    `fresh` leaves out an action whose key is already in `seen`. Nothing here changes `seen`: `_settle_lane_sync`
+    `fresh` leaves out an action whose key is already in `seen`. Nothing here changes `seen`: `settle_lane_sync`
     does, once `perform` has recorded the action. A sync that raises is one `lane_checkout_error` action, and the
     keys already standing are kept, because a failed sync says nothing about them.
     """
@@ -517,7 +554,7 @@ def _lane_checkout_step(deps: RunDeps, dry_run: bool) -> LaneTick:
     return LaneTick([a for a in found if _lane_key(a) not in seen], found, keys)
 
 
-def _settle_lane_sync(deps: RunDeps, step: LaneTick, results: list[Result]) -> None:
+def settle_lane_sync(deps: RunDeps, step: LaneTick, results: list[Result]) -> None:
     """Remember a key only if it was already seen or `perform` recorded its action, so a lost one is raised again."""
     recorded = {_lane_key(r["action"]) for r in results if r["status"] == "recorded"}
     deps.lane_sync_state.seen = frozenset(k for k in step.keys if k in deps.lane_sync_state.seen or k in recorded)
@@ -545,7 +582,7 @@ def _publish_tick_status(deps: RunDeps, dry_run: bool, line: str, now: datetime)
         deps.write_tick_status(deps.runs_dir, deps.current_epoch(), text)
 
 
-def _publish_reasons(deps: RunDeps, dry_run: bool, now: datetime) -> None:
+def publish_reasons(deps: RunDeps, dry_run: bool, now: datetime) -> None:
     """Leave the tick's why-not-launched reasons in the runs directory, replacing the last tick's, so a server
     beside the chair can answer "why did this not launch". They are never recorded as actions: there is one per
     waiting initiative per tick. A dry run and a failed write leave the file as it was."""
@@ -565,7 +602,7 @@ def next_gate_record(was_paused: bool, gate: CiGate, held: tuple[str, ...], epoc
     return {"kind": ActionKind.NEEDS_CHAIR, "initiative": "ci-gate", "cause": f"ci_gate_paused: {gate.reason}{named}", "epoch": epoch}
 
 
-def _evaluate_gate(deps: RunDeps, now: datetime) -> CiGate:
+def gate_now(deps: RunDeps, now: datetime) -> CiGate:
     if deps.status_reader is None:
         return chair_land.UNPAUSED
     return evaluate_gate(deps.status_reader.read(), deps.queued_since(), now.timestamp(), DEFAULT_QUEUED_BOUND_SECONDS)
@@ -696,7 +733,7 @@ def _chat_step(chat: ChatDeps, facts: Facts, actions: Sequence[Action], now: dat
     return f"chat: {applied} applied, {len(events) - applied} refused, {len(questions)} answered" if messages else ""
 
 
-def _directive_step(deps: RunDeps, acting: bool, facts: Facts, actions: Sequence[Action], now: datetime) -> str:
+def directive_step(deps: RunDeps, acting: bool, facts: Facts, actions: Sequence[Action], now: datetime) -> str:
     """The note of the chat step, or "" when it did not run. Only a holder's live tick runs it; a failure becomes a note, never a stop."""
     if not acting or deps.chat is None:
         return ""
@@ -774,12 +811,12 @@ def tick_timed(
         return released, {}, {}
     sources: dict[str, float] = {}
     deps.beat()
-    _publish_meter(deps, dry_run, now)
-    pull_failure = _pull_step(deps, dry_run)
-    lane = _lane_checkout_step(deps, dry_run)
+    publish_meter(deps, dry_run, now)
+    pull_failure = pull_step(deps, dry_run)
+    lane = lane_checkout_step(deps, dry_run)
     gathered, facts_s = _gather_bounded(deps, sources, now, clock)
     facts = as_holder(gathered, deps.force_holder) if dry_run else gathered
-    gate = _evaluate_gate(deps, now)
+    gate = gate_now(deps, now)
     if not dry_run:
         deps.set_gate(gate)
     planned, plan_s = _planned(deps, facts, now, gate, clock)
@@ -800,7 +837,7 @@ def tick_timed(
     deps.reason_state.lines = chair_report.unlaunched_lines(planned.actions, now)
     deps.reason_state.items = [{"initiative": a.get("initiative"), "reason": a.get("reason")} for a in planned.actions if a.get("kind") == "unlaunched"]
     acting = not dry_run and all(a.get("kind") != "standby" for a in planned.actions)
-    chat_note = _directive_step(deps, acting, facts, planned.actions, now)
+    chat_note = directive_step(deps, acting, facts, planned.actions, now)
     notice = next_gate_record(deps.gate_state.paused, gate, planned.held_for_ci, deps.current_epoch()) if acting and gate.paused else None
     # Fresh lane checkout actions ride the planned list: perform records each needs_chair, and the notify step pushes it.
     # perform fences an action with no epoch, so each carries the current one.
@@ -808,14 +845,14 @@ def tick_timed(
     actions = [*planned.actions, *stamped, *([notice] if notice is not None else [])]
     results, perform_s = chair_timing.timed(clock, deps.perform, actions, deps.exec_deps, deps.current_epoch, dry_run)
     if not dry_run:
-        _settle_lane_sync(deps, lane, results)
+        settle_lane_sync(deps, lane, results)
     # Notify hears every standing lane action each tick: `notify_core.due` pushes a standing key once, and a push
     # that failed is only retried while its event is still presented.
     standing = [a for a in lane.standing if a not in lane.fresh]
     if acting and gate.paused != deps.gate_state.paused:
         deps.gate_state.paused = gate.paused
     ids = () if dry_run or deps.export_rows is None else changed_row_ids(results)
-    note, export_s = chair_timing.timed(clock, _export_note, deps.export_rows, ids) if ids and deps.export_rows is not None else ("", None)
+    note, export_s = chair_timing.timed(clock, export_note, deps.export_rows, ids) if ids and deps.export_rows is not None else ("", None)
     try:
         line = format_status(facts, [*actions, *reported_waiting(facts, now)], results, now)
     except Exception as exc:  # the actions already ran; report them rather than drop them
@@ -851,7 +888,7 @@ def _attempt(deps: RunDeps, dry_run: bool) -> None:
     shown = with_note(line, deps.restart_note)
     _publish_status(deps, dry_run, shown, now, stage_seconds)
     _publish_tick_status(deps, dry_run, shown, now)
-    _publish_reasons(deps, dry_run, now)
+    publish_reasons(deps, dry_run, now)
     try:
         if timing is not None:
             # Before the status line: `_chair_run` takes its --once exit code from the last line echoed.

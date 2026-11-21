@@ -29,6 +29,34 @@ WATCHDOG_PLIST_NAME = "coxswain-chair-watchdog.plist"
 
 _EXEC_START = re.compile(r"^ExecStart=(.*)$", re.MULTILINE)
 
+# The chair's units (this tick's, and the queue workers' template, `chair_queue_units.template_text`) stop only their
+# main process. The default, control-group, kills every process left in the unit's cgroup, and a land started in its
+# own session (`start_new_session`) is still in that cgroup: so a stop, a restart or the edge upgrade's try-restart
+# killed every land in flight. With `process` the lands, lanes and launches the chair started detached outlive it, as
+# they already do under launchd; the chair stops what it ran for itself on its way out (`unit_children`).
+KILL_MODE_LINE = "KillMode=process"
+_KILL_MODE = re.compile(r"^KillMode=.*$", re.MULTILINE)
+
+
+def with_kill_mode(text: str) -> str:
+    """Pure. A unit file's text with `KILL_MODE_LINE` in its [Service] section: an existing KillMode= line is replaced,
+    else the line goes at the end of the section. Text with no [Service] section comes back unchanged.
+
+    This is how a unit installed before the setting gets it (`unit_refresh`): the rest of the file, whatever the
+    operator installed it with, is left as it is."""
+    if _KILL_MODE.search(text):
+        return _KILL_MODE.sub(KILL_MODE_LINE, text)
+    lines = text.splitlines(keepends=True)
+    start = next((i for i, line in enumerate(lines) if line.strip() == "[Service]"), None)
+    if start is None:
+        return text
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("[")), len(lines))
+    while end > start + 1 and not lines[end - 1].strip():
+        end -= 1
+    if lines[end - 1] and not lines[end - 1].endswith("\n"):
+        lines[end - 1] += "\n"
+    return "".join([*lines[:end], KILL_MODE_LINE + "\n", *lines[end:]])
+
 
 def unit_path[Home: PurePath](home: Home) -> Home:  # a Path in, a Path out: the edge calls .exists on the result
     return home / ".config/systemd/user" / UNIT_NAME
@@ -52,7 +80,8 @@ def unit_text(
     cox: str, workspace_dir: str, label: str, interval: int, environment_file: str | None, profile: str | None = None,
     path: str | None = None,
 ) -> str:
-    """`EnvironmentFile=-` keeps a missing file from failing the unit; `path` becomes the one `Environment=PATH=` line."""
+    """`EnvironmentFile=-` keeps a missing file from failing the unit; `path` becomes the one `Environment=PATH=` line.
+    `KillMode=process`: see `KILL_MODE_LINE`."""
     env_lines = [environment_file_line(environment_file)] if environment_file is not None else []
     path_lines = [f"Environment=PATH={path}"] if path is not None else []
     profile_args = f" --profile {profile}" if profile is not None else ""
@@ -66,6 +95,7 @@ def unit_text(
         *path_lines,
         *env_lines,
         "Restart=on-failure",
+        KILL_MODE_LINE,
         f"RestartForceExitStatus={RESTART_EXIT_CODE}",
         "RestartSec=30",
         "",

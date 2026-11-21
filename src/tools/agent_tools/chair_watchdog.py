@@ -14,6 +14,7 @@ from typing import Protocol
 
 from agent_tools import run_store
 from agent_tools.chair import LEASE_NAME
+from agent_tools.chair_kinds import QUEUE_KINDS
 from agent_tools.notify_core import Event, NotifyConfig
 from agent_tools.notify_dispatch import dispatch
 from core.jsontypes import is_mapping
@@ -92,6 +93,47 @@ def evaluate(
     alerts = tuple(a for a in (loop_down(holder, last_beat, now, stale_minutes), idle(rows, now, idle_minutes)) if a)
     down = tuple(a for a in alerts if a.title == LOOP_DOWN_TITLE)[:1]
     return down + tuple(a for a in alerts if a.title != LOOP_DOWN_TITLE)
+
+
+QUEUES_DOWN_TITLE = "Chair queue down"
+
+
+def queues_down(
+    queued: frozenset[str], leases: Mapping[str, str], now: datetime, stale_minutes: int = 10
+) -> Alert | None:
+    """The listed queue kinds whose worker lease (`chair:<kind>`) has no row, or expired more than `stale_minutes` ago
+    by `now`, the store's clock; None when every listed kind has a worker. `leases` maps a kind to its `expires_at`.
+
+    The workers watch each other (`chair_kinds.watcher`), so this is the line behind them: it still fires with every
+    worker and the tick down, since the timer starts a new process each time."""
+    def dead(kind: str) -> bool:
+        expired = parse_ts(leases.get(kind, ""))
+        return expired is None or now - expired > timedelta(minutes=stale_minutes)
+
+    down = [kind for kind in QUEUE_KINDS if kind in queued and dead(kind)]
+    if not down:
+        return None
+    return Alert(QUEUES_DOWN_TITLE, f"No worker for {', '.join(down)} in {stale_minutes} min. "
+                                    f"Start `cox chair worker --kind {down[0]}`, or check `cox chair status`.")
+
+
+def evaluate_with_queues(
+    queued: frozenset[str],
+    holder: str | None,
+    last_beat: datetime | None,
+    rows: Sequence[tuple[datetime, str]],
+    leases: Mapping[str, str],
+    now: datetime,
+    store_now: datetime,
+    stale_minutes: int = 10,
+    idle_minutes: int = 30,
+) -> tuple[Alert, ...]:
+    """`evaluate`, and the queue check for the listed kinds. With every kind listed the tick has nothing left to plan
+    and is stopped (the cutover, §5.4), so its lease and its status lines are not judged: they would read as a loop
+    down from the moment the tick stopped. The lanes-idle check reads the tick's status lines and so goes with it."""
+    tick = () if queued >= frozenset(QUEUE_KINDS) else evaluate(holder, last_beat, rows, now, stale_minutes, idle_minutes)
+    down = queues_down(queued, leases, store_now, stale_minutes) if queued else None
+    return (*tick, *((down,) if down else ()))
 
 
 _STATUS_ROW_CAP = 2000  # `ts` is text in mixed ISO shapes, so the window is cut in Python; the cap only bounds the read
@@ -182,6 +224,23 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+def _queue_leases(
+    runs_dir: Path, queued: frozenset[str], read: Callable[[Path], tuple[Mapping[str, str] | None, str]] | None,
+    now: datetime,
+) -> tuple[Mapping[str, str], datetime]:
+    """Edge. The kinds' worker leases and the store's clock, read only while a kind is listed; raises
+    `StoreUnreadable` when they cannot be read, as the other reads do."""
+    if not queued:
+        return {}, now
+    if read is None:
+        from agent_tools.chair_read_queues import read_queue_leases as read
+    leases, stamp = read(runs_dir)
+    store_now = parse_ts(stamp) if stamp else None
+    if leases is None:
+        raise StoreUnreadable("the worker leases (chair:<kind>) could not be read")
+    return leases, store_now or now
+
+
 def run_watchdog(
     runs_dir: Path,
     *,
@@ -194,17 +253,23 @@ def run_watchdog(
     notifier: Callable[..., list[str]] = dispatch,
     read_lease: Callable[[Path], tuple[str | None, datetime | None]] = read_lease_row,
     read_rows: Callable[[Path, datetime, int], list[tuple[datetime, str]]] = read_status_rows,
+    queued: frozenset[str] = frozenset(),
+    read_queues: Callable[[Path], tuple[Mapping[str, str] | None, str]] | None = None,
 ) -> int:
     """Exit code: 0 whether or not anything was pushed, 1 only when the store cannot be read (reported on stderr).
-    `--dry-run` prints each alert's title and body and pushes nothing; it does not consult the `due` window."""
+    `--dry-run` prints each alert's title and body and pushes nothing; it does not consult the `due` window.
+
+    `queued` is the profile's `chair.queues`; while it lists a kind, the kinds' worker leases are read too
+    (`read_queues`, `chair_read_queues.read_queue_leases` by default) and judged on the store's clock."""
     now = clock()
     try:
         holder, last_beat = read_lease(runs_dir)
         rows = read_rows(runs_dir, now, idle_minutes)
+        leases, store_now = _queue_leases(runs_dir, queued, read_queues, now)
     except (*run_store.db_error_types(), RuntimeError, OSError) as exc:
         print(f"watchdog: cannot read store: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
-    alerts = evaluate(holder, last_beat, rows, now, stale_minutes, idle_minutes)
+    alerts = evaluate_with_queues(queued, holder, last_beat, rows, leases, now, store_now, stale_minutes, idle_minutes)
     if dry_run:
         for alert in alerts:
             print(f"{alert.title}\n{alert.body}")

@@ -74,7 +74,7 @@ ALLOWED_UNTIMED = {
     ("tools/agent_tools/cli_route_launch.py", "_route_launch"): "a detached background run, never waited on here",
     ("tools/agent_tools/cli_route_launch.py", "_run_decompose_for_result"): "Popen waited with _DECOMPOSE_TIMEOUT_S, killed past it",
     ("tools/agent_tools/cli_courier.py", "_spawn"): "a detached child in its own session, never waited on",
-    ("tools/agent_tools/cli_chair.py", "spawn_land"): "a detached land process, which bounds itself",
+    ("tools/agent_tools/cli_chair.py", "_spawn_detached"): "a detached land process, which bounds itself",
     ("tools/agent_tools/worker_ports.py", "launch"): "the phase launch, spawned and polled; the worker's stop path ends it",
     ("tools/agent_tools/inbox_cli.py", "subprocess_runner"): "a command a person runs with the terminal attached",
     ("tools/agent_tools/plan.py", "serve"): "a long-lived local server and a browser, both detached",

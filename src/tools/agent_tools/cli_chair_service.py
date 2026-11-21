@@ -90,7 +90,10 @@ def _chair_run(a: argparse.Namespace) -> int:
     if missing:
         print(f"chair run: refusing to start, no lease taken; not wired: {', '.join(missing)}")
         return 2
-    chair_run.run(a.once, a.interval, a.dry_run, deps, a.max_overruns)
+    try:
+        chair_run.run(a.once, a.interval, a.dry_run, deps, a.max_overruns)
+    finally:
+        _stop_own_children(a.dry_run)
     if a.once and deps.holds():  # a one-shot process exits here, so its lease must not outlive it
         deps.release()
     if not a.once and deps.restart_state.moved is not None:
@@ -99,6 +102,9 @@ def _chair_run(a: argparse.Namespace) -> int:
         print(f"chair run: stopping after {deps.overrun_state.consecutive} facts-stage overruns in a row; exit 3 for the supervisor")
         return 3
     return _chair_once_exit(last[0]) if a.once else 0
+
+
+WORKER_HUNG_EXIT = 4  # `cox chair worker` left a pass hung past its deadline, after its kind lease lapsed
 
 
 def _chair_worker(a: argparse.Namespace) -> int:
@@ -158,6 +164,7 @@ def _chair_worker(a: argparse.Namespace) -> int:
         runs_dir, profile, session, pid, host, a.dry_run, chair_report.echo_line,
         _profile_path(a), work_state.work_state_mode(provider),
         worker_epoch=lambda: held.epoch if held.epoch is not None else -1, record_store=record_store,
+        worker_lands=a.kind == "watch",
     )
     missing = _chair_unwired_sources(deps)
     if missing:
@@ -181,25 +188,77 @@ def _chair_worker(a: argparse.Namespace) -> int:
     def perform_batch(actions: list, current: Callable[[], int]) -> list:
         return deps.perform(list(actions), deps.exec_deps, current, a.dry_run)
 
+    def notify(kind: str, facts: dict, actions: list) -> str:
+        """The pass's push (`chair_worker_notify`), on the notifier the tick uses, with this kind's own sent file."""
+        from agent_tools import chair_worker_notify
+        from agent_tools.notify_cards import card_events, pending_cards
+
+        if deps.workspace is None:
+            return ""
+        events = chair_worker_notify.worker_events(kind, facts, actions, card_events(pending_cards(deps.workspace)))  # type: ignore[arg-type]
+        deps.notify(events, deps.notify_config, chair_worker_notify.sent_path(deps.workspace, kind), time.time())
+        return ""
+
     wait, close = chair_queue.store_waiter(url, time.sleep)
+    chores = None if a.dry_run else _worker_chores(a.kind, deps, runs_dir)
     ports = chair_queue.Ports(
         queued=chair_read_queues.queues_keeping_last_good(_profile_path(a)),
         acquire=lambda: on_store(lambda c: store_chair_lease.acquire(c, name, holder, ttl), None),
         renew=lambda epoch: on_store(lambda c: store_chair_lease.renew(c, name, holder, epoch, ttl), False),
         holds=lambda epoch: on_store(lambda c: store_chair_lease.holds(c, name, holder, epoch), False),
         release=lambda epoch: on_store(lambda c: store_chair_lease.release(c, name, holder, epoch), False),
-        gather=gather, perform_one=perform_one, perform_batch=perform_batch,  # type: ignore[arg-type]
+        gather=gather, perform_one=perform_one, perform_batch=perform_batch, notify=notify, chores=chores,  # type: ignore[arg-type]
         wait=wait, pause=close, clock=time.monotonic, now=lambda: datetime.datetime.now(datetime.UTC),
         echo=chair_report.echo_line,
+        abandon=None if a.dry_run else _abandon_hung_pass,
     )
     poll = a.poll if a.poll is not None else chair_kinds.POLL_SECONDS[a.kind]
-    timing = chair_queue.Timing(poll=poll, min_gap=a.min_gap, settle=a.settle)
+    deadline = a.pass_deadline if getattr(a, "pass_deadline", None) is not None else chair_queue.PASS_DEADLINE_SECONDS[a.kind]
+    timing = chair_queue.Timing(poll=poll, min_gap=a.min_gap, settle=a.settle, deadline=deadline)
     restore = (lambda: None) if a.dry_run else chair_run.sigterm_as_interrupt()
     try:
         return chair_queue.run(a.kind, ports, timing, a.once, a.dry_run, held)
     finally:
         close()
         restore()
+        _stop_own_children(a.dry_run)
+
+
+def _stop_own_children(dry_run: bool) -> None:
+    """Edge. The chair's units stop only the main process (`KillMode=process`), so on its way out the chair stops what it
+    ran for itself, and leaves the lands and lanes it started detached (`unit_children`). A dry run starts nothing."""
+    from agent_tools import unit_children
+
+    if not dry_run:
+        unit_children.stop_children(log=lambda line: print(line, file=sys.stderr))
+
+
+def _abandon_hung_pass() -> None:
+    """Edge. A pass hung past its deadline, its lease lapsed: stop what the pass was running (a hung check, a hung git),
+    then exit at once, so the unit's supervisor starts a fresh worker. Called from the beat thread, so `os._exit`: the
+    main thread is the one that hung."""
+    _stop_own_children(False)
+    os._exit(WORKER_HUNG_EXIT)
+
+
+def _worker_chores(kind: str, deps: chair_run.RunDeps, runs_dir: Path) -> object:
+    """Edge. The tick's loop chores the worker of `kind` owns once no tick runs them (`chair_worker_chores`): every one
+    for housekeeping, the reasons file for launch, the collection of ended lands for watch, none for the rest."""
+    from agent_tools import chair_worker_chores
+
+    def stamp() -> object | None:
+        try:
+            return run_store.queue_stamp(runs_dir)
+        except Exception:  # an unreadable version reads as a move, so the export runs
+            return None
+
+    if kind == "housekeeping":
+        return chair_worker_chores.housekeeping_chores(deps, stamp, lambda: chair_worker_chores.workspace_head(runs_dir.parent))
+    if kind == "launch":
+        return chair_worker_chores.launch_chores(deps)
+    if kind == "watch":
+        return chair_worker_chores.watch_chores(deps)
+    return None
 
 
 def _chair_default_environment_file() -> str | None:
@@ -387,9 +446,19 @@ def _chair_service_host_status(a: argparse.Namespace, runs_dir: Path) -> int:
 
 
 def _chair_service(a: argparse.Namespace) -> int:
-    """Edge for the unit text in `chair_service`. Never runs systemctl; `--install` wins when both flags are given."""
+    """Edge for the unit text in `chair_service`. Never runs systemctl but with `--queues` (`cli_chair_units`), the
+    cutover's swap; `--install` wins over `--status` when both are given."""
     path = chair_service.unit_path(Path.home())
     host = getattr(a, "host", None)
+    queues, uninstall = getattr(a, "queues", False), getattr(a, "uninstall", False)
+    if queues or uninstall:
+        if not queues or host or not (a.install or uninstall):
+            print("chair service: --queues goes with --install or --uninstall, on this machine (no --host); "
+                  "--uninstall is only the queue units' rollback")
+            return 2
+        from agent_tools import cli_chair_units
+
+        return cli_chair_units.chair_service_queues(a)
     if a.install and host:
         profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
         if refuse_rc is not None:
@@ -650,9 +719,13 @@ def _chair_watchdog(a: argparse.Namespace) -> int:
     profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
     if refuse_rc is not None:
         return refuse_rc
+    from agent_tools import chair_read_queues, route
+
+    queued = chair_read_queues.read_chair_queues(_profile_path(a))
     return chair_watchdog.run_watchdog(
         runs_dir, notify_config=notify_core.config_from_profile(profile), state_path=runs_dir.parent / "notify-sent.json",
         idle_minutes=a.idle_minutes, stale_minutes=a.stale_minutes, dry_run=a.dry_run,
+        queued=frozenset() if isinstance(queued, route.ProfileError) else queued,
     )
 
 

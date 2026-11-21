@@ -88,7 +88,8 @@ def test_the_workers_together_plan_what_the_tick_planned_alone_and_the_tick_none
     why = (f"alone {dict(alone)} {asked}, tick with every kind listed {dict(left)} {unowned}, "
            f"workers {({k: dict(v) for k, v in workers.items()})}")
     # No worker runs here, so the tick raises its one alarm per listed kind with no owner (`queue_unowned`).
-    assert sorted(unowned) == sorted([*asked, *["chair-queue"] * len(KINDS)]), why
+    # Each names its kind's lease as its task (C6), so each is its own record.
+    assert sorted(unowned) == sorted([*asked, *[f"chair:{kind}" for kind in KINDS]]), why
     for kind, planned in workers.items():
         assert not set(planned) & set(left), (kind, why)  # the tick plans none of a listed kind's actions
         assert all(alone[a] >= n for a, n in planned.items()), (kind, why)  # nothing the tick alone did not plan
