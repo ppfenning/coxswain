@@ -452,15 +452,17 @@ def test_a_refused_push_is_reconciled_and_the_healthy_holder_keeps_its_claim(lan
 
 
 # L2: the phase level of the repository's `.agent-checks`, a wiring check none of the tasks' own checks covers. It
-# notes where it ran (`smoke-ran`), leaves a marker in that tree, and fails: no note says it is wired in.
+# notes where it ran (`smoke-ran`) and which environment it found there (`smoke-env`: the repository's own probe on
+# PATH, and where the tree's `.venv` points), leaves a marker in that tree, and fails: no note says it is wired in.
 SMOKE_CMD = ('echo "$PWD" >> {marks}/smoke-ran && touch .smoke-ran && '
+             f'{{{{ command -v {plan.LANE_PROBE}; readlink .venv; }}}} > {{marks}}/smoke-env; '
              "{{ grep -q wired notes/t1.txt notes/t2.txt notes/t3.txt || {{ echo 'wiring broken: no note is wired' >&2; exit 1; }}; }}")
 
 
 def test_a_phase_whose_tasks_pass_alone_but_whose_wiring_is_broken_fails_its_smoke_before_any_review(lane_machine):
     """Each task passes its own checks, one of which proves the smoke has run nowhere yet and left no marker in the
     task's tree. Once all three have rolled up, the lane runs the phase level once, in the phase worktree at the tip;
-    it fails, so the `smoke` row is the last step, no review role is ever called, and the worker does not park the
+    it fails, so the `smoke` row comes after every roll-up, no review role is ever called, and the worker does not park the
     phase `built`: it finishes `failed` with the smoke's failure as its reason, since a retry would only repeat it."""
     sandbox, repo, name, env, init_sha, launchable = lane_machine
     marks = sandbox.home / "marks"
@@ -494,6 +496,11 @@ def test_a_phase_whose_tasks_pass_alone_but_whose_wiring_is_broken_fails_its_smo
     # The smoke ran once, in the phase worktree, and in no task's: each task's `no-smoke-yet` check passed.
     ran = (marks / "smoke-ran").read_text(encoding="utf-8").splitlines()
     assert len(ran) == 1 and ran[0].endswith(f"/{run_id}/{PHASE}/_phase"), ran
+    # The phase worktree is in the lane's own clone, which has no venv: the smoke ran under the shared checkout's, the
+    # one every task's checks run under (its bin first on PATH, and the tree's `.venv` linked to it).
+    shared_venv = (repo.path / ".venv").resolve()
+    assert (marks / "smoke-env").read_text(encoding="utf-8").splitlines() == [
+        str(repo.path / ".venv" / "bin" / plan.LANE_PROBE), str(shared_venv)]
     assert {s["task_id"] for s in steps if s["kind"] == "checks" and s["ok"]} == {"t1", "t2", "t3"}, steps
     roles = _owner(sandbox, "SELECT DISTINCT role FROM node_calls WHERE run_id LIKE %s", args=(f"{run_id}%",))[0]
     assert not {r[0] for r in roles} & set(REVIEW_ROLES), roles

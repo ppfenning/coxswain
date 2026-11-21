@@ -78,7 +78,7 @@ from harness.lane_workers import LANE_CAPACITY_VAR
 from harness.store_dialect import Connection, JsonObject
 from harness.store_steps import step_key, step_row, steps_of_result, with_checks
 from harness.store_types import StepRow
-from harness.worktree import clone_worktree, remove_worktree
+from harness.worktree import clone_worktree, link_venv, remove_worktree
 from runner.protocol import LimitStop, RunnerError
 
 __all__ = [
@@ -486,11 +486,18 @@ SMOKE_SCRATCH = "@smoke"  # the smoke's scratch name: `@` keeps it apart from ev
 
 def _smoke(lane: Lane, tip: str, round_: int) -> bool:
     """Edge. The phase smoke at `tip` before review round `round_`, in the phase worktree (checked out at `tip`): the
-    level gate run once under the repository's gate lock, or an earlier passing run of it on this host (the worker)
-    at this tip reused (`lane_smoke.reusable`), then the `smoke` step row. Whether it passed; a lost claim writes no row and is False.
+    level gate run once, or an earlier passing run of it on this host (the worker) at this tip reused
+    (`lane_smoke.reusable`), then the `smoke` step row. Whether it passed; a lost claim writes no row and is False.
+
+    The phase worktree is in the lane's own clone when it has one (`_own_clone`), which has no venv; the tasks build
+    in the shared checkout and their checks run under its venv. The smoke runs under that same venv: its `bin` is
+    already first on the lane's PATH (`cox route launch`), and the worktree's `.venv` is linked to it as a task
+    worktree's is (`link_venv`), for `uv run` and `.venv/bin/...` lines. The gate lock is the shared checkout's, the
+    one every lane and the lander of this repository take on this machine.
 
     The lane runs it once every task has rolled up; L6 runs it again after each revision, with that round's number."""
     c, ctx = lane.claim, lane.ctx
+    shared = lane.shared or ctx
     checks = ctx.level_checks
     cmds = [str(check.get("cmd") or "") for check in checks]
     started = lane.now()
@@ -507,8 +514,9 @@ def _smoke(lane: Lane, tip: str, round_: int) -> bool:
         if checks:
             lane.log(f"lane: the phase smoke runs at {tip[:12]}: {'; '.join(cmds)}")
             env = checks_env(ctx, {LANE_BASE_VAR: lane.base_sha}, c.phase, SMOKE_SCRATCH)
+            link_venv(shared.repo, lane.phase_worktree)
             try:
-                with repo_gate_lock(ctx.repo):
+                with repo_gate_lock(shared.repo):
                     results = list(run_checks(lane.phase_worktree, checks, env=env,
                                               log_dir=ctx.runs_dir / ctx.run_id / "checks" / c.phase / SMOKE_SCRATCH,
                                               log_prefix=f"checks/{c.phase}/{SMOKE_SCRATCH}/"))
