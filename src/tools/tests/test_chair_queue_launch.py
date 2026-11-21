@@ -170,3 +170,25 @@ def test_the_ticks_own_launches_carry_no_proof():
     deps = _launch_deps(argvs, PROOF)
     perform([action], Deps(**{**deps.__dict__, "queue_proof": None}), lambda: 1, False)  # type: ignore[list-item]
     assert "--queue-lease" not in argvs[0]
+
+
+def test_a_launch_that_hangs_is_bounded_and_its_timeout_is_a_failed_launch():
+    """A hung `cox route launch` must not hold the launch kind forever while the beat renews the lease: the door kills
+    it on `local_timeout` (the local argv bound) and reports exit 124, which the launch records as failed, so the
+    pass ends and the next one re-plans from the facts."""
+    from agent_tools.chair_exec_edge import local_timeout
+    from agent_tools.chair_exec_land import LOCAL_ARGV_TIMEOUT_S, TIMED_OUT
+
+    def hung(argvs: list):
+        def run(argv: list) -> tuple[int, str]:
+            argvs.append(argv)
+            return TIMED_OUT, "cox: timed out after 900.0s\n"  # what `run_argv_split` reports for a child it killed
+        return run
+
+    for kind, extra in (("launch_decompose", {"intake_ids": ["intake/x.md"]}), ("launch_epic", {"initiative": "ship"})):
+        argvs: list = []
+        deps = _launch_deps(argvs, PROOF)
+        deps = type(deps)(**{**deps.__dict__, "run": hung(argvs)})
+        [result] = perform([{"kind": kind, "epoch": 1, **extra}], deps, lambda: 1, False)  # type: ignore[list-item]
+        assert result["status"] == "failed" and "timed out" in result["reason"], result
+        assert local_timeout(argvs[0]) == LOCAL_ARGV_TIMEOUT_S

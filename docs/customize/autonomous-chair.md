@@ -166,14 +166,23 @@ order:
 
 1. A phase whose intake was filed as a hotfix or a bug comes first. Every
    other phase comes after.
-2. Within each of those two groups, the initiative queued first goes first. Its
-   time is the first time any of its phases was queued, by the store's clock,
-   so work that comes back after a review keeps its place.
-3. Initiatives that ship in the same `target_release` are claimed together, at
-   the place of the one queued first.
-4. Every ready phase has its own row. A worker that can run only a later row
+2. Within each of those two groups, the initiative with the higher priority
+   goes first: the priority the docket ranks it by, which
+   `cox route priority <initiative> --top` (or `--set`, `--up`, `--down`,
+   `--bottom`) sets. Priority never moves a phase between the two groups.
+3. At equal priority, the initiative queued first goes first. Its time is the
+   first time any of its phases was queued, by the store's clock, so work that
+   comes back after a review keeps its place.
+4. Initiatives that ship in the same `target_release` are claimed together, at
+   the place of the first of them in that order. A release whose first member
+   was queued long ago pulls its newly filed members forward to that place.
+5. Every ready phase has its own row. A worker that can run only a later row
    (another repository, say) takes it at once, so one repository's work never
    waits behind another's.
+
+Each tick places every row a worker could claim, including one an older worker
+parked `built` and one the docket no longer lists, around the rows workers have
+claimed, so no two rows ever share a place in the queue.
 
 An intake's kind is its frontmatter `kind`: `idea` (the default), `feature`,
 `bug` or `hotfix`. Set it when you file the intake:
@@ -523,7 +532,11 @@ fill a lane past the cap by one.
 The launch worker performs its pass in one batch, as the tick does, so a
 relaunch still waits on its branch clear and launches on one host are still
 staggered. Before each action it asks the store whether it still holds
-`chair:launch`; once it does not, that action and every later one are fenced.
+`chair:launch`, and it fences the action when the answer is no. A lease another
+worker took stays lost, so every later action is fenced too. A store read that
+fails only briefly fences only the actions asked about while it failed.
+A launch command that hangs is killed after 15 minutes and recorded as a failed
+launch, so a hung launch cannot hold the launch kind for good.
 Its launches start beside the tick's live loop lock, which is held under the
 tick's label. Each carries the worker's lease
 (`--queue-lease chair:launch --queue-holder <holder> --queue-epoch <n>`), and
@@ -550,6 +563,12 @@ Every machine needs a `cox` that knows `chair: queues:` before any profile
 sets it. An older `cox` refuses a profile with the key, so a rollback to one
 also takes the key out. Only the flow list form, `queues: [a, b]`, is
 accepted.
+
+Every chair machine must run a `cox` with the launch kind (C5) before any
+profile lists `decompose` or `launch`. A C4 decompose worker still launches
+its decomposes itself under `chair:decompose`. Beside a C5 tick or launch
+worker, which launches decomposes too, both can launch the same intake. Stop
+every `cox chair worker`, upgrade every machine, and only then list either kind.
 
 ## Lane hosts
 

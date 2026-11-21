@@ -123,6 +123,21 @@ def test_a_launch_pass_whose_lease_still_holds_performs_every_launch_in_one_perf
     assert perform_batched(actions, lambda: True, lambda: None, lambda b, c: [{"e": c()}]) == [{"e": -2}]  # type: ignore[arg-type,list-item]
 
 
+def test_a_store_read_that_fails_briefly_fences_only_the_action_read_while_it_failed():
+    """The epoch is asked for before each action, and each asks the store again: one failed `holds` read fences that
+    action alone, and the next runs once the store answers that the lease still holds."""
+    from agent_tools.chair_queue import perform_batched
+
+    answers = iter([True, False, True])
+
+    def perform_batch(batch, current):
+        return [{"action": a, "status": "done" if current() == a["epoch"] else "fenced", "reason": ""} for a in batch]
+
+    actions = [{"kind": "launch_epic", "initiative": i, "epoch": 4} for i in ("a", "b", "c")]
+    results = perform_batched(actions, lambda: next(answers), lambda: 4, perform_batch)  # type: ignore[arg-type]
+    assert [r["status"] for r in results] == ["done", "fenced", "done"]
+
+
 def test_a_launch_worker_pass_plans_the_launch_slot_and_hands_it_to_one_batched_perform():
     """`chair_queue.run` for `launch`, one pass, over the tick's own planner: every launch the pass plans goes to
     `perform_batch` in one call, stamped with the worker's epoch; `perform_one` is never used for it."""

@@ -255,8 +255,10 @@ def perform_batched(
     """Edge. The whole pass in one perform (a batched kind, `chair_kinds.BATCHED_KINDS`), so the rules that span its
     actions hold as they do in the tick's perform: a relaunch is skipped when its branch clear did not finish, launches
     on one host are staggered. The perform reads the epoch before each action, and here that read asks the store
-    whether the lease still holds: once it does not, the epoch reads as none held (-2), so that action and every
-    later one stamped with the lease's epoch are fenced and none of them runs."""
+    whether the lease still holds: when it does not, the epoch reads as none held (-2) and that action, stamped with
+    the lease's epoch, is fenced. Each action asks again: a lease taken over stays lost, so every later action is
+    fenced too, but a store read that fails only briefly (`holds` is bounded, and a failure reads as not held)
+    fences only the actions read while it failed, and the ones after it run once the store answers again."""
 
     def current() -> int:
         held = epoch()
