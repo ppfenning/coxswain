@@ -1396,10 +1396,13 @@ def _read_epics(ws: Path) -> tuple[dict[str, dict], dict[str, str], set[str]]:
     return definitions, refusals, unread
 
 
-def _initiative_target_branch(profile: dict, repo: Path | None, ws: Path, initiative: str | None) -> tuple[str | None, str | None]:
+def _initiative_target_branch(
+    profile: dict, repo: Path | None, ws: Path, initiative: str | None, *, work_dir: Path | None = None,
+) -> tuple[str | None, str | None]:
     """Edge. `(branch, refusal)`: the initiative's resolved target branch (its own `target_branch:`, else its epic's,
     else the cartridge's `landing_areas.target_branch`), None when none is set. `refusal` is the message when the
-    cartridge does not resolve or a set target branch is invalid; every other gap falls back to None with a `note:`."""
+    cartridge does not resolve or a set target branch is invalid; every other gap falls back to None with a `note:`.
+    `initiative.md` is read under `work_dir`, `ws/work` when not given (a worker's launch names its view of the store)."""
     from core.cartridge import OVERLAY_ALLOWED_KEYS  # lazy: core sits beside agent_tools in one venv
     from core.landing import resolve_epic_stack, resolve_target_branch
 
@@ -1408,7 +1411,7 @@ def _initiative_target_branch(profile: dict, repo: Path | None, ws: Path, initia
         return None, error
     definitions, refusals, unread = _read_epics(ws)
     try:
-        text = _read_text_or_none(ws / "work" / initiative / "initiative.md") if initiative else None
+        text = _read_text_or_none((work_dir or ws / "work") / initiative / "initiative.md") if initiative else None
         fields = route.parse_frontmatter(text)[0] if text is not None else {}
         if text is not None and not fields:
             print(f"note: work/{initiative}/initiative.md has no front matter; using the repo default", file=sys.stderr)
