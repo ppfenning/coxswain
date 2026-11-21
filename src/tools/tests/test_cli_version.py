@@ -17,7 +17,7 @@ try:
     code = cli.main(%r)
 except SystemExit as exc:
     code = exc.code
-loaded = sorted(m for m in sys.modules if m.startswith("agent_tools.") and m not in ("agent_tools.cli", "agent_tools.commands", "agent_tools.version_info"))
+loaded = sorted(m for m in sys.modules if m.startswith("agent_tools.") and m not in ("agent_tools.cli", "agent_tools.cli_tables_route", "agent_tools.commands", "agent_tools.version_info"))
 print(%r + json.dumps({"code": code, "loaded": loaded}), file=sys.stderr)
 """
 # The probe's result line carries this prefix: stderr may also hold warnings from the interpreter or git,

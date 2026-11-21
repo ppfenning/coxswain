@@ -20,7 +20,7 @@ try:
     code = cli.main(%r)
 except SystemExit as exc:
     code = exc.code
-loaded = sorted(m for m in sys.modules if m.startswith("agent_tools.") and m not in ("agent_tools.cli", "agent_tools.commands"))
+loaded = sorted(m for m in sys.modules if m.startswith("agent_tools.") and m not in ("agent_tools.cli", "agent_tools.cli_tables_route", "agent_tools.commands"))
 print(json.dumps({"code": code, "loaded": loaded}), file=sys.stderr)
 """
 

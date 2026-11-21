@@ -27,7 +27,7 @@ class Command:
     group: str
     summary: str
     args: tuple[Arg, ...]
-    handler: Callable[[argparse.Namespace], int] | None
+    handler: Callable[[argparse.Namespace], int] | str | None  # a str is a "module:function" target, bound by cli._dispatch_table
     slash: bool
     examples: tuple[str, ...]
     subcommands: tuple[Command, ...] = ()
@@ -45,7 +45,7 @@ class Group:
     description: str
     epilog: str
     args: tuple[Arg, ...] = field(default_factory=tuple)
-    fn: Callable[[argparse.Namespace], int] | None = None
+    fn: Callable[[argparse.Namespace], int] | str | None = None  # as `Command.handler`
 
 
 def _bare_group(parser: argparse.ArgumentParser) -> Callable[[argparse.Namespace], int]:
