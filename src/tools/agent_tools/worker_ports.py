@@ -23,7 +23,7 @@ from pathlib import Path
 
 from agent_tools import bounded_run, chair, epic, lane_prereqs, repo_path, route, run_store, worker
 from agent_tools.chair_read_run_id import next_run_id, taken_names
-from harness import phase_pick, store_phases
+from harness import initiative_review, phase_pick, store_phases
 from harness.store_dialect import Connection, Json
 from harness.store_phases import Claim
 
@@ -182,6 +182,11 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
     def lane_facts(claim: Claim, run_id: str) -> worker.LaneFacts:
         from harness.store_queue import read
 
+        if claim.row.get("kind") == initiative_review.KIND:  # the initiative's own rounds and suite (D2)
+            rounds = store.call(lambda c: store_phases.review_rounds(c, claim.initiative, initiative_review.ROUNDS_PHASE))
+            suites = store.call(lambda c: store_phases.suite_rows(c, claim.initiative))
+            last, reason, suite = initiative_review.ended(rounds, suites)
+            return worker.LaneFacts((), (), last, None, reason, suite)
         rows = store.call(lambda c: read(c, claim.initiative))
         rollups = store.call(lambda c: store_phases.rollup_rows(c, [claim.initiative]))
         rounds = store.call(lambda c: store_phases.review_rounds(c, claim.initiative, claim.phase))

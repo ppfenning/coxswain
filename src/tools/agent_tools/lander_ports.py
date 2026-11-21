@@ -250,17 +250,12 @@ def run_gate(repo: Path, tree: Path, gate: str, landing: Mapping[str, object], e
 
     `lander.PHASE_GATE` is the new model's level gate: the cartridge's `level_checks`, then the `# level: phase`
     section of the tree's own `.agent-checks` (L2). Every other gate reads the cartridge's list alone, as before."""
-    from harness.check_gate import gate_checks
-    from harness.checks import repo_checks, run_checks
+    from harness.check_gate import gate_checks, tree_gate_checks
+    from harness.checks import run_checks
 
     if error:
         return False, f"cartridge checks unavailable ({error})"
-    if gate == lander.PHASE_GATE:
-        listed = tree / ".agent-checks"
-        parsed = repo_checks(listed.read_text(encoding="utf-8")) if listed.is_file() else []
-        checks = gate_checks(landing, "level", parsed)
-    else:
-        checks = gate_checks(landing, gate)
+    checks = tree_gate_checks(landing, "level", tree) if gate == lander.PHASE_GATE else gate_checks(landing, gate)
     if not checks:
         return True, ""
     results = run_checks(tree, checks)

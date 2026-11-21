@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import cast
 
 from harness import bounded_proc
-from harness.checks import for_level
+from harness.checks import for_level, repo_checks
 
 GATES: tuple[str, ...] = ("task", "level", "ticket")
 # The `.agent-checks` section each gate reads (`checks.LEVELS`).
@@ -51,6 +51,19 @@ def gate_checks(landing_areas: Mapping[str, object], gate: str,
     known = {c.get("cmd") for c in listed}
     extra = [cast("dict[str, str]", c) for c in for_level(repo, GATE_LEVELS[gate]) if c.get("cmd") not in known]
     return listed + extra if extra else listed  # nothing added: the cartridge's own list, as before levels
+
+
+def tree_gate_checks(landing_areas: Mapping[str, object], gate: str, tree: Path) -> list[dict[str, str]]:
+    """Edge. The new model's `gate` as it runs in `tree`: the cartridge's list, then the gate's section of the tree's
+    own `.agent-checks` (`gate_checks`), read from the tree so the merged tree's file decides. The lander's phase gate
+    (`lander_ports.run_gate`) and the initiative review's suite (`phase_lane._suite`, the `ticket` gate) read it here.
+    A file that is absent or does not read adds nothing."""
+    listed = Path(tree) / ".agent-checks"
+    try:
+        text = listed.read_text(encoding="utf-8-sig") if listed.is_file() else ""
+    except (OSError, UnicodeDecodeError):
+        text = ""
+    return gate_checks(landing_areas, gate, repo_checks(text))
 
 
 def gate_commands(landing_areas: Mapping[str, object],

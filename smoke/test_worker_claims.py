@@ -236,8 +236,8 @@ def test_a_worker_with_one_lane_never_holds_two_claims(launchable, repo):
 
 
 def test_a_fleet_of_one_machine_takes_a_phase_initiative_from_queue_to_main(launchable, repo):
-    """The chair queues, the worker builds, the review approves, the chair approves the tasks, the lander merges and
-    lands: one machine, one pass of each."""
+    """The chair queues, the worker builds, the review approves, the chair approves the tasks, the lander merges; the
+    chair queues the initiative review, the worker reviews it and runs the suite, and the lander lands: one machine."""
     sandbox, calls = _ssh_trap(launchable.sandbox)
     _queued(launchable, sandbox)
     reviewed = Worker(sandbox, "once", "--name", "solo").finished()
@@ -248,6 +248,15 @@ def test_a_fleet_of_one_machine_takes_a_phase_initiative_from_queue_to_main(laun
     sandbox.write("runs/policy.gate.json", json.dumps({"level": "full"}))  # the lander merges its own pull request
     adopted = sandbox.cox("lander", "adopt", "--apply", INITIATIVE, timeout=300)
     assert adopted.returncode == 0, adopted.stdout + adopted.stderr
+    merged = sandbox.cox("lander", "once", timeout=300)
+    assert merged.returncode == 0, merged.stdout + merged.stderr
+    # D2: the pull request waits for the initiative review: the chair queues it, the worker reviews the whole
+    # initiative (the scripted phase reviewer approves) and runs the suite at the tip, and then the lander lands it.
+    assert "the pull request waits: the initiative review has not decided a round yet" in merged.stdout, merged.stdout
+    queued = sandbox.cox("chair", "run", "--once", timeout=180)
+    assert queued.returncode == 0, queued.stdout + queued.stderr
+    whole = Worker(sandbox, "once", "--name", "solo").finished()
+    assert "finished approved: the initiative review approved it in round 1 and the suite passed" in whole, whole
     landed = sandbox.cox("lander", "once", timeout=300)
     assert landed.returncode == 0, landed.stdout + landed.stderr
     on_main = sandbox.git(repo.origin, "ls-tree", "-r", "--name-only", "main").splitlines()

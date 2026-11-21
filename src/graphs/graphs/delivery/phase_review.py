@@ -20,6 +20,10 @@ The first reviewer's seat is `review_phase` when the team binds it, else `review
 tier 1 or above: the adversary runs whenever the team binds one, whatever the diff's size. A round where both
 reviewers abstained, or a node failed, decides nothing: the result says `harness_fault` and the lane writes no round.
 
+With `scope: initiative` (D2) the round is of a whole assembled new-model initiative: its branch's diff against its
+parent, judged against the initiative's goal, the same two questions asked of the initiative; its `revise` is one
+revision phase, which the chair writes (`harness.initiative_review`).
+
 Advisory like every graph: no proposals, and nothing is written. The lane records the round.
 """
 
@@ -66,15 +70,31 @@ def _smoke_rows(smoke: Mapping[str, Any]) -> list[dict[str, Any]]:
     return rows or ([{"source": "harness_verify", "command": "phase smoke", "output": verdict}] if verdict else [])
 
 
+# The initiative review (D2): the same two questions, of the whole initiative branch against its parent.
+INITIATIVE_QUESTIONS = (
+    QUESTIONS.replace("Review the whole phase, not one task: the diff below is its branch against its base, every task "
+                      "and revision together.",
+                      "Review the whole initiative, not one phase: the diff below is its branch against its parent, every "
+                      "phase and revision merged together.")
+    .replace("revise: one revision of the branch", "revise: one revision phase of the branch")
+    .replace("the findings are the revision task", "the findings are the revision phase's task")
+    .replace("reason the phase is quarantined", "reason the initiative is held")
+    .replace("the phase", "the initiative")
+)
+
+
 def _ticket(args: Mapping[str, Any]) -> str:
     previous = [p for p in args.get("previous") or [] if isinstance(p, Mapping)]
     asked = "".join(f"\nRound {p.get('round')} said {p.get('verdict')}: {p.get('reason')}" for p in previous)
+    whole = args.get("scope") == "initiative"
+    subject = "initiative" if whole else "phase"
     return "\n".join([
-        f"Phase {args['phase']} of initiative {args.get('initiative') or ''}, review round {args.get('round') or 1}.",
-        f"THE PHASE'S GOAL, which is what you are judging against:\n{args.get('goal') or ''}",
+        (f"Initiative {args.get('initiative') or ''} as a whole, review round {args.get('round') or 1}." if whole else
+         f"Phase {args['phase']} of initiative {args.get('initiative') or ''}, review round {args.get('round') or 1}."),
+        f"THE {subject.upper()}'S GOAL, which is what you are judging against:\n{args.get('goal') or ''}",
         *([f"Its tasks: {', '.join(str(t) for t in args.get('tasks') or [])}"] if args.get("tasks") else []),
-        *([f"What earlier rounds of this phase said (their revisions are in the diff):{asked}"] if asked else []),
-        QUESTIONS,
+        *([f"What earlier rounds of this {subject} said (their revisions are in the diff):{asked}"] if asked else []),
+        INITIATIVE_QUESTIONS if whole else QUESTIONS,
     ])
 
 

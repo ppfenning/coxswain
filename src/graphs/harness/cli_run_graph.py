@@ -779,7 +779,7 @@ def _run_phase_lane(
 ) -> int:
     """Edge. `shell.py phase-lane`: build the one phase a worker claimed (`harness.phase_lane`), under its epoch."""
     from core.cartridge import test_database_setting
-    from harness import phase_lane
+    from harness import initiative_review, phase_lane
     from harness.checks import repo_checks
     from harness.cli_launch import _child_pids, _pgrep_children, lane_store_url, profile_storage_url
     from harness.epic import Ctx, resolve_default_ref
@@ -829,7 +829,8 @@ def _run_phase_lane(
         ctx, claim, store.conn, lambda: open_scoped(url), list(initiative.get("items") or []),
         default_ref, lambda line: print(line, flush=True),
         lambda: phase_lane.terminate_groups(_child_pids(pgrep=_pgrep_children)),
-        goal=phase_goal(initiative, phase),
+        goal=(initiative_review.initiative_goal(initiative) if phase == initiative_review.QUEUE_PHASE
+              else phase_goal(initiative, phase)),
     )
     print(f"phase-lane {run_id}: {claim.initiative}/{claim.phase} exit {code}")
     return code
