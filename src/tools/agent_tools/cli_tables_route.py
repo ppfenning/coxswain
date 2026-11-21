@@ -540,3 +540,21 @@ ROUTE_COMMANDS = [
         sub_dest="graph", sub_required=True,
     ),
 ]
+
+
+# `cox lander release`: the one lander row kept out of `agent_tools.cli` (H9). `cli` appends it to LANDER_COMMANDS.
+LANDER_RELEASE = commands.Command(
+    "release", "lander", "lift a new-model merge hold so the next pass tries the merge again",
+    (
+        commands.Arg(("initiative",), {"help": "the held initiative's id"}),
+        commands.Arg(("--profile",), {"help": "the routing profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
+    ),
+    "agent_tools.cli:_lander_release", False, (), defaults={"profile": None},
+    description=(
+        "A new-model phase merge that could not be made holds its initiative. The hold lifts on its own when a new "
+        "tip is pushed to the phase branch, or when its automatic retry is due (a resolver that raised, a harness "
+        "fault, no merge agent yet).\nA clean refusal and a failed level check are never retried on their own: "
+        "release one here, and the next lander pass merges the phase again, the merge agent asked again. Only a "
+        "merge hold is released; a record that disagrees with its branch is reconciliation's."
+    ),
+)

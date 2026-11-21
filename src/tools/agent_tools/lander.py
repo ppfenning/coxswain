@@ -8,9 +8,19 @@ landing record against git (`reconcile`).
 
 The decisions are pure functions (`land_step`, `phase_drift`, `lanes` and their helpers), tested on example inputs.
 
-The lander is a script, not an agent. It never resolves a conflict and never edits code: a conflict or a red check is
-recorded on the item and sent back to build as a rectify task. Everything it does can be run again: each step reads
-what is already true (the record, the branch, the forge) before it acts.
+The lander is a script, not an agent, and it never edits code itself. What a phase merge does with a conflict depends on
+the lane model its landing record was made under (`lane_model`, absent meaning the old one), so one pass handles both:
+
+- the old model: a conflict or a red check is recorded on the item and sent back to build as a rectify task, the
+  conflict committed, markers and all, on the phase branch (`_send_back`);
+- the new model (`phase`): each phase is merged from origin's copy of its branch (`merge_source`), and a conflict is
+  handed to the merge agent (`conflict_route`, `Ports.resolve_conflict`) in the merge's own scratch worktree. Its answer
+  meets the same guard and level checks as any merge; only when it cannot settle the merge does the initiative hold,
+  and the chair is told (`lander_hold`). The phase lane never merges into the initiative branch: the lander is the
+  only merger.
+
+Everything it does can be run again: each step reads what is already true (the record, the branch, the forge) before
+it acts.
 
 Every effect goes through `Ports`, so the whole worker runs in tests against a real repo, a real store and a fake forge.
 """
@@ -23,7 +33,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal, Protocol, TypedDict
 
-from agent_tools import lander_empty
+from agent_tools import lander_empty, lander_hold
 from core import landing_record as lr
 from core.jsontypes import is_mapping
 from core.landing import (
@@ -113,6 +123,23 @@ def _no_fetch(repo: Path, branch: str) -> str | None:
     return None
 
 
+@dataclass(frozen=True)
+class ConflictAsk:
+    """One new-model phase merge that conflicted, as the merge agent is asked to settle it: the merge of `source` (the
+    phase, as origin holds it) into the initiative `branch` is in progress in `scratch`, and `paths` hold its markers."""
+
+    initiative: str
+    phase: str
+    branch: str
+    source: str
+    scratch: Path
+    paths: tuple[str, ...]
+
+
+def _no_merge_agent(ask: ConflictAsk) -> lg.Resolved | str:
+    return lander_hold.NO_MERGE_AGENT
+
+
 @dataclass
 class Ports:
     """Everything the lander touches outside its own logic."""
@@ -123,7 +150,7 @@ class Ports:
     tasks: Callable[[str], Sequence[Row]]  # an initiative's task rows: id, phase, state, needs, title
     meta: Callable[[str], LandMeta]  # {"initiative": {...}, "cartridge": {...}, "epic_issue": ..., "gate": "full"}
     forge: ForgePort
-    checks: Callable[[Path, Path, str], tuple[bool, str]]  # (repo, tree, "level" | "ticket") -> passed, output
+    checks: Callable[[Path, Path, str], tuple[bool, str]]  # (repo, tree, "level" | PHASE_GATE | "ticket") -> passed, output
     mark_merged: Callable[[str, str, str], None]  # initiative, task, the initiative tip that holds it
     mark_done: Callable[[str, str, str], str | None]  # initiative, task, pr url -> why it was refused, or None
     file_rectify: Callable[[str, str, str, str], str | None] = _no_rectify  # initiative, phase, title, body -> task id
@@ -134,6 +161,8 @@ class Ports:
     # Bring one branch up to origin's copy, forward only: why it must not be moved here (it diverged), else None.
     fetch: Callable[[Path, str], str | None] = _no_fetch
     log: Callable[[str], None] = print
+    # The new model's merge agent, run through the local harness: each conflicted file's merged text, or why not.
+    resolve_conflict: Callable[[ConflictAsk], lg.Resolved | str] = _no_merge_agent
 
 
 @dataclass(frozen=True)
@@ -147,6 +176,42 @@ class Outcome:
 
 
 # -- the pure core ------------------------------------------------------------------------------------------------
+
+ConflictRoute = Literal["merge_agent", "rectify_task"]
+MergeSource = Literal["origin", "local"]
+# A new-model phase merge that cannot be made holds the initiative with a merge hold (`lander_hold`: `MERGE_HOLD`,
+# `merge_hold`, `merge_held`, `hold_lifted`). Reconciliation keeps it; the sweep lifts it once origin's branch of that
+# phase moves, an operator releases it, or its automatic retry comes due.
+
+
+def conflict_route(lane_model: str) -> ConflictRoute:
+    """Pure. Where a phase merge's conflict goes: the merge agent on the new model (`phase`), a rectify task built on
+    the conflicted phase branch on the old one. Anything that is not the new model is the old one."""
+    return "merge_agent" if lr.lane_model_of(lane_model) == lr.NEW_MODEL else "rectify_task"
+
+
+def merge_source(lane_model: str) -> MergeSource:
+    """Pure. Which copy of the phase branch a merge takes. The new model's phase is built on a worker and pushed, and
+    nothing else writes it, so it is always origin's copy; the old model's is this clone's own branch, which the
+    lander itself writes (a conflict committed for a rectify task)."""
+    return "origin" if lr.lane_model_of(lane_model) == lr.NEW_MODEL else "local"
+
+
+def source_ref(where: MergeSource, initiative: str, phase: str) -> str | None:
+    """Pure. The ref a phase merge takes for `where`: origin's remote-tracking ref of the phase branch, or None for the
+    local branch (`ops.merge_phase`'s own default)."""
+    return f"refs/remotes/origin/{ops.phase_branch(initiative, phase)}" if where == "origin" else None
+
+
+PHASE_GATE = "phase"  # the level gate with `.agent-checks`' `# level: phase` section (L2, #1307), as the lane runs it
+
+
+def level_gate(lane_model: str) -> str:
+    """Pure. The check gate a phase merge's level checks run. The old model runs `level` exactly as before levels
+    (the cartridge's `level_checks`); the new model runs `PHASE_GATE`, the same gate with the phase-level section of
+    the merged tree's `.agent-checks` added (`checks.for_level(..., "phase")`), the smoke its lane ran on the phase."""
+    return PHASE_GATE if lr.lane_model_of(lane_model) == lr.NEW_MODEL else "level"
+
 
 @dataclass(frozen=True)
 class LandFacts:
@@ -423,11 +488,14 @@ def parent_ref_of(repo: Path, parent: str) -> str:
     return f"origin/{parent}" if lg.rev(repo, f"refs/remotes/origin/{parent}") else parent
 
 
-def _level_checks(ports: Ports, repo: Path, record: lr.LandingRecord, phase: str) -> lg.Checks | None:
-    """Level checks for the merged tree, only when the merge joins the phase with work it has not seen."""
-    if lg.is_ancestor(repo, record_text(record, "branch"), ops.phase_branch(record_text(record, "initiative"), phase)):
+def _level_checks(ports: Ports, repo: Path, record: lr.LandingRecord, phase: str,
+                  source: str | None = None) -> lg.Checks | None:
+    """Level checks for the merged tree, only when the merge joins the phase with work it has not seen. `source` is the
+    ref the merge takes (None: the local phase branch); the gate is the record's model's (`level_gate`)."""
+    if lg.is_ancestor(repo, record_text(record, "branch"), source or ops.phase_branch(record_text(record, "initiative"), phase)):
         return None
-    return lambda tree: ports.checks(repo, tree, "level")
+    gate = level_gate(lr.record_lane_model(record))
+    return lambda tree: ports.checks(repo, tree, gate)
 
 
 # -- the lander's copy of the initiative branch -------------------------------------------------------------------
@@ -632,24 +700,36 @@ def _adopt_or_wait(ports: Ports, repo: Path, initiative: str, ident: str) -> Out
 # -- phase_merge --------------------------------------------------------------------------------------------------
 
 def merge_phase(ports: Ports, initiative: str, phase: str) -> Outcome:
-    """Merge one built phase into its initiative branch and settle what follows from it."""
+    """Merge one built phase into its initiative branch and settle what follows from it.
+
+    The record's lane model decides the source and the conflict path: the old model merges this clone's phase branch
+    and sends a conflict back as a rectify task (`_send_back`); the new model merges origin's copy, gives a conflict to
+    the merge agent, and holds the initiative when the merge cannot be made (`_hold_phase`)."""
     ident = ls.item_id(ls.PHASE_MERGE, initiative, phase)
     record = ls.get_record(ports.conn, initiative)
     if record is None:
         return Outcome("skipped", ident, f"{initiative} has no landing record")
     repo, tasks = ports_repo(ports, record), ports.tasks(initiative)
+    model = lr.record_lane_model(record)
+    source = source_ref(merge_source(model), initiative, phase)
     # The phase was built on another host as often as not: its branch, and the initiative's, come from origin first.
     diverged = ports.fetch(repo, ops.phase_branch(initiative, phase))
+    if source is not None:
+        # The new model merges origin's copy, whatever this clone's own copy says: only the lane writes the phase.
+        diverged = _fetch_origin(repo, ops.phase_branch(initiative, phase))[1] or None
     if diverged:
         return Outcome("waiting", ident, diverged)
     # The initiative branch may exist only on the lane host that built the phases before this one.
     adopted = _adopt_or_wait(ports, repo, initiative, ident)
     if isinstance(adopted, Outcome):
         return adopted
-    refused = _empty_phase(ports, repo, initiative, phase, tasks)
+    refused = _empty_phase(ports, repo, initiative, phase, tasks, source)
     if refused is not None:
         return Outcome("waiting", ident, refused, tuple(adopted))
 
+    if source is not None and lg.rev(repo, source) is None:
+        return Outcome("waiting", ident, f"origin has no {ops.phase_branch(initiative, phase)}: on the {model} model "
+                                         "a phase merges from origin's copy, once its lane has pushed it", tuple(adopted))
     pushed_note: list[str] = []
 
     def publish(branch: str) -> str | None:
@@ -662,16 +742,24 @@ def merge_phase(ports: Ports, initiative: str, phase: str) -> Outcome:
             pushed_note.append(f"{branch} pushed to origin at {tip[:12]} before phase {phase} was recorded merged")
         return why
 
+    agent = conflict_route(model) == "merge_agent"
     done = ops.merge_phase(ports.conn, repo, initiative=initiative, phase=phase, tasks=tasks, worker=ports.worker,
-                           now=ports.now(), checks=_level_checks(ports, repo, record, phase),
-                           fetch=lambda branch: ports.fetch(repo, branch), publish=publish)
+                           now=ports.now(), checks=_level_checks(ports, repo, record, phase, source),
+                           fetch=lambda branch: ports.fetch(repo, branch), publish=publish, source=source,
+                           resolve=_resolver(ports, record, phase, source) if agent and source else None)
     if done.status in ("busy", "not_ready"):
         return Outcome("waiting", ident, done.detail)
     if done.status == "error":
         return Outcome("failed", ident, done.detail)
     if done.status == "conflicted":
+        if agent:
+            tip = done.tip or lg.rev(repo, source or "") or ""  # the tip the merge took
+            return Outcome("failed", ident, done.detail, tuple(_hold_phase(ports, record, phase, done, tip)))
         return Outcome("failed", ident, done.detail, tuple(_send_back(ports, record, phase, done)))
     events = [*adopted, f"phase {phase} of {initiative} merged into {record_text(record, 'branch')}"]
+    _forget_retry(ports, initiative)
+    if done.resolved_by:
+        events.append(f"phase {phase} of {initiative}: its conflict in {record_text(record, 'branch')} was resolved by {done.resolved_by}")
     for task in done.merged_tasks:
         ports.mark_merged(initiative, task, done.merge_sha)
     events += pushed_note if done.status == "merged" else []
@@ -689,12 +777,14 @@ def _phase_states(ports: Ports, initiative: str) -> dict[str, str] | None:
     return lr.phase_states(record, ports.tasks(initiative))
 
 
-def _empty_phase(ports: Ports, repo: Path, initiative: str, phase: str, tasks: Sequence[Row]) -> str | None:
+def _empty_phase(ports: Ports, repo: Path, initiative: str, phase: str, tasks: Sequence[Row],
+                 merged_from: str | None = None) -> str | None:
     """Edge. The refusal of a built phase whose branch carries nothing (`lander_empty`), told to the chair once; None
     when it carries a change, or is not waiting to merge. It is judged against the parent (main), as a branch of only
-    merges holds nothing beyond it, and against the initiative branch it merges into, which may hold earlier phases."""
+    merges holds nothing beyond it, and against the initiative branch it merges into, which may hold earlier phases.
+    `merged_from` is the ref the merge will take (`source_ref`), when it is not this clone's own phase branch."""
     record = ls.get_record(ports.conn, initiative)
-    source = lg.branch_ref(repo, ops.phase_branch(initiative, phase))
+    source = merged_from or lg.branch_ref(repo, ops.phase_branch(initiative, phase))
     if record is None or source is None or lr.phase_state(record, phase, tasks) not in ("built", "queued"):
         ls.forget(ports.conn, lander_empty.empty_key(initiative, phase))  # not waiting to merge: no refusal stands
         return None
@@ -728,6 +818,39 @@ def publish_initiative(ports: Ports, repo: Path, branch: str) -> str | None:
         return None
     pushed, why = push_branch(repo, branch)
     return None if pushed else f"push of {branch} to origin failed: {why.splitlines()[0] if why else 'no detail from git'}"
+
+
+def _resolver(ports: Ports, record: lr.LandingRecord, phase: str, source: str) -> lg.Resolve:
+    """The new model's resolver for `lg.merge_into`: the conflicted merge in its scratch, put to the merge agent."""
+    initiative, branch = record_text(record, "initiative"), record_text(record, "branch")
+    return lambda scratch, paths: ports.resolve_conflict(ConflictAsk(initiative, phase, branch, source, scratch, paths))
+
+
+def _hold_phase(ports: Ports, record: lr.LandingRecord, phase: str, done: ops.PhaseMerge, tip: str) -> list[str]:
+    """A new-model phase merge the merge agent could not settle (or whose answer failed the guard or the level
+    checks): no rectify task, no commit on the phase branch, which is the lane's. The initiative holds, with why, its
+    cause and how many times this merge was tried (`lander_hold.next_hold`). The chair is told when that is news
+    (`lander_hold.told_now`); the sweep lifts the hold (`_lift_merge_hold`)."""
+    initiative = record_text(record, "initiative")
+    current = ls.get_record(ports.conn, initiative) or record
+    held = _held(current)
+    prior = held if lander_hold.is_merge_hold(held) else current.get("retried")
+    cause = lander_hold.merge_cause(done.cause, done.unsettled, done.detail)
+    hold = lander_hold.next_hold(prior, phase, tip, done.detail, ports.now(), cause)
+    if held and not lander_hold.is_merge_hold(held):
+        hold["drift"] = str(held.get("reason") or "")  # a drift hold set meanwhile is kept beside it
+    elif held and held.get("drift"):
+        hold["drift"] = str(held.get("drift"))
+    reason = str(hold.get("reason") or "")
+    same = prior is not None and reason_key(reason) == reason_key(str(prior.get("reason") or ""))
+    news = lander_hold.told_now(prior, hold, same)
+    said = f"phase {phase} of {initiative} is held ({cause}, attempt {hold.get('attempts')}): {reason}"
+    ls.put_record(ports.conn, {**current, "held": hold, "retried": None, "updated_at": ports.now()})
+    if not news:
+        return [said]
+    spent = " (its automatic retries are spent)" if lander_hold.retries_spent(hold) else ""
+    ports.notify("needs_chair", {"initiative": initiative, "phase": phase, "reason": f"held: {reason}{spent}"})
+    return [said, f"{initiative}: the chair has been told"]
 
 
 def _send_back(ports: Ports, record: lr.LandingRecord, phase: str, done: ops.PhaseMerge) -> list[str]:
@@ -903,7 +1026,9 @@ def _held(record: lr.LandingRecord) -> lr.Hold | None:
 
 def held_note(record: lr.LandingRecord) -> str:
     """Pure. Why a held initiative waits, for its queue item."""
-    return f"{record.get('initiative')} is held: {(_held(record) or {}).get('reason') or 'its record and its branch disagree'}"
+    hold = _held(record) or {}
+    drift = f"; and {hold.get('drift')}" if hold.get("drift") else ""
+    return f"{record.get('initiative')} is held: {hold.get('reason') or 'its record and its branch disagree'}{drift}"
 
 
 def _poll_checks(ports: Ports, repo: Path, initiative: str, branch: str) -> tuple[str, str]:
@@ -1224,6 +1349,7 @@ def sweep(ports: Ports, initiatives: Collection[str] | None = None) -> list[str]
         tasks = ports.tasks(initiative)
         if not tasks:
             continue
+        events += _lift_merge_hold(ports, record)
         events += settle_blocked(ports, record, tasks)
         current = ls.get_record(ports.conn, initiative) or record
         for phase in lr.mergeable_phases(current, tasks):
@@ -1235,6 +1361,58 @@ def sweep(ports: Ports, initiatives: Collection[str] | None = None) -> list[str]
         ):
             events.append(f"sweep: queued {initiative} to land")
     return events
+
+
+def _lift_merge_hold(ports: Ports, record: lr.LandingRecord) -> list[str]:
+    """Edge. Lift a merge hold so the merge is tried again: once origin's branch of its phase has moved
+    (`lander_hold.hold_lifted`, a fresh count), or once an operator released it or its automatic retry is due
+    (`lander_hold.retry_due`, the count kept on `retried`). A drift kept beside it stays as a hold of its own. Any
+    other record is left as it is, and read nothing for."""
+    if not lander_hold.merge_held(record):
+        return []
+    hold = _held(record) or {}
+    initiative, phase = record_text(record, "initiative"), str(hold.get("phase") or "")
+    try:
+        repo = ports_repo(ports, record)
+    except LookupError:
+        return []
+    now = ports.now()
+    tip = _origin_phase_tips(repo, initiative, [phase]).get(phase) if phase else None
+    moved = lander_hold.hold_lifted(record, tip)
+    if not moved and not lander_hold.retry_due(hold, now):
+        return []
+    current = ls.get_record(ports.conn, initiative) or record
+    left = lander_hold.without_merge_hold(_held(current), now)
+    ls.put_record(ports.conn, {**current, "held": left, "retried": None if moved else _held(current), "updated_at": now})
+    branch = ops.phase_branch(initiative, phase)
+    if moved:
+        why = f"{branch} moved on origin to {str(tip)[:12]}"
+    elif hold.get("released") is True:
+        why = "an operator released it"
+    else:
+        why = f"its retry is due ({hold.get('cause')}, attempt {hold.get('attempts')})"
+    kept = f"; {initiative} stays held: {left.get('reason')}" if left else ""
+    return [f"sweep: {initiative}: {why}; the merge hold is lifted and phase {phase} is tried again{kept}"]
+
+
+def _forget_retry(ports: Ports, initiative: str) -> None:
+    """Edge. A phase merged: the count a lifted merge hold left for its retry is no longer anyone's."""
+    current = ls.get_record(ports.conn, initiative)
+    if current is not None and current.get("retried"):
+        ls.put_record(ports.conn, {**current, "retried": None, "updated_at": ports.now()})
+
+
+def release_merge_hold(ports: Ports, initiative: str) -> tuple[bool, str]:
+    """Edge. `cox lander release`: release the initiative's merge hold for the next pass, whatever its cause or count
+    (`lander_hold.release`). (released, what to say)."""
+    record = ls.get_record(ports.conn, initiative)
+    if record is None:
+        return False, f"{initiative} has no landing record"
+    released, said = lander_hold.release(record)
+    if released is None:
+        return False, said
+    ls.put_record(ports.conn, {**released, "updated_at": ports.now()})
+    return True, said
 
 
 def stale_items[R: Row](items: Sequence[R], now: str, limit: int = QUEUE_ALARM_SECONDS) -> list[R]:
@@ -1325,7 +1503,8 @@ def _check_together(ports: Ports, repo: Path, parent_ref: str, branches: Sequenc
     """Merge every member onto the parent in a scratch tree and run the gate checks there, once, for the batch."""
     def check(tree: Path) -> tuple[bool, str]:
         for branch in branches:
-            ok, out = lg.git(tree, *lg.IDENTITY, "merge", "--no-ff", "--no-edit", "-m", f"batch: {branch}", branch)
+            # rerere off, as on every merge the lander makes: a recorded resolution must not make a batch look clean.
+            ok, out = lg.git(tree, *lg.IDENTITY, *lg.NO_RERERE, "merge", "--no-ff", "--no-edit", "-m", f"batch: {branch}", branch)
             if not ok:
                 lg.git(tree, "merge", "--abort")
                 return False, f"{branch} does not merge with the rest of the batch: {out.splitlines()[0] if out else 'conflict'}"
@@ -1581,6 +1760,9 @@ def reconcile(ports: Ports, initiative: str) -> list[str]:
         if not judged.judged:
             return events
         current = ls.get_record(ports.conn, initiative) or record
+        kept = lander_hold.reconciled_hold(_held(current), judged.reason, ports.now())
+        if kept is not None:  # a merge hold is the sweep's to lift: a drift is kept beside it, never in its place
+            return events + _drift_beside(ports, current, kept, judged.reason)
         held, news = held_after(_held(current), judged.reason, ports.now())
         if news:
             ls.put_record(ports.conn, {**current, "held": held, "updated_at": ports.now()})
@@ -1592,6 +1774,19 @@ def reconcile(ports: Ports, initiative: str) -> list[str]:
         return events
     finally:
         store_lease.release(ports.conn, ops.branch_lease(initiative), ports.worker, int(lease.epoch or 0))
+
+
+def _drift_beside(ports: Ports, record: lr.LandingRecord, kept: tuple[lr.Hold | None, bool], reason: str | None) -> list[str]:
+    """Edge. Write a merge hold with reconciliation's drift kept beside it, or cleared from it; tell a new drift."""
+    hold, news = kept
+    if not news:
+        return []
+    initiative = record_text(record, "initiative")
+    ls.put_record(ports.conn, {**record, "held": hold, "updated_at": ports.now()})
+    if reason is None:
+        return [f"reconcile: {initiative}: the record and origin's {record_text(record, 'branch')} agree again; the merge hold stays"]
+    ports.notify("needs_chair", {"initiative": initiative, "reason": f"held: {reason}"})
+    return [f"reconcile: {initiative} is held: {reason} (beside its merge hold)"]
 
 
 # -- the pass -----------------------------------------------------------------------------------------------------

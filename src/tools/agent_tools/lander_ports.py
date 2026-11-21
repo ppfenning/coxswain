@@ -19,11 +19,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
-from agent_tools import courier, forge, lander, repo_path, route, run_store, work_state
+from agent_tools import courier, forge, lander, lander_merge, repo_path, route, run_store, work_state
 from agent_tools.forge import ForgeModule
 from agent_tools.store_url import read_provider_profile
 from core.jsontypes import is_mapping
 from core.landing_record import LandingRecord, Listing
+from harness import lane_merge
+from harness.landing_git import Resolved
 from harness.store_dialect import Connection
 
 WAIT_CHECKS_S = 1800.0  # the bound on a wait for a forge that cannot poll its checks once
@@ -244,13 +246,21 @@ def fetch_branch(repo: Path, branch: str) -> str | None:
 
 
 def run_gate(repo: Path, tree: Path, gate: str, landing: Mapping[str, object], error: str | None) -> tuple[bool, str]:
-    """Edge. Run one gate's checks in `tree`. A cartridge that does not resolve fails the gate: it would run fewer checks."""
+    """Edge. Run one gate's checks in `tree`. A cartridge that does not resolve fails the gate: it would run fewer checks.
+
+    `lander.PHASE_GATE` is the new model's level gate: the cartridge's `level_checks`, then the `# level: phase`
+    section of the tree's own `.agent-checks` (L2). Every other gate reads the cartridge's list alone, as before."""
     from harness.check_gate import gate_checks
-    from harness.checks import run_checks
+    from harness.checks import repo_checks, run_checks
 
     if error:
         return False, f"cartridge checks unavailable ({error})"
-    checks = gate_checks(landing, gate)
+    if gate == lander.PHASE_GATE:
+        listed = tree / ".agent-checks"
+        parsed = repo_checks(listed.read_text(encoding="utf-8")) if listed.is_file() else []
+        checks = gate_checks(landing, "level", parsed)
+    else:
+        checks = gate_checks(landing, gate)
     if not checks:
         return True, ""
     results = run_checks(tree, checks)
@@ -408,6 +418,48 @@ def send_back(ws: Path, conn: Connection, worker: str, mode: str) -> Callable[[s
     return move
 
 
+def merge_seat(profile: Mapping[str, object], ws: Path, scratch: Path,
+               timeout_s: float = lander_merge.AGENT_TIMEOUT_S) -> lander_merge.Seat | None:
+    """Edge. The team cartridge's `merge_tasks` seat, as one call through the local harness's runner (the provider
+    profile's; the scripted one offline), or None when no seat is bound or no provider profile is named. A cartridge
+    that does not resolve raises: that is a resolver error, retried, never read as no seat."""
+    from harness.epic_types import as_list
+    from harness.resolve import resolve_cartridge, role_skill_bodies
+    from harness.runners import build_runner
+
+    team, cartridges_dir, provider = profile.get("team"), profile.get("cartridges_dir"), profile.get("provider_profile")
+    if not (team and cartridges_dir and provider):
+        return None
+    roots = profile.get("skills_roots")
+    cartridge, index = resolve_cartridge(str(team), cartridges_dir=Path(str(cartridges_dir)).expanduser(),
+                                         skills_root=[Path(str(r)).expanduser() for r in as_list(roots)])
+    skills = cartridge.get("skills")
+    if not is_mapping(skills) or lane_merge.ROLE not in skills:
+        return None
+    runner = build_runner(scripted=None, provider_profile=str(provider), role_skills=role_skill_bodies(cartridge, index),
+                          workdir=ws, repo=scratch)
+    if hasattr(runner, "timeout"):  # a runner that kills its own node gets a bound a little inside the agent's, so its
+        runner.timeout = max(1, int(timeout_s) - 15)  # own kill fires before the lander abandons the call and exits
+    context = [str(c) for c in as_list(cartridge.get("context"))]
+
+    def call(prompt: str, task: str) -> Mapping[str, object]:
+        answer: Mapping[str, object] = runner.run(role=lane_merge.ROLE, tier="standard", schema=lane_merge.SCHEMA,
+                                                  task=task, prompt=prompt, context=context)
+        return answer
+
+    return call
+
+
+def conflict_resolver(profile: Mapping[str, object], ws: Path) -> Callable[[lander.ConflictAsk], Resolved | str]:
+    """Edge. The new model's merge agent for one conflicted phase merge: L5's `merge_tasks` seat, run through the local
+    harness (`merge_seat`, `lander_merge.resolve`), bounded inside the branch lease. With no seat bound every conflict
+    is refused with `NO_MERGE_AGENT`, the retryable "no merge agent yet" hold."""
+    def resolve_conflict(ask: lander.ConflictAsk) -> Resolved | str:
+        return lander_merge.resolve(ask, merge_seat(profile, ws, ask.scratch))
+
+    return resolve_conflict
+
+
 def initiatives_in(ws: Path) -> list[str]:
     """Edge. Every initiative with an `initiative.md` under the workspace's `work/`, by name."""
     return sorted(p.parent.name for p in (Path(ws) / "work").glob("*/initiative.md"))
@@ -553,6 +605,6 @@ def build(ws: Path, profile: Mapping[str, object], *, worker: str | None = None,
         conn=store, worker=name, now=now_stamp, tasks=tasks, meta=meta, forge=Forge(module), checks=checks,
         mark_merged=lambda initiative, task, tip: None,  # the landing record is the one place that says a phase merged
         mark_done=mark_done, file_rectify=file_rectify, split_blocked=split_blocked, notify=notify, repo=repo_of,
-        fetch=fetch_branch, log=log,
+        fetch=fetch_branch, log=log, resolve_conflict=conflict_resolver(profile, ws),
     ))
     return ports_ref[0]

@@ -18,6 +18,7 @@ from agent_tools.cli_tables_route import (
     COURIER_GROUP,
     EPIC_COMMANDS,
     EPIC_GROUP,
+    LANDER_RELEASE,
     MCP_GROUP,
     PLAN_COMMANDS,
     PLAN_GROUP,
@@ -1012,7 +1013,7 @@ LANDER_GROUP = commands.Group(
         "The landing worker. It runs beside the chair and owns the land queue: a built phase is merged into its "
         "initiative branch, and a whole initiative goes to its parent as one pull request."
     ),
-    epilog="examples:\n  cox lander status\n  cox lander adopt\n  cox lander adopt --apply\n  cox lander once\n  cox lander run --interval 30\n  cox lander service --install",
+    epilog="examples:\n  cox lander status\n  cox lander adopt\n  cox lander adopt --apply\n  cox lander once\n  cox lander release <initiative>\n  cox lander run --interval 30\n  cox lander service --install",
 )
 LANDER_COMMANDS = [
     commands.Command(
@@ -1069,6 +1070,7 @@ LANDER_COMMANDS = [
         ),
         "agent_tools.cli:_lander_service", False, (), defaults={"profile": None},
     ),
+    LANDER_RELEASE,
 ]
 
 _WORKER_ARGS = (
