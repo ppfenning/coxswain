@@ -165,7 +165,7 @@ def _chair_worker(a: argparse.Namespace) -> int:
         return 2
 
     def queue_proof() -> chair_kinds.QueueProof | None:
-        """The kind lease as it now stands: what a decompose launch carries past the loop guard (`chair_kinds`)."""
+        """The kind lease as it now stands: what a launch carries past the loop guard (`chair_kinds`)."""
         epoch = held.epoch
         return chair_kinds.QueueProof(name, holder, epoch) if epoch is not None else None
 
@@ -178,6 +178,9 @@ def _chair_worker(a: argparse.Namespace) -> int:
     def perform_one(action: dict, current: Callable[[], int]) -> list:
         return deps.perform([action], deps.exec_deps, current, a.dry_run)
 
+    def perform_batch(actions: list, current: Callable[[], int]) -> list:
+        return deps.perform(list(actions), deps.exec_deps, current, a.dry_run)
+
     wait, close = chair_queue.store_waiter(url, time.sleep)
     ports = chair_queue.Ports(
         queued=chair_read_queues.queues_keeping_last_good(_profile_path(a)),
@@ -185,7 +188,7 @@ def _chair_worker(a: argparse.Namespace) -> int:
         renew=lambda epoch: on_store(lambda c: store_chair_lease.renew(c, name, holder, epoch, ttl), False),
         holds=lambda epoch: on_store(lambda c: store_chair_lease.holds(c, name, holder, epoch), False),
         release=lambda epoch: on_store(lambda c: store_chair_lease.release(c, name, holder, epoch), False),
-        gather=gather, perform_one=perform_one,  # type: ignore[arg-type]
+        gather=gather, perform_one=perform_one, perform_batch=perform_batch,  # type: ignore[arg-type]
         wait=wait, pause=close, clock=time.monotonic, now=lambda: datetime.datetime.now(datetime.UTC),
         echo=chair_report.echo_line,
     )

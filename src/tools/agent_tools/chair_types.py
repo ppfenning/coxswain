@@ -629,6 +629,8 @@ class PhaseQueueFacts(TypedDict):
     tasks: NotRequired[list[dict[str, object]]]  # the phase initiatives' task rows, with state and merged_commit
     rollups: NotRequired[list[dict[str, object]]]  # their roll-up step rows (`store_phases.rollup_rows`), oldest first
     rounds: NotRequired[list[dict[str, object]]]  # each of their phases' last review round (`store_phases.last_rounds`)
+    releases: NotRequired[dict[str, str]]  # initiative to its `target_release`, from its intake or its own row
+    kinds: NotRequired[dict[str, str]]  # initiative to its intake's `kind` (`core.intake.KINDS`): a hotfix or bug goes first
 
 
 class Facts(TypedDict):

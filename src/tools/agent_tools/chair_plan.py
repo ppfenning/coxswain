@@ -22,6 +22,7 @@ from agent_tools import (
 )
 from agent_tools.chair_carry import plan_carry
 from agent_tools.chair_decompose_miss import DecomposeMiss, escalation_reason, is_skipped, needs_escalation
+from agent_tools.chair_decompose_streak import stalled_reason
 from agent_tools.chair_idle_ready import plan_idle_ready
 from agent_tools.chair_idle_stall import diagnose, is_stalled
 from agent_tools.chair_no_progress import plan_no_progress
@@ -673,10 +674,7 @@ def _decompose_gate(facts: Facts) -> tuple[frozenset[str], list[Action]]:
             "initiative": initiative,
             "run": run,
             "cause": "decompose_stalled",
-            "reason": (
-                f"decompose of {path} wrote no task items in {len(s.run_ids)} runs: {', '.join(s.run_ids)}. "
-                f"{s.first_refusal or 'no refusal line was printed'}"
-            ),
+            "reason": stalled_reason(path, s),  # an empty run, or one whose tasks collided (C5)
         }
         for path, s, initiative, run in keyed
         if f"{initiative}|{run}" not in reported
@@ -1478,12 +1476,12 @@ _TRIAGE_KINDS = frozenset({ActionKind.REQUEST_TRIAGE, ActionKind.HOLD_TASK, Acti
 
 
 def launch_slot_kind(action: Action, recovered: Sequence[Action]) -> str:
-    """Pure. The kind that plans one action of the launch slot. A decompose launch is `decompose`'s; a triage decision,
-    or a quarantine of recovery's (`recovered`) that reaches the chair for its task, is `quarantine`'s; the rest
-    (launches, relaunches, retries, rescues, rebases, a pull, recovery's other reports) are `launch`'s."""
+    """Pure. The kind that plans one action of the launch slot. A triage decision, or a quarantine of recovery's
+    (`recovered`) that reaches the chair for its task, is `quarantine`'s; the rest (launches, relaunches, retries,
+    rescues, decompose launches, rebases, a pull, recovery's other reports) are `launch`'s. A decompose launch was the
+    decompose worker's in C4; it is `launch`'s since C5, so every run the chair starts is started by one owner and the
+    cap the plan applied is the cap the lanes see (`chair_kinds`). The decompose worker keeps its gates and reports."""
     kind = action.get("kind")
-    if kind == ActionKind.LAUNCH_DECOMPOSE:
-        return "decompose"
     if kind in _TRIAGE_KINDS or (kind == ActionKind.NEEDS_CHAIR and "task_id" in action and action in recovered):
         return "quarantine"
     return "launch"
@@ -1645,7 +1643,12 @@ def plan_kind(kind: str, facts: Facts, now: datetime, held: frozenset[str] = fro
     if kind not in chair_kinds.QUEUE_KINDS:
         return []
     _basis, _launch, segments = _holder_segments(facts, now, held)
-    slots = _withhold_blocked_hosts([a for k, actions in segments if k == kind for a in actions], facts)
+    mine = [(k, a) for k, actions in segments if k == kind for a in actions]
+    if kind == "launch":
+        # A launch worker never performs a triage: whoever does (the tick or a quarantine worker) is another process,
+        # so the worker holds that initiative's launch back for this pass, as the tick does (`triage_first`).
+        mine = triage_first(mine, _triaged_by_worker(segments, ("quarantine",)))
+    slots = _withhold_blocked_hosts([a for _k, a in mine], facts)
     return [*slots, *(plan_housekeeping(facts, now) if kind == "housekeeping" else [])]
 
 

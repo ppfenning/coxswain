@@ -51,17 +51,22 @@ def held_initiatives(rows: Sequence[Row]) -> frozenset[str]:
     return frozenset(own | named)
 
 
+def initiative_values(rows: Sequence[Row], key: str) -> dict[str, str]:
+    """Initiative id to the non-empty `extra[key]` of its intake or its own row, which wins. An intake names its
+    initiative by `extra.initiative`, and an initiative its intake by `extra.intake` (`intake/<id>.md`); either link
+    counts."""
+    intakes = [r for r in rows if r["kind"] == "intake" and r["state"] != "removed"]
+    by_path = {f"intake/{r['task_id']}.md": _text(_extra(r).get(key)) for r in intakes}
+    own = [r for r in rows if r["kind"] == "initiative"]
+    linked = {str(r.get("initiative") or r["task_id"]): by_path.get(_text(_extra(r).get("intake")), "") for r in own}
+    named = {_text(_extra(r)["initiative"]): _text(_extra(r).get(key)) for r in _named_intakes(rows)}
+    from_rows = {str(r.get("initiative") or r["task_id"]): _text(_extra(r).get(key)) for r in own}
+    return {k: v for layer in (linked, named, from_rows) for k, v in layer.items() if v}
+
+
 def deferred_initiatives(rows: Sequence[Row], current: str) -> dict[str, str]:
     """Initiative id to target release, from its intake or its own row (which wins), when current is below it."""
-    from_intakes = {
-        _text(_extra(r)["initiative"]): _text(_extra(r).get("target_release")) for r in _named_intakes(rows)
-    }
-    from_rows = {
-        str(r.get("initiative") or r["task_id"]): _text(_extra(r).get("target_release"))
-        for r in rows
-        if r["kind"] == "initiative"
-    }
-    merged = {**{k: v for k, v in from_intakes.items() if v}, **{k: v for k, v in from_rows.items() if v}}
+    merged = initiative_values(rows, "target_release")
     return {name: target for name, target in merged.items() if is_deferred(target, current)}
 
 

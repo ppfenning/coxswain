@@ -843,7 +843,10 @@ def _chair_run_deps(
         # A SQLite store's file stamp keeps each intake's runs across ticks; a Postgres store has none, so every intake
         # shares the tick's one read instead of sending its own two queries.
         tick = once("decompose_tick_runs", lambda: chair_decompose_runs.read_tick_runs(Path(runs_dir))) if postgres_store() else None
-        return chair_decompose_runs.read_decompose_runs(Path(runs_dir), under, decompose_cache_for(under), tick)  # type: ignore[arg-type]
+        # C5: a `collision` step row of the initiative counts against the decompose that wrote its tasks.
+        collided = once("decompose_collisions", lambda: chair_decompose_runs.read_collisions(Path(runs_dir)))
+        runs = chair_decompose_runs.read_decompose_runs(Path(runs_dir), under, decompose_cache_for(under), tick)  # type: ignore[arg-type]
+        return chair_decompose_runs.collided_runs(runs, collided, under)  # type: ignore[arg-type]
 
     def initiative_intakes() -> dict[str, str]:
         return _initiative_intakes(chair_read_quarantined.initiative_files(ws, work_files()))

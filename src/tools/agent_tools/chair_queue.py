@@ -65,6 +65,7 @@ __all__ = [
     "pass_line",
     "pass_reason",
     "passed",
+    "perform_batched",
     "perform_fenced",
     "planned_pass",
     "run",
@@ -247,6 +248,23 @@ def perform_fenced(
     return results
 
 
+def perform_batched(
+    actions: Sequence[Action], holds: Callable[[], bool], epoch: Callable[[], int | None],
+    perform_batch: Callable[[Sequence[Action], Callable[[], int]], list[Result]],
+) -> list[Result]:
+    """Edge. The whole pass in one perform (a batched kind, `chair_kinds.BATCHED_KINDS`), so the rules that span its
+    actions hold as they do in the tick's perform: a relaunch is skipped when its branch clear did not finish, launches
+    on one host are staggered. The perform reads the epoch before each action, and here that read asks the store
+    whether the lease still holds: once it does not, the epoch reads as none held (-2), so that action and every
+    later one stamped with the lease's epoch are fenced and none of them runs."""
+
+    def current() -> int:
+        held = epoch()
+        return held if held is not None and holds() else -2
+
+    return perform_batch(actions, current)
+
+
 def bounded[T](call: Callable[[], T], seconds: float, otherwise: T) -> T:
     """Edge. `call()`, or `otherwise` when it raises or has not returned within `seconds`. A call that hangs is left on
     its daemon thread; its late answer is dropped."""
@@ -283,6 +301,8 @@ class Ports:
     clock: Callable[[], float]
     now: Callable[[], datetime]
     echo: Callable[[str], None]
+    # A batched kind's whole pass in one perform (`perform_batched`); None performs it one action at a time.
+    perform_batch: Callable[[Sequence[Action], Callable[[], int]], list[Result]] | None = None
 
 
 @dataclass
@@ -309,7 +329,11 @@ def _pass(kind: str, ports: Ports, held: Held, reason: str, dry_run: bool, beat:
         def holds() -> bool:
             return dry_run or (held.epoch is not None and ports.holds(held.epoch))
 
-        results = perform_fenced(actions, holds, lambda a: ports.perform_one(a, current))
+        if kind in chair_kinds.BATCHED_KINDS and ports.perform_batch is not None:
+            epoch_now = (lambda: -1) if dry_run else (lambda: held.epoch)
+            results = perform_batched(actions, holds, epoch_now, ports.perform_batch)
+        else:
+            results = perform_fenced(actions, holds, lambda a: ports.perform_one(a, current))
         line = pass_line(kind, reason, actions, results, dry_run, now)
         return f"{line} | lease lost: the rest fenced" if any(r["status"] == "fenced" for r in results) else line
     finally:

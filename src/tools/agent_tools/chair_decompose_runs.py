@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from agent_tools import route, run_store
-from agent_tools.chair_decompose_streak import DecomposeRun
+from agent_tools.chair_decompose_streak import DecomposeRun, with_collisions
 from agent_tools.chair_facts import run_initiative
 from agent_tools.chair_read_cache import Stamp, StampCache, file_stamp
 from agent_tools.chair_read_exits import exit_rows, row_exited
@@ -203,7 +203,8 @@ def read_decompose_runs(
 
     With a cache, the exit rows, the task count and each run's log facts are keyed by file stamp, so an unchanged
     file is not read again. Entries not seen in this call are dropped, so give each intake its own cache.
-    With `tick` (`read_tick_runs`), the runs and the count come from the tick's shared reads instead."""
+    With `tick` (`read_tick_runs`), the runs and the count come from the tick's shared reads instead. The tick then
+    puts the initiative's `collision` step rows on them (`collided_runs`)."""
     exits_key, items_key = ("decompose-exits", str(runs_dir)), ("decompose-items", str(runs_dir), intake_id)
     if tick is not None:
         items = None if tick.items is None else tick.items.get(intake_id, 0)
@@ -250,3 +251,26 @@ def live_decompose_initiatives(runs_dir: Path) -> frozenset[str]:
     except OSError:
         return frozenset()
     return frozenset(run_initiative(path.stem) for path in pidfiles if pid_alive(path))
+
+
+def collisions_by_initiative(rows: object) -> dict[str, list[Mapping[str, object]]]:
+    """Pure. The `collision` step rows (`store_api.collision_step_rows`) grouped by initiative, oldest first as read;
+    empty when the read failed (not a list), so a store that cannot answer never makes a miss."""
+    groups: dict[str, list[Mapping[str, object]]] = {}
+    for row in rows if is_list(rows) else []:
+        if is_mapping(row) and row.get("initiative"):
+            groups.setdefault(str(row["initiative"]), []).append(row)
+    return groups
+
+
+def read_collisions(runs_dir: Path) -> dict[str, list[Mapping[str, object]]]:
+    """Edge. Every `collision` step row in the store, by initiative: one read a tick, shared by every intake."""
+    return collisions_by_initiative(run_store.harness_store_api().collision_step_rows(run_store.store_url_for(runs_dir)))
+
+
+def collided_runs(
+    runs: Sequence[DecomposeRun], collisions: Mapping[str, Sequence[Mapping[str, object]]], initiative: str
+) -> list[DecomposeRun]:
+    """Pure. One initiative's decompose runs with its `collision` step rows (`read_collisions`) put on the run whose
+    tasks collided (`chair_decompose_streak.with_collisions`)."""
+    return with_collisions(runs, collisions.get(initiative, ()))

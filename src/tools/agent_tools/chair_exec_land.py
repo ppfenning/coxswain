@@ -148,7 +148,7 @@ class Deps:
     # C3: (kind) -> whether a queue worker holds chair:<kind> now, by the store's clock. The tick's perform asks it
     # before each action tagged `queue_kind`, and skips the action when a worker holds that kind. None asks nothing.
     queue_held: Callable[[str], bool] | None = None
-    # C4: a queue worker's kind lease as it now stands (None while not held). A decompose launch it makes carries it
+    # C4, C5: a queue worker's kind lease as it now stands (None while not held). A launch it makes carries it
     # (`chair_kinds.proof_argv`), so the launch's loop guard lets it through beside the tick's live lock only while the
     # store says that lease is held at that epoch. None (the tick) carries nothing.
     queue_proof: Callable[[], chair_kinds.QueueProof | None] | None = None
@@ -915,6 +915,12 @@ def _merge_and_write(work_dir: Path, runs_dir: Path, initiative: str) -> str:
     return ""
 
 
+def launch_graph(argv: Sequence[str]) -> str:
+    """Pure. The graph a `cox route launch <graph>` argv starts, "" for any other command. A launch a queue worker makes
+    carries its kind lease (`chair_kinds.proof_argv`) for every graph `chair_kinds.LAUNCH_LEASES` names."""
+    return argv[3] if len(argv) > 3 and list(argv[:3]) == ["cox", "route", "launch"] else ""
+
+
 def perform_launch(action: Action, deps: Deps) -> Result:
     initiative_id = ""
     intake_ids = action.get("intake_ids")
@@ -931,7 +937,7 @@ def perform_launch(action: Action, deps: Deps) -> Result:
     argv = argv_for(action, initiative_id, deps.ids_mode, deps.label)
     if argv is None:
         return make_result(action, "refused", f"{action.get('kind')} names no initiative, task or intake id")
-    if action.get("kind") == "launch_decompose" and deps.queue_proof is not None:
+    if launch_graph(argv) in chair_kinds.LAUNCH_LEASES and deps.queue_proof is not None:
         proof = deps.queue_proof()
         if proof is None:  # the worker's lease is gone: its launch is fenced, never sent without the proof
             return make_result(action, "fenced", "the kind lease was lost before the launch")

@@ -1,10 +1,11 @@
 """The tick's read of the phase queue: the stored `phase_queue` rows, the lane-prerequisite gate, and which
-initiatives are on the phase model or closed, from the work-item rows the tick already read (no second read)."""
+initiatives are on the phase model or closed, and each one's `target_release` and intake `kind` (the queue's order,
+`chair_phase_queue.order`), from the work-item rows the tick already read (no second read)."""
 
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from agent_tools import chair_capacity, queue_rows, run_store
+from agent_tools import chair_capacity, queue_rows, release_gate, run_store
 from agent_tools.chair_types import PhaseQueueFacts
 
 
@@ -33,4 +34,6 @@ def read_phase_queue(runs_dir: Path, profile: Mapping[str, object], work_rows: S
         "readable": not isinstance(rows, unread) and not isinstance(review, unread),
         "lane_prereqs": chair_capacity.chair_lane_prereqs(profile),
         "phase_initiatives": phase, "closed": closed, "tasks": tasks, "rollups": rollups, "rounds": rounds,
+        "releases": release_gate.initiative_values(work_rows, "target_release"),
+        "kinds": release_gate.initiative_values(work_rows, "kind"),
     }

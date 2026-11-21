@@ -2,6 +2,7 @@ from agent_tools.release_gate import (
     deferred_initiatives,
     deferred_intakes,
     held_initiatives,
+    initiative_values,
     is_deferred,
     release_tuple,
 )
@@ -107,3 +108,16 @@ def test_deferred_intakes_only_queued_and_below_target() -> None:
 
 def test_deferred_intakes_empty_for_an_unparseable_current() -> None:
     assert deferred_intakes([intake("late", target_release="2026.12.0")], "") == {}
+
+
+def test_initiative_values_come_from_the_intake_by_either_link_and_the_initiatives_own_row_wins() -> None:
+    rows = [
+        intake("i-a", state="decomposed", initiative="a", kind="hotfix", target_release="2026.12.1"),
+        intake("i-b", state="done", kind="bug"),  # names no initiative; b's own row links it as its intake
+        initiative("b", intake="intake/i-b.md"),
+        initiative("c", kind="feature"),
+        intake("i-d", state="removed", initiative="d", kind="hotfix"),  # a removed intake counts for nothing
+        initiative("a", target_release="2026.12.2"),
+    ]
+    assert initiative_values(rows, "kind") == {"a": "hotfix", "b": "bug", "c": "feature"}
+    assert initiative_values(rows, "target_release") == {"a": "2026.12.2"}

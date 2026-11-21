@@ -25,7 +25,7 @@ from harness.store_landed import mark_landed
 from harness.store_migrate import MigrationError, open_store
 from harness.store_pause import clear_paused, set_paused
 from harness.store_read import StoreVersionError, connect_readonly
-from harness.store_steps import steps_for
+from harness.store_steps import collision_steps, steps_for
 from harness.store_types import Claim, QueueRow, StepRow, WorkItemRecord, WorkItemRow
 from harness.store_work_state import Mismatch, set_state
 from harness.store_write import record_merge
@@ -542,6 +542,11 @@ def run_task_ids(url: str, run_id: str) -> list[str] | Failed | NotAvailable:
 def step_rows(url: str, run_id: str) -> list[StepRow] | Failed | NotAvailable:
     """Every `step_results` row of one run, read-only; `cox runs artifacts` lists the keys they name."""
     return _read(url, lambda c: step_rows_on(c, run_id))
+
+
+def collision_step_rows(url: str) -> list[StepRow] | Failed | NotAvailable:
+    """Every `collision` step row, oldest first, read-only: the chair's evidence of a decompose's miss."""
+    return _read(url, collision_steps)
 
 
 def resolve_token(url: str, token: str) -> Resolved | Failed | NotAvailable | None:

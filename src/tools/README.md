@@ -119,7 +119,7 @@ cox epic watch PIDFILE [--log LOG] [--max-seconds MAX_SECONDS] [--interval INTER
 cox pr land NUMBER --repo REPO [--timeout TIMEOUT]   wait for the required checks, squash-merge a pull request and mark its tasks done
 cox route context [--profile PROFILE] [--json]   the routing profile's resolved context
 cox route status [--profile PROFILE] [--json] [--all]   what is queued or running for this profile
-cox route file [--profile PROFILE] [--repo REPO] [--title TITLE] [--body BODY] [--phase PHASE] [--intake] [--from-intake FROM_INTAKE] [--force] [--link LINK] [--after AFTER] [--draft] [--ready] [--epic EPIC] [--priority PRIORITY] [--target-release TARGET_RELEASE]   file a new ticket for the harness
+cox route file [--profile PROFILE] [--repo REPO] [--title TITLE] [--body BODY] [--phase PHASE] [--intake] [--from-intake FROM_INTAKE] [--force] [--link LINK] [--after AFTER] [--draft] [--ready] [--epic EPIC] [--priority PRIORITY] [--target-release TARGET_RELEASE] [--kind KIND]   file a new ticket for the harness
 cox route priority [INITIATIVE] [--profile PROFILE] [--set N] [--up] [--down] [--top] [--bottom]   move an initiative or a queued intake up or down the launch order
 cox route schedule [--profile PROFILE] [--explain INITIATIVE] [--should-jump INITIATIVE]   project the whole queue as one schedule
 cox route pull [--profile PROFILE] [--source SOURCE] [--dry-run]   file intake tickets from a source, once per link
@@ -159,7 +159,7 @@ cox route launch rescue [--profile PROFILE] --initiative INITIATIVE --task TASK 
 cox route launch cos [--profile PROFILE] [--dry-run] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the cos graph
 cox route launch sweep --idea IDEA --initiative-id INITIATIVE_ID [--label LABEL] [--dry-run]   launch the sweep graph against an idea
 cox chair run [--once] [--interval INTERVAL] [--dry-run] [--as-holder] [--max-overruns MAX_OVERRUNS] [--label LABEL] [--profile PROFILE]   beat, gather, plan, perform and report every tick until interrupted
-cox chair worker --kind KIND [--once] [--dry-run] [--poll POLL] [--min-gap MIN_GAP] [--settle SETTLE] [--label LABEL] [--profile PROFILE]   run one kind of the chair's work (housekeeping, watch, quarantine or decompose) as its own process
+cox chair worker --kind KIND [--once] [--dry-run] [--poll POLL] [--min-gap MIN_GAP] [--settle SETTLE] [--label LABEL] [--profile PROFILE]   run one kind of the chair's work (housekeeping, watch, quarantine, decompose or launch) as its own process
 cox chair service [--install] [--status] [--label LABEL] [--interval INTERVAL] [--environment-file ENVIRONMENT_FILE] [--profile PROFILE] [--host HOST] [--apply]   write or show the systemd user unit that keeps `cox chair run` alive
 cox chair ask QUESTION [--option OPTION] [--context CONTEXT] [--label LABEL] [--profile PROFILE]   put a question with its options to the operator on the courier bus
 cox chair attach [--profile PROFILE] [--lend-routine] [--recall-routine]   say whether a live chair loop holds the lease; exit 0 if so, 1 if not

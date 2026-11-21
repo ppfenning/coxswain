@@ -10,8 +10,13 @@ withholds it: its initiative held, deferred or stopped by its own failures, one 
 initiative closed, or the hard stop on spend. Its requirements are the union of its ready tasks' `requires:`,
 `repo:<name>` for the initiative's repository, and `docker` while the lane-prerequisite gate is on
 (`policy.dispatch.lane_prereqs`, on by default), since every phase runs the smoke suite; a worker advertises `docker`
-only when the doctor's lane checks pass. Order is the docket's: `band` 1 today, `seq` the initiative's place in the
-docket, then the phase's place in it.
+only when the doctor's lane checks pass.
+
+Order is `order`'s (C5), and a worker claims by it (`phase_pick.choices`, lowest `(band, seq)` first): band 0 for an
+initiative whose intake `kind` is a hotfix or a bug, else band 1; first in first out inside a band, by the first time
+any phase of the initiative was queued (its rows' `queued_at`, the store's clock); the initiatives of a band that share
+a `target_release` placed together at the earliest one's position; and every ready phase its own row, so nothing waits
+behind another repository's work.
 
 A claimed row is the worker's and is never changed here. A withheld phase's ready row is withdrawn (`cancelled`) and
 comes back when it is wanted again. A finished row is reopened when its phase is ready again and it finished approved
@@ -31,10 +36,13 @@ from typing import cast
 from agent_tools.chair_types import Action, ActionKind, Facts, InitiativeFacts
 from agent_tools.lane_prereqs import DOCKER_CAPABILITY
 from agent_tools.queue_rows import launchable_by_tick
+from core.intake import URGENT_KINDS
 from harness import phase_pick
 
-BAND = 1  # every phase today; band 0 is kept for hotfixes and bugs
-_SEQ_STRIDE = 1000  # phases per initiative the order leaves room for
+BAND_URGENT = 0  # an initiative whose intake was filed as a hotfix or a bug
+BAND = 1  # every other phase
+_SEQ_STRIDE = 1000  # phases per initiative the docket order (`rows`, before `order`) leaves room for
+_UNSEEN = "~"  # sorts after every stamp: an initiative with no first-queued time goes last in its band
 _REOPENED = frozenset({"approved", "quarantined"})
 
 # The old model's actions on an initiative: each starts, signals, fetches, rewrites or lands a run or its branches.
@@ -101,6 +109,70 @@ def rows(initiatives: Sequence[InitiativeFacts], lane_prereqs: bool, holds: Coll
                 "band": BAND, "seq": place * _SEQ_STRIDE + index,
             })
     return out
+
+
+def band_of(kind: str) -> int:
+    """Pure. The band of an initiative whose intake `kind` is `kind`: 0 for a hotfix or a bug, else 1."""
+    return BAND_URGENT if kind.strip().lower() in URGENT_KINDS else BAND
+
+
+def order(phases: Sequence[Key], releases: Mapping[str, str], kinds: Mapping[str, str],
+          first_seen: Mapping[str, str]) -> dict[Key, tuple[int, int]]:
+    """Pure. The `(band, seq)` each ready phase is claimed by, lowest first (`phase_pick.choices`).
+
+    `phases` are the ready phases in docket order, each initiative's in its own phase order; `releases` maps an
+    initiative to its `target_release` ("" or absent: none), `kinds` to its intake's `kind`, and `first_seen` to the
+    store's stamp of the first time a phase of it was queued.
+
+    1. band 0 for an initiative whose intake kind is a hotfix or a bug, else 1;
+    2. inside a band, first in first out by `first_seen`, then docket place, then id, so a tie is stable;
+    3. the initiatives of one band that share a `target_release` follow one another from the earliest one's position,
+       so a release's work is claimed together; an urgent initiative is never moved into band 1 to join its release;
+    4. each phase is its own row with its own seq: nothing groups or serialises by repository, so a worker that meets
+       only a later row's requirements takes that row at once (`phase_pick.choices` pages past what it cannot meet).
+    Seqs count from 0 inside each band, one per phase, consecutive in claim order."""
+    place = {i: n for n, i in enumerate(dict.fromkeys(i for i, _ in phases))}
+    own: dict[str, list[Key]] = {}
+    for key in phases:
+        own.setdefault(key[0], []).append(key)
+
+    def release(initiative: str) -> str:
+        return (releases.get(initiative) or "").strip()
+
+    def fifo(initiative: str) -> tuple[str, int, str]:
+        return (first_seen.get(initiative) or _UNSEEN, place[initiative], initiative)
+
+    out: dict[Key, tuple[int, int]] = {}
+    for band in (BAND_URGENT, BAND):
+        members = sorted((i for i in place if band_of(kinds.get(i, "")) == band), key=fifo)
+        arranged: list[str] = []
+        for initiative in members:
+            if initiative not in arranged:
+                mates = [m for m in members if release(m) == release(initiative)] if release(initiative) else [initiative]
+                arranged.extend(m for m in mates if m not in arranged)
+        keys = [key for initiative in arranged for key in own[initiative]]
+        out.update({key: (band, seq) for seq, key in enumerate(keys)})
+    return out
+
+
+def first_queued(stored: Sequence[Row]) -> dict[str, str]:
+    """Pure. Each initiative's earliest `queued_at` over its stored rows, finished ones too: the first time any phase
+    of it was ready. A reopen keeps a row's `queued_at`, so work that comes back keeps its place in the line."""
+    out: dict[str, str] = {}
+    for row in stored:
+        initiative, at = str(row.get("initiative")), str(row.get("queued_at") or "")
+        if at and (initiative not in out or at < out[initiative]):
+            out[initiative] = at
+    return out
+
+
+def ordered(wanted: Sequence[Row], stored: Sequence[Row], releases: Mapping[str, str], kinds: Mapping[str, str],
+            now: str) -> list[dict[str, object]]:
+    """Pure. `wanted` with each row's `band` and `seq` from `order`. An initiative with no stored row yet is first
+    queued `now`, the tick's clock, so a new one goes behind every one already waiting in its band."""
+    seen = {**{str(w["initiative"]): now for w in wanted}, **first_queued(stored)}
+    placed = order([_key(w) for w in wanted], releases, kinds, seen)
+    return [{**w, "band": placed[_key(w)][0], "seq": placed[_key(w)][1]} for w in wanted]
 
 
 def _requires_of(row: Row) -> list[str]:
@@ -195,6 +267,7 @@ def plan(facts: Facts, now: str, holds: Collection[str] = ()) -> list[Action]:
     pending = {(a["initiative"], a["phase"]) for a in approve}
     wanted = [w for w in rows(facts.get("initiatives") or [], queue["lane_prereqs"], held, held_phases, closed, stopped)
               if _key(w) not in pending]
+    wanted = ordered(wanted, queue["rows"], queue.get("releases") or {}, queue.get("kinds") or {}, now)
     reviewed = {_key(r) for r in queue.get("rounds") or []}
     found = changes(wanted, queue["rows"], now, held, held_phases, closed, stopped, reviewed)
     out: list[Action] = []

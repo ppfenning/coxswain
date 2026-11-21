@@ -47,6 +47,7 @@ __all__ = [
     "STEP_COLUMNS",
     "TASK_KINDS",
     "belongs",
+    "collision_steps",
     "put_step",
     "refix_of",
     "step_key",
@@ -308,3 +309,15 @@ def steps_for(conn: Connection, run_id: str) -> list[StepRow]:
         for r in conn.query_all(sql, (run_id,))
     ]
     return sorted(rows, key=lambda row: row["step"])
+
+
+def collision_steps(conn: Connection) -> list[StepRow]:
+    """Edge. Every `collision` step row (`lane_merge.collision_row`), oldest first by when it finished: the record that
+    two tasks a decompose called independent edited the same files, which the chair counts as a miss of that
+    decompose (`chair_decompose_streak`)."""
+    sql = f"SELECT {', '.join(STEP_COLUMNS)} FROM step_results WHERE kind = {conn.dialect.placeholder}"
+    rows = [
+        cast(StepRow, {c: json_load(v) if c.endswith("_json") else v for c, v in zip(STEP_COLUMNS, r, strict=True)})
+        for r in conn.query_all(sql, ("collision",))
+    ]
+    return sorted(rows, key=lambda row: (str(row["finished_at"] or ""), row["run_id"], row["step"]))
