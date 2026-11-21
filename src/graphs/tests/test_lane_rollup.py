@@ -91,6 +91,7 @@ def test_a_change_that_does_not_apply_commits_nothing_and_leaves_the_worktree_cl
     lane_rollup.open_phase_worktree(repo, phase, base)
     assert lane_rollup.apply_and_commit(phase, _diff(repo, base, "a.txt", "two\n"), "m")[0] is not None
     sha, why = lane_rollup.apply_and_commit(phase, _diff(repo, base, "a.txt", "three\n"), "m")
-    assert sha is None and "does not apply cleanly" in why
+    assert sha is None and lane_rollup.did_not_apply(why)  # the lane hands this one to the merge agent
+    assert not lane_rollup.did_not_apply("the roll-up could not be committed: x")
     assert _git(phase, "status", "--porcelain") == ""
     assert (phase / "a.txt").read_text() == "two\n"
