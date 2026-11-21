@@ -797,3 +797,8 @@ def _worker_checkout(a: argparse.Namespace) -> int:
 def _worker_forget(a: argparse.Namespace) -> int:
     from agent_tools import worker_cli
     return worker_cli.cmd_forget(a)
+
+
+def _worker_reopen(a: argparse.Namespace) -> int:
+    from agent_tools import worker_cli
+    return worker_cli.cmd_reopen(a)

@@ -674,3 +674,71 @@ def test_the_chair_quarantines_a_quarantined_phase_s_task_with_its_mark_in_the_s
     assert (rows["t2"]["state"], rows["t2"]["extra"]) == ("in_progress", {})
     assert store_phases.get_row(conn, "ship", "p1")["state"] == "ready"
     assert store_api.phase_changes_on(conn, changes, "chair-loop") == 0  # a repeat changes nothing
+
+
+def _failed_after_three_claims(conn):
+    """A phase whose three claims ended without a verdict and whose last finished it failed, after one review round."""
+    store_phases.apply_changes(conn, [_change(requires=["docker"], seq=2000)], "chair-loop")
+    for epoch in (1, 2, 3):
+        claim = store_phases.claim_next(conn, "w1", ["docker"], 1)
+        if epoch == 1:
+            store_phases.put_steps_fenced(conn, [], "w1", claim.epoch, rounds=[_review_round(1, "revise")])
+        if epoch < 3:
+            store_phases.release(conn, claim, "w1", "tasks left ready", 0)
+    store_phases.finish(conn, claim, "w1", "failed", "the phase smoke failed")
+
+
+def test_reopen_puts_a_failed_phase_back_to_ready_records_who_and_why_and_starts_a_new_episode(conn):
+    _failed_after_three_claims(conn)
+    done = store_phases.reopen_phase(conn, "ship", "p1", "pat", "the flaky check is fixed")
+    assert (done.verdict, done.prior["outcome"], done.prior["attempts"]) == ("reopen", "failed", 3)
+    row = store_phases.get_row(conn, "ship", "p1")
+    assert done.after == row
+    assert ({k: row[k] for k in ("state", "outcome", "attempts", "claim_epoch", "reason", "updated_by")} ==
+            {"state": "ready", "outcome": "", "attempts": 0, "claim_epoch": 3,
+             "reason": "reopened by pat: the flaky check is fixed", "updated_by": "pat"})
+    assert (row["requires_json"], row["band"], row["seq"]) == (["docker"], 1, 2000)  # its requirements and place kept
+    rounds = store_phases.review_rounds(conn, "ship", "p1")
+    assert [(r["round"], r["verdict"], r["reason"]) for r in rounds] == [
+        (1, "revise", ""), (2, "reopened", "reopened by pat: the flaky check is fixed")]
+    again = store_phases.claim_next(conn, "w2", ["docker"], 1)  # claimable at once, a fresh episode of attempts
+    assert again is not None and (again.epoch, again.row["attempts"]) == (4, 1)
+
+
+def test_reopen_again_on_the_ready_row_changes_nothing(conn):
+    _failed_after_three_claims(conn)
+    store_phases.reopen_phase(conn, "ship", "p1", "pat", "fixed")
+    before = store_phases.get_row(conn, "ship", "p1")
+    done = store_phases.reopen_phase(conn, "ship", "p1", "sam", "again")
+    assert (done.verdict, done.after) == ("already", before)
+    assert store_phases.get_row(conn, "ship", "p1") == before
+    assert len(store_phases.review_rounds(conn, "ship", "p1")) == 2  # no second boundary
+
+
+def test_reopen_leaves_a_quarantined_phase_to_triage_and_a_failed_one_with_no_round_writes_no_boundary(conn):
+    store_phases.apply_changes(conn, [_change(), _change("p2", seq=1)], "chair-loop")
+    first = store_phases.claim_next(conn, "w1", [], 1)
+    store_phases.finish(conn, first, "w1", "quarantined", "goal missed")
+    second = store_phases.claim_next(conn, "w1", [], 1)
+    store_phases.finish(conn, second, "w1", "failed", "the phase smoke failed")
+    quarantined = store_phases.get_row(conn, "ship", "p1")
+    assert store_phases.reopen_phase(conn, "ship", "p1", "pat", "triaged").verdict == "quarantined"
+    assert store_phases.get_row(conn, "ship", "p1") == quarantined  # triage owns it: nothing written
+    assert store_phases.reopen_phase(conn, "ship", "p2", "pat", "fixed").verdict == "reopen"
+    assert store_phases.get_row(conn, "ship", "p2")["state"] == "ready"
+    assert store_phases.review_rounds(conn, "ship", "p2") == []
+
+
+def test_reopen_refuses_a_claimed_an_approved_and_an_unqueued_phase_and_a_dry_run_writes_nothing(conn):
+    store_phases.apply_changes(conn, [_change(), _change("p2", seq=1), _change("p3", seq=2)], "chair-loop")
+    approved = store_phases.claim_next(conn, "w1", [], 1)
+    store_phases.finish(conn, approved, "w1", "approved", "the phase review approved it in round 1")
+    failed = store_phases.claim_next(conn, "w1", [], 1)
+    store_phases.finish(conn, failed, "w1", "failed", "the phase smoke failed")
+    store_phases.claim_next(conn, "w1", [], 1)  # p3, held
+    before = {p: store_phases.get_row(conn, "ship", p) for p in ("p1", "p2", "p3")}
+    assert store_phases.reopen_phase(conn, "ship", "p1", "pat", "x").verdict == "approved"
+    assert store_phases.reopen_phase(conn, "ship", "p3", "pat", "x").verdict == "claimed"
+    assert store_phases.reopen_phase(conn, "ship", "p9", "pat", "x").verdict == "absent"
+    assert store_phases.reopen_phase(conn, "ship", "p2", "pat", "x", dry_run=True).verdict == "reopen"
+    assert {p: store_phases.get_row(conn, "ship", p) for p in ("p1", "p2", "p3")} == before
