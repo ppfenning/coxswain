@@ -24,12 +24,14 @@ has ever been seen (`queue_leases_seen`), and how long the read has been failing
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import cast
 
 from agent_tools.chair_types import Action, ActionKind, Facts
 
 __all__ = [
+    "LAUNCH_LEASES",
     "LEASE_PREFIX",
     "LEASE_TTL_SECONDS",
     "POLL_SECONDS",
@@ -37,8 +39,11 @@ __all__ = [
     "UNOWNED_CAUSE",
     "UNREADABLE_CAUSE",
     "WAKE_TABLES",
+    "QueueProof",
+    "launch_refusal",
     "lease_name",
     "live_kinds",
+    "proof_argv",
     "queued_kinds",
     "tick_skips",
     "unowned_actions",
@@ -173,3 +178,38 @@ def unowned_actions(facts: Facts) -> list[Action]:
         }
         for kind in sorted(unowned_kinds(facts))
     ]
+
+
+# The launches a queue worker makes, by graph, and the kind lease each is made under. `cox route launch <graph>` started
+# beside the loop's live lock (held under the tick's label) is accepted only while the store says that lease is held,
+# by that holder at that epoch: a worker that lost its lease, or a stale process naming an old epoch, is refused.
+LAUNCH_LEASES: Mapping[str, str] = {"decompose": lease_name("decompose")}
+
+
+@dataclass(frozen=True)
+class QueueProof:
+    """The kind lease a queue worker's launch is made under: the lease's name, its holder and its epoch."""
+
+    lease: str
+    holder: str
+    epoch: int
+
+
+def proof_argv(proof: QueueProof) -> list[str]:
+    """Pure. The `cox route launch` flags that carry `proof`."""
+    return ["--queue-lease", proof.lease, "--queue-holder", proof.holder, "--queue-epoch", str(proof.epoch)]
+
+
+def launch_refusal(refusal: str | None, graph: str, proof: QueueProof | None, held: bool) -> str | None:
+    """Pure. Whether a launch goes on: None to go on, else the line it is refused with.
+
+    `refusal` is the loop lock's own (`chair.guard`: another label's live lock), None when the lock lets it through.
+    A launch the lock refuses goes on only with a proof of the kind lease its graph is made under (`LAUNCH_LEASES`)
+    that the store says is `held`, by its holder at its epoch."""
+    if refusal is None or proof is None:
+        return refusal
+    if LAUNCH_LEASES.get(graph) != proof.lease:
+        return f"{refusal}; {proof.lease} does not cover a {graph} launch"
+    if not held:
+        return f"{refusal}; {proof.lease} is not held by {proof.holder} at epoch {proof.epoch} by the store's clock"
+    return None

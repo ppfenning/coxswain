@@ -16,6 +16,7 @@ from pathlib import Path
 
 import yaml
 
+from agent_tools import chair_kinds
 from agent_tools.cli_board import _launch_rows_then_export, _merge_initiative_tickets, _merging_into
 from agent_tools.cli_common import _now_iso, _profile_path, _read_text_or_none, _stored_work_items, workspace_git_on
 from agent_tools.cli_lake import _lake_provider
@@ -136,6 +137,17 @@ def lane_capacity_env(env: Mapping[str, str], capacity: int) -> dict[str, str]:
     return {"COX_LANE_CAPACITY": str(capacity), **env}
 
 
+def _queue_proof(a: argparse.Namespace) -> tuple[chair_kinds.QueueProof | None, str]:
+    """Pure. The kind lease a queue worker's launch names (`--queue-lease`, `--queue-holder`, `--queue-epoch`), or
+    none; the second value is the refusal when only some of the three are given."""
+    lease, holder, epoch = getattr(a, "queue_lease", None), getattr(a, "queue_holder", None), getattr(a, "queue_epoch", None)
+    if lease is None and holder is None and epoch is None:
+        return None, ""
+    if not lease or not holder or epoch is None:
+        return None, "routing: --queue-lease, --queue-holder and --queue-epoch go together"
+    return chair_kinds.QueueProof(lease, holder, epoch), ""
+
+
 def _route_launch(a: argparse.Namespace) -> int:
     phases = list(dict.fromkeys(getattr(a, "phase", None) or []))
     if phases and a.graph != "epic":
@@ -208,7 +220,14 @@ def _route_launch(a: argparse.Namespace) -> int:
     # Read before the guard: a claim replaces the record with one that has no `model` key.
     chair_model = _recorded_chair_model(runs_dir)
     lock_before = _lock_snapshot(runs_dir)
-    guard_rc = _leader_guard_or_refuse(runs_dir, _holder_label(a), a.force, claim=not a.no_claim, explicit_label=getattr(a, "label", None))
+    proof, proof_problem = _queue_proof(a)
+    if proof_problem:
+        print(proof_problem)
+        return 2
+    guard_rc = _leader_guard_or_refuse(
+        runs_dir, _holder_label(a), a.force, claim=not a.no_claim and proof is None,
+        explicit_label=getattr(a, "label", None), queue_proof=(a.graph, proof) if proof is not None else None,
+    )
     if guard_rc is not None:
         return guard_rc
     usage_code, usage_lines = route.launch_gate(

@@ -164,6 +164,13 @@ def _chair_worker(a: argparse.Namespace) -> int:
         print(f"chair worker: refusing to start, no lease taken; not wired: {', '.join(missing)}")
         return 2
 
+    def queue_proof() -> chair_kinds.QueueProof | None:
+        """The kind lease as it now stands: what a decompose launch carries past the loop guard (`chair_kinds`)."""
+        epoch = held.epoch
+        return chair_kinds.QueueProof(name, holder, epoch) if epoch is not None else None
+
+    deps = dataclasses.replace(deps, exec_deps=dataclasses.replace(deps.exec_deps, queue_proof=queue_proof))
+
     def gather(now: datetime.datetime) -> object:
         deps.beat()  # a worker's beat only clears the read caches of the last pass
         return deps.gather(deps.facts_deps, now)

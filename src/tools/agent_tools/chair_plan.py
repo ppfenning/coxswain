@@ -1559,7 +1559,35 @@ def _plan_as_holder(
     # repeated-failure checks stand. The alarm reads every kind's slots, a worker's too: an idle line a housekeeping
     # worker sends is still the chair's idle line, so the tick does not raise a second one.
     alarms = plan_stall_alarm(basis.facts, planned, now, launch_paused=launch.launch_paused) if now is not None else []
-    return [*(_tagged(a, kind, tag) for kind, actions in segments if kind not in skip for a in actions), *alarms]
+    kept = [(kind, a) for kind, actions in segments if kind not in skip for a in actions]
+    return [*(_tagged(a, kind, tag) for kind, a in triage_first(kept, _triaged_by_worker(segments, skip))), *alarms]
+
+
+# The triage decisions that change the state a relaunch reads: a triage request sends the task back to ready with its
+# flag, a hold moves it to blocked. A relaunch performed before either would build the initiative without it.
+_TRIAGE_BEFORE_RELAUNCH = frozenset({ActionKind.REQUEST_TRIAGE, ActionKind.HOLD_TASK})
+# What the tick holds back for an initiative whose triage a worker owns: a launch of it (a relaunch, or a first launch
+# of an initiative whose task failed before its runs were recorded) and the relaunch's paired branch clear.
+_HELD_FOR_TRIAGE = frozenset({ActionKind.RELAUNCH, ActionKind.LAUNCH_EPIC, ActionKind.CLEAR_BRANCHES})
+
+
+def _triaged_by_worker(segments: Sequence[Segment], skip: Collection[str]) -> frozenset[str]:
+    """The initiatives with a triage request or hold in a slot the tick skips (a queue worker makes it)."""
+    return frozenset(
+        action_text(a, "initiative")
+        for kind, actions in segments if kind in skip
+        for a in actions if a.get("kind") in _TRIAGE_BEFORE_RELAUNCH
+    )
+
+
+def triage_first(kept: Sequence[tuple[str, Action]], triaged: Collection[str]) -> list[tuple[str, Action]]:
+    """Pure. The tick's slots without the launch, relaunch and branch clear of each initiative in `triaged`.
+
+    The tick alone plans `request_triage`, `clear_branches`, `relaunch` for one initiative and performs them in that
+    order, so the relaunch picks the triaged task up. When a quarantine worker owns the triage, the tick cannot order
+    its launch after the worker's write, so it holds them back for this tick; the next tick, once the worker has
+    set the flag, plans no triage for that state and relaunches."""
+    return [(kind, a) for kind, a in kept if not (a.get("kind") in _HELD_FOR_TRIAGE and action_text(a, "initiative") in triaged)]
 
 
 def _parse_utc(ts: str | None) -> datetime | None:
@@ -1627,24 +1655,17 @@ def tag_queue_kinds(actions: Sequence[Action], facts: Facts, now: datetime, gate
 
     The kind comes from the slot that planned the action (`plan_tick_held` with `tag`), never from matching its text,
     so two identical actions of two kinds each keep their own. `actions` is the same planner's output from the same
-    facts, so it lines up with the tagged plan one for one. One that does not (a planner other than the tick's) is
-    tagged by its text only where that text names one kind alone; the rest pass unmarked."""
+    facts, so it lines up with the tagged plan one for one. A plan that does not line up raises `PlanMismatch`: the
+    caller then performs it untagged, which keeps every action with the tick."""
     tagged = plan_tick_held(facts, now, gate, tag=True).actions
-    if [_untagged(a) for a in tagged] == list(actions):
-        return tagged
-    kinds: dict[str, set[str]] = {}
-    for a in tagged:
-        if "queue_kind" in a:
-            kinds.setdefault(_unstamped(_untagged(a)), set()).add(str(a["queue_kind"]))
-    return [
-        {**a, "queue_kind": next(iter(named))} if len(named := kinds.get(_unstamped(a), set())) == 1 else a
-        for a in actions
-    ]
+    if [_untagged(a) for a in tagged] != list(actions):
+        raise PlanMismatch(f"the tick's {len(actions)} actions do not line up with the tagged plan's {len(tagged)}")
+    return tagged
+
+
+class PlanMismatch(ValueError):
+    """The actions handed to `tag_queue_kinds` are not the tick planner's output for the same facts."""
 
 
 def _untagged(action: Action) -> Action:
     return {k: v for k, v in action.items() if k != "queue_kind"}  # type: ignore[return-value]
-
-
-def _unstamped(action: Action) -> str:
-    return repr(sorted((k, repr(v)) for k, v in action.items() if k != "epoch"))

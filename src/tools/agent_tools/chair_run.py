@@ -30,7 +30,7 @@ from agent_tools import (
 from agent_tools.chair_beat import beat_in_thread
 from agent_tools.chair_exec import Result
 from agent_tools.chair_facts import FactsDeps, gather_facts
-from agent_tools.chair_plan import TickPlan, plan_tick, plan_tick_held, reported_waiting, tag_queue_kinds
+from agent_tools.chair_plan import PlanMismatch, TickPlan, plan_tick, plan_tick_held, reported_waiting, tag_queue_kinds
 from agent_tools.chair_report import EASTERN, format_status, write_status
 from agent_tools.chair_restart import (
     RESTART,
@@ -792,7 +792,11 @@ def tick_timed(
             planned, plan_s = _planned(deps, facts, now, gate, clock)
         # A worker can still take a kind while this tick performs (a revert waits on checks): mark each action of a kind
         # a worker could run, and perform asks for that kind's lease again just before it (`chair_exec.Deps.queue_held`).
-        planned = TickPlan(tag_queue_kinds(planned.actions, facts, now, gate), planned.held_for_ci)
+        try:
+            planned = TickPlan(tag_queue_kinds(planned.actions, facts, now, gate), planned.held_for_ci)
+        except PlanMismatch as exc:  # untagged, every action stays the tick's: it was planned with the kinds skipped
+            with contextlib.suppress(Exception):
+                deps.report_deps.echo(f"chair: WARNING queue kinds not tagged this tick, every action stays the tick's: {exc}")
     deps.reason_state.lines = chair_report.unlaunched_lines(planned.actions, now)
     deps.reason_state.items = [{"initiative": a.get("initiative"), "reason": a.get("reason")} for a in planned.actions if a.get("kind") == "unlaunched"]
     acting = not dry_run and all(a.get("kind") != "standby" for a in planned.actions)

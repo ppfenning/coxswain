@@ -1349,7 +1349,7 @@ ROUTE_COMMANDS = [
                     commands.Arg(("--detach",), {"action": "store_true", "help": "start the decompose in the background and return once it has started"}),
                     commands.Arg(("--dry-run",), {"action": "store_true"}),
                     commands.Arg(("--run-id",), {"help": "use this run id instead of the next free one; refused when taken"}),
-                    *_LAUNCH_SHARED_ARGS,
+                    *commands.QUEUE_PROOF_ARGS, *_LAUNCH_SHARED_ARGS,
                 ),
                 "agent_tools.cli:_route_launch", False, (), defaults={"graph": "decompose"},
             ),

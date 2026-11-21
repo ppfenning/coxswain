@@ -19,6 +19,7 @@ from pathlib import Path
 
 import yaml
 
+from agent_tools import chair_kinds, chair_read_queues
 from agent_tools.cli_common import _profile_path, _read_text_or_none
 from agent_tools.cli_lake import _lake_provider, _lake_real_run
 from agent_tools.cli_land_facts import (
@@ -1258,16 +1259,29 @@ def _leader_read_or_refuse(runs_dir: Path):
         return None, 2
 
 
-def _leader_guard_or_refuse(runs_dir: Path, holder: str, force: bool, claim: bool = False, explicit_label: str | None = None) -> int | None:
+def _leader_guard_or_refuse(
+    runs_dir: Path, holder: str, force: bool, claim: bool = False, explicit_label: str | None = None,
+    queue_proof: tuple[str, chair_kinds.QueueProof] | None = None,
+) -> int | None:
     """Exit code 2 with the refusal printed when another live session holds the loop;
     None to proceed. `claim` takes an unheld, stale or crashed lock for `holder` before
-    proceeding, so launching or landing is what makes a session the leader."""
+    proceeding, so launching or landing is what makes a session the leader.
+
+    `queue_proof` is (graph, `chair_kinds.QueueProof`) for a launch a queue worker makes under its kind lease: beside
+    another label's live lock it goes on only while the store says that lease is held at that epoch
+    (`chair_kinds.launch_refusal`), and it never claims the lock."""
     record, rc = _leader_read_or_refuse(runs_dir)
     if rc is not None:
         return None
     state = chair.liveness(record, _leader_pid_alive(record), datetime.datetime.now(datetime.UTC), socket.gethostname(), _leader_heartbeat_minutes())
     holder = chair.resolve_holder_label(record, state, os.environ, socket.gethostname(), explicit_label) or holder
     line = chair.guard(record, holder, state)
+    if line is not None and record is not None and queue_proof is not None:
+        graph, proof = queue_proof
+        line = chair_kinds.launch_refusal(line, graph, proof, chair_read_queues.queue_lease_holds(runs_dir, proof))
+        if line is None:
+            print(f"chair: {graph} launch under {proof.lease} at epoch {proof.epoch}, beside {record.get('session')}'s live loop")
+            return None
     if line is not None:
         print(f"override: {line}" if force else line)
         return None if force else 2

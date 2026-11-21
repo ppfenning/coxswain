@@ -13,9 +13,28 @@ from agent_tools.chair_types import QueueLeases
 from core.jsontypes import is_mapping
 
 __all__ = [
-    "SEEN_MARKER", "QueueLeasesReader", "mark_seen", "queues_keeping_last_good", "read_chair_queues", "read_queue_leases",
-    "seen_marker", "store_stamp",
+    "SEEN_MARKER", "QueueLeasesReader", "mark_seen", "queue_lease_holds", "queues_keeping_last_good", "read_chair_queues",
+    "read_queue_leases", "seen_marker", "store_stamp",
 ]
+
+LEASE_CHECK_SECONDS = 5.0  # a lease check that has not answered by then reads as not held, never as held
+
+
+def queue_lease_holds(runs_dir: Path, proof: chair_kinds.QueueProof, seconds: float = LEASE_CHECK_SECONDS) -> bool:
+    """Edge. Whether the store says `proof`'s kind lease is held by its holder at its epoch, unexpired by the store's
+    clock (`store_chair_lease.holds`). A store that fails, hangs past `seconds` or is missing reads as not held."""
+    from agent_tools.chair_queue import bounded
+    from harness import store_chair_lease
+    from harness.store_dialect import connect
+
+    def check() -> bool:
+        conn = connect(run_store.store_url_for(runs_dir))
+        try:
+            return store_chair_lease.holds(conn, proof.lease, proof.holder, proof.epoch)
+        finally:
+            conn.close()
+
+    return bounded(check, seconds, False)
 
 
 def read_chair_queues(profile_path: Path) -> frozenset[str] | route.ProfileError:

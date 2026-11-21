@@ -103,3 +103,12 @@ def build_parser(
             gp.set_defaults(fn=g.fn)
         parsers[g.name] = gp
     return parsers
+
+
+# The `cox route launch decompose` flags a queue worker's launch carries its kind lease on (`chair_kinds.proof_argv`).
+# They live here, not in `cli.py` (at its size limit), because `cox --help` imports this module and no other.
+QUEUE_PROOF_ARGS = (
+    Arg(("--queue-lease",), {"help": "the kind lease a queue worker launches under (chair:decompose); with --queue-holder and --queue-epoch, the launch goes on beside the loop's live lock while the store says that lease is held"}),
+    Arg(("--queue-holder",), {"help": "the holder of --queue-lease"}),
+    Arg(("--queue-epoch",), {"type": int, "default": None, "help": "the epoch of --queue-lease"}),
+)

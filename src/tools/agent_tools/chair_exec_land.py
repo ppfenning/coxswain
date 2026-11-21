@@ -18,6 +18,7 @@ from agent_tools import (
     base_branch,
     chair_apply_fetch,
     chair_apply_widen,
+    chair_kinds,
     chair_lease_refusal,
     chair_plan_prune,
     chair_sort,
@@ -147,6 +148,10 @@ class Deps:
     # C3: (kind) -> whether a queue worker holds chair:<kind> now, by the store's clock. The tick's perform asks it
     # before each action tagged `queue_kind`, and skips the action when a worker holds that kind. None asks nothing.
     queue_held: Callable[[str], bool] | None = None
+    # C4: a queue worker's kind lease as it now stands (None while not held). A decompose launch it makes carries it
+    # (`chair_kinds.proof_argv`), so the launch's loop guard lets it through beside the tick's live lock only while the
+    # store says that lease is held at that epoch. None (the tick) carries nothing.
+    queue_proof: Callable[[], chair_kinds.QueueProof | None] | None = None
     home: str = ""  # this machine's home directory, read once at the edge; "" leaves a repo path unmapped for a lane host
     quarantine_phase: Callable[[str, str, str, str], Quarantined | None] | None = None  # (initiative, phase, cause, reason): quarantines that phase's tasks, answering those it moved and one line per write the store refused
     resolve_land: Callable[[str, str, str], None] | None = None  # (initiative, phase, outcome): the store's resolve write for a land
@@ -926,6 +931,11 @@ def perform_launch(action: Action, deps: Deps) -> Result:
     argv = argv_for(action, initiative_id, deps.ids_mode, deps.label)
     if argv is None:
         return make_result(action, "refused", f"{action.get('kind')} names no initiative, task or intake id")
+    if action.get("kind") == "launch_decompose" and deps.queue_proof is not None:
+        proof = deps.queue_proof()
+        if proof is None:  # the worker's lease is gone: its launch is fenced, never sent without the proof
+            return make_result(action, "fenced", "the kind lease was lost before the launch")
+        argv = [*argv, *chair_kinds.proof_argv(proof)]
     code, output = deps.run(argv)
     if code == 0:
         return make_result(action, "done", output)

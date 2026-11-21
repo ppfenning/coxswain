@@ -459,10 +459,35 @@ tick's own profile says, and checks the leases again just before it performs.
 When it cannot read the leases at all, and a worker could be running, it
 leaves every queue kind alone for that tick rather than risk doing one twice. A
 worker could be running when the profile lists a kind, or when a `chair:<kind>`
-lease row has ever been seen on this machine. The tick records that in
-`<runs_dir>/chair-queue-lease-seen`, so a restarted tick still knows it. When a listed kind has had no live worker
-for over a minute, the tick raises one `needs chair` line, `queue_unowned
-<kind>`, and the notifier pushes it once.
+lease row has ever been seen on this machine. When a listed kind has had no
+live worker for over a minute, the tick raises one `needs chair` line,
+`queue_unowned <kind>`, and the notifier pushes it once.
+
+The tick records that a worker lease row has been seen in an empty marker file,
+`<runs_dir>/chair-queue-lease-seen`, so a restarted tick still knows it. Nothing
+removes the file. While it is there, a failed lease read makes the tick leave
+every queue kind alone for that tick, even with `chair.queues` empty. Once no
+worker will run on this machine again (after a rollback, say), stop every
+`cox chair worker`, check that no `chair:<kind>` lease is live, and delete the
+file:
+
+```sh
+rm <workspace_dir>/runs/chair-queue-lease-seen
+```
+
+With quarantine listed, the tick does not launch or relaunch an initiative in
+the tick where the quarantine worker owns a triage request or hold for one of
+its tasks. A launch before the worker's write would build the initiative
+without the triaged task. The tick launches it on its next pass, once the
+worker has flagged the task.
+
+A decompose worker launches its decompose beside the tick's live loop lock,
+which is held under the tick's label. The launch carries the worker's lease
+(`--queue-lease chair:decompose --queue-holder <holder> --queue-epoch <n>`).
+The loop guard lets it through only while the store says that holder holds
+`chair:decompose` at that epoch, so a worker that lost its lease is refused. The
+launch cap is applied when the tick and the worker plan, not when they launch,
+so a worker's decompose launch can fill a lane past the cap by one.
 
 A worker wakes on a write to a table its kind reads: `work_items` and `runs` for
 housekeeping; `landing_records` and `land_queue` for the watch; and
