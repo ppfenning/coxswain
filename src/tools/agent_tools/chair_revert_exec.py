@@ -100,8 +100,8 @@ def perform_revert(
     clear_stale: ClearStale | None = None,
 ) -> RevertResult:
     """With `find_open_pr`, an open revert PR is reused and no branch or PR is made; `clear_stale` backs up and clears a stale branch first."""
-    # Not the live path yet: chair_exec._revert_land passes neither port, so it still reverts onto a fresh revert/<pr>
-    # and fails on a stale one. `attempt_revert` requires both; route _revert_land through it to go live.
+    # The live path: chair_exec._revert_land goes through `attempt_revert` with both ports when `revert_reuse` is wired
+    # (`cox chair run` and `cox chair worker` wire it); without them it reverts onto a fresh revert/<pr>.
     branch = f"revert/{pr}"
     url = find_open_pr(repo, pr) if find_open_pr is not None else None
     if not url:

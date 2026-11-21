@@ -805,6 +805,29 @@ def artifacts_rows(url: str | None, bad_url: str | None, failed: tuple[str, str]
     return [_shared_row(True, f"{where}: a probe object was written, read back and removed", check=ARTIFACTS_CHECK)]
 
 
+NOTIFY_QUEUE_CHECK = "store notify queue"
+# Migration 0021's triggers notify on every write to a watched table. A listener that never drains holds the server's
+# notification queue back, and once it is full every writer to a watched table fails at commit (SQLSTATE 54000). Half
+# full is far past anything a draining listener leaves (it takes every notification on each wake), so it fails here.
+NOTIFY_QUEUE_LIMIT = 0.5
+
+
+def notify_queue_rows(postgres: bool, usage: float | None, error: str | None, limit: float = NOTIFY_QUEUE_LIMIT) -> list[dict]:
+    """The "store notify queue" row from `pg_notification_queue_usage()` (0 to 1): ok at or under `limit`, a failure
+    above it, and a failure naming `error` when it could not be read. None on a store that is not Postgres."""
+    if not postgres:
+        return []
+    if error is not None or usage is None:
+        return [_shared_row(False, f"cannot read pg_notification_queue_usage(): {error or 'no answer'}", check=NOTIFY_QUEUE_CHECK)]
+    detail = f"{usage:.1%} of the notification queue in use"
+    if usage > limit:
+        return [_shared_row(False, f"{detail}, over {limit:.0%}: a session is listening on cox_store without draining "
+                                   "it, and a full queue fails every write to a watched table; find it in pg_stat_activity "
+                                   "(state 'idle in transaction', or a LISTEN that never reads) and end it",
+                            check=NOTIFY_QUEUE_CHECK)]
+    return [_shared_row(True, detail, check=NOTIFY_QUEUE_CHECK)]
+
+
 WORKER_ROLE_CHECK = "worker store role"
 
 

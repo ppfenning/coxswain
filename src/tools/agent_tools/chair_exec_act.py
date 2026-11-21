@@ -70,7 +70,7 @@ from agent_tools.chair_exec_land import (
 from agent_tools.chair_facts import STRANDED_CAUSE
 from agent_tools.chair_phase_quarantine import Quarantined, release_commands
 from agent_tools.chair_rebase_exec import perform_rebase
-from agent_tools.chair_revert_exec import MERGED, RevertResult, perform_revert
+from agent_tools.chair_revert_exec import MERGED, RevertResult, attempt_revert, perform_revert
 from agent_tools.chair_schedule import SCHEDULE_FILE
 from agent_tools.chair_stall_alarm import notice_word, stall_message_id
 from agent_tools.chair_types import Action, ActionKind, action_text, is_fenced
@@ -687,6 +687,34 @@ def revert_reason(reason: str, quarantined: Quarantined, initiative: str) -> str
     return "; ".join([reason, *released, *(f"quarantine not recorded: {line}" for line in quarantined.failures)])
 
 
+def _queue_held(action: Action, deps: Deps) -> str | None:
+    """Edge. Why the tick skips this action: a queue worker now holds the action's kind (`queue_kind`, C3). None to go on."""
+    kind = action.get("queue_kind")
+    if not kind or deps.queue_held is None:
+        return None
+    try:
+        held = deps.queue_held(str(kind))
+    except Exception:  # unknown: a worker may hold it, and the worker or the next tick does it
+        held = True
+    return f"a queue worker holds chair:{kind}" if held else None
+
+
+def _reverted(action: Action, deps: Deps, git: object, forge: object) -> RevertResult:
+    """Edge. The revert over the ports. With `revert_reuse` it goes through `attempt_revert`: an open `revert/<pr>` PR is
+    reused (a second revert of the same land waits on and merges the one already open, never a second branch), and a
+    stale branch is backed up and cleared first. The failure streak `attempt_revert` returns is not kept: a failed revert
+    is planned again next tick, as before."""
+    repo, pr, commit, reason = action.get("repo", ""), int(action.get("pr", 0)), action.get("commit", ""), action.get("reason", "")
+    if deps.revert_reuse is None:
+        return perform_revert(repo, pr, commit, reason, git, forge)  # type: ignore[arg-type]
+    find_open_pr, clear_stale = deps.revert_reuse(action)
+    result, _streak, _first = attempt_revert(
+        repo, pr, commit, reason, git, forge, (), datetime.now(UTC),  # type: ignore[arg-type]
+        find_open_pr=find_open_pr, clear_stale=clear_stale,
+    )
+    return result
+
+
 def _revert_land(action: Action, deps: Deps) -> Result:
     """Edge. `perform_revert` over the wired ports, then quarantine the phase whatever the status, so no relaunch stacks onto
     a red main. The land is resolved as reverted only when the revert merged; a failed one is planned again next tick."""
@@ -695,9 +723,7 @@ def _revert_land(action: Action, deps: Deps) -> Result:
     initiative, phase = action.get("initiative", ""), action.get("phase", "")
     git, forge = deps.revert_ports(action)
     try:
-        reverted = perform_revert(
-            action.get("repo", ""), int(action.get("pr", 0)), action.get("commit", ""), action.get("reason", ""), git, forge
-        )  # a revert_land's pr is the number of the land's pull request
+        reverted = _reverted(action, deps, git, forge)  # a revert_land's pr is the number of the land's pull request
     except Exception as exc:  # the edge: a port failure is a failed revert, and main is still red
         reverted = RevertResult("failed", "", f"revert raised {type(exc).__name__}: {exc}")
     quarantined = deps.quarantine_phase(initiative, phase, "main_red", action.get("reason", "")) or Quarantined()
@@ -1084,6 +1110,8 @@ def perform(
         frozen: str | None = None  # set by the freeze branch below, so a frozen land is not escalated
         if action.get("kind") not in UNFENCED_KINDS and is_fenced(action, current_epoch()):
             result = make_result(action, "fenced", "planned under another lease epoch")
+        elif (queued := _queue_held(action, deps)) is not None:
+            result = make_result(action, "skipped", queued)
         elif action.get("kind") == "relaunch" and initiative in uncleared:
             result = make_result(action, "skipped", f"clear_branches for {initiative} was {uncleared[initiative]} this tick")
         elif (

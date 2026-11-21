@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_tools import chair_run, cli, commands, stats_chair, stats_gates
+from agent_tools import chair_queue, chair_run, cli, commands, stats_chair, stats_gates
 
 _PROBE = """
 import json, sys
@@ -103,3 +103,5 @@ def test_build_time_defaults_match_the_constants_they_copy() -> None:
     assert cli._STATS_CAUSES == stats_chair.CAUSES
     assert cli._GATES_MIN_SAMPLE == stats_gates.MIN_SAMPLE
     assert cli._CHAIR_RUN_INTERVAL == chair_run.DEFAULT_INTERVAL
+    assert cli._CHAIR_WORKER_MIN_GAP == chair_queue.MIN_GAP_SECONDS
+    assert cli._CHAIR_WORKER_SETTLE == chair_queue.SETTLE_SECONDS

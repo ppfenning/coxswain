@@ -54,6 +54,7 @@ from agent_tools.cli_lazy import (
     chair_read_phase_queue,
     chair_read_phase_records,
     chair_read_quarantined,
+    chair_read_queues,
     chair_read_record,
     chair_read_remote_unfetched,
     chair_read_run_id,
@@ -525,6 +526,16 @@ def _store_quarantine(runs_dir: Path, by: str) -> Callable[[str, str, str, str],
     )
 
 
+def _revert_reuse(
+    runner: Callable[[list[str]], tuple[int, str]],
+) -> Callable[[chair_exec.Action], tuple[Callable[[str, int], str | None], Callable[[str, str, bool], list[str]]]]:
+    """Edge. A revert_land's lookup of its open `revert/<pr>` PR (by the repo's owner/name) and its stale-branch clear."""
+    return lambda action: (
+        lambda repo, pr: chair_revert_ports.find_open_revert_pr(runner, _gh_repo(repo), pr),
+        chair_revert_ports.GitRevertPort(runner).clear_stale_branch,
+    )
+
+
 def _revert_land_deps(
     runs_dir: Path, holder: str, runner: Callable[[list[str]], tuple[int, str]],
     actions: Callable[[], Sequence[Mapping]], record: Callable[[Mapping], None],
@@ -533,6 +544,7 @@ def _revert_land_deps(
     reverted phase, and the resolve of its land watch. `cox chair run` wires exactly these."""
     return {
         "revert_ports": _revert_ports(runner),
+        "revert_reuse": _revert_reuse(runner),
         "quarantine_phase": _store_quarantine(runs_dir, holder),
         "resolve_land": _resolve_land_with(actions, record),
     }
@@ -673,9 +685,15 @@ def _takes_cache(read: Callable[..., list[dict]], cache: object) -> Callable[...
 
 def _chair_run_deps(
     runs_dir: Path, profile: dict, session: str, pid: int, host: str, dry_run: bool, echo: Callable[[str], None],
-    profile_path: Path, mode: str,
+    profile_path: Path, mode: str, worker_epoch: Callable[[], int] | None = None,
+    record_store: Callable[[list[str]], tuple[int, str]] | None = None,
 ) -> chair_run.RunDeps:
-    """Every source has an edge reader; `_ChairUnwired` stays for a source that loses one. A dry run never beats the lease."""
+    """Every source has an edge reader; `_ChairUnwired` stays for a source that loses one. A dry run never beats the lease.
+
+    `worker_epoch` builds the deps a queue worker (`cox chair worker`) gathers and performs with: its actions are fenced
+    and recorded under its own kind lease's epoch, `beat` only clears the tick's read caches and never touches the
+    chair's lease, and it starts no land sink, so it never collects the tick's land results. `record_store` replaces
+    the store write of each action's row (the worker's is fenced on its kind lease)."""
     holder = chair.lease_holder(session, pid, host)
     ws = runs_dir.parent
     home = os.path.expanduser("~")
@@ -872,6 +890,9 @@ def _chair_run_deps(
         green_since.cache.clear()
         meter_snapshot.clear()
         fallback_noticed.clear()
+        if worker_epoch is not None:  # a queue worker beats its own kind lease, in its own loop
+            warn_overloaded_hosts()
+            return ""
         lost = "" if dry_run else chair.renew_lease(runs_dir, session, pid, host)
         if _record_beat_wanted(dry_run, lost):
             _beat_record(runs_dir, session, pid, host, now())
@@ -919,10 +940,14 @@ def _chair_run_deps(
         return previous
 
     def epoch() -> int:
+        if worker_epoch is not None:
+            return worker_epoch()
         lease = chair._read_lease(runs_dir, holder)
         return lease["epoch"] if lease is not None else -1  # no lease matches no action's epoch, so all are fenced
 
-    record = chair_read_record.recorder(runs_dir, epoch, now_text, store=store_cli.runner(runs_dir), holder=holder)
+    record = chair_read_record.recorder(
+        runs_dir, epoch, now_text, store=record_store or store_cli.runner(runs_dir), holder=holder
+    )
 
     def has_patch(initiative: str, task: str) -> bool:
         """`read_has_patch` needs a run id: the newest attempt on this task names it. No attempt has no record."""
@@ -1067,6 +1092,8 @@ def _chair_run_deps(
         )
 
     sources_configured, profile_stale = chair_read_intake.sources_configured_keeping_last_good(profile_path)
+    # C3: one reader of the worker leases for the facts, the pre-perform re-read and the per-action check
+    queue_leases = chair_read_queues.QueueLeasesReader(runs_dir, time.monotonic)
     repo_for = _repo_for(ws, home)
     lane_capacity = _check_capacity(runs_dir, profile, host)
 
@@ -1112,6 +1139,8 @@ def _chair_run_deps(
         work_store_ready=lambda: chair_read_docket.work_store_ready(docket()),
         sources_configured=sources_configured,
         profile_stale=profile_stale,
+        chair_queues=chair_read_queues.queues_keeping_last_good(profile_path),
+        queue_leases=queue_leases,
         session=session, pid=pid, host=host, dispatch=dispatch,
         drafts=lambda: draft_list.count_drafts(
             draft_list.read_drafts(ws / "work", now_text(), chair_read_quarantined.initiative_files(ws, work_files()))
@@ -1188,6 +1217,9 @@ def _chair_run_deps(
         mark_handled=None if dry_run else (lambda key: _mark_handled_key(runs_dir, key)),
         # The same reader the facts use, so a miss records the fingerprint the next tick's facts compare against.
         intake_fingerprint=intake_fingerprint,
+        # C3: the tick asks before each housekeeping or watch action whether a queue worker now holds that kind. A
+        # worker's own deps ask nothing (its fence is its lease).
+        queue_held=None if dry_run or worker_epoch is not None else queue_leases.held,
     )
     def held() -> None:
         """Resolves each pending watch the smoke hold does not name, when its commit is green on main or main went green after it."""
@@ -1200,7 +1232,7 @@ def _chair_run_deps(
 
     stop_lands = chair_run.no_lands_to_stop
     lands_in_flight = chair_run.no_lands_in_flight
-    if not dry_run:
+    if not dry_run and worker_epoch is None:
         # Lands run behind the tick on the land worker (tools #1287), which beats only the chair lease while one runs:
         # the tick's own `beat` also clears this tick's fact caches, which a worker thread must never touch.
         sink = chair_run.land_sink(lambda: chair.renew_lease(runs_dir, session, pid, host), released=lambda: chair.honour_release_request(runs_dir, session, pid, host))
@@ -1303,6 +1335,7 @@ def _chair_run_deps(
         record_restart=None if dry_run else record_restart,
         save_cache=None if dry_run else save_caches,
         store_reads=lambda: chair_tick_cache.merged_counts(reader_cache.tick_counts(), actions_cache.tick_counts()),
+        queue_leases=None if dry_run else queue_leases,
     )
 
 

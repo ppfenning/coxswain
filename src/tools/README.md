@@ -159,6 +159,7 @@ cox route launch rescue [--profile PROFILE] --initiative INITIATIVE --task TASK 
 cox route launch cos [--profile PROFILE] [--dry-run] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the cos graph
 cox route launch sweep --idea IDEA --initiative-id INITIATIVE_ID [--label LABEL] [--dry-run]   launch the sweep graph against an idea
 cox chair run [--once] [--interval INTERVAL] [--dry-run] [--as-holder] [--max-overruns MAX_OVERRUNS] [--label LABEL] [--profile PROFILE]   beat, gather, plan, perform and report every tick until interrupted
+cox chair worker --kind KIND [--once] [--dry-run] [--poll POLL] [--min-gap MIN_GAP] [--settle SETTLE] [--label LABEL] [--profile PROFILE]   run one kind of the chair's work (housekeeping or watch) as its own process
 cox chair service [--install] [--status] [--label LABEL] [--interval INTERVAL] [--environment-file ENVIRONMENT_FILE] [--profile PROFILE] [--host HOST] [--apply]   write or show the systemd user unit that keeps `cox chair run` alive
 cox chair ask QUESTION [--option OPTION] [--context CONTEXT] [--label LABEL] [--profile PROFILE]   put a question with its options to the operator on the courier bus
 cox chair attach [--profile PROFILE] [--lend-routine] [--recall-routine]   say whether a live chair loop holds the lease; exit 0 if so, 1 if not

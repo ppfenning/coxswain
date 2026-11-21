@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 
 from agent_tools import (
     chair_approval_restore,
+    chair_kinds,
     chair_launch_why,
     chair_lease_refusal,
     chair_login_watch,
@@ -1465,7 +1466,13 @@ def plan_housekeeping_kind(basis: TickBasis, launch: LaunchPlan) -> Housekeeping
     )
 
 
-def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str] = frozenset()) -> list[Action]:
+# Each slot of the tick's layout, in the tick's order, named by the kind that plans it. A kind a queue worker runs
+# (`chair_kinds`) is dropped from the tick's list by its name here, and `plan_kind` returns exactly that kind's slots, so
+# the two together always plan what the tick alone did.
+Segment = tuple[str, list[Action]]
+
+
+def _holder_segments(raw_facts: Facts, now: datetime | None, held: frozenset[str]) -> tuple[TickBasis, LaunchPlan, list[Segment]]:
     basis = tick_basis(raw_facts, now, held)
     watch = plan_watch_kind(basis)
     land = plan_land_kind(basis)
@@ -1473,44 +1480,54 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     quarantine = plan_quarantine_kind(basis)
     launch = plan_launch_kind(basis, launch_gates(land, decompose, quarantine))
     housekeeping = plan_housekeeping_kind(basis, launch)
-    planned = [
-        *watch.reverts,
-        *land.lands,
-        *land.fetch_exits,
-        *housekeeping.stale,
-        *housekeeping.tune,
-        *housekeeping.stall,
-        *housekeeping.idle_stall,
-        *housekeeping.idle_ready,
-        *quarantine.releases,  # a release starts no run
-        *land.deadlock_chair,
-        *land.carries,
-        *launch.launches,
+    segments: list[Segment] = [
+        ("watch", watch.reverts),
+        ("land", land.lands),
+        ("land", land.fetch_exits),
+        ("housekeeping", housekeeping.stale),
+        ("housekeeping", housekeeping.tune),
+        ("housekeeping", housekeeping.stall),
+        ("housekeeping", housekeeping.idle_stall),
+        ("housekeeping", housekeeping.idle_ready),
+        ("quarantine", quarantine.releases),  # a release starts no run
+        ("land", land.deadlock_chair),
+        ("land", land.carries),
+        ("launch", launch.launches),
         # phase-model initiatives: the queue a worker claims from, never a launch
-        *plan_phase_queue(basis.facts, now.strftime("%Y-%m-%dT%H:%M:%SZ") if now is not None else "", basis.gated),
-        *quarantine.widen,
-        *housekeeping.login_needs_chair,
-        *decompose.empty_needs_chair,
-        *launch.lease_stuck,
-        *quarantine.held_needs_chair,
-        *quarantine.no_progress_holds,
-        *decompose.stalled_needs_chair,
-        *quarantine.review,
-        *launch.unstarted_waiting_chair,
-        *launch.waiting_actions,
-        *launch.stuck_heads,
-        *launch.unlaunched,
-        *land.closes,
-        *launch.stopped,
-        *launch.schedule_update,
+        ("launch", plan_phase_queue(basis.facts, now.strftime("%Y-%m-%dT%H:%M:%SZ") if now is not None else "", basis.gated)),
+        ("quarantine", quarantine.widen),
+        ("housekeeping", housekeeping.login_needs_chair),
+        ("decompose", decompose.empty_needs_chair),
+        ("launch", launch.lease_stuck),
+        ("quarantine", quarantine.held_needs_chair),
+        ("quarantine", quarantine.no_progress_holds),
+        ("decompose", decompose.stalled_needs_chair),
+        ("quarantine", quarantine.review),
+        ("launch", launch.unstarted_waiting_chair),
+        ("launch", launch.waiting_actions),
+        ("launch", launch.stuck_heads),
+        ("launch", launch.unlaunched),
+        ("land", land.closes),
+        ("launch", launch.stopped),
+        ("launch", launch.schedule_update),
     ]
+    # A phase initiative is the worker's for its whole life: no old-model action of any planner may name it.
+    phase_ids = phase_model_ids(basis.facts)
+    return basis, launch, [(kind, withhold_old_model(actions, phase_ids)) for kind, actions in segments]
+
+
+def _plan_as_holder(
+    raw_facts: Facts, now: datetime | None, held: frozenset[str] = frozenset(), skip: frozenset[str] = frozenset()
+) -> list[Action]:
+    """The holder's tick, without the slots of the kinds in `skip` (those a queue worker runs)."""
+    basis, launch, segments = _holder_segments(raw_facts, now, held)
+    planned = [a for _kind, actions in segments for a in actions]
     # H7.1: one alarm per stall the tick sees and one all-clear per raised stall that no longer stands; a launch planned
     # this tick means the lanes are not idle. The hard stop means no launch on purpose, so only the land and
-    # repeated-failure checks stand.
-    # A phase initiative is the worker's for its whole life: no old-model action of any planner may name it.
-    planned = withhold_old_model(planned, phase_model_ids(basis.facts))
+    # repeated-failure checks stand. The alarm reads every kind's slots, a worker's too: an idle line a housekeeping
+    # worker sends is still the chair's idle line, so the tick does not raise a second one.
     alarms = plan_stall_alarm(basis.facts, planned, now, launch_paused=launch.launch_paused) if now is not None else []
-    return [*planned, *alarms]
+    return [*(a for kind, actions in segments if kind not in skip for a in actions), *alarms]
 
 
 def _parse_utc(ts: str | None) -> datetime | None:
@@ -1533,21 +1550,57 @@ def plan_housekeeping(facts: Facts, now: datetime) -> list[Action]:
 def plan_tick_held(facts: Facts, now: datetime | None = None, gate: CiGate = _UNPAUSED) -> TickPlan:
     """now is the tick's clock; without it no housekeeping, check_login, probe_host or host_back is planned.
 
+    A kind `chair_kinds.tick_skips` names (a queue worker runs it) is not planned here; `plan_kind` plans it.
+
     While `gate.paused`, a started initiative that waits only on a land not yet completed gets no relaunch and is
     named in `held_for_ci`; the caller reports it. An unpaused gate, or a tick the lease gates, holds nothing."""
     lease = facts["lease"]
     gated = _lease_gate(lease)
-    housekeeping = plan_housekeeping(facts, now) if now is not None else []
+    skip = chair_kinds.tick_skips(facts)
+    housekeeping = plan_housekeeping(facts, now) if now is not None and "housekeeping" not in skip else []
     login_checks = [*_login_check_actions(facts, now), *_probe_host_actions(facts, now)]
     held = _land_only_ids(facts["initiatives"], facts["approved"]) if gate.paused and gated is None else frozenset[str]()
-    holder = _withhold_blocked_hosts(_plan_as_holder(facts, now, held), facts) if gated is None else []
+    holder = _withhold_blocked_hosts(_plan_as_holder(facts, now, held, skip), facts) if gated is None else []
     # A lent lease plans the routine actions, then standby last, so the tick still reads as not acting.
     lent = gated is not None and gated[0]["kind"] == "standby" and lease.get("lent", False)
-    routine = _withhold_blocked_hosts(routine_only(_plan_as_holder(facts, now)), facts) if lent else []
-    actions = [*holder, *housekeeping, *login_checks] if gated is None else [*routine, *gated]
+    routine = _withhold_blocked_hosts(routine_only(_plan_as_holder(facts, now, skip=skip)), facts) if lent else []
+    # a listed kind no live worker holds, or worker leases unreadable for too long: nobody plans it, so say so
+    unowned = [*chair_kinds.unowned_actions(facts), *chair_kinds.unreadable_actions(facts)]
+    actions = [*holder, *housekeeping, *login_checks, *unowned] if gated is None else [*routine, *gated]
     return TickPlan([stamp(a, lease["epoch"]) for a in actions], tuple(sorted(held)))
 
 
 def plan_tick(facts: Facts, now: datetime | None = None) -> list[Action]:
     """The actions of `plan_tick_held` under an unpaused gate."""
     return plan_tick_held(facts, now).actions
+
+
+def plan_kind(kind: str, facts: Facts, now: datetime, held: frozenset[str] = frozenset()) -> list[Action]:
+    """The actions a queue worker of `kind` performs: that kind's slots of the holder's tick, in the tick's order, with
+    the hosts a blocked host holds back withheld as the tick withholds them. Housekeeping also carries the periodic
+    sweep (`plan_housekeeping`), which the tick drops when it skips the kind. Unstamped: the worker stamps each action
+    with its own lease's epoch. A kind no worker runs plans nothing."""
+    if kind not in chair_kinds.QUEUE_KINDS:
+        return []
+    _basis, _launch, segments = _holder_segments(facts, now, held)
+    slots = _withhold_blocked_hosts([a for k, actions in segments if k == kind for a in actions], facts)
+    return [*slots, *(plan_housekeeping(facts, now) if kind == "housekeeping" else [])]
+
+
+def tag_queue_kinds(actions: Sequence[Action], facts: Facts, now: datetime) -> list[Action]:
+    """The tick's actions with each one a queue worker could run marked `queue_kind` (housekeeping or watch), so its
+    perform can check that kind's lease again just before that action. An action is matched to `plan_kind`'s output
+    by everything but its lease epoch, one for one; the rest pass unmarked."""
+    owed = {kind: Counter(_unstamped(a) for a in plan_kind(kind, facts, now)) for kind in chair_kinds.QUEUE_KINDS}
+    tagged: list[Action] = []
+    for action in actions:
+        key = _unstamped(action)
+        kind = next((k for k, left in owed.items() if left[key] > 0), None)
+        if kind is not None:
+            owed[kind][key] -= 1
+        tagged.append({**action, "queue_kind": kind} if kind is not None else action)
+    return tagged
+
+
+def _unstamped(action: Action) -> str:
+    return repr(sorted((k, repr(v)) for k, v in action.items() if k != "epoch"))
