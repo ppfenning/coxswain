@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import argparse
-import difflib
 
 import yaml
 
 from agent_tools import cli
+from tests.comment_helpers import _comments, _edits
 
 CARTRIDGE = "policy:\n  dispatch:\n    max_in_flight: 2\n"
 REFUSAL = "orchestration needs another active lane host"
@@ -88,17 +88,6 @@ def _commented(tmp_path, monkeypatch, host_names, text=COMMENTED):
     profile, cartridge = _setup(tmp_path, monkeypatch, host_names)
     cartridge.write_text(text, encoding="utf-8")
     return profile, cartridge
-
-
-def _edits(before: str, after: str) -> list[tuple[str, list[str], list[str]]]:
-    """The non-equal line ranges between two texts, as (tag, lines before, lines after)."""
-    a, b = before.splitlines(), after.splitlines()
-    ops = difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes()
-    return [(tag, a[i1:i2], b[j1:j2]) for tag, i1, i2, j1, j2 in ops if tag != "equal"]
-
-
-def _comments(text: str) -> list[str]:
-    return [line for line in text.splitlines() if "#" in line]
 
 
 def test_on_keeps_comments_and_other_keys_through_its_handler(tmp_path, monkeypatch):

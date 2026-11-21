@@ -101,33 +101,19 @@ def test_dry_run_shows_the_minimal_yaml_write_with_no_skills_bindings(tmp_path, 
 def test_second_init_without_force_exits_2_and_changes_nothing(tmp_path, capsys):
     cartridges_dir = tmp_path / "cartridges"
     assert _main(["init", "acme", "--cartridges-dir", str(cartridges_dir)]) == 0
-    capsys.readouterr()  # discard the first, successful run's own "wrote" line
-    yaml_path = cartridges_dir / "acme" / "cartridge.yaml"
-    before = yaml_path.read_text(encoding="utf-8")
-
-    exit_code = _main(["init", "acme", "--cartridges-dir", str(cartridges_dir)])
-    out = capsys.readouterr().out
-
-    assert exit_code == 2
-    assert yaml_path.read_text(encoding="utf-8") == before
-    assert "wrote" not in out
-
-
-def test_refused_init_leaves_a_hand_edited_cartridge_byte_identical(tmp_path, capsys):
-    cartridges_dir = tmp_path / "cartridges"
-    assert _main(["init", "acme", "--cartridges-dir", str(cartridges_dir)]) == 0
     yaml_path = cartridges_dir / "acme" / "cartridge.yaml"
     yaml_path.write_text("# keep me\nteam: acme\ncustom_key: 1\n", encoding="utf-8")
     before = yaml_path.read_bytes()
-    capsys.readouterr()
+    capsys.readouterr()  # discard the first, successful run's own "wrote" line
 
     exit_code = _main(["init", "acme", "--cartridges-dir", str(cartridges_dir)])
-    err = capsys.readouterr().err
+    captured = capsys.readouterr()
 
     assert exit_code == 2
-    assert str(yaml_path) in err
-    assert "already exists" in err
     assert yaml_path.read_bytes() == before
+    assert "wrote" not in captured.out
+    assert str(yaml_path) in captured.err
+    assert "already exists" in captured.err
 
 
 def test_init_help_names_what_force_loses(capsys):
