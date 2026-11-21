@@ -26,8 +26,8 @@ from agent_tools.cli_tables_route import (
     PR_GROUP,
     ROUTE_COMMANDS,
     ROUTE_GROUP,
+    WORKER_FORGET,
 )
-from agent_tools.cli_tables_worker import WORKER_FORGET
 from core import module_facade
 
 
