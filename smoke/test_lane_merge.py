@@ -178,14 +178,14 @@ def test_a_task_a_stale_lane_already_landed_on_the_tip_is_adopted_not_applied_tw
     push is refused, and t1 is re-applied onto origin's tip, which now holds t2; when t2 rolls up, the tip's
     trailers already carry it: the lane adopts that commit, with its roll-up row, and applies nothing."""
     sandbox, repo, name, env, init_sha, launchable = merge_machine
-    launchable.scripted({**_answers(BOTH), "build@t1": _build("t1", 6), "build@t2": _build("t2", 15)})
+    launchable.scripted({**_answers(BOTH), "build@t1": _build("t1", 4), "build@t2": _build("t2", 8)})
     worker = Worker(sandbox, env, "once", "--name", name)
     try:
         _until(lambda: {s["task_id"] for s in _steps(sandbox) if s["kind"] == "build"} >= {"t1", "t2"}, 240,
                "t1's and t2's builds")
         other = sandbox.home / "stale"
         sandbox.git(repo.path.parent, "clone", "--quiet", "--branch", INIT, str(repo.origin), str(other))
-        for path, text in ((other / "notes" / "t2.txt", "t2\n"), (other / "waits" / "t2", "15\n")):
+        for path, text in ((other / "notes" / "t2.txt", "t2\n"), (other / "waits" / "t2", "8\n")):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text, encoding="utf-8")
         sandbox.git(other, "add", "-A")

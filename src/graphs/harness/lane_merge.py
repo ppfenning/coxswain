@@ -132,19 +132,23 @@ def has_markers(text: str) -> bool:
 
 
 def _added(base: str, side: str) -> Counter[str]:
-    """The non-blank lines `side` holds more often than `base`, with how many more: what that side added."""
+    """The non-blank lines `side` holds more often than `base`, with how many more: what that side added. Lines are
+    compared with their indentation (trailing whitespace aside): in Python a line's indent is its meaning."""
     def count(text: str) -> Counter[str]:
-        return Counter(line.strip() for line in text.splitlines() if line.strip())
+        return Counter(line.rstrip() for line in text.splitlines() if line.strip())
     return count(side) - count(base)
 
 
 def lost_lines(base: str, ours: str, theirs: str, merged: str) -> list[str]:
-    """Pure. The lines either side added to a file (against their common `base`) that the `merged` text does not hold
-    as often, sorted, compared without their indentation (a merge may nest an edit): a merge that drops one side's
-    edit to make the conflict go away loses lines here."""
-    have = Counter(line.strip() for line in merged.splitlines() if line.strip())
+    """Pure. The lines either side added to a file (against their common `base`) that the `merged` text did not add
+    as often (each counted as an addition over `base`, so a line the base already holds cannot hide a dropped copy),
+    sorted: a merge that drops one side's added line, or moves it to another indent, loses it here. A false alarm
+    costs one rebuild, the safe side.
+
+    It covers additions only. A merge that undoes a side's deletion, or keeps the old line beside the new one, adds
+    nothing it drops: that is left to both sides' cheap checks and `verify` commands on the merged tree."""
     wanted = _added(base, ours) | _added(base, theirs)
-    return sorted((wanted - have).elements())
+    return sorted((wanted - _added(base, merged)).elements())
 
 
 def brief(task: str, title: str, other: str, other_title: str, conflicted: Mapping[str, str], change: str) -> str:

@@ -29,7 +29,7 @@
 "smoke/test_lander_push.py": 10.2,
 "smoke/test_lander_unreadable_record.py": 8.5,
 "smoke/test_lane_env_check.py": 0.0,
-"smoke/test_lane_merge.py": 80.0,
+"smoke/test_lane_merge.py": 57.4,
 "smoke/test_lane_model_stamp.py": 6.6,
 "smoke/test_local_image.py": 0.3,
 "smoke/test_operator_commands.py": 6.1,

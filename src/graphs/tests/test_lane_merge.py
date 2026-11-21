@@ -80,14 +80,36 @@ def test_a_merge_keeping_both_sides_added_lines_loses_none():
 
 
 def test_a_merge_that_drops_one_sides_line_names_it():
-    assert lane_merge.lost_lines(BASE, OURS, THEIRS, OURS) == ["name = name.title()"]
-    assert lane_merge.lost_lines(BASE, OURS, THEIRS, THEIRS) == ["name = name.strip()"]
+    assert lane_merge.lost_lines(BASE, OURS, THEIRS, OURS) == ["    name = name.title()"]
+    assert lane_merge.lost_lines(BASE, OURS, THEIRS, THEIRS) == ["    name = name.strip()"]
+
+
+def test_a_dropped_addition_of_a_line_the_base_already_holds_is_still_lost():
+    """The base calls `flush()` in `a()`; theirs adds a `flush()` to `b()`; the merge drops it. The merged file still
+    holds the base's `flush()`, which must not stand in for the added one."""
+    base = "def a():\n    flush()\n\n\ndef b():\n    pass\n"
+    theirs = "def a():\n    flush()\n\n\ndef b():\n    flush()\n    pass\n"
+    ours = "def a():\n    flush()\n    log()\n\n\ndef b():\n    pass\n"
+    merged = "def a():\n    flush()\n    log()\n\n\ndef b():\n    pass\n"
+    assert lane_merge.lost_lines(base, ours, theirs, merged) == ["    flush()"]
+
+
+def test_a_line_moved_to_another_indent_is_lost():
+    """`return 0` added under the `if` and moved out from under it by the merge: its meaning changed."""
+    base = "def f(x):\n    if x:\n        pass\n    return 1\n"
+    theirs = "def f(x):\n    if x:\n        return 0\n    return 1\n"
+    merged = "def f(x):\n    if x:\n        pass\n    return 0\n    return 1\n"
+    assert lane_merge.lost_lines(base, base, theirs, merged) == ["        return 0"]
+
+
+def test_trailing_whitespace_alone_is_not_a_loss():
+    assert lane_merge.lost_lines(BASE, OURS, BASE, OURS.replace("strip()\n", "strip()   \n")) == []
 
 
 def test_a_line_both_sides_added_need_appear_once_and_a_line_added_twice_twice():
     twice = "def greet(name):\n    log()\n    log()\n    return name\n"
     assert lane_merge.lost_lines(BASE, OURS, OURS, OURS) == []
-    assert lane_merge.lost_lines(BASE, twice, BASE, "def greet(name):\n    log()\n    return name\n") == ["log()"]
+    assert lane_merge.lost_lines(BASE, twice, BASE, "def greet(name):\n    log()\n    return name\n") == ["    log()"]
     assert lane_merge.lost_lines("", "a\n", "b\n", "a\n") == ["b"]  # a file both sides added: no base
 
 
