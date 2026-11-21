@@ -173,10 +173,18 @@ def cmd_forget(a: argparse.Namespace) -> int:
     return 0 if done.verdict in ("forget", "already") else 1
 
 
+def _os_user() -> str:
+    """Edge. The OS user's name, or `operator` when the system cannot say (no login name, no passwd entry)."""
+    try:
+        return getpass.getuser() or "operator"
+    except (OSError, KeyError):
+        return "operator"
+
+
 def cmd_reopen(a: argparse.Namespace) -> int:
-    """`cox worker reopen INITIATIVE/PHASE --reason WHY`: put a phase that finished failed or quarantined back to
-    ready (`store_phases.reopen_phase`). Exit 0 when it is ready afterwards (reopened now, or ready already), 1 when
-    it was refused, 2 on a bad target or no profile."""
+    """`cox worker reopen INITIATIVE/PHASE --reason WHY`: put a phase that finished failed back to ready
+    (`store_phases.reopen_phase`). Exit 0 when it is ready afterwards (reopened now, or ready already), 1 when it was
+    refused, 2 on a bad target or no profile."""
     key = phase_reopen.target(str(a.target))
     if key is None:
         print(f"worker: {a.target!r} is not INITIATIVE/PHASE; nothing changed")
@@ -184,7 +192,7 @@ def cmd_reopen(a: argparse.Namespace) -> int:
     ws = _workspace(a)
     if ws is None:
         return 2
-    by = str(a.by or getpass.getuser())
+    by = str(a.by or _os_user())
     store = worker_ports.Store(ws / "runs")
     try:
         done = store.call(lambda c: store_phases.reopen_phase(c, *key, by, str(a.reason), dry_run=bool(a.dry_run)))

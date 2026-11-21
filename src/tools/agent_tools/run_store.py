@@ -507,12 +507,12 @@ def task_run_phases(runs_dir: Path, initiative: str, task_id: str) -> list[tuple
     return [(str(run), str(phase)) for run, phase in rows if str(run).rsplit("-", 1)[0] == initiative]
 
 
-def stopped_phases(runs_dir: Path, initiative: str) -> list[tuple[str, str]]:
-    """Edge. `(phase, outcome)` of each of `initiative`'s phase-queue rows finished failed or quarantined, by phase:
-    what only `cox worker reopen` retries. Empty with no store or an unreadable one."""
-    sql = ("SELECT phase, outcome FROM phase_queue WHERE initiative = {p} AND state = 'finished' "
-           "AND outcome IN ('failed', 'quarantined') ORDER BY phase")
-    return [(str(phase), str(outcome)) for phase, outcome in _store_tuples(runs_dir, sql, (initiative,), ("phase", "outcome"))]
+def failed_phases(runs_dir: Path, initiative: str) -> list[str]:
+    """Edge. Each of `initiative`'s phases whose phase-queue row finished failed, by name: what only `cox worker
+    reopen` retries. Empty with no store or an unreadable one."""
+    sql = ("SELECT phase FROM phase_queue WHERE initiative = {p} AND state = 'finished' AND outcome = 'failed' "
+           "ORDER BY phase")
+    return [str(row[0]) for row in _store_tuples(runs_dir, sql, (initiative,), ("phase",))]
 
 
 _GATE_FACTS = ("handoff_verdict", "charter_verdict", "adversary_verdict", "arbiter_verdict", "fix_loop_attempts",

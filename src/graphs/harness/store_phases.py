@@ -603,7 +603,7 @@ class Reopened:
 
 
 def reopen_phase(conn: Connection, initiative: str, phase: str, by: str, why: str, *, dry_run: bool = False) -> Reopened:
-    """Edge. `cox worker reopen`: put a phase that finished failed or quarantined back to ready with its attempts at
+    """Edge. `cox worker reopen`: put a phase that finished failed back to ready with its attempts at
     0, through the chair's own `reopen` write (`_apply`), which ends its last review episode; `by` and `why` become
     the row's `updated_by` and reason (`phase_reopen.reason`). Decided on the row as read, locked until the write
     commits (`phase_reopen.verdict`): nothing is written for any other verdict, nor with `dry_run`."""

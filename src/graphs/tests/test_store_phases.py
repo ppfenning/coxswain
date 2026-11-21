@@ -715,15 +715,17 @@ def test_reopen_again_on_the_ready_row_changes_nothing(conn):
     assert len(store_phases.review_rounds(conn, "ship", "p1")) == 2  # no second boundary
 
 
-def test_reopen_takes_a_quarantined_phase_and_a_failed_one_with_no_round_writes_no_boundary(conn):
+def test_reopen_leaves_a_quarantined_phase_to_triage_and_a_failed_one_with_no_round_writes_no_boundary(conn):
     store_phases.apply_changes(conn, [_change(), _change("p2", seq=1)], "chair-loop")
     first = store_phases.claim_next(conn, "w1", [], 1)
     store_phases.finish(conn, first, "w1", "quarantined", "goal missed")
     second = store_phases.claim_next(conn, "w1", [], 1)
     store_phases.finish(conn, second, "w1", "failed", "the phase smoke failed")
-    assert store_phases.reopen_phase(conn, "ship", "p1", "pat", "triaged").verdict == "reopen"
+    quarantined = store_phases.get_row(conn, "ship", "p1")
+    assert store_phases.reopen_phase(conn, "ship", "p1", "pat", "triaged").verdict == "quarantined"
+    assert store_phases.get_row(conn, "ship", "p1") == quarantined  # triage owns it: nothing written
     assert store_phases.reopen_phase(conn, "ship", "p2", "pat", "fixed").verdict == "reopen"
-    assert {store_phases.get_row(conn, "ship", p)["state"] for p in ("p1", "p2")} == {"ready"}
+    assert store_phases.get_row(conn, "ship", "p2")["state"] == "ready"
     assert store_phases.review_rounds(conn, "ship", "p2") == []
 
 

@@ -1,16 +1,20 @@
-"""`cox worker reopen`: the operator's retry of a new-model phase that finished `failed` or `quarantined`.
+"""`cox worker reopen`: the operator's retry of a new-model phase that finished `failed`.
 
 A phase that finished failed (its claims ran out, or its smoke failed) is terminal: the chair reopens only a phase
 that finished approved or quarantined and is wanted again (`chair_phase_queue._REOPENED`), so a failed smoke never
 loops on its own. The operator retries it here, on purpose and with a reason. The row goes back to `ready` with its
 attempts at 0, claimable at once, and a reopen from `finished` ends the last review episode (`store_phases._apply`'s
-`reopen`, which writes the L6 `reopened` round when the phase has rounds), so the next lane reviews afresh. Nothing on
-the phase branch is touched: the next claim resumes from the tasks' trailers there (`lane_progress.resume_plan`) and
-builds only what is missing.
+`reopen`, which writes the L6 `reopened` round when the phase has rounds), so the next lane reviews afresh; for the
+initiative review's row that resets its round cap too. Nothing on the phase branch is touched: the next claim resumes
+from the tasks' trailers there (`lane_progress.resume_plan`) and builds only what is missing.
+
+A phase finished quarantined is refused: triage owns it. Its review's quarantine reaches its tasks through the
+chair (`chair_phase_queue.quarantines`), and the chair reopens the row itself once triage readies them; an operator's
+reopen would race that write and give the tasks two owners.
 
 `verdict` decides on the row as the store holds it, locked (`store_phases.reopen_phase`), so the write is the
-decision's: a claimed row, an approved one and a phase with no queue row (not on the new model) are refused; a row
-already `ready` is left as it is, so a repeat changes nothing. Everything here is pure.
+decision's: a claimed row, an approved or quarantined one and a phase with no queue row (not on the new model) are
+refused; a row already `ready` is left as it is, so a repeat changes nothing. Everything here is pure.
 """
 
 from __future__ import annotations
@@ -20,12 +24,13 @@ from typing import Literal, cast
 
 __all__ = ["REOPENABLE", "Verdict", "change", "note", "reason", "release_hints", "target", "verdict"]
 
-REOPENABLE = frozenset({"failed", "quarantined"})  # the outcomes an operator may reopen
+REOPENABLE = frozenset({"failed"})  # the outcomes an operator may reopen
 
-# reopen: finished failed or quarantined, so it goes back to ready. already: it is ready; nothing to do. absent: no
-# queue row, so no phase of the new model. claimed: a worker holds it. approved: it finished approved. other: any
-# other state or outcome (waiting, built, withdrawn, an initiative review finished revised), which the chair moves.
-Verdict = Literal["reopen", "already", "absent", "claimed", "approved", "other"]
+# reopen: finished failed, so it goes back to ready. already: it is ready; nothing to do. absent: no queue row, so no
+# phase of the new model. claimed: a worker holds it. approved: it finished approved. quarantined: it finished
+# quarantined, and triage owns it. other: any other state or outcome (waiting, built, withdrawn, an initiative review
+# finished revised), which the chair moves.
+Verdict = Literal["reopen", "already", "absent", "claimed", "approved", "quarantined", "other"]
 
 type Row = Mapping[str, object]
 
@@ -47,8 +52,8 @@ def verdict(row: Row | None) -> Verdict:
         return "claimed"
     if state == "finished" and outcome in REOPENABLE:
         return "reopen"
-    if state == "finished" and outcome == "approved":
-        return "approved"
+    if state == "finished" and outcome in ("approved", "quarantined"):
+        return cast("Verdict", outcome)
     return "other"
 
 
@@ -83,13 +88,15 @@ def note(initiative: str, phase: str, found: Verdict, prior: Row | None, after: 
         "claimed": f"worker: {key} is claimed by {was.get('claimed_by')} (epoch {was.get('claim_epoch')}); nothing "
                    "changed",
         "approved": f"worker: {key} finished approved; there is nothing to retry; nothing changed",
+        "quarantined": f"worker: {key} finished quarantined: triage owns it, and the chair reopens it once its tasks "
+                       "are ready again; nothing changed",
         "other": f"worker: {key} is {was.get('state')}{' ' + str(was['outcome']) if was.get('outcome') else ''}, "
-                 "not finished failed or quarantined; the chair moves it; nothing changed",
+                 "not finished failed; the chair moves it; nothing changed",
     }[found]
 
 
-def release_hints(initiative: str, left: Sequence[tuple[str, str]]) -> list[str]:
-    """What `cox route release` adds for each phase (phase, outcome) of `initiative` it leaves finished failed or
-    quarantined: releasing a hold does not retry a finished phase."""
-    return [f"release: phase {initiative}/{phase} is finished {outcome}; reopen it with "
-            f"`cox worker reopen {initiative}/{phase} --reason ...`" for phase, outcome in left]
+def release_hints(initiative: str, failed: Sequence[str]) -> list[str]:
+    """What `cox route release` adds for each phase of `initiative` it leaves finished failed: releasing a hold does
+    not retry a finished phase."""
+    return [f"release: phase {initiative}/{phase} is finished failed; reopen it with "
+            f"`cox worker reopen {initiative}/{phase} --reason ...`" for phase in failed]

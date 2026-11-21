@@ -580,7 +580,7 @@ WORKER_FORGET = commands.Command(
 )
 
 WORKER_REOPEN = commands.Command(
-    "reopen", "worker", "put a new-model phase that finished failed or quarantined back to ready, for another try",
+    "reopen", "worker", "put a new-model phase that finished failed back to ready, for another try",
     (
         commands.Arg(("target",), {"metavar": "INITIATIVE/PHASE", "help": "the phase, as `cox worker status` lists it"}),
         commands.Arg(("--reason",), {"required": True, "help": "why it is tried again; recorded on the phase's row"}),
@@ -593,8 +593,10 @@ WORKER_REOPEN = commands.Command(
         "A phase that finished failed (its claims ran out, or its smoke failed) stays finished: the chair never "
         "retries it on its own, and releasing a hold does not either. Reopen it here: its row goes back to ready with "
         "0 attempts, the reason and who reopened it are recorded on the row, and its review starts a new episode. "
-        "Nothing on the phase branch is touched, so the next claim builds only the tasks still missing.\n"
-        "A quarantined phase may be reopened the same way. A claimed phase, an approved one and a phase that is not "
-        "on the new model are refused. A phase already ready is left as it is."
+        "Nothing on the phase branch is touched, so the next claim builds only the tasks still missing. Reopening a "
+        "failed initiative-review row starts a new episode too, so its round cap starts again from zero.\n"
+        "A quarantined phase is refused: triage owns it, and the chair reopens it once its tasks are ready again. A "
+        "claimed phase, an approved one and a phase that is not on the new model are refused too. A phase already "
+        "ready is left as it is."
     ),
 )

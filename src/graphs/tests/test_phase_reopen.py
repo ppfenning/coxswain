@@ -13,7 +13,7 @@ def _row(state="finished", outcome="failed", **extra):
 
 @pytest.mark.parametrize(("row", "verdict"), [
     (_row(), "reopen"),
-    (_row(outcome="quarantined"), "reopen"),
+    (_row(outcome="quarantined"), "quarantined"),  # triage owns it; the chair reopens it once its tasks are ready
     (_row(outcome="approved"), "approved"),
     (_row(outcome="revised"), "other"),  # an initiative review the chair re-reviews once its revision merged
     (_row(state="claimed", outcome=""), "claimed"),
@@ -23,7 +23,7 @@ def _row(state="finished", outcome="failed", **extra):
     (_row(state="built", outcome=""), "other"),
     (None, "absent"),  # no queue row: not a phase on the new model
 ])
-def test_only_a_finished_failed_or_quarantined_row_is_reopened(row, verdict):
+def test_only_a_finished_failed_row_is_reopened(row, verdict):
     assert phase_reopen.verdict(row) == verdict
 
 
@@ -57,14 +57,16 @@ def test_the_note_says_what_changed_and_why_each_refusal_changed_nothing():
         "worker: ship/p1 is claimed by w1 (epoch 4); nothing changed")
     assert "finished approved; there is nothing to retry" in phase_reopen.note(
         "ship", "p1", "approved", _row(outcome="approved"), None)
-    assert phase_reopen.note("ship", "p1", "other", _row(state="cancelled", outcome=""), None).startswith(
-        "worker: ship/p1 is cancelled, not finished failed or quarantined")
+    assert phase_reopen.note("ship", "p1", "quarantined", _row(outcome="quarantined"), None).startswith(
+        "worker: ship/p1 finished quarantined: triage owns it")
+    assert phase_reopen.note("ship", "p1", "other", _row(state="cancelled", outcome=""), None) == (
+        "worker: ship/p1 is cancelled, not finished failed; the chair moves it; nothing changed")
     assert phase_reopen.note("ship", "p1", "other", _row(outcome="revised"), None).startswith(
         "worker: ship/p1 is finished revised, not")
 
 
-def test_a_release_names_each_finished_phase_it_leaves_and_the_reopen_that_retries_it():
+def test_a_release_names_each_failed_phase_it_leaves_and_the_reopen_that_retries_it():
     assert phase_reopen.release_hints("ship", []) == []
-    assert phase_reopen.release_hints("ship", [("p1", "failed"), ("p2", "quarantined")]) == [
+    assert phase_reopen.release_hints("ship", ["p1", "p2"]) == [
         "release: phase ship/p1 is finished failed; reopen it with `cox worker reopen ship/p1 --reason ...`",
-        "release: phase ship/p2 is finished quarantined; reopen it with `cox worker reopen ship/p2 --reason ...`"]
+        "release: phase ship/p2 is finished failed; reopen it with `cox worker reopen ship/p2 --reason ...`"]
