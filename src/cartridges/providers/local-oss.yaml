@@ -31,6 +31,7 @@ budget_usd:
   deep:      0.80
 role_budget_usd:
   review_charter:   1.20
+  review_phase:     1.50
   review_adversary: 1.20
   triage:    0.80
   build:     1.50
@@ -68,6 +69,7 @@ defaults:
   triage:          judge
   validate_chunk:  reason
   validate_phase:  judge
+  review_phase:    reason
 
 # System one is off by default. The local kNN backend was removed on 2026-09-25:
 # measured offline over this workspace's decisions, it could not reach the graduation

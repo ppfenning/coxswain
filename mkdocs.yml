@@ -63,6 +63,7 @@ nav:
           - phase-validate: methodology/graphs/phase-validate.md
           - review-diff: methodology/graphs/review-diff.md
           - rescue-review: methodology/graphs/rescue-review.md
+          - phase-review: methodology/graphs/phase-review.md
           - coxswain: methodology/graphs/coxswain.md
           - epic-reconcile: methodology/graphs/epic-reconcile.md
           - retro-propose: methodology/graphs/retro-propose.md

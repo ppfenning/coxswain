@@ -84,11 +84,6 @@ def test_recorded_writes_a_revise_the_budget_cannot_buy_as_its_quarantine():
     assert review_loop.recorded(rounds, 3, "approve", "fine", Progress()) == ("approve", "fine")
 
 
-def test_phase_verdict_maps_a_reject_to_quarantine():
-    assert [review_loop.phase_verdict(v) for v in ("approve", "revise", "reject", "")] == [
-        "approve", "revise", "quarantine", "quarantine"]
-
-
 def test_rounds_of_reads_store_rows_in_round_order():
     rows = [{"round": 2, "verdict": "approve", "reason": "", "revision_json": {}, "cost_usd": 0.5},
             {"round": 1, "verdict": "revise", "reason": "dup", "revision_json": {"id": "p1-rev-1"}, "cost_usd": 1}]

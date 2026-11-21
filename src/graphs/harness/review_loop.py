@@ -36,7 +36,6 @@ __all__ = [
     "Step",
     "episode",
     "next",
-    "phase_verdict",
     "recorded",
     "revision_id",
     "revision_task",
@@ -136,12 +135,6 @@ def next(rounds: Sequence[Round], progress: Progress, cap: int = CAP, spent: flo
         return Step("build_revision", last.number)
     upcoming = max((r.number for r in rounds), default=0) + 1
     return Step("review" if upcoming in progress.smoked else "smoke", upcoming)
-
-
-def phase_verdict(review_verdict: str) -> str:
-    """The phase's verdict for the review's: `approve` and `revise` as they are, anything else (`reject`, or an
-    arbiter's answer outside the schema) is `quarantine`."""
-    return review_verdict if review_verdict in ("approve", "revise") else "quarantine"
 
 
 def recorded(rounds: Sequence[Round], number: int, verdict: str, reason: str, progress: Progress, cap: int = CAP,
