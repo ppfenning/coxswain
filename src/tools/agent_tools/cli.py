@@ -27,6 +27,7 @@ from agent_tools.cli_tables_route import (
     ROUTE_COMMANDS,
     ROUTE_GROUP,
     WORKER_FORGET,
+    WORKER_REOPEN,
 )
 from core import module_facade
 
@@ -1091,7 +1092,7 @@ WORKER_GROUP = commands.Group(
         "it qualifies for, runs it through the harness on this machine, and keeps its claim alive while it runs.\n"
         "Nothing reaches a worker over ssh: it pulls."
     ),
-    epilog="examples:\n  cox worker status\n  cox worker once\n  cox worker run --capability os:macos\n  cox worker checkout https://example.org/app.git ~/repos/app\n  cox worker forget devbox",
+    epilog="examples:\n  cox worker status\n  cox worker once\n  cox worker run --capability os:macos\n  cox worker checkout https://example.org/app.git ~/repos/app\n  cox worker forget devbox\n  cox worker reopen ship/p1 --reason \"the flaky check is fixed\"",
 )
 WORKER_COMMANDS = [
     commands.Command(
@@ -1120,6 +1121,7 @@ WORKER_COMMANDS = [
             "Deleting it costs only time: a clone never keeps borrowing from it."),
     ),
     WORKER_FORGET,
+    WORKER_REOPEN,
 ]
 
 CHAIR_GROUP = commands.Group(

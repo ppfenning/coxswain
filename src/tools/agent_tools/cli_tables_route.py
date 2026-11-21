@@ -1,5 +1,5 @@
-"""The command tables for filing and moving work: `mcp`, `courier`, `plan`, `epic`, `pr` and `route`, and two rows
-`cli` binds into other groups (`lander release`, `worker forget`).
+"""The command tables for filing and moving work: `mcp`, `courier`, `plan`, `epic`, `pr` and `route`, and three rows
+`cli` binds into other groups (`lander release`, `worker forget`, `worker reopen`).
 
 Data only, kept out of `agent_tools.cli` for H9 (docs/hardening.md). Each row names its handler as an
 `agent_tools.cli:...` string, so importing this module imports no command module; `cli` binds the rows
@@ -576,5 +576,25 @@ WORKER_FORGET = commands.Command(
         "its row is marked `stopping`, and the next start of the name takes it over.\nA row that records a machine "
         "and was beaten within 900 s may be a running worker, so it is refused without --force. A row not `up` is "
         "left as it is."
+    ),
+)
+
+WORKER_REOPEN = commands.Command(
+    "reopen", "worker", "put a new-model phase that finished failed or quarantined back to ready, for another try",
+    (
+        commands.Arg(("target",), {"metavar": "INITIATIVE/PHASE", "help": "the phase, as `cox worker status` lists it"}),
+        commands.Arg(("--reason",), {"required": True, "help": "why it is tried again; recorded on the phase's row"}),
+        commands.Arg(("--by",), {"help": "who reopens it; default the OS user"}),
+        commands.Arg(("--dry-run",), {"action": "store_true", "help": "say what would change and write nothing"}),
+        commands.Arg(("--profile",), {"help": "the routing profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
+    ),
+    "agent_tools.cli:_worker_reopen", False, (), defaults={"profile": None},
+    description=(
+        "A phase that finished failed (its claims ran out, or its smoke failed) stays finished: the chair never "
+        "retries it on its own, and releasing a hold does not either. Reopen it here: its row goes back to ready with "
+        "0 attempts, the reason and who reopened it are recorded on the row, and its review starts a new episode. "
+        "Nothing on the phase branch is touched, so the next claim builds only the tasks still missing.\n"
+        "A quarantined phase may be reopened the same way. A claimed phase, an approved one and a phase that is not "
+        "on the new model are refused. A phase already ready is left as it is."
     ),
 )

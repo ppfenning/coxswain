@@ -578,10 +578,16 @@ def _route_release(a: argparse.Namespace) -> int:
     if runs_dir is None:
         print(f"route: {reason}")
         return 2
-    return route_hold.release(
+    code = route_hold.release(
         runs_dir.parent, runs_dir, a.id, run_store.read_queue(runs_dir), initiative_live=_live_runs(runs_dir, _now_iso()),
         dry_run=a.dry_run, now=datetime.datetime.now(datetime.UTC),
     )
+    if code == 0:  # a hold released leaves a finished phase finished: say so, and how to retry it
+        from harness import phase_reopen
+
+        for line in phase_reopen.release_hints(a.id, run_store.stopped_phases(runs_dir, a.id)):
+            print(line)
+    return code
 
 
 def _route_set_stage(a: argparse.Namespace, stage: str) -> int:

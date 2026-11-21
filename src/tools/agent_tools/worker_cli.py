@@ -1,8 +1,9 @@
 """`cox worker`: run the phase worker on this machine, or look at the phase queue and the workers.
 
 `run` claims and runs phases until interrupted; `once` makes one claim pass and runs what it claimed to its end;
-`status` prints the queue and the registry; `checkout` clones a repository through this machine's mirror
-(`harness.worktree.clone_worktree`), so a machine joining as a worker gets the checkout its `repo:` token needs.
+`status` prints the queue and the registry; `reopen` retries a phase that finished failed (`harness.phase_reopen`);
+`checkout` clones a repository through this machine's mirror (`harness.worktree.clone_worktree`), so a machine
+joining as a worker gets the checkout its `repo:` token needs.
 The handlers are thin: the loop is `worker.py`, the effects `worker_ports.py`, the store `harness.store_phases`.
 There is no service unit yet: the CLI is the whole surface.
 """
@@ -10,6 +11,7 @@ There is no service unit yet: the CLI is the whole surface.
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 import signal
@@ -19,7 +21,7 @@ from pathlib import Path
 from typing import cast
 
 from agent_tools import worker, worker_ports
-from harness import phase_pick, repo_cache, store_phases, worker_identity, worktree
+from harness import phase_pick, phase_reopen, repo_cache, store_phases, worker_identity, worktree
 
 
 def claim_of(row: Mapping[str, object], now: str) -> dict[str, object] | None:
@@ -169,6 +171,31 @@ def cmd_forget(a: argparse.Namespace) -> int:
         store.close()
     print(worker_identity.forget_note(a.name, done.verdict, done.prior))
     return 0 if done.verdict in ("forget", "already") else 1
+
+
+def cmd_reopen(a: argparse.Namespace) -> int:
+    """`cox worker reopen INITIATIVE/PHASE --reason WHY`: put a phase that finished failed or quarantined back to
+    ready (`store_phases.reopen_phase`). Exit 0 when it is ready afterwards (reopened now, or ready already), 1 when
+    it was refused, 2 on a bad target or no profile."""
+    key = phase_reopen.target(str(a.target))
+    if key is None:
+        print(f"worker: {a.target!r} is not INITIATIVE/PHASE; nothing changed")
+        return 2
+    ws = _workspace(a)
+    if ws is None:
+        return 2
+    by = str(a.by or getpass.getuser())
+    store = worker_ports.Store(ws / "runs")
+    try:
+        done = store.call(lambda c: store_phases.reopen_phase(c, *key, by, str(a.reason), dry_run=bool(a.dry_run)))
+    finally:
+        store.close()
+    if a.dry_run and done.verdict == "reopen":
+        print(f"worker: dry run: {key[0]}/{key[1]} is finished {(done.prior or {}).get('outcome')}; it would be "
+              f"ready with 0 attempts, \"{phase_reopen.reason(by, str(a.reason))}\"; nothing written")
+    else:
+        print(phase_reopen.note(*key, done.verdict, done.prior, done.after))
+    return 0 if done.verdict in ("reopen", "already") else 1
 
 
 def cmd_checkout(a: argparse.Namespace) -> int:

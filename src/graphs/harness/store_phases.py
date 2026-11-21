@@ -16,7 +16,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
 
-from harness import initiative_review, phase_pick, review_loop, worker_identity
+from harness import initiative_review, phase_pick, phase_reopen, review_loop, worker_identity
 from harness.store_dialect import Cell, Connection, Json, insert_ignore, json_load, json_text, upsert
 from harness.store_steps import put_round, put_step, round_row
 from harness.store_types import StepRow
@@ -27,6 +27,7 @@ __all__ = [
     "Claim",
     "Forgotten",
     "Registration",
+    "Reopened",
     "apply_changes",
     "beat_worker",
     "claim_next",
@@ -44,6 +45,7 @@ __all__ = [
     "put_steps_fenced",
     "register",
     "release",
+    "reopen_phase",
     "review_rounds",
     "rollup_rows",
     "set_run",
@@ -588,6 +590,36 @@ def forget_worker(conn: Connection, name: str, *, force: bool = False) -> Forgot
         if verdict == "forget":
             conn.execute(f"UPDATE workers SET state = 'stopping' WHERE name = {p} AND state = 'up'", (name,))
     return Forgotten(verdict, prior)
+
+
+@dataclass(frozen=True)
+class Reopened:
+    """What `reopen_phase` did: `phase_reopen.verdict`'s verdict, the row before, and the row after (the row before
+    when nothing was written)."""
+
+    verdict: phase_reopen.Verdict
+    prior: Row | None
+    after: Row | None
+
+
+def reopen_phase(conn: Connection, initiative: str, phase: str, by: str, why: str, *, dry_run: bool = False) -> Reopened:
+    """Edge. `cox worker reopen`: put a phase that finished failed or quarantined back to ready with its attempts at
+    0, through the chair's own `reopen` write (`_apply`), which ends its last review episode; `by` and `why` become
+    the row's `updated_by` and reason (`phase_reopen.reason`). Decided on the row as read, locked until the write
+    commits (`phase_reopen.verdict`): nothing is written for any other verdict, nor with `dry_run`."""
+    p = conn.dialect.placeholder
+    lock = " FOR UPDATE" if conn.dialect.name == "postgres" else ""
+    with conn.transaction():
+        now = store_now(conn)
+        found = conn.query_one(f"SELECT {', '.join(PHASE_COLUMNS)} FROM phase_queue WHERE initiative = {p} "
+                               f"AND phase = {p}{lock}", (initiative, phase))
+        prior = None if found is None else _decode(PHASE_COLUMNS, found)
+        verdict = phase_reopen.verdict(prior)
+        if verdict != "reopen" or prior is None or dry_run:
+            return Reopened(verdict, prior, prior)
+        if not _apply(conn, phase_reopen.change(prior, by, why), by, now):
+            raise RuntimeError(f"the reopen of {initiative}/{phase} matched no row under its own lock")
+        return Reopened(verdict, prior, get_row(conn, initiative, phase))
 
 
 def beat_worker(conn: Connection, name: str, machine_id: str) -> bool:
