@@ -843,6 +843,7 @@ def scripted_epic_responses(patch: str, files: Sequence[str]) -> dict[str, objec
         "plan": {"steps": ["write the file"], "files_expected": list(files), "out_of_scope": []},
         "build": {"patch": patch, "summary": "built", "files_touched": list(files), "commands_run": []},
         "review_charter": {"verdict": "approve", "findings": [], "rationale": "matches the charter"},
+        "review_phase": {"verdict": "approve", "findings": [], "rationale": "the goal is met and nothing is spare"},
         "validate_chunk": {"satisfied": True, "gaps": [], "reasoning": "the description is satisfied"},
         "validate_phase": {"goal_met": True, "partial": False, "missing": [], "quarantine_blocks_dependents": False,
                            "reasoning": "the pieces add up"},

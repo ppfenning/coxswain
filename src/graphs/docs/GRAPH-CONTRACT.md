@@ -137,6 +137,7 @@ staying small, enforced at the seam where it actually matters.
 | `coxswain` | one `dispatch` node over a driver-assembled docket. Selects; the driver invokes. |
 | `review-diff` | review_charter → review_adversary → verify_evidence → [arbitrate]. Reviews an arbitrary diff, outside any build's own run. |
 | `rescue-review` | handoff → review_charter → review_adversary → [arbitrate] → emit. One review round over a patch that already exists. |
+| `phase-review` | review_phase → review_adversary → [arbitrate] → emit. One review round of a phase branch against its base; the phase lane runs it. |
 
 All eleven are specified in `graphs/`, declare a `SPEC`, and are implemented. The table names each graph by its `GRAPH_NAME`; `shell.py` takes the subcommand its `SPEC` declares (for example `decompose`, `lifecycle`, `validate`, `cos`, `reconcile`, `retro`, and `triage-quarantine` for `triage`).
 

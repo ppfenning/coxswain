@@ -63,7 +63,8 @@ command once. So an initiative already on the old model checks what it checked b
 land` and the chair's carry do the same. The lander's gate for a phase-model initiative arrives with the phase-model
 lander.
 
-On the phase model, a phase whose smoke fails gets no review and is not parked `built`. A failing check finishes the
+On the phase model, a phase whose smoke passes goes to its review, in the same lane (`phase-review`), and the smoke
+runs again before each later round. A phase whose smoke fails gets no review. A failing check finishes the
 phase `failed` at once, with the failure as its reason, because a retry would run the same commands on the same
 commit. A smoke that could not run (a harness fault) goes back to the queue once. A second harness fault on the same
 commit finishes the phase `failed`. Either way the operator decides what happens next. A pass counts as evidence
