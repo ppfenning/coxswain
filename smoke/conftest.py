@@ -241,6 +241,17 @@ with psycopg.connect(url, autocommit=True) as conn:
             except errors.ObjectInUse:
                 continue
             print(name)
+    elif verb == "roles":  # `names` is LIKE patterns here
+        for pattern in names:
+            for (rolname,) in conn.execute("SELECT rolname FROM pg_roles WHERE rolname LIKE %s", (pattern,)):
+                print(rolname)
+    elif verb == "drop-roles":  # a role something still depends on stays; the next reap tries again
+        for name in names:
+            try:
+                conn.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(name)))
+            except (errors.DependentObjectsStillExist, errors.ObjectInUse):
+                continue
+            print(name)
     elif verb == "copy":  # `names` is the new database, then the template it copies
         name, template = names
         conn.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(name)))
@@ -280,27 +291,44 @@ class SessionDatabases:
         """Every `smoke_` database on the server."""
         return self._admin("list", r"smoke\_%", must=True).stdout.split()
 
+    def role_names(self) -> list[str]:
+        """Every role a smoke session makes: worker logins (`cox_w_smoke_...`) and the rest (`smoke_...`)."""
+        return self._admin("roles", r"cox\_w\_smoke\_%", r"smoke\_%", must=True).stdout.split()
+
+    def drop_roles(self, *names: str) -> list[str]:
+        """Drop the roles, in the order given; return the names it dropped."""
+        return self._admin("drop-roles", *names, must=True).stdout.split() if names else []
+
     def reap(self) -> list[str]:
-        """Drop the databases created more than `plan.STALE_AFTER_S` ago that nobody is connected to; return the names
-        it dropped. A killed session's connections are gone with it, so its databases go; a live one's stay."""
-        stale = plan.stale_databases(self.names(), int(time.time()))
-        return self._admin("reap", *stale, must=True).stdout.split() if stale else []
+        """Drop the databases, then the roles, created more than `plan.STALE_AFTER_S` ago that nothing still holds;
+        return the names it dropped. A killed session's connections are gone with it, so its databases and roles go; a
+        live one's stay. Databases go first, so a role that only they depended on goes in the same reap."""
+        now = int(time.time())
+        stale = plan.stale_databases(self.names(), now)
+        dropped = self._admin("reap", *stale, must=True).stdout.split() if stale else []
+        return dropped + self.drop_roles(*plan.stale_roles(self.role_names(), now))
 
     def drop_prefix(self, prefix: str) -> None:
         self.drop(*(name for name in self.names() if name.startswith(prefix)))
 
+    def drop_session(self, session: str) -> None:
+        """Drop every database, then every role, carrying the session's prefix."""
+        self.drop_prefix(plan.session_prefix(session))
+        prefixes = plan.session_role_prefixes(session)
+        self.drop_roles(*plan.role_drop_order(n for n in self.role_names() if n.startswith(prefixes)))
+
 
 @pytest.fixture(scope="session")
 def session_databases(postgres: str, install: Install) -> Iterator[SessionDatabases]:
-    """The session's handle on its server's databases. At the start it reaps the ones a killed session left behind; at
-    the end it drops every one still carrying this session's prefix. On a container the server goes away whole, so the
-    reap finds nothing there."""
+    """The session's handle on its server's databases and roles. At the start it reaps the ones a killed session left
+    behind; at the end it drops every one still carrying this session's prefix. On a container the server goes away
+    whole, so the reap finds nothing there."""
     databases = SessionDatabases(postgres, install)
     databases.reap()
     try:
         yield databases
     finally:
-        databases.drop_prefix(plan.session_prefix(SESSION))
+        databases.drop_session(SESSION)
 
 
 # --- the session's store template ------------------------------------------------------------------------------

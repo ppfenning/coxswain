@@ -47,7 +47,11 @@ without mocks in `tests/test_smoke_plan.py`.
   go, its template among them. The reap drops without `FORCE`, so Postgres refuses to drop a database someone is still
   connected to, and the reap leaves it. The age is the database's own, not its session's. A name not shaped
   `smoke_<12 hex>_<epoch>_` is left alone. At the end of the session it drops every database still carrying the
-  session's prefix. Every name reaches SQL through `psycopg.sql.Identifier`.
+  session's prefix. Roles are server-wide, so the roles a test makes are named the same way: a worker login is
+  `cox_w_smoke_<session>_<created>_<hash>` (`plan.worker_name`) and a store owner `smoke_<session>_<created>_owner_<hash>`
+  (`plan.scoped_name`). The session's end drops its roles after its databases, and the reap drops a killed session's
+  by age (`plan.stale_roles`), worker logins before other roles. A role something still depends on is left for the
+  next reap. Every name reaches SQL through `psycopg.sql.Identifier`.
 - **`store_template`** (once per session, after the reap): a database at the newest schema, named
   `smoke_<session>_<created>_template` (`plan.template_name`). It is created and opened once by `harness.store_cli`,
   so the schema migrations apply the way they do on any store, under the install's own sandboxed environment. The

@@ -626,6 +626,30 @@ def test_a_run_s_seconds_sum_per_file_and_rewrite_only_the_files_it_measured():
     assert text.splitlines()[1:3] == ['"smoke/test_a.py": 3.2,', '"smoke/test_c.py": 5.0']  # one file per line, sorted
 
 
+def test_a_test_s_worker_and_role_names_carry_its_session_and_creation_time():
+    database = plan.database_name("smoke/test_worker_role.py::test_a", SESSION_ID, CREATED)
+    worker = plan.worker_name(database)
+    assert worker == f"smoke-{SESSION_ID}-{CREATED}-{database.rsplit('_', 1)[-1]}"
+    login = plan.LOGIN_PREFIX + worker.replace("-", "_") + "_c3"  # the longest one the tests make
+    owner = plan.scoped_name(database, "owner")
+    assert len(login) <= 63 and owner == f"smoke_{SESSION_ID}_{CREATED}_owner_{database.rsplit('_', 1)[-1]}"
+    assert login.startswith(plan.session_role_prefixes(SESSION_ID)) and owner.startswith(plan.session_role_prefixes(SESSION_ID))
+    other = plan.database_name("smoke/test_worker_role.py::test_a", "ba9876543210", CREATED)
+    assert plan.worker_name(other) != worker and plan.scoped_name(other, "owner") != owner
+    with pytest.raises(ValueError):
+        plan.worker_name("smoke_template_0123")
+
+
+def test_stale_roles_read_a_login_without_its_front_and_put_logins_first():
+    now = CREATED + plan.STALE_AFTER_S + 1
+    database = plan.database_name("a::b", SESSION_ID, CREATED)
+    login = plan.LOGIN_PREFIX + plan.worker_name(database).replace("-", "_")
+    owner = plan.scoped_name(database, "owner")
+    fresh = plan.scoped_name(plan.database_name("a::b", SESSION_ID, now), "owner")
+    assert plan.stale_roles([owner, fresh, login, "cox_worker", "cox_w_laptop"], now) == [login, owner]
+    assert plan.stale_roles([owner, login], CREATED + 60) == []
+
+
 def test_the_template_database_is_one_per_session_and_never_a_test_s():
     other = "ba9876543210"
     template = plan.template_name(SESSION_ID, CREATED)

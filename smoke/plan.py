@@ -313,6 +313,52 @@ def stale_databases(names: Iterable[str], now: int, stale_after: int = STALE_AFT
     return stale
 
 
+_SCOPED = re.compile(r"smoke_([0-9a-f]{12})_(\d+)_.*_([0-9a-f]{12})")
+
+
+def _scope(database: str) -> tuple[str, str, str]:
+    match = _SCOPED.fullmatch(database)
+    if not match:
+        raise ValueError(f"not a session's test database name: {database!r}")
+    return match.group(1), match.group(2), match.group(3)
+
+
+def worker_name(database: str) -> str:
+    """The worker name a test makes its login role for, from its database's name: `smoke-<session>-<created>-<hash>`.
+    Roles are server-wide, so it carries the session and the creation time: two sessions on one server never share
+    one, and its login role (`cox_w_` and the name with `-` as `_`) is reaped by age like the databases are."""
+    session, created, digest = _scope(database)
+    return f"smoke-{session}-{created}-{digest}"
+
+
+def scoped_name(database: str, kind: str) -> str:
+    """Another server-wide name a test makes, from its database's name: `smoke_<session>_<created>_<kind>_<hash>`."""
+    session, created, digest = _scope(database)
+    return f"smoke_{session}_{created}_{kind}_{digest}"
+
+
+LOGIN_PREFIX = "cox_w_"  # what `cox setup store worker-role <name>` puts before the name (harness.store_roles)
+
+
+def session_role_prefixes(session: str) -> tuple[str, str]:
+    """The fronts of every role one session creates: its worker logins, then its other roles."""
+    return f"{LOGIN_PREFIX}{session_prefix(session)}", session_prefix(session)
+
+
+def stale_roles(names: Iterable[str], now: int, stale_after: int = STALE_AFTER_S) -> list[str]:
+    """`stale_databases` for roles: a worker login is read without its `cox_w_` front. Logins come first, since a
+    login's membership was granted by an owner role, which therefore goes after it."""
+    def bare(name: str) -> str:
+        return name.removeprefix(LOGIN_PREFIX)
+    stale = set(stale_databases((bare(n) for n in names), now, stale_after))
+    return role_drop_order(n for n in names if bare(n) in stale)
+
+
+def role_drop_order(names: Iterable[str]) -> list[str]:
+    """Worker logins before any other role, each group in name order."""
+    return sorted(names, key=lambda n: (not n.startswith(LOGIN_PREFIX), n))
+
+
 def template_name(session: str, created: int) -> str:
     """The session's template database, created at `created` (epoch seconds): migrated once, then copied for each test
     (`CREATE DATABASE ... TEMPLATE`). One per session, so two sessions on one server never copy, or drop, each other's.
