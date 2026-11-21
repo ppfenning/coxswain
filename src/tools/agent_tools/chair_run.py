@@ -30,7 +30,7 @@ from agent_tools import (
 from agent_tools.chair_beat import beat_in_thread
 from agent_tools.chair_exec import Result
 from agent_tools.chair_facts import FactsDeps, gather_facts
-from agent_tools.chair_plan import TickPlan, plan_tick, plan_tick_held, reported_waiting
+from agent_tools.chair_plan import TickPlan, plan_tick, plan_tick_held, reported_waiting, tag_queue_kinds
 from agent_tools.chair_report import EASTERN, format_status, write_status
 from agent_tools.chair_restart import (
     RESTART,
@@ -44,7 +44,7 @@ from agent_tools.chair_restart import (
     touches_chair_code,
 )
 from agent_tools.chair_restart_log import with_note
-from agent_tools.chair_types import Action, ActionKind, EpicView, Facts, PlanTick
+from agent_tools.chair_types import Action, ActionKind, EpicView, Facts, PlanTick, QueueLeases
 from agent_tools.ci_gate import DEFAULT_QUEUED_BOUND_SECONDS, CiGate, evaluate_gate
 from agent_tools.forge_status import StatusReader
 from agent_tools.notify_cards import card_events, pending_cards
@@ -295,7 +295,7 @@ class RunDeps:
     store_reads: Callable[[], tuple[Mapping[str, int], Mapping[str, int]]] | None = None
     # C3: the kinds' worker leases and the store's clock (`chair_read_queues.read_queue_leases`), re-read just before a
     # live tick performs. None re-reads nothing.
-    queue_leases: Callable[[], tuple[Mapping[str, str] | None, str]] | None = None
+    queue_leases: Callable[[], QueueLeases] | None = None
 
 
 def finished_land(action: Action, outcome: chair_land.LandResult[Result] | None) -> Result:
@@ -706,10 +706,12 @@ def _directive_step(deps: RunDeps, acting: bool, facts: Facts, actions: Sequence
         return f"chat step failed: {exc}"
 
 
-def queue_facts(facts: Facts, read: tuple[Mapping[str, str] | None, str]) -> Facts:
+def queue_facts(facts: Facts, read: QueueLeases) -> Facts:
     """Pure. `facts` with the kinds' worker leases replaced by a fresh read (None leases: unreadable)."""
-    leases, at = read
-    return {**facts, "queue_leases": None if leases is None else dict(leases), "queue_lease_now": at}
+    return {
+        **facts, "queue_leases": None if read.leases is None else dict(read.leases), "queue_lease_now": read.now,
+        "queue_leases_seen": read.seen, "queue_leases_failing_s": read.failing_s,
+    }
 
 
 def _planned(deps: RunDeps, facts: Facts, now: datetime, gate: CiGate, clock: chair_timing.Clock) -> tuple[TickPlan, float]:
@@ -788,6 +790,9 @@ def tick_timed(
         if chair_kinds.tick_skips(fresh) - chair_kinds.tick_skips(facts):
             facts = fresh
             planned, plan_s = _planned(deps, facts, now, gate, clock)
+        # A worker can still take a kind while this tick performs (a revert waits on checks): mark each action of a kind
+        # a worker could run, and perform asks for that kind's lease again just before it (`chair_exec.Deps.queue_held`).
+        planned = TickPlan(tag_queue_kinds(planned.actions, facts, now), planned.held_for_ci)
     deps.reason_state.lines = chair_report.unlaunched_lines(planned.actions, now)
     deps.reason_state.items = [{"initiative": a.get("initiative"), "reason": a.get("reason")} for a in planned.actions if a.get("kind") == "unlaunched"]
     acting = not dry_run and all(a.get("kind") != "standby" for a in planned.actions)

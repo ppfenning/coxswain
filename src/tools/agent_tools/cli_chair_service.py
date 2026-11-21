@@ -139,12 +139,20 @@ def _chair_worker(a: argparse.Namespace) -> int:
         return chair_queue.bounded(opened, limit, otherwise)
 
     def record_store(argv: list[str]) -> tuple[int, str]:
+        """An action's row, fenced on the kind lease. The effect has already run when its row is written, so a lease
+        lost in between does not drop the row: it is written unfenced and marked `late` (`store_chair_lease.late`)."""
         epoch = held.epoch
         action = json.loads(argv[-1])
         kept = epoch is not None and on_store(
             lambda c: store_chair_lease.record_fenced(c, name, holder, epoch, argv[2], action), False
         )
-        return (0, "") if kept else (1, f"the kind lease {name} is no longer held; the row was not written")
+        if kept:
+            return 0, ""
+        wrote = on_store(lambda c: store_chair_lease.record_late(c, argv[2], action) or True, False)
+        if wrote:
+            print(f"chair worker: {action.get('kind')} recorded late: {name} was lost after it ran", file=sys.stderr)
+            return 0, ""
+        return 1, f"the kind lease {name} was lost and the late row could not be written either"
 
     deps = _chair_run_deps(
         runs_dir, profile, session, pid, host, a.dry_run, chair_report.echo_line,

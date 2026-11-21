@@ -18,7 +18,7 @@ from harness import phase_pick, store_lease
 from harness.store_cli import CHAIR_ACTION_COLUMNS, CHAIR_ACTION_KEY, action_row
 from harness.store_dialect import POSTGRES, Connection, insert_ignore
 
-__all__ = ["acquire", "holds", "leases", "record_fenced", "release", "renew", "store_now"]
+__all__ = ["acquire", "holds", "late", "leases", "record_fenced", "record_late", "release", "renew", "store_now"]
 
 
 def store_now(conn: Connection) -> str:
@@ -84,3 +84,16 @@ def leases(conn: Connection, prefix: str) -> tuple[dict[str, str], str]:
     with conn.transaction():
         rows = conn.query_all(f"SELECT name, expires_at FROM leases WHERE name LIKE {p}", (f"{prefix}%",))
         return {str(r[0]): str(r[1]) for r in rows}, store_now(conn)
+
+
+def late(action: Mapping[str, object]) -> dict[str, object]:
+    """Pure. The row of an action whose effect ran but whose lease was lost before its row was written: kept, marked
+    `late`, and its reason says so, so no effect goes unrecorded."""
+    return {**action, "late": True, "reason": f"late, the kind lease was lost after the effect ran: {action.get('reason', '')}"}
+
+
+def record_late(conn: Connection, holder: str, action: Mapping[str, object]) -> None:
+    """Edge. Insert the `late` row of an action whose fenced write was refused, without the fence."""
+    row = action_row(holder, late(action))
+    with conn.transaction():
+        conn.execute(insert_ignore(conn.dialect, "chair_actions", CHAIR_ACTION_COLUMNS, CHAIR_ACTION_KEY), list(row.values()))

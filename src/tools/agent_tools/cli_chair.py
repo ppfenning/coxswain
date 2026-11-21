@@ -503,6 +503,16 @@ def _store_quarantine(runs_dir: Path, by: str) -> Callable[[str, str, str, str],
     )
 
 
+def _revert_reuse(
+    runner: Callable[[list[str]], tuple[int, str]],
+) -> Callable[[chair_exec.Action], tuple[Callable[[str, int], str | None], Callable[[str, str, bool], list[str]]]]:
+    """Edge. A revert_land's lookup of its open `revert/<pr>` PR (by the repo's owner/name) and its stale-branch clear."""
+    return lambda action: (
+        lambda repo, pr: chair_revert_ports.find_open_revert_pr(runner, _gh_repo(repo), pr),
+        chair_revert_ports.GitRevertPort(runner).clear_stale_branch,
+    )
+
+
 def _revert_land_deps(
     runs_dir: Path, holder: str, runner: Callable[[list[str]], tuple[int, str]],
     actions: Callable[[], Sequence[Mapping]], record: Callable[[Mapping], None],
@@ -511,6 +521,7 @@ def _revert_land_deps(
     reverted phase, and the resolve of its land watch. `cox chair run` wires exactly these."""
     return {
         "revert_ports": _revert_ports(runner),
+        "revert_reuse": _revert_reuse(runner),
         "quarantine_phase": _store_quarantine(runs_dir, holder),
         "resolve_land": _resolve_land_with(actions, record),
     }
@@ -1058,6 +1069,8 @@ def _chair_run_deps(
         )
 
     sources_configured, profile_stale = chair_read_intake.sources_configured_keeping_last_good(profile_path)
+    # C3: one reader of the worker leases for the facts, the pre-perform re-read and the per-action check
+    queue_leases = chair_read_queues.QueueLeasesReader(runs_dir, time.monotonic)
     repo_for = _repo_for(ws, home)
     lane_capacity = _check_capacity(runs_dir, profile, host)
 
@@ -1104,7 +1117,7 @@ def _chair_run_deps(
         sources_configured=sources_configured,
         profile_stale=profile_stale,
         chair_queues=chair_read_queues.queues_keeping_last_good(profile_path),
-        queue_leases=lambda: chair_read_queues.read_queue_leases(runs_dir),
+        queue_leases=queue_leases,
         session=session, pid=pid, host=host, dispatch=dispatch,
         drafts=lambda: draft_list.count_drafts(
             draft_list.read_drafts(ws / "work", now_text(), chair_read_quarantined.initiative_files(ws, work_files()))
@@ -1181,6 +1194,9 @@ def _chair_run_deps(
         mark_handled=None if dry_run else (lambda key: _mark_handled_key(runs_dir, key)),
         # The same reader the facts use, so a miss records the fingerprint the next tick's facts compare against.
         intake_fingerprint=intake_fingerprint,
+        # C3: the tick asks before each housekeeping or watch action whether a queue worker now holds that kind. A
+        # worker's own deps ask nothing (its fence is its lease).
+        queue_held=None if dry_run or worker_epoch is not None else queue_leases.held,
     )
     def held() -> None:
         """Resolves each pending watch the smoke hold does not name, when its commit is green on main or main went green after it."""
@@ -1294,7 +1310,7 @@ def _chair_run_deps(
         record_restart=None if dry_run else record_restart,
         save_cache=None if dry_run else save_caches,
         store_reads=lambda: chair_tick_cache.merged_counts(reader_cache.tick_counts(), actions_cache.tick_counts()),
-        queue_leases=None if dry_run else (lambda: chair_read_queues.read_queue_leases(runs_dir)),
+        queue_leases=None if dry_run else queue_leases,
     )
 
 

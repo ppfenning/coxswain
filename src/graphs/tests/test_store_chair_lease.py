@@ -52,3 +52,16 @@ def test_release_frees_the_kind_for_the_next_worker_at_a_new_epoch(store_conn):
     assert kl.acquire(store_conn, NAME, "a", 60) == 1
     assert kl.release(store_conn, NAME, "a", 1) is True
     assert kl.acquire(store_conn, NAME, "b", 60) == 2
+
+
+def test_a_row_whose_lease_was_lost_after_its_effect_ran_is_kept_and_marked_late(store_conn):
+    import json
+
+    assert kl.acquire(store_conn, NAME, "a", 60) == 1
+    _expire(store_conn)
+    assert kl.record_fenced(store_conn, NAME, "a", 1, "chair-a", _ACTION) is False
+    kl.record_late(store_conn, "chair-a", _ACTION)
+    (row,) = store_conn.query_all("SELECT status, reason, action_json FROM chair_actions")
+    body = row[2] if isinstance(row[2], dict) else json.loads(row[2])
+    assert row[0] == "done" and body["late"] is True
+    assert row[1] == "late, the kind lease was lost after the effect ran: swept"

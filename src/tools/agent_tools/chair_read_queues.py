@@ -9,9 +9,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from agent_tools import chair_kinds, route, run_store
+from agent_tools.chair_types import QueueLeases
 from core.jsontypes import is_mapping
 
-__all__ = ["queues_keeping_last_good", "read_chair_queues", "read_queue_leases", "store_stamp"]
+__all__ = ["QueueLeasesReader", "queues_keeping_last_good", "read_chair_queues", "read_queue_leases", "store_stamp"]
 
 
 def read_chair_queues(profile_path: Path) -> frozenset[str] | route.ProfileError:
@@ -72,3 +73,32 @@ def read_queue_leases(runs_dir: Path) -> tuple[dict[str, str] | None, str]:
         return None, ""
     leases = {str(r["name"]).removeprefix(chair_kinds.LEASE_PREFIX): str(r["expires_at"]) for r in rows}
     return leases, store_stamp(now)
+
+
+class QueueLeasesReader:
+    """Edge. `read_queue_leases` with what the tick needs to fail closed sensibly: whether a worker lease row has ever
+    been seen in this process, and since when (on `clock`, monotonic seconds) the read has been failing. The tick's
+    facts, its pre-perform re-read and its per-action check share one reader."""
+
+    def __init__(self, runs_dir: Path, clock: Callable[[], float]) -> None:
+        self._runs_dir, self._clock = runs_dir, clock
+        self._seen = False
+        self._failing_since: float | None = None
+
+    def __call__(self) -> QueueLeases:
+        leases, now = read_queue_leases(self._runs_dir)
+        if leases is None:
+            at = self._clock()
+            self._failing_since = at if self._failing_since is None else self._failing_since
+            return QueueLeases(None, "", self._seen, at - self._failing_since)
+        self._seen = self._seen or bool(leases)
+        self._failing_since = None
+        return QueueLeases(leases, now, self._seen, 0.0)
+
+    def held(self, kind: str) -> bool:
+        """Whether a worker holds `kind`'s lease now, by the store's clock. Unreadable: held when a worker could be
+        running (a lease row has been seen), so the tick leaves the action to it; else not."""
+        read = self()
+        if read.leases is None:
+            return read.seen
+        return kind in chair_kinds.live_kinds(read.leases, read.now)

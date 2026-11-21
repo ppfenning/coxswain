@@ -42,6 +42,7 @@ from agent_tools.chair_types import (
     PidProbeFact,
     QuarantineFacts,
     QueueFile,
+    QueueLeases,
     ReviewPr,
     RunningInitiative,
     ScheduleHost,
@@ -286,7 +287,7 @@ class FactsDeps:
     profile_stale: Callable[[], bool] = lambda: False  # read after sources_configured: this tick's profile re-read failed and the last good value was kept
     chair_queues: Callable[[], Sequence[str]] = lambda: ()  # profile chair.queues, re-read each tick (chair_kinds.queued_kinds); absent means none
     # (kind to its worker lease's expires_at, or None when unreadable; the store's clock): chair_read_queues.read_queue_leases
-    queue_leases: Callable[[], tuple[Mapping[str, str] | None, str]] = lambda: ({}, "")
+    queue_leases: Callable[[], QueueLeases] = lambda: QueueLeases({}, "", False, 0.0)
     lane_bounds: Callable[[], Mapping[str, tuple[int, int]]] = lambda: {}  # host ("" local) to the cartridge's (min, max) lanes; absent means {}
     land_watches: Callable[[], Sequence[LandWatch]] = lambda: []  # unresolved lands; absent means landed_main is []
     read_main_ci: Callable[[str, str], tuple[str, str]] = lambda repo, commit: ("pending", "")  # (repo, commit) to (state, output)

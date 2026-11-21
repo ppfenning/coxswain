@@ -110,11 +110,12 @@ def test_queuing_never_changes_the_alarms_the_tick_raises(name: str):
 
 def test_a_lease_taken_after_the_gather_takes_the_kind_off_the_tick_when_it_plans_again_before_perform():
     from agent_tools.chair_run import queue_facts
+    from agent_tools.chair_types import QueueLeases
 
     facts = _facts(landed_main=[_RED_MAIN], stale_candidates=[_stale_row("a", "a-1")])
-    gathered = queue_facts(facts, ({}, _LEASE_NOW))
+    gathered = queue_facts(facts, QueueLeases({}, _LEASE_NOW, False, 0.0))
     assert "revert_land" in [a["kind"] for a in plan_tick(gathered, _KINDS_NOW)]
-    fresh = queue_facts(gathered, ({"watch": "2026-11-20T12:01:00Z"}, _LEASE_NOW))
+    fresh = queue_facts(gathered, QueueLeases({"watch": "2026-11-20T12:01:00Z"}, _LEASE_NOW, True, 0.0))
     assert chair_kinds.tick_skips(fresh) - chair_kinds.tick_skips(gathered) == {"watch"}
     assert "revert_land" not in [a["kind"] for a in plan_tick(fresh, _KINDS_NOW)]
 

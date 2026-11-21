@@ -1564,7 +1564,8 @@ def plan_tick_held(facts: Facts, now: datetime | None = None, gate: CiGate = _UN
     # A lent lease plans the routine actions, then standby last, so the tick still reads as not acting.
     lent = gated is not None and gated[0]["kind"] == "standby" and lease.get("lent", False)
     routine = _withhold_blocked_hosts(routine_only(_plan_as_holder(facts, now, skip=skip)), facts) if lent else []
-    unowned = chair_kinds.unowned_actions(facts)  # a listed kind no live worker holds: nobody plans it, so say so
+    # a listed kind no live worker holds, or worker leases unreadable for too long: nobody plans it, so say so
+    unowned = [*chair_kinds.unowned_actions(facts), *chair_kinds.unreadable_actions(facts)]
     actions = [*holder, *housekeeping, *login_checks, *unowned] if gated is None else [*routine, *gated]
     return TickPlan([stamp(a, lease["epoch"]) for a in actions], tuple(sorted(held)))
 
@@ -1584,3 +1585,22 @@ def plan_kind(kind: str, facts: Facts, now: datetime, held: frozenset[str] = fro
     _basis, _launch, segments = _holder_segments(facts, now, held)
     slots = _withhold_blocked_hosts([a for k, actions in segments if k == kind for a in actions], facts)
     return [*slots, *(plan_housekeeping(facts, now) if kind == "housekeeping" else [])]
+
+
+def tag_queue_kinds(actions: Sequence[Action], facts: Facts, now: datetime) -> list[Action]:
+    """The tick's actions with each one a queue worker could run marked `queue_kind` (housekeeping or watch), so its
+    perform can check that kind's lease again just before that action. An action is matched to `plan_kind`'s output
+    by everything but its lease epoch, one for one; the rest pass unmarked."""
+    owed = {kind: Counter(_unstamped(a) for a in plan_kind(kind, facts, now)) for kind in chair_kinds.QUEUE_KINDS}
+    tagged: list[Action] = []
+    for action in actions:
+        key = _unstamped(action)
+        kind = next((k for k, left in owed.items() if left[key] > 0), None)
+        if kind is not None:
+            owed[kind][key] -= 1
+        tagged.append({**action, "queue_kind": kind} if kind is not None else action)
+    return tagged
+
+
+def _unstamped(action: Action) -> str:
+    return repr(sorted((k, repr(v)) for k, v in action.items() if k != "epoch"))

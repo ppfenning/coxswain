@@ -168,13 +168,15 @@ def _facts(**kw: object) -> Facts:
     return kw  # type: ignore[return-value]
 
 
-def test_the_tick_skips_listed_kinds_kinds_a_live_worker_holds_and_every_kind_when_the_leases_are_unreadable():
+def test_the_tick_skips_listed_kinds_and_kinds_a_live_worker_holds_and_fails_closed_only_where_a_worker_could_run():
     leases = {"watch": "2026-11-20T12:01:00Z"}
     facts = _facts(chair_queues=["housekeeping"], queue_leases=leases, queue_lease_now=NOW)
     assert chair_kinds.tick_skips(facts) == {"housekeeping", "watch"}
     assert chair_kinds.tick_skips(_facts(queue_leases=leases, queue_lease_now=NOW)) == {"watch"}  # whatever the profile says
     assert chair_kinds.tick_skips(_facts()) == frozenset()
-    assert chair_kinds.tick_skips(_facts(queue_leases=None, queue_lease_now="")) == set(chair_kinds.QUEUE_KINDS)  # fails closed
+    assert chair_kinds.tick_skips(_facts(queue_leases=None, queue_lease_now="")) == frozenset()  # default: nothing changes
+    seen = _facts(queue_leases=None, queue_lease_now="", queue_leases_seen=True)
+    assert chair_kinds.tick_skips(seen) == set(chair_kinds.QUEUE_KINDS)  # a worker could be running: fails closed
     assert chair_kinds.worker_acts("housekeeping", facts) and not chair_kinds.worker_acts("watch", facts)
 
 

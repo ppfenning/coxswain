@@ -142,6 +142,11 @@ class Deps:
     rebase_port: Callable[[Action], RebasePort] | None = None  # a rebase_phase's port; None refuses it
     set_lanes: Callable[[str, int], int] | None = None  # a tune_lanes's (host, count) -> exit code; None refuses it
     revert_ports: Callable[[Action], tuple[RevertGitPort, RevertForgePort]] | None = None  # a revert_land's ports; None refuses it
+    # a revert_land's (find the open revert/<pr> PR, clear a stale revert/<pr> branch); None reverts onto a fresh branch
+    revert_reuse: Callable[[Action], tuple[Callable[[str, int], str | None], Callable[[str, str, bool], list[str]]]] | None = None
+    # C3: (kind) -> whether a queue worker holds chair:<kind> now, by the store's clock. The tick's perform asks it
+    # before each action tagged `queue_kind`, and skips the action when a worker holds that kind. None asks nothing.
+    queue_held: Callable[[str], bool] | None = None
     home: str = ""  # this machine's home directory, read once at the edge; "" leaves a repo path unmapped for a lane host
     quarantine_phase: Callable[[str, str, str, str], Quarantined | None] | None = None  # (initiative, phase, cause, reason): quarantines that phase's tasks, answering those it moved and one line per write the store refused
     resolve_land: Callable[[str, str, str], None] | None = None  # (initiative, phase, outcome): the store's resolve write for a land

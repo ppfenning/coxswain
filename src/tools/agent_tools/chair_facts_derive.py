@@ -1244,8 +1244,8 @@ def gather_facts(
     refusals = land_refusals_from_actions(selected(index, "land_phase", "partial_land"), now)
     work = list(deps.work_rows()) if deps.work_rows is not None else []
     epics = epic_facts(work, epic_definitions or {}) if deps.work_rows is not None else []
-    read_leases, queue_lease_now = deps.queue_leases()
-    queue_leases = None if read_leases is None else dict(read_leases)  # None: unreadable, so the tick fails closed
+    read_leases = deps.queue_leases()
+    queue_leases = None if read_leases.leases is None else dict(read_leases.leases)  # None: unreadable (chair_kinds)
     facts: Facts = {
         "lease": lease_facts(deps.lease(), deps.session, deps.pid, deps.host),
         "limits": limits_facts(
@@ -1263,7 +1263,9 @@ def gather_facts(
         "profile_stale": deps.profile_stale(),
         "chair_queues": sorted(deps.chair_queues()),
         "queue_leases": queue_leases,
-        "queue_lease_now": queue_lease_now,
+        "queue_lease_now": read_leases.now,
+        "queue_leases_seen": read_leases.seen,
+        "queue_leases_failing_s": read_leases.failing_s,
         "drafts": deps.drafts() if deps.drafts is not None else 0,
         "missing_repos": new_missing_repos(
             deps.missing_repos() if deps.missing_repos is not None else [],

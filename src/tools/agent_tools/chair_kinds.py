@@ -9,14 +9,16 @@ Who plans a kind, decided from the same facts on both sides:
 - the tick skips a kind that its profile lists, and a kind whose worker lease (`chair:<kind>`) is live by the store's
   clock whatever its profile says, so a worker on a machine whose profile lists the kind is never doubled by a tick
   on one whose profile does not;
-- when the leases cannot be read, the tick skips every kind a worker could run (it fails closed): it cannot tell
-  whether a worker holds one, and a tick of delay for housekeeping or the watch costs less than a double revert;
+- when the leases cannot be read and a worker could be running (a kind is listed, or a worker lease has been seen),
+  the tick skips every kind a worker could run (it fails closed), and says so once the read has failed for longer
+  than the lease's time to live; on the default, with no worker in sight, a failed read changes nothing;
 - a worker acts only for a kind its profile lists, and only while it holds that kind's lease;
 - a kind the profile lists whose lease has been dead for longer than its time to live has no owner: the tick says so
   with one needs_chair (`unowned_actions`), which the notifier pushes once while it stands.
 
-The facts carry the leases as `queue_leases` (kind to `expires_at`, None when unreadable) and the store's clock at
-that read as `queue_lease_now`, so every comparison is on the store's clock, never a machine's.
+The facts carry the leases as `queue_leases` (kind to `expires_at`, None when unreadable), the store's clock at that
+read as `queue_lease_now` (so every comparison is on the store's clock, never a machine's), whether a worker lease row
+has ever been seen (`queue_leases_seen`), and how long the read has been failing (`queue_leases_failing_s`).
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ __all__ = [
     "POLL_SECONDS",
     "QUEUE_KINDS",
     "UNOWNED_CAUSE",
+    "UNREADABLE_CAUSE",
     "WAKE_TABLES",
     "lease_name",
     "live_kinds",
@@ -40,6 +43,7 @@ __all__ = [
     "tick_skips",
     "unowned_actions",
     "unowned_kinds",
+    "unreadable_actions",
     "worker_acts",
 ]
 
@@ -62,6 +66,7 @@ LEASE_TTL_SECONDS = 60
 
 LEASE_PREFIX = "chair:"
 UNOWNED_CAUSE = "queue_unowned"
+UNREADABLE_CAUSE = "queue_leases_unreadable"
 
 
 def lease_name(kind: str) -> str:
@@ -99,13 +104,19 @@ def _leases(facts: Facts) -> Mapping[str, str] | None:
     return facts["queue_leases"]
 
 
+def _workers_matter(facts: Facts) -> bool:
+    """Whether a queue worker could be running: the profile lists a kind, or a worker lease row has been seen."""
+    return bool(queued_kinds(list(facts.get("chair_queues") or ()))) or bool(facts.get("queue_leases_seen"))
+
+
 def tick_skips(facts: Facts) -> frozenset[str]:
-    """The kinds the tick does not plan: those its profile lists, those a live worker lease holds, and every kind a
-    worker could run when the leases could not be read."""
+    """The kinds the tick does not plan: those its profile lists, those a live worker lease holds, and, when the leases
+    could not be read and a worker could be running, every kind a worker could run. On the default (nothing listed, no
+    worker lease ever seen) a failed read changes nothing."""
     queued = queued_kinds(list(facts.get("chair_queues") or ()))
     leases = _leases(facts)
     if leases is None:
-        return frozenset(QUEUE_KINDS)
+        return frozenset(QUEUE_KINDS) if _workers_matter(facts) else queued
     return queued | live_kinds(leases, facts.get("queue_lease_now", ""))
 
 
@@ -128,6 +139,20 @@ def unowned_kinds(facts: Facts, ttl: int = LEASE_TTL_SECONDS) -> frozenset[str]:
         return expired is None or (now - expired).total_seconds() > ttl
 
     return frozenset(k for k in queued if dead(k))
+
+
+def unreadable_actions(facts: Facts, ttl: int = LEASE_TTL_SECONDS) -> list[Action]:
+    """One needs_chair while the tick fails closed on unreadable worker leases for longer than `ttl`: housekeeping and
+    the watch are then planned by no one until the store answers. Pushed once while it stands, as `unowned_actions`."""
+    if _leases(facts) is not None or not _workers_matter(facts) or float(facts.get("queue_leases_failing_s", 0.0)) <= ttl:
+        return []
+    return [{
+        "kind": ActionKind.NEEDS_CHAIR, "initiative": "chair-queue", "cause": UNREADABLE_CAUSE,
+        "reason": (
+            f"the worker leases (chair:<kind>) have not been readable for over {ttl}s, so the tick leaves "
+            f"{', '.join(QUEUE_KINDS)} alone and a worker may not be acting either: check the store"
+        ),
+    }]
 
 
 def unowned_actions(facts: Facts) -> list[Action]:
