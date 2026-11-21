@@ -223,7 +223,7 @@ def _chair_worker(a: argparse.Namespace) -> int:
 
 def _worker_chores(kind: str, deps: chair_run.RunDeps, runs_dir: Path) -> object:
     """Edge. The tick's loop chores the worker of `kind` owns once no tick runs them (`chair_worker_chores`): every one
-    for housekeeping, the reasons file for launch, none for the rest."""
+    for housekeeping, the reasons file for launch, the collection of ended lands for watch, none for the rest."""
     from agent_tools import chair_worker_chores
 
     def stamp() -> object | None:
@@ -236,6 +236,8 @@ def _worker_chores(kind: str, deps: chair_run.RunDeps, runs_dir: Path) -> object
         return chair_worker_chores.housekeeping_chores(deps, stamp, lambda: chair_worker_chores.workspace_head(runs_dir.parent))
     if kind == "launch":
         return chair_worker_chores.launch_chores(deps)
+    if kind == "watch":
+        return chair_worker_chores.watch_chores(deps)
     return None
 
 

@@ -220,3 +220,20 @@ def test_a_failed_export_is_retried_on_the_next_move_not_on_every_pass(tmp_path)
     rig.stamp = ("rows", 9)
     _pass("housekeeping", facts, chores)
     assert len(attempts) == 2
+
+
+def test_the_watch_worker_collects_ended_lands_on_a_pass_that_performed_nothing(tmp_path):
+    rig = Rig(tmp_path)
+    calls: list[list] = []
+    deps = rig.deps()
+    deps = dataclasses.replace(
+        deps, exec_deps=dataclasses.replace(deps.exec_deps, lands=object()),  # type: ignore[arg-type]
+        perform=lambda actions, _exec, _epoch, _dry: calls.append(list(actions)) or [{"action": {"kind": "land"}, "status": "landed"}],
+    )
+    chores = chair_worker_chores.watch_chores(deps)
+    assert chores.after([], []) == "collected 1 ended land(s)"
+    assert calls == [[]]
+    assert chores.after([{"kind": "revert_land"}], []) == ""  # its perform already collected them
+    assert calls == [[]]
+    no_lands = chair_worker_chores.watch_chores(rig.deps())
+    assert no_lands.after([], []) == ""

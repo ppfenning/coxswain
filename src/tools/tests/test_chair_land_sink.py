@@ -240,3 +240,32 @@ def test_the_fallback_gets_submit_stop_and_its_results_and_its_lands_are_held_he
     assert rig.fallback.stopped == 1
     assert sink.held_here() == held
     assert sink.collect() == rig.fallback.collect()
+
+
+def test_two_processes_over_one_state_dir_report_an_ended_land_once(tmp_path: Path) -> None:
+    """C6: before the cutover the tick and the watch worker both read the tick's land state dir. Whichever collects an
+    ended land first claims its spec; the other finds nothing to report."""
+    rig = Rig(tmp_path)
+    tick, watch = rig.sink(), Rig(tmp_path).sink()
+    tick.start(_action(), ["x"])
+    _, outcome_path = paths_for(tmp_path, land_key(_action()))
+    outcome_path.write_text(encode_outcome(LandOutcome(0, "merged")))
+    # Both read the ended spec; the watch worker claims it between the tick's read and the tick's claim.
+    from agent_tools import chair_land_sink
+
+    real = chair_land_sink._claim
+    taken: list[bool] = []
+
+    def watch_first(spec_path: Path) -> bool:
+        if not taken:
+            taken.append(real(spec_path))  # the other process's claim lands first
+        return real(spec_path)
+
+    chair_land_sink._claim = watch_first
+    try:
+        assert tick.collect() == []
+    finally:
+        chair_land_sink._claim = real
+    assert taken == [True]
+    assert watch.collect() == []  # and nothing is left for anyone to report again
+    assert not list(tmp_path.glob("*.claimed-*"))

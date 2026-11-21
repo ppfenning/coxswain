@@ -8,6 +8,7 @@ the land command takes the per-repo land lease under its own holder id.
 from __future__ import annotations
 
 import dataclasses
+import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -64,6 +65,18 @@ def _read_outcome(path: Path) -> LandOutcome | None:
         return parse_outcome(path.read_text())
     except OSError:
         return None
+
+
+def _claim(spec_path: Path) -> bool:
+    """Edge. Take an ended land's spec for this process: rename it aside, then delete it. False when another process
+    renamed it first. The spec goes before the outcome, as before: a spec with no outcome is read as dead."""
+    claimed = spec_path.with_name(f"{spec_path.name}.claimed-{os.getpid()}")
+    try:
+        spec_path.rename(claimed)
+    except FileNotFoundError:
+        return False
+    claimed.unlink(missing_ok=True)
+    return True
 
 
 def _in_progress(action: Action, reason: str) -> Result:
@@ -141,15 +154,18 @@ class ProcessLands:
         return _read_outcome(outcome_path) or dead_outcome(spec, spec.pid)
 
     def collect(self) -> list[Result]:
-        """Each ended land once: its files are deleted after it is reported."""
+        """Each ended land once, by whichever chair process collects it first: the spec is claimed by an atomic rename
+        before the land is reported, so a tick and the watch worker reading one state dir (C6, before the cutover)
+        never both report it. Its files are deleted as it is reported."""
         results: list[Result] = []
         for spec in _specs(self._dir):
             outcome = self._settled(spec)
             if outcome is None:
                 continue
-            results.append(self._finish(spec.action, outcome.code, outcome.output))
             spec_path, outcome_path = paths_for(self._dir, spec.key)
-            spec_path.unlink(missing_ok=True)  # the spec first: a spec with no outcome is read as dead
+            if not _claim(spec_path):
+                continue  # another process collected it between the read and the claim
+            results.append(self._finish(spec.action, outcome.code, outcome.output))
             outcome_path.unlink(missing_ok=True)
         return [*results, *self._fallback.collect()]
 

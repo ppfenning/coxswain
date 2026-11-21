@@ -9,7 +9,9 @@ plan's why-not-launched reasons beside the runs. The cutover stops the tick, so 
 
 - **housekeeping** owns every chore but the reasons: the meter, the pull and checkout sync, the lane checkout check,
   the chat directives, the CI-gate pause line and the export;
-- **launch** writes the reasons file, since only its plan has the `unlaunched` lines.
+- **launch** writes the reasons file, since only its plan has the `unlaunched` lines;
+- **watch**, which owns the land slot, collects the lands that ended on a pass that performed nothing: the tick's
+  perform collected them every tick, and a worker performs only when it has something planned.
 
 Each runs only on a live pass of a listed kind while no tick holds the chair lease (`chair_queue.chores_due`), and
 each is idempotent: a pull of an up-to-date workspace does nothing, a lane checkout line already recorded is not
@@ -33,7 +35,7 @@ from agent_tools.chair_exec import Result
 from agent_tools.chair_queue import Chores, ChoreStep
 from agent_tools.chair_types import Action, Facts
 
-__all__ = ["ExportState", "export_due", "housekeeping_chores", "launch_chores", "workspace_head"]
+__all__ = ["ExportState", "export_due", "housekeeping_chores", "launch_chores", "watch_chores", "workspace_head"]
 
 
 @dataclass
@@ -128,5 +130,22 @@ def launch_chores(deps: chair_run.RunDeps) -> Chores:
         ]
         chair_run.publish_reasons(deps, False, datetime.now(UTC))
         return ""
+
+    return Chores(before=before, after=after)
+
+
+def watch_chores(deps: chair_run.RunDeps) -> Chores:
+    """Edge. The watch worker's one chore: on a pass that performed nothing, collect the lands that ended since the last
+    perform (`chair_exec.perform` with no actions), so a finished land is recorded within one pass, as on the tick.
+    A pass that performed an action has already collected them."""
+
+    def before(_facts: Facts, _planned: Sequence[Action], _now: datetime) -> ChoreStep:
+        return ChoreStep()
+
+    def after(actions: Sequence[Action], _results: Sequence[Result]) -> str:
+        if actions or deps.exec_deps.lands is None:
+            return ""
+        collected = deps.perform([], deps.exec_deps, lambda: -1, False)
+        return f"collected {len(collected)} ended land(s)" if collected else ""
 
     return Chores(before=before, after=after)
