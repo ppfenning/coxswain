@@ -28,7 +28,9 @@ from typing import Literal
 
 __all__ = [
     "CACHE_ENV",
+    "IN_PROGRESS",
     "LANE_CLONE",
+    "LANE_LOCK",
     "MIRROR_REFSPECS",
     "CloneState",
     "MirrorStep",
@@ -40,6 +42,7 @@ __all__ = [
     "dead_clones",
     "discard_mirror",
     "lane_clone_dir",
+    "lane_lock_file",
     "lock_file",
     "mirror_dir",
     "mirror_fetch_argv",
@@ -49,6 +52,10 @@ __all__ = [
     "trace_line",
 ]
 
+# The file our clone carries in its `.git` from the moment git makes it until it is repacked and checked out.
+IN_PROGRESS = "coxswain-clone-in-progress"
+# The lock file a live lane holds in its run folder (`lane_lock_file`).
+LANE_LOCK = ".lane.lock"
 # The folder of a lane's own clone inside its run folder under the worktree root (`lane_clone_dir`).
 LANE_CLONE = "_repo"
 # An explicit cache root, for an operator who keeps it off the home disk; a lane inherits it from its worker.
@@ -128,11 +135,14 @@ def mirror_fetch_argv(mirror: Path, url: str) -> list[str]:
             url, *MIRROR_REFSPECS]
 
 
-def clone_argv(url: str, dest: Path, reference: Path | None) -> list[str]:
+def clone_argv(url: str, dest: Path, reference: Path | None, template: Path) -> list[str]:
     """Clone `url` into `dest` without a checkout, borrowing `reference`'s objects when there is one. `--no-local`: a
-    path URL goes through git's transport too, so it borrows rather than copying every object of the source."""
+    path URL goes through git's transport too, so it borrows rather than copying every object of the source.
+    `--template` is a folder holding only `IN_PROGRESS`: git copies it into the new `.git` before it fetches, so a
+    clone killed at any point is marked as ours and unfinished."""
     borrow = ["--reference", str(reference)] if reference is not None else []
-    return ["git", "clone", "--quiet", "--no-checkout", "--no-local", *borrow, url, str(dest)]
+    return ["git", "clone", "--quiet", "--no-checkout", "--no-local", "--template", str(template), *borrow, url,
+            str(dest)]
 
 
 def checkout_argv(dest: Path, branch: str | None, base: str | None) -> list[str]:
@@ -159,19 +169,28 @@ def discard_mirror(borrowed_ok: bool, plain_ok: bool, mirror_sound: bool) -> boo
 CloneState = Literal["absent", "present", "broken", "foreign"]
 
 
-def clone_state(holds_git: bool, origin_is_url: bool, borrowing: bool, head_ok: bool, has_index: bool) -> CloneState:
-    """What a destination holds before a clone into it. A clone a crash interrupted (still borrowing through its
-    alternates file, no valid HEAD, or never checked out, so no index) is `broken`, cleared and cloned again; only a
-    finished one is `present`. A repository of another remote is `foreign` and never touched."""
+def clone_state(holds_git: bool, in_progress: bool, origin_is_url: bool, borrowing: bool, head_ok: bool,
+                has_index: bool) -> CloneState:
+    """What a destination holds before a clone into it. Only a clone our code marked as unfinished (`IN_PROGRESS` in
+    its `.git`) is `broken`, cleared and cloned again. A finished clone of this URL (no alternates file, a valid HEAD,
+    checked out) is `present`. Anything else, an operator's own checkout of the same origin included, is `foreign`:
+    refused, never deleted."""
     if not holds_git:
         return "absent"
-    if not origin_is_url:
-        return "foreign"
-    return "present" if not borrowing and head_ok and has_index else "broken"
+    if in_progress:
+        return "broken"
+    return "present" if origin_is_url and not borrowing and head_ok and has_index else "foreign"
+
+
+def lane_lock_file(worktree_root: Path, run_id: str) -> Path:
+    """The file a live lane holds an exclusive `flock` on for its whole life, in its own run folder: taken before its
+    clone exists, so any run folder holding a clone whose lock is free belongs to a lane that is gone."""
+    return worktree_root / run_id / LANE_LOCK
 
 
 def dead_clones(runs: Mapping[str, bool]) -> list[str]:
-    """Of the runs holding a lane clone, by whether each is alive, those whose clone a lane starting now removes."""
+    """Of the runs holding a lane clone, by whether each is alive (its lane lock is held), those whose folder a lane
+    starting now removes."""
     return sorted(run for run, alive in runs.items() if not alive)
 
 

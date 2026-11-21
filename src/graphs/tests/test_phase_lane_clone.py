@@ -69,14 +69,20 @@ def test_a_failed_clone_leaves_the_lane_in_the_shared_checkout_and_nothing_behin
     assert not repo_cache.lane_clone_dir(ctx.worktree_root, ctx.run_id).exists()
 
 
-def test_a_starting_lane_removes_dead_runs_clones_of_any_phase_and_nothing_else(shared, tmp_path):
+def test_a_starting_lane_removes_dead_runs_clones_of_any_phase_and_never_a_live_one(shared, tmp_path):
     ctx = _ctx(shared, tmp_path, run_id="ship-p1-5")
-    root, runs = ctx.worktree_root, ctx.runs_dir
-    runs.mkdir()
-    for run in ("other-p9-1", "ship-p1-3", "live-p2-1", "ship-p1-5"):
-        (root / run / repo_cache.LANE_CLONE).mkdir(parents=True)
-    (root / "old-model-1" / "p1").mkdir(parents=True)  # no clone: not ours to judge
-    (runs / "ship-p1-3.pid").write_text("999999999\n", encoding="utf-8")  # names no process
-    (runs / "live-p2-1.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
-    assert phase_lane._sweep_dead_clones(ctx) == ["other-p9-1", "ship-p1-3"]
-    assert sorted(p.name for p in root.iterdir()) == ["live-p2-1", "old-model-1", "ship-p1-5"]
+    root = ctx.worktree_root
+    # A live lane of another phase, with no pidfile at all: it holds its lock, as `run_lane` does from its start.
+    live = phase_lane._hold_run_lock(_ctx(shared, tmp_path, run_id="live-p2-1"))
+    try:
+        for run in ("other-p9-1", "ship-p1-3", "live-p2-1", "ship-p1-5"):
+            (root / run / repo_cache.LANE_CLONE).mkdir(parents=True, exist_ok=True)
+        for run in ("ship-p1-3",):  # a dead lane that took its lock: the kernel dropped it when the lane died
+            repo_cache.lane_lock_file(root, run).write_text("", encoding="utf-8")
+        (root / "old-model-1" / "p1").mkdir(parents=True)  # no clone: not ours to judge
+        assert phase_lane._sweep_dead_clones(ctx) == ["other-p9-1", "ship-p1-3"]
+        assert sorted(p.name for p in root.iterdir()) == ["live-p2-1", "old-model-1", "ship-p1-5"]
+        assert (root / "live-p2-1" / repo_cache.LANE_CLONE).is_dir()
+    finally:
+        os.close(live)
+    assert phase_lane._sweep_dead_clones(ctx) == ["live-p2-1"]  # its lane gone, its lock free: swept

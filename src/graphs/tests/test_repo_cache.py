@@ -57,13 +57,15 @@ def test_the_mirror_fetch_and_the_clone_get_the_slow_remote_bound():
     fetch = rc.mirror_fetch_argv(Path("/c/git/m.git"), "https://f/o/app")
     assert bounded_proc.git_subcommand(fetch) == "fetch"
     assert bounded_proc.default_timeout(fetch) == bounded_proc.GIT_SLOW_TIMEOUT_SECONDS
-    assert bounded_proc.default_timeout(rc.clone_argv("u", Path("/d"), Path("/m"))) == bounded_proc.GIT_SLOW_TIMEOUT_SECONDS
+    clone = rc.clone_argv("u", Path("/d"), Path("/m"), Path("/t"))
+    assert bounded_proc.default_timeout(clone) == bounded_proc.GIT_SLOW_TIMEOUT_SECONDS
 
 
 def test_clone_argv_borrows_only_when_given_a_reference():
-    assert rc.clone_argv("u", Path("/d"), Path("/m")) == [
-        "git", "clone", "--quiet", "--no-checkout", "--no-local", "--reference", "/m", "u", "/d"]
-    assert rc.clone_argv("u", Path("/d"), None) == ["git", "clone", "--quiet", "--no-checkout", "--no-local", "u", "/d"]
+    assert rc.clone_argv("u", Path("/d"), Path("/m"), Path("/t")) == [
+        "git", "clone", "--quiet", "--no-checkout", "--no-local", "--template", "/t", "--reference", "/m", "u", "/d"]
+    assert rc.clone_argv("u", Path("/d"), None, Path("/t")) == [
+        "git", "clone", "--quiet", "--no-checkout", "--no-local", "--template", "/t", "u", "/d"]
 
 
 def test_checkout_argv():
@@ -88,12 +90,19 @@ def test_a_mirror_is_discarded_only_when_it_failed_and_the_remote_worked():
 
 
 def test_clone_state_counts_only_a_finished_clone_as_present():
-    assert rc.clone_state(False, False, False, False, False) == "absent"
-    assert rc.clone_state(True, False, False, True, True) == "foreign"
-    assert rc.clone_state(True, True, False, True, True) == "present"
-    assert rc.clone_state(True, True, True, True, False) == "broken"  # killed between clone and repack
-    assert rc.clone_state(True, True, False, True, False) == "broken"  # killed between repack and checkout
-    assert rc.clone_state(True, True, False, False, False) == "broken"  # killed inside the clone
+    # (holds_git, in_progress, origin_is_url, borrowing, head_ok, has_index)
+    assert rc.clone_state(False, False, False, False, False, False) == "absent"
+    assert rc.clone_state(True, False, True, False, True, True) == "present"
+    assert rc.clone_state(True, True, True, True, True, False) == "broken"  # ours, killed between clone and repack
+    assert rc.clone_state(True, True, True, False, False, False) == "broken"  # ours, killed inside the clone
+    assert rc.clone_state(True, True, False, False, False, False) == "broken"  # ours before git wrote the origin
+
+
+def test_only_our_mark_lets_a_destination_be_cleared():
+    # An operator's `git clone --shared` of the same origin: borrowing, maybe dirty, never marked. Refused.
+    assert rc.clone_state(True, False, True, True, True, True) == "foreign"
+    assert rc.clone_state(True, False, True, False, True, False) == "foreign"  # not checked out, not ours
+    assert rc.clone_state(True, False, False, False, True, True) == "foreign"  # another remote
 
 
 def test_dead_clones():

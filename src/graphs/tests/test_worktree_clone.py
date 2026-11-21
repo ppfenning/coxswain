@@ -149,13 +149,30 @@ def test_a_clone_a_crash_left_still_borrowing_is_cloned_again_not_reported_prese
     url, _ = origin
     cache, dest = tmp_path / "cache", tmp_path / "lane"
     worktree.refresh_mirror(url, cache)
-    # What a run killed between our clone and our repack leaves: the borrow still in place, nothing checked out.
-    _git("clone", "-q", "--no-checkout", "--no-local", "--reference", str(repo_cache.mirror_dir(cache, url)), url, str(dest))
-    assert _alternates(dest).exists()
+    # What a run killed between our clone and our repack leaves: our mark, the borrow still in place, no checkout.
+    template = tmp_path / "template"
+    template.mkdir()
+    (template / repo_cache.IN_PROGRESS).write_text("", encoding="utf-8")
+    _git(*repo_cache.clone_argv(url, dest, repo_cache.mirror_dir(cache, url), template)[1:])
+    assert _alternates(dest).exists() and (dest / ".git" / repo_cache.IN_PROGRESS).exists()
     cloned = worktree.clone_worktree(url, dest, cache_root=cache)
     assert cloned.ok and cloned.mirror != "present" and cloned.borrowed, cloned
     assert not _alternates(dest).exists() and (dest / "c").exists()
+    assert not (dest / ".git" / repo_cache.IN_PROGRESS).exists()
     assert worktree.clone_worktree(url, dest, cache_root=cache).mirror == "present"  # now it is finished
+
+
+def test_an_operators_shared_clone_of_the_same_origin_with_work_in_it_is_refused_and_kept(origin, tmp_path):
+    """The reviewer's case: `git clone --shared` (still borrowing, no mark of ours) with an uncommitted file."""
+    url, _ = origin
+    dest = tmp_path / "mine"
+    _git("clone", "-q", "--shared", url.removeprefix("file://"), str(dest))
+    _git("remote", "set-url", "origin", url, cwd=dest)  # the very URL the checkout is asked for
+    (dest / "wip.txt").write_text("not committed\n", encoding="utf-8")
+    refused = worktree.clone_worktree(url, dest, cache_root=tmp_path / "cache")
+    assert not refused.ok and "left as it is" in refused.detail, refused
+    assert (dest / "wip.txt").read_text(encoding="utf-8") == "not committed\n"
+    assert _alternates(dest).exists() and (dest / "c").exists()
 
 
 def test_a_repository_of_another_remote_is_never_cleared(origin, tmp_path):
