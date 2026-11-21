@@ -45,7 +45,9 @@ variable whose name holds TOKEN, SECRET, PASSWORD, PASSWD or KEY (`secret_values
 `forgejo_api.redact` knows. The second is the userinfo, and any password in the query (`store_switch.display`), of
 every URL in the text. That is a floor, not a guarantee, so the bucket must be private to the fleet and reached with
 credentials scoped to it. An item whose bytes the scrub changed carries `scrubbed: true` in `artifacts_json`, so a
-reader knows the stored copy is not the bytes the step saw.
+reader knows the stored copy is not the bytes the step saw. A failed check's row keeps the end of its output for the
+task's next build (`store_steps._tail`); where that check's log is marked, the row drops it (`withhold_tails`), since
+the tail is a piece of the same log.
 
 **The patch is never scrubbed** (`UNSCRUBBED`, `text/x-diff`). It is repo content on its way into git, so the stored
 copy must be the change itself, byte for byte: a test fixture holding `postgresql://cox:cox@localhost/db` lands as
@@ -66,7 +68,7 @@ failed. A root that refuses any of them (a read-only
 mount, a filesystem with no hard links, a bucket the key cannot write) fails `cox setup doctor` before a run marks a
 row missing.
 
-`key`, `entry`, `decide`, `secret_values`, `scrub`, `prepared`, `sources`, `attach`, `mark_missing`, `verified` and
+`key`, `entry`, `decide`, `secret_values`, `scrub`, `prepared`, `sources`, `attach`, `withhold_tails`, `mark_missing`, `verified` and
 `probe_key` are pure. `artifacts_root`, `put_object`, `upload`, `step_artifacts`, `locate` and `probe`
 are the edges.
 """
@@ -120,6 +122,7 @@ __all__ = [
     "step_artifacts",
     "upload",
     "verified",
+    "withhold_tails",
 ]
 
 LAYOUT = "v1"
@@ -320,6 +323,22 @@ def attach(row: StepRow, entries: Sequence[JsonObject]) -> StepRow:
     return cast(StepRow, {**row, "artifacts_json": [*row["artifacts_json"], *entries]})
 
 
+def withhold_tails(row: StepRow) -> StepRow:
+    """Pure. `row` with no check's `output_tail` (`store_steps._tail`) where that check's log, as the row lists it,
+    is marked `scrubbed` or `holds_secret`: the tail is a piece of that log, so it holds what the scrub found, and the
+    row keeps `output_withheld: true` instead. A row with no such check is returned as it is."""
+    checks = _rows(row["result_json"].get("checks"))
+    marked = [str(i.get("key") or "") for i in _rows(row["artifacts_json"])
+              if i.get(SCRUBBED_FIELD) is True or i.get(HOLDS_SECRET_FIELD) is True]
+    held = {n for n, c in enumerate(checks, 1)
+            if "output_tail" in c and any(f"/{_check_name(n, c)}@" in k for k in marked)}
+    if not held:
+        return row
+    kept = [{**{k: v for k, v in c.items() if k != "output_tail"}, "output_withheld": True} if n in held else dict(c)
+            for n, c in enumerate(checks, 1)]
+    return cast(StepRow, {**row, "result_json": {**row["result_json"], "checks": kept}})
+
+
 def mark_missing(row: StepRow, error: str) -> StepRow:
     """Pure. `row` with `result_json.artifacts_error` saying why some of its artifacts were not written. Its
     `artifacts_json` still lists only objects that were written."""
@@ -495,7 +514,7 @@ def step_artifacts(
     except Exception as exc:
         error = _shown(exc, root)
         done = tuple(mark_missing(row, error) for row in rows)
-    by_step = {row["step"]: row for row in done}
+    by_step = {row["step"]: withhold_tails(row) for row in done}
     return tuple(by_step.get(row["step"], row) for row in rows)
 
 

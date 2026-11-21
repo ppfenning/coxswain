@@ -78,6 +78,74 @@ def test_nothing_refused_gives_no_feedback_and_the_body_stays_as_it_was():
     assert lane_feedback.with_feedback("the body", "why") == "the body\n\nwhy"
 
 
+# -- a failed check's output -------------------------------------------------------------------------------------------
+
+TYPES = "python .github/check_types.py"
+PYRIGHT = ("src/graphs/harness/phase_lane.py:812:9 - error: Argument of type \"str | None\" cannot be assigned to "
+           "parameter \"base\" of type \"str\"", "src/graphs/harness/lane_feedback.py:40:5 - error: \"_mapping\" is "
+           "not defined", "2 errors, 0 warnings, 0 informations")
+
+
+def _types_check(noise: int = 200) -> dict:
+    """A failed `check_types` result as `checks.run_checks` keeps it: a long run of progress lines, then pyright's
+    errors, in both its output tail and its excerpt (the last lines, for output that is not pytest's)."""
+    output = "\n".join([*(f"checking module {n} of {noise}" for n in range(noise)), *PYRIGHT])
+    return {"name": TYPES, "cmd": TYPES, "passed": False, "exit_code": 1, "outcome": "failed",
+            "output_tail": output[-2000:], "excerpt": "\n".join(output.splitlines()[-40:]), "log": "checks/p1/t1/1.log"}
+
+
+def _checks_row(checks: list[dict], run_id: str = "r1") -> dict:
+    result = with_checks({"run_id": f"{run_id}:t1"}, checks, run_id)
+    return steps_of_result(result, run_id=run_id, initiative="ship", phase="p1", task="t1", at=AT)[0]
+
+
+def test_a_failed_check_s_errors_reach_the_feedback_from_its_row_capped():
+    row = _checks_row([_types_check()])
+    kept = row["result_json"]["checks"][0]["output_tail"]
+    assert kept.splitlines()[-3:] == list(PYRIGHT) and len(kept) <= 2000 and len(kept.splitlines()) <= 40
+    text = lane_feedback.refusal_feedback([row])
+    assert f"- check `{TYPES}` failed (exit 1)" in text and all(line in text for line in PYRIGHT)
+    assert "checking module 0 of" not in text  # the end of the output, never the whole log
+
+
+def test_only_three_failed_checks_carry_their_output_and_a_passed_or_timed_out_one_none():
+    many = [{**_types_check(5), "name": f"types-{n}", "excerpt": f"error in check {n}"} for n in range(4)]
+    timed_out = {"name": "suite", "passed": False, "exit_code": None, "outcome": "timed_out", "excerpt": "[timed out]"}
+    passed = {"name": "lint", "passed": True, "exit_code": 0, "outcome": "passed", "excerpt": "All checks passed!"}
+    row = _checks_row([passed, timed_out, *many])
+    assert ["output_tail" in c for c in row["result_json"]["checks"]] == [False, False, True, True, True, False]
+    text = lane_feedback.refusal_feedback([row])
+    assert all(f"error in check {n}" in text for n in range(3)) and "error in check 3" not in text
+    assert "- check `types-3` failed (exit 1)" in text  # still named, without its output
+
+
+def test_a_check_whose_log_held_a_secret_is_named_without_its_output(tmp_path, lane_store):
+    pytest.importorskip("pyarrow")
+    from harness.artifacts import artifacts_root, step_artifacts
+
+    token = "s3cr3t-forgejo-token-value"
+    check = {**_types_check(5), "excerpt": f"auth failed with {token}\n{PYRIGHT[0]}"}
+    log = tmp_path / "runs" / "r1" / "checks" / "p1" / "t1" / "1.log"
+    log.parent.mkdir(parents=True)
+    log.write_text(check["excerpt"] + "\n", encoding="utf-8")
+    root = artifacts_root({"artifacts_url": f"file://{tmp_path / 'artifacts'}"}, {"FORGEJO_TOKEN": token},
+                          tmp_path / "runs")
+    result = with_checks({"run_id": "r1:t1"}, [check], "r1")
+    rows = steps_of_result(result, run_id="r1", initiative="ship", phase="p1", task="t1", at=AT)
+    assert token in rows[0]["result_json"]["checks"][0]["output_tail"]  # what the row would have kept
+    conn = open_store(lane_store, AT)
+    try:
+        (stored,) = step_artifacts(root, conn, rows, result, runs_dir=tmp_path / "runs", run_id="r1", phase="p1",
+                                   task="t1")
+    finally:
+        conn.close()
+    assert stored["artifacts_json"][0]["scrubbed"] is True
+    entry = stored["result_json"]["checks"][0]
+    assert "output_tail" not in entry and entry["output_withheld"] is True
+    text = lane_feedback.refusal_feedback([stored])
+    assert token not in text and PYRIGHT[0] not in text and "its log held a secret" in text
+
+
 # -- the step row ------------------------------------------------------------------------------------------------------
 
 def test_a_build_only_result_records_its_handoff_and_an_old_model_result_does_not():
@@ -160,6 +228,26 @@ def test_a_task_whose_last_build_s_handoff_was_refused_is_built_again_with_the_r
         third = ScriptedRunner({"plan": PLAN, "build": BUILD, "handoff": COMPLETE})
         phase_lane._build(_lane(tmp_path, lane_store, conn, claim, "ship-p1-3", third, log), "t1", _base(tmp_path))
         assert all(lane_feedback.HEADING not in c["prompt"] and MISSING not in c["prompt"] for c in third.calls)
+    finally:
+        conn.close()
+
+
+def test_a_task_its_checks_refused_is_built_again_with_the_check_s_errors(tmp_path, lane_store):
+    conn = open_store(lane_store, AT)
+    try:
+        claim, log = _claim(conn), []
+        first = _lane(tmp_path, lane_store, conn, claim, "ship-p1-1",
+                      ScriptedRunner({"plan": PLAN, "build": BUILD, "handoff": COMPLETE}), log)
+        result, why, _, _ = phase_lane._build(first, "t1", _base(tmp_path))
+        assert result is not None and why == ""
+        # The handoff passed and `check_types` refused the change, as in E1: the lane writes the checks row.
+        assert first.put(phase_lane._rows_of(first, with_checks(result, [_types_check()], "ship-p1-1"), "t1", ""))
+
+        again = ScriptedRunner({"plan": PLAN, "build": BUILD, "handoff": COMPLETE})
+        phase_lane._build(_lane(tmp_path, lane_store, conn, claim, "ship-p1-2", again, log), "t1", _base(tmp_path))
+        prompt = next(c["prompt"] for c in again.calls if c["role"] == "build")
+        assert lane_feedback.HEADING in prompt and f"- check `{TYPES}` failed (exit 1)" in prompt
+        assert all(line in prompt for line in PYRIGHT) and "checking module 0 of" not in prompt
     finally:
         conn.close()
 
