@@ -10,6 +10,7 @@ login role and drops it at the end; the `cox_worker` group is shared, as it is o
 import json
 import stat
 import subprocess
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -17,6 +18,7 @@ from urllib.parse import quote, urlsplit, urlunsplit
 import pytest
 
 from smoke import plan
+from smoke.conftest import SESSION
 
 ROLE_ENV, PASSWORD_ENV = "COX_WORKER_STORE_ROLE", "COX_WORKER_STORE_PASSWORD"
 CHECK = "worker store role"
@@ -126,10 +128,15 @@ def worker_machine(sandbox) -> Iterator:
                                            f"THEN EXECUTE 'DROP OWNED BY {login}'; EXECUTE 'DROP ROLE {login}'; END IF; END$$")
 
 
+def _database(machine) -> str:
+    return urlsplit(machine.store_url).path.lstrip("/")
+
+
 def _worker(machine) -> str:
-    """A worker name of this test's own: the hash that ends its database's name. Roles are server-wide, so two tests
-    on one server must not share one."""
-    return f"smoke-{urlsplit(machine.store_url).path.rsplit('_', 1)[-1]}"
+    """A worker name of this test's own, from its database's name (`plan.worker_name`). Roles are server-wide, so it
+    carries the session and the creation time: two tests, or two sessions, on one server never share one, and the
+    session's end or the age reaper drops its login role like the session's databases."""
+    return plan.worker_name(_database(machine))
 
 
 def _login(machine) -> str:
@@ -343,7 +350,7 @@ def test_the_doctor_row_fails_when_the_password_is_wrong(worker_machine):
 
 
 def test_open_scoped_refuses_an_older_store_and_migrates_nothing(sandbox, postgres):
-    name = plan.database_name("worker-role-older-store")
+    name = plan.database_name("worker-role-older-store", SESSION, int(time.time()))
     url = plan.with_database(postgres, name)
     done = subprocess.run([str(sandbox.install.python), "-c", OLDER_STORE, postgres, name, url], env=sandbox.env,
                           cwd=sandbox.home, capture_output=True, text=True, timeout=120)
@@ -359,17 +366,14 @@ def test_open_scoped_refuses_an_older_store_and_migrates_nothing(sandbox, postgr
     assert older["outcome"].startswith("refused: ") and "never migrates" in older["outcome"]
 
 
-def _hash(machine) -> str:
-    return urlsplit(machine.store_url).path.rsplit("_", 1)[-1]
-
-
 @pytest.fixture
 def managed_owner(worker_machine, postgres) -> Iterator:
     """A store owned by a role with CREATEROLE and no superuser, as managed Postgres gives an operator: its own
     database, and ADMIN on the shared `cox_worker` group (made here by the superuser when no test has made it yet)
     without being a member of it. The sandbox's provider profile points at this owner, so `cox` runs as it."""
-    h = _hash(worker_machine)
-    owner, password, database = f"smoke_owner_{h}", f"owner-pass-{h}", f"smoke_owned_{h}"
+    test_database = _database(worker_machine)
+    owner, database = plan.scoped_name(test_database, "owner"), plan.scoped_name(test_database, "owned")
+    password = f"owner-pass-{test_database.rsplit('_', 1)[-1]}"
     url = plan.with_database(postgres, database)
     url = urlunsplit(urlsplit(url)._replace(netloc=f"{owner}:{password}@{urlsplit(url).netloc.rpartition('@')[2]}"))
     _owner(worker_machine, postgres,
@@ -427,8 +431,7 @@ def test_a_statement_the_owner_may_not_run_is_a_refusal_not_a_traceback(managed_
 
 
 def test_concurrent_setup_runs_queue_instead_of_failing(worker_machine):
-    h = _hash(worker_machine)
-    names = [f"smoke-{h}-c{i}" for i in range(4)]
+    names = [f"{_worker(worker_machine)}-c{i}" for i in range(4)]
     argv = [str(worker_machine.install.cox), "setup", "store", "worker-role"]
     try:
         procs = [subprocess.Popen([*argv, name, "--environment-file", str(worker_machine.home / f"{name}.env")],

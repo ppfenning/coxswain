@@ -384,6 +384,25 @@ def _queue_phases(action: Action, deps: Deps) -> Result:
     return make_result(action, "done", f"{written} phase queue row(s) written; {action.get('reason', '')}")
 
 
+def _approve_phase_tasks(action: Action, deps: Deps) -> Result:
+    """Edge. A phase the phase review approved: each of its tasks moves to approved with its roll-up commit as
+    `merged_commit`, the lander's precondition (every approved task's commit is on the phase tip), both in one
+    transaction per task (`store_api.approve_at`): a task is never left approved without its commit. A repeat changes
+    nothing; a task that failed is planned again on the next tick (`chair_phase_queue.approvals`)."""
+    from harness import store_api
+
+    url, now = run_store.store_url_for(deps.runs_dir), _stamp_now()
+    done: list[str] = []
+    for one in action.get("approvals", []):
+        initiative, task, commit = one["initiative"], one["task_id"], one["commit"]
+        approved = store_api.approve_at(url, initiative, task, commit, "chair-loop", now)
+        if not isinstance(approved, store_api.MergeRecorded):
+            return make_result(action, "failed", f"{initiative}/{task} not approved at {commit[:12]}: {approved}; "
+                                                 f"approved first: {', '.join(done) or 'none'}")
+        done.append(task)
+    return make_result(action, "done", f"approved {', '.join(done)}; {action.get('reason', '')}")
+
+
 def _stamp_now() -> str:
     """Edge. Only the migration's bookkeeping reads this: every phase queue time is the store's own."""
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -900,6 +919,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
             return _finish_task(action, deps)
         case ActionKind.QUEUE_PHASES:
             return _queue_phases(action, deps)
+        case ActionKind.APPROVE_PHASE_TASKS:
+            return _approve_phase_tasks(action, deps)
         case ActionKind.REQUEUE_TASK:
             return _requeue_task(action, deps)
         case ActionKind.RESCUE:

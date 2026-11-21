@@ -205,6 +205,29 @@ def _epic_definitions(ws: Path) -> dict[str, dict]:
     return definitions
 
 
+def _store_nap(runs_dir: Path) -> Callable[[float], bool] | None:
+    """Edge. The chair's wait step on the store's notifications (`harness.store_notify`, migration 0021): blocks up to
+    the step, True once a table in `chair_wake.STORE_WAKE_TABLES` was written. None where the store cannot notify
+    (sqlite) or cannot be reached now, and a listener that fails later sleeps the step out: polling stays the fallback."""
+    from harness import store_notify
+
+    try:
+        listener = store_notify.listen(run_store.store_url_for(runs_dir))
+    except Exception:
+        return None
+    if listener is None:
+        return None
+
+    def nap(seconds: float) -> bool:
+        try:
+            return bool(listener.wait(seconds) & chair_wake.STORE_WAKE_TABLES)
+        except Exception:
+            time.sleep(seconds)
+            return False
+
+    return nap
+
+
 def _chair_gather(ws: Path) -> chair_run.Gather:
     """Pure. The chair's gatherer with the epic definitions of `ws` read on every tick through `_epic_definitions`."""
     return lambda deps, now: chair_facts.gather_facts(deps, now, epic_definitions=_epic_definitions(ws))
@@ -1280,7 +1303,9 @@ def _chair_run_deps(
         return courier.entries(courier.read_text(ws / "courier.jsonl"))  # a missing file is an empty bus
 
     # A dry run and a missing workspace keep the plain sleep, so polling is unchanged there.
-    wake = None if dry_run or not ws.is_dir() else chair_wake.wait_for_run_exit(read_bus, time.sleep, time.monotonic, CHAIR_WAKE_POLL_SECONDS)
+    nap = _store_nap(runs_dir) if mode == "store" and not dry_run else None
+    wake = None if dry_run or not ws.is_dir() else chair_wake.wait_for_run_exit(
+        read_bus, time.sleep, time.monotonic, CHAIR_WAKE_POLL_SECONDS, nap)
 
     chat = None if dry_run or not ws.is_dir() else _chat_deps(ws)
 

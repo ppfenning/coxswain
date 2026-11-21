@@ -23,10 +23,14 @@ def read_phase_queue(runs_dir: Path, profile: Mapping[str, object], work_rows: S
     from harness import store_api
 
     phase, closed = initiative_sets(work_rows)
-    rows = store_api.phase_queue_rows(run_store.store_url_for(runs_dir))
-    readable = not isinstance(rows, store_api.Failed | store_api.NotAvailable)
+    url = run_store.store_url_for(runs_dir)
+    rows = store_api.phase_queue_rows(url)
+    review = store_api.phase_review_facts(url, phase)
+    unread = (store_api.Failed, store_api.NotAvailable)
+    rollups, tasks, rounds = review if not isinstance(review, unread) else ([], [], [])
     return {
-        "rows": rows if not isinstance(rows, store_api.Failed | store_api.NotAvailable) else [],
-        "readable": readable, "lane_prereqs": chair_capacity.chair_lane_prereqs(profile),
-        "phase_initiatives": phase, "closed": closed,
+        "rows": rows if not isinstance(rows, unread) else [],
+        "readable": not isinstance(rows, unread) and not isinstance(review, unread),
+        "lane_prereqs": chair_capacity.chair_lane_prereqs(profile),
+        "phase_initiatives": phase, "closed": closed, "tasks": tasks, "rollups": rollups, "rounds": rounds,
     }

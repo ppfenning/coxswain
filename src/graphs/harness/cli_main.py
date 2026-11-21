@@ -50,10 +50,11 @@ def _build_parser(specs: dict[str, GraphSpec]) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "graph",
-        choices=sorted([*specs, "phase", "epic", "rescue", "sweep"]),
+        choices=sorted([*specs, "phase", "epic", "phase-lane", "rescue", "sweep"]),
         help=(
             "which graph to run ('phase' drives the lifecycle graph over one phase; "
             "'epic' drives a whole initiative, phase by phase, gating each one; "
+            "'phase-lane' builds one phase a worker claimed, its tasks in parallel, each pushed as it rolls up; "
             "'rescue' runs one rescue of one quarantined task and prints its JSON report; "
             "'sweep' is registered for coxswain dispatch but not yet runnable standalone)"
         ),
@@ -145,8 +146,11 @@ def _build_parser(specs: dict[str, GraphSpec]) -> argparse.ArgumentParser:
         action="append",
         default=None,
         metavar="PHASE",
-        help="epic: run only the named phase, repeatable; the phases' parents are taken as complete from the work store",
+        help="epic: run only the named phase, repeatable; the phases' parents are taken as complete from the work store; "
+        "phase-lane: the claimed phase",
     )
+    parser.add_argument("--lane-worker", help="phase-lane: the worker whose phase_queue claim this lane runs under")
+    parser.add_argument("--claim-epoch", type=int, help="phase-lane: the claim's epoch, which every write is fenced on")
     parser.add_argument(
         "--repo",
         help=(
@@ -216,8 +220,8 @@ def main(argv: list[str] | None = None) -> int:
 
 def _refuse_phase_outside_epic(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """`--phase` selects phases of an initiative, which only the epic driver has."""
-    if args.graph != "epic" and getattr(args, "phase", None):
-        parser.error("--phase applies to the epic graph only")
+    if args.graph not in ("epic", "phase-lane") and getattr(args, "phase", None):
+        parser.error("--phase applies to the epic and phase-lane graphs only")
 
 
 def _expand_repo(args: argparse.Namespace) -> argparse.Namespace:

@@ -54,11 +54,29 @@ def test_route_edit_refuses_a_backward_move_and_writes_nothing(sandbox):
     _agree(sandbox, path, "approved")
 
 
-def test_route_context_counts_a_ready_task_from_the_store(sandbox):
+def _paths(value):
+    """Every string in a JSON value that is an absolute path."""
+    if isinstance(value, dict):
+        return [p for v in value.values() for p in _paths(v)]
+    if isinstance(value, list):
+        return [p for v in value for p in _paths(v)]
+    return [value] if isinstance(value, str) and value.startswith("/") else []
+
+
+def test_route_context_counts_a_ready_task_from_the_store_under_the_sandbox_profile(sandbox):
     _imported(sandbox, {**TASK, "state": "ready"})
-    context = sandbox.cox("route", "context", "--json")
-    assert context.returncode == 0, context.stderr
-    assert {"id": "ship", "phase": "p1", "ready": 1} in json.loads(context.stdout)["initiatives"]
+    done = sandbox.cox("route", "context", "--json")
+    assert done.returncode == 0, done.stderr
+    context = json.loads(done.stdout)
+    assert {"id": "ship", "phase": "p1", "ready": 1} in context["initiatives"]
+    # cox resolved the profile the sandbox HOME names, and every path it reports is the sandbox's or the install's.
+    # That does not prove it opens no other file; the environment (plan.sandbox_env: no real HOME, XDG root or
+    # AGENT_TOOLS_PROFILE) is what keeps the real home out of its reach.
+    assert (context["team"], context["workspace_dir"]) == ("smoke", str(sandbox.workspace))
+    assert context["harness_dir"] == str(sandbox.install.root)
+    assert context["provider_profile"] == str(sandbox.home / ".config" / "agent-tools" / "provider.yaml")
+    roots = (str(sandbox.home.parent), str(sandbox.install.root))
+    assert [p for p in _paths(context) if not p.startswith(roots)] == []
 
 
 def test_route_edit_with_the_initiative_moves_that_initiatives_ticket_when_the_id_repeats(sandbox):

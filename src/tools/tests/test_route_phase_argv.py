@@ -32,6 +32,15 @@ def test_epic_argv_without_phase_is_the_argv_minus_the_phase_pair():
     assert _epic(phase=None) == without
 
 
+def test_the_phase_lane_argv_is_the_epics_with_the_claim_it_runs_under():
+    lane = harness_argv(PROFILE, "phase-lane", "init-1", initiative="init", repo="/r", phase="b", lane_worker="w1",
+                        claim_epoch=3)
+    assert lane[2] == "phase-lane"
+    i = lane.index("--lane-worker")
+    assert lane[i : i + 4] == ["--lane-worker", "w1", "--claim-epoch", "3"]
+    assert lane[:i] + lane[i + 4 :] == [*_epic(phase="b")[:2], "phase-lane", *_epic(phase="b")[3:]]
+
+
 def test_rescue_argv_ignores_a_phase():
     argv = harness_argv(PROFILE, "rescue", "init-1", initiative="init", repo="/r", task="t1", phase="b")
     assert "--phase" not in argv

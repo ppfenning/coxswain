@@ -10,6 +10,7 @@ Run it from the repository root: `pytest -q -rs smoke`.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import os
 import re
@@ -40,6 +41,13 @@ sys.path[:0] = [str(ROOT / "src" / name) for name in ("tools", "graphs", "cartri
 # One reader of a Forgejo branch answer, shared with the code under test: the forge's own parser, imported from this
 # tree (not from whatever checkout the runner's venv installed), since the fixtures poll the same endpoint it does.
 from agent_tools.forge_forgejo import parse_branch_tip  # noqa: E402
+
+# The suite's own imports come from this tree, or it does not load (tests/test_smoke_shell.py rebuilds the stale
+# checkout that once shadowed `core` and `harness` while only src/tools was put ahead).
+for _package, _folder in {"agent_tools": "tools", "harness": "graphs", "core": "cartridges"}.items():
+    _found = Path(importlib.import_module(_package).__file__).resolve()
+    if not _found.is_relative_to(ROOT / "src" / _folder):
+        raise RuntimeError(f"{_package} imported from {_found}, not from this tree's src/{_folder}")
 
 # The harness backs a store up with `pg_dump` before it migrates one that holds something (`harness.store_migrate`,
 # `should_back_up`); a fresh smoke database is not backed up, but test_store_backup_pg_dump.py migrates one that is.
@@ -130,6 +138,10 @@ def install(tmp_path_factory: pytest.TempPathFactory) -> Install:
     return _install(tmp_path_factory, "install", "postgres,traces,lake")
 
 
+_SITE_PROBE = ("import sysconfig, agent_tools, harness, core; "
+               "print(sysconfig.get_paths()['purelib'], *(m.__file__ for m in (agent_tools, harness, core)), sep=chr(10))")
+
+
 def _install(tmp_path_factory: pytest.TempPathFactory, name: str, extras: str) -> Install:
     uv = shutil.which("uv")
     if uv is None:
@@ -143,10 +155,15 @@ def _install(tmp_path_factory: pytest.TempPathFactory, name: str, extras: str) -
     # install the previous build. The drift check below proves the install is this tree either way.
     _must([uv, "pip", "install", "--quiet", "--python", str(python), "--reinstall-package", "coxswain", f"{ROOT}[{extras}]"])
     env = _clean_env(root / "home", [str(venv / "bin")])
-    site = Path(_must([str(python), "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"], env=env).stdout.strip())
+    # #1184/#1185: child interpreters imported a venv's editable checkout of another tree. The packages the install's
+    # python imports under the install's environment must be the installed ones, the files the drift check compares.
+    site, *imported = _must([str(python), "-c", _SITE_PROBE], env=env).stdout.splitlines()
+    site = Path(site)
     drift = _install_drift(site)
     if drift:
         pytest.fail(f"the install is not this tree: {drift[:5]}", pytrace=False)
+    if elsewhere := [path for path in imported if not Path(path).is_relative_to(site)]:
+        pytest.fail(f"the install's python imports from outside its site-packages {site}: {elsewhere}", pytrace=False)
     return Install(root=root, python=python, bin=venv / "bin", site=site, env=env)
 
 
@@ -175,15 +192,27 @@ def _ready_port(container: str) -> int:
     return plan.parse_published_port(_must(plan.docker_port_argv(container)).stdout)
 
 
+def _answers(url: str) -> bool:
+    """Whether something accepts a TCP connection at the URL's host and port. Who answers is the doctor's check."""
+    try:
+        with socket.create_connection(plan.url_address(url), timeout=2):
+            return True
+    except OSError:
+        return False
+
+
 @pytest.fixture(scope="session")
 def postgres() -> Iterator[str]:
     """The URL of the session's Postgres server: the one `COX_SMOKE_POSTGRES_URL` names, else a container started here
-    and removed at the end of the session."""
+    and removed at the end of the session. The warm server's URL (`plan.WARM_URL`) falling silent falls back to a
+    container; any other URL that does not answer fails the run (`plan.postgres_source`)."""
     docker = shutil.which("docker")
     url = os.environ.get(plan.URL_ENV)
     broken_ok = plan.is_required(os.environ.get(plan.BROKEN_DOCKER_OK_ENV))
-    docker_ok = url is None and _docker_ok(docker)
-    decision = plan.postgres_source(url, docker, docker_ok, required=_required(), broken_docker_ok=broken_ok)
+    reachable = bool(url) and plan.loopback_refusal(url) is None and _answers(url)
+    docker_ok = plan.needs_container(url, reachable) and _docker_ok(docker)
+    decision = plan.postgres_source(url, docker, docker_ok, required=_required(), broken_docker_ok=broken_ok,
+                                    reachable=reachable)
     if isinstance(decision, plan.Skip | plan.Fail):
         _unavailable(decision)
     if isinstance(decision, plan.UseUrl):
@@ -199,32 +228,146 @@ def postgres() -> Iterator[str]:
 
 
 _ADMIN = """import sys, psycopg
-url, verb, name = sys.argv[1:4]
+from psycopg import errors, sql
+url, verb, *names = sys.argv[1:]
 with psycopg.connect(url, autocommit=True) as conn:
-    conn.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
-    if verb == "create":
-        conn.execute(f'CREATE DATABASE "{name}"')
+    if verb == "list":  # `names` is one LIKE pattern here
+        for (datname,) in conn.execute("SELECT datname FROM pg_database WHERE datname LIKE %s", (names[0],)):
+            print(datname)
+    elif verb == "reap":  # no FORCE: Postgres refuses to drop a database someone is connected to, so a live one stays
+        for name in names:
+            try:
+                conn.execute(sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(name)))
+            except errors.ObjectInUse:
+                continue
+            print(name)
+    elif verb == "roles":  # `names` is LIKE patterns here
+        for pattern in names:
+            for (rolname,) in conn.execute("SELECT rolname FROM pg_roles WHERE rolname LIKE %s", (pattern,)):
+                print(rolname)
+    elif verb == "drop-roles":  # a role something still depends on stays; the next reap tries again
+        for name in names:
+            try:
+                conn.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(name)))
+            except (errors.DependentObjectsStillExist, errors.ObjectInUse):
+                continue
+            print(name)
+    elif verb == "copy":  # `names` is the new database, then the template it copies
+        name, template = names
+        conn.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(name)))
+        conn.execute(sql.SQL("CREATE DATABASE {} TEMPLATE {}").format(sql.Identifier(name), sql.Identifier(template)))
+    else:
+        for name in names:
+            conn.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(name)))
+            if verb == "create":
+                conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
 """
 
 
+@dataclass(frozen=True)
+class SessionDatabases:
+    """The smoke databases on the session's Postgres server. Every call runs the admin script under the install's own
+    sandboxed environment: no PYTHONPATH, no PG* variables and no real HOME reach it."""
+
+    server: str
+    install: Install
+
+    def _admin(self, verb: str, *names: str, must: bool) -> subprocess.CompletedProcess[str]:
+        argv = [str(self.install.python), "-c", _ADMIN, self.server, verb, *names]
+        return (_must if must else _run)(argv, env=self.install.env, cwd=self.install.root)
+
+    def create(self, name: str) -> None:
+        self._admin("create", name, must=True)
+
+    def copy(self, name: str, template: str) -> None:
+        """Create `name` as a copy of `template` (`CREATE DATABASE ... TEMPLATE`)."""
+        self._admin("copy", name, template, must=True)
+
+    def drop(self, *names: str) -> None:
+        if names:
+            self._admin("drop", *names, must=False)
+
+    def names(self) -> list[str]:
+        """Every `smoke_` database on the server."""
+        return self._admin("list", r"smoke\_%", must=True).stdout.split()
+
+    def role_names(self) -> list[str]:
+        """Every role a smoke session makes: worker logins (`cox_w_smoke_...`) and the rest (`smoke_...`)."""
+        return self._admin("roles", r"cox\_w\_smoke\_%", r"smoke\_%", must=True).stdout.split()
+
+    def drop_roles(self, *names: str) -> list[str]:
+        """Drop the roles, in the order given; return the names it dropped."""
+        return self._admin("drop-roles", *names, must=True).stdout.split() if names else []
+
+    def reap(self) -> list[str]:
+        """Drop the databases, then the roles, created more than `plan.STALE_AFTER_S` ago that nothing still holds;
+        return the names it dropped. A killed session's connections are gone with it, so its databases and roles go; a
+        live one's stay. Databases go first, so a role that only they depended on goes in the same reap."""
+        now = int(time.time())
+        stale = plan.stale_databases(self.names(), now)
+        dropped = self._admin("reap", *stale, must=True).stdout.split() if stale else []
+        return dropped + self.drop_roles(*plan.stale_roles(self.role_names(), now))
+
+    def drop_prefix(self, prefix: str) -> None:
+        self.drop(*(name for name in self.names() if name.startswith(prefix)))
+
+    def drop_session(self, session: str) -> None:
+        """Drop every database, then every role, carrying the session's prefix."""
+        self.drop_prefix(plan.session_prefix(session))
+        prefixes = plan.session_role_prefixes(session)
+        self.drop_roles(*plan.role_drop_order(n for n in self.role_names() if n.startswith(prefixes)))
+
+
+@pytest.fixture(scope="session")
+def session_databases(postgres: str, install: Install) -> Iterator[SessionDatabases]:
+    """The session's handle on its server's databases and roles. At the start it reaps the ones a killed session left
+    behind; at the end it drops every one still carrying this session's prefix. On a container the server goes away
+    whole, so the reap finds nothing there."""
+    databases = SessionDatabases(postgres, install)
+    databases.reap()
+    try:
+        yield databases
+    finally:
+        databases.drop_session(SESSION)
+
+
+# --- the session's store template ------------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def store_template(postgres: str, session_databases: SessionDatabases) -> Iterator[str]:
+    """The name of a database at the newest schema, made once per session the way every store is: the harness's own
+    store CLI opens it, which is what applies the migrations (`harness.store_migrate.open_store`). Each test's store
+    is a copy of it (`store_url`), so the migrations run once per session rather than once per test. It carries the
+    session's prefix and its own creation time, so it is dropped with the session's databases and, if the session is
+    killed, reaped by age like any of them. It depends on `session_databases`, so the reap runs before it exists."""
+    install = session_databases.install
+    name = plan.template_name(SESSION, int(time.time()))
+    session_databases.create(name)
+    try:
+        url = plan.with_database(postgres, name)
+        _must([str(install.python), "-m", "harness.store_cli", "--store-url", url, "host", "list"], env=install.env, cwd=install.root)
+        yield name
+    finally:
+        session_databases.drop(name)
+
+
 @pytest.fixture
-def store_url(postgres: str, install: Install, request: pytest.FixtureRequest) -> Iterator[str]:
-    """A fresh database for one test, at the newest schema. The harness's own store CLI opens it first, which is
-    what applies the migrations (`harness.store_migrate.open_store`)."""
+def store_url(postgres: str, session_databases: SessionDatabases, store_template: str, request: pytest.FixtureRequest) -> Iterator[str]:
+    """A fresh database for one test, at the newest schema: a copy of the session's migrated `store_template`. Its
+    name starts with this session's id and its own creation time, so another session sharing the server never drops
+    it while it is young or in use."""
     if PG_DUMP is None:
         pytest.fail("pg_dump is not on PATH: the harness backs up every store it migrates with pg_dump, and each smoke "
                     "database is migrated when it opens. Install the PostgreSQL client tools and put pg_dump on PATH.",
                     pytrace=False)
-    name = plan.database_name(request.node.nodeid)
-    # install.env, not the caller's: no PYTHONPATH, no PG* variables and no real HOME reach these calls
-    admin = [str(install.python), "-c", _ADMIN, postgres]
-    _must([*admin, "create", name], env=install.env, cwd=install.root)
+    name = plan.database_name(request.node.nodeid, SESSION, int(time.time()))
+    session_databases.copy(name, store_template)
     url = plan.with_database(postgres, name)
-    _must([str(install.python), "-m", "harness.store_cli", "--store-url", url, "host", "list"], env=install.env, cwd=install.root)
     try:
         yield url
     finally:
-        _run([*admin, "drop", name], env=install.env, cwd=install.root)
+        session_databases.drop(name)
 
 
 # --- the sandbox ---------------------------------------------------------------------------------------------------
@@ -415,7 +558,8 @@ def pytest_configure(config: pytest.Config) -> None:
 
 @pytest.hookimpl(trylast=True)  # after `-m` has deselected
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """With COX_SMOKE_SHARD=<k>/<n>, keep only the files `plan.shard_files` puts in shard k (CI's parallel smoke jobs)."""
+    """With COX_SMOKE_SHARD=<k>/<n>, keep only the files `plan.shard_files` puts in shard k (CI's parallel smoke jobs),
+    each weighed by its seconds in the committed `smoke/timings.json`."""
     value = os.environ.get(plan.SHARD_ENV)
     if not value:
         return
@@ -426,7 +570,8 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     folder = Path(__file__).parent
     sources = {f"{folder.name}/{path.name}": path.read_text(encoding="utf-8") for path in folder.glob("test_*.py")}
     files = [item.nodeid.split("::")[0] for item in items]
-    keep = set(plan.shard_files(plan.file_weights(sources), n)[k - 1])
+    timings = plan.read_timings((folder / plan.TIMINGS_FILE).read_text(encoding="utf-8"))
+    keep = set(plan.shard_files(plan.file_weights(sources, timings), n)[k - 1])
     dropped = [item for item, name in zip(items, files, strict=True) if name not in keep]
     if dropped:
         config.hook.pytest_deselected(items=dropped)

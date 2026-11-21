@@ -141,6 +141,10 @@ def _route_launch(a: argparse.Namespace) -> int:
     if phases and a.graph != "epic":
         print("routing: --phase applies to the epic graph only")
         return 2
+    lane_worker, claim_epoch = getattr(a, "lane_worker", None), getattr(a, "claim_epoch", None)
+    if (lane_worker is None) != (claim_epoch is None) or (lane_worker is not None and len(phases) != 1):
+        print("routing: --lane-worker and --claim-epoch go together, with exactly one --phase")
+        return 2
     if len(phases) > 1 and getattr(a, "run_id", None) is not None:
         print("routing: --run-id names one run; it cannot go with more than one --phase")
         return 2
@@ -282,6 +286,8 @@ def _route_launch(a: argparse.Namespace) -> int:
             needs["fix_attempts"] = a.fix_attempts
         if phase is not None:
             needs["phase"] = phase
+        if lane_worker is not None:
+            needs["lane_worker"], needs["claim_epoch"] = lane_worker, claim_epoch
         if host is None:
             # A remote lane runs the host's own `cox route launch` on the synced repo, which resolves the repo's `base:`
             # setting itself through this same branch; only an explicit `--base` is lost there, so `_dropped_ceilings` refuses it.
@@ -395,7 +401,7 @@ def _route_launch(a: argparse.Namespace) -> int:
     harness_python = str(install_root.harness_python(harness_dir)) if harness_dir else None
     result_path = runs_dir / f"{run_id}.result.json"
     argv = route.harness_argv(
-        launch_profile, a.graph, run_id, python=harness_python, result_out=str(result_path) if via_rows else None, **needs,
+        launch_profile, "phase-lane" if lane_worker is not None else a.graph, run_id, python=harness_python, result_out=str(result_path) if via_rows else None, **needs,
     )
     log_path = runs_dir / f"{run_id}.log"
     pid_path = runs_dir / f"{run_id}.pid"

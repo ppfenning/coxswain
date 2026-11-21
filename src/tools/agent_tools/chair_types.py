@@ -626,6 +626,9 @@ class PhaseQueueFacts(TypedDict):
     lane_prereqs: bool
     phase_initiatives: list[str]  # every initiative whose store row is stamped `lane_model: phase`, ready work or not
     closed: list[str]  # the initiatives whose store row is done or dropped
+    tasks: NotRequired[list[dict[str, object]]]  # the phase initiatives' task rows, with state and merged_commit
+    rollups: NotRequired[list[dict[str, object]]]  # their roll-up step rows (`store_phases.rollup_rows`), oldest first
+    rounds: NotRequired[list[dict[str, object]]]  # each of their phases' last review round (`store_phases.last_rounds`)
 
 
 class Facts(TypedDict):
@@ -818,6 +821,7 @@ class ActionKind(StrEnum):
     STALL_ALARM = "stall_alarm"
     STALL_CLEAR = "stall_clear"
     QUEUE_PHASES = "queue_phases"
+    APPROVE_PHASE_TASKS = "approve_phase_tasks"
     PYTEST_TMP_SWEEP = "pytest_tmp_sweep"  # recorded by the executor after a tick's actions; no planner plans it
 
 
@@ -934,6 +938,7 @@ class Action(TypedDict, total=False):
     schedule: dict[str, object]  # a schedule_updated carries `chair_schedule._body`, written whole to the schedule file
     head: str  # a land_phase names its phase branch's tip just before the land, when the branch resolves
     changes: list[dict[str, object]]  # a queue_phases carries its phase_queue writes (`chair_phase_queue.changes`)
+    approvals: list[dict[str, str]]  # an approve_phase_tasks carries {initiative, phase, task_id, commit} per task
 
 
 class PlanLands(Protocol):

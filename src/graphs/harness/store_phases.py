@@ -18,6 +18,8 @@ from typing import cast
 
 from harness import phase_pick
 from harness.store_dialect import Cell, Connection, Json, insert_ignore, json_load, json_text, upsert
+from harness.store_steps import put_step
+from harness.store_types import StepRow
 
 __all__ = [
     "PHASE_COLUMNS",
@@ -28,13 +30,21 @@ __all__ = [
     "finish",
     "get_row",
     "heartbeat",
+    "held",
+    "host_threads",
+    "last_round",
+    "last_rounds",
     "list_rows",
     "list_workers",
     "live_claims",
+    "park",
+    "put_steps_fenced",
     "register",
     "release",
+    "rollup_rows",
     "set_run",
     "store_now",
+    "task_commits",
 ]
 
 PHASE_COLUMNS: tuple[str, ...] = (
@@ -132,6 +142,12 @@ def _apply(conn: Connection, change: Mapping[str, object], by: str, now: str) ->
             f"WHERE initiative = {p} AND phase = {p} AND state IN ('finished', 'cancelled') AND claim_epoch = {p}",
             (reason, requires, change.get("band", 1), change.get("seq", 0), now, now, by,
              initiative, phase, change.get("epoch", 0)),
+        ) == 1
+    if op == "review":
+        return conn.execute(
+            f"UPDATE phase_queue SET state = 'ready', reason = {p}, ready_at = {p}, attempts = 0, updated_at = {p}, "
+            f"updated_by = {p} WHERE initiative = {p} AND phase = {p} AND state = 'built' AND claim_epoch = {p}",
+            (reason, now, now, by, initiative, phase, change.get("epoch", 0)),
         ) == 1
     if op == "withdraw":
         return conn.execute(
@@ -250,6 +266,20 @@ def finish(conn: Connection, claim: Claim, worker: str, outcome: str, reason: st
         ) == 1
 
 
+def park(conn: Connection, claim: Claim, worker: str, reason: str) -> bool:
+    """Edge. Every task of the phase rolled up and no review round has judged it: the row becomes `built`, which no
+    claim takes (`phase_pick.claimable`), until the chair queues it again once a round is written (`_apply`'s
+    `review`). The claim's attempt is given back: the build succeeded. False when the claim is gone."""
+    p = conn.dialect.placeholder
+    with conn.transaction():
+        now = store_now(conn)
+        return conn.execute(
+            f"UPDATE phase_queue SET state = 'built', lease_until = '', reason = {p}, attempts = attempts - 1, "
+            f"updated_at = {p}, updated_by = {p} {_fence(p)}",
+            (reason, now, worker, claim.initiative, claim.phase, worker, claim.epoch, now),
+        ) == 1
+
+
 def release(conn: Connection, claim: Claim, worker: str, reason: str, wait_s: int, *, refund: bool = False) -> bool:
     """Edge. The retryable nack: give the claim back as `ready`, claimable again `wait_s` seconds from now. The
     attempt stays counted (the claim counted it) unless `refund`: a refused launch, or a worker told to stop, costs
@@ -275,6 +305,100 @@ def live_claims(conn: Connection) -> list[Row]:
         (now,),
     )
     return [_decode(PHASE_COLUMNS, r) for r in rows]
+
+
+# -- the lane's side: every write it makes is fenced on the claim its worker holds --------------------------------
+
+def held(conn: Connection, initiative: str, phase: str, worker: str, epoch: int, margin_s: int = 0) -> bool:
+    """Edge. Whether `worker` still holds the claim at `epoch` with at least `margin_s` seconds of its lease left, by
+    the store's clock. A plain read: it never waits on a lock another session holds on the row."""
+    now = store_now(conn)
+    return phase_pick.fenced(get_row(conn, initiative, phase), worker, epoch, phase_pick.lease(now, margin_s))
+
+
+def put_steps_fenced(conn: Connection, rows: Sequence[StepRow], worker: str, epoch: int) -> bool:
+    """Edge. Insert step rows (insert-ignore, so a repeat changes nothing) only while `worker` holds the claim at
+    `epoch`, in one transaction; False, with nothing written, when it does not. The claim row is read under a share
+    lock (Postgres; sqlite serialises every writer), so a takeover cannot commit between the check and the insert.
+    Each row's `finished_at` is the store's time of this write, and its `started_at` too when the row has none."""
+    if not rows:
+        return True
+    p = conn.dialect.placeholder
+    initiative, phase = rows[0]["initiative"], rows[0]["phase"]
+    with conn.transaction():
+        now = store_now(conn)
+        found = conn.query_one(
+            f"SELECT {', '.join(PHASE_COLUMNS)} FROM phase_queue WHERE initiative = {p} AND phase = {p}"
+            f"{conn.dialect.share_lock}",
+            (initiative, phase),
+        )
+        if not phase_pick.fenced(None if found is None else _decode(PHASE_COLUMNS, found), worker, epoch, now):
+            return False
+        for row in rows:
+            put_step(conn, cast(StepRow, {**row, "finished_at": now, "started_at": row["started_at"] or now}))
+    return True
+
+
+def last_round(conn: Connection, initiative: str, phase: str) -> tuple[int, str] | None:
+    """Edge. The phase's last completed review round as (round, verdict), None before its first."""
+    p = conn.dialect.placeholder
+    found = conn.query_one(
+        f"SELECT round, verdict FROM review_rounds WHERE initiative = {p} AND phase = {p} ORDER BY round DESC LIMIT 1",
+        (initiative, phase),
+    )
+    return None if found is None else (int(str(found[0])), str(found[1]))
+
+
+def last_rounds(conn: Connection, initiatives: Sequence[str]) -> list[Row]:
+    """Edge. The last review round of each phase of the named initiatives, as {initiative, phase, round, verdict}."""
+    if not initiatives:
+        return []
+    p = conn.dialect.placeholder
+    rows = conn.query_all(
+        f"SELECT initiative, phase, round, verdict FROM review_rounds WHERE phase <> '' "
+        f"AND initiative IN ({', '.join(p for _ in initiatives)}) ORDER BY initiative, phase, round",
+        tuple(initiatives),
+    )
+    last = {(str(r[0]), str(r[1])): r for r in rows}
+    return [{"initiative": r[0], "phase": r[1], "round": r[2], "verdict": r[3]} for r in last.values()]
+
+
+def task_commits(conn: Connection, initiatives: Sequence[str]) -> list[Row]:
+    """Edge. The task rows of the named initiatives as the chair's approvals read them: {initiative, task_id, phase,
+    state, merged_commit ('' for none)}."""
+    if not initiatives:
+        return []
+    p = conn.dialect.placeholder
+    columns = ("initiative", "task_id", "phase", "state", "merged_commit")
+    rows = conn.query_all(
+        f"SELECT {', '.join(columns)} FROM work_items WHERE kind = 'task' "
+        f"AND initiative IN ({', '.join(p for _ in initiatives)}) ORDER BY initiative, task_id",
+        tuple(initiatives),
+    )
+    return [{**dict(zip(columns, r, strict=True)), "merged_commit": r[4] or ""} for r in rows]
+
+
+def host_threads(conn: Connection, name: str) -> int:
+    """Edge. The operator's thread budget for the machine `name` (`hosts.threads`); 0, which means its cores, when
+    it has no row or set none."""
+    found = conn.query_one(f"SELECT threads FROM hosts WHERE name = {conn.dialect.placeholder}", (name,))
+    value = None if found is None else found[0]
+    return value if isinstance(value, int) and value > 0 else 0
+
+
+def rollup_rows(conn: Connection, initiatives: Sequence[str]) -> list[Row]:
+    """Edge. Every roll-up step that put a commit on its phase branch, of the named initiatives, as {initiative,
+    phase, task_id, subject_sha, run_id, finished_at}, oldest first."""
+    if not initiatives:
+        return []
+    p = conn.dialect.placeholder
+    columns = ("initiative", "phase", "task_id", "subject_sha", "run_id", "finished_at")
+    rows = conn.query_all(
+        f"SELECT {', '.join(columns)} FROM step_results WHERE kind = 'rollup' AND ok = 1 AND subject_sha <> '' "
+        f"AND initiative IN ({', '.join(p for _ in initiatives)}) ORDER BY finished_at, run_id, step",
+        tuple(initiatives),
+    )
+    return [dict(zip(columns, r, strict=True)) for r in rows]
 
 
 # -- the registry -------------------------------------------------------------------------------------------------
