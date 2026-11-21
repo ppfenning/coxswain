@@ -14,11 +14,15 @@ Lock choice: a plain `CREATE INDEX`, not `CONCURRENTLY`. `migrate` runs each mig
 transaction (`conn.transaction()`, with its `schema_version` row and the `SHARE ROW EXCLUSIVE` lock on that table),
 and Postgres refuses `CREATE INDEX CONCURRENTLY` inside a transaction block, so using it would mean a second,
 non-transactional runner path for one migration. A plain build takes a SHARE lock on its table, which blocks that
-table's writers (not its readers) until the transaction commits. At today's sizes this is short: on Postgres 16 with
-60,000 node_calls and 30,000 chair_actions rows the whole migration, both builds included, took 0.56 s, so a chair or
-worker write waits at most that long, once. A migration that waits for the lock gives up after
-`store_migrate.MIGRATION_LOCK_TIMEOUT_MS`. A table grown large enough that a build would stall writers needs a
-concurrent path built first, not this one.
+table's writers (not its readers) until the transaction commits. On Postgres 16 with 60,000 node_calls and 30,000
+chair_actions rows the whole migration, both builds included, took 0.56 s.
+
+The wait for that lock is not short by construction. A build waits for its SHARE lock for as long as
+`store_migrate.MIGRATION_LOCK_TIMEOUT_MS` (300 s) allows, and while it waits, every later writer to that table queues
+behind it. Both builds run in one transaction, so the lock on node_calls is held while the chair_actions build waits
+for its own. Today the store's writes are short row writes, so the wait drains almost at once and the stall is
+negligible. A long-running writer, or a table grown large enough that a build takes long, needs a concurrent path
+built first, not this one.
 """
 
 from __future__ import annotations
