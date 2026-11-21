@@ -2,11 +2,17 @@
 # task's cheap checks, `# level: phase` is the phase's smoke, run once its tasks have rolled up, and `# level: initiative`
 # is the full suite, run before the initiative's one pull request. A file with no marker is all task checks.
 #
-# Task level. The component suites, each from its own folder (their tests import sibling test modules by name),
-# narrowed to the tests a patch can affect.
-cd src/tools && pytest -q -n auto
-cd src/graphs && pytest -q -n auto
-cd src/cartridges && pytest -q -n auto
+# Task level: cheap and fast, since every task of a phase runs it at once on one machine. Each component's unit tests,
+# from its own folder (their tests import sibling test modules by name), but `# touched only`: a phase-model task runs
+# only the test files it added or changed, those whose imports reach a source it changed, and those a changed conftest
+# or test helper reaches, and none of a component it touched no test of. A suite runs whole only for test machinery the
+# map cannot place; the whole suites are the initiative level's (E1: three tasks each running all three timed out). The old model has no wider level, so its flat list leaves these lines out and takes the suites
+# whole from the initiative section, as it ran them before levels.
+cd src/tools && pytest -q -n auto  # touched only
+cd src/graphs && pytest -q -n auto  # touched only
+cd src/cartridges && pytest -q -n auto  # touched only
+# CI's ruff step, with its safe fixes applied before the gate; the old model leaves it to CI, as it always has.
+python -m ruff check .  # fix: python -m ruff check --fix .  # new model only
 # CI's "clean (no personal reference)" step, plus a refusal of files under build/.
 # --require-names fails the lane when COXSWAIN_CLEAN_DENY is unset, so the names rule is never skipped silently:
 # the lane host must export it (the same regex as the CI secret), or a host name passes here and fails CI.

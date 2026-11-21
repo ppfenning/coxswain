@@ -30,6 +30,11 @@ and everything you decide leaves in the structured output.
   logic goes in a pure function whose unit test passes example inputs, with
   no mock, `monkeypatch`, stub or fake; the last step names the smoke or
   end-to-end test that runs the entry point reaching the change.
+- **The lane's checks are not steps.** The harness runs the configured
+  checks (lint, the privacy check, the tests the change touches, and on the
+  phase model the whole suites at the phase and initiative gates) on every
+  build. A step asks the builder to run the test it adds or names, never
+  lint, a formatter or a whole suite.
 - **Tests get neutral paths.** When a step adds or edits a test, the step names
   `tmp_path` or a neutral constant for any path the test needs. It never names
   a home-shaped path such as `/home/<name>`, `/Users/<name>` or `~/`.

@@ -47,9 +47,12 @@ def _sections() -> dict[str, list[str]]:
     return out
 
 
-def test_agent_checks_keeps_task_checks():
-    pytest_lines = [f"cd src/{name} && pytest -q -n auto" for name in ("tools", "graphs", "cartridges")]
-    assert _sections()["task"] == pytest_lines + [CLEAN_LINE, UNWIRED_LINE, TYPES_LINE]
+def test_agent_checks_keeps_task_checks_cheap():
+    # E1: a task runs only the component tests it touched (`# touched only`) and lint, beside the static checks; the
+    # suites whole are the initiative level's.
+    pytest_lines = [f"cd src/{name} && pytest -q -n auto  # touched only" for name in ("tools", "graphs", "cartridges")]
+    ruff = "python -m ruff check .  # fix: python -m ruff check --fix .  # new model only"
+    assert _sections()["task"] == [*pytest_lines, ruff, CLEAN_LINE, UNWIRED_LINE, TYPES_LINE]
 
 
 def test_the_phase_level_is_the_smoke_without_the_forge_and_the_initiative_level_is_the_whole_suite():

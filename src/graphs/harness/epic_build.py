@@ -19,7 +19,7 @@ from harness import pool_edge, warm_pool
 from harness.check_deps import load_dep_map
 from harness.check_gate import repo_gate_lock
 from harness.check_reuse import run_checks_reusing
-from harness.check_scope import is_test_file, pytest_component, render_selection, select_checks
+from harness.check_scope import TOUCHED_ONLY, is_test_file, pytest_component, render_selection, select_checks
 from harness.checks import (
     check_feedback,
     checks_evidence,
@@ -118,11 +118,12 @@ def _nul_paths(listing: str) -> list[str]:
 def _lane_checks(
     worktree: Path, base: str, checks: Sequence[Mapping[str, object]]
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
-    """The checks the task's patch can affect, and the selection; every check, with a reason, on any error."""
+    """The checks the task's patch can affect, and the selection; on any error every check, with a reason, but a
+    `TOUCHED_ONLY` one (`# touched only`), which is never run whole: its suite is a wider level's."""
     known = [c for c in (pytest_component(str(check.get("cmd", ""))) for check in checks) if c]
 
     def everything(why: str) -> tuple[list[dict[str, object]], dict[str, object]]:
-        return [dict(c) for c in checks], {
+        return [dict(c) for c in checks if not c.get(TOUCHED_ONLY)], {
             "components_run": known,
             "components_skipped": [],
             "narrowed": dict.fromkeys(known, "whole"),
@@ -142,6 +143,7 @@ def _lane_checks(
             "components": dep_map.components,
             "test_reach": dep_map.test_reach,
             "unresolved": dep_map.unresolved,
+            "test_imports": dep_map.test_imports,
         }
         added_tests = [p for p in _nul_paths(added) if is_test_file(p)]
         scoped = select_checks(checks, _nul_paths(changed), added_tests, import_map)
