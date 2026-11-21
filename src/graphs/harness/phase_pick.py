@@ -20,8 +20,10 @@ lane reads its margin from the claim row (`margin_of`) and nothing has to pass t
 
 Every call these timings count on is bounded on the client's side as well as the server's
 (`store_dialect.Connection.within`), so a store gone silent costs a heartbeat `HEARTBEAT_CALL_S` and a lane's claim
-check `CHECK_CALL_S`, never the minute the kernel would wait. The shortest lease is the one whose margin still holds
-what follows a good check: the rest of that check, one bounded push, and `SKEW_S` of slack (`lease_problem`).
+check `CHECK_CALL_S`, never the minute the kernel would wait. The check's server bounds are tighter still
+(`CHECK_SERVER_MS`), so a live store that is busy (a table lock a migration holds) answers it with an error first, and
+the lane checks again rather than give up a claim it still holds. The shortest lease is the one whose margin still
+holds what follows a good check: the rest of that check, one bounded push, and `SKEW_S` of slack (`lease_problem`).
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ __all__ = [
     "BEAT_LOOP_S",
     "CANDIDATES",
     "CHECK_CALL_S",
+    "CHECK_SERVER_MS",
     "DEFAULT_TIMINGS",
     "HEARTBEAT_CALL_S",
     "HEARTBEAT_S",
@@ -66,6 +69,7 @@ __all__ = [
     "lane_verdict",
     "lapsed",
     "lease",
+    "lease_left",
     "lease_problem",
     "lost_reason",
     "margin_of",
@@ -81,8 +85,9 @@ __all__ = [
 HEARTBEAT_S = 10
 LEASE_S = 60
 STOP_AFTER_S = 45
-# The longest one heartbeat call can take, connect included: the worker gives it that long and then shuts its socket
-# (`worker_ports.Store`, `store_dialect.Connection.within`); a live store answers in a 5 s connect plus 5 s statements.
+# The longest one heartbeat call can take, a reconnect included: the worker gives it that long and then shuts its
+# socket (`worker_ports.Store`, `store_dialect.Connection.within`, `store_dialect.open_within` for the reconnect); a
+# live store answers in a 5 s connect plus 5 s statements.
 HEARTBEAT_CALL_S = 10
 STOP_GRACE_S = 5  # TERM to KILL, for the launch and the harness alike
 KILL_WAIT_S = 2  # KILL to gone
@@ -97,9 +102,14 @@ LANE_MARGIN_S = LEASE_S - STOP_AFTER_S
 LANE_STALL_S = 90
 # A push follows a claim check that found the margin left, so the margin must hold what can pass after the store read
 # its clock for that check: the rest of the check (`CHECK_CALL_S`, the fence's own bound on it), one bounded push
-# (`lane_rollup.REMOTE_TIMEOUT_S`), and `SKEW_S` for the lane's own scheduling and the store's clock reading.
+# (`lane_rollup.REMOTE_TIMEOUT_S`), and `SKEW_S` for the lane's own scheduling and the store's clock reading. A check a
+# busy store answered with an error finds the margin from the last lease it read instead, timed on the lane's own
+# monotonic clock from before that read, which can only be earlier than the store's reading.
 PUSH_BOUND_S = 8
 CHECK_CALL_S = 3
+# The check's own statement and lock-wait bound on the server, a second under `CHECK_CALL_S`: a live store holding a
+# lock the check waits on (ALTER TABLE, VACUUM FULL, REINDEX) ends it with an error the lane can tell from silence.
+CHECK_SERVER_MS = 2_000
 SKEW_S = 1
 MARGIN_FLOOR_S = CHECK_CALL_S + PUSH_BOUND_S + SKEW_S
 MIN_LEASE_S = 4 * MARGIN_FLOOR_S  # 48 s, the shortest lease `lease_problem` accepts: a quarter of it is the floor
@@ -179,6 +189,14 @@ def lease_problem(lease_s: int) -> str:
     if t.heartbeat_s + HEARTBEAT_CALL_S > stop_at(0.0, t):
         return f"a {lease_s}s lease leaves no time for a heartbeat ({HEARTBEAT_CALL_S}s) before the worker must stop"
     return ""
+
+
+def lease_left(row: Row | None, worker: str, epoch: int, now: str) -> int | None:
+    """Pure. The whole seconds the claim's lease has left at `now` while `worker` holds it at `epoch` (`fenced`), else
+    None."""
+    if not fenced(row, worker, epoch, now) or row is None:
+        return None
+    return seconds(now, str(row.get("lease_until")))
 
 
 def margin_of(row: Row | None) -> int:

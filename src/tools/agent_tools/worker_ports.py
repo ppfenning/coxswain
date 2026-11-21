@@ -19,6 +19,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from pathlib import Path
 
 from agent_tools import bounded_run, chair, epic, lane_prereqs, repo_path, route, run_store, worker
@@ -62,26 +63,41 @@ class Store:
     """One connection, opened on first use and opened again after a failure, so a store restart costs one call. Every
     statement, lock wait and connect on it is bounded well inside the heartbeat window (`worker.bounded_url`), by the
     server and, for a server gone silent, by the client too (`worker.STATEMENT_S`, `Connection.limit`). With `call_s`
-    each whole call, connect included, ends within that or raises (`Connection.within`): the heartbeat's
-    (`phase_pick.HEARTBEAT_CALL_S`)."""
+    each whole call ends within that or raises: its statements under `Connection.within`, and a reopen, its connect
+    and version check, under `store_dialect.open_within` with what is left of the same deadline (the heartbeat's
+    `phase_pick.HEARTBEAT_CALL_S`).
 
-    def __init__(self, runs_dir: Path, call_s: float | None = None) -> None:
+    Only the first open of a `migrate` store may migrate (`open_store`): the worker's main store, opened before the
+    worker claims anything. Every reopen, and every open of a store that is not `migrate` (the heartbeat's), is scoped
+    (`store_scoped.open_scoped`): it checks the version and writes no DDL, so no migration ever runs under a claim."""
+
+    def __init__(self, runs_dir: Path, call_s: float | None = None, *, migrate: bool = True) -> None:
         self._runs_dir = runs_dir
         self._call_s = call_s
+        self._migrate = migrate
         self._conn: Connection | None = None
 
-    def _open(self) -> Connection:
+    def _open(self, seconds: float | None) -> Connection:
         if self._conn is None:
+            from harness.store_dialect import open_within
             from harness.store_migrate import open_store
+            from harness.store_scoped import open_scoped
 
             url = worker.bounded_url(run_store.store_url_for(self._runs_dir))
-            self._conn = open_store(url, time.strftime(_STAMP, time.gmtime())).limit(worker.STATEMENT_S)
+            if self._migrate:
+                self._conn = open_store(url, time.strftime(_STAMP, time.gmtime())).limit(worker.STATEMENT_S)
+                self._migrate = False
+            else:
+                def scoped() -> Connection:
+                    return open_scoped(url).limit(worker.STATEMENT_S)
+
+                self._conn = scoped() if seconds is None else open_within(scoped, seconds)
         return self._conn
 
     def call[T](self, act: Callable[[Connection], T]) -> T:
         started = time.monotonic()
         try:
-            conn = self._open()
+            conn = self._open(self._call_s)
             if self._call_s is None:
                 return act(conn)
             with conn.within(self._call_s - (time.monotonic() - started)):
@@ -96,6 +112,17 @@ class Store:
                 self._conn.close()
             finally:
                 self._conn = None
+
+
+def _take_lost(path: Path) -> str:
+    """Edge. The lane's lost mark (`phase_lane.lost_path`), removed once read: why the lane gave its claim up, "" when
+    it did not."""
+    try:
+        why = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    path.unlink(missing_ok=True)
+    return why or "the lane gave its claim up"
 
 
 def _signal_group(pid: int, sig: int) -> None:
@@ -192,6 +219,12 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
         return worker.old_model_runs(here, claimed)
 
     def lane_facts(claim: Claim, run_id: str) -> worker.LaneFacts:
+        from harness.phase_lane import lost_path
+
+        facts = _facts(claim, run_id)  # first: a pass whose store reads fail leaves the lost mark for the next one
+        return replace(facts, lost=_take_lost(lost_path(runs_dir, run_id)))
+
+    def _facts(claim: Claim, run_id: str) -> worker.LaneFacts:
         from harness.store_queue import read
 
         if claim.row.get("kind") == initiative_review.KIND:  # the initiative's own rounds and suite (D2)
@@ -291,7 +324,7 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
 
     def heartbeats(leases: worker.Leases) -> Callable[[], None]:
         """A thread of its own, on a store connection of its own, renewing each lease when it is due."""
-        own = Store(runs_dir, call_s=phase_pick.HEARTBEAT_CALL_S)
+        own = Store(runs_dir, call_s=phase_pick.HEARTBEAT_CALL_S, migrate=False)
         halt = threading.Event()
 
         def renew(claim: Claim) -> bool:

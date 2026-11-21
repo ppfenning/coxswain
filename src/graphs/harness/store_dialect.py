@@ -44,6 +44,7 @@ __all__ = [
     "insert_ignore",
     "json_load",
     "json_text",
+    "open_within",
     "sqlite_sync_off",
     "upsert",
 ]
@@ -233,12 +234,13 @@ class Connection:
         self._watch_lock = threading.Lock()
         self._armed = 0  # which statement the watchdog may shut the socket under; 0 for none
         self._watches = 0  # how many statements have been watched: each one's token, never reused
+        self._closed = False  # set under `_watch_lock`, so no shutdown ever reaches a descriptor the close freed
         self.expired = ""  # why the connection is dead: the deadline it missed
 
     def _fileno(self) -> int | None:
         """The socket under a Postgres connection; None for sqlite, which has none and waits on a file lock instead."""
         fileno = getattr(self.raw, "fileno", None)
-        if self.dialect is not POSTGRES or not callable(fileno):
+        if self._closed or self.dialect is not POSTGRES or not callable(fileno):
             return None
         try:
             return int(cast("Callable[[], int]", fileno)())
@@ -253,6 +255,22 @@ class Connection:
         self._statement_s = statement_s
         return self.bound_socket(statement_s)
 
+    def server_bounds(self, statement_ms: int, lock_ms: int) -> Connection:
+        """Bound this session's statements and lock waits on the server to `statement_ms` and `lock_ms`, tighter than
+        `BOUND_OPTIONS`: a statement waiting on a lock of a live server then ends with the server's error, not silence,
+        so a caller whose client deadline is just above these can tell a busy store from a silent one. A no-op on
+        sqlite. The connection."""
+        if self.dialect is POSTGRES:
+            self.execute(f"SET statement_timeout = {int(statement_ms)}")
+            self.execute(f"SET lock_timeout = {int(lock_ms)}")
+        return self
+
+    @property
+    def broken(self) -> bool:
+        """Whether the connection can take no more statements: given up (`expired`), closed, or its link lost."""
+        return bool(self.expired) or self._closed or bool(getattr(self.raw, "closed", False)) \
+            or bool(getattr(self.raw, "broken", False))
+
     def bound_socket(self, seconds: float) -> Connection:
         """Bound the socket's own silence to about `seconds` where the kernel can (`tcp_options`): a peer whose host or
         network died is found by the kernel, while a statement waiting on a lock of a live server waits as before. A
@@ -264,12 +282,11 @@ class Connection:
     def abandon(self, why: str) -> None:
         """Give the connection up now, from any thread: a statement blocked on it raises `StoreDeadline` at once, and so
         does every later one. For a caller that has learned, elsewhere, that the store has gone silent."""
-        with self._watch_lock:
+        with self._watch_lock:  # the shutdown too: a `close` meanwhile would free the descriptor for another socket
             if not self.expired:
                 self.expired = why
-            fd = self._fileno()
-        if fd is not None:
-            _shut(fd)
+            if (fd := self._fileno()) is not None:
+                _shut(fd)
 
     @contextmanager
     def within(self, seconds: float) -> Generator[Connection]:
@@ -295,9 +312,8 @@ class Connection:
             if self._armed != token:
                 return
             self.expired = f"the store did not answer within {round(seconds, 1):g}s"
-            fd = self._fileno()
-        if fd is not None:
-            _shut(fd)
+            if (fd := self._fileno()) is not None:
+                _shut(fd)
 
     @contextmanager
     def _watched(self) -> Generator[None]:
@@ -395,7 +411,52 @@ class Connection:
                 self._in_tx = False
 
     def close(self) -> None:
-        self.raw.close()
+        """Close it. Under `_watch_lock`, as `abandon` and the watchdog shut the socket: once the driver has freed the
+        descriptor, which the kernel may hand the next socket opened, nothing of this connection's touches it."""
+        with self._watch_lock:
+            self._closed = True
+            self.raw.close()
+
+
+def open_within(open_conn: Callable[[], Connection], seconds: float,
+                cancelled: threading.Event | None = None) -> Connection:
+    """Edge. `open_conn()`, bounded on the client's side as a statement is (`Connection.within`): a connect and the
+    reads it makes (`store_scoped.open_scoped`'s version check) to a store gone silent raise `StoreDeadline` within
+    `seconds`, or at once when `cancelled` is set meanwhile (a caller that learned elsewhere that the store is silent).
+    The open runs on a thread of its own, which closes what it opens if nobody is left to take it."""
+    done = threading.Event()
+    lock = threading.Lock()
+    box: dict[str, object] = {}
+
+    def run() -> None:
+        try:
+            conn = open_conn()
+        except BaseException as exc:  # handed to the caller as it is
+            box["error"] = exc
+            done.set()
+            return
+        with lock:
+            if box.get("gave_up"):
+                with contextlib.suppress(Exception):
+                    conn.close()
+                return
+            box["conn"] = conn
+        done.set()
+
+    threading.Thread(target=run, name="store-open", daemon=True).start()
+    until = time.monotonic() + seconds
+    while not done.wait(min(0.05, max(until - time.monotonic(), 0.0))):
+        if time.monotonic() >= until or (cancelled is not None and cancelled.is_set()):
+            with lock:
+                if "conn" not in box and "error" not in box:
+                    box["gave_up"] = True
+                    why = "the open was abandoned" if cancelled is not None and cancelled.is_set() else \
+                        f"the store did not answer an open within {round(seconds, 1):g}s"
+                    raise StoreDeadline(why)
+            break
+    if "error" in box:
+        raise cast(BaseException, box["error"])
+    return cast(Connection, box["conn"])
 
 
 def _sqlite_target(url: str) -> str:

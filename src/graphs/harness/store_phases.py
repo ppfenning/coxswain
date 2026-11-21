@@ -33,6 +33,7 @@ __all__ = [
     "held",
     "host_threads",
     "last_round",
+    "lease_left",
     "list_rows",
     "list_workers",
     "live_claims",
@@ -349,11 +350,21 @@ def live_claims(conn: Connection) -> list[Row]:
 def held(conn: Connection, initiative: str, phase: str, worker: str, epoch: int, margin_s: int | None = 0) -> bool:
     """Edge. Whether `worker` still holds the claim at `epoch` with at least `margin_s` seconds of its lease left, by
     the store's clock; with `margin_s` None, the margin the claim's own lease gives its lane (`phase_pick.margin_of`).
-    A plain read: it never waits on a lock another session holds on the row."""
+    A plain read: it never waits on a row lock another session holds, but it does wait on a table lock that blocks
+    reads (ACCESS EXCLUSIVE: an ALTER TABLE, a VACUUM FULL, a REINDEX), as long as the session's lock bound allows."""
     now = store_now(conn)
     row = get_row(conn, initiative, phase)
     margin = phase_pick.margin_of(row) if margin_s is None else margin_s
     return phase_pick.fenced(row, worker, epoch, phase_pick.lease(now, margin))
+
+
+def lease_left(conn: Connection, initiative: str, phase: str, worker: str, epoch: int) -> tuple[int, int] | None:
+    """Edge. (seconds of lease left, the margin its lane stops at) by the store's clock while `worker` holds the claim
+    at `epoch` (`phase_pick.lease_left`, `phase_pick.margin_of`); None when it does not. A plain read, as `held`'s."""
+    now = store_now(conn)
+    row = get_row(conn, initiative, phase)
+    left = phase_pick.lease_left(row, worker, epoch, now)
+    return None if left is None else (left, phase_pick.margin_of(row))
 
 
 def put_steps_fenced(conn: Connection, rows: Sequence[StepRow], worker: str, epoch: int,

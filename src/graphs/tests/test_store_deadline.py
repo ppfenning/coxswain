@@ -207,3 +207,69 @@ def test_an_abandoned_connection_fails_a_blocked_statement_at_once_and_every_lat
         assert isinstance(exc, StoreDeadline) and "the fence found the store silent" in str(exc) and took < 0.5
     finally:
         conn.close()
+
+
+def test_an_open_on_a_silent_store_ends_within_its_bound_or_at_once_when_cancelled(pg_url, relay):
+    from harness.store_dialect import open_within
+
+    relay.silent.set()
+    started = time.monotonic()
+    with pytest.raises(StoreDeadline, match="did not answer an open within 1s"):
+        open_within(lambda: connect(relay.url(pg_url)), 1.0)
+    assert time.monotonic() - started < 2.0
+    cancelled = threading.Event()
+    threading.Timer(0.3, cancelled.set).start()
+    started = time.monotonic()
+    with pytest.raises(StoreDeadline, match="the open was abandoned"):
+        open_within(lambda: connect(relay.url(pg_url)), 30.0, cancelled=cancelled)
+    assert time.monotonic() - started < 1.5
+
+
+def test_an_open_that_answers_in_time_is_handed_back_and_its_errors_as_they_are(pg_url):
+    from harness.store_dialect import open_within
+
+    conn = open_within(lambda: connect(pg_url), 10.0)
+    try:
+        assert conn.query_one("SELECT 1") == (1,)
+    finally:
+        conn.close()
+
+    def refused() -> Connection:
+        raise ValueError("unsupported store URL")
+
+    with pytest.raises(ValueError, match="unsupported store URL"):
+        open_within(refused, 10.0)
+
+
+def test_a_closed_connection_never_shuts_a_descriptor_down_again(pg_url, monkeypatch):
+    """`close` and the shutdowns share `_watch_lock`: once the driver freed the descriptor (which the next socket may
+    reuse), an `abandon` or a late watchdog finds no descriptor to shut."""
+    from harness import store_dialect
+
+    shut: list[int] = []
+    monkeypatch.setattr(store_dialect, "_shut", shut.append)
+    conn = connect(pg_url)
+    conn.close()
+    conn.abandon("late")
+    conn._fire(conn._armed, 1.0)
+    assert shut == [] and conn.broken
+
+
+def test_server_bounds_end_a_lock_wait_with_the_server_s_error_not_silence(pg_url):
+    import uuid
+
+    table = f"bounds_probe_{uuid.uuid4().hex[:12]}"
+    holder, waiter = connect(pg_url), connect(pg_url).server_bounds(500, 500)
+    try:
+        holder.execute(f"CREATE TABLE {table} (x int)")
+        with holder.transaction():
+            holder.execute(f"LOCK TABLE {table} IN ACCESS EXCLUSIVE MODE")
+            took, exc = _timed(waiter, f"SELECT count(*) FROM {table}")
+        assert exc is not None and not isinstance(exc, StoreDeadline), exc
+        assert took < 2.0 and not waiter.broken
+        assert waiter.query_one("SELECT 1") == (1,)  # the connection lives on
+    finally:
+        with contextlib.suppress(Exception):
+            holder.execute(f"DROP TABLE IF EXISTS {table}")
+        holder.close()
+        waiter.close()

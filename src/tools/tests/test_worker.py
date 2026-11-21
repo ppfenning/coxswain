@@ -331,3 +331,103 @@ def test_an_ended_initiative_review_is_judged_by_its_round_and_suite_and_a_phase
     build = worker.lane_verdict(_claim(), worker.LaneFacts(("t1",), (), (2, "approve"), None, "", passed))
     assert (build.kind, build.outcome) == ("ack", "approved")
     assert worker.lane_verdict(_claim(), worker.LaneFacts(("t1",), (), None, None)).kind == "retry"
+
+
+def test_a_lane_that_gave_its_claim_up_under_a_held_claim_costs_the_phase_no_attempt():
+    """A lane's lost mark: the store lost the claim, not the phase. A retry goes back refunded, even on the last
+    attempt; what the store holds still decides an ack or a real failure."""
+    lost = worker.LaneFacts(("t1",), (), None, None, lost="the claim could not be read: StoreDeadline: silent")
+    retried = worker.lane_verdict(_claim(), lost)
+    assert (retried.kind, retried.refund) == ("retry", True)
+    assert retried.reason.startswith("the lane gave its claim up (the claim could not be read: StoreDeadline: silent)")
+    last = worker.lane_verdict(_claim_attempts(phase_pick.MAX_ATTEMPTS), lost)
+    assert (last.kind, last.refund) == ("retry", True)
+    counted = worker.lane_verdict(_claim_attempts(phase_pick.MAX_ATTEMPTS), worker.LaneFacts(("t1",), (), None, None))
+    assert (counted.kind, counted.outcome) == ("quarantine", "failed")
+    approved = worker.lane_verdict(_claim(), worker.LaneFacts(("t1",), ("t1",), (1, "approve"), None, lost="gone"))
+    assert (approved.kind, approved.outcome) == ("ack", "approved")
+
+
+def _claim_attempts(attempts: int):
+    from harness.store_phases import Claim
+
+    return Claim("ship", "p1", 1, "2026-11-20T10:01:00Z", {"attempts": attempts})
+
+
+class _FakeConn:
+    def __init__(self, how: str) -> None:
+        self.how = how
+        self.closed = False
+
+    def limit(self, _s: float) -> _FakeConn:
+        return self
+
+    def within(self, _s: float):
+        import contextlib
+
+        return contextlib.nullcontext(self)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _opens(monkeypatch, tmp_path, scoped_wait_s: float = 0.0) -> list[str]:
+    import time
+
+    from agent_tools import run_store
+    from harness import store_migrate, store_scoped
+
+    opened: list[str] = []
+
+    def migrating(_url: str, _now: str) -> _FakeConn:
+        opened.append("open_store")
+        return _FakeConn("open_store")
+
+    def scoped(_url: str) -> _FakeConn:
+        time.sleep(scoped_wait_s)
+        opened.append("open_scoped")
+        return _FakeConn("open_scoped")
+
+    monkeypatch.setattr(run_store, "store_url_for", lambda _d: "postgresql://w@127.0.0.1:1/cox")
+    monkeypatch.setattr(store_migrate, "open_store", migrating)
+    monkeypatch.setattr(store_scoped, "open_scoped", scoped)
+    return opened
+
+
+def test_only_the_main_store_s_first_open_migrates_and_every_reopen_is_scoped(monkeypatch, tmp_path):
+    opened = _opens(monkeypatch, tmp_path)
+    main = worker_ports.Store(tmp_path)
+    assert main.call(lambda c: c.how) == "open_store"
+
+    def fail(_c):
+        raise OSError("the store restarted")
+
+    with pytest.raises(OSError):
+        main.call(fail)
+    assert main.call(lambda c: c.how) == "open_scoped"  # a reopen mid-claim never migrates
+    beats = worker_ports.Store(tmp_path, call_s=phase_pick.HEARTBEAT_CALL_S, migrate=False)
+    assert beats.call(lambda c: c.how) == "open_scoped"
+    assert opened == ["open_store", "open_scoped", "open_scoped"]
+
+
+def test_a_heartbeat_s_reopen_on_a_silent_store_ends_within_the_call_s_bound(monkeypatch, tmp_path):
+    import time
+
+    from harness.store_dialect import StoreDeadline
+
+    _opens(monkeypatch, tmp_path, scoped_wait_s=5.0)
+    beats = worker_ports.Store(tmp_path, call_s=0.5, migrate=False)
+    started = time.monotonic()
+    with pytest.raises(StoreDeadline):
+        beats.call(lambda c: c.how)
+    assert time.monotonic() - started < 1.5
+
+
+def test_the_lane_s_lost_mark_is_read_once_by_the_worker(tmp_path):
+    from harness.phase_lane import lost_path, write_lost
+
+    path = lost_path(tmp_path, "ship.p1-1")
+    assert worker_ports._take_lost(path) == ""  # a lane that kept its claim writes none
+    write_lost(path, "the claim could not be read:\n StoreDeadline: silent", lambda line: None)
+    assert worker_ports._take_lost(path) == "the claim could not be read: StoreDeadline: silent"
+    assert not path.exists() and worker_ports._take_lost(path) == ""

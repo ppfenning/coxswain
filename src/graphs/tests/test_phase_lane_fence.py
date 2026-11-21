@@ -3,7 +3,9 @@ own lease gives it. Once the claim is lost it stops the lane's children, then ke
 each check or build started after the loss (a real process in a session of its own), but never a child in the lane's
 own group, as a task thread's cleanup in the shared checkout is. On Postgres, a check that the store never answers
 gives up within its bound (`phase_pick.CHECK_CALL_S`), so a silent store loses the claim rather than holding the
-lane."""
+lane, while a store busy with a table lock the check waits on (a migration's ALTER TABLE) answers it with the server's
+error first (`phase_pick.CHECK_SERVER_MS`), and the lane holds on, on the lease it read last, until that is within its
+margin."""
 
 from __future__ import annotations
 
@@ -17,6 +19,7 @@ import pytest
 
 from harness import phase_pick, store_phases
 from harness.phase_lane import Fence, LaneClaim, terminate_groups
+from harness.store_dialect import connect
 from harness.store_migrate import open_store
 from tests.test_store_deadline import SilentRelay
 
@@ -148,4 +151,121 @@ def test_a_check_the_store_never_answers_loses_the_claim_within_its_bound(pg_sto
         fence.stop()
         relay.close()
         writes.close()
+        owner.close()
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.t = 1000.0
+
+    def __call__(self) -> float:
+        return self.t
+
+
+def test_a_busy_store_holds_the_claim_on_the_lease_read_last_until_it_is_within_its_margin(lane_store, monkeypatch):
+    owner = open_store(lane_store, AT)
+    clock = _Clock()
+    lost: list[str] = []
+    lines: list[str] = []
+    fence = Fence(lambda: open_store(lane_store, AT), _claimed(owner), lines.append, lambda: lost.append("x"),
+                  monotonic=clock)
+    try:
+        assert fence.check()  # 48 s left of a 48 s lease, a 12 s margin
+        real = store_phases.lease_left
+
+        def busy(*_a, **_k):
+            raise RuntimeError("canceling statement due to lock timeout")
+
+        monkeypatch.setattr(store_phases, "lease_left", busy)
+        clock.t += 30  # 18 s left by the lane's own clock: busy, and held
+        assert fence.check() and not fence.lost.is_set() and not lost
+        assert "lane: the store is busy (RuntimeError: canceling statement due to lock timeout)" in lines[-1], lines
+        monkeypatch.setattr(store_phases, "lease_left", real)
+        assert fence.check()  # the store answers again: the lease read anew
+        monkeypatch.setattr(store_phases, "lease_left", busy)
+        clock.t += 37  # 11 s (10 across a second) left of the lease read last: within the margin
+        assert not fence.check() and fence.lost.is_set() and lost == ["x"]
+        assert "s left, within its 12s margin" in fence.why, fence.why
+    finally:
+        fence.stop()
+        owner.close()
+
+
+def test_a_busy_first_check_has_no_lease_to_go_on_and_loses_the_claim(lane_store, monkeypatch):
+    owner = open_store(lane_store, AT)
+    fence = Fence(lambda: open_store(lane_store, AT), _claimed(owner), lambda line: None, lambda: None)
+
+    def busy(*_a, **_k):
+        raise RuntimeError("lock timeout")
+
+    monkeypatch.setattr(store_phases, "lease_left", busy)
+    try:
+        assert not fence.check()
+        assert "no earlier check read its lease" in fence.why, fence.why
+    finally:
+        fence.stop()
+        owner.close()
+
+
+@pytest.mark.parametrize("store_url", ["postgres"], indirect=True)
+def test_a_table_lock_held_past_the_check_s_bound_never_loses_a_live_lane_or_counts_an_attempt(pg_store):
+    """The reviewer's case: a migration's ACCESS EXCLUSIVE lock on phase_queue held 5 s, past `CHECK_CALL_S`. The
+    check's server bounds end its wait first, with an error; the lane checks again on the lease it read, and holds."""
+    owner = open_store(pg_store, AT)
+    claim = _claimed(owner)
+    attempts = store_phases.get_row(owner, "ship", "p1")["attempts"]
+    lines: list[str] = []
+    lost: list[float] = []
+    silent: list[str] = []
+    fence = Fence(lambda: open_store(pg_store, AT), claim, lines.append, lambda: lost.append(time.monotonic()),
+                  watch_s=0.2, on_silent=silent.append)
+    locker = connect(pg_store)
+    locked = threading.Event()
+
+    def hold() -> None:
+        with locker.transaction():
+            locker.execute("LOCK TABLE phase_queue IN ACCESS EXCLUSIVE MODE")
+            locked.set()
+            time.sleep(5)
+
+    try:
+        assert fence.check()
+        holder = threading.Thread(target=hold)
+        holder.start()
+        assert locked.wait(5)
+        started = time.monotonic()
+        assert fence.check()  # answered with the server's error inside the client's bound, not given up
+        assert time.monotonic() - started < phase_pick.CHECK_CALL_S
+        fence.start()  # the watch's checks through the rest of the lock, and a check of the lane's beside them
+        assert fence.check()
+        holder.join(timeout=10)
+        time.sleep(0.6)  # the watch's checks after the lock: answered again
+        assert not fence.lost.is_set() and not lost and not silent, (fence.why, lines)
+        assert any("lane: the store is busy" in line for line in lines), lines
+        assert fence.check()
+        row = store_phases.get_row(owner, "ship", "p1")
+        assert (row["state"], row["claimed_by"], row["claim_epoch"]) == ("claimed", "w1", claim.epoch)
+        assert row["attempts"] == attempts  # nothing lost, so nothing to count
+    finally:
+        fence.stop()
+        locker.close()
+        owner.close()
+
+
+@pytest.mark.parametrize("store_url", ["postgres"], indirect=True)
+def test_a_store_silent_when_the_fence_reconnects_loses_the_claim_within_its_bound(pg_store):
+    store_url = pg_store
+    owner = open_store(store_url, AT)
+    relay = SilentRelay(store_url)
+    claim = _claimed(owner)
+    fence = Fence(lambda: open_store(relay.url(store_url), AT), claim, lambda line: None, lambda: None)
+    try:
+        relay.silent.set()
+        started = time.monotonic()
+        assert not fence.check()
+        assert time.monotonic() - started < phase_pick.CHECK_CALL_S + 1.0
+        assert "StoreDeadline: the store did not answer an open within 3s" in fence.why, fence.why
+    finally:
+        fence.stop()
+        relay.close()
         owner.close()

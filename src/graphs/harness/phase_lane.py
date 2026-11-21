@@ -46,9 +46,11 @@ lost or its lease is within its margin of lapsing (`phase_pick.margin_of`: a qua
 the default 60 s): by then its worker has gone the 45 s it may go without a heartbeat. A push follows a claim check
 that found at least that margin and is bounded to `lane_rollup.REMOTE_TIMEOUT_S` (8 s), and the margin holds that
 check's own bound (`phase_pick.CHECK_CALL_S`) and that push with slack to spare (`phase_pick.MARGIN_FLOOR_S`), so a
-lane that keeps running cannot push once its lease has lapsed. Every store call of the lane's is bounded on the
-client's side as well (`store_dialect.Connection.limit`, `.within`), so a store gone silent, its sockets open and
-nothing coming back, loses the claim at the next check rather than holding the lane past its lease. What no check
+lane that keeps running cannot push once its lease has lapsed. The fence's check is bounded on the client's side
+(`store_dialect.Connection.within`), and a second tighter on the server's (`phase_pick.CHECK_SERVER_MS`), so a store
+gone silent, its sockets open and nothing coming back, loses the claim at the next check rather than holding the lane
+past its lease, while a live store busy with a lock the check waits on (a migration's ALTER TABLE) answers with an
+error, and the lane checks again on the lease it last read (`Fence`). What no check
 can close is a lane frozen (stopped, swapped out, its machine suspended) between its last check and the moment git
 sends the refs: it may wake after another lane holds the claim. Then the push is a plain fast-forward: if the new
 holder pushed first it is refused; if not, it lands one commit, which is a whole roll-up of a task built on the phase
@@ -85,6 +87,7 @@ import os
 import shutil
 import signal
 import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field, fields, replace
@@ -121,7 +124,7 @@ from harness.epic_context import Ctx, git_in
 from harness.epic_types import as_list
 from harness.handoff import plan_context
 from harness.lane_workers import LANE_CAPACITY_VAR
-from harness.store_dialect import Connection, JsonObject, StoreDeadline
+from harness.store_dialect import Connection, JsonObject, StoreDeadline, open_within
 from harness.store_steps import phase_review_rows, round_row, step_key, step_row, steps_of_result, with_checks
 from harness.store_types import StepRow
 from harness.worktree import clone_worktree, link_venv, remove_worktree
@@ -140,6 +143,7 @@ __all__ = [
     "exit_code",
     "lane_url",
     "lanes_of",
+    "lost_path",
     "missing_rollups",
     "phase_tasks",
     "review_args",
@@ -149,6 +153,7 @@ __all__ = [
     "terminate_groups",
     "threads_for",
     "write_beat",
+    "write_lost",
 ]
 
 EXIT_BUILT = 0  # every task rolled up, or nothing was left to build
@@ -252,50 +257,95 @@ class TaskCtx(Ctx):
 
 class Fence:
     """Edge. The claim as the lane sees it. A thread of its own reads the claim row every `WATCH_S` on a connection
-    of its own; once the claim is gone, or its lease is within its margin of lapsing, `lost` is set and
-    `on_lost` runs once (it stops the lane's agents and checks). Any part of the lane may also `lose` it, when a
-    fenced write was refused or the branch moved under it. A read that fails counts as lost: the lane cannot show it
-    still holds the claim, and stopping is the safe side. So does one that takes longer than `phase_pick.CHECK_CALL_S`
-    (a store gone silent): the fence gives up on it then (`Connection.within`), whatever the kernel would wait, and
-    first runs `on_silent`, which abandons the lane's other connections, so a write blocked on the silent store
-    fails at once rather than holding the lane past its lease. Its reads are plain and never wait on a lock, so only
-    a store that does not answer misses that bound."""
+    of its own; once the claim is gone, or its lease is within its margin of lapsing, `lost` is set and `on_lost` runs
+    once (it stops the lane's agents and checks). Any part of the lane may also `lose` it, when a fenced write was
+    refused or the branch moved under it.
+
+    The check tells a busy store from a silent one. Its connection's statements and lock waits are bounded on the
+    server (`phase_pick.CHECK_SERVER_MS`) a second under the client's bound on the whole check, open included
+    (`phase_pick.CHECK_CALL_S`, `Connection.within`, `open_within`). Its reads wait on a table lock that blocks them
+    (ACCESS EXCLUSIVE: a migration's ALTER TABLE, a VACUUM FULL, a REINDEX), so such a store answers with the server's
+    error, and an error is "busy, check again": the claim is held as long as the lease the last good check read,
+    timed on the lane's own monotonic clock from before that read, still has more than its margin left. Only two
+    things lose it: that estimate reaching the margin (or there being none yet, on the first check), and a check the
+    store does not answer within the client's bound (a store gone silent). That one first runs `on_silent`, which
+    abandons the lane's other connections, so a write blocked on the silent store fails at once rather than holding
+    the lane past its lease."""
 
     def __init__(self, open_conn: Callable[[], Connection], claim: LaneClaim, log: Callable[[str], None],
                  on_lost: Callable[[], None], beat: Callable[[int], None] = lambda _n: None,
                  watch_s: float = WATCH_S, still_lost: Callable[[], None] | None = None,
-                 on_silent: Callable[[str], None] = lambda _why: None) -> None:
+                 on_silent: Callable[[str], None] = lambda _why: None,
+                 monotonic: Callable[[], float] = time.monotonic) -> None:
         self._open, self._claim, self._log, self._on_lost, self._beat = open_conn, claim, log, on_lost, beat
         self._watch_s = watch_s
         self._still_lost = still_lost or on_lost
         self._on_silent = on_silent
+        self._monotonic = monotonic
         self._conn: Connection | None = None
         self._lock = threading.Lock()
         self._halt = threading.Event()
+        # The last good check: when it set out (this process's monotonic clock), the lease's seconds left and margin.
+        self._seen: tuple[float, int, int] | None = None
         self.lost = threading.Event()
         self.why = ""
         self._thread: threading.Thread | None = None
 
+    def _bounded(self) -> Connection:
+        conn = self._open()
+        try:
+            return conn.server_bounds(phase_pick.CHECK_SERVER_MS, phase_pick.CHECK_SERVER_MS)
+        except BaseException:
+            conn.close()
+            raise
+
     def check(self) -> bool:
-        """Read the claim now; True while it is held with the margin left. Sets `lost` when it is not."""
+        """Read the claim now; True while it is held with the margin left, or the store is busy and the last lease
+        read still has the margin left by this process's clock. Sets `lost` when neither."""
         if self.lost.is_set():
             return False
         c = self._claim
         try:
-            with self._lock:
+            with self._lock:  # another thread's check first: this one's bound starts once it has the connection
+                started = self._monotonic()
                 if self._conn is None:
-                    self._conn = self._open()
-                with self._conn.within(phase_pick.CHECK_CALL_S):
-                    ok = store_phases.held(self._conn, c.initiative, c.phase, c.worker, c.epoch, None)
-        except Exception as exc:
-            why = f"the claim could not be read: {type(exc).__name__}: {' '.join(str(exc).split())[:200]}"
-            if isinstance(exc, StoreDeadline):  # the store went silent: nothing else of the lane's will hear back
-                self._on_silent(why)
+                    self._conn = open_within(self._bounded, phase_pick.CHECK_CALL_S)
+                with self._conn.within(phase_pick.CHECK_CALL_S - (self._monotonic() - started)):
+                    seen = store_phases.lease_left(self._conn, c.initiative, c.phase, c.worker, c.epoch)
+        except StoreDeadline as exc:  # the store went silent: nothing else of the lane's will hear back
+            why = f"the claim could not be read: StoreDeadline: {' '.join(str(exc).split())[:200]}"
+            self._on_silent(why)
             self.lose(why)
             return False
-        if not ok:
+        except Exception as exc:  # a live store's error (a lock wait or statement it cut short, a restart): busy
+            self._drop_broken()
+            return self._busy(f"{type(exc).__name__}: {' '.join(str(exc).split())[:200]}")
+        if seen is None or seen[0] <= seen[1]:
             self.lose(f"the claim at epoch {c.epoch} is no longer {c.worker}'s, or its lease is about to lapse")
-        return ok
+            return False
+        self._seen = (started, *seen)
+        return True
+
+    def _drop_broken(self) -> None:
+        with self._lock:
+            if self._conn is not None and self._conn.broken:
+                with contextlib.suppress(Exception):
+                    self._conn.close()
+                self._conn = None
+
+    def _busy(self, error: str) -> bool:
+        """A check the store answered with an error: held while the last lease read has more than its margin left."""
+        if self._seen is None:
+            self.lose(f"the claim could not be read ({error}), and no earlier check read its lease")
+            return False
+        at, left, margin = self._seen
+        remaining = at + left - self._monotonic()
+        if remaining <= margin:
+            self.lose(f"the claim could not be read ({error}), and the lease read last has {max(remaining, 0):.0f}s "
+                      f"left, within its {margin}s margin")
+            return False
+        self._log(f"lane: the store is busy ({error}); the lease read last has {remaining:.0f}s left; checking again")
+        return True
 
     def lose(self, why: str) -> None:
         with self._lock:
@@ -359,6 +409,7 @@ class Lane:
     open_conn: Callable[[], Connection]
     store_lock: threading.Lock = field(default_factory=threading.Lock)
     # Uploads go through a connection of their own, so a slow bucket never holds the row writes a roll-up waits on.
+    # `open_conn` opens it (`run_lane`'s tracked open), so a store found silent abandons it even while it is opening.
     artifacts_lock: threading.Lock = field(default_factory=threading.Lock)
     artifacts_conn: Connection | None = None
     handoffs: dict[str, Mapping[str, Any]] = field(default_factory=dict[str, Mapping[str, Any]])
@@ -1156,17 +1207,30 @@ def run_lane(ctx: Ctx, claim: LaneClaim, conn: Connection, open_conn: Callable[[
     refs it fetched), any private refs in the shared checkout, and its progress mark are removed. Once the claim is
     lost, `stop_children` stops every child the lane has, and `stop_new_children` (`Fence`'s `still_lost`) whatever
     check or build starts after that. A store gone silent (the fence's check missed its bound) abandons `conn` and
-    every connection the lane opened, so nothing of the lane's waits on it."""
+    every connection the lane opened, and any open still in flight (`open_within`), so nothing of the lane's waits on
+    it; every later open fails at once. A lane that ends with its claim lost says so, and why, in its lost mark
+    (`lost_path`), which the worker reads to give back the attempt of a claim it still holds."""
     mark = beat_path(ctx.runs_dir, ctx.run_id)
     opened: list[Connection] = [conn]
+    opened_lock = threading.Lock()
+    silent = threading.Event()
+    silent_why: list[str] = []
 
     def open_tracked() -> Connection:
-        c = open_conn()
-        opened.append(c)
+        c = open_within(open_conn, phase_pick.LANE_SOCKET_S, cancelled=silent)
+        with opened_lock:
+            opened.append(c)
+            gone = silent.is_set()
+        if gone:  # opened as the store was given up: given up too
+            c.abandon(silent_why[0] if silent_why else "the store went silent")
         return c
 
     def abandon_all(why: str) -> None:
-        for c in list(opened):
+        with opened_lock:
+            silent_why.append(why)
+            silent.set()
+            found = list(opened)
+        for c in found:
             c.abandon(why)
 
     fence = Fence(open_conn, claim, log, stop_children, lambda n: write_beat(mark, n), still_lost=stop_new_children,
@@ -1189,6 +1253,8 @@ def run_lane(ctx: Ctx, claim: LaneClaim, conn: Connection, open_conn: Callable[[
                     ctx if lane_ctx is not ctx else None, goal)
     finally:
         fence.stop()
+        if fence.lost.is_set():
+            write_lost(lost_path(ctx.runs_dir, ctx.run_id), fence.why, log)
         settle_pool(ctx, keep_worktrees=False)
         if phase_worktree.exists():
             remove_worktree(lane_ctx.repo, phase_worktree)
@@ -1258,6 +1324,23 @@ def _run(ctx: Ctx, claim: LaneClaim, conn: Connection, fence: Fence, items: Sequ
 def beat_path(runs_dir: Path, run_id: str) -> Path:
     """Pure. The lane's progress mark, beside its pidfile: the worker reads it (`worker.lane_stalled`)."""
     return runs_dir / f"{run_id}.lane-beat"
+
+
+def lost_path(runs_dir: Path, run_id: str) -> Path:
+    """Pure. The lane's lost mark, beside its progress mark: written when the lane ends with its claim lost, read and
+    removed by the worker (`worker_ports.lane_facts`)."""
+    return runs_dir / f"{run_id}.lane-lost"
+
+
+def write_lost(path: Path, why: str, log: Callable[[str], None]) -> None:
+    """Edge. Write the lost mark with `why`, whole or not at all; a mark that cannot be written is said, not raised:
+    the worker then counts the attempt, the safe side."""
+    part = path.with_name(path.name + ".part")
+    try:
+        part.write_text(f"{' '.join(why.split())}\n", encoding="utf-8")
+        os.replace(part, path)
+    except OSError as exc:
+        log(f"lane: the lost mark could not be written: {exc}")
 
 
 def write_beat(path: Path, count: int) -> None:

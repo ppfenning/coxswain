@@ -139,15 +139,26 @@ class LaneFacts:
     smoke: phase_pick.SmokeSeen | None
     reason: str = ""
     suite: initiative_review.SuiteSeen | None = None  # an initiative review's: the suite at the tip its round reviewed
+    lost: str = ""  # why the lane gave its claim up (its lost mark, `phase_lane.lost_path`), "" when it did not
 
 
 def lane_verdict(claim: Claim, facts: LaneFacts) -> phase_pick.Verdict:
     """The ack or nack for a claim whose lane ended: an initiative review's by its round and suite
-    (`initiative_review.lane_verdict`), any other phase's by its tasks, round and smoke (`phase_pick.lane_verdict`)."""
+    (`initiative_review.lane_verdict`), any other phase's by its tasks, round and smoke (`phase_pick.lane_verdict`).
+
+    A lane that gave its claim up (`facts.lost`) while this worker still holds it (`settle` writes nothing otherwise)
+    lost it to the store, not to the phase: its attempt is not counted. What the store holds still decides an ack or a
+    real failure; any retry, including one the attempts would otherwise have ended, goes back with the attempt
+    refunded (`phase_pick.refusal`)."""
+    attempts = attempts_of(claim) - (1 if facts.lost else 0)
     if claim.row.get("kind") == initiative_review.KIND:
-        return initiative_review.lane_verdict(facts.last_round, facts.suite, attempts_of(claim), reason=facts.reason)
-    return phase_pick.lane_verdict(facts.tasks, facts.rolled_up, facts.last_round, attempts_of(claim),
-                                   smoke=facts.smoke, reason=facts.reason)
+        found = initiative_review.lane_verdict(facts.last_round, facts.suite, attempts, reason=facts.reason)
+    else:
+        found = phase_pick.lane_verdict(facts.tasks, facts.rolled_up, facts.last_round, attempts,
+                                        smoke=facts.smoke, reason=facts.reason)
+    if facts.lost and found.kind == "retry":
+        return phase_pick.refusal(f"the lane gave its claim up ({facts.lost}); {found.reason}", attempts_of(claim))
+    return found
 
 
 def lane_facts(task_rows: Sequence[Mapping[str, object]], rollups: Sequence[Mapping[str, object]], phase: str,
