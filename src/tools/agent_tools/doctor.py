@@ -164,6 +164,13 @@ def _none_ok_row(check: str, facts: Mapping, key: str, cascade: bool) -> dict:
     return {"check": check, "ok": False, "detail": str(val)}
 
 
+def _deprecation_rows(facts: Mapping, cascade: bool) -> list[dict]:
+    """One passing `cartridge` row flagged `warn` per deprecation the resolved cartridge names; none when it names none."""
+    resolved = None if cascade else facts.get("resolved")
+    found = resolved.get("deprecations") if isinstance(resolved, Mapping) else None
+    return [{"check": "cartridge", "ok": True, "warn": True, "detail": str(d)} for d in found or ()]
+
+
 def _overlay_row(facts: Mapping, cascade: bool) -> dict:
     if cascade:
         return _skip("project overlay")
@@ -361,7 +368,7 @@ def _unit_path_row(facts: Mapping) -> dict:
 def checks(facts: Mapping) -> list[dict]:
     """Judge a Facts mapping. Returns rows `{"check", "ok", "detail"}` in a
     fixed check order: git, forge, profile, profile paths, harness venv, core
-    importable, cartridge, project overlay, skills, provider, claude token,
+    importable, cartridge (and one warn row per cartridge deprecation), project overlay, skills, provider, claude token,
     plugins, store, workspace, schema, cast, chair unit PATH. A fact that was never gathered fails as "not checked",
     except `cast` and `claude token`, which pass when ungathered; a profile that fails to parse
     fails every row after it as "skipped: no profile"; an empty collection
@@ -377,6 +384,7 @@ def checks(facts: Mapping) -> list[dict]:
         _harness_venv_row(facts, cascade),
         _none_ok_row("core importable", facts, "core_import", cascade),
         _none_ok_row("cartridge", facts, "cartridge_load", cascade),
+        *_deprecation_rows(facts, cascade),
         _overlay_row(facts, cascade),
         _skills_row(facts, cascade, parsed),
         _provider_row(facts, cascade),

@@ -40,6 +40,7 @@ from agent_tools import chair_cap, route
 from agent_tools.editor_model import _MISSING, _get
 from agent_tools.queue_rows import LANE_MODELS
 from agent_tools.settings_model import STORE_MODES, Setting, setting_for
+from core.seats import SEAT_ALIASES
 
 # Cartridge keys the chair reads, with the reader it calls and the rule it enforces.
 _CHAIR_READS = {
@@ -95,12 +96,20 @@ def _load(text: str) -> dict | PlanError:
 
 
 def _parts(scope: str, doc: dict, path: str) -> list[str]:
-    """Path segments; `crew` addresses `cast` when the document uses that older name, and a
-    profile spend key lives under `spend:` in the file."""
+    """Path segments; `crew` addresses `cast` when the document uses that older name, a seat
+    addresses its old person name when the block binds only that, and a profile spend key
+    lives under `spend:` in the file."""
     head, *rest = path.split(".")
     if scope == "profile" and path in _PROFILE_SPEND_KEYS:
         return ["spend", path]
-    return ["cast" if head == "crew" and "crew" not in doc and "cast" in doc else head, *rest]
+    if head != "crew":
+        return [head, *rest]
+    block = "cast" if "crew" not in doc and "cast" in doc else "crew"
+    seats = doc.get(block)
+    if rest and isinstance(seats, dict) and rest[0] not in seats:
+        old = next((o for o, new in SEAT_ALIASES.items() if new == rest[0] and o in seats), None)
+        rest = [old or rest[0], *rest[1:]]
+    return [block, *rest]
 
 
 # Private names of route, the profile parser's own key sets.
