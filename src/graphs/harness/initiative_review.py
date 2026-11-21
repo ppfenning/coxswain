@@ -42,9 +42,9 @@ __all__ = [
     "lane_verdict",
     "merged_revisions",
     "next_step",
+    "reviewed_tip",
     "revision_phase",
     "revision_task",
-    "reviewed_tip",
     "rounds_phase",
     "suite_at",
 ]
