@@ -37,12 +37,14 @@ __all__ = [
     "SUITE_FAILED",
     "SuiteSeen",
     "ended",
+    "fix_phase",
     "initiative_goal",
     "lane_verdict",
     "merged_revisions",
     "next_step",
     "revision_phase",
     "revision_task",
+    "reviewed_tip",
     "rounds_phase",
     "suite_at",
 ]
@@ -75,6 +77,12 @@ def initiative_goal(initiative: Mapping[str, object]) -> str:
 def revision_phase(number: int) -> str:
     """Pure. The revision phase initiative review round `number` asks for, `revise-<round>`; its one task has the same id."""
     return f"revise-{number}"
+
+
+def fix_phase(number: int) -> str:
+    """Pure. The phase a quarantine in initiative review round `number` is triaged through, `fix-<round>`: one task,
+    written quarantined with the round's reason, which the chair's triage sends to build or to an operator."""
+    return f"fix-{number}"
 
 
 def revision_task(initiative: str, number: int, reviewer_output: Mapping[str, object]) -> dict[str, object]:
@@ -130,6 +138,14 @@ def suite_at(rows: Sequence[Mapping[str, object]], tip: str) -> SuiteSeen | None
     return None
 
 
+def reviewed_tip(round_rows: Sequence[Mapping[str, object]]) -> str:
+    """Pure. The tip the current episode's last round reviewed (its row's `head_sha`); "" when the episode has no round."""
+    held = review_loop.episode(review_loop.rounds_of(round_rows))
+    if not held:
+        return ""
+    return next((str(r.get("head_sha") or "") for r in round_rows if str(r.get("round")) == str(held[-1].number)), "")
+
+
 def ended(round_rows: Sequence[Mapping[str, object]],
           suite_rows: Sequence[Mapping[str, object]]) -> tuple[tuple[int, str] | None, str, SuiteSeen | None]:
     """Pure. What the worker reads of an initiative review once its lane ended, from the initiative's `review_rounds`
@@ -139,8 +155,7 @@ def ended(round_rows: Sequence[Mapping[str, object]],
     if not held:
         return None, "", None
     last = held[-1]
-    head = next((str(r.get("head_sha") or "") for r in round_rows if str(r.get("round")) == str(last.number)), "")
-    return (last.number, last.verdict), last.reason, suite_at(suite_rows, head)
+    return (last.number, last.verdict), last.reason, suite_at(suite_rows, reviewed_tip(round_rows))
 
 
 def lane_verdict(last_round: tuple[int, str] | None, suite: SuiteSeen | None, attempts: int,

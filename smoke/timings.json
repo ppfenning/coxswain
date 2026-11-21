@@ -27,7 +27,7 @@
 "smoke/test_edge_upgrade.py": 0.0,
 "smoke/test_forge_land.py": 0.0,
 "smoke/test_harness_launch.py": 10.3,
-"smoke/test_initiative_review.py": 28.4,
+"smoke/test_initiative_review.py": 45.5,
 "smoke/test_lake.py": 11.4,
 "smoke/test_lander_empty.py": 5.4,
 "smoke/test_lander_lanes.py": 32.2,

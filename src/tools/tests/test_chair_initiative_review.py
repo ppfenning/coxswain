@@ -83,6 +83,46 @@ def test_a_finished_review_is_the_lander_s_and_a_withdrawn_one_comes_back_once_n
     assert (back["op"], back["phase"], back["epoch"]) == ("reopen", ir.QUEUE_PHASE, 3)
 
 
+def _moved(**extra) -> dict:
+    return _record("p1", "p2", review_tip={"tip": "h-new", "moves": 1}, **extra)
+
+
+def test_a_finished_review_runs_again_once_the_branch_moved_from_the_tip_its_last_round_reviewed():
+    for outcome, verdict in (("approved", "approve"), ("failed", "approve"), ("quarantined", "quarantine")):
+        stored = [*PHASES, _review("finished", outcome)]
+        rounds = _rounds(verdict)
+        found = [c for c in _changes([_moved()], stored=stored, rounds=rounds) if c["op"] == "reopen"]
+        assert len(found) == 1 and (found[0]["phase"], found[0]["epoch"]) == (ir.QUEUE_PHASE, 3), (outcome, found)
+        assert "moved from h1" in found[0]["reason"] and "h-new" in found[0]["reason"]
+        # At the tip it reviewed, before the gate read a tip, once held or no longer assembled, it is left alone.
+        assert not [c for c in _changes([_record("p1", "p2", review_tip={"tip": "h1"})], stored=stored, rounds=rounds)
+                    if c["op"] == "reopen"]
+        assert not [c for c in _changes([_record("p1", "p2")], stored=stored, rounds=rounds) if c["op"] == "reopen"]
+        assert not [c for c in _changes([_moved(held={"reason": "x", "since": "t"})], stored=stored, rounds=rounds)
+                    if c["op"] == "reopen"]
+        assert not [c for c in _changes([_moved(state="pr_open")], stored=stored, rounds=rounds) if c["op"] == "reopen"]
+    # A reopened episode has no round yet: no tip reviewed, so it is not reopened again.
+    closed = {"ship": [*_rounds("approve")["ship"], {"round": 2, "verdict": review_loop.REOPENED, "head_sha": ""}]}
+    assert _changes([_moved()], stored=[*PHASES, _review("finished", "approved")], rounds=closed) == []
+
+
+def test_a_quarantined_review_is_sent_to_triage_once_as_a_marked_quarantined_task():
+    stored = [*PHASES, {**_review("finished", "quarantined"), "run_id": "ship.initiative-1"}]
+    rounds = _rounds("quarantine")
+    review_hold = {"reason": "the initiative review holds the pull request: q", "since": "t", "pull_request_only": True}
+    (write,) = _changes([_record("p1", "p2", held=review_hold)], stored=stored, rounds=rounds)
+    assert (write["op"], write["phase"], "row" in write) == (ir.REVISE_OP, "fix-1", False)
+    task = write["task"]
+    assert (task["task_id"], task["phase"], task["state"]) == ("fix-1", "fix-1", "quarantined")
+    assert task["extra"]["quarantine_mark"] == {"cause": review_loop.REVIEW_CAUSE, "reason": "r1", "run": "ship.initiative-1"}
+    assert "r1" in task["body"]
+    triaged = [*DONE, *_tasks(("fix-1", "fix-1", "quarantined"))]
+    assert _changes([_record("p1", "p2", held=review_hold)], triaged, stored, rounds) == []  # written once
+    drift = {"reason": "drift", "since": "t"}
+    assert _changes([_record("p1", "p2", held=drift)], stored=stored, rounds=rounds) == []  # a drift holds merges too
+    assert _changes([_record("p1", "p2")], stored=stored, rounds=rounds, withheld={"ship"}) == []
+
+
 def test_the_tick_queues_the_review_and_its_revision_in_its_queue_phases_action():
     records = [_record("p1", "p2")]
     queue = {**_queue(PHASES, phase_initiatives=["ship"]), "tasks": DONE, "records": records, "initiative_rounds": {}}

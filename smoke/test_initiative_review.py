@@ -10,10 +10,14 @@ passes its own checks, smoke and review; but the repository's suite (`suite.sh`)
 without `notes/fix.txt`: the merge breaks a test that neither phase broke alone.
 
 - No forge: the review approves, the suite fails at the tip, the worker finishes the review `failed`, and the lander
-  holds the initiative and opens no pull request; the chair is told once.
+  holds the initiative and opens no pull request; the chair is told once. Then a fix phase is filed, built and merged:
+  the tip moves, the hold lifts, the chair reopens the review (a new episode), it approves, the suite passes at the
+  new tip, and the pull request opens there, its body naming that sha.
 - On Forgejo: round 1 says revise; the chair writes the revision phase `revise-1`, a worker claims and builds it (it
-  adds the fix), the lander merges it; the chair queues the review again, round 2 approves, the suite passes, and the
-  lander opens the pull request on the forge, saying which round and which tip passed.
+  adds the fix), the lander merges it; the chair queues the review again, round 2 approves, the suite passes. Then
+  `main` moves before the land: the lander takes it forward, opens no pull request at a tip the suite never ran at,
+  and pushes the refreshed branch; the chair reopens the review, the suite passes at the new tip, and the lander opens
+  the pull request on the forge at that tip, saying which round and which sha passed.
 """
 
 from __future__ import annotations
@@ -168,15 +172,41 @@ def _chair_told(sandbox) -> int:
     return inbox.stdout.count("the initiative review holds the pull request")
 
 
+def _fixed(sandbox, env: dict[str, str], name: str, clone: Path) -> str:
+    """A person files a fix phase (task `fix`, adding `notes/fix.txt`); a worker builds it, the chair approves its task
+    and the lander merges it into origin's initiative branch. That branch's new tip."""
+    sandbox.write(f"work/{INITIATIVE}/fix/fix.md", plan.work_item_text(
+        {"id": "fix", "title": "Fix the suite", "state": "ready", "phase": "fix", "repo": "app"}, "Add notes/fix.txt."))
+    filled = sandbox.cox("route", "store-fill")
+    assert filled.returncode == 0, filled.stdout + filled.stderr
+    _tick(sandbox)
+    out = _claim_once(sandbox, env, name)
+    assert (_phase_row(sandbox, "fix")["state"], _phase_row(sandbox, "fix")["outcome"]) == ("finished", "approved"), out
+    _tick(sandbox)  # its task approved at its roll-up
+    out = _lander(sandbox)
+    assert f"phase fix of {INITIATIVE} merged into {INIT}" in out and "opened the pull request" not in out, out
+    return _origin_tip(sandbox, clone, INIT)
+
+
+def _reopened(sandbox, tip: str) -> None:
+    """The chair reopens the finished review once the branch moved from the tip its last round reviewed."""
+    out = _tick(sandbox)
+    row = _phase_row(sandbox, "initiative")
+    assert (row["state"], row["outcome"]) == ("ready", ""), (out, row)
+    assert _record(sandbox, INITIATIVE)["review_tip"]["tip"] == tip
+
+
 @pytest.fixture
 def review_machine(launchable, repo) -> Iterator[tuple]:
     for sandbox, name, env in _machine(launchable, repo.path):
         yield sandbox, name, env, launchable, repo.path
 
 
-def test_phases_that_each_pass_but_whose_merge_breaks_the_suite_open_no_pull_request(review_machine):
+def test_phases_whose_merge_breaks_the_suite_open_no_pull_request_until_a_fix_passes_at_the_new_tip(review_machine):
     sandbox, name, env, launchable, clone = review_machine
-    launchable.scripted(_plan_answers(p1_review_1=APPROVE, p2_review_1=APPROVE, initiative_review_1=APPROVE))
+    launchable.scripted({**_plan_answers(p1_review_1=APPROVE, p2_review_1=APPROVE, initiative_review_1=APPROVE,
+                                         fix_review_1=APPROVE, initiative_review_3=APPROVE),
+                         "build@fix": _build("fix", "notes/fix.txt")})
     tip = _phases_built_and_merged(sandbox, env, name, clone)
     _queued_review(sandbox)
 
@@ -197,6 +227,18 @@ def test_phases_that_each_pass_but_whose_merge_breaks_the_suite_open_no_pull_req
     again = _lander(sandbox)
     assert "opened the pull request" not in again and _chair_told(sandbox) == 1, again
 
+    # A fix merges: the tip moves, the hold lifts, the chair reopens the review, and the suite passes at the new tip.
+    fixed = _fixed(sandbox, env, name, clone)
+    assert not _record(sandbox, INITIATIVE).get("held") and fixed != tip
+    _reopened(sandbox, fixed)
+    out = _claim_once(sandbox, env, name)
+    assert f"finished approved: the initiative review approved it in round 3 and the suite passed at {fixed[:12]}" in out, out
+    assert _rounds(sandbox) == [(1, "approve", tip), (2, "reopened", ""), (3, "approve", fixed)]
+    out = _lander(sandbox)
+    assert "opened the pull request for ship" in out, out
+    pr = _record(sandbox, INITIATIVE)["pr"]
+    assert pr["url"] and _origin_tip(sandbox, clone, INIT) == fixed, pr
+
 
 @pytest.fixture
 def forge_review_machine(forge_sandbox, forge_repo, tmp_path) -> Iterator[tuple]:
@@ -212,7 +254,8 @@ def test_a_revise_round_s_revision_phase_is_built_merged_and_reviewed_again_and_
     fix = {"patch": plan.new_file_patch("notes/fix.txt", "fix"), "summary": "the fix", "files_touched": ["notes/fix.txt"],
            "commands_run": []}
     launchable.scripted({**_plan_answers(p1_review_1=APPROVE, p2_review_1=APPROVE, initiative_review_1=REVISE,
-                                         revise_1_review_1=APPROVE, initiative_review_2=APPROVE),
+                                         revise_1_review_1=APPROVE, initiative_review_2=APPROVE,
+                                         initiative_review_4=APPROVE),
                          "build@revise-1": fix})
     first = _phases_built_and_merged(sandbox, env, name, clone)
     _queued_review(sandbox)
@@ -247,9 +290,26 @@ def test_a_revise_round_s_revision_phase_is_built_merged_and_reviewed_again_and_
     assert _rounds(sandbox) == [(1, "revise", first), (2, "approve", second)]
     assert _suites(sandbox) == [("phase/suite/2", 1, second)]
 
+    # main moves before the land: no pull request at a tip the suite never ran at; the refreshed branch is pushed.
+    sandbox.git(clone, "checkout", "--quiet", "main")
+    (clone / "elsewhere.txt").write_text("another change on main\n", encoding="utf-8")
+    sandbox.git(clone, "add", "elsewhere.txt")
+    sandbox.git(clone, "commit", "--quiet", "-m", "another change lands on main")
+    sandbox.git(clone, "push", "--quiet", "origin", "main")
+    out = _lander(sandbox)
+    assert "opened the pull request" not in out and "after the suite passed" in out, out
+    third = _origin_tip(sandbox, clone, INIT)
+    assert third != second and forge_repo.file_text(INIT, "elsewhere.txt") == "another change on main\n"
+    assert _record(sandbox, INITIATIVE)["review_tip"] == {"tip": third, "moves": 1}
+
+    _reopened(sandbox, third)
+    out = _claim_once(sandbox, env, name)
+    assert f"finished approved: the initiative review approved it in round 4 and the suite passed at {third[:12]}" in out, out
+    assert _suites(sandbox) == [("phase/suite/2", 1, second), ("phase/suite/4", 1, third)]
     out = _lander(sandbox)
     assert "opened the pull request for ship" in out, out
     pull = forge_repo.pull(1)
-    assert (pull["state"], pull["head"], pull["base"], pull["sha"]) == ("open", INIT, "main", second), pull
+    assert (pull["state"], pull["head"], pull["base"], pull["sha"]) == ("open", INIT, "main", third), pull
     body = str(forge_repo.api("GET", "/pulls/1")["body"])  # type: ignore[index]
-    assert f"Initiative review: the initiative review approved it in round 2 and the suite passed at {second[:12]}." in body
+    assert f"the initiative review approved it in round 4 and the suite passed at {third[:12]}." in body
+    assert f"The full suite passed at `{third}`." in body

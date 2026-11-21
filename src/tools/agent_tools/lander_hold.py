@@ -21,16 +21,21 @@ D2's pull-request gate (`lander_review.pr_gate`) holds a new-model initiative th
 hold for every rule here (reconciliation keeps it, `cox lander release` releases it, the chair is told once, a released
 one is told again), has no phase and is never retried on its own; it holds the pull request only, so phase merges go
 on (`landing_record.holds_merges`) and the work that answers it can land; the gate itself lifts it once it no longer
-says the same hold (the tip moved, or the review moved on).
+says the same hold (the tip moved, or the review moved on). A merge hold set while a review hold stands never takes
+it over: the review hold is kept beside it (`review`, `beside_review`), as a drift is, and is what is left once the
+merge hold lifts (`without_merge_hold`). The `outpaced` review hold (the branch moved too often between a passing
+suite and the pull request, `lander_review.refresh_step`) is lifted only by an operator's release, which counts the
+moves afresh.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
-from typing import Literal
+from typing import Literal, cast
 
 from core import landing_record as lr
+from core.jsontypes import is_mapping
 
 # The prefix of the hold a new-model phase merge sets when it cannot be made.
 MERGE_HOLD = "the lander could not merge new-model phase "
@@ -44,7 +49,8 @@ RETRY_BASE_SECONDS = 600  # the first retry's backoff; each next one doubles (10
 NO_AGENT_RETRY_SECONDS = 3600  # "no merge agent yet" is tried again hourly, unbounded, until an agent answers
 # The prefix of the hold D2's pull-request gate sets, and why: the review quarantined it, or the suite failed at the tip.
 REVIEW_HOLD = "the initiative review holds the pull request: "
-ReviewCause = Literal["quarantined", "suite_failed"]
+# `outpaced`: the branch moved between a passing suite and the pull request too many times in a row.
+ReviewCause = Literal["quarantined", "suite_failed", "outpaced"]
 
 _STAMP = "%Y-%m-%dT%H:%M:%SZ"
 
@@ -153,10 +159,25 @@ def hold_lifted(record: lr.LandingRecord, origin_tip: str | None) -> bool:
 
 
 def without_merge_hold(hold: lr.Hold | None, now: str) -> lr.Hold | None:
-    """Pure. What is left once a merge hold is lifted: a drift reconciliation kept beside it, as a hold of its own,
-    or nothing."""
+    """Pure. What is left once a merge hold is lifted: the review hold it was set over (`beside_review`), with a
+    drift reconciliation kept beside the merge hold kept beside it in turn; else that drift, as a hold of its own; or
+    nothing."""
     drift = str((hold or {}).get("drift") or "")
+    review = (hold or {}).get("review")
+    if is_mapping(review) and is_review_hold(review) and (hold or {}).get("phase"):
+        kept = cast("lr.Hold", dict(review))
+        return {**kept, "drift": drift} if drift else kept
     return {"reason": drift, "since": now} if drift else None
+
+
+def beside_review(hold: lr.Hold, held: lr.Hold | None) -> lr.Hold:
+    """Pure. A merge hold to set while the record carries `held`: a review hold (D2's pull-request gate) is kept
+    beside it (`review`), never replaced, as a drift is (`drift`), and comes back once the merge hold lifts
+    (`without_merge_hold`); a review hold the one it replaces already kept stays kept."""
+    if is_review_hold(held):
+        return {**hold, "review": {k: v for k, v in (held or {}).items() if k != "drift"}}
+    review = (held or {}).get("review")
+    return {**hold, "review": dict(review)} if is_merge_hold(held) and is_mapping(review) else hold
 
 
 def told_now(prior: lr.Hold | None, hold: lr.Hold, same_reason: bool) -> bool:
@@ -181,7 +202,10 @@ def release(record: lr.LandingRecord) -> tuple[lr.LandingRecord | None, str]:
     if hold.get("released") is True:
         return None, f"{initiative}: its merge hold is already released; the next pass tries {what} again"
     released: lr.Hold = {**hold, "released": True}
-    return {**record, "held": released}, (
+    out: lr.LandingRecord = {**record, "held": released}
+    if hold.get("cause") == "outpaced":  # the branch's moves in a row (`lander_review.refresh_step`) count afresh
+        out["review_tip"] = {**(record.get("review_tip") or {}), "moves": 0}
+    return out, (
         f"{initiative}: the merge hold on {what} is released; the next lander pass tries it again "
         f"(cause {hold.get('cause') or 'unrecorded'}, {hold.get('attempts') or 1} attempt(s) so far)")
 
