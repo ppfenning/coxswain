@@ -181,6 +181,17 @@ def _chair_worker(a: argparse.Namespace) -> int:
     def perform_batch(actions: list, current: Callable[[], int]) -> list:
         return deps.perform(list(actions), deps.exec_deps, current, a.dry_run)
 
+    def notify(kind: str, facts: dict, actions: list) -> str:
+        """The pass's push (`chair_worker_notify`), on the notifier the tick uses, with this kind's own sent file."""
+        from agent_tools import chair_worker_notify
+        from agent_tools.notify_cards import card_events, pending_cards
+
+        if deps.workspace is None:
+            return ""
+        events = chair_worker_notify.worker_events(kind, facts, actions, card_events(pending_cards(deps.workspace)))  # type: ignore[arg-type]
+        deps.notify(events, deps.notify_config, chair_worker_notify.sent_path(deps.workspace, kind), time.time())
+        return ""
+
     wait, close = chair_queue.store_waiter(url, time.sleep)
     ports = chair_queue.Ports(
         queued=chair_read_queues.queues_keeping_last_good(_profile_path(a)),
@@ -188,7 +199,7 @@ def _chair_worker(a: argparse.Namespace) -> int:
         renew=lambda epoch: on_store(lambda c: store_chair_lease.renew(c, name, holder, epoch, ttl), False),
         holds=lambda epoch: on_store(lambda c: store_chair_lease.holds(c, name, holder, epoch), False),
         release=lambda epoch: on_store(lambda c: store_chair_lease.release(c, name, holder, epoch), False),
-        gather=gather, perform_one=perform_one, perform_batch=perform_batch,  # type: ignore[arg-type]
+        gather=gather, perform_one=perform_one, perform_batch=perform_batch, notify=notify,  # type: ignore[arg-type]
         wait=wait, pause=close, clock=time.monotonic, now=lambda: datetime.datetime.now(datetime.UTC),
         echo=chair_report.echo_line,
     )
@@ -650,9 +661,13 @@ def _chair_watchdog(a: argparse.Namespace) -> int:
     profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
     if refuse_rc is not None:
         return refuse_rc
+    from agent_tools import chair_read_queues, route
+
+    queued = chair_read_queues.read_chair_queues(_profile_path(a))
     return chair_watchdog.run_watchdog(
         runs_dir, notify_config=notify_core.config_from_profile(profile), state_path=runs_dir.parent / "notify-sent.json",
         idle_minutes=a.idle_minutes, stale_minutes=a.stale_minutes, dry_run=a.dry_run,
+        queued=frozenset() if isinstance(queued, route.ProfileError) else queued,
     )
 
 

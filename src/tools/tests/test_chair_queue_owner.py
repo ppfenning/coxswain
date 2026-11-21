@@ -110,14 +110,22 @@ def test_a_kind_with_no_worker_plans_nothing():
     assert plan_kind("launch", facts, now)  # C5: launch is a worker's kind
 
 
+_TICK_DUTIES = {"stall_alarm", "stall_clear", "check_login", "probe_host"}
+
+
 @pytest.mark.parametrize("name", sorted(_SCENARIOS))
-def test_queuing_never_changes_the_alarms_the_tick_raises(name: str):
-    """The stall alarm reads every kind's slots, a worker's too, so moving housekeeping never raises a second idle line."""
+@pytest.mark.parametrize("kinds", _SUBSETS, ids=lambda k: "+".join(sorted(k)) or "none")
+def test_the_stall_alarm_and_the_host_checks_go_with_housekeeping_and_are_raised_once(name: str, kinds: frozenset[str]):
+    """C6: the stall alarm and the host checks are housekeeping's, so they go on once the tick is stopped. The tick
+    raises them while it plans housekeeping and the housekeeping worker once it is listed; never both, never neither.
+    The alarm still reads every kind's slots, so moving any kind never changes it."""
     facts, now = _SCENARIOS[name]
-    alarms = {"stall_alarm", "stall_clear"}
-    off = [a for a in plan_tick(facts, now) if a["kind"] in alarms]
-    on = [a for a in plan_tick(_queued(facts, frozenset(chair_kinds.QUEUE_KINDS)), now) if a["kind"] in alarms]
-    assert _bag(on) == _bag(off)
+    off = [a for a in plan_tick(facts, now) if a["kind"] in _TICK_DUTIES]
+    on = _queued(facts, kinds)
+    tick = [a for a in plan_tick(on, now) if a["kind"] in _TICK_DUTIES]
+    worker = [a for a in (planned_pass("housekeeping", on, now, 1, dry_run=False) or []) if a["kind"] in _TICK_DUTIES]
+    assert _bag([*tick, *worker]) == _bag(off)
+    assert not (worker if "housekeeping" not in kinds else tick)
 
 
 def test_a_lease_taken_after_the_gather_takes_the_kind_off_the_tick_when_it_plans_again_before_perform():

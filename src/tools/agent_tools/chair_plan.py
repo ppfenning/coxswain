@@ -1555,10 +1555,24 @@ def _plan_as_holder(
     # H7.1: one alarm per stall the tick sees and one all-clear per raised stall that no longer stands; a launch planned
     # this tick means the lanes are not idle. The hard stop means no launch on purpose, so only the land and
     # repeated-failure checks stand. The alarm reads every kind's slots, a worker's too: an idle line a housekeeping
-    # worker sends is still the chair's idle line, so the tick does not raise a second one.
-    alarms = plan_stall_alarm(basis.facts, planned, now, launch_paused=launch.launch_paused) if now is not None else []
+    # worker sends is still the chair's idle line, so the tick does not raise a second one. The alarm is housekeeping's
+    # (C6): a housekeeping worker raises it, and the tick only while it plans housekeeping (`_tick_alarms`).
+    alarms = _stall_alarms(basis, launch, planned, now) if "housekeeping" not in skip else []
     kept = [(kind, a) for kind, actions in segments if kind not in skip for a in actions]
-    return [*(_tagged(a, kind, tag) for kind, a in triage_first(kept, _triaged_by_worker(segments, skip))), *alarms]
+    return [
+        *(_tagged(a, kind, tag) for kind, a in triage_first(kept, _triaged_by_worker(segments, skip))),
+        *(_tagged(a, "housekeeping", tag) for a in alarms),
+    ]
+
+
+def _stall_alarms(basis: TickBasis, launch: LaunchPlan, planned: Sequence[Action], now: datetime | None) -> list[Action]:
+    """The H7.1 stall alarm over every kind's slots, which only a planner with the clock raises."""
+    return plan_stall_alarm(basis.facts, list(planned), now, launch_paused=launch.launch_paused) if now is not None else []
+
+
+def _host_checks(facts: Facts, now: datetime | None) -> list[Action]:
+    """The due login checks and host probes. Housekeeping's since C6, so they go on once the tick is stopped."""
+    return [*_login_check_actions(facts, now), *_probe_host_actions(facts, now)]
 
 
 # The triage decisions that change the state a relaunch reads: a triage request sends the task back to ready with its
@@ -1618,7 +1632,8 @@ def plan_tick_held(facts: Facts, now: datetime | None = None, gate: CiGate = _UN
     skip = chair_kinds.tick_skips(facts)
     sweep = plan_housekeeping(facts, now) if now is not None and "housekeeping" not in skip else []
     housekeeping = [_tagged(a, "housekeeping", tag) for a in sweep]
-    login_checks = [*_login_check_actions(facts, now), *_probe_host_actions(facts, now)]
+    # The host checks are housekeeping's (C6): the tick plans them only while it plans housekeeping.
+    login_checks = [_tagged(a, "housekeeping", tag) for a in _host_checks(facts, now)] if "housekeeping" not in skip else []
     held = _land_only_ids(facts["initiatives"], facts["approved"]) if gate.paused and gated is None else frozenset[str]()
     holder = _withhold_blocked_hosts(_plan_as_holder(facts, now, held, skip, tag), facts) if gated is None else []
     # A lent lease plans the routine actions, then standby last, so the tick still reads as not acting.
@@ -1642,14 +1657,19 @@ def plan_kind(kind: str, facts: Facts, now: datetime, held: frozenset[str] = fro
     with its own lease's epoch. A kind no worker runs plans nothing."""
     if kind not in chair_kinds.QUEUE_KINDS:
         return []
-    _basis, _launch, segments = _holder_segments(facts, now, held)
+    basis, launch, segments = _holder_segments(facts, now, held)
     mine = [(k, a) for k, actions in segments if k == kind for a in actions]
     if kind == "launch":
         # A launch worker never performs a triage: whoever does (the tick or a quarantine worker) is another process,
         # so the worker holds that initiative's launch back for this pass, as the tick does (`triage_first`).
         mine = triage_first(mine, _triaged_by_worker(segments, ("quarantine",)))
     slots = _withhold_blocked_hosts([a for _k, a in mine], facts)
-    return [*slots, *(plan_housekeeping(facts, now) if kind == "housekeeping" else [])]
+    if kind != "housekeeping":
+        return slots
+    # The tick's own housekeeping: the periodic sweep, the stall alarm over every kind's slots, and the host checks, in
+    # the tick's order (`_plan_as_holder` then `plan_tick_held`).
+    planned = [a for _k, actions in segments for a in actions]
+    return [*slots, *_stall_alarms(basis, launch, planned, now), *plan_housekeeping(facts, now), *_host_checks(facts, now)]
 
 
 def tag_queue_kinds(actions: Sequence[Action], facts: Facts, now: datetime, gate: CiGate = _UNPAUSED) -> list[Action]:

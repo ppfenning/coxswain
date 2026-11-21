@@ -215,7 +215,10 @@ def planned_pass(kind: str, facts: Facts, now: datetime, epoch: int, dry_run: bo
     does not list the kind (a live pass never plans a kind the tick may still be planning). A dry run plans anyway."""
     if not dry_run and not chair_kinds.worker_acts(kind, facts):
         return None
-    return [stamp(a, epoch) for a in plan_kind(kind, facts, now)]
+    # The queue alarms for the other kinds, once no tick raises them (C6, `chair_kinds.watcher`). A dry run holds no
+    # lease and so watches no one: its plan stays the kind's own, which is what §5.3's comparison reads.
+    alarms = [] if dry_run else chair_kinds.watcher_actions(kind, facts)
+    return [stamp(a, epoch) for a in [*plan_kind(kind, facts, now), *alarms]]
 
 
 def pass_line(
@@ -305,6 +308,9 @@ class Ports:
     echo: Callable[[str], None]
     # A batched kind's whole pass in one perform (`perform_batched`); None performs it one action at a time.
     perform_batch: Callable[[Sequence[Action], Callable[[], int]], list[Result]] | None = None
+    # The pass's push (C6): handed the kind, the facts and the pass's actions after they were performed, it pushes what
+    # needs the operator and returns "" or a note for the pass line. None pushes nothing (the tick still does).
+    notify: Callable[[str, Facts, Sequence[Action]], str] | None = None
 
 
 @dataclass
@@ -325,7 +331,7 @@ def _pass(kind: str, ports: Ports, held: Held, reason: str, dry_run: bool, beat:
         epoch = held.epoch if held.epoch is not None and not dry_run else -1
         actions = planned_pass(kind, facts, now, epoch, dry_run)
         if not actions:
-            return pass_line(kind, reason, actions, [], dry_run, now)
+            return _with_note(pass_line(kind, reason, actions, [], dry_run, now), _push(kind, ports, facts, actions, dry_run))
         current = (lambda: -1) if dry_run else (lambda: held.epoch if held.epoch is not None else -2)
 
         def holds() -> bool:
@@ -337,9 +343,25 @@ def _pass(kind: str, ports: Ports, held: Held, reason: str, dry_run: bool, beat:
         else:
             results = perform_fenced(actions, holds, lambda a: ports.perform_one(a, current))
         line = pass_line(kind, reason, actions, results, dry_run, now)
-        return f"{line} | lease lost: the rest fenced" if any(r["status"] == "fenced" for r in results) else line
+        line = f"{line} | lease lost: the rest fenced" if any(r["status"] == "fenced" for r in results) else line
+        return _with_note(line, _push(kind, ports, facts, actions, dry_run))
     finally:
         stop.set()
+
+
+def _push(kind: str, ports: Ports, facts: Facts, actions: Sequence[Action] | None, dry_run: bool) -> str:
+    """Edge. The pass's push, on every live pass of a listed kind (a pass with nothing planned too, so a hold that
+    cleared is seen to clear); never on a dry run or an unlisted kind. A push that raises is a note, not a failed pass."""
+    if dry_run or actions is None or ports.notify is None:
+        return ""
+    try:
+        return ports.notify(kind, facts, actions)
+    except Exception as exc:
+        return f"notify failed: {type(exc).__name__}: {exc}"
+
+
+def _with_note(line: str, note: str) -> str:
+    return f"{line} | {note}" if note else line
 
 
 def _renew_or_drop(ports: Ports, held: Held, stop: threading.Event) -> None:
