@@ -30,6 +30,10 @@ Merge semantics:
     a deprecated alias for one release: a layer using it resolves exactly as
     `crew` would, and is named in the resolved dict's `deprecations` list.
     The resolved dict carries both `crew` and `cast` with the same value.
+    Seats are named by function; a seat's old person name (`core.seats`) is
+    likewise a deprecated alias for one release, resolved to the function
+    name and named in `deprecations`, and a retired seat's binding is dropped
+    with a deprecation saying where its work went.
 
 Validation — refuse to resolve, loudly, when:
 
@@ -39,6 +43,7 @@ Validation — refuse to resolve, loudly, when:
 -   a context path does not exist
 -   a write kind names an apply_arm role that is not bound
 -   a layer declares both `cast` and `crew` for the seats mapping
+-   a layer binds both a seat's old name and its function name
 
 Fail at load, never at run. A graph that discovers a missing binding halfway
 through a production sweep has already done half the damage.
@@ -97,6 +102,7 @@ import yaml
 from core.init import init_plan, render_plan
 from core.jsontypes import is_dict, is_mapping
 from core.landing import valid_branch
+from core.seats import rename_seats
 
 __all__ = ["CartridgeError", "load"]
 
@@ -141,21 +147,29 @@ def _read_yaml(path: Path, *, empty_ok: bool = False) -> dict[str, object]:
     return data
 
 
-def _normalize_crew(raw: Mapping[str, object], label: str) -> tuple[dict[str, object], str | None, str | None]:
+def _normalize_crew(raw: Mapping[str, object], label: str) -> tuple[dict[str, object], list[str], list[str]]:
     """`cast` is a deprecated alias for `crew`, treated exactly as `crew` for
-    merging and validation. `label` is the layer or fragment name a problem
-    or deprecation names, matching the labels `layers()` uses. A conflict is
-    returned as a problem string rather than raised, so `_resolve` reports it
-    alongside every other problem the chain has, in one pass.
+    merging and validation, and a seat's old person name is a deprecated alias
+    for its function name (`core.seats`). `label` is the layer or fragment
+    name a problem or deprecation names, matching the labels `layers()` uses.
+    Returns (normalized, deprecations, problems). A conflict is returned as a
+    problem string rather than raised, so `_resolve` reports it alongside
+    every other problem the chain has, in one pass.
     """
     if "cast" in raw and "crew" in raw:
         problem = f"{label}: declares both 'cast' and 'crew'; 'cast' is a deprecated alias for 'crew'"
-        return dict(raw), None, problem
-    if "cast" not in raw:
-        return dict(raw), None, None
+        return dict(raw), [], [problem]
     normalized = dict(raw)
-    normalized["crew"] = normalized.pop("cast")
-    return normalized, f"{label}: rename cast to crew", None
+    deprecations: list[str] = []
+    if "cast" in normalized:
+        normalized["crew"] = normalized.pop("cast")
+        deprecations.append(f"{label}: rename cast to crew")
+    crew = normalized.get("crew")
+    if not is_mapping(crew):
+        return normalized, deprecations, []
+    renamed, seat_deprecations, problems = rename_seats(crew, label)
+    normalized["crew"] = renamed
+    return normalized, [*deprecations, *seat_deprecations], problems
 
 
 # The cartridges this checkout ships (base, local, example-team, ...). A workspace's cartridges_dir holds its own
@@ -653,10 +667,12 @@ def _walk(
 
     Every layer's and fragment's raw dict is normalized through
     `_normalize_crew` before it merges or folds, so `cast` and `crew` are
-    interchangeable for the rest of resolution; each use of `cast` appends
-    to the returned deprecations, in the order layers and fragments fold. A
-    layer or fragment declaring both `cast` and `crew` appends to the
-    returned problems instead of raising, alongside every other problem.
+    interchangeable for the rest of resolution, and so are a seat's old
+    person name and its function name; each use of `cast` or of an old seat
+    name appends to the returned deprecations, in the order layers and
+    fragments fold. A layer or fragment declaring both `cast` and `crew`, or
+    both a seat's old and new name, appends to the returned problems instead
+    of raising, alongside every other problem.
     """
     entries: list[tuple[str, dict[str, object]]] = []
     merged: dict[str, object] = {}
@@ -664,11 +680,9 @@ def _walk(
     deprecations: list[str] = []
     fragment_paths: list[Path] = []
     for name, directory, raw in chain:
-        normalized_layer, layer_deprecation, layer_problem = _normalize_crew(raw, name)
-        if layer_deprecation:
-            deprecations.append(layer_deprecation)
-        if layer_problem:
-            problems.append(layer_problem)
+        normalized_layer, layer_deprecations, layer_problems = _normalize_crew(raw, name)
+        deprecations.extend(layer_deprecations)
+        problems.extend(layer_problems)
         level = dict(normalized_layer)
         level["context"] = _absolutise_context(normalized_layer, directory)
         child_kinds = level.get("write_kinds")
@@ -687,11 +701,9 @@ def _walk(
         for path, frag in _fragments(directory):
             fragment_paths.append(path)
             label = f"{name}/cartridge.d/{path.name}"
-            normalized_frag, frag_deprecation, frag_problem = _normalize_crew(frag, label)
-            if frag_deprecation:
-                deprecations.append(frag_deprecation)
-            if frag_problem:
-                problems.append(frag_problem)
+            normalized_frag, frag_deprecations, frag_problems = _normalize_crew(frag, label)
+            deprecations.extend(frag_deprecations)
+            problems.extend(frag_problems)
             current, frag_problems = _fold_fragments(current, [(label, normalized_frag)], current)
             problems.extend(frag_problems)
             entries.append((label, current))

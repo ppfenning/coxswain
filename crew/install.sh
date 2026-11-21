@@ -6,6 +6,11 @@
 # copy drifts silently, which is the failure this whole repository is arranged
 # to avoid.
 #
+# Only the function-named seats are rendered. The old person names (sarah,
+# lewis, ...) are aliases the cartridge loader resolves at lookup for one
+# release, never agent files; a link an old name left here points at a seat
+# file that no longer exists, and install and uninstall remove it.
+#
 #   ./install.sh                 symlink every seat into ~/.claude/agents
 #   ./install.sh --check         report what is installed, and from where
 #   ./install.sh --prefix DIR    install into DIR instead
@@ -22,13 +27,23 @@ while [ $# -gt 0 ]; do
     --check)     MODE=check ;;
     --uninstall) MODE=uninstall ;;
     --prefix)    PREFIX="${2:?--prefix needs a directory}"; shift ;;
-    -h|--help)   sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)   sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)           echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
 done
 
 seat_files() { find "$SEATS" -maxdepth 1 -name '*.md' ! -name 'SEATS.md' | sort; }
+
+# Links in PREFIX that point into this repository's seats/ at a file that is
+# gone: what a renamed or retired seat leaves behind.
+stale_links() {
+  [ -d "$PREFIX" ] || return 0
+  find "$PREFIX" -maxdepth 1 -name '*.md' -type l | sort | while IFS= read -r link; do
+    src="$(readlink "$link")"
+    case "$src" in "$SEATS"/*) [ -e "$src" ] || echo "$link" ;; esac
+  done
+}
 
 case "$MODE" in
   check)
@@ -46,6 +61,9 @@ case "$MODE" in
         printf '%-14s %-10s %s\n' "$name" absent -
       fi
     done
+    while IFS= read -r link; do
+      printf '%-14s %-10s %s\n' "$(basename "$link" .md)" stale "$(readlink "$link")"
+    done < <(stale_links)
     ;;
   uninstall)
     for seat in $(seat_files); do
@@ -56,9 +74,11 @@ case "$MODE" in
         rm "$target"; echo "removed $target"
       fi
     done
+    while IFS= read -r link; do rm "$link"; echo "removed $link (stale)"; done < <(stale_links)
     ;;
   install)
     mkdir -p "$PREFIX"
+    while IFS= read -r link; do rm "$link"; echo "removed $link (stale)"; done < <(stale_links)
     for seat in $(seat_files); do
       name="$(basename "$seat" .md)"
       target="$PREFIX/$name.md"
@@ -71,6 +91,6 @@ case "$MODE" in
     done
     echo
     echo "Installed into $PREFIX. Bind seats to your team's skills with a"
-    echo "cast: block in your cartridge — see the README."
+    echo "crew: block in your cartridge — see the README."
     ;;
 esac

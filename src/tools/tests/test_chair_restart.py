@@ -86,7 +86,7 @@ def test_checkout_root_holds_the_repository():
 
 def test_docs_only_paths_do_not_touch_chair_code():
     assert not touches_chair_code(
-        ["docs/index.md", "crew/seats/sky.md", "deploy/superset/bootstrap.py", "devtools/cli.py"]
+        ["docs/index.md", "crew/seats/triage.md", "deploy/superset/bootstrap.py", "devtools/cli.py"]
     )
 
 
