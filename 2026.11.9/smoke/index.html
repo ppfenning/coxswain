@@ -7161,6 +7161,11 @@ into a scratch copy of the tree and confirming that they fail.</p>
 <td>An approved phase whose branch holds only merge commits being merged, queued to land or given a pull request, or the chair told of it more than once; and a phase with a real change no longer landing. The first test failed on the tree before the fix.</td>
 </tr>
 <tr>
+<td><code>test_lander_record_auto.py</code></td>
+<td><code>cox chair run --once</code>, <code>cox worker once</code> and <code>cox lander once</code>, with no <code>cox lander adopt</code>, to a real clone of a bare origin and a Postgres store</td>
+<td>A phase-model initiative with no landing record once the chair queues its phases (E1, 2026-11-21), so its approved phases never reach the initiative branch; a second record, or one not stamped <code>lane_model: phase</code>. It failed on the tree before the fix: the lander said "nothing to do".</td>
+</tr>
+<tr>
 <td><code>test_lander_unreadable_record.py</code></td>
 <td><code>cox lander once</code>, <code>status</code> and <code>adopt</code> to a Postgres store holding one malformed landing record</td>
 <td>One bad row stopping every lander pass in the store, a stall nobody is told of (or told of twice), or any reader writing into the bad row.</td>
