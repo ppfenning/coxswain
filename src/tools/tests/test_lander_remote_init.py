@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from test_lander import Forge, commit, run, task
 
-from agent_tools import lander
+from agent_tools import lander, lander_base
 from agent_tools.lander_ports import fetch_branch
 from core import landing_record as lr
 from harness import landing_git as lg
@@ -326,7 +326,7 @@ def test_with_a_fetch_that_only_updates_origins_ref_origins_copy_is_branched_her
     published = run(hosts.origin, "rev-parse", "refs/heads/init/i")
 
     def remote_only(repo: Path, branch: str) -> str | None:
-        lander._fetch_origin(repo, branch)
+        lander_base.fetch_origin(repo, branch)
         return None
 
     hosts.ports.fetch = remote_only
@@ -520,10 +520,10 @@ def test_a_lander_copy_diverged_with_other_work_holds_and_names_both_commits(hos
 
 
 def test_a_push_is_done_once_origin_holds_the_local_tip() -> None:
-    assert lander.origin_holds("abc", "abc")
-    assert not lander.origin_holds("abc", None), "origin has no such branch yet"
-    assert not lander.origin_holds("abc", "old"), "a forge that kept the branch local"
-    assert lander.origin_holds(None, None), "nothing here to push"
+    assert lander_base.origin_holds("abc", "abc")
+    assert not lander_base.origin_holds("abc", None), "origin has no such branch yet"
+    assert not lander_base.origin_holds("abc", "old"), "a forge that kept the branch local"
+    assert lander_base.origin_holds(None, None), "nothing here to push"
 
 
 def test_the_merge_push_goes_through_the_forge_and_a_forge_that_keeps_the_branch_local_is_followed_by_git(hosts: Hosts) -> None:

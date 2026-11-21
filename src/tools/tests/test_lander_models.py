@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_tools import lander, lander_adopt, lander_cli, lander_hold, lander_ports, lander_release
+from agent_tools import lander, lander_adopt, lander_base, lander_cli, lander_hold, lander_ports, lander_release
 from core import landing_record as lr
 from harness import landing_git as lg
 from harness import landing_ops as ops
@@ -608,7 +608,7 @@ def test_a_harness_fault_committing_the_answer_is_retried(models: Models) -> Non
 def test_no_merge_agent_yet_is_retried_hourly_and_merges_once_a_merge_agent_is_wired(models: Models) -> None:
     """L5 lands: a conflict held only because no merge agent was wired is merged on the next retry, not stuck."""
     _collide(models)
-    models.ports = replace(models.ports, resolve_conflict=lander._no_merge_agent)  # the lander as it is before L5
+    models.ports = replace(models.ports, resolve_conflict=lander_base._no_merge_agent)  # the lander as it is before L5
     _pass(models)
     held = models.record("n")["held"]
     assert held["cause"] == "no_merge_agent" and lander_hold.NO_MERGE_AGENT in held["reason"]
