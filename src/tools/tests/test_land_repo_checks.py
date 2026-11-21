@@ -401,6 +401,16 @@ def test_the_land_facts_read_ticket_checks_from_the_cartridge_alone(tmp_path, mo
     assert cli._land_repo_facts(tmp_path, {}, "main")["ticket_checks"] == []
 
 
+def test_the_land_reads_a_marked_file_as_the_old_model_does_one_flat_list_each_suite_once(tmp_path, monkeypatch):
+    """`cox runs land` is the old model's: its checks are the task lines and the widest level's, and its ticket gate is
+    the cartridge's alone, as before levels."""
+    (tmp_path / ".agent-checks").write_text("echo task\n# level: phase\necho smoke\n# level: initiative\necho task\necho suite\n")
+    monkeypatch.setattr(cli, "_cartridge_landing", lambda repo, profile: ({"ticket_checks": _TICKET}, None))
+    facts = cli._land_repo_facts(tmp_path, {}, "main")
+    assert [c["cmd"] for c in facts["checks"]] == ["echo task", "echo suite"]
+    assert facts["ticket_checks"] == _TICKET
+
+
 def test_the_dry_run_labels_the_ticket_gate_step():
     [gate] = _ticket_steps(_card_plan({"ticket_checks": _TICKET}))
     assert cli._land_checks_lines([gate]) == [f"ticket gate ({_BRANCH}): e2e = cd e2e && pytest -q; lint = ruff check ."]

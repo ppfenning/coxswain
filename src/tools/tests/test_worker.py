@@ -2,6 +2,7 @@
 The loop itself is glue, proven against a real store by smoke/test_worker_claims.py."""
 
 from agent_tools import worker, worker_cli
+from harness import phase_pick
 
 NOW = "2026-11-20T10:00:00Z"
 
@@ -210,8 +211,32 @@ def test_a_lanes_facts_are_the_phases_open_tasks_its_roll_ups_in_any_run_and_its
             {"kind": "task", "task_id": "t9", "phase": "p2", "state": "ready"},
             {"kind": "initiative", "task_id": "ship", "phase": "", "state": "ready"}]
     rollups = [{"phase": "p1", "task_id": "t1"}, {"phase": "p1", "task_id": "t1"}, {"phase": "p2", "task_id": "t9"}]
-    facts = worker.lane_facts(rows, rollups, "p1", (1, "revise"))
-    assert facts == worker.LaneFacts(("t1", "t2"), ("t1",), (1, "revise"))
+    facts = worker.lane_facts(rows, rollups, "p1", (1, "revise"), [], "ship.p1-1")
+    assert facts == worker.LaneFacts(("t1", "t2"), ("t1",), (1, "revise"), None)
+
+
+def _smoke(run: str, ok: int, sha: str = "a1", reason: str = "", fault: bool = False) -> dict[str, object]:
+    return {"run_id": run, "ok": ok, "verdict": "passed" if ok else "failed", "subject_sha": sha,
+            "result_json": {"tip": sha, "reason": reason, "harness_fault": fault}}
+
+
+def test_a_lanes_smoke_is_the_last_smoke_row_its_own_run_wrote_with_its_reason():
+    failed, passed = _smoke("r1", 0, reason="the phase smoke failed: wiring"), _smoke("r1", 1)
+    assert worker.lane_facts([], [], "p1", None, [passed, failed], "r1").smoke == phase_pick.SmokeSeen(
+        False, "the phase smoke failed: wiring", 0)
+    assert worker.lane_facts([], [], "p1", None, [failed, passed], "r1").smoke == phase_pick.SmokeSeen(
+        True, "the phase smoke was passed", 0)
+    assert worker.lane_facts([], [], "p1", None, [failed, passed], "r2").smoke is None  # another run's are not its own
+    assert worker.lane_facts([], [], "p1", None, [{"run_id": "r1", "ok": 0, "result_json": None}], "r1").smoke == (
+        phase_pick.SmokeSeen(False, "the phase smoke was not recorded", 0))
+
+
+def test_a_harness_fault_counts_every_harness_fault_of_the_phase_at_that_tip():
+    why = "the phase smoke failed: harness fault: check 'smoke' could not run"
+    rows = [_smoke("r1", 0, "a1", why, fault=True), _smoke("r1", 0, "a0", why, fault=True),
+            _smoke("r1", 0, "a1", "the phase smoke failed: wiring"), _smoke("r2", 0, "a1", why, fault=True)]
+    assert worker.lane_facts([], [], "p1", None, rows, "r2").smoke == phase_pick.SmokeSeen(False, why, 2)
+    assert worker.lane_facts([], [], "p1", None, rows[:1], "r1").smoke == phase_pick.SmokeSeen(False, why, 1)
 
 
 def test_every_other_live_lane_of_the_phase_is_an_older_claims_and_is_stopped_before_the_new_one_starts():

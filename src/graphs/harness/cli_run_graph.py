@@ -814,6 +814,7 @@ def _run_phase_lane(
         max_parallel=threads, ledger_path=Path(args.ledger), provider_profile=_provider_profile_scope(args.provider_profile),
         runs_dir=Path(args.runs_dir), worktree_root=Path(str(worktree_root)).expanduser(), assume=args.assume,
         fix_attempts=0, initiative_id=claim.initiative, default_ref=default_ref, repo_checks=repo_checks(checks_text),
+        check_levels=True,  # the phase model: each `.agent-checks` level at its own gate (the smoke is `_smoke`'s)
         store=store, test_database=cast("Mapping[str, str] | None", test_database_setting(cartridge)),
         # each check's own workers: the cores split over every task build this machine runs at once
         lane_workers=lane_workers(os.cpu_count() or 1, threads * phase_lane.lanes_of(os.environ)),

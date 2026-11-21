@@ -251,12 +251,13 @@ class _GitEdge:
             raise RuntimeError(f"push of {branch}: {detail}")
 
     def run_checks(self) -> list[str]:
-        """The failing lines of the worktree's `.agent-checks`, each run through bash there; blanks and comments skipped."""
+        """The failing checks of the worktree's `.agent-checks`, each run through bash there. A carry is the old model's,
+        so it runs the file as one flat list (`carry_commands`), never a level section twice."""
         try:
-            lines = (Path(self.tmp) / ".agent-checks").read_text(encoding="utf-8").splitlines()
+            text = (Path(self.tmp) / ".agent-checks").read_text(encoding="utf-8")
         except OSError:
             return []
-        commands = [line.strip() for line in lines if line.strip() and not line.lstrip().startswith("#")]
+        commands = carry_commands(text)
         from harness.lane_workers import check_env
         env = check_env(os.environ, os.cpu_count() or 1, self.capacity)  # None inherits the chair's own environment
         return [c for c in commands if run_argv(["bash", "-c", c], cwd=Path(self.tmp), timeout=_CHECK_COMMAND_TIMEOUT_S, env=env)[0] != 0]
@@ -267,6 +268,15 @@ class _GitEdge:
     def close(self) -> None:
         if self.tmp:
             run_argv(["git", "-C", self.local_repo, "worktree", "remove", "--force", self.tmp])
+
+
+def carry_commands(text: str) -> list[str]:
+    """Pure. The shell lines a carry runs for an `.agent-checks` file: the old model's one flat list
+    (`checks.old_model_checks`), so a file with level sections runs each suite once, and a file with none runs every
+    command line in order, as it always has. A `# fix:` comment is not part of the command bash runs."""
+    from harness.checks import old_model_checks, repo_checks
+
+    return [str(c["cmd"]) for c in old_model_checks(repo_checks(text))]
 
 
 def _pr_url(detail: str) -> str:

@@ -16,7 +16,7 @@ from core.jsontypes import is_mapping
 from core.landing import TemplateError, initiative_branch_name, pr_branch_name, resolve_push_initiative
 from core.landing_record import INTEGRATE_PHASE
 from harness import bounded_proc, courier_adapter, landing_git, landing_ops, landing_store
-from harness.check_gate import gate_commands, repo_gate_lock
+from harness.check_gate import repo_gate_lock
 from harness.checks import outside_surface_files, run_checks
 from harness.digest import build_digest
 from harness.epic_context import Ctx, git_in
@@ -177,7 +177,7 @@ def invoke_from_attempt(
     attempt. A change that does not apply to the tree it was written against is left as the builder returned it."""
     view = PhaseRunner(
         ctx.shared_runner if ctx.shared_runner is not None else ctx.runner, tree, build_digest(tree) or None,
-        [str(c.get("cmd")) for c in ctx.checks if c.get("cmd")], gate_commands(ctx.landing_areas),
+        [str(c.get("cmd")) for c in ctx.checks if c.get("cmd")], ctx.gate_commands,
     )
     results, _, failures = invoke_graphs([inv], specs=ctx.specs, runner=view, run_id=run_id, max_parallel=1)
     for result in results:

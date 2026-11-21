@@ -1,15 +1,15 @@
-# The component suites, each from its own folder (their tests import sibling test modules by name).
-# The three pytest lines are narrowed to the tests a patch can affect; the full suites run once at the level and ticket gate, from .agent/cartridge.yaml.
-# The last line is CI's "clean (no personal reference)" step, plus a refusal of files under build/.
-# --require-names fails the lane when COXSWAIN_CLEAN_DENY is unset, so the names rule is never skipped silently:
-# the lane host must export it (the same regex as the CI secret), or a host name passes here and fails CI.
+# Three levels (docs/customize/team-cartridge.md, "Checks by gate"): the lines before the first `# level:` marker are a
+# task's cheap checks, `# level: phase` is the phase's smoke, run once its tasks have rolled up, and `# level: initiative`
+# is the full suite, run before the initiative's one pull request. A file with no marker is all task checks.
+#
+# Task level. The component suites, each from its own folder (their tests import sibling test modules by name),
+# narrowed to the tests a patch can affect.
 cd src/tools && pytest -q -n auto
 cd src/graphs && pytest -q -n auto
 cd src/cartridges && pytest -q -n auto
-# The smoke suite (docs/smoke.md): real cox from this worktree against real git and a throwaway Postgres container.
-# With no docker on PATH it skips and says why (-rs); a docker whose daemon does not answer fails unless the host sets
-# COX_SMOKE_SKIP_BROKEN_DOCKER=1. CI's required test job runs it with COX_SMOKE_REQUIRED.
-pytest -q -rs smoke
+# CI's "clean (no personal reference)" step, plus a refusal of files under build/.
+# --require-names fails the lane when COXSWAIN_CLEAN_DENY is unset, so the names rule is never skipped silently:
+# the lane host must export it (the same regex as the CI secret), or a host name passes here and fails CI.
 python .github/check_clean.py . --require-names
 # H10 item 5 (docs/hardening.md): a public function, class or module the patch adds under src/ with no reference
 # outside tests fails the lane; entry points nothing calls by name are allowlisted, with a reason, in .github/unwired-allow.txt.
@@ -19,3 +19,18 @@ python .github/check_unwired.py
 # Without pyright or the extras in this python it skips and says how to install them, as smoke skips without docker;
 # CI sets COX_TYPES_REQUIRED=1, which makes a missing one a failure.
 python .github/check_types.py
+
+# level: phase
+# The smoke suite without the forge (docs/smoke.md, "The phase check needs no forge"): real cox from this tree against
+# real git and a throwaway Postgres container, and no Forgejo. With no docker on PATH it skips and says why (-rs); a
+# docker whose daemon does not answer fails unless the host sets COX_SMOKE_SKIP_BROKEN_DOCKER=1.
+pytest -q -rs smoke -m "not forge"
+
+# level: initiative
+# The full suite: the three component suites whole, and the smoke suite with the forge tests (the umbrella's own
+# tests/ run in CI's `unit (root)` job, as they always have). An old-model run reads this file as one flat list, its
+# task lines and then these (checks.old_model_checks): exactly the seven commands it ran before levels.
+cd src/tools && pytest -q -n auto
+cd src/graphs && pytest -q -n auto
+cd src/cartridges && pytest -q -n auto
+pytest -q -rs smoke

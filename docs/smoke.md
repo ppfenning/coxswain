@@ -209,7 +209,7 @@ macOS launchd stays an operator check: the suite runs on Linux and starts no lau
 
 ## The phase check needs no forge
 
-A phase and an initiative check different amounts of the suite (L2 gives each level its own `.agent-checks` lines):
+A phase and an initiative check different amounts of the suite (each is a section of `.agent-checks`, `# level: phase` and `# level: initiative`):
 
 | Level | Command | Forgejo |
 | --- | --- | --- |
@@ -226,8 +226,8 @@ facts:
   smoke tests that exist and carry no `forge` mark;
 - only the `forge` fixture calls `plan.forgejo_run_argv`, and no test of the run without the `forge` mark has `forge`
   in its fixture closure. A run that deselects the forge tests therefore starts no container of the Forgejo image.
-  Under `COX_SMOKE_SHARD` this covers the files of the shard that holds the meta-test; the unsharded phase command
-  covers them all.
+  It reads every item the run's `-m` selected, which the conftest keeps before `COX_SMOKE_SHARD` drops the other
+  shards' files, so the shard that holds the meta-test checks every file, as the unsharded phase command does.
 
 ## Where it runs
 
@@ -247,7 +247,10 @@ facts:
   `COX_SMOKE_TIMINGS=smoke/timings.json pytest -q -rs -p smoke.timings -m "not forge" smoke`. A test's seconds are its
   setup, call and teardown, less the session fixtures it set up, which every shard pays once whatever it holds. A run
   on a few files rewrites only theirs; a file whose every test was deselected weighs 0.
-- **Lane checks.** `.agent-checks` runs `pytest -q -rs smoke` after the component suites. A lane host with docker
+- **Lane checks.** On the phase model, `.agent-checks` runs `pytest -q -rs smoke -m "not forge"` at the phase level
+  (`# level: phase`). It runs once per phase, in the phase worktree, after every task has rolled up, and never in a
+  task's own checks. The whole `pytest -q -rs smoke` is in its initiative level. An old-model task reads the file as
+  one flat list, as before levels, and so still runs `pytest -q -rs smoke` in its own checks. A lane host with docker
   runs it against its own container. A host with no docker on PATH skips it and prints the reason. A host whose
   `docker` is on PATH but whose daemon does not answer fails, because that is a host fault a skip would hide. Set
   `COX_SMOKE_SKIP_BROKEN_DOCKER=1` on such a host to skip there instead.

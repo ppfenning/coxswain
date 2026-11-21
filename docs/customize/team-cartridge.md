@@ -42,7 +42,33 @@ Three lists hold checks, one per gate. `landing_areas.checks` holds the task che
 
 All three use the `{name, cmd}` shape, with names unique inside each list. The two new lists are optional. A cartridge that omits them has no level or ticket checks, and `checks` reads as it always has.
 
-An integration suite that needs exclusive use of a resource belongs in `level_checks` or `ticket_checks`, because those run once for the level or ticket and not beside every task. The harness reads the two new lists in separate changes.
+An integration suite that needs exclusive use of a resource belongs in `level_checks` or `ticket_checks`, because those run once for the level or ticket and not beside every task.
+
+The three gates are three levels of checking:
+
+| Gate | Level | Runs | Cartridge list | `.agent-checks` section |
+| --- | --- | --- | --- | --- |
+| `task` | task | a task's cheap checks, narrowed to what its change touches, in its own worktree | `checks` | before the first marker, or `# level: task` |
+| `level` | phase | the phase's smoke, once every task has rolled up, in the phase worktree at the tip | `level_checks` | `# level: phase` |
+| `ticket` | initiative | the full suite, before the initiative's one pull request | `ticket_checks` | `# level: initiative` |
+
+A repository names all three in one `.agent-checks` file. A line `# level: phase` or `# level: initiative` starts a
+section that runs until the next marker. Everything before the first marker is task checks, so a file with no marker
+works as it always has. A marker naming any other level becomes a task check that fails and names the line.
+
+Only the phase model reads the sections at their gates. There, each gate runs the cartridge's list first, then the
+repository's section, without repeating a command the cartridge already runs. The old model reads the file as one
+list of task checks: the task lines, then the lines of the widest level the file names (initiative, else phase), each
+command once. So an initiative already on the old model checks what it checked before levels. Its lander, `cox runs
+land` and the chair's carry do the same. The lander's gate for a phase-model initiative arrives with the phase-model
+lander.
+
+On the phase model, a phase whose smoke fails gets no review and is not parked `built`. A failing check finishes the
+phase `failed` at once, with the failure as its reason, because a retry would run the same commands on the same
+commit. A smoke that could not run (a harness fault) goes back to the queue once. A second harness fault on the same
+commit finishes the phase `failed`. Either way the operator decides what happens next. A pass counts as evidence
+that a later lane on the same commit may reuse only when it checked something: a pass made only of skipped tests is
+run again.
 
 ## Landing granularity
 

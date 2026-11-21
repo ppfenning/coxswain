@@ -304,6 +304,30 @@ def test_the_rollups_and_the_last_review_round_of_a_phase_are_read_back(conn):
     assert store_phases.last_round(conn, "ship", "p1") == (2, "approve")
 
 
+def _smoke(round_, ok, sha, run="ship.p1-1", reason=""):
+    from harness.store_steps import step_key, step_row
+
+    return step_row(run_id=run, step=step_key("phase", "", "smoke", round_), initiative="ship", phase="p1", task_id="",
+                    kind="smoke", round_=round_, ok=ok, verdict="passed" if ok else "failed",
+                    result={"tip": sha, "cmds": ["smoke"], "reason": reason}, finished_at="", subject_sha=sha,
+                    worker="w1", claim_epoch=1)
+
+
+def test_the_phase_smoke_rows_are_read_back_decoded_for_every_run_or_one(conn):
+    store_phases.apply_changes(conn, [_change()], "chair-loop")
+    claim = store_phases.claim_next(conn, "w1", [], 1)
+    assert store_phases.put_steps_fenced(conn, [_smoke(1, False, "a1", reason="the phase smoke failed: x")], "w1", claim.epoch)
+    assert store_phases.put_steps_fenced(conn, [_smoke(1, True, "a1", run="ship.p1-2"), _step("t1", "rollup", "a1")],
+                                         "w1", claim.epoch)
+    rows = store_phases.smoke_rows(conn, "ship", "p1")
+    assert {(r["run_id"], r["round"], r["ok"], r["verdict"], r["subject_sha"]) for r in rows} == {
+        ("ship.p1-1", 1, 0, "failed", "a1"), ("ship.p1-2", 1, 1, "passed", "a1")}
+    assert {r["worker"] for r in rows} == {"w1"}  # the host each ran on, which reuse is keyed on
+    mine = store_phases.smoke_rows(conn, "ship", "p1", "ship.p1-1")
+    assert [r["result_json"] for r in mine] == [{"tip": "a1", "cmds": ["smoke"], "reason": "the phase smoke failed: x"}]
+    assert store_phases.smoke_rows(conn, "ship", "p2") == []
+
+
 def test_a_machine_with_no_thread_budget_reads_zero(conn):
     assert store_phases.host_threads(conn, "nobody") == 0
 

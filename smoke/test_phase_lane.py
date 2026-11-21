@@ -289,6 +289,8 @@ def test_three_tasks_build_in_parallel_each_pushed_as_it_lands_and_the_approved_
 
     steps = {(s["task_id"], s["kind"]): s for s in _steps(sandbox, run_id)}
     assert {k for k in steps if k[1] == "rollup"} == {("t1", "rollup"), ("t2", "rollup"), ("t3", "rollup")}
+    # L2: the repository names no phase level, so the smoke row says so, passed, at the tip it parked.
+    assert (steps[("", "smoke")]["ok"], steps[("", "smoke")]["subject_sha"]) == (1, commits[-1]["sha"]), steps
     assert {steps[(c["task"], "rollup")]["subject_sha"] for c in commits} == {c["sha"] for c in commits}
     # t1 and t2 ran at once: t1's check passes only once t2's check is running (the `await:t2` barrier), so its roll-up
     # proves the overlap; and the lane started t2 before t1 rolled up, in the lane's own order of events.
@@ -446,4 +448,62 @@ def test_a_refused_push_is_reconciled_and_the_healthy_holder_keeps_its_claim(lan
         ("t1", row["run_id"]), ("t2", f"{INITIATIVE}.p1-9"), ("t3", row["run_id"])], commits
     steps = {(s["task_id"], s["kind"]): s for s in _steps(sandbox, row["run_id"])}
     assert steps[("t2", "rollup")]["subject_sha"] == theirs, steps
+    assert sandbox.git(repo.origin, "rev-parse", INIT) == init_sha
+
+
+# L2: the phase level of the repository's `.agent-checks`, a wiring check none of the tasks' own checks covers. It
+# notes where it ran (`smoke-ran`) and which environment it found there (`smoke-env`: the repository's own probe on
+# PATH, and where the tree's `.venv` points), leaves a marker in that tree, and fails: no note says it is wired in.
+SMOKE_CMD = ('echo "$PWD" >> {marks}/smoke-ran && touch .smoke-ran && '
+             f'{{{{ command -v {plan.LANE_PROBE}; readlink .venv; }}}} > {{marks}}/smoke-env; '
+             "{{ grep -q wired notes/t1.txt notes/t2.txt notes/t3.txt || {{ echo 'wiring broken: no note is wired' >&2; exit 1; }}; }}")
+
+
+def test_a_phase_whose_tasks_pass_alone_but_whose_wiring_is_broken_fails_its_smoke_before_any_review(lane_machine):
+    """Each task passes its own checks, one of which proves the smoke has run nowhere yet and left no marker in the
+    task's tree. Once all three have rolled up, the lane runs the phase level once, in the phase worktree at the tip;
+    it fails, so the `smoke` row comes after every roll-up, no review role is ever called, and the worker does not park the
+    phase `built`: it finishes `failed` with the smoke's failure as its reason, since a retry would only repeat it."""
+    sandbox, repo, name, env, init_sha, launchable = lane_machine
+    marks = sandbox.home / "marks"
+    (repo.path / ".agent-checks").write_text(f"# level: phase\n{SMOKE_CMD.format(marks=marks)}\n", encoding="utf-8")
+    sandbox.git(repo.path, "add", ".agent-checks")
+    sandbox.git(repo.path, "commit", "--quiet", "-m", "the phase level")
+    path = launchable.cartridges / TEAM / "cartridge.yaml"
+    cartridge = json.loads(path.read_text(encoding="utf-8"))
+    cartridge["landing_areas"]["checks"].append(
+        {"name": "no-smoke-yet", "cmd": f"test ! -e .smoke-ran && test ! -e {marks}/smoke-ran"})
+    path.write_text(json.dumps(cartridge, indent=2) + "\n", encoding="utf-8")
+    launchable.scripted(_answers({"t1": 1, "t2": 1, "t3": 1}))
+    out = Worker(sandbox, env, "once", "--name", name).finished()
+
+    row = _row(sandbox)
+    run_id = row["run_id"]
+    assert "parked as built" not in out and "finished failed: the phase smoke failed" in out, out
+    # A real failure is not retried: the same commands on the same tip would fail again. Finished for the operator.
+    assert (row["state"], row["outcome"], row["claim_epoch"], row["attempts"]) == ("finished", "failed", 1, 1), row
+    assert row["reason"].startswith("the phase smoke failed: configured check failed: ") and "wiring broken" in row["reason"], row
+
+    commits = _commits(sandbox, repo.origin)
+    assert sorted(c["task"] for c in commits) == ["t1", "t2", "t3"], commits  # every task passed and rolled up
+    steps = _steps(sandbox, run_id)
+    (smoke,) = [s for s in steps if s["kind"] == "smoke"]
+    assert (smoke["ok"], smoke["step"], smoke["subject_sha"]) == (0, "phase/smoke/1", commits[-1]["sha"]), smoke
+    # It started once the last roll-up was written (the store's clock, to the second), at the tip that roll-up made.
+    assert smoke["started_at"] >= max(s["finished_at"] for s in steps if s["kind"] == "rollup"), steps
+    log = _run_log(sandbox, run_id)
+    assert max(log.index(f"lane: {t} rolled up") for t in ("t1", "t2", "t3")) < log.index("lane: the phase smoke runs"), log
+    # The smoke ran once, in the phase worktree, and in no task's: each task's `no-smoke-yet` check passed.
+    ran = (marks / "smoke-ran").read_text(encoding="utf-8").splitlines()
+    assert len(ran) == 1 and ran[0].endswith(f"/{run_id}/{PHASE}/_phase"), ran
+    # The phase worktree is in the lane's own clone, which has no venv: the smoke ran under the shared checkout's, the
+    # one every task's checks run under (its bin first on PATH, and the tree's `.venv` linked to it).
+    shared_venv = (repo.path / ".venv").resolve()
+    assert (marks / "smoke-env").read_text(encoding="utf-8").splitlines() == [
+        str(repo.path / ".venv" / "bin" / plan.LANE_PROBE), str(shared_venv)]
+    assert {s["task_id"] for s in steps if s["kind"] == "checks" and s["ok"]} == {"t1", "t2", "t3"}, steps
+    roles = _owner(sandbox, "SELECT DISTINCT role FROM node_calls WHERE run_id LIKE %s", args=(f"{run_id}%",))[0]
+    assert not {r[0] for r in roles} & set(REVIEW_ROLES), roles
+    assert not _owner(sandbox, "SELECT 1 FROM review_rounds WHERE initiative = %s", args=(INITIATIVE,))[0]
+    assert f"lane: the phase smoke at {commits[-1]['sha'][:12]} failed" in _run_log(sandbox, run_id)
     assert sandbox.git(repo.origin, "rev-parse", INIT) == init_sha
