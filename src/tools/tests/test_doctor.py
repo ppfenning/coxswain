@@ -128,6 +128,19 @@ def test_a_profile_with_no_unknown_key_has_no_warning_row():
     assert "warning" not in doctor.render(rows)
 
 
+def test_each_cartridge_deprecation_is_a_warning_row_after_the_cartridge_row():
+    facts = _good_facts()
+    facts["resolved"] = {"deprecations": ["acme: rename cast to crew", "acme: rename crew seat 'lewis' to 'reviewer'"]}
+    rows = doctor.checks(facts)
+    at = [r["check"] for r in rows].index("cartridge")
+    assert rows[at + 1 : at + 3] == [
+        {"check": "cartridge", "ok": True, "warn": True, "detail": "acme: rename cast to crew"},
+        {"check": "cartridge", "ok": True, "warn": True, "detail": "acme: rename crew seat 'lewis' to 'reviewer'"},
+    ]
+    assert doctor.exit_code(rows) == 0
+    assert "2 warning" in doctor.render(rows)
+
+
 def test_malformed_known_key_still_fails_with_an_unknown_key_present():
     facts = _good_facts()
     facts["profile_text"] += "colour: blue\nspend: 5\n"

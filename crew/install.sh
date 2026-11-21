@@ -39,7 +39,7 @@ seat_files() { find "$SEATS" -maxdepth 1 -name '*.md' ! -name 'SEATS.md' | sort;
 # gone: what a renamed or retired seat leaves behind.
 stale_links() {
   [ -d "$PREFIX" ] || return 0
-  find "$PREFIX" -maxdepth 1 -name '*.md' -type l | sort | while read -r link; do
+  find "$PREFIX" -maxdepth 1 -name '*.md' -type l | sort | while IFS= read -r link; do
     src="$(readlink "$link")"
     case "$src" in "$SEATS"/*) [ -e "$src" ] || echo "$link" ;; esac
   done
@@ -61,9 +61,9 @@ case "$MODE" in
         printf '%-14s %-10s %s\n' "$name" absent -
       fi
     done
-    for link in $(stale_links); do
+    while IFS= read -r link; do
       printf '%-14s %-10s %s\n' "$(basename "$link" .md)" stale "$(readlink "$link")"
-    done
+    done < <(stale_links)
     ;;
   uninstall)
     for seat in $(seat_files); do
@@ -74,11 +74,11 @@ case "$MODE" in
         rm "$target"; echo "removed $target"
       fi
     done
-    for link in $(stale_links); do rm "$link"; echo "removed $link (stale)"; done
+    while IFS= read -r link; do rm "$link"; echo "removed $link (stale)"; done < <(stale_links)
     ;;
   install)
     mkdir -p "$PREFIX"
-    for link in $(stale_links); do rm "$link"; echo "removed $link (stale)"; done
+    while IFS= read -r link; do rm "$link"; echo "removed $link (stale)"; done < <(stale_links)
     for seat in $(seat_files); do
       name="$(basename "$seat" .md)"
       target="$PREFIX/$name.md"

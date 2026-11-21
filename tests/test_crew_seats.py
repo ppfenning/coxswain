@@ -127,14 +127,20 @@ def test_install_renders_the_function_names_and_removes_only_links_an_old_name_l
     prefix.mkdir()
     seats = ROOT / "crew" / "seats"
     (prefix / "sarah.md").symlink_to(seats / "sarah.md")  # what the last release's install left
+    (prefix / "old seat.md").symlink_to(seats / "old seat.md")  # stale, with a space in its path
     (prefix / "mine.md").symlink_to(tmp_path / "gone.md")  # dangling, but not ours
-    assert "sarah          stale" in _install(prefix, "--check")
+    (prefix / "lewis.md").write_text("the user's own agent\n", encoding="utf-8")  # an old seat's name, not a link
+    check = _install(prefix, "--check")
+    assert "sarah          stale" in check and "old seat       stale" in check
     assert "removed" in _install(prefix)
-    state = {p.name: os.readlink(p) for p in prefix.iterdir()}
+    state = {p.name: os.readlink(p) for p in prefix.iterdir() if p.is_symlink()}
     assert "removed" not in _install(prefix)  # a second install changes nothing
-    assert {p.name: os.readlink(p) for p in prefix.iterdir()} == state
+    assert {p.name: os.readlink(p) for p in prefix.iterdir() if p.is_symlink()} == state
     assert sorted(state) == sorted(
         ["mine.md", "builder.md", "ops.md", "planner.md", "recon.md", "retro.md", "reviewer.md", "triage.md",
          "writer.md"])
+    assert (prefix / "lewis.md").read_text(encoding="utf-8") == "the user's own agent\n"
     assert all((prefix / f"{seat}.md").resolve() == seats / f"{seat}.md" for seat in check_seats.voices(
         (seats / "SEATS.md").read_text(encoding="utf-8")))
+    _install(prefix, "--uninstall")
+    assert sorted(p.name for p in prefix.iterdir()) == ["lewis.md", "mine.md"]

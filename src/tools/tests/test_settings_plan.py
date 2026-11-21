@@ -1,5 +1,6 @@
 from agent_tools import chair_cap, route
 from agent_tools.settings_plan import _CHAIR_READS, Plan, PlanError, plan_set
+from core.cartridge import load
 
 OLD = "policy:\n  dispatch:\n    max_in_flight: 2\n"
 NEW = "policy:\n  dispatch:\n    max_in_flight: 4\n"
@@ -322,3 +323,20 @@ def test_string_that_yaml_reads_as_another_type_is_quoted():
 def test_quoted_top_level_key_is_found_and_not_repeated():
     result = plan_set("cartridge", "epic_threshold", "4", '"epic_threshold": 3  # keep\n', _valid)
     assert result.new_text == '"epic_threshold": 4  # keep\n'
+
+
+def test_a_seat_set_by_its_function_name_updates_the_old_name_the_file_binds(tmp_path):
+    text = (
+        "team: acme\n"
+        "version: 1\n"
+        "roles: {required: [], optional: []}\n"
+        "crew:\n"
+        "  lewis: {skills: []}\n"
+    )
+    result = plan_set("cartridge", "crew.reviewer.skills", "[acme-skills:review]", text, _valid)
+    assert isinstance(result, Plan)
+    assert result.new_text == text.replace("lewis: {skills: []}", "lewis: {skills: ['acme-skills:review']}")
+    (tmp_path / "acme").mkdir()
+    (tmp_path / "acme" / "cartridge.yaml").write_text(result.new_text, encoding="utf-8")
+    resolved = load("acme", tmp_path, skill_index={"acme-skills:review": ["/fake/review/SKILL.md"]})
+    assert resolved["crew"] == {"reviewer": {"skills": ["acme-skills:review"]}}
