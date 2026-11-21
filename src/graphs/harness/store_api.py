@@ -577,11 +577,6 @@ def phase_queue_rows(url: str) -> list[dict[str, object]] | Failed | NotAvailabl
     return _read(url, store_phases.list_rows)
 
 
-def phase_rollups(url: str, initiatives: Sequence[str]) -> list[dict[str, object]] | Failed | NotAvailable:
-    """The roll-up step rows of the named initiatives, oldest first (`store_phases.rollup_rows`)."""
-    return _read(url, lambda c: store_phases.rollup_rows(c, initiatives))
-
-
 def phase_review_facts(url: str, initiatives: Sequence[str]) -> tuple[list[dict[str, object]], ...] | Failed | NotAvailable:
     """What the chair's phase-queue planner reads besides the rows, in one connection: the roll-up step rows, the
     task rows with their `merged_commit`, and each phase's last review round."""
