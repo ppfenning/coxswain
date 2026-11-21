@@ -8,6 +8,7 @@ smoke/test_imports_this_tree.py). Real files and real processes; nothing is repl
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -46,9 +47,14 @@ def test_a_plain_gh_binary_is_its_own_answer(tmp_path):
     assert gh_replay.real_gh(str(gh)) == str(gh)
 
 
-def test_the_committed_timings_file_reads_and_names_only_smoke_test_files():
+def test_the_committed_timings_name_every_smoke_file_and_no_deleted_one():
+    """The shards fall back gracefully on a file with no recorded seconds (`plan.file_weights`), so nothing else would
+    notice a stale timings file: this does. A forge-only file is named too, at 0 (`plan.file_seconds`)."""
     timings = plan.read_timings((ROOT / "smoke" / plan.TIMINGS_FILE).read_text(encoding="utf-8"))
-    assert timings and all(name.startswith("smoke/test_") and name.endswith(".py") for name in timings)
+    files = {f"smoke/{path.name}" for path in (ROOT / "smoke").glob("test_*.py")}
+    regenerate = f'regenerate it: {plan.TIMINGS_ENV}=smoke/{plan.TIMINGS_FILE} pytest -p smoke.timings -m "not forge" smoke'
+    assert sorted(files - timings.keys()) == [], f"smoke files with no recorded seconds; {regenerate}"
+    assert sorted(timings.keys() - files) == [], f"{plan.TIMINGS_FILE} names deleted files; drop them or {regenerate}"
 
 
 def _collect_smoke(pythonpath: str) -> subprocess.CompletedProcess[str]:
@@ -69,3 +75,28 @@ def test_a_stale_checkout_ahead_on_the_path_does_not_shadow_this_tree(tmp_path: 
     inherited = os.environ.get("PYTHONPATH", "")
     done = _collect_smoke(os.pathsep.join(p for p in (str(stale), inherited) if p))
     assert done.returncode == 0, done.stdout[-2000:] + done.stderr[-2000:]
+
+
+def _ignore(folder: str, names: list[str]) -> set[str]:
+    return {name for name in names if name in {"tests", "__pycache__"}}
+
+
+def test_the_conftest_refuses_a_tree_whose_path_fix_no_longer_covers_harness_and_core(tmp_path: Path) -> None:
+    """The guard pinned: a copy of this tree whose conftest puts only src/tools ahead (the fix as it first was), with a
+    stale checkout ahead of it on the path that holds real, importable copies of `harness` and `core`. Every import
+    succeeds, so only the guard can refuse it, and it must, naming the package and this tree's src/ folder."""
+    tree, stale = tmp_path / "tree", tmp_path / "stale-checkout"
+    shutil.copytree(ROOT / "src" / "tools" / "agent_tools", tree / "src" / "tools" / "agent_tools", ignore=_ignore)
+    shutil.copytree(ROOT / "smoke", tree / "smoke", ignore=lambda folder, names: {n for n in names if n.startswith("test_")})
+    shutil.copytree(ROOT / "src" / "graphs" / "harness", stale / "harness", ignore=_ignore)
+    shutil.copytree(ROOT / "src" / "cartridges" / "core", stale / "core", ignore=_ignore)
+    conftest = tree / "smoke" / "conftest.py"
+    fix = 'for name in ("tools", "graphs", "cartridges")]'
+    assert fix in conftest.read_text(encoding="utf-8")
+    conftest.write_text(conftest.read_text(encoding="utf-8").replace(fix, 'for name in ("tools",)]'), encoding="utf-8")
+    env = {**os.environ, "PYTHONPATH": str(stale)}
+    done = subprocess.run([sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider", "smoke"],
+                          cwd=tree, env=env, capture_output=True, text=True, timeout=120)
+    found = (stale / "harness" / "__init__.py").resolve()
+    assert done.returncode not in (0, 5), done.stdout[-2000:] + done.stderr[-2000:]
+    assert f"harness imported from {found}, not from this tree's src/graphs" in done.stdout + done.stderr, done.stdout[-2000:]
