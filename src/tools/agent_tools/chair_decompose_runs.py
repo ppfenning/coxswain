@@ -222,7 +222,10 @@ def read_decompose_runs(
         run = parse_run({"run_id": str(row["run_id"]), "log": None, "task_items": items if exited else None})
         refusal, verdict = _log_facts(runs_dir, run.run_id, cache)
         wrote = verdict if exited and verdict is not None else run.wrote_items
-        out.append(replace(run, wrote_items=wrote, refusal_line=refusal, launched_at=parse_when(row.get("launched_at"))))
+        out.append(replace(
+            run, wrote_items=wrote, refusal_line=refusal, launched_at=parse_when(row.get("launched_at")),
+            exited=exited, ended_at=parse_when(row.get("ended_at")) if exited else None,
+        ))
     if cache is not None:
         cache.keep([exits_key, items_key, *(_log_key(runs_dir, run.run_id) for run in out)])
     return out

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypedDict
 
 from agent_tools import chair_lease_refusal, chair_read_docket, pacing, repo_path, route
+from agent_tools.chair_decompose_flight import in_flight_facts, launch_times
 from agent_tools.chair_decompose_miss import DecomposeMiss, next_miss
 from agent_tools.chair_decompose_streak import DecomposeRun, DecomposeStreak, at_limit, streak
 from agent_tools.chair_facts_read import (
@@ -1242,6 +1243,8 @@ def gather_facts(
     probe = dict(deps.pid_probe())
     from agent_tools.chair_decompose_runs import decompose_refusals  # lazy: chair_decompose_runs imports this module
 
+    # Each intake's decompose runs, read once: the streak gate and the in-flight gate both read them.
+    decompose_runs = {path: list(deps.decompose_runs(path)) for path in intake} if deps.decompose_runs is not None else {}
     refusals = land_refusals_from_actions(selected(index, "land_phase", "partial_land"), now)
     work = list(deps.work_rows()) if deps.work_rows is not None else []
     epics = epic_facts(work, epic_definitions or {}) if deps.work_rows is not None else []
@@ -1290,7 +1293,7 @@ def gather_facts(
             refusals=decompose_refusals(Path(deps.runs_dir()), decomposed.values()),
         ),
         "todo_initiatives": todo_initiative_facts(list(deps.work_rows())) if deps.work_rows is not None else [],
-        "decompose_streaks": decompose_streak_facts(intake, deps.decompose_runs, deps.decompose_cutoff) if deps.decompose_runs is not None else {},
+        "decompose_streaks": decompose_streak_facts(intake, decompose_runs.__getitem__, deps.decompose_cutoff) if deps.decompose_runs is not None else {},
         "decompose_stalled_reported": decompose_stalled_keys(selected(index, ("needs_chair", "decompose_stalled"))),
         "env_stale_reported": stale_checkout_keys(selected(index, ("needs_chair", STALE_CHECKOUT_CAUSE))),
         "held_files": [HeldFile(**h) for h in deps.held_files()],
@@ -1375,6 +1378,11 @@ def gather_facts(
     facts["decompose_misses"] = misses["decompose_misses"]
     facts["decompose_miss_fingerprints"] = misses["decompose_miss_fingerprints"]
     facts["decompose_misses_reported"] = misses["decompose_misses_reported"]
+    cutoff = deps.decompose_cutoff
+    facts["decompose_in_flight"] = in_flight_facts(
+        intake, decompose_runs, launch_times([action_doc(r) for r in selected(index, "launch_decompose")]),
+        {path: cutoff(path) for path in intake} if cutoff is not None else {}, now,
+    )
     if (freeze := land_freeze_fact(deps.runs_dir(), now)) is not None:
         facts["land_freeze"] = freeze
     if (queue := merge_queue_fact(deps.merge_queue() if deps.merge_queue is not None else None)) is not None:

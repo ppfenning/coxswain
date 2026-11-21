@@ -2,6 +2,7 @@
 "smoke/test_artifacts_store.py": 43.5,
 "smoke/test_chair_actions_window.py": 12.3,
 "smoke/test_chair_approved_not_on_phase_branch.py": 1.4,
+"smoke/test_chair_decompose_once.py": 21.6,
 "smoke/test_chair_dry_run_read_only.py": 2.2,
 "smoke/test_chair_fetch_exit_quarantined.py": 1.8,
 "smoke/test_chair_idle_alarm.py": 10.3,
