@@ -15,7 +15,7 @@ A worker claims a phase (`store_phases.claim_next`) and starts this lane under t
    the cheap checks in the task's worktree (the cartridge's and `.agent-checks`' task checks, narrowed to what the
    change touches: unit tests, lint, the privacy check), with the task's own verification commands. A task an earlier
    attempt of this episode refused (its handoff found evidence missing, or its checks failed) is built with the reasons
-   in its ticket body (`lane_feedback`, from `store_phases.task_refusals`), since a build-only run has no fix loop;
+   in its ticket body (`lane_feedback`, from `store_phases.task_attempt_rows`), since a build-only run has no fix loop;
 6. the roll-up, in order: the checks passed, their artifacts uploaded, the `checks` step row written; the phase's local
    lock taken; a task the tip's trailers already carry (a stale lane landed it) adopted instead of applied twice; the
    change applied cleanly onto the phase tip and committed with the trailers; the claim checked again; pushed; the
@@ -504,7 +504,7 @@ def _build(lane: Lane, task: str, base: str, ident: str = "") -> tuple[Mapping[s
         return None, why, started, tctx
     item = lane.items[task]
     with lane.store_lock:  # the task's refused attempts of this episode, whichever run made them
-        refused = store_phases.task_refusals(lane.conn, lane.claim.initiative, lane.claim.phase, task)
+        refused = store_phases.task_attempt_rows(lane.conn, lane.claim.initiative, lane.claim.phase, task)
     feedback = lane_feedback.refusal_feedback(refused)
     if feedback:
         lane.log(f"lane: {task} is built again with why its last attempt was refused")

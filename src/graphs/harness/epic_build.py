@@ -143,6 +143,7 @@ def _lane_checks(
             "components": dep_map.components,
             "test_reach": dep_map.test_reach,
             "unresolved": dep_map.unresolved,
+            "test_imports": dep_map.test_imports,
         }
         added_tests = [p for p in _nul_paths(added) if is_test_file(p)]
         scoped = select_checks(checks, _nul_paths(changed), added_tests, import_map)

@@ -12,7 +12,7 @@ from harness import lane_feedback, phase_lane, phase_pick, review_loop, store_ph
 from harness.epic import Ctx
 from harness.phase_lane import Fence, Lane, LaneClaim
 from harness.store_migrate import open_store
-from harness.store_steps import put_round, put_step, round_row, steps_of_result
+from harness.store_steps import put_round, put_step, round_row, steps_of_result, with_checks
 from runner import ScriptedRunner
 from tests.conftest import CARTRIDGE
 
@@ -53,6 +53,19 @@ def test_only_the_latest_refusing_run_counts_and_a_harness_fault_is_not_a_refusa
     assert OTHER not in text and "unit" not in text and "timed" not in text  # older, passing, and a fault: none of them
     # A timeout alone refused nothing the builder can answer, so the handoff before it is still the last word.
     assert "(run r1)" in lane_feedback.refusal_feedback([rows[0], rows[2]])
+
+
+def test_a_refusal_a_later_complete_handoff_answered_is_not_replayed_after_a_timeout():
+    rows = [
+        _row("r1", "handoff", {"complete": False, "missing": [MISSING]}, "2026-11-21T09:09:00Z"),
+        _row("r2", "handoff", {"complete": True, "missing": []}, "2026-11-21T09:20:00Z"),
+        _row("r2", "checks", _checks(("cd src/tools && pytest -q -n auto", False, None, "timed_out")), "2026-11-21T09:20:00Z"),
+    ]
+    assert lane_feedback.refusal_feedback(rows) == ""
+    # In one store second an attempt's checks still follow its handoff: a failure there is the latest verdict.
+    failed = _row("r2", "checks", _checks(("lint", False, 1, "failed")), "2026-11-21T09:20:00Z")
+    assert "- check `lint` failed" in lane_feedback.refusal_feedback([*rows[:2], failed])
+    assert MISSING not in lane_feedback.refusal_feedback([*rows[:2], failed])
 
 
 def test_nothing_refused_gives_no_feedback_and_the_body_stays_as_it_was():
@@ -114,13 +127,23 @@ def test_a_task_whose_last_build_s_handoff_was_refused_is_built_again_with_the_r
         assert lane_feedback.HEADING not in next(c["prompt"] for c in first.calls if c["role"] == "build")
 
         again = ScriptedRunner({"plan": PLAN, "build": BUILD, "handoff": COMPLETE})
-        result, why, _, _ = phase_lane._build(_lane(tmp_path, lane_store, conn, claim, "ship-p1-2", again, log), "t1", "")
+        second = _lane(tmp_path, lane_store, conn, claim, "ship-p1-2", again, log)
+        result, why, _, _ = phase_lane._build(second, "t1", "")
         assert result is not None and why == ""
         for role in ("plan", "build"):  # the ticket body both read carries the refusal, each missing item verbatim
             prompt = next(c["prompt"] for c in again.calls if c["role"] == role)
             assert lane_feedback.HEADING in prompt and "(run ship-p1-1)" in prompt
             assert MISSING in prompt and OTHER in prompt
         assert "lane: t1 is built again with why its last attempt was refused" in log
+
+        # The second attempt's handoff passed, then its suite timed out (a harness fault, as in E1's p1-3): the third
+        # build is not told the first attempt's complaint again, which the second already answered.
+        timed_out = [{"name": "cd src/tools && pytest -q -n auto", "passed": False, "exit_code": None,
+                      "outcome": "timed_out"}]
+        assert second.put(phase_lane._rows_of(second, with_checks(result, timed_out, "ship-p1-2"), "t1", ""))
+        third = ScriptedRunner({"plan": PLAN, "build": BUILD, "handoff": COMPLETE})
+        phase_lane._build(_lane(tmp_path, lane_store, conn, claim, "ship-p1-3", third, log), "t1", "")
+        assert all(lane_feedback.HEADING not in c["prompt"] and MISSING not in c["prompt"] for c in third.calls)
     finally:
         conn.close()
 
@@ -132,10 +155,10 @@ def test_a_refusal_from_before_the_phase_was_reopened_is_not_this_episode_s(tmp_
         for row in steps_of_result(result, run_id="old", initiative="ship", phase="p1", task="t1",
                                    at="2026-11-20T00:00:00Z"):
             put_step(conn, row)
-        assert [r["kind"] for r in store_phases.task_refusals(conn, "ship", "p1", "t1")] == ["handoff"]
-        assert store_phases.task_refusals(conn, "ship", "p1", "t2") == []
+        assert [r["kind"] for r in store_phases.task_attempt_rows(conn, "ship", "p1", "t1")] == ["handoff"]
+        assert store_phases.task_attempt_rows(conn, "ship", "p1", "t2") == []
         put_round(conn, round_row(initiative="ship", phase="p1", round_=1, verdict=review_loop.REOPENED,
                                   reason="reopened", worker="chair", decided_at="2026-11-20T12:00:00Z"))
-        assert store_phases.task_refusals(conn, "ship", "p1", "t1") == []
+        assert store_phases.task_attempt_rows(conn, "ship", "p1", "t1") == []
     finally:
         conn.close()

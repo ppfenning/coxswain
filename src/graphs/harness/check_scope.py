@@ -1,8 +1,9 @@
 """Pure scope selector: which `cd <dir> && pytest` checks a patch can affect; every other command passes through.
 
-A check marked `TOUCHED_ONLY` (`.agent-checks`' `# touched only`, the phase model's task gate) is never run whole: it
-runs on the tests the task touched (`touched_tests`), or not at all when there are none. Every other check is scoped as
-before, and may fall back to its whole component."""
+A check marked `TOUCHED_ONLY` (`.agent-checks`' `# touched only`, the phase model's task gate) runs on the tests the
+task touched (`touched_tests`), or not at all when there are none, under `TOUCHED_TIMEOUT_S`. It runs whole only when the
+task changed test machinery the map cannot place (a conftest with no test below it, a helper no test imports, a data
+file or `pytest.ini` under tests). Every other check is scoped as before, and may fall back to its whole component."""
 
 from __future__ import annotations
 
@@ -13,6 +14,9 @@ from dataclasses import dataclass
 from typing import Any
 
 TOUCHED_ONLY = "touched_only"
+# A touched-only check's timeout unless it names its own: a change to a module most tests import still selects most of
+# a suite, and three tasks running theirs at once on one machine outran the 600 s default in E1.
+TOUCHED_TIMEOUT_S = 1800
 _WHOLE = "whole"
 _ALWAYS_WHOLE = frozenset({"conftest.py", "pytest.ini"})
 
@@ -143,15 +147,45 @@ def _full(
     )
 
 
+def _in_tests_dir(path: str) -> bool:
+    return "tests" in path.split("/")[:-1]
+
+
+def _infra_tests(path: str, component: str, tests: Collection[str], imports: Mapping[str, Any]) -> set[str] | None:
+    """The tests a changed piece of test machinery under `component` reaches, or None when it cannot be mapped (the
+    whole suite runs): a conftest reaches every test in its folder and below; a helper module in a tests folder
+    reaches the tests whose imports include it; anything else there (a data file, `pytest.ini`) is not mapped."""
+    name, folder = posixpath.basename(path), posixpath.dirname(path)
+    if name == "conftest.py":
+        below = {t for t in tests if _under(t, folder)}
+        return below or None
+    if name in _ALWAYS_WHOLE or not path.endswith(".py"):
+        return None
+    users = {t for t, reached in imports.items() if path in reached}
+    return users or None
+
+
 def touched_tests(
-    component: str, changed_paths: Collection[str], added_tests: Collection[str], test_reach: Mapping[str, Any]
-) -> list[str]:
-    """Pure. The test files under `component`, relative to it, that a task touched: each it added or changed, and each
-    whose imports reach a Python source it changed (in any component). A deleted test is not one: `test_reach` maps
-    the files the tree holds. Never the whole component; [] when the task touched no test of it."""
+    component: str, changed_paths: Collection[str], added_tests: Collection[str], import_map: Mapping[str, Any]
+) -> list[str] | None:
+    """Pure. The test files under `component`, relative to it, that a task touched: each it added or changed, each
+    whose imports reach a Python source it changed (in any component), and each a changed piece of its test machinery
+    reaches (`_infra_tests`: a conftest, a helper module beside the tests). A deleted test is not one: `test_reach`
+    maps the files the tree holds. None, the whole component, only for test machinery that cannot be mapped; [] when
+    the task touched no test of it. `import_map["test_imports"]`, every file a test imports, tests folders included,
+    maps the helpers; without it a helper is not mapped."""
+    reach: Mapping[str, Any] = import_map["test_reach"]
+    imports: Mapping[str, Any] = import_map.get("test_imports") or {}
     changed = set(changed_paths)
+    machinery = [p for p in changed if not is_test_file(p) and _under(p, component)
+                 and (posixpath.basename(p) in _ALWAYS_WHOLE or _in_tests_dir(_relative(p, component)))]
     sources = {p for p in changed if p.endswith(".py") and not is_test_file(p)}
-    reached = {t for t, srcs in test_reach.items() if t in changed or set(srcs) & sources}
+    reached = {t for t, srcs in reach.items() if t in changed or set(srcs) & sources}
+    for path in machinery:
+        found = _infra_tests(path, component, reach, imports)
+        if found is None:
+            return None
+        reached |= found
     return sorted(_relative(t, component) for t in reached | set(added_tests) if _under(t, component))
 
 
@@ -171,20 +205,22 @@ def select_checks(
         return _select(checks, changed_paths, added_tests, import_map)
     plain_checks = [c for i, c in enumerate(checks) if i not in owner]
     scoped = _select(plain_checks, changed_paths, added_tests, import_map)
-    files = {i: touched_tests(comp, changed_paths, added_tests, import_map["test_reach"]) for i, comp in owner.items()}
+    files = {i: touched_tests(comp, changed_paths, added_tests, import_map) for i, comp in owner.items()}
     plain = iter(scoped.checks)  # `_select` keeps its checks' order and their names, dropping a skipped one
     upcoming = next(plain, None)
     kept: list[dict[str, Any]] = []
     for i, c in enumerate(checks):
         if i in owner:
-            kept += [{**c, "cmd": _narrowed_cmd(str(c["cmd"]), files[i])}] if files[i] else []
+            chosen = files[i]
+            cmd = str(c["cmd"]) if chosen is None else _narrowed_cmd(str(c["cmd"]), chosen)
+            kept += [{**c, "cmd": cmd, "timeout": c.get("timeout", TOUCHED_TIMEOUT_S)}] if chosen != [] else []
         elif upcoming is not None and upcoming.get("name") == c.get("name"):
             kept.append(upcoming)
             upcoming = next(plain, None)
     return ScopedChecks(tuple(kept), {
         **scoped.selection,
-        "touched": {owner[i]: f for i, f in files.items() if f},
-        "touched_skipped": [owner[i] for i, f in files.items() if not f],
+        "touched": {owner[i]: _WHOLE if f is None else f for i, f in files.items() if f != []},
+        "touched_skipped": [owner[i] for i, f in files.items() if f == []],
     })
 
 
@@ -243,7 +279,8 @@ def render_selection(selection: Mapping[str, Any]) -> str:
 
     ran = ", ".join(label(c) for c in selection["components_run"])
     skipped = ", ".join(selection["components_skipped"])
-    touched = ", ".join(f"{c} ({len(files)} touched test file{'' if len(files) == 1 else 's'})"
+    touched = ", ".join(f"{c} (whole: test machinery it cannot map)" if files == _WHOLE
+                        else f"{c} ({len(files)} touched test file{'' if len(files) == 1 else 's'})"
                         for c, files in selection.get("touched", {}).items())
     untouched = ", ".join(selection.get("touched_skipped", []))
     return (f"scoped checks: ran {ran}" + (f"; skipped {skipped}" if skipped else "")

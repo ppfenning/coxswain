@@ -9,7 +9,7 @@ from __future__ import annotations
 import ast
 import os
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 SKIP_DIRS = frozenset({".venv", "target", "node_modules"})
@@ -20,11 +20,13 @@ _Ref = tuple[int, str, tuple[str, ...]]
 
 @dataclass(frozen=True)
 class DepMap:
-    """What the lane selector reads: component imports, per-test reach, and files it could not read."""
+    """What the lane selector reads: component imports, per-test reach, and files it could not read. `test_imports` is
+    each test's reach with the files under tests folders kept (its helpers), which `test_reach` drops."""
 
     components: Mapping[str, frozenset[str]]
     test_reach: Mapping[str, frozenset[str]]
     unresolved: frozenset[str]
+    test_imports: Mapping[str, frozenset[str]] = field(default_factory=dict[str, frozenset[str]])
 
 
 def _component(path: str, component_dirs: Sequence[str]) -> str | None:
@@ -138,6 +140,7 @@ def build_dep_map(files: Mapping[str, str], component_dirs: Sequence[str]) -> De
         components={c: frozenset(deps - {c}) for c, deps in imported.items()},
         test_reach={p: frozenset(f for f in r if not _is_test(f) and not _in_tests_dir(f)) for p, r in reach.items()},
         unresolved=unresolved,
+        test_imports=reach,
     )
 
 
