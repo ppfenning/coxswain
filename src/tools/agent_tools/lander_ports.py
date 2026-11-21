@@ -438,8 +438,8 @@ def merge_seat(profile: Mapping[str, object], ws: Path, scratch: Path,
         return None
     runner = build_runner(scripted=None, provider_profile=str(provider), role_skills=role_skill_bodies(cartridge, index),
                           workdir=ws, repo=scratch)
-    if hasattr(runner, "timeout"):  # a runner that kills its own node at a bound gets the agent's
-        runner.timeout = int(timeout_s)
+    if hasattr(runner, "timeout"):  # a runner that kills its own node gets a bound a little inside the agent's, so its
+        runner.timeout = max(1, int(timeout_s) - 15)  # own kill fires before the lander abandons the call and exits
     context = [str(c) for c in as_list(cartridge.get("context"))]
 
     def call(prompt: str, task: str) -> Mapping[str, object]:

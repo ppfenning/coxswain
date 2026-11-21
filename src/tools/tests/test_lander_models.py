@@ -18,7 +18,7 @@ from core import landing_record as lr
 from harness import landing_git as lg
 from harness import landing_ops as ops
 from harness import landing_store as ls
-from tests.test_lander import World, run, task
+from tests.test_lander import ID, World, run, task
 
 T0 = "2026-11-20T00:00:00Z"
 GOLDEN = Path(__file__).parent / "fixtures" / "lander_old_model_collision.json"
@@ -417,7 +417,7 @@ def _prime_rerere(repo: Path, ours: str, theirs: str, resolved: str) -> None:
     run(repo, "config", "rerere.enabled", "true")
     side = repo.parent / "rerere-prime"
     run(repo, "worktree", "add", "-q", "--detach", str(side), ours)
-    subprocess.run(["git", "-C", str(side), "merge", "--no-edit", theirs], capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(side), *ID, "merge", "--no-edit", theirs], capture_output=True, text=True)
     (side / "shared.txt").write_text(resolved)
     run(side, "add", "shared.txt")
     run(side, "commit", "-qm", "a resolution rerere records")

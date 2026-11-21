@@ -15,7 +15,6 @@ import pytest
 
 from agent_tools import lander, lander_hold, lander_merge, lander_ports
 from harness import landing_git as lg
-from harness import lane_merge
 from tests.test_lander import run
 from tests.test_lander_models import BOTH, P1_TEXT, P2_TEXT, Models, _collide, _pass, _two_sides
 
