@@ -8,7 +8,8 @@ A worker claims a phase (`store_phases.claim_next`) and starts this lane under t
    of the `Cox-*` trailers): git is the authority for what is built, so a lane that claims after another finds the
    tasks already rolled up and builds only the rest; a roll-up whose step row was lost is written again;
 3. joins that with the phase's last review round (`lane_progress.resume_plan`): with tasks missing it builds them; a
-   phase with every task rolled up waits for its review, which is L6's, so the lane ends there;
+   phase with every task rolled up goes to the smoke (7), then waits for its review, which is L6's, so the lane ends
+   there;
 4. starts each task once everything it needs inside the phase has rolled up (`lane_plan.next_tasks`), up to its share
    of the machine's threads (`lane_plan.threads`), each in a worktree of its own cut from the phase tip at that moment;
 5. per task: the lifecycle graph in build-only mode (plan, build, handoff; never a review, which is the phase's), then
@@ -21,6 +22,10 @@ A worker claims a phase (`store_phases.claim_next`) and starts this lane under t
    (`lane_rollup.next_move`): the claim is checked and origin fetched; a commit of this task another lane landed is
    adopted (and any roll-up row it left out written), a branch that moved has the change re-applied onto it, a push
    that failed to arrive is tried again; past three tries only that task fails.
+7. once every task has rolled up, the phase smoke (`_smoke`, `lane_smoke`): the `level` gate (the cartridge's
+   `level_checks` and `.agent-checks`' `# level: phase` section) run once in the phase worktree at the tip, never in
+   a task's, and one `smoke` step row for the round it precedes. A failed smoke writes no review and does not park the
+   phase `built`: the worker sends it back to the queue with the failure (`phase_pick.lane_verdict`).
 
 **What is fenced, and what is left.** Every step row is written only while the claim is held, by the store's clock
 (`store_phases.put_steps_fenced`: one transaction, under a share lock on the claim row), so a lane that lost its claim
@@ -61,17 +66,19 @@ from pathlib import Path
 from typing import Any, cast
 
 from graphs._contract import ContractViolation
-from harness import lane_plan, lane_progress, lane_rollup, phase_pick, repo_cache, store_phases
+from harness import lane_plan, lane_progress, lane_rollup, lane_smoke, phase_pick, repo_cache, store_phases
 from harness.artifacts import mark_missing, step_artifacts
-from harness.epic_branches import LIFECYCLE
-from harness.epic_build import build_task, drop_lane, lifecycle_invocation, settle_pool, verify_of
+from harness.check_gate import repo_gate_lock
+from harness.checks import run_checks
+from harness.epic_branches import LIFECYCLE, checks_env
+from harness.epic_build import LANE_BASE_VAR, build_task, drop_lane, lifecycle_invocation, settle_pool, verify_of
 from harness.epic_context import Ctx, git_in
 from harness.handoff import plan_context
 from harness.lane_workers import LANE_CAPACITY_VAR
 from harness.store_dialect import Connection, JsonObject
 from harness.store_steps import step_key, step_row, steps_of_result, with_checks
 from harness.store_types import StepRow
-from harness.worktree import clone_worktree, remove_worktree
+from harness.worktree import clone_worktree, link_venv, remove_worktree
 from runner.protocol import LimitStop, RunnerError
 
 __all__ = [
@@ -89,6 +96,8 @@ __all__ = [
     "missing_rollups",
     "phase_tasks",
     "run_lane",
+    "smoke_due",
+    "smoke_round",
     "task_dag",
     "terminate_groups",
     "threads_for",
@@ -141,9 +150,20 @@ def lane_url(owner_url: str, role: str, password: str, worker_url: Callable[[str
     return owner_url, "the profile's store user"
 
 
-def exit_code(lost: bool, failed: Sequence[str]) -> int:
-    """Pure. The lane's exit: lost beats failed beats built."""
-    return EXIT_LOST if lost else EXIT_FAILED if failed else EXIT_BUILT
+def exit_code(lost: bool, failed: Sequence[str], smoke_passed: bool = True) -> int:
+    """Pure. The lane's exit: lost beats failed (a task, or the phase smoke) beats built."""
+    return EXIT_LOST if lost else EXIT_FAILED if failed or not smoke_passed else EXIT_BUILT
+
+
+def smoke_due(failed: Mapping[str, str], stopping: bool) -> bool:
+    """Pure. Whether the lane runs the phase smoke: every task rolled up (none failed) and the lane is not stopping."""
+    return not failed and not stopping
+
+
+def smoke_round(nxt: lane_progress.Next) -> int:
+    """Pure. The review round the smoke comes before: the round `resume_plan` gave a lane that goes to review, and
+    round 1 for one that built the phase's tasks (it builds only before the first round)."""
+    return nxt.round if nxt.action == "review" else 1
 
 
 def missing_rollups(done: Mapping[str, str], stored: Sequence[Mapping[str, object]], phase: str) -> dict[str, str]:
@@ -461,6 +481,60 @@ def _task(lane: Lane, task: str, base: str) -> tuple[bool, str]:
         _cleanup(lane, tctx, task)
 
 
+SMOKE_SCRATCH = "@smoke"  # the smoke's scratch name: `@` keeps it apart from every task id (`epic_branches.scratch_dir`)
+
+
+def _smoke(lane: Lane, tip: str, round_: int) -> bool:
+    """Edge. The phase smoke at `tip` before review round `round_`, in the phase worktree (checked out at `tip`): the
+    level gate run once, or an earlier passing run of it on this host (the worker) at this tip reused
+    (`lane_smoke.reusable`), then the `smoke` step row. Whether it passed; a lost claim writes no row and is False.
+
+    The phase worktree is in the lane's own clone when it has one (`_own_clone`), which has no venv; the tasks build
+    in the shared checkout and their checks run under its venv. The smoke runs under that same venv: its `bin` is
+    already first on the lane's PATH (`cox route launch`), and the worktree's `.venv` is linked to it as a task
+    worktree's is (`link_venv`), for `uv run` and `.venv/bin/...` lines. The gate lock is the shared checkout's, the
+    one every lane and the lander of this repository take on this machine.
+
+    The lane runs it once every task has rolled up; L6 runs it again after each revision, with that round's number."""
+    c, ctx = lane.claim, lane.ctx
+    shared = lane.shared or ctx
+    checks = ctx.level_checks
+    cmds = [str(check.get("cmd") or "") for check in checks]
+    started = lane.now()
+    with lane.store_lock:
+        prior = lane_smoke.reusable(store_phases.smoke_rows(lane.conn, c.initiative, c.phase), tip, cmds, c.worker)
+    results: list[dict[str, object]] = []
+    if prior is not None:
+        smoke = lane_smoke.Smoke(True, "reused")
+        stored = prior.get("result_json")
+        earlier = cast("Sequence[Mapping[str, object]]", stored.get("checks") or []) if isinstance(stored, Mapping) else []
+        result = lane_smoke.result_json(tip, cmds, c.worker, smoke, earlier,
+                                        reused_from=str(prior.get("run_id") or ""))
+    else:
+        if checks:
+            lane.log(f"lane: the phase smoke runs at {tip[:12]}: {'; '.join(cmds)}")
+            env = checks_env(ctx, {LANE_BASE_VAR: lane.base_sha}, c.phase, SMOKE_SCRATCH)
+            link_venv(shared.repo, lane.phase_worktree)
+            try:
+                with repo_gate_lock(shared.repo):
+                    results = list(run_checks(lane.phase_worktree, checks, env=env,
+                                              log_dir=ctx.runs_dir / ctx.run_id / "checks" / c.phase / SMOKE_SCRATCH,
+                                              log_prefix=f"checks/{c.phase}/{SMOKE_SCRATCH}/"))
+            finally:
+                drop_lane(ctx, c.phase, SMOKE_SCRATCH)
+        smoke = lane_smoke.outcome(results)
+        result = lane_smoke.result_json(tip, cmds, c.worker, smoke, results)
+    row = step_row(run_id=ctx.run_id, step=step_key("phase", "", "smoke", round_), initiative=c.initiative,
+                   phase=c.phase, task_id="", kind="smoke", round_=round_, ok=smoke.ok, verdict=smoke.verdict,
+                   result=cast(JsonObject, json.loads(json.dumps(result, default=str))), finished_at="",
+                   started_at=started, subject_sha=tip, worker=c.worker, claim_epoch=c.epoch)
+    written = lane.put([row], {"checks": results})
+    lane.log(f"lane: the phase smoke at {tip[:12]} {smoke.verdict}"
+             + (f": {' '.join(smoke.reason.split())[:300]}" if smoke.reason else "")
+             + ("" if written else "; its row was not written, the claim is gone"))
+    return smoke.ok and written
+
+
 def _schedule(lane: Lane, dag: Mapping[str, Sequence[str]], done: Sequence[str], threads: int) -> dict[str, str]:
     """Edge. Start each task once its needs have rolled up, up to `threads` at once, until none is left to start;
     the tasks that failed, with why. A task blocked behind a failed one is never started."""
@@ -650,20 +724,23 @@ def _run(ctx: Ctx, claim: LaneClaim, conn: Connection, fence: Fence, items: Sequ
         log(f"lane: {claim.initiative}/{claim.phase} on {branch} from {base_branch}: "
             f"{len(progress.done)} of {len(order)} task(s) on the branch; next: {nxt.action}"
             + (f" {', '.join(nxt.tasks)}" if nxt.tasks else ""))
-        if nxt.action != "build":
+        if nxt.action not in ("build", "review"):
             return EXIT_BUILT
         ok, detail = lane_rollup.open_phase_worktree(ctx.repo, phase_worktree, tip)
         if not ok:
             log(f"lane: the phase worktree could not be opened at {tip[:12]}: {detail[:300]}")
             return EXIT_FAILED
-        failed = _schedule(lane, task_dag(tasks), list(progress.done), ctx.max_parallel)
+        failed = _schedule(lane, task_dag(tasks), list(progress.done), ctx.max_parallel) if nxt.action == "build" else {}
+        smoked = None
+        if smoke_due(failed, lane.stopping()):
+            smoked = _smoke(lane, lane_rollup.head(phase_worktree), smoke_round(nxt))
     finally:
         lane.close()
     for task, why in sorted(failed.items()):
         log(f"lane: {task} not rolled up: {' '.join(why.split())[:300]}")
     if fence.lost.is_set():
         log(f"lane: the claim was lost ({fence.why}); nothing more was written or pushed")
-    return exit_code(fence.lost.is_set(), sorted(failed))
+    return exit_code(fence.lost.is_set(), sorted(failed), smoked is not False)
 
 
 def beat_path(runs_dir: Path, run_id: str) -> Path:

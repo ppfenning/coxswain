@@ -21,8 +21,8 @@ from core.landing import pr_branch_name
 from graphs._spec import GraphSpec
 from harness import pool_edge
 from harness.artifacts import ArtifactsRoot
-from harness.check_gate import gate_checks
-from harness.checks import check_timeout
+from harness.check_gate import gate_checks, gate_commands
+from harness.checks import check_timeout, for_level, old_model_checks
 from harness.epic_types import PhaseRecord
 from harness.store_dialect import Connection, connect
 from harness.store_retry import retry_store_write
@@ -145,6 +145,9 @@ class Ctx:
     shared_runner: Any = None
     resume_from: str | None = None
     repo_checks: Sequence[Mapping[str, object]] = field(default_factory=list[Mapping[str, object]])
+    # Whether this run reads `.agent-checks`' level sections, each at its own gate: the phase model's lane does. An
+    # old-model run keeps one flat task list (`checks.old_model_checks`), so it runs what it ran before levels.
+    check_levels: bool = False
     store: Store | None = None
     epoch: int | None = None
     lease_name: str | None = None
@@ -226,13 +229,24 @@ class Ctx:
         listed = self.landing_areas.get("checks")
         cartridge_checks = [c for c in listed if is_mapping(c)] if is_list(listed) else []
         known = {c.get("cmd") for c in cartridge_checks}
-        extra = [c for c in self.repo_checks if c.get("cmd") not in known]
+        extra = [c for c in self._task_repo_checks() if c.get("cmd") not in known]
         return cartridge_checks + extra
+
+    def _task_repo_checks(self) -> list[dict[str, object]]:
+        """`.agent-checks`' task checks: its task section on the phase model, else the old model's one flat list."""
+        return for_level(self.repo_checks, "task") if self.check_levels else old_model_checks(self.repo_checks)
 
     @property
     def level_checks(self) -> list[Mapping[str, object]]:
-        """The cartridge's level gate; never joined with `.agent-checks`, and never read by a task build."""
-        return list(gate_checks(self.landing_areas, "level"))
+        """The level gate: the cartridge's `level_checks`, then, on the phase model, `.agent-checks`' `# level: phase`
+        section, the phase's smoke. Never read by a task build."""
+        return list(gate_checks(self.landing_areas, "level", self.repo_checks if self.check_levels else ()))
+
+    @property
+    def gate_commands(self) -> dict[str, list[str]]:
+        """The command strings of each gate (`check_gate.gate_commands`), the repository's level sections included
+        on the phase model only."""
+        return gate_commands(self.landing_areas, self.repo_checks if self.check_levels else ())
 
     @property
     def integration_checks(self) -> list[Mapping[str, object]]:

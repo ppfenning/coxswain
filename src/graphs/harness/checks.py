@@ -28,6 +28,7 @@ from harness.lane_workers import XDIST_VAR
 
 __all__ = [
     "HARNESS_FAULT_PREFIX",
+    "LEVELS",
     "all_passed",
     "check_feedback",
     "check_outcome",
@@ -40,7 +41,9 @@ __all__ = [
     "failures_outside",
     "fixable_checks",
     "flaky_note",
+    "for_level",
     "is_harness_fault",
+    "old_model_checks",
     "output_excerpt",
     "outside_surface_files",
     "quarantine_reason",
@@ -161,27 +164,71 @@ def check_outcome(returncode: int | None, error: str | None) -> str:
     return "passed" if returncode == 0 else "failed"
 
 
+LEVELS: tuple[str, ...] = ("task", "phase", "initiative")
+_LEVEL_MARK = re.compile(r"^#\s*level:\s*(\S+)\s*$")
+
+
 def repo_checks(text: str) -> list[dict[str, Any]]:
     """Parse a `.agent-checks` file: one shell command per line, pure.
 
     A line may end `# fix: <command>`: the check then carries that `fix`, which the build runs mechanically
     before the gate (a formatter, for example) instead of failing the task on a style-only difference.
 
-    Blank lines and lines starting with `#` are ignored. Each surviving line,
+    A line `# level: task`, `# level: phase` or `# level: initiative` starts a section: the commands after it, up to
+    the next such line, run at that level (`for_level`). Commands before the first marker are task checks, so a file
+    with no marker reads exactly as it always has. An entry of the phase or initiative level carries `level`; a task
+    entry carries no such key. A marker naming any other level becomes one task check that fails and names the line,
+    so a misspelt section is never silently dropped or run at the wrong level.
+
+    Blank lines and other lines starting with `#` are ignored. Each surviving line,
     stripped, becomes an entry whose `name` and `cmd` are the stripped line
-    itself, so a failure names the whole command. A duplicate `cmd` keeps only
+    itself, so a failure names the whole command. A duplicate `cmd` within one level keeps only
     its first occurrence; order is otherwise preserved. Odd input (`None`, or
     anything that is not a string) yields `[]` rather than raising — a
     malformed file is a check that did not run, not a crash.
     """
     if not isinstance(text, str):
         return []
-    lines = (stripped for stripped in (line.strip() for line in text.splitlines()) if stripped and not stripped.startswith("#"))
-    entries: dict[str, dict] = {}  # first occurrence of a cmd wins, order preserved
-    for line in lines:
+    entries: dict[tuple[str, str], dict[str, Any]] = {}  # first occurrence of a cmd per level wins, order preserved
+    level = "task"
+    for number, line in enumerate((line.strip() for line in text.splitlines()), 1):
+        if mark := _LEVEL_MARK.match(line):
+            level = mark.group(1)
+            if level not in LEVELS:
+                entries.setdefault(("task", f"#{number}"), _bad_level(number, level))
+            continue
+        if not line or line.startswith("#") or level not in LEVELS:
+            continue
         cmd, fix = _split_fix(line)
-        entries.setdefault(cmd, {"name": line, "cmd": cmd, **({"fix": fix} if fix else {})})
+        tagged = {} if level == "task" else {"level": level}
+        entries.setdefault((level, cmd), {"name": line, "cmd": cmd, **({"fix": fix} if fix else {}), **tagged})
     return list(entries.values())
+
+
+def _bad_level(number: int, level: str) -> dict[str, Any]:
+    """The failing task check an unknown `# level:` marker becomes; its own lines are not run at any level."""
+    said = f".agent-checks line {number}: unknown level {level!r}, expected one of {', '.join(LEVELS)}"
+    return {"name": said, "cmd": f"echo {shlex.quote(said)} >&2; exit 2"}
+
+
+def for_level(parsed: Sequence[Mapping[str, Any]], level: str) -> list[dict[str, Any]]:
+    """Pure. The entries of a parsed `.agent-checks` (`repo_checks`) that run at `level`, in file order: an entry with
+    no `level` key is a task check. Raises ValueError on a level outside `LEVELS`."""
+    if level not in LEVELS:
+        raise ValueError(f"unknown check level {level!r}; expected one of {LEVELS}")
+    return [dict(c) for c in parsed if str(c.get("level") or "task") == level]
+
+
+def old_model_checks(parsed: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Pure. What a parsed `.agent-checks` asks of the old model, which knows one repository gate, the task's: the
+    task lines, then the lines of the widest level the file names (initiative, else phase) whose command is not
+    already listed. The levels nest, each a wider check than the one below, so the widest holds the narrower one's
+    intent; running both would run a suite twice. A file with no marker gives its task lines, exactly as before
+    levels. Each entry is a task entry: no `level` key."""
+    widest = for_level(parsed, "initiative") or for_level(parsed, "phase")
+    task = for_level(parsed, "task")
+    known = {c["cmd"] for c in task}
+    return task + [{k: v for k, v in c.items() if k != "level"} for c in widest if c["cmd"] not in known]
 
 
 _FIX_MARK = re.compile(r"\s+#\s*fix:\s*(\S.*)$")

@@ -1,4 +1,5 @@
-"""The repo's own overlay leaves the full suite to CI: task checks run narrowed, and no local level or ticket gate repeats the suite."""
+"""The repo's own overlay leaves the full suite to CI: task checks run narrowed, the phase level runs the smoke once,
+and the overlay adds no level or ticket list of its own (the levels are `.agent-checks` sections)."""
 
 import tomllib
 from pathlib import Path
@@ -35,14 +36,29 @@ def test_no_local_gate_repeats_the_full_suite(key):
     assert key not in overlay()["landing_areas"]
 
 
+def _sections() -> dict[str, list[str]]:
+    """`.agent-checks`' command lines under each `# level:` marker; the lines before the first are `task`."""
+    level, out = "task", {"task": [], "phase": [], "initiative": []}
+    for line in (ROOT / ".agent-checks").read_text().splitlines():
+        if line.startswith("# level: "):
+            level = line.removeprefix("# level: ").strip()
+        elif line.strip() and not line.startswith("#"):
+            out[level].append(line)
+    return out
+
+
 def test_agent_checks_keeps_task_checks():
-    lines = [
-        line
-        for line in (ROOT / ".agent-checks").read_text().splitlines()
-        if line.strip() and not line.startswith("#")
-    ]
     pytest_lines = [f"cd src/{name} && pytest -q -n auto" for name in ("tools", "graphs", "cartridges")]
-    assert lines == pytest_lines + [SMOKE_LINE, CLEAN_LINE, UNWIRED_LINE, TYPES_LINE]
+    assert _sections()["task"] == pytest_lines + [CLEAN_LINE, UNWIRED_LINE, TYPES_LINE]
+
+
+def test_the_phase_level_is_the_smoke_without_the_forge_and_the_initiative_level_is_the_whole_suite():
+    # L2: the smoke runs once per phase, never in a task's own checks; the full suite is the initiative's, which
+    # `land_checks: ci` leaves to CI on the pull request.
+    sections = _sections()
+    assert sections["phase"] == [f'{SMOKE_LINE} -m "not forge"']
+    pytest_lines = [f"cd src/{name} && pytest -q -n auto" for name in ("tools", "graphs", "cartridges")]
+    assert sections["initiative"] == [*pytest_lines, SMOKE_LINE]
 
 
 def ci_workflow() -> dict:
