@@ -465,6 +465,26 @@ def _doctor_artifacts_rows(profile: dict | None) -> list[dict]:
     return doctor.artifacts_rows(url, None, failed)
 
 
+def _doctor_notify_queue_rows(profile: dict | None) -> list[dict]:
+    """Edge. The store notify queue row: on a Postgres store, one read of `pg_notification_queue_usage()` on a
+    read-only connection; `doctor.notify_queue_rows` judges. No row without a profile or on sqlite."""
+    if profile is None or not profile.get("provider_profile") or not profile.get("workspace_dir"):
+        return []
+    url = store_url.resolve_store_url(os.path.expanduser(profile["provider_profile"]), Path(profile["workspace_dir"]).expanduser() / "runs")
+    try:
+        postgres = store_dialect.is_postgres(url)
+    except ValueError:
+        return []
+    if not postgres:
+        return []
+    try:
+        with contextlib.closing(store_dialect.connect_readonly_url(_with_connect_timeout(url))) as conn:
+            row = conn.execute("SELECT pg_notification_queue_usage() AS usage").fetchone()
+        return doctor.notify_queue_rows(True, float(row["usage"]), None)
+    except Exception as exc:  # the row reports why it could not read; the doctor never raises
+        return doctor.notify_queue_rows(True, None, _store_error(exc))
+
+
 def _doctor_worker_role_rows(profile: dict | None) -> list[dict]:
     """Edge. The worker store role row: when the units' env (loaded under any variable the process lacks) names a
     worker role, connect as it through `store_scoped.open_scoped`, which never migrates, and run the probes, each in
@@ -640,6 +660,7 @@ def _setup_doctor_here(a: argparse.Namespace) -> int:
         *_doctor_home_rows(profile),
         *_doctor_store_rows(profile),
         *_doctor_artifacts_rows(profile),
+        *_doctor_notify_queue_rows(profile),
         *_doctor_worker_role_rows(profile),
         *_doctor_dash_build_rows(profile),
         *_doctor_running_install_rows(profile),

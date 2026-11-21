@@ -15,6 +15,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import time
 import uuid
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -98,6 +99,72 @@ def _chair_run(a: argparse.Namespace) -> int:
         print(f"chair run: stopping after {deps.overrun_state.consecutive} facts-stage overruns in a row; exit 3 for the supervisor")
         return 3
     return _chair_once_exit(last[0]) if a.once else 0
+
+
+def _chair_worker(a: argparse.Namespace) -> int:
+    """`cox chair worker --kind K`: one kind of the chair's work in its own process (`chair_queue`). Refuses, holding no
+    lease, while a fact source or recorder is unwired, as `chair run` does."""
+    from agent_tools import chair_kinds, chair_queue, chair_read_queues, store_cli
+
+    if a.kind not in chair_kinds.QUEUE_KINDS:
+        print(f"chair worker: no queue worker for kind {a.kind!r}; one of: {', '.join(chair_kinds.QUEUE_KINDS)}")
+        return 2
+    profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
+    if refuse_rc is not None:
+        return refuse_rc
+    provider, problem = _lake_provider(a)
+    if problem:
+        print(f"chair worker: refusing to start, no lease taken; lake: {problem}")
+        return 2
+    held: list[int] = [-1]  # edge state: the kind lease's epoch, which the recorder and the fence read
+    pid, host = os.getpid(), socket.gethostname()
+    session = _holder_label(a)
+    deps = _chair_run_deps(
+        runs_dir, profile, session, pid, host, a.dry_run, chair_report.echo_line,
+        _profile_path(a), work_state.work_state_mode(provider), worker_epoch=lambda: held[0],
+    )
+    missing = _chair_unwired_sources(deps)
+    if missing:
+        print(f"chair worker: refusing to start, no lease taken; not wired: {', '.join(missing)}")
+        return 2
+    name, holder = chair_kinds.lease_name(a.kind), f"{a.kind}-{chair.lease_holder(session, pid, host)}"
+    ttl = chair_queue.LEASE_TTL_SECONDS
+
+    def acquire() -> int | None:
+        result = store_cli.lease_acquire(runs_dir, name, holder, ttl)
+        held[0] = result.epoch if isinstance(result, store_cli.LeaseGranted) else -1
+        return result.epoch if isinstance(result, store_cli.LeaseGranted) else None
+
+    def renew(epoch: int) -> bool:
+        kept = isinstance(store_cli.lease_renew(runs_dir, name, holder, epoch, ttl), store_cli.LeaseGranted)
+        held[0] = epoch if kept else -1
+        return kept
+
+    def release(epoch: int) -> None:
+        held[0] = -1
+        store_cli.lease_release(runs_dir, name, holder, epoch)
+
+    def gather(now: datetime.datetime) -> object:
+        deps.beat()  # a worker's beat only clears the read caches of the last pass
+        return deps.gather(deps.facts_deps, now)
+
+    def perform(actions: list, current: Callable[[], int], dry_run: bool) -> list:
+        return deps.perform(actions, deps.exec_deps, current, dry_run)
+
+    wait, close = chair_queue.store_waiter(run_store.store_url_for(runs_dir), time.sleep)
+    ports = chair_queue.Ports(
+        queued=chair_read_queues.queues_keeping_last_good(_profile_path(a)),
+        acquire=acquire, renew=renew, release=release, gather=gather, perform=perform,  # type: ignore[arg-type]
+        wait=wait, clock=time.monotonic, now=lambda: datetime.datetime.now(datetime.UTC), echo=chair_report.echo_line,
+    )
+    poll = a.poll if a.poll is not None else chair_kinds.POLL_SECONDS[a.kind]
+    timing = chair_queue.Timing(poll=poll, min_gap=a.min_gap)
+    restore = (lambda: None) if a.dry_run else chair_run.sigterm_as_interrupt()
+    try:
+        return chair_queue.run(a.kind, ports, timing, a.once, a.dry_run)
+    finally:
+        close()
+        restore()
 
 
 def _chair_default_environment_file() -> str | None:

@@ -107,6 +107,7 @@ reads_board = _LazyHandler("agent_tools.cli_common:reads_board")
 _STATS_CAUSES = ("ticket", "code", "harness", "unknown")  # stats_chair.CAUSES
 _GATES_MIN_SAMPLE = 50  # stats_gates.MIN_SAMPLE
 _CHAIR_RUN_INTERVAL = 60.0  # chair_run.DEFAULT_INTERVAL
+_CHAIR_WORKER_MIN_GAP = 10.0  # chair_queue.MIN_GAP_SECONDS
 
 
 # Commands in a board group that read only the files they are pointed at, so a machine with no store can run them.
@@ -1636,6 +1637,25 @@ CHAIR_COMMANDS = [
             "Each tick beats the chair lease, gathers facts, plans, performs and reports one status line.\n"
             "It yields to `cox route chair take --steal`: actions planned under a lost lease are fenced.\n"
             "It hard-stops at the profile's weekly_hard_stop_fraction of the weekly ceiling."
+        ),
+    ),
+    commands.Command(
+        "worker", "chair", "run one kind of the chair's work (housekeeping or watch) as its own process",
+        (
+            commands.Arg(("--kind",), {"required": True, "help": "the kind of work: housekeeping or watch"}),
+            commands.Arg(("--once",), {"action": "store_true", "help": "run one pass and exit; exit 1 if it could not act (not queued, or another worker holds the kind)"}),
+            commands.Arg(("--dry-run",), {"action": "store_true", "help": "plan and report each pass without taking the kind lease or performing any action"}),
+            commands.Arg(("--poll",), {"type": float, "default": None, "help": "seconds between passes with no notification (default: 60)"}),
+            commands.Arg(("--min-gap",), {"type": float, "default": _CHAIR_WORKER_MIN_GAP, "help": "seconds a notified pass waits after the last one (default: 10)"}),
+            commands.Arg(("--label",), {"help": "the worker's holder label (default: $COX_SESSION_LABEL, else unlabeled)"}),
+            commands.Arg(("--profile",), {"help": "the routing profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
+        ),
+        "agent_tools.cli:_chair_worker", False, (),
+        defaults={"profile": None},
+        description=(
+            "Plans and performs one kind of the chair's work, the kind the profile's chair.queues moves off the tick.\n"
+            "It holds the store lease chair:<kind>, so a second copy stands by. It wakes on a store notification for a\n"
+            "table its kind reads, and polls as its fallback. While chair.queues does not list the kind it stays idle."
         ),
     ),
     commands.Command(

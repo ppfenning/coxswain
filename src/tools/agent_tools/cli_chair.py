@@ -54,6 +54,7 @@ from agent_tools.cli_lazy import (
     chair_read_phase_queue,
     chair_read_phase_records,
     chair_read_quarantined,
+    chair_read_queues,
     chair_read_record,
     chair_read_remote_unfetched,
     chair_read_run_id,
@@ -650,9 +651,13 @@ def _takes_cache(read: Callable[..., list[dict]], cache: object) -> Callable[...
 
 def _chair_run_deps(
     runs_dir: Path, profile: dict, session: str, pid: int, host: str, dry_run: bool, echo: Callable[[str], None],
-    profile_path: Path, mode: str,
+    profile_path: Path, mode: str, worker_epoch: Callable[[], int] | None = None,
 ) -> chair_run.RunDeps:
-    """Every source has an edge reader; `_ChairUnwired` stays for a source that loses one. A dry run never beats the lease."""
+    """Every source has an edge reader; `_ChairUnwired` stays for a source that loses one. A dry run never beats the lease.
+
+    `worker_epoch` builds the deps a queue worker (`cox chair worker`) gathers and performs with: its actions are fenced
+    and recorded under its own kind lease's epoch, `beat` only clears the tick's read caches and never touches the
+    chair's lease, and it starts no land sink, so it never collects the tick's land results."""
     holder = chair.lease_holder(session, pid, host)
     ws = runs_dir.parent
     home = os.path.expanduser("~")
@@ -849,6 +854,9 @@ def _chair_run_deps(
         green_since.cache.clear()
         meter_snapshot.clear()
         fallback_noticed.clear()
+        if worker_epoch is not None:  # a queue worker beats its own kind lease, in its own loop
+            warn_overloaded_hosts()
+            return ""
         lost = "" if dry_run else chair.renew_lease(runs_dir, session, pid, host)
         if _record_beat_wanted(dry_run, lost):
             _beat_record(runs_dir, session, pid, host, now())
@@ -896,6 +904,8 @@ def _chair_run_deps(
         return previous
 
     def epoch() -> int:
+        if worker_epoch is not None:
+            return worker_epoch()
         lease = chair._read_lease(runs_dir, holder)
         return lease["epoch"] if lease is not None else -1  # no lease matches no action's epoch, so all are fenced
 
@@ -1089,6 +1099,8 @@ def _chair_run_deps(
         work_store_ready=lambda: chair_read_docket.work_store_ready(docket()),
         sources_configured=sources_configured,
         profile_stale=profile_stale,
+        chair_queues=chair_read_queues.queues_keeping_last_good(profile_path),
+        queue_workers=lambda: chair_read_queues.read_queue_workers(runs_dir, now_text()),
         session=session, pid=pid, host=host, dispatch=dispatch,
         drafts=lambda: draft_list.count_drafts(
             draft_list.read_drafts(ws / "work", now_text(), chair_read_quarantined.initiative_files(ws, work_files()))
@@ -1177,7 +1189,7 @@ def _chair_run_deps(
 
     stop_lands = chair_run.no_lands_to_stop
     lands_in_flight = chair_run.no_lands_in_flight
-    if not dry_run:
+    if not dry_run and worker_epoch is None:
         # Lands run behind the tick on the land worker (tools #1287), which beats only the chair lease while one runs:
         # the tick's own `beat` also clears this tick's fact caches, which a worker thread must never touch.
         sink = chair_run.land_sink(lambda: chair.renew_lease(runs_dir, session, pid, host), released=lambda: chair.honour_release_request(runs_dir, session, pid, host))

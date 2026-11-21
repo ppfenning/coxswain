@@ -284,6 +284,8 @@ class FactsDeps:
     landing: Callable[[], Sequence[LandingFact]] | None = None  # WorkerLands.landing; absent means []
     tuning: Callable[[datetime], tuple[Sequence[Row], str | None]] = lambda now: ([], None)  # chair_read_tuning.read_tuning bound to its db, runs dir and current tiers; absent means no rows and no last tune
     profile_stale: Callable[[], bool] = lambda: False  # read after sources_configured: this tick's profile re-read failed and the last good value was kept
+    chair_queues: Callable[[], Sequence[str]] = lambda: ()  # profile chair.queues, re-read each tick (chair_kinds.queued_kinds); absent means none
+    queue_workers: Callable[[], Sequence[str]] = lambda: ()  # kinds whose worker lease is live (chair_kinds.live_kinds); absent means none
     lane_bounds: Callable[[], Mapping[str, tuple[int, int]]] = lambda: {}  # host ("" local) to the cartridge's (min, max) lanes; absent means {}
     land_watches: Callable[[], Sequence[LandWatch]] = lambda: []  # unresolved lands; absent means landed_main is []
     read_main_ci: Callable[[str, str], tuple[str, str]] = lambda repo, commit: ("pending", "")  # (repo, commit) to (state, output)

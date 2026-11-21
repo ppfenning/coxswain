@@ -426,6 +426,35 @@ To keep logs longer, set `log_retention_days` in the routing profile. Every
 machine needs it applied together, since an older `cox` refuses a key it
 does not know.
 
+### Queue workers (housekeeping and watch)
+
+Two kinds of the tick's work can run as their own process instead:
+housekeeping (stale tickets, lane tuning, stalled runs, idle lanes, lapsed
+logins, and the periodic sweep above) and the watch (reverting a landed commit
+whose main CI went red). The tick stays the default.
+
+```yaml
+chair:
+  queues: [housekeeping, watch]
+```
+
+With a kind listed, the tick no longer plans it, and
+`cox chair worker --kind housekeeping` (or `--kind watch`) does. A worker holds
+the store lease `chair:<kind>`, so a second copy of one kind stands by and
+takes over when the first stops. The tick also leaves a kind alone while a
+worker holds its lease, even on a machine whose profile does not list it. A
+worker wakes within a second of a write to a table its kind reads (the store's
+`cox_store` notifications) and otherwise plans every `--poll` seconds
+(default 60). While the profile does not list its kind, a worker stays idle.
+`cox chair worker --kind K --once --dry-run` plans one pass and performs
+nothing, so its plan can be compared with `cox chair run --once --dry-run`.
+
+`cox setup doctor` has a `store notify queue` row on a Postgres store. It
+fails when more than half of the server's notification queue is in use: a
+session listening without draining fills it, and a full queue fails every
+write to a watched table. Every machine needs a `cox` that knows
+`chair: queues:` before any profile sets it.
+
 ## Lane hosts
 
 Each tick, the loop counts the live lanes on every host. It reads them from

@@ -120,6 +120,8 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
     `result["chair"]["steward_scope"]`; any other value raises ProfileError. The key is absent when not written and the reader applies the default `all`.
     `intake_stage:` is `draft` or `ready`, quotes and case ignored, kept lower case; any other value raises ProfileError.
     `upgrade_channel:` is `stable` or `edge` under the same rule.
+    It also takes `queues:`, a flow list of kind names (`[housekeeping, watch]`), kept as a list of str in
+    `result["chair"]["queues"]`; `chair_kinds.queued_kinds` drops a name no queue worker runs. Any other value raises ProfileError.
     It also takes `session_takes:`, text with quotes stripped, `never`, `when_free` or `always` in any case, kept lower case as a str in
     `result["chair"]["session_takes"]`; any other value raises ProfileError. The key is absent when not written and the reader applies the default `when_free`.
     A bare `store:` line followed by an indented `mode:` line is kept as text in
@@ -202,6 +204,12 @@ def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
                     if taken not in _CHAIR_SESSION_TAKES:
                         raise ProfileError(f"line {lineno}: chair session_takes must be one of never, when_free, always: {raw_line}")
                     result.setdefault("chair", {})[key] = taken
+                    continue
+                if key == "queues":  # `[housekeeping, watch]`: the kinds a queue worker runs (chair_kinds.queued_kinds)
+                    if not (value.startswith("[") and value.endswith("]")):
+                        raise ProfileError(f"line {lineno}: chair queues is a list such as [housekeeping, watch]: {raw_line}")
+                    inner = value[1:-1].strip()
+                    result.setdefault("chair", {})[key] = [i.strip().strip("\"'") for i in inner.split(",") if i.strip()] if inner else []
                     continue
                 if key not in _CHAIR_KEYS:
                     raise ProfileError(f"line {lineno}: {raw_line}")

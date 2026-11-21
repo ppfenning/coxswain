@@ -1259,6 +1259,8 @@ def gather_facts(
         "work_store_ready": deps.work_store_ready(),
         "sources_configured": deps.sources_configured(),
         "profile_stale": deps.profile_stale(),
+        "chair_queues": sorted(deps.chair_queues()),
+        "queue_workers": sorted(deps.queue_workers()),
         "drafts": deps.drafts() if deps.drafts is not None else 0,
         "missing_repos": new_missing_repos(
             deps.missing_repos() if deps.missing_repos is not None else [],
