@@ -1634,13 +1634,17 @@ def tell_unreadable_rows(ports: Ports, unreadable: Sequence[lr.Unreadable]) -> l
 
 
 def plan_pass(ports: Ports) -> list[Lane]:
-    """The shared start of a pass, which writes no initiative's record: the epics' pull requests, then the pass's
-    work split into one lane per repository. Everything per initiative (the sweep, the alarm, reconciliation, the
-    items) happens in the lane that owns it, so a record has one writer in a pass while lanes run side by side.
+    """The shared start of a pass: the epics' pull requests, the records of phase-model initiatives the chair has
+    queued and that have none (`lander_adopt.record_phase_initiatives`, before any lane runs, so each is made once),
+    then the pass's work split into one lane per repository. Everything else per initiative (the sweep, the alarm,
+    reconciliation, the items) happens in the lane that owns it, so a record has one writer in a pass while lanes run
+    side by side; a record made here is swept, and its built phases merged, by its lane in this same pass.
 
     A landing-record row that does not read stops only its own initiative: its items are left out of the pass, the
     chair is told once, and every other initiative's pass goes on."""
-    for line in land_epics(ports):
+    from agent_tools import lander_adopt  # adopt is built on this module, so it is imported here, at the call
+
+    for line in [*land_epics(ports), *lander_adopt.record_phase_initiatives(ports)]:
         ports.log(line)
     table = ls.list_records(ports.conn)
     for line in tell_unreadable_rows(ports, table.unreadable):
