@@ -28,6 +28,8 @@ __all__ = [
     "HEARTBEAT_CALL_S",
     "HEARTBEAT_S",
     "KILL_WAIT_S",
+    "LANE_MARGIN_S",
+    "LANE_STALL_S",
     "LEASE_S",
     "MAX_ATTEMPTS",
     "STOP_AFTER_S",
@@ -39,6 +41,8 @@ __all__ = [
     "claimable",
     "exhausted",
     "fenced",
+    "lane_stalled",
+    "lane_verdict",
     "lease",
     "meets",
     "next_step",
@@ -57,6 +61,12 @@ KILL_WAIT_S = 2  # KILL to gone
 BEAT_LOOP_S = 1  # how often the heartbeat loop looks at its claims
 CANDIDATES = 16  # rows one page of a claim reads, in (band, seq) order; it pages on past rows this worker cannot meet
 MAX_ATTEMPTS = 3  # claims of one phase before a failure is permanent
+# A lane stops itself once its claim's lease has less than this left by the store's clock: its worker has gone the
+# 45 s it may go without a heartbeat, so the lane is gone before the lease can lapse and another lane be started.
+LANE_MARGIN_S = LEASE_S - STOP_AFTER_S
+# A lane rewrites its progress mark every 2 s while it holds its claim; one whose mark has not moved for this long,
+# under a worker that is itself alive, is hung (stopped, deadlocked) and is stopped so its phase can be claimed again.
+LANE_STALL_S = 90
 _BACKOFF_BASE_S = 60
 _BACKOFF_CAP_S = 900
 
@@ -175,7 +185,7 @@ def fenced(row: Row | None, worker: str, epoch: int, now: str) -> bool:
     )
 
 
-Kind = Literal["ack", "retry", "quarantine"]
+Kind = Literal["ack", "retry", "quarantine", "built"]
 
 _SETTLED_OK = frozenset({"approved", "done", "dropped"})
 _OPEN = frozenset({"ready", "in_progress", "todo"})
@@ -219,3 +229,34 @@ def verdict(task_states: Sequence[str], attempts: int, launch_error: str = "", m
     if attempts >= max_attempts:
         return Verdict("quarantine", "failed", f"{attempts} attempt(s), the last: {why}")
     return Verdict("retry", "", why, backoff_s(attempts))
+
+
+def lane_verdict(tasks: Collection[str], rolled_up: Collection[str], last_round: tuple[int, str] | None, attempts: int,
+                 max_attempts: int = MAX_ATTEMPTS) -> Verdict:
+    """The ack or nack for a phase whose lane ended, from what the store holds for it: the phase's tasks (dropped ones
+    left out), the tasks whose roll-up put a commit on the phase branch, and its last review round.
+
+    The review round decides: approve is the ack, quarantine the permanent nack. With no round, a phase whose every
+    task rolled up is `built`: it is parked, not claimable, until a review round is written for it (the phase review
+    loop is L6) and the chair queues it again. A phase with tasks left is retryable with backoff, and after
+    `max_attempts` claims it has failed."""
+    if last_round is not None and last_round[1] == "approve":
+        return Verdict("ack", "approved", f"the phase review approved it in round {last_round[0]}")
+    if last_round is not None and last_round[1] == "quarantine":
+        return Verdict("quarantine", "quarantined", f"the phase review quarantined it in round {last_round[0]}")
+    missing = sorted(set(tasks) - set(rolled_up))
+    if tasks and not missing:
+        return Verdict("built", "", "every task rolled up; waiting for the phase review")
+    why = f"tasks not rolled up: {', '.join(missing)}" if tasks else "the phase has no tasks in the store"
+    if attempts >= max_attempts:
+        return Verdict("quarantine", "failed", f"{attempts} attempt(s), the last: {why}")
+    return Verdict("retry", "", why, backoff_s(attempts))
+
+
+def lane_stalled(seen: tuple[str, float] | None, mark: str, now: float, limit_s: float = LANE_STALL_S) -> tuple[tuple[str, float], bool]:
+    """Pure. Follow a lane's progress mark: `seen` is the mark last read and when it last changed (None before the
+    first read), `mark` what it reads now ("" while there is none), `now` the worker's own monotonic clock. The new
+    `seen`, and whether the mark has stood still for `limit_s`: a lane that never wrote one counts from the first read."""
+    if seen is None or seen[0] != mark:
+        return (mark, now), False
+    return seen, now - seen[1] >= limit_s

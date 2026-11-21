@@ -39,10 +39,10 @@ def test_repo_tokens_name_only_the_queued_repos_checked_out_here():
     assert worker.repo_tokens(["~/src/app", "~/src/lib/", "", "~/src/gone"], {"~/src/app", "~/src/lib/"}) == ["repo:app", "repo:lib"]
 
 
-def test_the_launch_is_today_s_per_phase_launch_under_the_loop_s_label():
-    assert worker.launch_argv("ship", "p1", "ship.p1-1", "chair-x") == [
+def test_the_launch_is_the_phase_lane_of_the_claim_under_the_loop_s_label():
+    assert worker.launch_argv("ship", "p1", "ship.p1-1", "chair-x", "w1", 4) == [
         "cox", "route", "launch", "epic", "--local", "--initiative", "work/ship", "--phase", "p1", "--run-id", "ship.p1-1",
-        "--label", "chair-x", "--no-claim",
+        "--label", "chair-x", "--no-claim", "--lane-worker", "w1", "--claim-epoch", "4",
     ]
     assert worker.launch_label({"session": "chair-x"}, "worker:w1") == "chair-x"
     assert worker.launch_label(None, "worker:w1") == "worker:w1"
@@ -201,3 +201,21 @@ def test_a_slow_stop_of_one_lane_never_holds_up_the_other_lane_s_heartbeat():
             break
         threading.Event().wait(0.05)
     assert {h.claim.phase: h.stopped for h in leases.snapshot()} == {"p1": True, "p2": False}
+
+
+def test_a_lanes_facts_are_the_phases_open_tasks_its_roll_ups_in_any_run_and_its_last_round():
+    rows = [{"kind": "task", "task_id": "t2", "phase": "p1", "state": "ready"},
+            {"kind": "task", "task_id": "t1", "phase": "p1", "state": "approved"},
+            {"kind": "task", "task_id": "t0", "phase": "p1", "state": "dropped"},
+            {"kind": "task", "task_id": "t9", "phase": "p2", "state": "ready"},
+            {"kind": "initiative", "task_id": "ship", "phase": "", "state": "ready"}]
+    rollups = [{"phase": "p1", "task_id": "t1"}, {"phase": "p1", "task_id": "t1"}, {"phase": "p2", "task_id": "t9"}]
+    facts = worker.lane_facts(rows, rollups, "p1", (1, "revise"))
+    assert facts == worker.LaneFacts(("t1", "t2"), ("t1",), (1, "revise"))
+
+
+def test_every_other_live_lane_of_the_phase_is_an_older_claims_and_is_stopped_before_the_new_one_starts():
+    live = [{"run": "ship.p1-1", "pid": 11, "state": "running"}, {"run": "ship.p1-2", "pid": 12, "state": "fenced"},
+            {"run": "ship.p1-3", "pid": 13, "state": "running"}]
+    assert worker.stale_lanes(live, "ship.p1-3") == [worker.Running("ship.p1-1", 11), worker.Running("ship.p1-2", 12)]
+    assert worker.stale_lanes([], "ship.p1-3") == []

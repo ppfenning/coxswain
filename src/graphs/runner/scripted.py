@@ -22,7 +22,7 @@ __all__ = ["ScriptedRunner"]
 
 
 class ScriptedRunner:
-    """Replays `{role: response}` (or `{role: [response, ...]}`) by role.
+    """Replays `{role: response}` (or `{role: [response, ...]}`) by role, and `{"<role>@<task>": ...}` for one task.
 
     Records every call on `.calls` so a test can assert on what the graph asked
     for — the tier it requested, the context it passed — and not merely on what
@@ -59,7 +59,9 @@ class ScriptedRunner:
         record["wait_if_paused_given"] = wait_if_paused is not None
         record["wait_if_paused_calls"] = 1 if wait_if_paused is not None else 0
         self.calls.append({**record, "hints": hints} if hints is not None else record)
-        queued = self._responses.get(role)
+        # `<role>@<task>` answers that role for that task only, ahead of the role's own answers, so tasks built in
+        # parallel each get their own answer whichever reaches the runner first.
+        queued = (self._responses.get(f"{role}@{task}") if task else None) or self._responses.get(role)
         if not queued:
             raise RunnerError(
                 f"no scripted response for role '{role}'"

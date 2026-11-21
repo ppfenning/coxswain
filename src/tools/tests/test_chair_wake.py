@@ -78,3 +78,16 @@ def test_run_sleeps_when_wait_is_none_and_waits_when_it_is_set():
 
     run(False, 60, False, replace(with_wait.deps(), wait=wait))
     assert waited == [60] and with_wait.sleeps == []
+
+
+def test_a_store_write_the_chair_watches_ends_the_wait_at_once_and_its_nap_replaces_the_sleep():
+    clock, written = Clock(), []
+
+    def nap(seconds):
+        clock.sleep(seconds)
+        return clock.t >= 10 and bool(written)
+
+    wait = wait_for_run_exit(lambda: [], clock.sleep, clock.now, 5, nap)
+    assert wait(20) is False and clock.steps == [5, 5, 5, 5]  # no write: the interval passes in naps
+    written.append("review_rounds")
+    assert wait(60) is True and clock.steps[-1] == 5  # the next nap saw it

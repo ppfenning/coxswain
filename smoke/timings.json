@@ -31,6 +31,8 @@
 "smoke/test_lane_model_stamp.py": 6.6,
 "smoke/test_local_image.py": 0.3,
 "smoke/test_operator_commands.py": 6.1,
+"smoke/test_phase_check_no_forge.py": 0.0,
+"smoke/test_phase_lane.py": 212.6,
 "smoke/test_release_deploy.py": 0.4,
 "smoke/test_session_databases.py": 12.9,
 "smoke/test_store_additive_newer.py": 3.2,
@@ -38,6 +40,6 @@
 "smoke/test_store_notify.py": 9.0,
 "smoke/test_unit_env_doctor.py": 3.1,
 "smoke/test_usage_window_ceiling.py": 0.9,
-"smoke/test_worker_claims.py": 185.8,
+"smoke/test_worker_claims.py": 187.4,
 "smoke/test_worker_role.py": 29.6
 }
