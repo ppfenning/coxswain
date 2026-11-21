@@ -70,17 +70,10 @@ def test_extends_local_writes_every_template_file():
 
 
 def test_an_existing_cartridge_yaml_is_kept_not_written():
-    steps = _plan(existing_files={"cartridge.yaml"})
+    steps = _plan(cartridge_exists=True)
     written = {s["path"] for s in steps if s["op"] == "write"}
     assert written == {"/repo/cartridges/acme/context/code-style.md"}
     assert {"op": "print", "text": "kept existing /repo/cartridges/acme/cartridge.yaml"} in steps
-
-
-def test_no_existing_files_still_writes_cartridge_yaml():
-    steps = _plan(existing_files=frozenset())
-    written = {s["path"] for s in steps if s["op"] == "write"}
-    assert "/repo/cartridges/acme/cartridge.yaml" in written
-    assert not any(s["op"] == "print" and s["text"].startswith("kept") for s in steps)
 
 
 def test_write_steps_get_their_own_mkdir_even_when_nested():

@@ -986,7 +986,6 @@ def _init_main(argv: Sequence[str]) -> int:
     args = parser.parse_args(argv)
 
     team_dir = Path(args.cartridges_dir) / args.team
-    existing_files = frozenset(name for name in ("cartridge.yaml",) if (team_dir / name).is_file())
     try:
         steps = init_plan(
             args.team,
@@ -994,7 +993,7 @@ def _init_main(argv: Sequence[str]) -> int:
             extends=args.extends,
             package_cartridges_dir=_DEFAULT_CARTRIDGES_DIR,
             template=_example_team_template(),
-            existing_files=existing_files,
+            cartridge_exists=(team_dir / "cartridge.yaml").is_file(),
         )
         if args.dry_run:
             print(render_plan(steps))

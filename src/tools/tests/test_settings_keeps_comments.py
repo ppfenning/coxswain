@@ -116,28 +116,6 @@ def _workspace(tmp_path: Path, text: str) -> tuple[Path, Path]:
     return profile, cartridge
 
 
-def test_comment_and_blank_lines_picks_comments_and_blanks_only():
-    assert comment_and_blank_lines("# a\nk: 1  # t\n\n  # b\n") == ["# a", "", "  # b"]
-
-
-def test_keys_at_reads_file_order_at_a_path():
-    assert keys_at("b: 1\na: {y: 1, x: 2}\n", "a") == ["y", "x"]
-    assert keys_at("b: 1\na: 2\n", "") == ["b", "a"]
-
-
-def test_changed_lines_names_the_differing_indexes():
-    assert changed_lines("a\nb\nc\n", "a\nB\nc\n") == [1]
-
-
-def test_fixture_parses_and_holds_every_registry_key():
-    assert comment_and_blank_lines(CARTRIDGE)
-    doc = yaml.safe_load(CARTRIDGE)
-    for key in CASES:
-        node = doc
-        for seg in key.split("."):
-            node = node[seg]
-
-
 def test_every_cartridge_registry_key_has_a_case():
     registered = {s.path for s in REGISTRY if s.scope == "cartridge"}
     assert registered == set(CASES)

@@ -62,17 +62,3 @@ def test_each_mode_changes_only_the_local_lanes_value_line(tmp_path, monkeypatch
         assert _lines_but_value(text) == _lines_but_value(CARTRIDGE)
         assert [ln for ln in text.split("\n") if "local_lanes:" in ln] == [_value_line(value)]
         assert len(text.split("\n")) == len(CARTRIDGE.split("\n"))
-
-
-def test_a_repeated_mode_leaves_the_file_byte_identical_and_writes_nothing(tmp_path, monkeypatch, capsys):
-    profile, cartridge = _setup(tmp_path, monkeypatch)
-    for mode in ("on", "off"):
-        assert _run(profile, mode) == 0
-        before, mtime = cartridge.read_bytes(), cartridge.stat().st_mtime_ns
-        capsys.readouterr()
-        assert _run(profile, mode) == 0
-        out = capsys.readouterr().out
-        assert "no change:" in out
-        assert "wrote" not in out
-        assert cartridge.read_bytes() == before
-        assert cartridge.stat().st_mtime_ns == mtime

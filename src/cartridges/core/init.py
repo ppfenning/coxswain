@@ -9,7 +9,7 @@ imports only the standard library and never opens a file itself.
 from __future__ import annotations
 
 import re
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]*$")
@@ -61,11 +61,11 @@ def init_plan(
     extends: str = "local",
     package_cartridges_dir: str | Path,
     template: Mapping[str, str],
-    existing_files: Collection[str] = frozenset(),
+    cartridge_exists: bool = False,
 ) -> list[dict[str, str]]:
     """Return the ordered steps that would build `<cartridges_dir>/<team>`.
 
-    `existing_files` names the team files (relative to the team dir) already on disk."""
+    `cartridge_exists` says the team's cartridge.yaml is already on disk, so it is kept."""
     root = Path(cartridges_dir)
     package_root = Path(package_cartridges_dir)
     _validate(team, extends)
@@ -100,7 +100,7 @@ def init_plan(
     cartridge_path = str(team_dir / "cartridge.yaml")
     cartridge_step: dict[str, str] = (
         {"op": "print", "text": f"kept existing {cartridge_path}"}
-        if "cartridge.yaml" in existing_files
+        if cartridge_exists
         else {"op": "write", "path": cartridge_path, "text": _minimal_cartridge_yaml(team, extends)}
     )
     context_steps: list[dict[str, str]] = [
