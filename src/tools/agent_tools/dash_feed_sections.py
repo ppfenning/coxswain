@@ -16,7 +16,6 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from agent_tools import (
-    analytics_costs,
     budget,
     chair_activity,
     chair_activity_read,
@@ -249,6 +248,10 @@ _BUDGET_LOOKBACK = timedelta(days=32)
 def _window_costs(runs_dir: Path, at: datetime) -> Callable[[str, str], float | None]:
     """Edge. The budget block's `cost_between`: one read of the calls since `_BUDGET_LOOKBACK` before `at`, from the
     lake and the store's unsynced tail (`analytics_costs`), not one store scan per window."""
+    # Imported here, not at the top: the chair imports this module (cli_chair -> chair_read_idle_open -> dash_feed),
+    # and its path must not load the lake reader.
+    from agent_tools import analytics_costs
+
     return analytics_costs.cost_reader(Path(runs_dir), at - _BUDGET_LOOKBACK)
 
 

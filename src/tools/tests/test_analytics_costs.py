@@ -4,13 +4,23 @@ The pure core is tested on values. The edge is tested against a real migrated sq
 lake synced by `lake_sync`, the default lake `cox lake sync` makes in the runs dir: nothing is mocked."""
 
 import sqlite3
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from agent_tools import analytics_costs, run_store
-from agent_tools.analytics_costs import catalog_problem, lake_mark, parse_rows, sum_between, text_floor
+from agent_tools.analytics_costs import (
+    catalog_problem,
+    chunks,
+    lake_mark,
+    parse_rows,
+    sum_between,
+    tail_run_ids,
+    text_floor,
+)
 
 T0 = datetime(2026, 11, 10, 12, 0, tzinfo=UTC)
 
@@ -120,34 +130,89 @@ def _windows(runs_dir: Path) -> list[float | None]:
     return [read(since, until) for since, until in WINDOWS]
 
 
-def test_without_a_lake_one_store_read_answers_every_window_as_cost_since_does_and_says_why(runs):
-    rows = analytics_costs.window_rows(runs, T0 - timedelta(days=32))
+def _db(runs_dir: Path) -> sqlite3.Connection:
+    return sqlite3.connect(run_store.sqlite_path(run_store.store_url_for(runs_dir)))
 
-    assert rows is not None and rows.source == "store" and rows.note.startswith("no lake catalog at ")
+
+@pytest.fixture
+def notes(monkeypatch, caplog):
+    """The fallback warnings this test caused, in order; the last-reason state starts empty."""
+    monkeypatch.setattr(analytics_costs, "_last_reason", None)
+    caplog.set_level("WARNING", logger=analytics_costs.__name__)
+    return lambda: [r.getMessage() for r in caplog.records if r.name == analytics_costs.__name__]
+
+
+def test_without_a_lake_one_store_read_answers_every_window_as_cost_since_does_and_says_why(runs, notes):
+    assert _windows(runs) == _store_truth(runs) == [1.5, 1.5, 0.5]
     assert not (runs / "lake-catalog.db").exists()  # reading never creates the lake
-    assert _windows(runs) == _store_truth(runs) == [1.5, 1.5, 0.5]
+    [note] = notes()
+    assert note.startswith("analytics: no lake catalog at ") and note.endswith("spend windows read the live store")
 
 
-def test_a_synced_lake_answers_for_ended_runs_and_the_store_only_for_runs_it_does_not_hold(runs):
+def test_the_lake_answers_for_the_runs_it_holds_and_the_store_for_every_other_run_id(runs, notes):
     # One test, two syncs: the lake's tables take seconds to create, and every step below needs one.
-    _sync_lake(runs)
-    rows = analytics_costs.window_rows(runs, T0 - timedelta(days=32))
-    assert rows is not None and (rows.source, rows.note) == ("lake", None)
+    _sync_lake(runs)  # the lake's mark is now r-ended's ended_at, 09:00
     assert _windows(runs) == _store_truth(runs) == [1.5, 1.5, 0.5]
+    assert notes() == []
 
-    # A run that ends after the sync is read from the store until the next sync, which appends it once.
-    store = run_store.sqlite_path(run_store.store_url_for(runs))
-    with sqlite3.connect(store) as db:
-        db.execute("UPDATE runs SET ended_at = '2026-11-10T11:30:00+00:00' WHERE run_id = 'r-live'")
-    assert _windows(runs) == _store_truth(runs) == [1.5, 1.5, 0.5]
+    # A run stamped ended at or before the mark after the sync (a backfilled ended_at, a slow clock): the sync never
+    # takes it, so the store answers for it, by run id, now and after every later sync.
+    with _db(runs) as db:
+        db.execute("INSERT INTO runs (run_id, launched_at, ended_at) VALUES ('r-late', '2026-11-10T07:00:00+00:00', "
+                   "'2026-11-10T08:30:00+00:00')")
+        db.execute("INSERT INTO node_calls (call_id, run_id, seq, ts, cost_usd, ok) VALUES "
+                   "('c-late', 'r-late', 1, '2026-11-10T08:10:00+00:00', 3.0, 1)")
+        # A call whose run has no runs row, and one with no run id: cost_since counts both, so the windows do too.
+        db.execute("INSERT INTO node_calls (call_id, run_id, seq, ts, cost_usd, ok) VALUES "
+                   "('c-ghost', 'r-ghost', 1, '2026-11-10T08:20:00+00:00', 0.125, 1), "
+                   "('c-none', NULL, 1, '2026-10-20T09:00:00+00:00', 0.0625, 1)")
+    truth = [4.625, 4.625, 0.5625]
+    assert _windows(runs) == _store_truth(runs) == truth
     _sync_lake(runs)
-    assert _windows(runs) == [1.5, 1.5, 0.5]
+    assert _windows(runs) == _store_truth(runs) == truth
 
-    # Every call now comes from the lake: gone from the store, the windows still count them, and cost_since does not.
-    with sqlite3.connect(store) as db:
-        db.execute("DELETE FROM node_calls")
-    assert _windows(runs) == [1.5, 1.5, 0.5]
-    assert _store_truth(runs) == [0.0, 0.0, 0.0]
+    # The runs the lake holds come from the lake alone: deleted from the store, the windows still count them.
+    with _db(runs) as db:
+        db.execute("DELETE FROM node_calls WHERE run_id = 'r-ended'")
+    assert _windows(runs) == truth
+    assert _store_truth(runs) == [3.375, 3.375, 0.0625]
+    assert notes() == []
+
+
+def test_a_lake_never_synced_falls_back_to_the_store_and_says_so(runs, notes):
+    pytest.importorskip("pyiceberg")
+    from agent_tools import lake_config, lake_tables
+
+    lake_tables.ensure_tables(lake_config.load_catalog(lake_config.resolve_lake({}, runs)))
+    assert _windows(runs) == _store_truth(runs)
+    assert [n.split(";")[0] for n in notes()] == ["analytics: the lake's node_calls has never been synced (cox lake sync)"]
+
+
+def test_an_unreadable_lake_falls_back_and_a_changed_reason_warns_again_but_a_repeat_does_not(runs, notes):
+    assert _windows(runs) == _store_truth(runs)
+    (runs / "lake-catalog.db").write_bytes(b"not a sqlite database" * 100)
+    assert _windows(runs) == _store_truth(runs)
+    assert _windows(runs) == _store_truth(runs)
+    first, second = notes()
+    assert first.startswith("analytics: no lake catalog at ")
+    assert second.startswith("analytics: the lake could not be read: ")
+
+
+def test_tail_run_ids_are_the_stores_ids_the_lake_does_not_hold():
+    assert tail_run_ids(["r3", "r1", "r2", "r1"], {"r2", "r9"}) == ("r1", "r3")
+    assert tail_run_ids([], {"r1"}) == ()
+
+
+def test_chunks_split_an_in_list_without_losing_or_repeating_an_id():
+    assert [list(c) for c in chunks(("a", "b", "c", "d", "e"), 2)] == [["a", "b"], ["c", "d"], ["e"]]
+    assert list(chunks((), 2)) == []
+
+
+def test_the_chair_path_does_not_load_the_lake_reader():
+    probe = ("import sys, agent_tools.chair_read_idle_open; "
+             "print(sorted(m for m in ('agent_tools.analytics_costs', 'pyiceberg') if m in sys.modules))")
+    done = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=120)
+    assert (done.returncode, done.stdout.strip()) == (0, "[]"), done.stderr
 
 
 def test_a_window_before_the_rows_read_is_refused_rather_than_undercounted(runs):
