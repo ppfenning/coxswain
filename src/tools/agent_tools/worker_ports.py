@@ -10,6 +10,7 @@ connection of its own, so no call on the main loop can hold up a heartbeat.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import platform
 import shutil
@@ -114,15 +115,23 @@ class Store:
                 self._conn = None
 
 
-def _take_lost(path: Path) -> str:
-    """Edge. The lane's lost mark (`phase_lane.lost_path`), removed once read: why the lane gave its claim up, "" when
-    it did not."""
+def _take_lost(path: Path) -> tuple[str, bool]:
+    """Edge. The lane's lost mark (`phase_lane.write_lost`), removed once read: why the lane gave its claim up ("" when
+    it did not) and whether a check of its read the lease first. A mark that does not say (one in an older lane's
+    plain text) is taken as unchecked: the attempt counts, the safe side."""
     try:
-        why = path.read_text(encoding="utf-8").strip()
+        text = path.read_text(encoding="utf-8").strip()
     except OSError:
-        return ""
+        return "", False
     path.unlink(missing_ok=True)
-    return why or "the lane gave its claim up"
+    try:
+        mark = json.loads(text)
+    except ValueError:
+        mark = None
+    if not isinstance(mark, dict):
+        return text or phase_pick.GAVE_UP, False
+    why = mark.get("why")
+    return (why if isinstance(why, str) and why else phase_pick.GAVE_UP), mark.get("checked") is True
 
 
 def _signal_group(pid: int, sig: int) -> None:
@@ -222,7 +231,8 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
         from harness.phase_lane import lost_path
 
         facts = _facts(claim, run_id)  # first: a pass whose store reads fail leaves the lost mark for the next one
-        return replace(facts, lost=_take_lost(lost_path(runs_dir, run_id)))
+        why, checked = _take_lost(lost_path(runs_dir, run_id))
+        return replace(facts, lost=why, checked=checked)
 
     def _facts(claim: Claim, run_id: str) -> worker.LaneFacts:
         from harness.store_queue import read

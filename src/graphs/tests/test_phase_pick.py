@@ -221,3 +221,37 @@ def test_a_run_that_never_started_is_retried_even_when_its_tasks_look_done():
     found = phase_pick.verdict(["approved"], 1, launch_error="the launch exited 2: no initiative.md")
     assert found == Verdict("retry", "", "the launch exited 2: no initiative.md", 60)
     assert phase_pick.verdict([], 1).reason == "the phase has no tasks in the store"
+
+
+def test_the_lost_lane_refund_count_rides_the_row_s_reason_and_any_retry_keeps_it():
+    assert phase_pick.refunds_of("tasks left ready") == (0, False)
+    one = phase_pick.with_refunds("the lane gave its claim up (x); tasks left ready", 1)
+    assert one.endswith(" [lost lanes refunded: 1]") and phase_pick.refunds_of(one) == (1, False)
+    told = phase_pick.with_refunds(one, 3, told=True)
+    assert phase_pick.refunds_of(told) == (3, True) and told.count("[lost lanes refunded") == 1
+    assert phase_pick.with_refunds(one, 0) == "the lane gave its claim up (x); tasks left ready"
+    # A refused launch's retry keeps the episode's count; a reason with its own tag keeps that one.
+    assert phase_pick.refunds_of(phase_pick.carry_refunds(told, "the launch was refused: budget")) == (3, True)
+    assert phase_pick.carry_refunds(told, one) == one
+    assert phase_pick.carry_refunds("", "tasks left ready") == "tasks left ready"
+
+
+def test_a_first_check_loss_counts_a_checked_one_is_refunded_until_the_cap():
+    assert not phase_pick.lost_refund("", checked=False)  # never reached the store: a fault every retry meets
+    assert phase_pick.lost_refund("", checked=True)
+    under = phase_pick.with_refunds(phase_pick.GAVE_UP + " (x); y", phase_pick.LOST_REFUNDS - 1)
+    assert phase_pick.lost_refund(under, checked=True)
+    spent = phase_pick.with_refunds(phase_pick.GAVE_UP + " (x); y", phase_pick.LOST_REFUNDS)
+    assert not phase_pick.lost_refund(spent, checked=True)
+
+
+def test_the_gave_up_alarm_is_a_ready_row_whose_refunds_are_spent_and_not_yet_told():
+    spent = phase_pick.with_refunds(phase_pick.GAVE_UP + " (x); y", phase_pick.LOST_REFUNDS)
+    assert phase_pick.gave_up_alarm({"state": "ready", "reason": spent})
+    assert not phase_pick.gave_up_alarm({"state": "claimed", "reason": spent})
+    assert not phase_pick.gave_up_alarm({"state": "ready", "reason": phase_pick.with_refunds(spent, 3, told=True)})
+    under = phase_pick.with_refunds(phase_pick.GAVE_UP + " (x); y", phase_pick.LOST_REFUNDS - 1)
+    assert not phase_pick.gave_up_alarm({"state": "ready", "reason": under})
+    # A refused launch carrying a spent count is not the lane's loss: the alarm waits for one.
+    carried = phase_pick.carry_refunds(spent, "the launch was refused: budget")
+    assert not phase_pick.gave_up_alarm({"state": "ready", "reason": carried})

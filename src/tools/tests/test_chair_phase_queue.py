@@ -393,3 +393,45 @@ def test_no_notice_for_a_live_claim_when_the_chair_s_clock_runs_ahead(tmp_path, 
         assert store_phases.held(conn, "ship", "p1", "a", claim.epoch)
     finally:
         conn.close()
+
+
+def _spent(reason_told=False, state="ready"):
+    from harness import phase_pick
+
+    why = phase_pick.with_refunds(f"{phase_pick.GAVE_UP} (silent); tasks left ready", phase_pick.LOST_REFUNDS,
+                                  told=reason_told)
+    return {**_stored("p1", state=state), "reason": why}
+
+
+def test_a_phase_whose_lost_lanes_spent_their_refunds_is_planned_as_its_told_mark_with_its_notice():
+    from harness import phase_pick
+
+    row = _spent()
+    (action,) = chair_phase_queue.gave_up_alarms([row])
+    told = phase_pick.with_refunds(row["reason"], phase_pick.LOST_REFUNDS, told=True)
+    assert action["changes"] == [{"op": "tell_gave_up", "initiative": "ship", "phase": "p1", "seen": row["reason"],
+                                  "reason": told}]
+    assert action["notice"] == {"kind": "needs_chair", "initiative": "ship", "phase": "p1",
+                                "cause": chair_phase_queue.GAVE_UP_CAUSE, "reason": row["reason"],
+                                "command": ["cox", "worker", "status"]}
+    assert chair_phase_queue.gave_up_alarms([_spent(reason_told=True), _spent(state="claimed"), _stored("p2")]) == []
+    queued = plan_tick({**_tick_facts(initiatives=[]), "phase_queue": _queue([row])}, NOW)
+    assert [a["changes"][0]["op"] for a in queued if a.get("notice")] == ["tell_gave_up"]
+    assert not [a for a in queued if a.get("cause") == chair_phase_queue.GAVE_UP_CAUSE]  # told only once marked
+
+
+def test_the_gave_up_notice_is_told_once(tmp_path, store_at):
+    from harness import phase_pick, store_phases
+
+    conn, claim = _claimed_store(tmp_path, store_at)
+    try:
+        why = phase_pick.with_refunds(f"{phase_pick.GAVE_UP} (silent); tasks left ready", phase_pick.LOST_REFUNDS)
+        assert store_phases.release(conn, claim, "a", why, 60, refund=True)
+        (action,) = chair_phase_queue.gave_up_alarms([store_phases.get_row(conn, "ship", "p1")])
+        done = _execute(action, tmp_path)
+        assert done["status"] == "done" and done["needs_chair"] == action["notice"]
+        again = _execute(action, tmp_path)  # a repeat of the same mark changes nothing, and tells nothing
+        assert again["status"] == "done" and "needs_chair" not in again
+        assert chair_phase_queue.gave_up_alarms([store_phases.get_row(conn, "ship", "p1")]) == []  # next tick: told
+    finally:
+        conn.close()

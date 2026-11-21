@@ -40,6 +40,7 @@ __all__ = [
     "CHECK_CALL_S",
     "CHECK_SERVER_MS",
     "DEFAULT_TIMINGS",
+    "GAVE_UP",
     "HEARTBEAT_CALL_S",
     "HEARTBEAT_S",
     "KILL_WAIT_S",
@@ -47,6 +48,7 @@ __all__ = [
     "LANE_SOCKET_S",
     "LANE_STALL_S",
     "LEASE_S",
+    "LOST_REFUNDS",
     "MARGIN_FLOOR_S",
     "MAX_ATTEMPTS",
     "MAX_LEASE_S",
@@ -61,10 +63,12 @@ __all__ = [
     "Verdict",
     "backoff_s",
     "bad_tokens",
+    "carry_refunds",
     "choices",
     "claimable",
     "exhausted",
     "fenced",
+    "gave_up_alarm",
     "lane_stalled",
     "lane_verdict",
     "lapsed",
@@ -72,14 +76,17 @@ __all__ = [
     "lease_left",
     "lease_problem",
     "lost_reason",
+    "lost_refund",
     "margin_of",
     "meets",
     "next_step",
+    "refunds_of",
     "refusal",
     "seconds",
     "stamp_of",
     "stop_at",
     "verdict",
+    "with_refunds",
 ]
 
 HEARTBEAT_S = 10
@@ -270,6 +277,53 @@ def lost_reason(row: Row) -> str:
     run = str(row.get("run_id") or "")
     return (f"{RUN_LOST}: {row.get('claimed_by')}'s claim at epoch {row.get('claim_epoch')} lapsed at "
             f"{row.get('lease_until')}" + (f", leaving run {run}" if run else "") + "; claimable again")
+
+
+GAVE_UP = "the lane gave its claim up"  # how a retry of a lane that ended lost under a held claim opens its reason
+LOST_REFUNDS = 3  # the lost lanes an episode gives back; past them a lost lane counts its attempt (`lost_refund`)
+_REFUNDS = re.compile(r" \[lost lanes refunded: (\d+)(, the chair told)?\]$")
+
+
+def refunds_of(reason: str) -> tuple[int, bool]:
+    """Pure. How many lost lanes the phase's episode has had refunded, and whether the chair has told the operator the
+    cap was reached, from the tag at the end of the row's reason (`with_refunds`); (0, False) when it carries none. The
+    count lives on the row's reason, so a reopen, which writes the chair's own reason, starts the episode at 0."""
+    found = _REFUNDS.search(reason)
+    return (int(found.group(1)), found.group(2) is not None) if found else (0, False)
+
+
+def with_refunds(reason: str, refunds: int, told: bool = False) -> str:
+    """Pure. `reason` with its refund tag (`refunds_of`) set to `refunds` and `told`; no tag when `refunds` is 0."""
+    bare = _REFUNDS.sub("", reason)
+    if refunds <= 0:
+        return bare
+    return f"{bare} [lost lanes refunded: {refunds}{', the chair told' if told else ''}]"
+
+
+def carry_refunds(prior: str, reason: str) -> str:
+    """Pure. A retry's `reason` carrying the refund tag of the claim's `prior` reason, unless it has one of its own: so
+    a retry for any other cause (a refused launch) keeps the episode's count."""
+    if _REFUNDS.search(reason):
+        return reason
+    return with_refunds(reason, *refunds_of(prior))
+
+
+def lost_refund(prior: str, checked: bool) -> bool:
+    """Pure. Whether a lane that ended lost while its worker still holds the claim gives the attempt back, from the
+    claim's `prior` reason and whether any check of the lane's read its lease (`checked`). A loss at the first check
+    counts: the lane never reached the store (a wrong password, a refusing pg_hba, a store at another version), a
+    fault that would come back on every retry. A loss after a good check is the store's, not the phase's, and is
+    refunded, `LOST_REFUNDS` times an episode; after that it counts too, so a fault that keeps coming back still runs
+    the phase out of attempts (`exhausted`), and the chair has told the operator (`gave_up_alarm`)."""
+    return checked and refunds_of(prior)[0] < LOST_REFUNDS
+
+
+def gave_up_alarm(row: Row) -> bool:
+    """Pure. A ready row a lost lane gave back whose episode has spent its `LOST_REFUNDS` and whose operator has not
+    been told yet: the chair tells once and marks the tag told (`with_refunds`)."""
+    reason = str(row.get("reason") or "")
+    refunds, told = refunds_of(reason)
+    return row.get("state") == "ready" and reason.startswith(GAVE_UP) and refunds >= LOST_REFUNDS and not told
 
 
 def claimable(row: Row, now: str, max_attempts: int = MAX_ATTEMPTS) -> bool:

@@ -27,7 +27,9 @@ when that write changed the row (`lost_runs`). The tick plans on its own clock, 
 lapsed by the store's, at the epoch the tick saw, and only once; so a claim that is still live (the chair's clock runs
 ahead) or was taken over meanwhile is neither marked nor told about. Nothing else is done for it: the lapsed claim is claimable, the next
 worker that claims it starts where the branch stands (`lane_progress.resume_plan`), and a phase whose claims ran out
-is exhausted as before. A lost run taken over before any tick saw it lapse gets no mark: it was recovered. A withheld phase's ready row is withdrawn (`cancelled`) and
+is exhausted as before. A lost run taken over before any tick saw it lapse gets no mark: it was recovered. A lane
+that gives its claim up while its worker still holds it never lapses: the worker gives its attempt back, three times
+an episode, and once those are spent the chair tells the operator once (`gave_up_alarms`, cause `GAVE_UP_CAUSE`). A withheld phase's ready row is withdrawn (`cancelled`) and
 comes back when it is wanted again. A finished row is reopened when its phase is ready again and it finished approved
 or quarantined: work came back to it, and the reopen starts a new review episode (`store_phases`). A row whose claims
 ran out while nobody held it is finished as failed (`exhaust`), and so is any phase that ran out of attempts: it stays
@@ -70,6 +72,7 @@ _SEQ_STRIDE = 1000  # phases per initiative the docket order (`rows`, before `or
 _UNSEEN = "~"  # sorts after every stamp: an initiative with no first-queued time goes last in its band
 _REOPENED = frozenset({"approved", "quarantined"})
 RUN_LOST_CAUSE = "run_lost"  # the needs_chair cause that tells the operator a claim's run was lost
+GAVE_UP_CAUSE = "lane_gave_up"  # the needs_chair cause: a phase's lost lanes spent the episode's refunds
 STATUS_COMMAND = ("cox", "worker", "status")  # where the operator sees the lapsed claim and who could take it
 
 # The old model's actions on an initiative: each starts, signals, fetches, rewrites or lands a run or its branches.
@@ -324,6 +327,28 @@ def lost_runs(stored: Sequence[Row], now: str) -> list[Action]:
     return out
 
 
+def gave_up_alarms(stored: Sequence[Row]) -> list[Action]:
+    """The phases whose lost lanes spent their episode's refunds (`phase_pick.gave_up_alarm`): each ready row whose
+    reason opens with "the lane gave its claim up" and whose tag counts `phase_pick.LOST_REFUNDS` refunds not yet told.
+    For each, a `queue_phases` of its one `tell_gave_up` change (the same reason, its tag marked told, conditional on
+    the reason seen here) carrying the needs_chair `notice`, recorded only when that write changed the row, so the
+    operator is told once an episode: a store that keeps losing a lane after a good check, which the claim's lapse
+    would never show (`lost_runs`), since its worker holds the claim throughout."""
+    out: list[Action] = []
+    for row in stored:
+        if not phase_pick.gave_up_alarm(row):
+            continue
+        (initiative, phase), seen = _key(row), str(row.get("reason") or "")
+        refunds, _told = phase_pick.refunds_of(seen)
+        notice: Action = {"kind": ActionKind.NEEDS_CHAIR, "initiative": initiative, "phase": phase,
+                          "cause": GAVE_UP_CAUSE, "reason": seen, "command": list(STATUS_COMMAND)}
+        out.append({"kind": ActionKind.QUEUE_PHASES, "initiative": initiative, "phase": phase,
+                    "changes": [{"op": "tell_gave_up", "initiative": initiative, "phase": phase, "seen": seen,
+                                 "reason": phase_pick.with_refunds(seen, refunds, told=True)}],
+                    "notice": notice, "reason": f"phase queue: {initiative}/{phase} tell_gave_up"})
+    return out
+
+
 _DONE = frozenset({"done", "dropped"})
 
 
@@ -371,7 +396,8 @@ def quarantines(stored: Sequence[Row], tasks: Sequence[Row]) -> list[dict[str, o
 def plan(facts: Facts, now: str, holds: Collection[str] = ()) -> list[Action]:
     """One `approve_phase_tasks` action for the tasks of phases that finished approved (`approvals`), one
     `queue_phases` action with the tick's changes and the task quarantines of phases that finished quarantined
-    (`quarantines`), and one `queue_phases` per lost run, its mark with its notice (`lost_runs`); each is left out
+    (`quarantines`), one `queue_phases` per lost run, its mark with its notice (`lost_runs`), and one per phase
+    whose lost lanes spent their refunds, its told mark with its notice (`gave_up_alarms`); each is left out
     when it has nothing. Without the stored rows (`phase_queue` unread) nothing is
     planned. A phase whose tasks wait to be approved or quarantined is not wanted again: its ready tasks are what this
     tick settles, not work that came back. `holds` is the tick's held and deferred initiatives; the facts add those
@@ -406,4 +432,4 @@ def plan(facts: Facts, now: str, holds: Collection[str] = ()) -> list[Action]:
     if found:
         names = ", ".join(f"{c['initiative']}/{c['phase']}{'/' + str(c['task_id']) if 'task_id' in c else ''} {c['op']}" for c in found)
         out.append({"kind": ActionKind.QUEUE_PHASES, "changes": found, "reason": f"phase queue: {names}"})
-    return [*out, *lost_runs(queue["rows"], now)]
+    return [*out, *lost_runs(queue["rows"], now), *gave_up_alarms(queue["rows"])]

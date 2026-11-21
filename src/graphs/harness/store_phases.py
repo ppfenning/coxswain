@@ -134,8 +134,10 @@ def _apply(conn: Connection, change: Mapping[str, object], by: str, now: str) ->
     a claimed one. `exhaust` finishes as failed a row whose claims ran out while nobody holds it
     (`phase_pick.exhausted`, in SQL). `mark_lost` writes the chair's "run lost" mark (`phase_pick.lost_reason`) as the
     reason of a claim whose lease lapsed with nobody taking it over: only the reason, only of the epoch the chair saw,
-    only while it is still lapsed, so a worker that claims meanwhile is never touched. Each is conditional on the state
-    it moves from, so a repeat changes nothing."""
+    only while it is still lapsed, so a worker that claims meanwhile is never touched. `tell_gave_up` marks told the
+    lost-lane refund tag of a ready row whose episode spent its refunds (`phase_pick.gave_up_alarm`): only while the
+    row's reason is still the one the chair saw (`seen`), so a worker's claim or release meanwhile is never touched.
+    Each is conditional on the state it moves from, so a repeat changes nothing."""
     p = conn.dialect.placeholder
     op, initiative, phase = change["op"], change["initiative"], change["phase"]
     requires = json_text(list(cast("Sequence[str]", change.get("requires") or [])))
@@ -190,6 +192,12 @@ def _apply(conn: Connection, change: Mapping[str, object], by: str, now: str) ->
             f"UPDATE phase_queue SET reason = {p}, updated_at = {p}, updated_by = {p} WHERE initiative = {p} "
             f"AND phase = {p} AND state = 'claimed' AND claim_epoch = {p} AND lease_until < {p} AND reason <> {p}",
             (reason, now, by, initiative, phase, change.get("epoch", 0), now, reason),
+        ) == 1
+    if op == "tell_gave_up":
+        return conn.execute(
+            f"UPDATE phase_queue SET reason = {p}, updated_at = {p}, updated_by = {p} WHERE initiative = {p} "
+            f"AND phase = {p} AND state = 'ready' AND reason = {p}",
+            (reason, now, by, initiative, phase, change.get("seen") or ""),
         ) == 1
     if op == "exhaust":
         return conn.execute(

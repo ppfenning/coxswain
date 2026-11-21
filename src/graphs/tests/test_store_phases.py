@@ -333,6 +333,27 @@ def test_a_claim_clears_only_a_run_lost_mark_and_keeps_any_other_reason(conn):
     assert claim is not None and store_phases.get_row(conn, "ship", "p1")["reason"] == "the last attempt failed: t1's check"
 
 
+def test_the_lost_lane_refund_tag_rides_the_release_and_the_claim_and_the_chair_marks_it_told_once(conn):
+    from harness import phase_pick
+
+    store_phases.apply_changes(conn, [_change()], "chair-loop")
+    claim = store_phases.claim_next(conn, "w1", [], 1)
+    spent = phase_pick.with_refunds(f"{phase_pick.GAVE_UP} (silent); tasks left ready", phase_pick.LOST_REFUNDS)
+    assert store_phases.release(conn, claim, "w1", spent, 0, refund=True)
+    told = phase_pick.with_refunds(spent, phase_pick.LOST_REFUNDS, told=True)
+    tell = _change(op="tell_gave_up", seen=spent, reason=told)
+    assert store_phases.apply_changes(conn, [_change(op="tell_gave_up", seen="other", reason=told)], "chair") == 0
+    assert store_phases.apply_changes(conn, [tell], "chair-loop") == 1
+    assert store_phases.apply_changes(conn, [tell], "chair-loop") == 0  # told once
+    again = store_phases.claim_next(conn, "w1", [], 1)  # the next claim reads the episode's count, told
+    assert again is not None and phase_pick.refunds_of(str(again.row["reason"])) == (phase_pick.LOST_REFUNDS, True)
+    assert store_phases.apply_changes(conn, [_change(op="tell_gave_up", seen=told, reason=told)], "chair") == 0
+    assert store_phases.finish(conn, again, "w1", "failed", "out of attempts")
+    reopen = _change(op="reopen", epoch=again.epoch, reason="work came back")
+    assert store_phases.apply_changes(conn, [reopen], "chair-loop") == 1  # a new episode: its count starts at 0
+    assert phase_pick.refunds_of(store_phases.get_row(conn, "ship", "p1")["reason"]) == (0, False)
+
+
 def test_the_rollups_and_the_last_review_round_of_a_phase_are_read_back(conn):
     store_phases.apply_changes(conn, [_change()], "chair-loop")
     claim = store_phases.claim_next(conn, "w1", [], 1)

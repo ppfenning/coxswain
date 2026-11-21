@@ -347,6 +347,12 @@ class Fence:
         self._log(f"lane: the store is busy ({error}); the lease read last has {remaining:.0f}s left; checking again")
         return True
 
+    @property
+    def checked(self) -> bool:
+        """Whether any check read the claim's lease: a lane lost before one did never reached the store, and the worker
+        counts its attempt (`phase_pick.lost_refund`)."""
+        return self._seen is not None
+
     def lose(self, why: str) -> None:
         with self._lock:
             if self.lost.is_set():
@@ -1209,7 +1215,8 @@ def run_lane(ctx: Ctx, claim: LaneClaim, conn: Connection, open_conn: Callable[[
     check or build starts after that. A store gone silent (the fence's check missed its bound) abandons `conn` and
     every connection the lane opened, and any open still in flight (`open_within`), so nothing of the lane's waits on
     it; every later open fails at once. A lane that ends with its claim lost says so, and why, in its lost mark
-    (`lost_path`), which the worker reads to give back the attempt of a claim it still holds."""
+    (`lost_path`), and whether any check read its lease first, which the worker reads to give back the attempt of a
+    claim it still holds (`phase_pick.lost_refund`)."""
     mark = beat_path(ctx.runs_dir, ctx.run_id)
     opened: list[Connection] = [conn]
     opened_lock = threading.Lock()
@@ -1254,7 +1261,7 @@ def run_lane(ctx: Ctx, claim: LaneClaim, conn: Connection, open_conn: Callable[[
     finally:
         fence.stop()
         if fence.lost.is_set():
-            write_lost(lost_path(ctx.runs_dir, ctx.run_id), fence.why, log)
+            write_lost(lost_path(ctx.runs_dir, ctx.run_id), fence.why, log, checked=fence.checked)
         settle_pool(ctx, keep_worktrees=False)
         if phase_worktree.exists():
             remove_worktree(lane_ctx.repo, phase_worktree)
@@ -1332,12 +1339,13 @@ def lost_path(runs_dir: Path, run_id: str) -> Path:
     return runs_dir / f"{run_id}.lane-lost"
 
 
-def write_lost(path: Path, why: str, log: Callable[[str], None]) -> None:
-    """Edge. Write the lost mark with `why`, whole or not at all; a mark that cannot be written is said, not raised:
-    the worker then counts the attempt, the safe side."""
+def write_lost(path: Path, why: str, log: Callable[[str], None], *, checked: bool = False) -> None:
+    """Edge. Write the lost mark, whole or not at all: `why`, and `checked`, whether a check read the claim's lease
+    before the loss (`Fence.checked`), as one JSON object. A mark that cannot be written is said, not raised: the
+    worker then counts the attempt, the safe side."""
     part = path.with_name(path.name + ".part")
     try:
-        part.write_text(f"{' '.join(why.split())}\n", encoding="utf-8")
+        part.write_text(json.dumps({"why": " ".join(why.split()), "checked": checked}) + "\n", encoding="utf-8")
         os.replace(part, path)
     except OSError as exc:
         log(f"lane: the lost mark could not be written: {exc}")

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -140,6 +140,7 @@ class LaneFacts:
     reason: str = ""
     suite: initiative_review.SuiteSeen | None = None  # an initiative review's: the suite at the tip its round reviewed
     lost: str = ""  # why the lane gave its claim up (its lost mark, `phase_lane.lost_path`), "" when it did not
+    checked: bool = False  # whether a check of that lane read its lease before the loss (the lost mark says)
 
 
 def lane_verdict(claim: Claim, facts: LaneFacts) -> phase_pick.Verdict:
@@ -147,18 +148,29 @@ def lane_verdict(claim: Claim, facts: LaneFacts) -> phase_pick.Verdict:
     (`initiative_review.lane_verdict`), any other phase's by its tasks, round and smoke (`phase_pick.lane_verdict`).
 
     A lane that gave its claim up (`facts.lost`) while this worker still holds it (`settle` writes nothing otherwise)
-    lost it to the store, not to the phase: its attempt is not counted. What the store holds still decides an ack or a
-    real failure; any retry, including one the attempts would otherwise have ended, goes back with the attempt
-    refunded (`phase_pick.refusal`)."""
-    attempts = attempts_of(claim) - (1 if facts.lost else 0)
+    after a good check lost it to the store, not to the phase: its attempt is not counted, up to
+    `phase_pick.LOST_REFUNDS` times an episode (`phase_pick.lost_refund`). What the store holds still decides an ack
+    or a real failure; any retry, including one the attempts would otherwise have ended, goes back with the attempt
+    refunded (`phase_pick.refusal`) and the episode's count one up on the row's reason. A loss at the first check, or
+    one past the cap, counts as any other attempt, and its retry's reason still says the lane gave its claim up."""
+    prior = str(claim.row.get("reason") or "")
+    refunds = phase_pick.refunds_of(prior)[0]
+    refund = bool(facts.lost) and phase_pick.lost_refund(prior, facts.checked)
+    attempts = attempts_of(claim) - (1 if refund else 0)
     if claim.row.get("kind") == initiative_review.KIND:
         found = initiative_review.lane_verdict(facts.last_round, facts.suite, attempts, reason=facts.reason)
     else:
         found = phase_pick.lane_verdict(facts.tasks, facts.rolled_up, facts.last_round, attempts,
                                         smoke=facts.smoke, reason=facts.reason)
-    if facts.lost and found.kind == "retry":
-        return phase_pick.refusal(f"the lane gave its claim up ({facts.lost}); {found.reason}", attempts_of(claim))
-    return found
+    if not facts.lost or found.kind != "retry":
+        return found
+    if refund:
+        why = f"{phase_pick.GAVE_UP} ({facts.lost}); {found.reason}"
+        return phase_pick.refusal(phase_pick.with_refunds(why, refunds + 1), attempts_of(claim))
+    counted = ("at its first check, before it read its lease" if not facts.checked
+               else f"after {refunds} refunded this episode")
+    why = f"{phase_pick.GAVE_UP} ({facts.lost}); counted, {counted}; {found.reason}"
+    return replace(found, reason=phase_pick.with_refunds(why, *phase_pick.refunds_of(prior)))
 
 
 def lane_facts(task_rows: Sequence[Mapping[str, object]], rollups: Sequence[Mapping[str, object]], phase: str,
@@ -360,7 +372,8 @@ def settle(ports: Ports, leases: Leases, claim: Claim, verdict: phase_pick.Verdi
     if leases.take(claim) is None:
         ports.log(f"worker: {key_of(claim)} is no longer held; nothing written")
         return
-    if verdict.kind == "retry":
+    if verdict.kind == "retry":  # any retry keeps the episode's lost-lane refund count (`phase_pick.carry_refunds`)
+        verdict = replace(verdict, reason=phase_pick.carry_refunds(str(claim.row.get("reason") or ""), verdict.reason))
         done = ports.release(claim, verdict.reason, verdict.wait_s, verdict.refund)
         said = f"released for a retry in {verdict.wait_s}s{' (no attempt counted)' if verdict.refund else ''}: {verdict.reason}"
     else:

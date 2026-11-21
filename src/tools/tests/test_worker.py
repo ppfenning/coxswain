@@ -333,19 +333,63 @@ def test_an_ended_initiative_review_is_judged_by_its_round_and_suite_and_a_phase
     assert worker.lane_verdict(_claim(), worker.LaneFacts(("t1",), (), None, None)).kind == "retry"
 
 
-def test_a_lane_that_gave_its_claim_up_under_a_held_claim_costs_the_phase_no_attempt():
-    """A lane's lost mark: the store lost the claim, not the phase. A retry goes back refunded, even on the last
-    attempt; what the store holds still decides an ack or a real failure."""
-    lost = worker.LaneFacts(("t1",), (), None, None, lost="the claim could not be read: StoreDeadline: silent")
+def test_a_lane_that_gave_its_claim_up_after_a_good_check_costs_the_phase_no_attempt():
+    """A lane's lost mark after a good check: the store lost the claim, not the phase. A retry goes back refunded,
+    even on the last attempt, with the episode's count one up; what the store holds still decides an ack."""
+    lost = worker.LaneFacts(("t1",), (), None, None, lost="the claim could not be read: StoreDeadline: silent",
+                            checked=True)
     retried = worker.lane_verdict(_claim(), lost)
     assert (retried.kind, retried.refund) == ("retry", True)
     assert retried.reason.startswith("the lane gave its claim up (the claim could not be read: StoreDeadline: silent)")
+    assert phase_pick.refunds_of(retried.reason) == (1, False)
     last = worker.lane_verdict(_claim_attempts(phase_pick.MAX_ATTEMPTS), lost)
     assert (last.kind, last.refund) == ("retry", True)
     counted = worker.lane_verdict(_claim_attempts(phase_pick.MAX_ATTEMPTS), worker.LaneFacts(("t1",), (), None, None))
     assert (counted.kind, counted.outcome) == ("quarantine", "failed")
-    approved = worker.lane_verdict(_claim(), worker.LaneFacts(("t1",), ("t1",), (1, "approve"), None, lost="gone"))
+    approved = worker.lane_verdict(_claim(), worker.LaneFacts(("t1",), ("t1",), (1, "approve"), None, lost="gone",
+                                                              checked=True))
     assert (approved.kind, approved.outcome) == ("ack", "approved")
+
+
+def test_a_lane_lost_at_its_first_check_counts_its_attempt():
+    """No check read the lease (a wrong password, pg_hba refusing the role, a store at another version): the fault
+    comes back on every retry, so the attempt counts and the phase runs out of them as any other would."""
+    first = worker.LaneFacts(("t1",), (), None, None, lost="the claim could not be read (OperationalError: password "
+                             "authentication failed), and no earlier check read its lease")
+    retried = worker.lane_verdict(_claim(), first)
+    assert (retried.kind, retried.refund) == ("retry", False)
+    assert retried.reason.startswith("the lane gave its claim up (the claim could not be read (OperationalError")
+    assert "counted, at its first check" in retried.reason and phase_pick.refunds_of(retried.reason) == (0, False)
+    last = worker.lane_verdict(_claim_attempts(phase_pick.MAX_ATTEMPTS), first)
+    assert (last.kind, last.outcome) == ("quarantine", "failed")
+
+
+def _released(claim, verdict, attempts):
+    """The claim the worker's next claim of the row reads after `settle` released it with `verdict`: its reason (the
+    refund tag carried) and its attempts, as `store_phases.release` and `claim_next` leave them."""
+    from harness.store_phases import Claim
+
+    reason = phase_pick.carry_refunds(str(claim.row.get("reason") or ""), verdict.reason)
+    return Claim("ship", "p1", claim.epoch + 1, "2026-11-20T10:01:00Z",
+                 {"attempts": attempts - (1 if verdict.refund else 0) + 1, "reason": reason})
+
+
+def test_the_fourth_lost_lane_of_an_episode_counts_its_attempt():
+    lost = worker.LaneFacts(("t1",), (), None, None, lost="the claim could not be read: StoreDeadline: silent",
+                            checked=True)
+    claim = _claim()
+    for n in range(1, phase_pick.LOST_REFUNDS + 1):
+        found = worker.lane_verdict(claim, lost)
+        assert (found.kind, found.refund, phase_pick.refunds_of(found.reason)) == ("retry", True, (n, False))
+        claim = _released(claim, found, worker.attempts_of(claim))
+    assert worker.attempts_of(claim) == 1  # three losses, none counted
+    fourth = worker.lane_verdict(claim, lost)
+    assert (fourth.kind, fourth.refund) == ("retry", False)
+    assert "counted, after 3 refunded this episode" in fourth.reason
+    assert phase_pick.refunds_of(fourth.reason) == (phase_pick.LOST_REFUNDS, False)
+    claim = _released(claim, fourth, worker.attempts_of(claim))
+    claim = _released(claim, worker.lane_verdict(claim, lost), worker.attempts_of(claim))
+    assert (worker.lane_verdict(claim, lost).kind, worker.attempts_of(claim)) == ("quarantine", phase_pick.MAX_ATTEMPTS)
 
 
 def _claim_attempts(attempts: int):
@@ -427,7 +471,11 @@ def test_the_lane_s_lost_mark_is_read_once_by_the_worker(tmp_path):
     from harness.phase_lane import lost_path, write_lost
 
     path = lost_path(tmp_path, "ship.p1-1")
-    assert worker_ports._take_lost(path) == ""  # a lane that kept its claim writes none
-    write_lost(path, "the claim could not be read:\n StoreDeadline: silent", lambda line: None)
-    assert worker_ports._take_lost(path) == "the claim could not be read: StoreDeadline: silent"
-    assert not path.exists() and worker_ports._take_lost(path) == ""
+    assert worker_ports._take_lost(path) == ("", False)  # a lane that kept its claim writes none
+    write_lost(path, "the claim could not be read:\n StoreDeadline: silent", lambda line: None, checked=True)
+    assert worker_ports._take_lost(path) == ("the claim could not be read: StoreDeadline: silent", True)
+    assert not path.exists() and worker_ports._take_lost(path) == ("", False)
+    write_lost(path, "no earlier check read its lease", lambda line: None)
+    assert worker_ports._take_lost(path) == ("no earlier check read its lease", False)
+    path.write_text("an older lane's plain mark\n", encoding="utf-8")  # says nothing of a check: counted
+    assert worker_ports._take_lost(path) == ("an older lane's plain mark", False)
