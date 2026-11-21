@@ -194,13 +194,14 @@ def _chair_worker(a: argparse.Namespace) -> int:
         return ""
 
     wait, close = chair_queue.store_waiter(url, time.sleep)
+    chores = None if a.dry_run else _worker_chores(a.kind, deps, runs_dir)
     ports = chair_queue.Ports(
         queued=chair_read_queues.queues_keeping_last_good(_profile_path(a)),
         acquire=lambda: on_store(lambda c: store_chair_lease.acquire(c, name, holder, ttl), None),
         renew=lambda epoch: on_store(lambda c: store_chair_lease.renew(c, name, holder, epoch, ttl), False),
         holds=lambda epoch: on_store(lambda c: store_chair_lease.holds(c, name, holder, epoch), False),
         release=lambda epoch: on_store(lambda c: store_chair_lease.release(c, name, holder, epoch), False),
-        gather=gather, perform_one=perform_one, perform_batch=perform_batch, notify=notify,  # type: ignore[arg-type]
+        gather=gather, perform_one=perform_one, perform_batch=perform_batch, notify=notify, chores=chores,  # type: ignore[arg-type]
         wait=wait, pause=close, clock=time.monotonic, now=lambda: datetime.datetime.now(datetime.UTC),
         echo=chair_report.echo_line,
     )
@@ -212,6 +213,24 @@ def _chair_worker(a: argparse.Namespace) -> int:
     finally:
         close()
         restore()
+
+
+def _worker_chores(kind: str, deps: chair_run.RunDeps, runs_dir: Path) -> object:
+    """Edge. The tick's loop chores the worker of `kind` owns once no tick runs them (`chair_worker_chores`): every one
+    for housekeeping, the reasons file for launch, none for the rest."""
+    from agent_tools import chair_worker_chores
+
+    def stamp() -> object | None:
+        try:
+            return run_store.queue_stamp(runs_dir)
+        except Exception:  # an unreadable version reads as a move, so the export runs
+            return None
+
+    if kind == "housekeeping":
+        return chair_worker_chores.housekeeping_chores(deps, stamp, lambda: chair_worker_chores.workspace_head(runs_dir.parent))
+    if kind == "launch":
+        return chair_worker_chores.launch_chores(deps)
+    return None
 
 
 def _chair_default_environment_file() -> str | None:

@@ -49,6 +49,8 @@ __all__ = [
     "MIN_GAP_SECONDS",
     "SETTLE_SECONDS",
     "Beat",
+    "ChoreStep",
+    "Chores",
     "Idle",
     "Loop",
     "Pass",
@@ -57,6 +59,7 @@ __all__ = [
     "Wait",
     "beaten",
     "bounded",
+    "chores_due",
     "decide",
     "heard",
     "idled",
@@ -311,6 +314,36 @@ class Ports:
     # The pass's push (C6): handed the kind, the facts and the pass's actions after they were performed, it pushes what
     # needs the operator and returns "" or a note for the pass line. None pushes nothing (the tick still does).
     notify: Callable[[str, Facts, Sequence[Action]], str] | None = None
+    # The tick's loop chores this kind owns once no tick runs them (C6, `chores_due`); None for a kind that owns none.
+    chores: Chores | None = None
+
+
+@dataclass(frozen=True)
+class ChoreStep:
+    """What a kind's loop chores add to one pass: actions to perform under the kind lease beside the plan (unstamped),
+    actions the push hears but nothing performs (a standing lane checkout line), and a note for the pass line."""
+
+    perform: Sequence[Action] = ()
+    push: Sequence[Action] = ()
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class Chores:
+    """The tick's per-loop chores, as a worker runs them (C6). `before` runs after the plan and before the perform,
+    handed the facts, the planned actions and the pass's clock; `after` runs once the actions are performed, handed
+    the results. Each chore is idempotent and never assumes a tick: it reads what it needs from the workspace and the
+    store. A chore that raises is a note on the pass line, never a failed pass."""
+
+    before: Callable[[Facts, Sequence[Action], datetime], ChoreStep]
+    after: Callable[[Sequence[Action], Sequence[Result]], str]
+
+
+def chores_due(kind: str, facts: Facts, dry_run: bool) -> bool:
+    """Pure. Whether the worker of `kind` runs its loop chores this pass: on a live pass of a listed kind, and only while
+    no tick holds the chair lease (`chair_kinds.tick_watching`). While a tick runs it does them itself, so a pull, a
+    chat directive or an export is never made twice by two processes at once; once it stops, the worker does."""
+    return not dry_run and chair_kinds.worker_acts(kind, facts) and not chair_kinds.tick_watching(facts)
 
 
 @dataclass
@@ -330,25 +363,51 @@ def _pass(kind: str, ports: Ports, held: Held, reason: str, dry_run: bool, beat:
         facts = ports.gather(now)
         epoch = held.epoch if held.epoch is not None and not dry_run else -1
         actions = planned_pass(kind, facts, now, epoch, dry_run)
-        if not actions:
-            return _with_note(pass_line(kind, reason, actions, [], dry_run, now), _push(kind, ports, facts, actions, dry_run))
-        current = (lambda: -1) if dry_run else (lambda: held.epoch if held.epoch is not None else -2)
-
-        def holds() -> bool:
-            return dry_run or (held.epoch is not None and ports.holds(held.epoch))
-
-        if kind in chair_kinds.BATCHED_KINDS and ports.perform_batch is not None:
-            epoch_now = (lambda: -1) if dry_run else (lambda: held.epoch)
-            results = perform_batched(actions, holds, epoch_now, ports.perform_batch)
-        else:
-            results = perform_fenced(actions, holds, lambda a: ports.perform_one(a, current))
+        chores = ports.chores if actions is not None and chores_due(kind, facts, dry_run) else None
+        step = _chores_before(chores, facts, actions or [], now)
+        if actions is not None and step.perform:
+            actions = [*actions, *(stamp(a, epoch) for a in step.perform)]
+        results = _perform(kind, ports, held, actions, dry_run) if actions else []
         line = pass_line(kind, reason, actions, results, dry_run, now)
         if any(r["status"] == "fenced" for r in results):
             # No push from a pass that lost its lease: the kind is another worker's now, and so may the watch be.
             return f"{line} | lease lost: the rest fenced"
-        return _with_note(line, _push(kind, ports, facts, actions, dry_run))
+        after = _chores_after(chores, actions or [], results)
+        pushed = _push(kind, ports, facts, None if actions is None else [*actions, *step.push], dry_run)
+        return _with_note(_with_note(_with_note(line, step.note), after), pushed)
     finally:
         stop.set()
+
+
+def _perform(kind: str, ports: Ports, held: Held, actions: Sequence[Action], dry_run: bool) -> list[Result]:
+    """Edge. The pass's actions behind the fence: one at a time, or as one batch for a batched kind."""
+    current = (lambda: -1) if dry_run else (lambda: held.epoch if held.epoch is not None else -2)
+
+    def holds() -> bool:
+        return dry_run or (held.epoch is not None and ports.holds(held.epoch))
+
+    if kind in chair_kinds.BATCHED_KINDS and ports.perform_batch is not None:
+        epoch_now = (lambda: -1) if dry_run else (lambda: held.epoch)
+        return perform_batched(actions, holds, epoch_now, ports.perform_batch)
+    return perform_fenced(actions, holds, lambda a: ports.perform_one(a, current))
+
+
+def _chores_before(chores: Chores | None, facts: Facts, actions: Sequence[Action], now: datetime) -> ChoreStep:
+    if chores is None:
+        return ChoreStep()
+    try:
+        return chores.before(facts, actions, now)
+    except Exception as exc:
+        return ChoreStep(note=f"chores failed: {type(exc).__name__}: {exc}")
+
+
+def _chores_after(chores: Chores | None, actions: Sequence[Action], results: Sequence[Result]) -> str:
+    if chores is None:
+        return ""
+    try:
+        return chores.after(actions, results)
+    except Exception as exc:
+        return f"chores failed: {type(exc).__name__}: {exc}"
 
 
 def _push(kind: str, ports: Ports, facts: Facts, actions: Sequence[Action] | None, dry_run: bool) -> str:
