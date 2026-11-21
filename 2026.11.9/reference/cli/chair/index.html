@@ -3615,6 +3615,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#worker" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        worker
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#service" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6653,6 +6664,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#worker" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        worker
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#service" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6757,14 +6779,16 @@ Coxswain is in beta — versions may change between releases
 
 <h1 id="chair">chair</h1>
 <div class="highlight"><pre><span></span><code>usage: cox chair [-h]
-                 {run,service,ask,attach,answer,decisions,watchdog,freeze-lands} ...
+                 {run,worker,service,ask,attach,answer,decisions,watchdog,freeze-lands} ...
 
 The chair loop that runs the landing and launch ticks itself.
 
 positional arguments:
-  {run,service,ask,attach,answer,decisions,watchdog,freeze-lands}
+  {run,worker,service,ask,attach,answer,decisions,watchdog,freeze-lands}
     run                 beat, gather, plan, perform and report every tick
                         until interrupted
+    worker              run one kind of the chair's work (housekeeping or
+                        watch) as its own process
     service             write or show the systemd user unit that keeps `cox
                         chair run` alive
     ask                 put a question with its options to the operator on the
@@ -6813,6 +6837,32 @@ options:
                         else unlabeled)
   --profile PROFILE     the routing profile (default: ~/.config/agent-
                         tools/profile.yaml or $AGENT_TOOLS_PROFILE)
+</code></pre></div>
+<h2 id="worker">worker</h2>
+<div class="highlight"><pre><span></span><code>usage: cox chair worker [-h] --kind KIND [--once] [--dry-run] [--poll POLL]
+                        [--min-gap MIN_GAP] [--settle SETTLE] [--label LABEL]
+                        [--profile PROFILE]
+
+Plans and performs one kind of the chair's work, the kind the profile's chair.queues moves off the tick.
+It holds the store lease chair:&lt;kind&gt;, so a second copy stands by. It wakes on a store notification for a
+table its kind reads, and polls as its fallback. While chair.queues does not list the kind it stays idle.
+
+options:
+  -h, --help         show this help message and exit
+  --kind KIND        the kind of work: housekeeping or watch
+  --once             run one pass and exit; exit 1 if it could not act (not
+                     queued, or another worker holds the kind)
+  --dry-run          plan and report each pass without taking the kind lease
+                     or performing any action
+  --poll POLL        seconds between passes with no notification (default: 60)
+  --min-gap MIN_GAP  seconds a notified pass waits after the last one
+                     (default: 30)
+  --settle SETTLE    seconds a freshly taken kind lease waits before its first
+                     pass (default: 30)
+  --label LABEL      the worker's holder label (default: $COX_SESSION_LABEL,
+                     else unlabeled)
+  --profile PROFILE  the routing profile (default: ~/.config/agent-
+                     tools/profile.yaml or $AGENT_TOOLS_PROFILE)
 </code></pre></div>
 <h2 id="service">service</h2>
 <div class="highlight"><pre><span></span><code>usage: cox chair service [-h] [--install] [--status] [--label LABEL]
