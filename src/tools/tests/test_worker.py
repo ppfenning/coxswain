@@ -282,6 +282,20 @@ def test_a_lanes_facts_are_the_phases_open_tasks_its_roll_ups_in_any_run_and_its
     assert (quarantined.last_round, quarantined.reason) == ((2, "quarantine"), "goal missed")
 
 
+def test_a_revise_rounds_revision_that_did_not_roll_up_says_why_from_the_ended_runs_rows():
+    failed = [{"kind": "build", "ok": 0, "verdict": "failed", "result_json": {"error": "node 'build' patch_empty: x"}}]
+    rows = [{"kind": "task", "task_id": "t1", "phase": "p1", "state": "ready"}]
+    rolled = [{"phase": "p1", "task_id": "t1"}]
+    facts = worker.lane_facts(rows, rolled, "p1", (1, "revise"), [], "r2", "", "p1-rev-1", failed)
+    assert facts.revision == "its build failed: node 'build' patch_empty: x"
+    verdict = worker.lane_verdict(_claim(), facts)
+    assert verdict.reason == f"review round 1 asked for a revision, which did not roll up: {facts.revision}"
+    # A revision some run rolled up, or a round that is not a revise, has nothing to say.
+    landed = [*rolled, {"phase": "p1", "task_id": "p1-rev-1"}]
+    assert worker.lane_facts(rows, landed, "p1", (1, "revise"), [], "r2", "", "p1-rev-1", failed).revision == ""
+    assert worker.lane_facts(rows, rolled, "p1", (1, "approve"), [], "r2", "", "p1-rev-1", failed).revision == ""
+
+
 def _smoke(run: str, ok: int, sha: str = "a1", reason: str = "", fault: bool = False) -> dict[str, object]:
     return {"run_id": run, "ok": ok, "verdict": "passed" if ok else "failed", "subject_sha": sha,
             "result_json": {"tip": sha, "reason": reason, "harness_fault": fault}}

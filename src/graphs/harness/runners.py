@@ -200,7 +200,7 @@ def _scripted(
     path = profile.get("scripted")
     if not isinstance(path, str) or not path:
         raise ValueError("runner 'scripted' needs `scripted:`, the path of a JSON file of canned answers by role")
-    return ScriptedRunner(json.loads(Path(path).expanduser().read_text(encoding="utf-8")))
+    return ScriptedRunner(json.loads(Path(path).expanduser().read_text(encoding="utf-8")), repo)
 
 
 _RUNNERS: dict[str, _RunnerFactory] = {
@@ -262,7 +262,7 @@ def build_runner(
     """
     if scripted:
         responses = json.loads(Path(scripted).read_text(encoding="utf-8"))
-        return ScriptedRunner(responses)
+        return ScriptedRunner(responses, repo)
 
     from runner.anthropic_runner import load_provider_profile
 

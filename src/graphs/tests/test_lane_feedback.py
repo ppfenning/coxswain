@@ -4,6 +4,8 @@ graph under the scripted runner, whose recorded prompts are what the builder was
 
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from graphs._spec import GraphSpec
@@ -12,7 +14,7 @@ from harness import lane_feedback, phase_lane, phase_pick, review_loop, store_ph
 from harness.epic import Ctx
 from harness.phase_lane import Fence, Lane, LaneClaim
 from harness.store_migrate import open_store
-from harness.store_steps import put_round, put_step, round_row, steps_of_result, with_checks
+from harness.store_steps import put_round, put_step, round_row, step_row, steps_of_result, with_checks
 from runner import ScriptedRunner
 from tests.conftest import CARTRIDGE
 
@@ -103,9 +105,23 @@ def _claim(conn) -> LaneClaim:
     return LaneClaim("ship", "p1", "w1", claim.epoch)
 
 
+def _base(tmp_path) -> str:
+    """The commit a task builds on: `tmp_path/app`'s one commit, made the first time it is asked for. A build reads a
+    worktree at its base (`phase_lane.builder_runner`), so the checkout is a real repository."""
+    repo = tmp_path / "app"
+    if not repo.exists():
+        repo.mkdir()
+        (repo / "README.md").write_text("app\n", encoding="utf-8")
+        for args in (["init", "-q", "-b", "main"], ["add", "README.md"],
+                     ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"]):
+            subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+
+
 def _lane(tmp_path, url: str, conn, claim: LaneClaim, run_id: str, runner: ScriptedRunner, log: list[str]) -> Lane:
     cartridge = {**CARTRIDGE, "skills": {**CARTRIDGE["skills"], "handoff": "acme-skills:handoff"}}
-    ctx = Ctx(repo=tmp_path, cartridge=cartridge, runner=runner,
+    _base(tmp_path)
+    ctx = Ctx(repo=tmp_path / "app", cartridge=cartridge, runner=runner,
               specs={"lifecycle": GraphSpec(name="lifecycle", graph_name="lifecycle-propose", run=lifecycle_propose.run)},
               run_id=run_id, date="2026-11-21", max_parallel=1, ledger_path=tmp_path / "ledger", provider_profile="p",
               runs_dir=tmp_path / "runs", worktree_root=tmp_path / "wt", assume=None, fix_attempts=None,
@@ -122,13 +138,13 @@ def test_a_task_whose_last_build_s_handoff_was_refused_is_built_again_with_the_r
     try:
         claim, log = _claim(conn), []
         first = ScriptedRunner({"plan": PLAN, "build": BUILD, "handoff": REFUSED})
-        result, why, _, _ = phase_lane._build(_lane(tmp_path, lane_store, conn, claim, "ship-p1-1", first, log), "t1", "")
+        result, why, _, _ = phase_lane._build(_lane(tmp_path, lane_store, conn, claim, "ship-p1-1", first, log), "t1", _base(tmp_path))
         assert result is None and why.startswith("handoff incomplete")
         assert lane_feedback.HEADING not in next(c["prompt"] for c in first.calls if c["role"] == "build")
 
         again = ScriptedRunner({"plan": PLAN, "build": BUILD, "handoff": COMPLETE})
         second = _lane(tmp_path, lane_store, conn, claim, "ship-p1-2", again, log)
-        result, why, _, _ = phase_lane._build(second, "t1", "")
+        result, why, _, _ = phase_lane._build(second, "t1", _base(tmp_path))
         assert result is not None and why == ""
         for role in ("plan", "build"):  # the ticket body both read carries the refusal, each missing item verbatim
             prompt = next(c["prompt"] for c in again.calls if c["role"] == role)
@@ -142,7 +158,7 @@ def test_a_task_whose_last_build_s_handoff_was_refused_is_built_again_with_the_r
                       "outcome": "timed_out"}]
         assert second.put(phase_lane._rows_of(second, with_checks(result, timed_out, "ship-p1-2"), "t1", ""))
         third = ScriptedRunner({"plan": PLAN, "build": BUILD, "handoff": COMPLETE})
-        phase_lane._build(_lane(tmp_path, lane_store, conn, claim, "ship-p1-3", third, log), "t1", "")
+        phase_lane._build(_lane(tmp_path, lane_store, conn, claim, "ship-p1-3", third, log), "t1", _base(tmp_path))
         assert all(lane_feedback.HEADING not in c["prompt"] and MISSING not in c["prompt"] for c in third.calls)
     finally:
         conn.close()
@@ -160,5 +176,23 @@ def test_a_refusal_from_before_the_phase_was_reopened_is_not_this_episode_s(tmp_
         put_round(conn, round_row(initiative="ship", phase="p1", round_=1, verdict=review_loop.REOPENED,
                                   reason="reopened", worker="chair", decided_at="2026-11-20T12:00:00Z"))
         assert store_phases.task_attempt_rows(conn, "ship", "p1", "t1") == []
+    finally:
+        conn.close()
+
+
+def test_a_revision_s_rows_of_one_run_say_why_it_did_not_roll_up(tmp_path, lane_store):
+    conn = open_store(lane_store, AT)
+    try:
+        why = "node 'build' patch_outside_scratch: the reported patch is not in the scratch tree and does not apply to it"
+        for run, error in (("ship.p1-8", why), ("ship.p1-9", "another run's")):
+            put_step(conn, {**steps_of_result({"run_id": f"{run}:p1-rev-1", "build_only": True, "plan": PLAN},
+                                              run_id=run, initiative="ship", phase="p1", task="p1-rev-1", at=AT)[0]})
+            put_step(conn, step_row(
+                run_id=run, step="task/p1-rev-1/build/0", initiative="ship", phase="p1", task_id="p1-rev-1",
+                kind="build", round_=0, ok=False, verdict="failed", result={"error": error}, finished_at=AT))
+        rows = store_phases.task_run_rows(conn, "ship", "p1", "p1-rev-1", "ship.p1-8")
+        assert sorted(r["kind"] for r in rows) == ["build", "plan"]
+        assert phase_pick.revision_failure(rows) == f"its build failed: {why}"
+        assert store_phases.task_run_rows(conn, "ship", "p1", "p1-rev-1", "ship.p1-7") == []
     finally:
         conn.close()

@@ -502,6 +502,19 @@ def task_attempt_rows(conn: Connection, initiative: str, phase: str, task: str) 
     return [{**dict(zip(columns, r, strict=True)), "result_json": json_load(r[4])} for r in rows]
 
 
+def task_run_rows(conn: Connection, initiative: str, phase: str, task: str, run_id: str) -> list[Row]:
+    """Edge. Every step row run `run_id` wrote for the task, passed or failed, as {step, kind, ok, verdict,
+    result_json (decoded), finished_at}, oldest first: what `phase_pick.revision_failure` reads of a revision task."""
+    p = conn.dialect.placeholder
+    columns = ("step", "kind", "ok", "verdict", "result_json", "finished_at")
+    rows = conn.query_all(
+        f"SELECT {', '.join(columns)} FROM step_results WHERE initiative = {p} AND phase = {p} AND task_id = {p} "
+        f"AND run_id = {p} ORDER BY finished_at, step",
+        (initiative, phase, task, run_id),
+    )
+    return [{**dict(zip(columns, r, strict=True)), "result_json": json_load(r[4])} for r in rows]
+
+
 def _kind_rows(conn: Connection, kind: str, initiative: str, phase: str, run_id: str) -> list[Row]:
     p = conn.dialect.placeholder
     columns = ("run_id", "round", "ok", "verdict", "subject_sha", "result_json", "finished_at", "worker")

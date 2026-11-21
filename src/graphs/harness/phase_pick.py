@@ -425,8 +425,28 @@ class SmokeSeen:
     faults: int = 0
 
 
+_WHY_KEYS = ("error", "reason", "quarantine", "why")  # where a failed step row's `result_json` says why
+
+
+def revision_failure(rows: Sequence[Mapping[str, object]]) -> str:
+    """Pure. Why the revision task's run did not roll it up, from that run's step rows of it (`kind`, `ok`, `verdict`,
+    `result_json`; oldest first): its last failed step, as `its <kind> failed: <why>`; "the lane ended before it was
+    built" with no row at all, "the lane ended before it rolled up" with no failed one; "" once a roll-up passed."""
+    if any(r.get("kind") == "rollup" and r.get("ok") in (1, True) for r in rows):
+        return ""
+    failed = [r for r in rows if r.get("ok") not in (1, True)]
+    if not failed:
+        return "the lane ended before it rolled up" if rows else "the lane ended before it was built"
+    last = failed[-1]
+    result = last.get("result_json")
+    said = next((str(result[k]) for k in _WHY_KEYS if isinstance(result, Mapping) and str(result.get(k) or "").strip()),
+                f"it was {last.get('verdict') or 'not recorded'}")
+    return f"its {last.get('kind') or 'step'} failed: {' '.join(said.split())[:400]}"
+
+
 def lane_verdict(tasks: Collection[str], rolled_up: Collection[str], last_round: tuple[int, str] | None, attempts: int,
-                 max_attempts: int = MAX_ATTEMPTS, *, smoke: SmokeSeen | None, reason: str = "") -> Verdict:
+                 max_attempts: int = MAX_ATTEMPTS, *, smoke: SmokeSeen | None, reason: str = "",
+                 revision: str = "") -> Verdict:
     """The ack or nack for a phase whose lane ended, from what the store holds for it: the phase's tasks (dropped ones
     left out), the tasks whose roll-up put a commit on the phase branch, its last review round and that round's
     `reason`, and the phase smoke the ended lane wrote, or None when it wrote none (`lane_smoke`).
@@ -439,7 +459,9 @@ def lane_verdict(tasks: Collection[str], rolled_up: Collection[str], last_round:
     Every other end is retryable with backoff, and after `max_attempts` claims the phase has failed: a phase with
     tasks left, a lane that ended before its smoke ran, and one whose smoke passed but whose review loop did not finish
     (a review that decided nothing, a revision that did not roll up, a lane that stopped). Each such retry counts its
-    claim, so a loop that never finishes is bounded; nothing is parked, since the lane reviews its own phase.
+    claim, so a loop that never finishes is bounded; nothing is parked, since the lane reviews its own phase. A last
+    round of `revise` whose revision task did not roll up says why (`revision`, `revision_failure`'s), ahead of the
+    smoke: the smoke that stood before that round says nothing of why the lane ended.
 
     No failed smoke is quarantined: the chair reopens a quarantined phase whose tasks are still ready, which would
     run the same smoke on the same tip without bound; `failed` stays finished, for the operator."""
@@ -449,6 +471,10 @@ def lane_verdict(tasks: Collection[str], rolled_up: Collection[str], last_round:
         return Verdict("quarantine", "quarantined", f"the phase review quarantined it in round {last_round[0]}"
                                                     + (f": {reason}" if reason else ""))
     missing = sorted(set(tasks) - set(rolled_up))
+    if last_round is not None and last_round[1] == "revise" and revision and not missing:
+        why = f"review round {last_round[0]} asked for a revision, which did not roll up: {revision}"
+        return Verdict("quarantine", "failed", f"{attempts} attempt(s), the last: {why}") if attempts >= max_attempts \
+            else Verdict("retry", "", why, backoff_s(attempts))
     if tasks and not missing and smoke is not None and smoke.ok:
         why = "every task rolled up and the smoke passed, but the lane ended before its review finished the phase"
         return Verdict("quarantine", "failed", f"{attempts} attempt(s), the last: {why}") if attempts >= max_attempts \
