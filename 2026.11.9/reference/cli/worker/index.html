@@ -4476,6 +4476,17 @@ Coxswain is in beta — versions may change between releases
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#reopen" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        reopen
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -6753,6 +6764,17 @@ Coxswain is in beta — versions may change between releases
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#reopen" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        reopen
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -6780,13 +6802,13 @@ Coxswain is in beta — versions may change between releases
 
 
 <h1 id="worker">worker</h1>
-<div class="highlight"><pre><span></span><code>usage: cox worker [-h] {run,once,status,checkout,forget} ...
+<div class="highlight"><pre><span></span><code>usage: cox worker [-h] {run,once,status,checkout,forget,reopen} ...
 
 The phase worker. The chair queues each ready phase of a phase-model initiative; a worker claims the next one it qualifies for, runs it through the harness on this machine, and keeps its claim alive while it runs.
 Nothing reaches a worker over ssh: it pulls.
 
 positional arguments:
-  {run,once,status,checkout,forget}
+  {run,once,status,checkout,forget,reopen}
     run                 claim and run phases until interrupted
     once                one claim pass, then run what it claimed to its end
     status              every queued phase with its claim, and every
@@ -6795,6 +6817,8 @@ positional arguments:
                         machine's git mirror
     forget              mark a dead worker's row stopping, so the next start
                         of its name takes it over
+    reopen              put a new-model phase that finished failed back to
+                        ready, for another try
 
 options:
   -h, --help            show this help message and exit
@@ -6805,6 +6829,7 @@ examples:
   cox worker run --capability os:macos
   cox worker checkout https://example.org/app.git ~/repos/app
   cox worker forget devbox
+  cox worker reopen ship/p1 --reason "the flaky check is fixed"
 </code></pre></div>
 <h2 id="run">run</h2>
 <div class="highlight"><pre><span></span><code>usage: cox worker run [-h] [--name NAME] [--capability TOKEN] [--lanes LANES]
@@ -6882,6 +6907,25 @@ options:
   -h, --help         show this help message and exit
   --force            forget it even though it records a machine and was beaten
                      within 900 s, so it may still be running
+  --profile PROFILE  the routing profile (default: ~/.config/agent-
+                     tools/profile.yaml or $AGENT_TOOLS_PROFILE)
+</code></pre></div>
+<h2 id="reopen">reopen</h2>
+<div class="highlight"><pre><span></span><code>usage: cox worker reopen [-h] --reason REASON [--by BY] [--dry-run]
+                         [--profile PROFILE]
+                         INITIATIVE/PHASE
+
+A phase that finished failed (its claims ran out, or its smoke failed) stays finished: the chair never retries it on its own, and releasing a hold does not either. Reopen it here: its row goes back to ready with 0 attempts, the reason and who reopened it are recorded on the row, and its review starts a new episode. Nothing on the phase branch is touched, so the next claim builds only the tasks still missing. Reopening a failed initiative-review row starts a new episode too, so its round cap starts again from zero.
+A quarantined phase is refused: triage owns it, and the chair reopens it once its tasks are ready again. A claimed phase, an approved one and a phase that is not on the new model are refused too. A phase already ready is left as it is.
+
+positional arguments:
+  INITIATIVE/PHASE   the phase, as `cox worker status` lists it
+
+options:
+  -h, --help         show this help message and exit
+  --reason REASON    why it is tried again; recorded on the phase's row
+  --by BY            who reopens it; default the OS user
+  --dry-run          say what would change and write nothing
   --profile PROFILE  the routing profile (default: ~/.config/agent-
                      tools/profile.yaml or $AGENT_TOOLS_PROFILE)
 </code></pre></div>
