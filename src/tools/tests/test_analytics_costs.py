@@ -3,6 +3,7 @@
 The pure core is tested on values. The edge is tested against a real migrated sqlite store and a real local Iceberg
 lake synced by `lake_sync`, the default lake `cox lake sync` makes in the runs dir: nothing is mocked."""
 
+import importlib.util
 import sqlite3
 import subprocess
 import sys
@@ -195,7 +196,21 @@ def test_an_unreadable_lake_falls_back_and_a_changed_reason_warns_again_but_a_re
     assert _windows(runs) == _store_truth(runs)
     first, second = notes()
     assert first.startswith("analytics: no lake catalog at ")
-    assert second.startswith("analytics: the lake could not be read: ")
+    # With the lake extra the catalog fails to open; without it, the lake is unavailable before any file is read.
+    expected = "the lake could not be read: " if importlib.util.find_spec("pyiceberg") else analytics_costs.LAKE_EXTRA_MISSING
+    assert second.startswith(f"analytics: {expected}"), second
+
+
+def test_without_the_lake_extra_a_catalog_present_falls_back_to_the_store_and_says_the_extra_is_missing(
+        runs, notes, monkeypatch):
+    # The plain unit job has no pyiceberg; with the extra installed, a None entry in sys.modules makes the import fail
+    # the same way, so this proves the no-extras path on every install.
+    for name in ("pyiceberg", "pyiceberg.exceptions", "agent_tools.lake_tables"):
+        monkeypatch.setitem(sys.modules, name, None)
+    (runs / "lake-catalog.db").write_bytes(b"")
+    assert _windows(runs) == _store_truth(runs) == [1.5, 1.5, 0.5]
+    [note] = notes()
+    assert note.startswith(f"analytics: {analytics_costs.LAKE_EXTRA_MISSING} ("), note
 
 
 def test_tail_run_ids_are_the_stores_ids_the_lake_does_not_hold():

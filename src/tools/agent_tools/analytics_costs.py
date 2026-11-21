@@ -40,7 +40,7 @@ from typing import Any
 from agent_tools import lake_config, run_store
 from agent_tools.store_url import read_provider_profile
 
-__all__ = ["catalog_problem", "chunks", "cost_reader", "lake_mark", "parse_rows", "sum_between", "tail_run_ids",
+__all__ = ["LAKE_EXTRA_MISSING", "catalog_problem", "chunks", "cost_reader", "lake_mark", "parse_rows", "sum_between", "tail_run_ids",
            "text_floor", "window_rows"]
 
 _LOG = logging.getLogger(__name__)
@@ -48,6 +48,7 @@ _LOG = logging.getLogger(__name__)
 _last_reason: str | None = None
 
 _LAKE_TABLE = "node_calls"
+LAKE_EXTRA_MISSING = "the lake needs the optional extra `lake` (pip install 'coxswain[lake]')"
 # Every distinct run id in the store's node_calls, by walking ix_node_calls_run: each step is one index probe for the
 # next id, so this costs one probe per run, however many calls each holds. Both sqlite and Postgres answer MIN from
 # the index. NULL run ids are not walked; `_NO_RUN` reads them.
@@ -170,11 +171,15 @@ def _lake_rows(runs_dir: Path, since: datetime) -> tuple[frozenset[str], Pairs] 
     problem = catalog_problem(config.catalog_uri, Path(config.catalog_uri.removeprefix("sqlite:///")).exists())
     if problem is not None:
         return problem
+    # The lake extra is optional: without pyiceberg, or pyarrow, the lake is unavailable and the store answers. These
+    # imports come first and on their own, so no later clause names a class whose import failed.
     try:
         from pyiceberg.exceptions import NoSuchTableError
 
         from agent_tools.lake_tables import HWM_PROPERTY, NAMESPACE
-
+    except ImportError as exc:
+        return f"{LAKE_EXTRA_MISSING} ({exc})"
+    try:
         table = lake_config.load_catalog(config).load_table(f"{NAMESPACE}.{_LAKE_TABLE}")
         if lake_mark(table.properties, HWM_PROPERTY) is None:
             return f"the lake's {_LAKE_TABLE} has never been synced (cox lake sync)"
