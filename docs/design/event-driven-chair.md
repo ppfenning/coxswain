@@ -105,7 +105,9 @@ The cutover (C6) is an operator's procedure, on the [chair cutover](../customize
 `cox chair worker --kind <kind>` (the plan wrote `cox chair work`), so §5.4 step 4 is
 `cox chair worker --kind housekeeping --once`. And §5.3 step 3's comparison is one command, `cox chair parity`.
 Once the tick is stopped, the queue alarms (`queue_unowned`) are raised by the first live worker, and
-`cox chair watchdog` checks the worker leases behind them. The stall alarm and the host checks go with housekeeping.
+`cox chair watchdog` checks the worker leases behind them. The stall alarm, the host checks and the tick's loop chores
+(the workspace pull, the export, the chat directives, the lane checkout check, the CI-gate line) go with housekeeping,
+and the old model's land slot with the watch, so the stopped tick leaves no work without an owner.
 
 ## Open questions
 

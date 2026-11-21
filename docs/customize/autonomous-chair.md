@@ -470,8 +470,13 @@ does not know.
 Five kinds of the tick's work can run as their own process instead:
 
 - housekeeping: stale tickets, lane tuning, stalled runs, idle lanes, lapsed
-  logins, and the periodic sweep above;
-- the watch: reverting a landed commit whose main CI went red;
+  logins, and the periodic sweep above; and, once no tick runs, the tick's
+  loop chores (the meter, the workspace pull and checkout sync, the lane
+  checkout check, the chat directives, the CI-gate pause line, and the export
+  that fills the store from the workspace's files);
+- the watch: reverting a landed commit whose main CI went red, and the old
+  model's land slot (`lane_model: task`, the default): its lands, the fetch of
+  an exited remote run, carries and closes;
 - quarantine: the triage of a failed task (a triage request, a hold for a
   person, or a `needs chair` line), restored approvals, widened tickets, held
   files, repeated failures and review PRs;
@@ -479,7 +484,11 @@ Five kinds of the tick's work can run as their own process instead:
   hold a decompose back;
 - launch: every run the chair starts (a new epic, a relaunch, a retry, a
   rescue, and a decompose for a new intake), the branch work that goes with
-  them, and the phase queue's rows for `lane_model: phase` initiatives.
+  them, and the phase queue's rows for `lane_model: phase` initiatives; and,
+  once no tick runs, the why-not-launched reasons file.
+
+Every slot of the tick's plan is one of these kinds, so with all five listed
+the tick plans nothing but the queue alarms.
 
 The tick stays the default.
 
@@ -493,7 +502,11 @@ With a kind listed, the tick no longer plans it, and
 the store lease `chair:<kind>`, timed by the store's clock, so a second copy of
 one kind stands by, tries again every 10 seconds, and takes over within a
 minute of the first one stopping. A worker that has just taken the lease waits
-`--settle` seconds (default 30) before its first pass.
+`--settle` seconds (default 30) before its first pass. A pass has a deadline
+(`--pass-deadline`: 45 minutes for the watch, 15 for the rest). Past it the
+worker stops renewing its lease, so a hung worker's lease lapses and the
+alarms below name its kind; a minute later it exits with code 4 for its unit to
+start a fresh one.
 
 The tick leaves a kind alone while a worker holds its lease, whatever the
 tick's own profile says, and checks the leases again just before it performs.
@@ -537,7 +550,9 @@ when one does not. There is no `chair_queue` table: each pass re-derives its
 kind's work from the store's rows, so no queue depth or oldest age is printed.
 
 `cox chair service --install --queues` installs and starts one unit per kind
-and disables the tick's unit; `--uninstall --queues` is the rollback. The
+and disables the tick's unit; it refuses until the watchdog timer runs, and
+puts the tick's unit back if a step fails partway. `--uninstall --queues` is
+the rollback. The
 [chair cutover](chair-cutover.md) page walks through both.
 
 The tick records that a worker lease row has been seen in an empty marker file,
