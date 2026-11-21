@@ -5,9 +5,11 @@ validate. The coxswain steers; the crew rows.
 
 ## What it owns
 
-The `crew` folder holds eleven seat definitions — recon, triage, build,
-review, ops, the board, writing, the scribe, the steward, the courier and the
-model steward — each one role filled by one agent doing one job.
+The `crew` folder holds eight seat definitions, each named by its function —
+recon, triage, reviewer, builder, ops, planner, writer and retro — each one
+role filled by one agent doing one job. The old person names (sarah, lewis,
+nova, ...) still resolve in a cartridge's `crew:` block for one release, as
+deprecated aliases.
 
 ## Installing it
 
