@@ -52,6 +52,18 @@ def test_an_intake_with_all_fields_is_written_with_them_in_its_frontmatter(env):
     assert "target_release: 2026.11.6\n" in head
 
 
+def test_an_intake_filed_as_a_hotfix_carries_its_kind_for_the_phase_queue_order(env):
+    assert _file(env, "--kind", "HotFix") == 0
+    [path] = _filed(env)
+    assert "kind: hotfix\n" in path.read_text(encoding="utf-8").split("---")[1]
+
+
+def test_an_unknown_kind_is_refused_and_lists_the_valid_kinds(env, capsys):
+    assert _file(env, "--kind", "urgent") == 2
+    assert "valid kinds: idea, feature, bug, hotfix" in capsys.readouterr().out
+    assert not _filed(env)
+
+
 def test_an_unknown_repo_is_refused_and_lists_the_valid_names(env, capsys):
     assert _file(env, repo="nowhere") == 2
     out = capsys.readouterr().out
@@ -78,7 +90,8 @@ def test_a_malformed_version_is_refused_and_every_refusal_is_printed(env, capsys
 
 @pytest.mark.parametrize(
     "flag, value, noun",
-    [("--epic", "launch-pad", "an epic"), ("--priority", "2", "a priority"), ("--target-release", "1.2", "a target release")],
+    [("--epic", "launch-pad", "an epic"), ("--priority", "2", "a priority"), ("--target-release", "1.2", "a target release"),
+     ("--kind", "hotfix", "a kind")],
 )
 def test_each_field_flag_without_intake_is_refused(env, capsys, flag, value, noun):
     assert _file(env, flag, value, intake=False) == 2

@@ -2,7 +2,12 @@
 
 Pure. The profile key `chair.queues` lists the kinds that have moved to their own worker process
 (`cox chair worker --kind K`); the default is empty, so the tick plans every kind as before. The kinds that can move
-are `housekeeping` and `watch` (C3), and `quarantine` and `decompose` (C4); `launch` stays on the tick until C5.
+are `housekeeping` and `watch` (C3), `quarantine` and `decompose` (C4), and `launch` (C5).
+
+`launch` is the single owner of every run the chair starts (C5): the old model's launch_epic, relaunch, retry, rescue
+and decompose launches, and the phase queue's `queue_phases`. Whoever holds the launch slot (the tick, or the one
+worker holding `chair:launch`) plans the launch cap from one set of facts and performs it in one process, so two
+launches never race for the last lane: there is no second launcher whose plan could have read the same free lane.
 
 Who plans a kind, decided from the same facts on both sides:
 
@@ -31,6 +36,7 @@ from typing import cast
 from agent_tools.chair_types import Action, ActionKind, Facts
 
 __all__ = [
+    "BATCHED_KINDS",
     "LAUNCH_LEASES",
     "LEASE_PREFIX",
     "LEASE_TTL_SECONDS",
@@ -52,7 +58,7 @@ __all__ = [
     "worker_acts",
 ]
 
-QUEUE_KINDS = ("housekeeping", "watch", "quarantine", "decompose")
+QUEUE_KINDS = ("housekeeping", "watch", "quarantine", "decompose", "launch")
 
 # The tables whose write is a reason to plan a kind again now. Housekeeping reads hosts and workers too, but a host or
 # worker beat writes them every few seconds across a fleet, and each wake costs a full gather (with forge calls), so
@@ -66,10 +72,17 @@ WAKE_TABLES: Mapping[str, frozenset[str]] = {
     "quarantine": frozenset({"work_items", "runs", "phase_queue"}),
     # A new intake is a `work_items` row; a decompose run's exit is a `runs` row.
     "decompose": frozenset({"work_items", "runs", "phase_queue"}),
+    # A launch is due when work becomes ready (`work_items`), a lane frees (`runs`), or a phase row moves (`phase_queue`).
+    "launch": frozenset({"work_items", "runs", "phase_queue"}),
 }
 
+# The kinds whose pass is performed as one batch (`chair_queue.Ports.perform_batch`), each action still behind the
+# store's lease check: a launch pass carries rules across its actions (a relaunch waits on its branch clear, launches
+# on one host are staggered), which one action at a time would lose.
+BATCHED_KINDS = frozenset({"launch"})
+
 # The fallback: a worker plans at least this often with no notification at all (the tick's own default interval).
-POLL_SECONDS: Mapping[str, float] = {"housekeeping": 60.0, "watch": 60.0, "quarantine": 60.0, "decompose": 60.0}
+POLL_SECONDS: Mapping[str, float] = dict.fromkeys(QUEUE_KINDS, 60.0)
 
 # The leases amendment (2026-11-20): heartbeat 10 s, lease 60 s.
 LEASE_TTL_SECONDS = 60
@@ -183,7 +196,9 @@ def unowned_actions(facts: Facts) -> list[Action]:
 # The launches a queue worker makes, by graph, and the kind lease each is made under. `cox route launch <graph>` started
 # beside the loop's live lock (held under the tick's label) is accepted only while the store says that lease is held,
 # by that holder at that epoch: a worker that lost its lease, or a stale process naming an old epoch, is refused.
-LAUNCH_LEASES: Mapping[str, str] = {"decompose": lease_name("decompose")}
+# Every graph is the launch kind's (C5): a decompose launch is no longer the decompose worker's, so no second process
+# can start a run against the same free lane.
+LAUNCH_LEASES: Mapping[str, str] = {graph: lease_name("launch") for graph in ("decompose", "epic", "rescue")}
 
 
 @dataclass(frozen=True)

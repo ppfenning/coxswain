@@ -1143,9 +1143,9 @@ CHAIR_COMMANDS = [
         ),
     ),
     commands.Command(
-        "worker", "chair", "run one kind of the chair's work (housekeeping, watch, quarantine or decompose) as its own process",
+        "worker", "chair", "run one kind of the chair's work (housekeeping, watch, quarantine, decompose or launch) as its own process",
         (
-            commands.Arg(("--kind",), {"required": True, "help": "the kind of work: housekeeping, watch, quarantine or decompose"}),
+            commands.Arg(("--kind",), {"required": True, "help": "the kind of work: housekeeping, watch, quarantine, decompose or launch"}),
             commands.Arg(("--once",), {"action": "store_true", "help": "run one pass and exit; exit 1 if it could not act (not queued, or another worker holds the kind)"}),
             commands.Arg(("--dry-run",), {"action": "store_true", "help": "plan and report each pass without taking the kind lease or performing any action"}),
             commands.Arg(("--poll",), {"type": float, "default": None, "help": "seconds between passes with no notification (default: 60)"}),

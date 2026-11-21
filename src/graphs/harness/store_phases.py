@@ -125,8 +125,9 @@ def _apply(conn: Connection, change: Mapping[str, object], by: str, now: str) ->
     ending the episode there would hand the phase fresh rounds on every flap. `review` makes claimable again a row an
     older worker parked `built` (L1, before the lane reviewed its own phase), and counts an attempt: that worker's
     park gives its claim's attempt back, so without it an old worker and this chair would claim, park and requeue the
-    row forever; with it each round costs one and the row runs out (`exhaust`). `rereview` makes claimable again an
-    initiative review its lane finished `revised` (D2, `initiative_review`), once the revision phase it asked for has
+    row forever; with it each round costs one and the row runs out (`exhaust`). A `review` that carries `band` and `seq`
+    moves the row there too (the chair's order pass, `chair_phase_queue.placements`). `rereview` makes claimable again
+    an initiative review its lane finished `revised` (D2, `initiative_review`), once the revision phase it asked for has
     merged: the same episode, so no round is closed and the rounds already held count towards its cap. `withdraw`
     takes a waiting or ready row out of the queue (state `cancelled`: its phase is held, closed or over budget), never
     a claimed one. `exhaust` finishes as failed a row whose claims ran out while nobody holds it
@@ -159,11 +160,13 @@ def _apply(conn: Connection, change: Mapping[str, object], by: str, now: str) ->
             return True
         return reopen_from("cancelled")
     if op == "review":
+        placed = "band" in change and "seq" in change  # the chair's order pass placed it (C5); else it keeps its place
         return conn.execute(
             f"UPDATE phase_queue SET state = 'ready', reason = {p}, ready_at = {p}, attempts = attempts + 1, "
-            f"updated_at = {p}, updated_by = {p} "
+            f"{f'band = {p}, seq = {p}, ' if placed else ''}updated_at = {p}, updated_by = {p} "
             f"WHERE initiative = {p} AND phase = {p} AND state = 'built' AND claim_epoch = {p}",
-            (reason, now, now, by, initiative, phase, change.get("epoch", 0)),
+            (reason, now, *((change["band"], change["seq"]) if placed else ()), now, by, initiative, phase,
+             change.get("epoch", 0)),
         ) == 1
     if op == initiative_review.REREVIEW_OP:
         return conn.execute(

@@ -4,11 +4,12 @@
   `phase_queue` row moves to `finished`. The quarantine worker, polling only every ten minutes, is woken by that move
   alone and makes the triage decision (`request_triage`) within seconds, not on the next tick. No `run_exited`
   courier line is sent.
-- A new intake is filed: the decompose worker plans its decompose launch within seconds.
-- With both kinds listed, `cox chair run --once --dry-run` plans neither, and each worker's own dry run plans what the
+- A new intake is filed: the launch worker plans its decompose launch within seconds (C5: every launch is the launch
+  kind's; C4 had the decompose worker make it).
+- With the kinds listed, `cox chair run --once --dry-run` plans neither, and each worker's own dry run plans what the
   tick no longer does.
 
-Nothing is stubbed. The decompose worker runs as a dry run, so no decompose run is started in the sandbox; its wake,
+Nothing is stubbed. The launch worker runs as a dry run, so no decompose run is started in the sandbox; its wake,
 gather and plan are the live worker's own (`chair_queue.run`).
 """
 
@@ -192,9 +193,9 @@ def _file_intake(sandbox) -> float:
     return time.time()
 
 
-def test_a_new_intake_is_picked_up_by_the_decompose_worker_within_seconds_of_being_filed(sandbox):
-    _queue(sandbox, "decompose")
-    worker = Worker(sandbox, "decompose", "--dry-run", "--poll", "600", "--min-gap", "0")
+def test_a_new_intake_is_picked_up_by_the_launch_worker_within_seconds_of_being_filed(sandbox):
+    _queue(sandbox, "launch")
+    worker = Worker(sandbox, "launch", "--dry-run", "--poll", "600", "--min-gap", "0")
     try:
         worker.wait_for(lambda l: worker.is_pass(l) and "| start |" in l, 180)
         assert "launch_decompose" not in worker.text(), worker.text()
@@ -205,7 +206,7 @@ def test_a_new_intake_is_picked_up_by_the_decompose_worker_within_seconds_of_bei
         assert worker.stop() == 0, worker.text()
     assert "| notified: " in line and "work_items" in line, line
     woke, took = _pass_started(line) - filed, picked - filed
-    print(f"decompose: pass started {woke:.2f}s and planned {took:.2f}s after the intake was filed")
+    print(f"launch: pass started {woke:.2f}s and planned {took:.2f}s after the intake was filed")
     assert woke < WAKE_BOUND_S, (woke, worker.text())
     assert took < DECIDED_BOUND_S < TICK_INTERVAL_S, (took, worker.text())
     assert "1x launch_decompose dry_run" in line, line
@@ -219,18 +220,18 @@ def _would(stdout: str) -> str:
     return next((part for part in status.split(" | ") if part.startswith("would:")), "")
 
 
-def test_with_quarantine_and_decompose_queued_the_tick_plans_neither(sandbox):
+def test_with_quarantine_and_launch_queued_the_tick_plans_neither(sandbox):
     _seed_phase(sandbox)
     assert sandbox.python_json(QUARANTINE.format(url=sandbox.store_url)) == "Upserted"
     _file_intake(sandbox)
     before = sandbox.cox("chair", "run", "--once", "--dry-run", timeout=180)
     assert before.returncode == 0, before.stdout + before.stderr
     assert "request_triage:t1" in _would(before.stdout) and "launch_decompose:" in _would(before.stdout), before.stdout
-    _queue(sandbox, "quarantine, decompose")
+    _queue(sandbox, "quarantine, decompose, launch")
     after = sandbox.cox("chair", "run", "--once", "--dry-run", timeout=180)
     assert after.returncode == 0, after.stdout + after.stderr
     assert "request_triage" not in _would(after.stdout) and "launch_decompose" not in _would(after.stdout), after.stdout
-    for kind, planned in (("quarantine", "request_triage"), ("decompose", "launch_decompose")):
+    for kind, planned in (("quarantine", "request_triage"), ("launch", "launch_decompose")):
         dry = sandbox.cox("chair", "worker", "--kind", kind, "--once", "--dry-run", timeout=180)
         assert dry.returncode == 0, dry.stdout + dry.stderr
         assert f"1x {planned} dry_run" in dry.stdout, json.dumps([kind, dry.stdout])

@@ -150,7 +150,8 @@ def test_the_pass_line_names_the_kind_the_reason_and_what_was_performed():
         ([], frozenset()),
         (["housekeeping"], {"housekeeping"}),
         (["watch", "housekeeping", "watch"], {"watch", "housekeeping"}),
-        (["launch", "housekeeping", 3], {"housekeeping"}),  # a kind with no worker yet stays on the tick
+        (["lanes", "housekeeping", 3], {"housekeeping"}),  # a name no worker runs stays on the tick
+        (["launch", "decompose"], {"launch", "decompose"}),  # C5: launch has its own worker
         ("housekeeping", frozenset()),  # not a list: none, so a typo never leaves a kind unplanned
     ],
 )
@@ -159,7 +160,7 @@ def test_the_setting_lists_only_kinds_a_worker_can_run(raw: object, kinds: froze
 
 
 def test_a_worker_lease_counts_while_it_is_unexpired_by_the_stores_clock_and_only_for_a_known_kind():
-    leases = {"housekeeping": "2026-11-20T12:01:00Z", "watch": "2026-11-20T11:59:00Z", "launch": "2026-11-20T12:05:00Z"}
+    leases = {"housekeeping": "2026-11-20T12:01:00Z", "watch": "2026-11-20T11:59:00Z", "lanes": "2026-11-20T12:05:00Z"}
     assert chair_kinds.live_kinds(leases, NOW) == {"housekeeping"}
     assert chair_kinds.lease_name("watch") == "chair:watch"
 
