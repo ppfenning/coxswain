@@ -38,6 +38,7 @@
 "smoke/test_lane_merge.py": 49.6,
 "smoke/test_lane_model_stamp.py": 6.6,
 "smoke/test_local_image.py": 0.3,
+"smoke/test_lost_worker.py": 126.5,
 "smoke/test_operator_commands.py": 6.1,
 "smoke/test_phase_check_no_forge.py": 0.0,
 "smoke/test_phase_lane.py": 213.2,

@@ -49,6 +49,70 @@ def test_a_heartbeat_is_sent_only_when_it_is_due_and_cannot_run_past_the_stop():
     assert phase_pick.next_step(100.0, 127.1, 120.0) == "stop"  # a 10 s call from here would end past 137
 
 
+def test_a_lease_s_timings_scale_as_the_operator_s_sixty_seconds_do():
+    assert phase_pick.Timings.of(60) == phase_pick.DEFAULT_TIMINGS == phase_pick.Timings(60, 10, 45)
+    assert phase_pick.DEFAULT_TIMINGS.margin_s == phase_pick.LANE_MARGIN_S == 15
+    short = phase_pick.Timings.of(48)
+    assert (short.heartbeat_s, short.stop_after_s, short.margin_s) == (8, 36, 12)
+    assert phase_pick.stop_at(100.0, short) == 100.0 + 36 - 8
+    assert phase_pick.next_step(100.0, 108.0, 108.0, short) == "beat"  # 108 + 10 = 118: ends before its stop at 128
+    assert phase_pick.next_step(100.0, 118.1, 108.0, short) == "stop"
+
+
+def test_the_shortest_lease_leaves_its_lanes_a_check_a_push_and_slack_and_its_heartbeat_time_to_finish():
+    from harness import lane_rollup
+
+    assert phase_pick.PUSH_BOUND_S == lane_rollup.REMOTE_TIMEOUT_S
+    # What can pass after a good check's store read: the rest of that check, one bounded push, and the slack.
+    assert phase_pick.MARGIN_FLOOR_S == phase_pick.CHECK_CALL_S + phase_pick.PUSH_BOUND_S + phase_pick.SKEW_S == 12
+    assert phase_pick.MIN_LEASE_S == 48 and phase_pick.MAX_LEASE_S == 600
+    assert phase_pick.lease_problem(phase_pick.MIN_LEASE_S) == "" and phase_pick.lease_problem(60) == ""
+    assert "a claim check (3s), one bounded push (8s) and 1s of slack" in phase_pick.lease_problem(phase_pick.MIN_LEASE_S - 1)
+    assert phase_pick.lease_problem(32) and phase_pick.lease_problem(40)  # the old floor, and the reviewer's
+    assert phase_pick.lease_problem(0) and phase_pick.lease_problem(-5)
+    assert phase_pick.lease_problem(phase_pick.MAX_LEASE_S) == ""
+    assert "longer than the longest a worker takes (600s)" in phase_pick.lease_problem(phase_pick.MAX_LEASE_S + 1)
+    assert phase_pick.lease_problem(86_400)
+    accepted = range(phase_pick.MIN_LEASE_S, phase_pick.MAX_LEASE_S + 1)
+    assert all(phase_pick.lease_problem(n) == "" for n in accepted)
+    for n in accepted:
+        t = phase_pick.Timings.of(n)
+        # A heartbeat sent when due ends, at its client-side bound, before the stop; the run is gone before the margin.
+        assert phase_pick.next_step(0.0, t.heartbeat_s, t.heartbeat_s, t) == "beat", n
+        assert t.heartbeat_s + phase_pick.HEARTBEAT_CALL_S <= phase_pick.stop_at(0.0, t), n
+        assert t.stop_after_s + t.margin_s == n, n
+        # A push that follows a good check lands before the lease lapses, the check's own worst case included.
+        assert t.margin_s >= phase_pick.CHECK_CALL_S + phase_pick.PUSH_BOUND_S + phase_pick.SKEW_S, n
+        # The lane's other statements, and a fence check that hangs, end inside the margin too.
+        assert t.margin_s > phase_pick.LANE_SOCKET_S and t.margin_s > phase_pick.CHECK_CALL_S, n
+
+
+def test_a_lane_reads_its_margin_from_its_claim_s_own_lease():
+    def row(heartbeat_at, lease_until):
+        return {"heartbeat_at": heartbeat_at, "lease_until": lease_until}
+
+    assert phase_pick.margin_of(row(NOW, phase_pick.lease(NOW, 60))) == 15
+    assert phase_pick.margin_of(row(NOW, phase_pick.lease(NOW, 48))) == 12
+    assert phase_pick.margin_of(row(NOW, phase_pick.lease(NOW, 120))) == 30
+    # A row that says no lease a worker accepts: the default margin.
+    assert phase_pick.margin_of(row(NOW, phase_pick.lease(NOW, 10))) == 15
+    assert phase_pick.margin_of(row(NOW, phase_pick.lease(NOW, 32))) == 15  # under the floor now
+    assert phase_pick.margin_of(row(NOW, phase_pick.lease(NOW, 3600))) == 15  # over the cap
+    assert phase_pick.margin_of(row("", "")) == phase_pick.margin_of(None) == phase_pick.margin_of({}) == 15
+    assert phase_pick.seconds(NOW, "2026-11-20T10:00:32Z") == 32 and phase_pick.seconds("2026-11-20T10:00:32Z", NOW) == -32
+
+
+def test_a_lapsed_claim_s_lost_mark_names_its_holder_epoch_and_run_and_is_the_same_each_time():
+    held = {**_row("p1", state="claimed", lease_until="2026-11-20T09:59:00Z"), "claimed_by": "w1", "claim_epoch": 3,
+            "run_id": "i.p1-4"}
+    assert phase_pick.lapsed(held, NOW) and not phase_pick.lapsed(held, "2026-11-20T09:58:00Z")
+    assert not phase_pick.lapsed({**held, "state": "ready"}, NOW)
+    assert phase_pick.lost_reason(held) == phase_pick.lost_reason(dict(held)) == (
+        "run lost: w1's claim at epoch 3 lapsed at 2026-11-20T09:59:00Z, leaving run i.p1-4; claimable again")
+    assert phase_pick.lost_reason({**held, "run_id": ""}).endswith("lapsed at 2026-11-20T09:59:00Z; claimable again")
+    assert phase_pick.lost_reason(held).startswith(phase_pick.RUN_LOST)
+
+
 def test_backoff_doubles_from_a_minute_and_stops_at_fifteen():
     assert [phase_pick.backoff_s(n) for n in (1, 2, 3, 4, 5, 9)] == [60, 120, 240, 480, 900, 900]
 
@@ -157,3 +221,37 @@ def test_a_run_that_never_started_is_retried_even_when_its_tasks_look_done():
     found = phase_pick.verdict(["approved"], 1, launch_error="the launch exited 2: no initiative.md")
     assert found == Verdict("retry", "", "the launch exited 2: no initiative.md", 60)
     assert phase_pick.verdict([], 1).reason == "the phase has no tasks in the store"
+
+
+def test_the_lost_lane_refund_count_rides_the_row_s_reason_and_any_retry_keeps_it():
+    assert phase_pick.refunds_of("tasks left ready") == (0, False)
+    one = phase_pick.with_refunds("the lane gave its claim up (x); tasks left ready", 1)
+    assert one.endswith(" [lost lanes refunded: 1]") and phase_pick.refunds_of(one) == (1, False)
+    told = phase_pick.with_refunds(one, 3, told=True)
+    assert phase_pick.refunds_of(told) == (3, True) and told.count("[lost lanes refunded") == 1
+    assert phase_pick.with_refunds(one, 0) == "the lane gave its claim up (x); tasks left ready"
+    # A refused launch's retry keeps the episode's count; a reason with its own tag keeps that one.
+    assert phase_pick.refunds_of(phase_pick.carry_refunds(told, "the launch was refused: budget")) == (3, True)
+    assert phase_pick.carry_refunds(told, one) == one
+    assert phase_pick.carry_refunds("", "tasks left ready") == "tasks left ready"
+
+
+def test_a_first_check_loss_counts_a_checked_one_is_refunded_until_the_cap():
+    assert not phase_pick.lost_refund("", checked=False)  # never reached the store: a fault every retry meets
+    assert phase_pick.lost_refund("", checked=True)
+    under = phase_pick.with_refunds(phase_pick.GAVE_UP + " (x); y", phase_pick.LOST_REFUNDS - 1)
+    assert phase_pick.lost_refund(under, checked=True)
+    spent = phase_pick.with_refunds(phase_pick.GAVE_UP + " (x); y", phase_pick.LOST_REFUNDS)
+    assert not phase_pick.lost_refund(spent, checked=True)
+
+
+def test_the_gave_up_alarm_is_a_ready_row_whose_refunds_are_spent_and_not_yet_told():
+    spent = phase_pick.with_refunds(phase_pick.GAVE_UP + " (x); y", phase_pick.LOST_REFUNDS)
+    assert phase_pick.gave_up_alarm({"state": "ready", "reason": spent})
+    assert not phase_pick.gave_up_alarm({"state": "claimed", "reason": spent})
+    assert not phase_pick.gave_up_alarm({"state": "ready", "reason": phase_pick.with_refunds(spent, 3, told=True)})
+    under = phase_pick.with_refunds(phase_pick.GAVE_UP + " (x); y", phase_pick.LOST_REFUNDS - 1)
+    assert not phase_pick.gave_up_alarm({"state": "ready", "reason": under})
+    # A refused launch carrying a spent count is not the lane's loss: the alarm waits for one.
+    carried = phase_pick.carry_refunds(spent, "the launch was refused: budget")
+    assert not phase_pick.gave_up_alarm({"state": "ready", "reason": carried})

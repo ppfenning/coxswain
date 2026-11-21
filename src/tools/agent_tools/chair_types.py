@@ -839,6 +839,10 @@ class Action(TypedDict, total=False):
     initiative and cause, or host and cause when the entry names a lane host rather than an
     initiative; when host is present cause is "login_lapsed" or "stale_checkout" and there is no initiative key.
     A "lane_prereqs" needs_chair carries host and reason: the smoke-gate checks that host failed (`lane_prereqs`).
+    A "run_lost" needs_chair carries initiative, phase, claim_epoch, worker, run, reason and command: a phase claim that
+    lapsed with nobody taking it over (`chair_phase_queue.lost_runs`), recorded only when its mark changed the row.
+    A "lane_gave_up" needs_chair carries initiative, phase, reason and command: a phase whose lanes gave their claim up
+    under a held claim until the episode's refunds were spent (`chair_phase_queue.gave_up_alarms`), told once.
     A stale_checkout needs_chair also carries repo, the repo directory name keyed in the host's checkout_env record.
     review_landed carries initiative, phase, task_id, repo, url and merged_at. steer_clear carries
     initiative, other and paths: the launch of initiative is deferred because it shares paths with other.
@@ -943,7 +947,11 @@ class Action(TypedDict, total=False):
     schedule: dict[str, object]  # a schedule_updated carries `chair_schedule._body`, written whole to the schedule file
     head: str  # a land_phase names its phase branch's tip just before the land, when the branch resolves
     changes: list[dict[str, object]]  # a queue_phases carries its phase_queue writes (`chair_phase_queue.changes`)
+    # a lost run's (or a spent refund's) queue_phases carries the needs_chair recorded only when its one mark changed the row
+    notice: Action
     approvals: list[dict[str, str]]  # an approve_phase_tasks carries {initiative, phase, task_id, commit} per task
+    claim_epoch: int  # a run_lost needs_chair names the epoch of the phase claim that lapsed (`chair_phase_queue.lost_runs`)
+    worker: str  # and the worker that held it
 
 
 class PlanLands(Protocol):
