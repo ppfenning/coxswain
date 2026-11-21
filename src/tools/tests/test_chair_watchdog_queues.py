@@ -7,7 +7,13 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from agent_tools.chair_kinds import QUEUE_KINDS
-from agent_tools.chair_watchdog import LOOP_DOWN_TITLE, QUEUES_DOWN_TITLE, evaluate_with_queues, queues_down, run_watchdog
+from agent_tools.chair_watchdog import (
+    LOOP_DOWN_TITLE,
+    QUEUES_DOWN_TITLE,
+    evaluate_with_queues,
+    queues_down,
+    run_watchdog,
+)
 
 NOW = datetime(2026, 11, 21, 12, 0, tzinfo=UTC)
 ALL = frozenset(QUEUE_KINDS)

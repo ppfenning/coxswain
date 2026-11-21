@@ -20,12 +20,12 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from agent_tools.chair_kinds import QUEUE_KINDS
 
-__all__ = ["Reading", "Verdict", "judge", "tick_reading", "verdict_lines", "worker_reading"]
+__all__ = ["Reading", "Verdict", "judge", "scratch_profile", "tick_reading", "verdict_lines", "worker_reading"]
 
 _WORKER_COUNT = re.compile(r"(\d+)x (\S+) dry_run")
 
@@ -84,7 +84,9 @@ def judge(alone: Reading, listed: Reading, workers: Mapping[str, Reading]) -> Ve
                 f"{kind}: plans more than the tick alone: "
                 + ", ".join(f"{a} {planned.counts[a]} > {alone.counts.get(a, 0)}" for a in extra)
             )
-    total = sum((r.counts for r in workers.values()), Counter()) + listed.counts
+    total: Counter[str] = Counter(listed.counts)
+    for reading in workers.values():
+        total.update(reading.counts)
     lost, doubled = alone.counts - total, total - alone.counts
     if lost:
         problems.append("planned by the tick alone and by no worker: " + ", ".join(f"{n}x {a}" for a, n in sorted(lost.items())))
@@ -106,3 +108,30 @@ def verdict_lines(alone: Reading, listed: Reading, workers: Mapping[str, Reading
     ]
     tail = ["parity: match"] if verdict.ok else ["parity: MISMATCH", *(f"  {p}" for p in verdict.problems)]
     return [*rows, *tail]
+
+
+_REPLACED = ("workspace_dir:", "provider_profile:")
+
+
+def scratch_profile(text: str, provider_profile: str, workspace: str, kinds: Sequence[str]) -> str:
+    """Pure. The routing profile `text` for one dry run: its own lines, with `workspace_dir` and `provider_profile`
+    pointed at the scratch ones and `chair.queues` set to `kinds`; the rest of its `chair:` block is kept. Written as
+    the profile's own line format (`route.parse_profile` reads a subset of YAML), never re-serialized."""
+    kept: list[str] = []
+    chair: list[str] = []
+    in_chair = False
+    for line in text.splitlines():
+        top = bool(line) and not line[0].isspace()
+        if top:
+            in_chair = line.split("#", 1)[0].strip() == "chair:"
+            if in_chair or line.startswith(_REPLACED):
+                continue
+        if in_chair:
+            if line.strip() and not line.strip().startswith("queues:"):
+                chair.append(line)
+            continue
+        kept.append(line)
+    return "\n".join([
+        *kept, f"workspace_dir: {workspace}", f"provider_profile: {provider_profile}",
+        "chair:", *chair, f"  queues: [{', '.join(kinds)}]",
+    ]) + "\n"

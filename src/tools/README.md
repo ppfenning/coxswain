@@ -160,7 +160,9 @@ cox route launch cos [--profile PROFILE] [--dry-run] [--tier-ceiling cheap|stand
 cox route launch sweep --idea IDEA --initiative-id INITIATIVE_ID [--label LABEL] [--dry-run]   launch the sweep graph against an idea
 cox chair run [--once] [--interval INTERVAL] [--dry-run] [--as-holder] [--max-overruns MAX_OVERRUNS] [--label LABEL] [--profile PROFILE]   beat, gather, plan, perform and report every tick until interrupted
 cox chair worker --kind KIND [--once] [--dry-run] [--poll POLL] [--min-gap MIN_GAP] [--settle SETTLE] [--label LABEL] [--profile PROFILE]   run one kind of the chair's work (housekeeping, watch, quarantine, decompose or launch) as its own process
-cox chair service [--install] [--status] [--label LABEL] [--interval INTERVAL] [--environment-file ENVIRONMENT_FILE] [--profile PROFILE] [--host HOST] [--apply]   write or show the systemd user unit that keeps `cox chair run` alive
+cox chair status [--profile PROFILE]   who runs the chair's work: the chair lease, each queue kind's worker lease, and their units
+cox chair parity --store-url STORE_URL [--profile PROFILE] [--timeout TIMEOUT] [--workspace WORKSPACE]   plan the tick and every queue worker dry against one store and compare them kind by kind
+cox chair service [--install] [--queues] [--uninstall] [--dry-run] [--status] [--label LABEL] [--interval INTERVAL] [--environment-file ENVIRONMENT_FILE] [--profile PROFILE] [--host HOST] [--apply]   write or show the systemd user unit that keeps `cox chair run` alive, or swap in the queue workers' units
 cox chair ask QUESTION [--option OPTION] [--context CONTEXT] [--label LABEL] [--profile PROFILE]   put a question with its options to the operator on the courier bus
 cox chair attach [--profile PROFILE] [--lend-routine] [--recall-routine]   say whether a live chair loop holds the lease; exit 0 if so, 1 if not
 cox chair answer ID OPTION [--profile PROFILE]   answer an open decision with one of its options

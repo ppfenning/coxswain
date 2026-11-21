@@ -14,26 +14,29 @@ import shlex
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from agent_tools import bounded_run, chair_queue_units, chair_service
-from agent_tools.chair_queue_units import Step, UnitInputs
+from agent_tools.cli_lazy import bounded_run, chair_queue_units, chair_service
+
+if TYPE_CHECKING:
+    from agent_tools.chair_queue_units import Step, UnitInputs
 
 __all__ = ["chair_parity", "chair_service_queues", "chair_status", "launchd_loaded", "queue_unit_names", "run_steps"]
 
-_STEP_SECONDS = 60.0  # a systemctl or launchctl call that has not answered by then has failed
+_QU_STEP_SECONDS = 60.0  # a systemctl or launchctl call that has not answered by then has failed
 
 Runner = Callable[[Sequence[str]], tuple[int, str]]
 
 
-def _run(argv: Sequence[str]) -> tuple[int, str]:
+def _qu_run(argv: Sequence[str]) -> tuple[int, str]:
     """Edge. One systemctl or launchctl call, bounded; a hung one is killed and fails."""
-    result = bounded_run.run(list(argv), _STEP_SECONDS)
+    result = bounded_run.run(list(argv), _QU_STEP_SECONDS)
     if result.timed_out or result.returncode == bounded_run.UNRUNNABLE_RETURNCODE:
-        return result.returncode, bounded_run.failure_line(list(argv), result, _STEP_SECONDS)
+        return result.returncode, bounded_run.failure_line(list(argv), result, _QU_STEP_SECONDS)
     return result.returncode, result.output
 
 
-def run_steps(steps: Sequence[Step], run: Runner = _run, echo: Callable[[str], None] = print) -> int:
+def run_steps(steps: Sequence[Step], run: Runner = _qu_run, echo: Callable[[str], None] = print) -> int:
     """Edge. Each step in order, printed as it runs. A failed step stops the rest, unless it is marked `may_fail` (it
     undoes something that may not be there); the steps left are printed for a person to run. 0 when all went."""
     for i, step in enumerate(steps):
@@ -52,7 +55,7 @@ def run_steps(steps: Sequence[Step], run: Runner = _run, echo: Callable[[str], N
     return 0
 
 
-def launchd_loaded(labels: Sequence[str], uid: int, run: Runner = _run) -> dict[str, bool]:
+def launchd_loaded(labels: Sequence[str], uid: int, run: Runner = _qu_run) -> dict[str, bool]:
     """Edge. Which of `labels` launchd has loaded in the user's GUI domain: `launchctl print` exits 0 for a loaded one."""
     return {label: run(("launchctl", "print", f"gui/{uid}/{label}"))[0] == 0 for label in labels}
 
@@ -64,7 +67,7 @@ def queue_unit_names(home: Path) -> list[str]:
     return chair_queue_units.instance_names() if chair_queue_units.template_path(home).exists() else []
 
 
-def _inputs(a: argparse.Namespace) -> UnitInputs | str:
+def _qu_inputs(a: argparse.Namespace) -> UnitInputs | str:
     """Edge. The values the units are built from, resolved as the tick's unit's are; else why they cannot be."""
     from agent_tools.cli_chair_service import (
         _chair_service_environment_file,
@@ -78,10 +81,11 @@ def _inputs(a: argparse.Namespace) -> UnitInputs | str:
     resolved = _chair_unit_inputs(label, _chair_service_environment_file(a), _profile_path(a))
     if isinstance(resolved, _ChairUnitRefusal):
         return resolved.message
-    return UnitInputs(resolved.cox, resolved.workspace_dir, label, resolved.profile, resolved.path, resolved.env_file)
+    return chair_queue_units.UnitInputs(resolved.cox, resolved.workspace_dir, label, resolved.profile, resolved.path,
+                                        resolved.env_file)
 
 
-def _queued(a: argparse.Namespace) -> frozenset[str] | str:
+def _qu_queued(a: argparse.Namespace) -> frozenset[str] | str:
     from agent_tools import chair_read_queues, route
     from agent_tools.cli_common import _profile_path
 
@@ -89,12 +93,12 @@ def _queued(a: argparse.Namespace) -> frozenset[str] | str:
     return f"routing: profile unreadable: {read}" if isinstance(read, route.ProfileError) else read
 
 
-def _labels() -> list[str]:
+def _qu_labels() -> list[str]:
     return [chair_service.CHAIR_PLIST_LABEL, *(chair_queue_units.plist_label(k) for k in chair_queue_units.QUEUE_KINDS)]
 
 
-def _install(a: argparse.Namespace, platform: str, home: Path, uid: int, run: Runner) -> int:
-    queued = _queued(a)
+def _qu_install(a: argparse.Namespace, platform: str, home: Path, uid: int, run: Runner) -> int:
+    queued = _qu_queued(a)
     if isinstance(queued, str):
         print(queued)
         return 2
@@ -102,14 +106,14 @@ def _install(a: argparse.Namespace, platform: str, home: Path, uid: int, run: Ru
     if refusal:
         print(f"chair service: refusing, nothing written: {refusal}")
         return 2
-    inputs = _inputs(a)
+    inputs = _qu_inputs(a)
     if isinstance(inputs, str):
         print(inputs)
         return 2
     files = chair_queue_units.queue_files(platform, home, inputs)
     changed = [path for path, text in files if not path.is_file() or path.read_text(encoding="utf-8") != text]
     tick_unit = chair_service.service_file(platform, home)
-    loaded = launchd_loaded(_labels(), uid, run) if platform == "darwin" else {}
+    loaded = launchd_loaded(_qu_labels(), uid, run) if platform == "darwin" else {}
     steps = chair_queue_units.install_steps(
         platform, home, changed, tick_unit is not None and tick_unit.exists(), loaded, uid,
     )
@@ -133,8 +137,8 @@ def _install(a: argparse.Namespace, platform: str, home: Path, uid: int, run: Ru
     return code
 
 
-def _uninstall(a: argparse.Namespace, platform: str, home: Path, uid: int, run: Runner) -> int:
-    queued = _queued(a)
+def _qu_uninstall(a: argparse.Namespace, platform: str, home: Path, uid: int, run: Runner) -> int:
+    queued = _qu_queued(a)
     if isinstance(queued, str):
         print(queued)
         return 2
@@ -146,7 +150,7 @@ def _uninstall(a: argparse.Namespace, platform: str, home: Path, uid: int, run: 
     present = [p for p in (chair_queue_units.template_path(home),
                            *(chair_queue_units.plist_path(home, k) for k in chair_queue_units.QUEUE_KINDS)) if p.exists()]
     tick_unit = chair_service.service_file(platform, home)
-    loaded = launchd_loaded(_labels(), uid, run) if platform == "darwin" else {}
+    loaded = launchd_loaded(_qu_labels(), uid, run) if platform == "darwin" else {}
     stop, start = chair_queue_units.uninstall_steps(
         platform, home, bool(present), tick_unit is not None and tick_unit.exists(), loaded, uid,
     )
@@ -167,18 +171,18 @@ def _uninstall(a: argparse.Namespace, platform: str, home: Path, uid: int, run: 
     return code
 
 
-def chair_service_queues(a: argparse.Namespace, run: Runner = _run) -> int:
+def chair_service_queues(a: argparse.Namespace, run: Runner = _qu_run) -> int:
     """Edge. `--install --queues` or `--uninstall --queues` (`chair_queue_units`), on this machine's platform."""
     platform, home, uid = sys.platform, Path.home(), os.getuid()
     if a.install:
-        return _install(a, platform, home, uid, run)
-    return _uninstall(a, platform, home, uid, run)
+        return _qu_install(a, platform, home, uid, run)
+    return _qu_uninstall(a, platform, home, uid, run)
 
 
-_LEASES_SQL = "SELECT name, holder, epoch, heartbeat_at, expires_at FROM leases WHERE name = {p} OR name LIKE {p}"
+_QU_LEASES_SQL = "SELECT name, holder, epoch, heartbeat_at, expires_at FROM leases WHERE name = {p} OR name LIKE {p}"
 
 
-def _lease_rows(runs_dir: Path) -> tuple[list, str] | str:
+def _qu_lease_rows(runs_dir: Path) -> tuple[list, str] | str:
     """Edge, read-only. The chair lease and the kinds' worker leases, with the store's clock; else why not."""
     from agent_tools import chair_read_queues, run_store
     from agent_tools.chair import LEASE_NAME
@@ -191,7 +195,7 @@ def _lease_rows(runs_dir: Path) -> tuple[list, str] | str:
             return f"no store under {runs_dir}"
         conn, token = opened
         try:
-            raw = conn.execute(run_store.sql_for(_LEASES_SQL, token), (LEASE_NAME, f"{LEASE_PREFIX}%")).fetchall()
+            raw = conn.execute(run_store.sql_for(_QU_LEASES_SQL, token), (LEASE_NAME, f"{LEASE_PREFIX}%")).fetchall()
             now = conn.execute(chair_read_queues.NOW_SQL[token]).fetchone()["now"]
         finally:
             conn.close()
@@ -202,7 +206,7 @@ def _lease_rows(runs_dir: Path) -> tuple[list, str] | str:
     return rows, chair_read_queues.store_stamp(now)
 
 
-def _unit_states(platform: str, home: Path, run: Runner) -> dict[str, str] | None:
+def _qu_unit_states(platform: str, home: Path, run: Runner) -> dict[str, str] | None:
     """Edge. What the service manager says of the tick's unit and the queue workers' units that are installed: the
     systemd state, or on macOS whether the agent is loaded. None on a platform with neither."""
     if platform == "linux":
@@ -221,7 +225,7 @@ def _unit_states(platform: str, home: Path, run: Runner) -> dict[str, str] | Non
     return None
 
 
-def chair_status(a: argparse.Namespace, run: Runner = _run) -> int:
+def chair_status(a: argparse.Namespace, run: Runner = _qu_run) -> int:
     """Edge. `cox chair status` (`chair_status`): exit 0 when every kind `chair.queues` lists has a live worker, 1 when
     one does not, 2 when the store or the profile cannot be read."""
     from datetime import UTC, datetime
@@ -232,13 +236,13 @@ def chair_status(a: argparse.Namespace, run: Runner = _run) -> int:
     from agent_tools.cli_runs import _leader_runs_dir_or_refuse
 
     _profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
-    if refuse_rc is not None:
-        return refuse_rc
-    queued = _queued(a)
+    if refuse_rc is not None or runs_dir is None:
+        return refuse_rc if refuse_rc is not None else 2
+    queued = _qu_queued(a)
     if isinstance(queued, str):
         print(queued)
         return 2
-    read = _lease_rows(runs_dir)
+    read = _qu_lease_rows(runs_dir)
     if isinstance(read, str):
         print(f"chair status: {read}")
         return 2
@@ -246,7 +250,7 @@ def chair_status(a: argparse.Namespace, run: Runner = _run) -> int:
     now = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
     chair_row = next((r for r in rows if r.name == LEASE_NAME), None)
     kind_rows = [r for r in rows if r.name != LEASE_NAME]
-    print("\n".join(status.status_lines(queued, chair_row, kind_rows, now, _unit_states(sys.platform, Path.home(), run))))
+    print("\n".join(status.status_lines(queued, chair_row, kind_rows, now, _qu_unit_states(sys.platform, Path.home(), run))))
     by_kind = {r.name.removeprefix(LEASE_PREFIX): status.kind_standing(r, now) for r in kind_rows}
     return 0 if status.all_live(queued, by_kind) else 1
 
@@ -258,7 +262,7 @@ def _chair_status(a: argparse.Namespace) -> int:
 CoxRunner = Callable[[Sequence[str], dict[str, str], float], tuple[int, str]]
 
 
-def _run_cox(argv: Sequence[str], env: dict[str, str], timeout: float) -> tuple[int, str]:
+def _qu_run_cox(argv: Sequence[str], env: dict[str, str], timeout: float) -> tuple[int, str]:
     """Edge. One dry run of `cox`, bounded, with its stdout and stderr together."""
     import subprocess
 
@@ -271,7 +275,7 @@ def _run_cox(argv: Sequence[str], env: dict[str, str], timeout: float) -> tuple[
     return done.returncode, done.stdout + done.stderr
 
 
-def chair_parity(a: argparse.Namespace, run_cox: CoxRunner = _run_cox) -> int:
+def chair_parity(a: argparse.Namespace, run_cox: CoxRunner = _qu_run_cox) -> int:
     """Edge. `cox chair parity --store-url URL` (`chair_parity`): every dry run against `URL` through a copy of the
     routing profile and its provider profile in a scratch directory, with a scratch workspace unless `--workspace` names
     one (so no read cache of the throwaway store lands in the live workspace's runs directory)."""
@@ -288,8 +292,8 @@ def chair_parity(a: argparse.Namespace, run_cox: CoxRunner = _run_cox) -> int:
     from agent_tools.store_url import read_provider_profile
 
     _profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
-    if refuse_rc is not None:
-        return refuse_rc
+    if refuse_rc is not None or runs_dir is None:
+        return refuse_rc if refuse_rc is not None else 2
     if a.store_url.strip() == run_store.store_url_for(runs_dir).strip():
         print("chair parity: refusing: --store-url is the store this profile uses; restore a dump into a throwaway store")
         return 2
@@ -297,7 +301,8 @@ def chair_parity(a: argparse.Namespace, run_cox: CoxRunner = _run_cox) -> int:
     if cox is None:
         print("chair parity: cox is not on PATH")
         return 2
-    routing = yaml.safe_load(_profile_path(a).read_text(encoding="utf-8")) or {}
+    routing_text = _profile_path(a).read_text(encoding="utf-8")
+    routing = yaml.safe_load(routing_text) or {}
     named = routing.get("provider_profile")
     provider = dict(read_provider_profile(named)) if isinstance(named, str) and named else {}
     with tempfile.TemporaryDirectory(prefix="cox-parity-") as scratch:
@@ -309,9 +314,7 @@ def chair_parity(a: argparse.Namespace, run_cox: CoxRunner = _run_cox) -> int:
         env = {**os.environ, "AGENT_TOOLS_PROFILE": str(profile)}
 
         def listed(kinds: Sequence[str]) -> None:
-            chair = routing.get("chair") if isinstance(routing.get("chair"), dict) else {}
-            text = yaml.safe_dump({**routing, "provider_profile": str(root / "provider.yaml"),
-                                   "workspace_dir": str(workspace), "chair": {**chair, "queues": list(kinds)}})
+            text = parity.scratch_profile(routing_text, str(root / "provider.yaml"), str(workspace), kinds)
             profile.write_text(text, encoding="utf-8")
 
         def dry(argv: list[str]) -> tuple[int, str]:

@@ -16,9 +16,9 @@ from agent_tools import cli_chair_units
 from agent_tools.chair_kinds import QUEUE_KINDS
 from agent_tools.chair_service import CHAIR_PLIST_LABEL, UNIT_NAME
 
-HOME = PurePosixPath("/home/op")
-INPUTS = units.UnitInputs("/opt/cox/bin/cox", "/home/op/repos/workspace", "chair", "/home/op/.config/agent-tools/profile.yaml",
-                          "/opt/cox/bin:/usr/bin", "/home/op/.config/agent-tools/garage.env")
+HOME = PurePosixPath("/home/user")
+INPUTS = units.UnitInputs("/opt/cox/bin/cox", "/home/user/repos/workspace", "chair", "/home/user/.config/agent-tools/profile.yaml",
+                          "/opt/cox/bin:/usr/bin", "/home/user/.config/agent-tools/garage.env")
 ALL = frozenset(QUEUE_KINDS)
 
 
@@ -28,8 +28,8 @@ def _argvs(steps) -> list[str]:
 
 def test_the_template_runs_the_instance_kind_as_a_worker_under_the_chairs_label_and_profile():
     text = units.template_text(INPUTS)
-    assert "ExecStart=/opt/cox/bin/cox chair worker --kind %i --label chair --profile /home/op/.config/agent-tools/profile.yaml" in text
-    assert "EnvironmentFile=-/home/op/.config/agent-tools/garage.env" in text
+    assert "ExecStart=/opt/cox/bin/cox chair worker --kind %i --label chair --profile /home/user/.config/agent-tools/profile.yaml" in text
+    assert "EnvironmentFile=-/home/user/.config/agent-tools/garage.env" in text
     assert "Environment=PATH=/opt/cox/bin:/usr/bin" in text and "Restart=always" in text
     assert "WantedBy=default.target" in text
 

@@ -504,6 +504,42 @@ lease row has ever been seen on this machine. When a listed kind has had no
 live worker for over a minute, the tick raises one `needs chair` line,
 `queue_unowned <kind>`, and the notifier pushes it once.
 
+Once no tick holds the chair lease (after the cutover, when the tick is
+stopped), the workers raise that alarm themselves. The first live worker in the
+order housekeeping, watch, quarantine, decompose, launch raises
+`queue_unowned <kind>` for every other listed kind with no live worker. While
+housekeeping runs, it watches the other four. When housekeeping is the one
+down, the watch worker raises `queue_unowned housekeeping`; with the watch
+down too, the quarantine worker does, and so on. No single dead process
+silences the alarm. With every worker and the tick down, the watchdog timer
+still reports it (below). While a tick does hold the chair lease, it raises the
+alarm and no worker does, so it is never pushed twice.
+
+Each worker also pushes its own pass's `needs chair` lines and alarms, which
+the tick's notify step used to push. Each kind keeps its own sent file,
+`<workspace>/notify-sent-<kind>.json`. The worker that raises the queue alarms
+also pushes the open decision cards and `queue_empty`. The stall alarm and the
+login and host checks are housekeeping's, so they go on with the tick stopped:
+the tick plans them only while it plans housekeeping.
+
+`cox chair watchdog` (the five-minute timer) judges the worker leases too.
+While `chair.queues` lists a kind, it pushes `Chair queue down` when that kind's
+`chair:<kind>` lease has no row, or expired more than `--stale-minutes` ago by
+the store's clock. With every kind listed, the tick is stopped, so the watchdog
+judges neither the chair lease nor the tick's status lines. Its `Chair loop
+down` and `Lanes idle` checks read those, and would fire from the moment of the
+stop.
+
+`cox chair status` prints `chair.queues`, the chair lease, and each kind's lease
+with its holder, epoch, last beat and expiry, all on the store's clock, then the
+state of the units. It exits 0 when every listed kind has a live worker and 1
+when one does not. There is no `chair_queue` table: each pass re-derives its
+kind's work from the store's rows, so no queue depth or oldest age is printed.
+
+`cox chair service --install --queues` installs and starts one unit per kind
+and disables the tick's unit; `--uninstall --queues` is the rollback. The
+[chair cutover](chair-cutover.md) page walks through both.
+
 The tick records that a worker lease row has been seen in an empty marker file,
 `<runs_dir>/chair-queue-lease-seen`, so a restarted tick still knows it. Nothing
 removes the file. While it is there, a failed lease read makes the tick leave
@@ -553,6 +589,9 @@ seconds (default 60) when nothing is written. Host and worker beats do not wake
 it. While the profile does not list its kind, a worker stays idle.
 `cox chair worker --kind K --once --dry-run` plans one pass and performs
 nothing, so its plan can be compared with `cox chair run --once --dry-run`.
+`cox chair parity --store-url <url>` runs that comparison for every kind against
+one store (a throwaway one restored from a dump, never the live one) and says
+whether the workers together plan what the tick alone planned.
 
 `cox setup doctor` has a `store notify queue` row on a Postgres store. It
 fails when more than half of the server's notification queue is in use: a

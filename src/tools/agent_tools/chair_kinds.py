@@ -55,8 +55,8 @@ __all__ = [
     "proof_argv",
     "queued_kinds",
     "tick_skips",
-    "unowned_actions",
     "tick_watching",
+    "unowned_actions",
     "unowned_kinds",
     "unreadable_actions",
     "watcher",
@@ -193,7 +193,10 @@ def unowned_actions(facts: Facts, exclude: frozenset[str] = frozenset()) -> list
     it stands (`notify_core.due`)."""
     return [
         {
-            "kind": ActionKind.NEEDS_CHAIR, "initiative": "chair-queue", "cause": f"{UNOWNED_CAUSE} {kind}",
+            # The lease as the task: the record's key is (ts, holder, kind, target) and the target is the task first,
+            # so the alarms of one pass are a row each, not one row for whichever kind came first.
+            "kind": ActionKind.NEEDS_CHAIR, "initiative": "chair-queue", "task_id": lease_name(kind),
+            "cause": f"{UNOWNED_CAUSE} {kind}",
             "reason": (
                 f"chair.queues lists {kind} but no worker has held {lease_name(kind)} for over {LEASE_TTL_SECONDS}s, so "
                 f"nothing plans it: start `cox chair worker --kind {kind}`, or take {kind} out of chair.queues"

@@ -100,6 +100,13 @@ An item is enqueued by one of three feeds. Each feed only enqueues; it never dec
 
 Each step ships behind the existing tick until the next replaces it: the tick skips a kind whose queue is enabled.
 
+The cutover (C6) is an operator's procedure, on the [chair cutover](../customize/chair-cutover.md) page: the plan's
+§5.3 to §5.5 with the commands as built. Two of them differ from the plan's text. The worker is
+`cox chair worker --kind <kind>` (the plan wrote `cox chair work`), so §5.4 step 4 is
+`cox chair worker --kind housekeeping --once`. And §5.3 step 3's comparison is one command, `cox chair parity`.
+Once the tick is stopped, the queue alarms (`queue_unowned`) are raised by the first live worker, and
+`cox chair watchdog` checks the worker leases behind them. The stall alarm and the host checks go with housekeeping.
+
 ## Open questions
 
 - **Cursor or trigger for store changes.** A cursor on `updated_at` needs every writer to stamp it. Most do, but the

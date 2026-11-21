@@ -115,3 +115,25 @@ def test_with_nothing_listed_the_status_says_the_tick_plans_every_kind():
     lines = status.status_lines(frozenset(), None, [], NOW)
     assert lines[0] == "chair.queues: none (the tick plans every kind)" and not any("NOT RUNNING" in l for l in lines)
     assert status.all_live(frozenset(), {})
+
+
+PROFILE = """team: pat
+workspace_dir: ~/repos/workspace
+provider_profile: ~/.config/agent-tools/provider.yaml
+chair:
+  queues: [housekeeping]
+  housekeeping_hours: 6
+notify: {ntfy: https://ntfy.example/cox}
+"""
+
+
+def test_the_scratch_profile_points_at_the_scratch_store_and_workspace_and_lists_the_kinds():
+    from agent_tools import route
+
+    text = parity.scratch_profile(PROFILE, "/tmp/p/provider.yaml", "/tmp/p/workspace", QUEUE_KINDS)
+    read = route.parse_profile(text)
+    assert read["workspace_dir"] == "/tmp/p/workspace" and read["provider_profile"] == "/tmp/p/provider.yaml"
+    assert list(read["chair"]["queues"]) == list(QUEUE_KINDS) and float(read["chair"]["housekeeping_hours"]) == 6
+    assert read["team"] == "pat" and read["notify"] == {"ntfy": "https://ntfy.example/cox"}
+    empty = route.parse_profile(parity.scratch_profile(PROFILE, "/p", "/w", ()))
+    assert list(empty["chair"]["queues"]) == []
