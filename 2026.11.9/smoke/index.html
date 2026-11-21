@@ -973,6 +973,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#the-phase-check-needs-no-forge" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The phase check needs no forge
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#where-it-runs" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6704,6 +6715,17 @@ Coxswain is in beta — versions may change between releases
 </li>
       
         <li class="md-nav__item">
+  <a href="#the-phase-check-needs-no-forge" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The phase check needs no forge
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#where-it-runs" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -7080,6 +7102,43 @@ unit environment file.</p>
   by <code>state</code>, so a failed check was reported as "failing checks: combined status" instead of by its context.</li>
 </ul>
 <p>macOS launchd stays an operator check: the suite runs on Linux and starts no launchd agent.</p>
+<h2 id="the-phase-check-needs-no-forge">The phase check needs no forge</h2>
+<p>A phase and an initiative check different amounts of the suite (L2 gives each level its own <code>.agent-checks</code> lines):</p>
+<table>
+<thead>
+<tr>
+<th>Level</th>
+<th>Command</th>
+<th>Forgejo</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>phase</td>
+<td><code>pytest -q -rs smoke -m "not forge"</code></td>
+<td>never started</td>
+</tr>
+<tr>
+<td>initiative</td>
+<td><code>pytest -q -rs smoke</code></td>
+<td>started once, for the <code>forge</code> tests</td>
+</tr>
+</tbody>
+</table>
+<p>Every test marked <code>forge</code> needs Forgejo's API, not only a git remote: <code>test_forge_land.py</code> opens, polls and merges a
+pull request, and <code>test_edge_upgrade.py</code> reads the commit statuses that <code>forge_forgejo.green_commits</code> picks the
+upgrade from. The git-only behaviours the lander and the phase roll-up rely on run against bare origins and the local
+forge (<code>test_lander_push.py</code>, <code>test_lander_lanes.py</code>'s <code>_repository</code>). <code>test_phase_check_no_forge.py</code> holds both
+facts:</p>
+<ul>
+<li>each behaviour in <code>plan.GIT_ONLY_BEHAVIOURS</code> (push after merge, re-merge, roll-up, resume from task commits) names
+  smoke tests that exist and carry no <code>forge</code> mark. A behaviour whose test has not landed sits in
+  <code>plan.GIT_ONLY_PENDING</code>, and fails the meta-test once its test exists, so it moves over instead of going stale;</li>
+<li>only the <code>forge</code> fixture calls <code>plan.forgejo_run_argv</code>, and no test of the run without the <code>forge</code> mark has <code>forge</code>
+  in its fixture closure. A run that deselects the forge tests therefore starts no container of the Forgejo image.
+  Under <code>COX_SMOKE_SHARD</code> this covers the files of the shard that holds the meta-test; the unsharded phase command
+  covers them all.</li>
+</ul>
 <h2 id="where-it-runs">Where it runs</h2>
 <ul>
 <li><strong>CI.</strong> The <code>smoke</code> and <code>smoke (forge)</code> jobs each have a Postgres service (the pinned image). <code>smoke</code> runs
