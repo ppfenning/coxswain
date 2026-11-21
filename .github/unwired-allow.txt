@@ -11,12 +11,14 @@ src/graphs/graphs/ops/retro_propose.py::retro_propose  # graph module, discovere
 # `statements(dialect)` through the module object.
 src/graphs/harness/store_ddl_0019.py::statements  # migration module, discovered by store_migrate.default_modules' package walk
 src/graphs/harness/store_ddl_0020.py::statements  # migration module, discovered by store_migrate.default_modules' package walk
+src/graphs/harness/store_ddl_0021.py::statements  # migration module, discovered by store_migrate.default_modules' package walk
 
 # Commands a person runs as `python -m <module>`, documented where they are used.
 src/graphs/harness/graphdoc.py::graphdoc  # `python -m harness.graphdoc`, docs/customize/write-a-graph.md
 src/graphs/harness/store_backfill.py::store_backfill  # `python -m harness.store_backfill`, src/graphs/docs/STORAGE.md
 src/graphs/harness/store_card_keys.py::store_card_keys  # `python -m harness.store_card_keys URL`, run by a person (its docstring)
 src/graphs/harness/store_classify.py::store_classify  # `python -m harness.store_classify`, docs/releases/0.18.0.md
+src/graphs/harness/store_notify.py::store_notify  # `python -m harness.store_notify --store-url URL`, its docstring: watching the triggers during the soak
 src/tools/agent_tools/store_restore_drill.py::store_restore_drill  # `-m agent_tools.store_restore_drill` in ops/store-backup/coxswain-store-drill.service
 
 # pytest calls its hooks by name; the suites' conftest.py files import them.

@@ -33,6 +33,7 @@ EXPECTED_ORDER = (
     "step_results",
     "review_rounds",
     "workers",
+    "chair_queue",
 )
 
 SEED = {
@@ -101,6 +102,11 @@ SEED = {
     "workers": [
         {"name": "lane-host", "capabilities_json": "[]", "lanes": 2, "threads": 8, "state": "up", "version": "v",
          "doctor_json": "{}", "doctor_at": T0, "started_at": T0, "beat_at": T0},
+    ],
+    "chair_queue": [
+        {"id": "housekeeping:sweep", "kind": "housekeeping", "key": "sweep", "state": "queued", "reason": "timer",
+         "queued_at": T0, "due_at": T0, "claimed_by": "", "claimed_at": "", "lease_until": "", "attempts": 0,
+         "last_error": "", "updated_at": T0},
     ],
 }
 
