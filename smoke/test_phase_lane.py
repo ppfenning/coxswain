@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import subprocess
 import time
@@ -206,6 +207,23 @@ def _approve_round(sandbox, head: str) -> None:
     assert _row(sandbox)["state"] == "ready", (tick.stdout, _row(sandbox))
 
 
+_CLONE_TRACE = re.compile(r"lane: clone (?P<url>\S+): mirror (?P<mirror>\w+), mirror fetched (?P<fetched>\d+) object\(s\); "
+                          r"(?P<how>borrowed from the mirror|plain clone), received (?P<received>\d+) object\(s\)")
+
+
+def _clone_trace(sandbox, run_id: str) -> dict[str, str]:
+    """What the lane's own clone cost, from the trace line it logs (`harness.repo_cache.trace_line`)."""
+    found = _CLONE_TRACE.search(_run_log(sandbox, run_id))
+    assert found, _run_log(sandbox, run_id)
+    return found.groupdict()
+
+
+def _objects_since(sandbox, origin: Path, tips: list[str]) -> int:
+    """How many objects origin holds that none of `tips` reaches: what a mirror holding `tips` still lacks."""
+    listed = sandbox.git(origin, "rev-list", "--objects", "--all", "--not", *tips)
+    return len([line for line in listed.splitlines() if line.strip()])
+
+
 def _lane_refs(sandbox, repo) -> list[str]:
     return sandbox.git(repo.path, "for-each-ref", "--format=%(refname)", "refs/coxswain/").split()
 
@@ -225,7 +243,9 @@ def _thaw(lane: int) -> None:
 
 
 def test_three_tasks_build_in_parallel_each_pushed_as_it_lands_and_the_approved_round_approves_them(lane_machine):
-    sandbox, repo, name, env, init_sha, _ = lane_machine
+    sandbox, repo, name, env, init_sha, launchable = lane_machine
+    tips_before = sandbox.git(repo.origin, "for-each-ref", "--format=%(objectname)").split()
+    held_before = _objects_since(sandbox, repo.origin, [])
     worker = Worker(sandbox, env, "once", "--name", name)
     try:
         first = _until(lambda: [s for s in _steps(sandbox) if s["kind"] == "rollup"], 240, "the first roll-up")[0]
@@ -233,6 +253,12 @@ def test_three_tasks_build_in_parallel_each_pushed_as_it_lands_and_the_approved_
         on_origin = sandbox.git(repo.origin, "rev-parse", BRANCH)
         assert first["task_id"] == "t1" and first["subject_sha"] == on_origin, first
         assert not [s for s in _steps(sandbox) if s["task_id"] == "t3"], _steps(sandbox)
+        # The lane builds in a clone of its own, whose origin is the real one (the mirror is never a remote), and
+        # which keeps none of the mirror's objects borrowed.
+        own = launchable.worktrees / _row(sandbox)["run_id"] / "_repo"
+        assert sandbox.git(own, "remote") == "origin"
+        assert sandbox.git(own, "remote", "get-url", "origin") == str(repo.origin)
+        assert not (own / ".git" / "objects" / "info" / "alternates").exists()
         out = worker.finished(timeout=300)
     finally:
         worker.kill()
@@ -248,7 +274,11 @@ def test_three_tasks_build_in_parallel_each_pushed_as_it_lands_and_the_approved_
     assert all(len(c["parents"].split()) == 1 for c in commits)  # linear: no merge commits
     assert sandbox.git(repo.origin, "rev-parse", INIT) == init_sha  # one merge owner: the lane never moves init/ship
     assert _lane_refs(sandbox, repo) == []  # the run's private refs are gone with it
+    assert not (launchable.worktrees / run_id).exists()  # and its own clone, which held the refs it fetched
     assert not (sandbox.workspace / "runs" / f"{run_id}.lane-beat").exists()
+    cold = _clone_trace(sandbox, run_id)
+    assert (cold["mirror"], cold["how"], cold["received"]) == ("created", "borrowed from the mirror", "0"), cold
+    assert int(cold["fetched"]) == held_before, cold  # the whole of origin as the lane found it, once
 
     steps = {(s["task_id"], s["kind"]): s for s in _steps(sandbox, run_id)}
     assert {k for k in steps if k[1] == "rollup"} == {("t1", "rollup"), ("t2", "rollup"), ("t3", "rollup")}
@@ -271,6 +301,12 @@ def test_three_tasks_build_in_parallel_each_pushed_as_it_lands_and_the_approved_
     assert "finished approved" in again, again
     row = _row(sandbox)
     assert (row["state"], row["outcome"], row["claim_epoch"]) == ("finished", "approved", 2), row
+    # The second lane on this machine fetched only what origin gained since the first one's clone: its roll-ups.
+    warm = _clone_trace(sandbox, row["run_id"])
+    assert (warm["mirror"], warm["how"], warm["received"]) == ("refreshed", "borrowed from the mirror", "0"), warm
+    gained, whole = _objects_since(sandbox, repo.origin, tips_before), _objects_since(sandbox, repo.origin, [])
+    assert int(warm["fetched"]) == gained == whole - held_before, (warm, gained, whole)  # not the whole of origin again
+    assert not (launchable.worktrees / row["run_id"]).exists()
     assert not [s for s in _steps(sandbox, row["run_id"]) if s["kind"] in ("build", "rollup")]
     tick = sandbox.cox("chair", "run", "--once", timeout=180)
     assert tick.returncode == 0, tick.stdout + tick.stderr
