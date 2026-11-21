@@ -28,6 +28,10 @@ STARTED_LABEL = f"{LABEL}.started"
 STALE_AFTER_S = 2 * 60 * 60
 # The environment variable a CI job (or a person) sets to point the suite at a Postgres it already runs.
 URL_ENV = "COX_SMOKE_POSTGRES_URL"
+# The URL of the warm server `cox setup doctor --fix` keeps (`agent_tools.smoke_warm.url()`; a test in
+# tests/test_smoke_plan.py keeps the two equal). Set to this value and not answering, the suite starts a container per
+# session instead; any other URL that does not answer fails the run, since the person who set it meant that server.
+WARM_URL = f"postgresql://postgres:{POSTGRES_PASSWORD}@127.0.0.1:55432/postgres"
 # Set in CI: a missing docker, uv or Postgres fails the suite instead of skipping it, so a required job cannot pass empty.
 REQUIRED_ENV = "COX_SMOKE_REQUIRED"
 # Set on a host whose docker is known not to work: a docker on PATH whose daemon does not answer then skips the
@@ -174,19 +178,32 @@ def loopback_refusal(url: str) -> str | None:
     return None
 
 
+def needs_container(env_url: str | None, reachable: bool) -> bool:
+    """Whether the session starts its own container: no URL, or the warm server's URL while it does not answer."""
+    return not env_url or (env_url == WARM_URL and not reachable)
+
+
 def postgres_source(
     env_url: str | None, docker_path: str | None, docker_ok: bool, *, required: bool, broken_docker_ok: bool = False,
+    reachable: bool = True,
 ) -> PostgresSource:
     """Where the session's Postgres comes from: the URL the environment names, else a container, else skip or fail.
-    No docker at all skips (unless required). A docker whose daemon does not answer fails, unless `broken_docker_ok`
-    and the run is not required: it is a host fault, and a skip would hide it."""
+    A URL that does not answer (`reachable` false) fails, unless it is `WARM_URL`: the warm server being down falls
+    back to a container. No docker at all skips (unless required). A docker whose daemon does not answer fails, unless
+    `broken_docker_ok` and the run is not required: it is a host fault, and a skip would hide it."""
     if env_url:
         refusal = loopback_refusal(env_url)
-        return Fail(refusal) if refusal else UseUrl(env_url)
+        if refusal:
+            return Fail(refusal)
+        if reachable:
+            return UseUrl(env_url)
+        if not needs_container(env_url, reachable):
+            return Fail(f"{URL_ENV} names a server that does not answer; start it, or unset {URL_ENV} to use a container")
+    wanted = f"{URL_ENV} is not set" if not env_url else f"the warm server at {URL_ENV} does not answer"
     if docker_path is None:
-        return unavailable(f"no docker on PATH and {URL_ENV} is not set", required=required)
+        return unavailable(f"no docker on PATH and {wanted}", required=required)
     if not docker_ok:
-        reason = f"docker is on PATH but its daemon did not answer, and {URL_ENV} is not set"
+        reason = f"docker is on PATH but its daemon did not answer, and {wanted}"
         if broken_docker_ok and not required:
             return Skip(f"{reason} ({BROKEN_DOCKER_OK_ENV} is set)")
         return Fail(f"{reason}; set {BROKEN_DOCKER_OK_ENV}=1 to skip on this host")
@@ -263,18 +280,93 @@ def with_database(url: str, database: str) -> str:
     return parts._replace(path=f"/{database}").geturl()
 
 
-def database_name(test_id: str) -> str:
-    """A Postgres database name for one test: lower case letters, digits and underscores, at most 63 characters, and
-    distinct for distinct test ids (a hash of the id closes it)."""
-    stem = re.sub(r"[^a-z0-9]+", "_", test_id.lower()).strip("_")[:40]
+def url_address(url: str) -> tuple[str, int]:
+    """The (host, port) a postgres URL connects to; libpq's default port 5432 when it names none."""
+    parts = urlsplit(url)
+    return parts.hostname or "localhost", parts.port or 5432
+
+
+def session_prefix(session: str) -> str:
+    """The front of every database name one session creates: `smoke_<session>_`."""
+    return f"smoke_{session}_"
+
+
+def database_name(test_id: str, session: str, created: int) -> str:
+    """A Postgres database name for one test of one session, created at `created` (epoch seconds): lower case letters,
+    digits and underscores, at most 63 characters, and distinct for distinct test ids (a hash of the id closes it).
+    The time is the database's own, not the session's, so a session that runs for hours never ages its own databases."""
+    stem = re.sub(r"[^a-z0-9]+", "_", test_id.lower()).strip("_")[:20]
     digest = hashlib.sha256(test_id.encode()).hexdigest()[:12]
-    return f"smoke_{stem}_{digest}"
+    return f"{session_prefix(session)}{created}_{stem}_{digest}"
 
 
-def template_name(session: str) -> str:
-    """The session's template database: migrated once, then copied for each test (`CREATE DATABASE ... TEMPLATE`).
-    One per session, so two sessions on one server never copy, or drop, each other's."""
-    return f"smoke_template_{re.sub(r'[^a-z0-9]+', '_', session.lower())[:40]}"
+_SESSION_DATABASE = re.compile(r"smoke_[0-9a-f]{12}_(\d+)_")
+
+
+def stale_databases(names: Iterable[str], now: int, stale_after: int = STALE_AFTER_S) -> list[str]:
+    """The names whose embedded creation time is more than `stale_after` seconds before `now`. A name not shaped
+    `smoke_<12 hex>_<epoch>_...` is left alone: nothing says it is not some live session's."""
+    stale = []
+    for name in names:
+        match = _SESSION_DATABASE.match(name)
+        if match and now - int(match.group(1)) > stale_after:
+            stale.append(name)
+    return stale
+
+
+_SCOPED = re.compile(r"smoke_([0-9a-f]{12})_(\d+)_.*_([0-9a-f]{12})")
+
+
+def _scope(database: str) -> tuple[str, str, str]:
+    match = _SCOPED.fullmatch(database)
+    if not match:
+        raise ValueError(f"not a session's test database name: {database!r}")
+    return match.group(1), match.group(2), match.group(3)
+
+
+def worker_name(database: str) -> str:
+    """The worker name a test makes its login role for, from its database's name: `smoke-<session>-<created>-<hash>`.
+    Roles are server-wide, so it carries the session and the creation time: two sessions on one server never share
+    one, and its login role (`cox_w_` and the name with `-` as `_`) is reaped by age like the databases are."""
+    session, created, digest = _scope(database)
+    return f"smoke-{session}-{created}-{digest}"
+
+
+def scoped_name(database: str, kind: str) -> str:
+    """Another server-wide name a test makes, from its database's name: `smoke_<session>_<created>_<kind>_<hash>`."""
+    session, created, digest = _scope(database)
+    return f"smoke_{session}_{created}_{kind}_{digest}"
+
+
+LOGIN_PREFIX = "cox_w_"  # what `cox setup store worker-role <name>` puts before the name (harness.store_roles)
+
+
+def session_role_prefixes(session: str) -> tuple[str, str]:
+    """The fronts of every role one session creates: its worker logins, then its other roles."""
+    return f"{LOGIN_PREFIX}{session_prefix(session)}", session_prefix(session)
+
+
+def stale_roles(names: Iterable[str], now: int, stale_after: int = STALE_AFTER_S) -> list[str]:
+    """`stale_databases` for roles: a worker login is read without its `cox_w_` front. Logins come first, since a
+    login's membership was granted by an owner role, which therefore goes after it."""
+    def bare(name: str) -> str:
+        return name.removeprefix(LOGIN_PREFIX)
+    stale = set(stale_databases((bare(n) for n in names), now, stale_after))
+    return role_drop_order(n for n in names if bare(n) in stale)
+
+
+def role_drop_order(names: Iterable[str]) -> list[str]:
+    """Worker logins before any other role, each group in name order."""
+    return sorted(names, key=lambda n: (not n.startswith(LOGIN_PREFIX), n))
+
+
+def template_name(session: str, created: int) -> str:
+    """The session's template database, created at `created` (epoch seconds): migrated once, then copied for each test
+    (`CREATE DATABASE ... TEMPLATE`). One per session, so two sessions on one server never copy, or drop, each other's.
+    It carries the session's prefix and its own creation time, like every test database, so the session's end drops
+    it and a killed session's is reaped by age (`stale_databases`). No test database ends in `_template`: each ends in
+    a hash."""
+    return f"{session_prefix(session)}{created}_template"
 
 
 def system_path_with(system_path: str, tool_dir: str | None) -> str:

@@ -33,14 +33,32 @@ without mocks in `tests/test_smoke_plan.py`.
   digest (`plan.POSTGRES_IMAGE`). CI's service uses the same digest. The suite takes a URL only when it names one
   loopback host (`localhost`, `127.0.0.1` or `::1`). It refuses a URL that lists several hosts (`a:5432,b:5432`), and
   one whose query sets `host`, `hostaddr` or `service`, since libpq would connect wherever those say. A URL it
-  refuses fails the run, whether or not the run is required.
-- **`store_template`** (once per session): a database at the newest schema, named for the session
-  (`plan.template_name`). It is created and opened once by `harness.store_cli`, so the schema migrations apply the way
-  they do on any store, under the install's own sandboxed environment. The caller's `PYTHONPATH`, `PG*` variables and
-  HOME do not reach it. It is dropped at the end of the session.
-- **`store_url`** (per test): a fresh database on that server, a copy of the template
-  (`CREATE DATABASE ... TEMPLATE`), so the migrations run once per session and not once per test. It is dropped after
-  the test. The backup before a migration is proven on its own path, by `test_store_backup_pg_dump.py`.
+  refuses fails the run, whether or not the run is required. Before using a URL the suite opens a TCP connection to
+  its host and port. If nothing answers, which way it goes depends on the URL:
+  - **The warm server's URL** (`plan.WARM_URL`, `postgresql://postgres:smoke@127.0.0.1:55432/postgres`): the suite
+    falls back to a container per session, as if the variable were unset. A worker whose warm container is down still
+    runs its smoke.
+  - **Any other URL**: the run fails. Whoever set it meant that server, and a silent fallback would hide that it is
+    down.
+- **`session_databases`** (once per session): the session's handle on its server's databases. Every smoke database is
+  named `smoke_<session>_<created>_...`, the session's id and the database's own creation time (epoch seconds) first,
+  so two sessions sharing one server never pick the same name. When a session starts, this fixture reaps every
+  `smoke_` database created more than 2 hours ago (`plan.STALE_AFTER_S`), which is how a killed session's databases
+  go, its template among them. The reap drops without `FORCE`, so Postgres refuses to drop a database someone is still
+  connected to, and the reap leaves it. The age is the database's own, not its session's. A name not shaped
+  `smoke_<12 hex>_<epoch>_` is left alone. At the end of the session it drops every database still carrying the
+  session's prefix. Roles are server-wide, so the roles a test makes are named the same way: a worker login is
+  `cox_w_smoke_<session>_<created>_<hash>` (`plan.worker_name`) and a store owner `smoke_<session>_<created>_owner_<hash>`
+  (`plan.scoped_name`). The session's end drops its roles after its databases, and the reap drops a killed session's
+  by age (`plan.stale_roles`), worker logins before other roles. A role something still depends on is left for the
+  next reap. Every name reaches SQL through `psycopg.sql.Identifier`.
+- **`store_template`** (once per session, after the reap): a database at the newest schema, named
+  `smoke_<session>_<created>_template` (`plan.template_name`). It is created and opened once by `harness.store_cli`,
+  so the schema migrations apply the way they do on any store, under the install's own sandboxed environment. The
+  caller's `PYTHONPATH`, `PG*` variables and HOME do not reach it. It is dropped at the end of the session.
+- **`store_url`** (per test): a fresh database on that server, `smoke_<session>_<created>_<stem>_<hash>`, a copy of
+  the template (`CREATE DATABASE ... TEMPLATE`), so the migrations run once per session and not once per test. It is
+  dropped after the test. The backup before a migration is proven on its own path, by `test_store_backup_pg_dump.py`.
 - **`sandbox`** (per test): a temporary home with a routing profile at `~/.config/agent-tools/profile.yaml`, a
   provider profile naming the test's store, a workspace with `work/` and `runs/`, and a git config. Every `cox` runs
   with HOME, the XDG roots and git's global config inside the sandbox, and with the install's `bin` first on PATH.
@@ -242,6 +260,59 @@ session's container by hand:
 
 ```sh
 docker rm -f $(docker ps -aq --filter label=coxswain-smoke.session=<id>)
+```
+
+## The warm Postgres
+
+A worker machine can keep one long-lived Postgres for the suite instead of starting a container per session. The
+suite does not change for it: any loopback server named by `COX_SMOKE_POSTGRES_URL` is used as is, without starting
+docker. With the variable unset, or set to the warm server's URL while nothing answers there, the suite starts a
+container per session, as above. In CI the job's Postgres service
+container plays the warm server.
+
+The container is `coxswain-smoke-warm-postgres`, on the pinned image, published on `127.0.0.1:55432` only. The port
+is fixed so the URL in a worker's unit environment never changes. The doctor does not pick another port when 55432 is
+taken. It checks that it could bind the port before any command that would bind it, and if something else holds the
+port it starts nothing and says so. It is the
+throwaway container's twin (data on tmpfs, fsync off) except that it has no `--rm`, it has `--restart unless-stopped`,
+and its label is `coxswain-smoke-warm=1`, not `coxswain-smoke=1`, so the per-session reaper never removes it. Its image
+digest is written in `src/tools/agent_tools/smoke_warm.py` and in `smoke/plan.py`. Bump both together; a test in
+`tests/test_smoke_plan.py` fails when they differ.
+
+`cox setup doctor` keeps it, through the `smoke postgres` row. The row is advisory: `ok` is true in every state, so it
+never fails the doctor and never rolls an upgrade back. Its states:
+
+- **Up on the pinned image.** The detail gives the URL to set. The doctor gives the URL only for a container it
+  created: one with that name, the `coxswain-smoke-warm=1` label, and 5432 published on `127.0.0.1:55432` and nowhere
+  else. Those are the facts that say the server answering on the URL is ours, not merely some Postgres.
+- **Not ours.** A container with that name but without the label. The doctor gives no URL, and `--fix` never stops,
+  starts or removes it.
+- **Ours, published elsewhere.** The detail says `--fix` replaces it.
+- **Port held by something else.** The detail says `--fix` starts nothing until the port is free.
+- **Present but stopped.** The detail says `cox setup doctor --fix` starts it.
+- **Present on a different image.** The detail says `--fix` replaces it.
+- **Absent.** The detail says `--fix` creates it.
+- **Docker not available.** The detail says the suite will start a container per session.
+
+The doctor starts nothing without `--fix`. It also runs on machines that are not workers and in every upgrade, and
+starting a container there unasked would be a side effect. With `--fix` it starts, creates or replaces the container,
+waits for `pg_isready`, and reports the resulting row. It stops at the first docker command that fails, prints
+docker's first error line, and does not wait. A failed `docker run` can leave a container in `created`; the doctor
+removes it when it is ours, so the next `--fix` starts from absent. Run twice, `--fix` runs no docker command the
+second time. A paused container is unpaused and a dead one is replaced. A container that is restarting
+or being removed is left to docker. Set `COX_DOCTOR_SKIP_SMOKE_POSTGRES` to any value and the row reports `skipped` with
+no docker command at all; the unit suites set it, so no unit test reaches docker.
+
+`smoke/test_doctor_warm_postgres.py` runs `cox setup doctor` against the host's real docker, with and without `--fix`.
+It never touches the real warm container: that one is on tmpfs, so stopping it would drop every database on it,
+other lanes' included. Instead the test sets `COX_SMOKE_WARM_CONTAINER` and `COX_SMOKE_WARM_PORT` to a throwaway name
+and a free port of its own, and removes that container afterwards. Production leaves both unset. The `--fix` test
+skips where docker does not answer.
+
+A worker points the suite at the server by setting this in its unit environment:
+
+```sh
+COX_SMOKE_POSTGRES_URL=postgresql://postgres:smoke@127.0.0.1:55432/postgres
 ```
 
 ## Adding a smoke test
