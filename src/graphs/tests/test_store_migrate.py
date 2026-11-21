@@ -460,7 +460,9 @@ KNOWN_EXEMPTIONS: dict[int, dict[str, str]] = {
             "are written, and Postgres ignores what a statement-level trigger returns, so it cannot skip, drop or"
             " rewrite a row. Its function writes no row and takes no row lock: the only lock NOTIFY adds is "
             "Postgres's short queue lock at commit, taken after every lock the writer holds, so it cannot "
-            "deadlock an older writer either."
+            "deadlock an older writer either. The one way it can fail an older writer is a full notify queue (a "
+            "listener that never drains): every writer to a watched table then fails at commit with 54000. The "
+            "default 8 GB queue makes that remote."
         ),
         "function": (
             "cox_notify has no arguments, returns NULL, and runs one statement: pg_catalog.pg_notify('cox_store',"
@@ -615,6 +617,17 @@ def test_truncate_as_a_trigger_event_and_a_revoke_on_its_own_new_function_are_ad
                "FOR EACH STATEMENT EXECUTE FUNCTION note_run()")
     revoke = "REVOKE EXECUTE ON FUNCTION note_run() FROM PUBLIC"
     assert additive_violations((NOTES, FUNCTION, revoke, trigger), {"trigger": WHY, "function": WHY}) == ()
+    # A revoke names the function as created, schema and all: another schema's `note_run` is not this one.
+    other = "REVOKE EXECUTE ON FUNCTION other.note_run() FROM PUBLIC"
+    assert additive_violations((NOTES, FUNCTION, other), {"function": WHY}) == (
+        "statement 3 revokes EXECUTE on other.note_run, a function it did not create",
+    )
+    qualified = FUNCTION.replace("FUNCTION note_run()", "FUNCTION public.note_run()")
+    assert additive_violations((NOTES, qualified, revoke), {"function": WHY}) == (
+        "statement 3 revokes EXECUTE on note_run, a function it did not create",
+    )
+    assert additive_violations((NOTES, qualified, revoke.replace("note_run", "public.note_run")),
+                               {"function": WHY}) == ()
     # The event list is read only in its place: a TRUNCATE in a trigger's body still counts.
     body = "CREATE TRIGGER t AFTER TRUNCATE ON runs BEGIN TRUNCATE notes; END"
     assert additive_violations((NOTES, body), {"trigger": WHY}) == ("statement 2 has TRUNCATE",)

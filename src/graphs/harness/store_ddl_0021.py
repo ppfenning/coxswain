@@ -14,8 +14,11 @@ Why this is safe for older writers, and why no table and no row is involved:
 - The function takes no row lock and writes no row, so it cannot deadlock a writer, hold a hot row, or make a writer
   wait on another session's rows. Postgres serialises notifying commits on a short queue lock, taken at commit after
   every lock the writer already holds.
-- A listener that sits in an open transaction holds the notification queue back; the queue is 8 GB by default and a
-  payload is a table name, so the listener (`store_notify`) runs in autocommit and never opens one.
+- The one way it can fail an older writer is a full notification queue. A session that LISTENs and never drains
+  (or sits in an open transaction) holds the queue's tail back; once the queue is full, every writer to a watched
+  table fails at commit with 54000 "too many notifications in the NOTIFY queue". The default queue is 8 GB and a
+  payload is a table name, which makes this remote, not impossible. The listener (`store_notify`) runs in autocommit
+  and never opens a transaction; C3's listener gets a doctor check on `pg_notification_queue_usage()`.
 - It runs with the invoker's rights (no SECURITY DEFINER). NOTIFY needs no privilege, so a worker's scoped role
   (`store_roles`) writes and notifies with no new grant. Postgres checks EXECUTE on a trigger function only when a
   trigger is created, not when it fires.
@@ -48,7 +51,9 @@ ADDITIVE_EXEMPT = {
         "Each CREATE TRIGGER is an AFTER ... FOR EACH STATEMENT trigger. It fires once the statement's rows are "
         "written, and Postgres ignores what a statement-level trigger returns, so it cannot skip, drop or rewrite a "
         "row. Its function writes no row and takes no row lock: the only lock NOTIFY adds is Postgres's short queue "
-        "lock at commit, taken after every lock the writer holds, so it cannot deadlock an older writer either."
+        "lock at commit, taken after every lock the writer holds, so it cannot deadlock an older writer either. The "
+        "one way it can fail an older writer is a full notify queue (a listener that never drains): every writer to "
+        "a watched table then fails at commit with 54000. The default 8 GB queue makes that remote."
     ),
     "function": (
         "cox_notify has no arguments, returns NULL, and runs one statement: pg_catalog.pg_notify('cox_store', "
@@ -137,7 +142,8 @@ _INDEXES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("ix_chair_queue_due", "chair_queue", ("kind", "state", "due_at")),
 )
 
-# No `%` anywhere: psycopg reads one as a placeholder, since `migrate` passes every statement an (empty) parameter tuple.
+# No `%` anywhere: psycopg reads one as a placeholder, since `migrate` passes every statement an (empty)
+# parameter tuple.
 _FUNCTION = f"""CREATE OR REPLACE FUNCTION cox_notify() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $cox_notify$
 BEGIN

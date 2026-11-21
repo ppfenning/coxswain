@@ -163,10 +163,12 @@ _BLOCK_WORD = re.compile(r"\b(BEGIN|CASE|END)\b")  # what opens and closes a tri
 _TABLE = r"(?:\w+\.)?(\w+)"  # an optionally schema-qualified table name; group: the table
 _ALTER = re.compile(rf"^\s*ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?{_TABLE}\s+(\S.*)$", re.DOTALL)
 _CREATED = re.compile(rf"^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?{_TABLE}\s*\(")
-_CREATED_FUNCTION = re.compile(rf"^\s*CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+{_TABLE}\s*\(")
+# A function's name as written, schema and all: `other.f` is not the `f` this migration created.
+_QUALIFIED = r"((?:\w+\.)?\w+)"
+_CREATED_FUNCTION = re.compile(rf"^\s*CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+{_QUALIFIED}\s*\(")
 # A REVOKE of EXECUTE from PUBLIC on a no-argument function: it only narrows who may call or attach a function, and
 # it is additive only for a function this migration creates, which no older build calls.
-_REVOKE_EXECUTE = re.compile(rf"^\s*REVOKE\s+EXECUTE\s+ON\s+FUNCTION\s+{_TABLE}\s*\(\s*\)\s+FROM\s+PUBLIC\s*;?\s*$")
+_REVOKE_EXECUTE = re.compile(rf"^\s*REVOKE\s+EXECUTE\s+ON\s+FUNCTION\s+{_QUALIFIED}\s*\(\s*\)\s+FROM\s+PUBLIC\s*;?\s*$")
 # A trigger's events, between its timing and ON: `TRUNCATE` there names an event, not a statement that truncates.
 _TRIGGER_EVENTS = re.compile(
     r"\b(BEFORE|AFTER|INSTEAD\s+OF)\s+(?:INSERT|DELETE|TRUNCATE|UPDATE(?:\s+OF\s+\w+(?:\s*,\s*\w+)*)?)"
