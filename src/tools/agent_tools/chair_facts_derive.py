@@ -13,7 +13,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypedDict
 
 from agent_tools import chair_lease_refusal, chair_read_docket, pacing, repo_path, route
-from agent_tools.chair_decompose_flight import in_flight_facts, launch_times
+from agent_tools.chair_decompose_flight import (
+    QUEUED_AFTER_ROWS_CAUSE,
+    in_flight_facts,
+    launch_times,
+    queued_after_rows_facts,
+    queued_after_rows_keys,
+)
 from agent_tools.chair_decompose_miss import DecomposeMiss, next_miss
 from agent_tools.chair_decompose_streak import DecomposeRun, DecomposeStreak, at_limit, streak
 from agent_tools.chair_facts_read import (
@@ -1379,9 +1385,14 @@ def gather_facts(
     facts["decompose_miss_fingerprints"] = misses["decompose_miss_fingerprints"]
     facts["decompose_misses_reported"] = misses["decompose_misses_reported"]
     cutoff = deps.decompose_cutoff
+    since = {path: cutoff(path) for path in intake} if cutoff is not None else {}
     facts["decompose_in_flight"] = in_flight_facts(
-        intake, decompose_runs, launch_times([action_doc(r) for r in selected(index, "launch_decompose")]),
-        {path: cutoff(path) for path in intake} if cutoff is not None else {}, now,
+        intake, decompose_runs, launch_times([action_doc(r) for r in selected(index, "launch_decompose")]), since, now,
+        frozenset(facts["lost_runs"].values()),
+    )
+    facts["decompose_queued_after_rows"] = queued_after_rows_facts(intake, decompose_runs, since, now)
+    facts["decompose_queued_after_rows_reported"] = queued_after_rows_keys(
+        [action_doc(r) for r in selected(index, ("needs_chair", QUEUED_AFTER_ROWS_CAUSE))]
     )
     if (freeze := land_freeze_fact(deps.runs_dir(), now)) is not None:
         facts["land_freeze"] = freeze

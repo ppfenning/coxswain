@@ -13,29 +13,39 @@ sends. One decompose per intake is in flight when any of these hold, whatever th
 - its newest counted run ended having written task items: the intake is decomposed whatever a stale queue read says.
 
 A run or launch before `since` (the intake's last release or requeue) is not counted, as `chair_decompose_streak.counted`."""
-from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from collections.abc import Collection, Mapping, Sequence
+from datetime import datetime
 
 from agent_tools.chair_decompose_streak import DecomposeRun, counted, missed
 
 SETTLE_S = 300.0  # past the ssh, copy and start of a hosted run, and past the store's counter flush on a busy server
 RUN_MAX_S = 7200.0  # twice `cli_route_launch._DECOMPOSE_TIMEOUT_S`: an unended run older than this is not in flight
+QUEUED_AFTER_ROWS_CAUSE = "decompose_queued_after_rows"  # needs_chair: a run wrote items, its intake row stayed queued
 
 
 def _age_s(then: datetime, now: datetime) -> float:
-    return (now - then).total_seconds()
+    """Seconds from `then` to `now`; a `then` in the future (a host clock ahead of the chair's) is age 0, never "old"."""
+    return max(0.0, (now - then).total_seconds())
 
 
 def in_flight_reason(
-    runs: Sequence[DecomposeRun], launches: Sequence[datetime], since: datetime | None, now: datetime
+    runs: Sequence[DecomposeRun],
+    launches: Sequence[datetime],
+    since: datetime | None,
+    now: datetime,
+    lost: Collection[str] = frozenset(),
 ) -> str | None:
     """Why the intake must not launch another decompose now, or None when it may. `runs` is oldest first; `launches`
-    are the times the action log recorded a done launch_decompose of the intake, in any order."""
+    are the times the action log recorded a done launch_decompose of the intake, in any order. A run id in `lost`
+    (the `lost_runs` fact: its host went quiet or its lease expired with no end) no longer holds the intake."""
     kept = [r for r in runs if counted(r, since)]
-    live = [r for r in kept if not r.exited and r.launched_at is not None and 0 <= _age_s(r.launched_at, now) < RUN_MAX_S]
+    live = [
+        r for r in kept
+        if not r.exited and r.run_id not in lost and r.launched_at is not None and _age_s(r.launched_at, now) < RUN_MAX_S
+    ]
     if live:
         return f"its decompose run {live[-1].run_id} has not ended"
-    recent = [t for t in launches if (since is None or t >= since) and 0 <= _age_s(t, now) < SETTLE_S]
+    recent = [t for t in launches if (since is None or t >= since) and _age_s(t, now) < SETTLE_S]
     if recent:
         return f"a decompose launch was recorded {int(_age_s(max(recent), now))}s ago and its run has not reported yet"
     ended = [r for r in kept if r.exited]
@@ -44,28 +54,33 @@ def in_flight_reason(
     newest = ended[-1]
     if not missed(newest):
         return f"its decompose run {newest.run_id} wrote task items"
-    if newest.ended_at is not None and 0 <= _age_s(newest.ended_at, now) < SETTLE_S:
+    if newest.ended_at is not None and _age_s(newest.ended_at, now) < SETTLE_S:
         return f"its decompose run {newest.run_id} ended {int(_age_s(newest.ended_at, now))}s ago"
     return None
 
 
-def parse_ts(value: object) -> datetime | None:
-    """An action row's `ts` as an aware datetime, a naive one read as UTC; None for anything else."""
-    if not isinstance(value, str) or not value:
+def queued_after_rows(runs: Sequence[DecomposeRun], since: datetime | None, now: datetime) -> str | None:
+    """The run id when the intake's newest counted run ended more than `SETTLE_S` ago having written task items, so
+    the intake, still queued, is held for good (`in_flight_reason`) and a person must look. None otherwise. A run with
+    no readable end counts as long ended. Only reported; nothing marks the intake."""
+    kept = [r for r in runs if counted(r, since)]
+    if not kept or not kept[-1].exited or missed(kept[-1]):
         return None
-    try:
-        when = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return when if when.tzinfo is not None else when.replace(tzinfo=UTC)
+    newest = kept[-1]
+    settled = newest.ended_at is None or _age_s(newest.ended_at, now) >= SETTLE_S
+    return newest.run_id if settled else None
 
 
 def launch_times(docs: Sequence[Mapping[str, object]]) -> dict[str, list[datetime]]:
     """Intake path to the times of its done launch_decompose rows, from action docs; a row with no readable time is left out."""
+    from agent_tools.chair_decompose_runs import (
+        parse_when,  # lazy: chair_decompose_runs imports chair_facts, which imports this
+    )
+
     found: dict[str, list[datetime]] = {}
     for doc in docs:
         paths = doc.get("intake_ids")
-        when = parse_ts(doc.get("ts"))
+        when = parse_when(doc.get("ts"))
         if doc.get("kind") != "launch_decompose" or doc.get("status") != "done" or when is None:
             continue
         if isinstance(paths, (list, tuple)) and paths and isinstance(paths[0], str):
@@ -79,7 +94,25 @@ def in_flight_facts(
     launches: Mapping[str, Sequence[datetime]],
     since: Mapping[str, datetime | None],
     now: datetime,
+    lost: Collection[str] = frozenset(),
 ) -> dict[str, str]:
     """Intake path to why its decompose is in flight, for only the paths that are."""
-    reasons = {p: in_flight_reason(runs.get(p, ()), launches.get(p, ()), since.get(p), now) for p in paths}
+    reasons = {p: in_flight_reason(runs.get(p, ()), launches.get(p, ()), since.get(p), now, lost) for p in paths}
     return {p: reason for p, reason in reasons.items() if reason is not None}
+
+
+def queued_after_rows_facts(
+    paths: Sequence[str], runs: Mapping[str, Sequence[DecomposeRun]], since: Mapping[str, datetime | None], now: datetime
+) -> dict[str, str]:
+    """Intake path to the run that wrote its items while the intake stayed queued, for only those paths."""
+    found = {p: queued_after_rows(runs.get(p, ()), since.get(p), now) for p in paths}
+    return {p: run for p, run in found.items() if run is not None}
+
+
+def queued_after_rows_keys(docs: Sequence[Mapping[str, object]]) -> list[str]:
+    """`<intake>|<run>` of each decompose_queued_after_rows needs_chair already in the action log, in row order."""
+    return [
+        f"{d['intake']}|{d['run']}"
+        for d in docs
+        if d.get("kind") == "needs_chair" and d.get("cause") == QUEUED_AFTER_ROWS_CAUSE and d.get("intake") and d.get("run")
+    ]

@@ -14,7 +14,15 @@ from test_chair_facts import _deps as _facts_deps
 from test_chair_plan_kinds import _facts
 
 from agent_tools import run_store
-from agent_tools.chair_decompose_flight import RUN_MAX_S, SETTLE_S, in_flight_facts, in_flight_reason, launch_times
+from agent_tools.chair_decompose_flight import (
+    QUEUED_AFTER_ROWS_CAUSE,
+    RUN_MAX_S,
+    SETTLE_S,
+    in_flight_facts,
+    in_flight_reason,
+    launch_times,
+    queued_after_rows,
+)
 from agent_tools.chair_decompose_runs import read_decompose_runs
 from agent_tools.chair_decompose_streak import DecomposeRun
 from agent_tools.chair_facts import gather_facts
@@ -146,3 +154,62 @@ def test_the_runs_reader_says_which_runs_have_ended_and_when(tmp_path):
     [live] = read_decompose_runs(runs, IID)  # the refused run never started, so it is not one of the intake's runs
     assert (live.run_id, live.exited, live.ended_at) == (f"{IID}-1", False, None)
     assert in_flight_reason([live], [], None, NOW) == f"its decompose run {IID}-1 has not ended"
+
+
+# -- clock skew, lost runs, the told-once report ---------------------------------------------------------------------
+
+def test_a_host_clock_ahead_of_the_chair_still_holds_a_live_run():
+    ahead = DecomposeRun(f"{IID}-1", True, None, launched_at=NOW + timedelta(seconds=400), exited=False)
+    assert in_flight_reason([ahead], [], None, NOW) == f"its decompose run {IID}-1 has not ended"
+
+
+def test_an_empty_run_that_ended_in_the_future_reads_as_just_ended():
+    run = replace(_run(1, 60, wrote=False), exited=True, ended_at=NOW + timedelta(seconds=5))
+    assert in_flight_reason([run], [], None, NOW) == f"its decompose run {IID}-1 ended 0s ago"
+    assert in_flight_reason([], [NOW + timedelta(seconds=5)], None, NOW) is not None  # a launch stamped ahead, too
+
+
+def test_a_lost_run_no_longer_holds_the_intake():
+    assert in_flight_reason([_run(1, 600)], [], None, NOW, lost={f"{IID}-1"}) is None
+    assert in_flight_reason([_run(1, 600)], [], None, NOW, lost={"other-1"}) is not None
+
+
+def test_a_run_that_wrote_items_is_reported_only_once_it_has_settled():
+    assert queued_after_rows([_run(1, 900, ended_s=SETTLE_S + 1)], None, NOW) == f"{IID}-1"
+    assert queued_after_rows([_run(1, 900, ended_s=10)], None, NOW) is None  # its rows may not be read yet
+    assert queued_after_rows([_run(1, 900, ended_s=SETTLE_S + 1, wrote=False)], None, NOW) is None
+    assert queued_after_rows([_run(1, 900, ended_s=SETTLE_S + 1), _run(2, 30)], None, NOW) is None  # a newer one is live
+    assert queued_after_rows([_run(1, 900, ended_s=SETTLE_S + 1)], _ago(60), NOW) is None  # requeued since
+
+
+def _reports(facts) -> list[dict]:
+    return [a for a in plan_kind("decompose", facts, NOW) if a.get("cause") == QUEUED_AFTER_ROWS_CAUSE]
+
+
+def test_the_queued_after_rows_report_is_told_once_and_marks_nothing():
+    facts = _facts(intake=[PATH], decompose_queued_after_rows={PATH: f"{IID}-1"})
+    [told] = _reports(facts)
+    assert (told["kind"], told["intake"], told["run"]) == ("needs_chair", PATH, f"{IID}-1")
+    assert _reports({**facts, "decompose_queued_after_rows_reported": [f"{PATH}|{IID}-1"]}) == []
+    planned = [a for kind in ("launch", "decompose") for a in plan_kind(kind, facts, NOW) if a.get("intake") == PATH]
+    assert [a["kind"] for a in planned] == ["needs_chair"]  # the report, and no write to the intake
+
+
+def test_gather_reads_the_stuck_intake_and_the_reported_key():
+    doc = {"kind": "needs_chair", "cause": QUEUED_AFTER_ROWS_CAUSE, "intake": PATH, "run": f"{IID}-1", "status": "recorded"}
+    row = {"ts": "2026-11-21T12:00:00Z", "kind": "needs_chair", "action_json": json.dumps(doc)}
+    deps = replace(
+        _facts_deps(), intake=lambda: [PATH], actions=lambda: [row], decompose_runs=lambda path: [_run(1, 9000, ended_s=8000)],
+    )
+    facts = gather_facts(deps, NOW)
+    assert facts["decompose_queued_after_rows"] == {PATH: f"{IID}-1"}
+    assert facts["decompose_queued_after_rows_reported"] == [f"{PATH}|{IID}-1"]
+    assert _reports(facts) == []
+
+
+def test_gather_frees_an_intake_whose_live_run_is_lost():
+    deps = replace(
+        _facts_deps(), intake=lambda: [PATH], actions=lambda: [], decompose_runs=lambda path: [_run(1, 1200)],
+        lost_runs=lambda: {IID: f"{IID}-1"},
+    )
+    assert gather_facts(deps, NOW)["decompose_in_flight"] == {}
