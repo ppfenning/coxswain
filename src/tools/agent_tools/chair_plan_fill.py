@@ -4,7 +4,7 @@ Pure. free_lanes comes from the caller; only host_free_slots reads dispatch and 
 """
 from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import datetime
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from agent_tools import chair_login_watch, host_load, lane_prereqs
 from agent_tools.chair_plan_recover import budget_verdict
@@ -45,9 +45,10 @@ def required_capabilities(initiative: InitiativeFacts) -> frozenset[str]:
     return frozenset(cap for task in initiative["ready_tasks"] for cap in task.get("requires", []))
 
 
-def less_phase_ready(inputs: IdleStallInputs, initiatives: Sequence[InitiativeFacts]) -> IdleStallInputs:
+def less_phase_ready(inputs: IdleStallInputs, initiatives: Sequence[Mapping[str, Any]]) -> IdleStallInputs:
     """`inputs` with the ready tasks of each initiative `launchable_by_tick` refuses taken off its `ready` count, never
-    below zero. Those tasks wait for a phase worker, not for the tick, so they must not make the lanes look idle."""
+    below zero. Those tasks wait for a phase worker, not for the tick, so they must not make the lanes look idle.
+    `initiatives` is every docket entry, live run or not: a worker holding one phase must not make the rest count."""
     withheld = sum(len(i["ready_tasks"]) for i in initiatives if not launchable_by_tick(i))
     return inputs if not withheld else {**inputs, "ready": max(0, inputs["ready"] - withheld)}
 

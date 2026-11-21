@@ -15,11 +15,11 @@ from __future__ import annotations
 import functools
 import hashlib
 import sqlite3
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, cast, get_args
 
-from harness import store_lease, store_queue
+from harness import store_lease, store_phases, store_queue
 from harness.store_dialect import Cell, Connection, Json, JsonObject, StoreDriverMissing, json_load, json_text
 from harness.store_landed import mark_landed
 from harness.store_migrate import MigrationError, open_store
@@ -570,3 +570,13 @@ def export_hashes(url: str, now: str) -> dict[tuple[str, str], str] | Failed | N
 
 def set_export_hash(url: str, initiative: str, task: str, digest: str, now: str) -> Failed | NotAvailable | None:
     return _write(url, now, lambda c: set_export_hash_on(c, initiative, task, digest))
+
+
+def phase_queue_rows(url: str) -> list[dict[str, object]] | Failed | NotAvailable:
+    """Every `phase_queue` row, in claim order (`store_phases.list_rows`)."""
+    return _read(url, store_phases.list_rows)
+
+
+def apply_phase_changes(url: str, changes: Sequence[Mapping[str, object]], by: str, now: str) -> int | Failed | NotAvailable:
+    """The chair's phase queue writes, in one transaction at the store's own time; the rows they changed."""
+    return _write(url, now, lambda c: store_phases.apply_changes(c, changes, by))

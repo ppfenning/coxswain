@@ -608,6 +608,17 @@ class LandFreeze:
     expires_at: datetime
 
 
+class PhaseQueueFacts(TypedDict):
+    """The store's `phase_queue` rows as read this tick, and whether the lane-prerequisite gate is on, which makes
+    every queued phase require `docker` (`chair_phase_queue.requirements`)."""
+
+    rows: list[dict[str, object]]
+    readable: bool  # False when `phase_queue` could not be read: `rows` is empty and nothing may be written to it
+    lane_prereqs: bool
+    phase_initiatives: list[str]  # every initiative whose store row is stamped `lane_model: phase`, ready work or not
+    closed: list[str]  # the initiatives whose store row is done or dropped
+
+
 class Facts(TypedDict):
     lease: LeaseFacts
     limits: LimitsFacts
@@ -734,6 +745,7 @@ class Facts(TypedDict):
     # The store's `hosts` rows, each with its `versions_json`, for the login watch and placement. Absent means none.
     login_hosts: NotRequired[list[Mapping[str, object]]]
     land_freeze: NotRequired[LandFreeze]  # the operator's land freeze, when one is set; absent means lands run
+    phase_queue: NotRequired[PhaseQueueFacts]  # the stored phase queue; absent means it was not read and nothing is queued
 
 
 class ActionKind(StrEnum):
@@ -791,6 +803,7 @@ class ActionKind(StrEnum):
     HOLD_INITIATIVE = "hold_initiative"
     STALL_ALARM = "stall_alarm"
     STALL_CLEAR = "stall_clear"
+    QUEUE_PHASES = "queue_phases"
     PYTEST_TMP_SWEEP = "pytest_tmp_sweep"  # recorded by the executor after a tick's actions; no planner plans it
 
 
@@ -834,7 +847,8 @@ class Action(TypedDict, total=False):
     hold_task carries initiative, task_id, cause, reason (starting `needs you:`) and key (`hold:<task>:<run>`): the store
     row takes the reason and moves to blocked. announce_hold carries initiative, task_id, reason and key: one courier
     entry for a held task. hold_initiative carries initiative, cause (`no_progress`), reason (starting `needs you:`) and key
-    (`no_progress:<initiative>:<newest run>`): the initiative row and file are held with the reason, and one courier entry goes out."""
+    (`no_progress:<initiative>:<newest run>`): the initiative row and file are held with the reason, and one courier entry goes out.
+    queue_phases carries changes and reason: the `phase_queue` rows the chair writes for ready phases of phase-model initiatives."""
 
     kind: Required[ActionKind]  # every action names its kind; the other keys depend on it
     epoch: int | None
@@ -904,6 +918,7 @@ class Action(TypedDict, total=False):
     blob: str  # a needs_chair for a held file names the file's blob, so the same hand edit is reported once
     schedule: dict[str, object]  # a schedule_updated carries `chair_schedule._body`, written whole to the schedule file
     head: str  # a land_phase names its phase branch's tip just before the land, when the branch resolves
+    changes: list[dict[str, object]]  # a queue_phases carries its phase_queue writes (`chair_phase_queue.changes`)
 
 
 class PlanLands(Protocol):

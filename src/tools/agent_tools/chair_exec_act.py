@@ -369,6 +369,26 @@ def _close_initiative(action: Action, deps: Deps) -> Result:
     return make_result(action, "failed", f"set-state {state} for {initiative}: {written}")
 
 
+def _queue_phases(action: Action, deps: Deps) -> Result:
+    """Edge. The tick's `phase_queue` writes for ready phases (`chair_phase_queue.changes`), in one transaction at the
+    store's time. Each write names the state it moves from, so a repeat, or a worker's claim in between, changes nothing."""
+    from harness import store_api
+
+    written = store_api.apply_phase_changes(
+        run_store.store_url_for(deps.runs_dir), action.get("changes", []), "chair-loop", _stamp_now(),
+    )
+    if isinstance(written, store_api.Failed):
+        return make_result(action, "failed", f"phase queue: {written.detail}")
+    if isinstance(written, store_api.NotAvailable):
+        return make_result(action, "failed", f"phase queue: {written.reason}")
+    return make_result(action, "done", f"{written} phase queue row(s) written; {action.get('reason', '')}")
+
+
+def _stamp_now() -> str:
+    """Edge. Only the migration's bookkeeping reads this: every phase queue time is the store's own."""
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _finish_task(action: Action, deps: Deps) -> Result:
     """A `land: manual` task is done once its branch is merged on origin; the check fetches, then reads `origin/` refs only."""
     initiative, task, run = action.get("initiative", ""), action.get("task_id", ""), action.get("run", "")
@@ -852,6 +872,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, Blocker]) -> Result:
             return _close_initiative(action, deps)
         case ActionKind.FINISH_TASK:
             return _finish_task(action, deps)
+        case ActionKind.QUEUE_PHASES:
+            return _queue_phases(action, deps)
         case ActionKind.REQUEUE_TASK:
             return _requeue_task(action, deps)
         case ActionKind.RESCUE:
