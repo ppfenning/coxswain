@@ -23,7 +23,7 @@ from pathlib import Path
 import yaml
 
 from agent_tools import smoke_warm
-from agent_tools.cli_chair_service import _chair_default_environment_file, _write_private
+from agent_tools.cli_chair_service import _chair_default_environment_file, _unit_tmpdir, _write_private
 from agent_tools.cli_common import _profile_path, _read_text_or_none
 from agent_tools.cli_host import _run_ssh
 from agent_tools.cli_install import _load_lazy_modules, _migrate_kind, _schema_versions
@@ -594,6 +594,40 @@ def _doctor_running_install_rows(profile: dict | None) -> list[dict]:
     return [doctor.running_install_row(checkout, sys.executable, doctor.editable_source(record))]
 
 
+def _doctor_tmpdir_units(home: Path) -> list[tuple[str, str, list[tuple[str, str]]]]:
+    """Edge. Each installed unit that runs lane work, as (name, text, its `*.conf` drop-ins as (name, text)): the
+    chair's tick unit, the queue workers' template and the lander's on systemd; the chair's and the queue workers'
+    agents on launchd."""
+    from agent_tools import chair_queue_units, chair_service, lander_cli
+
+    paths = [chair_service.unit_path(home), chair_queue_units.template_path(home), lander_cli.unit_path(home),
+             chair_service.chair_plist_path(home),
+             *(chair_queue_units.plist_path(home, kind) for kind in chair_queue_units.QUEUE_KINDS)]
+    found = []
+    for path in paths:
+        text = _read_text_or_none(path)
+        if text is None:
+            continue
+        drop_dir = path.with_name(path.name + ".d")
+        drop_ins = [(conf.name, conf.read_text(encoding="utf-8")) for conf in sorted(drop_dir.glob("*.conf"))]
+        found.append((path.name, text, drop_ins))
+    return found
+
+
+def _doctor_tmpdir_rows(profile: dict | None) -> list[dict]:
+    """Edge. The `lane TMPDIR` rows (`tmpdir_check.rows`) over the installed units and this machine's mount table."""
+    from agent_tools import tmpdir_check, unit_tmpdir
+
+    seen = []
+    for name, text, drop_ins in _doctor_tmpdir_units(Path.home()):
+        effective = unit_tmpdir.effective_tmpdir(text, drop_ins)
+        tmpdir, source = effective if effective is not None else (unit_tmpdir.SYSTEM_DEFAULT, None)
+        seen.append(tmpdir_check.UnitTmpdir(name, tmpdir, os.path.realpath(tmpdir), source))
+    table = _read_text_or_none(Path("/proc/self/mountinfo"))
+    mounts = tmpdir_check.parse_mountinfo(table) if table else None
+    return tmpdir_check.rows(seen, mounts, _unit_tmpdir(profile or {}))
+
+
 def _doctor_extras_rows() -> list[dict]:
     """Edge. The `extras` row: which of the extras `cox` needs this interpreter cannot import. Finds, never imports."""
     missing = [extra for extra, module in doctor.EXTRA_MODULES if importlib.util.find_spec(module) is None]
@@ -732,6 +766,7 @@ def _setup_doctor_here(a: argparse.Namespace) -> int:
         *_doctor_dash_build_rows(profile),
         *_doctor_running_install_rows(profile),
         *_doctor_extras_rows(),
+        *_doctor_tmpdir_rows(profile),
         *_doctor_steward_rows(profile),
         *_doctor_lane_rows(profile),
         *_doctor_smoke_postgres_rows(fix=fix, out=out),
@@ -872,6 +907,7 @@ def _install_facts(a: argparse.Namespace) -> dict:
         "chair_service_exists": service_file is not None and service_file.exists(),
         "chair_env_file": chair_env_file,
         "chair_env_exports": tuple(chair_service.export_lines(chair_env_text or "")),
+        "chair_tmpdir": None if a.root else _unit_tmpdir({}),
     }
 
 

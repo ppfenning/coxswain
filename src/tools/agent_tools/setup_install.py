@@ -215,12 +215,14 @@ def _workspace_steps(workspace: str) -> list:
 def chair_service_steps(
     platform: str, home: str, cox_path: str | None, workspace: str, profile_file: str,
     exists: bool = False, force: bool = False, env_file: str | None = None, env_exports: tuple[int, ...] = (),
+    tmpdir: str | None = None,
 ) -> list:
     """The chair service file write and the activation lines the user runs, or one skip step saying why not.
     An existing file is kept unless `force`: it may carry a label, interval or env file this default lacks.
     The linux unit is refused, as `cox chair service --install` refuses it, when systemd would split or expand
     a value, or when `env_file` has `export` lines (`env_exports` are their numbers).
-    Linux gets the systemd user unit, darwin the launchd agent; any other platform gets nothing."""
+    Linux gets the systemd user unit, darwin the launchd agent; any other platform gets nothing. `tmpdir` is the TMPDIR
+    the unit gives the chair's lanes (`unit_tmpdir`)."""
     if platform not in ("linux", "darwin"):
         return []
     skip = {"op": "skip", "what": "chair service"}
@@ -238,6 +240,7 @@ def chair_service_steps(
         values = {
             "cox": cox_path, "workspace_dir": workspace, "--label": CHAIR_LABEL, "--profile": profile_file,
             **({"--environment-file": env_file} if env_file else {}), "PATH": path,
+            **({"TMPDIR": tmpdir} if tmpdir else {}),
         }
         unsafe = chair_service.unsafe_values(values)
         if unsafe:
@@ -248,12 +251,12 @@ def chair_service_steps(
             return [{**skip, "why": f"{env_file} has export lines ({numbers}) that EnvironmentFile= may skip; "
                                     "use NAME=value lines"}]
         text = chair_service.unit_text(
-            cox_path, workspace, CHAIR_LABEL, CHAIR_INTERVAL, env_file or None, profile_file, path)
+            cox_path, workspace, CHAIR_LABEL, CHAIR_INTERVAL, env_file or None, profile_file, path, tmpdir)
         activate = "\n".join(chair_service.systemctl_lines())
     else:
         text = chair_service.chair_plist_text(
             cox_path, workspace, CHAIR_LABEL, CHAIR_INTERVAL, path, profile_file,
-            env_file or unit_env.env_file_path(home))
+            env_file or unit_env.env_file_path(home), tmpdir)
         activate = f"launchctl bootstrap gui/$(id -u) {target}"
     return [
         {"op": "write", "path": target, "text": text, "why": "start the chair service with the machine"},
@@ -290,6 +293,7 @@ def install_plan(
     chair_service_exists: bool = False,
     chair_env_file: str | None = None,
     chair_env_exports: tuple[int, ...] = (),
+    chair_tmpdir: str | None = None,
 ) -> list:
     """Ordered setup steps for the one checkout `<installs>/coxswain`. With
     `locations`, the installs folder and the profile path come from the
@@ -360,7 +364,7 @@ def install_plan(
 
     steps.extend(chair_service_steps(
         platform, home, cox_path, workspace, profile_file, chair_service_exists, force_profile,
-        chair_env_file, chair_env_exports))
+        chair_env_file, chair_env_exports, chair_tmpdir))
 
     if workspace:
         steps.append(catalog_link_step(workspace, paths.cartridges))

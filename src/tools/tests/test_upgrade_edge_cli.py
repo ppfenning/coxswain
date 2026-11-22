@@ -3,13 +3,14 @@ the units the machine has, run the doctor, roll back on a failure, record the ou
 
 from __future__ import annotations
 
+import getpass
 import json
 import sys
 from pathlib import Path
 
 import pytest
 
-from agent_tools import cli, doctor, forge_github, upgrade_edge
+from agent_tools import cli, doctor, forge_github, unit_tmpdir, upgrade_edge
 
 A, B, C = ("a" * 40, "b" * 40, "c" * 40)  # newest first on main: A is the tip, B the newest green, C installed
 SLUG = "example-org/example-repo"
@@ -17,7 +18,9 @@ MANIFEST = f'[coxswain]\nversion = "2026.11.8"\nrepo = "{SLUG}"\n\n[providers.cl
 BASE_LISTING = "src/graphs/harness/store_ddl_0001.py\nsrc/graphs/harness/store_ddl_0002.py\nsrc/graphs/harness/cli.py\n"
 COX = "/opt/example/bin/cox"
 DOCTOR = ["cox", "setup", "doctor", "--json"]
-CURRENT_UNIT = "[Service]\nExecStart=/c chair run\nKillMode=process\n"
+DEFAULT_TMPDIR = unit_tmpdir.tmpdir_for({}, getpass.getuser())  # what a unit pinning no profile is given
+CURRENT_UNIT = "[Service]\nExecStart=/c chair run\nKillMode=process\n" + "".join(
+    f"{line}\n" for line in unit_tmpdir.service_lines(DEFAULT_TMPDIR))
 LEGACY_UNIT = "[Service]\nExecStart=/c chair run\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n"
 RELOAD = ["systemctl", "--user", "daemon-reload"]
 
@@ -156,6 +159,29 @@ def test_an_upgrade_gives_a_unit_installed_before_kill_mode_the_setting_and_relo
     assert "set KillMode=process in coxswain-chair.service, coxswain-chair@.service" in capsys.readouterr().out
 
 
+def test_an_upgrade_gives_every_unit_the_tmpdir_its_pinned_profile_names_and_a_second_run_changes_nothing(
+    world: World, tmp_path: Path, capsys
+):
+    """E1, 2026-11-21: units installed with no TMPDIR sent every lane's scratch and suite to a quota'd tmpfs /tmp."""
+    profile = tmp_path / "lander-profile.yaml"
+    profile.write_text("team: example\nlane_tmpdir: /srv/scratch/cox\n")
+    legacy = LEGACY_UNIT.replace("chair run", f"lander run --interval 30 --profile {profile}")
+    (_units(tmp_path) / "coxswain-lander.service").write_text(legacy)
+    (_units(tmp_path) / "coxswain-chair.service").write_text(LEGACY_UNIT)
+    assert _upgrade(tmp_path) == 0
+    lander = (_units(tmp_path) / "coxswain-lander.service").read_text()
+    chair = (_units(tmp_path) / "coxswain-chair.service").read_text()
+    assert "Environment=TMPDIR=/srv/scratch/cox\nExecStartPre=-mkdir -p -m 0700 /srv/scratch/cox\n" in lander
+    assert "KillMode" not in lander and "WantedBy=default.target" in lander  # the lander gets TMPDIR only
+    assert f"Environment=TMPDIR={DEFAULT_TMPDIR}\n" in chair  # no profile pinned: the default
+    assert "set TMPDIR in coxswain-chair.service" in capsys.readouterr().out
+    world.calls.clear()
+    assert _upgrade(tmp_path) == 0
+    assert (_units(tmp_path) / "coxswain-lander.service").read_text() == lander
+    assert (_units(tmp_path) / "coxswain-chair.service").read_text() == chair
+    assert "set TMPDIR" not in capsys.readouterr().out
+
+
 def test_a_failed_reload_restarts_nothing_so_no_land_in_flight_is_killed(world: World, tmp_path: Path, capsys):
     (_units(tmp_path) / "coxswain-chair.service").write_text(LEGACY_UNIT)
     world.reload_exit = 1
@@ -292,7 +318,8 @@ def test_a_stable_machine_upgrades_exactly_as_before(world: World, tmp_path: Pat
     assert _upgrade(tmp_path) == 0
     # The one call is the unit refresh's read-only question; the units are current, so nothing is written or reloaded.
     assert world.moves == [(None, False)]
-    assert world.calls == [["systemctl", "--user", "show", "-p", "NeedDaemonReload", "coxswain-chair.service"]]
+    assert world.calls == [["systemctl", "--user", "show", "-p", "NeedDaemonReload", "coxswain-chair.service",
+                            "coxswain-lander.service"]]
 
 
 def test_the_scheduled_upgrade_does_nothing_on_a_stable_machine(world: World, tmp_path: Path, capsys):

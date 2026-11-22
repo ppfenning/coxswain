@@ -13,7 +13,7 @@
 "smoke/test_chair_queue_handoff.py": 30.4,
 "smoke/test_chair_queue_parity.py": 5.2,
 "smoke/test_chair_queue_triage.py": 21.0,
-"smoke/test_chair_queue_units.py": 7.3,
+"smoke/test_chair_queue_units.py": 9.6,
 "smoke/test_chair_queue_workers.py": 66.5,
 "smoke/test_chair_stranded_stall_alarm.py": 10.0,
 "smoke/test_chair_tick_cache.py": 10.2,

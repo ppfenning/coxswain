@@ -20,6 +20,7 @@ import uuid
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
+from agent_tools import unit_tmpdir
 from agent_tools.cli import _CHAIR_RUN_INTERVAL, build_parser
 from agent_tools.cli_chair import _chair_once_exit, _chair_run_deps, _chair_unwired_sources
 from agent_tools.cli_common import _profile_path, _read_text_or_none
@@ -288,6 +289,27 @@ class _ChairUnitInputs:
     profile: str
     path: str
     env_file: str | None
+    tmpdir: str | None = None  # the units' TMPDIR (`unit_tmpdir`)
+
+
+def _unit_tmpdir(profile: Mapping[str, object]) -> str:
+    """Edge. The TMPDIR this machine's units set: the profile's `lane_tmpdir`, else one under /var/tmp for this user."""
+    import getpass
+
+    try:
+        user = getpass.getuser()
+    except (OSError, KeyError):
+        user = ""
+    return unit_tmpdir.tmpdir_for(profile, user)
+
+
+def _make_agent_tmpdir(plist_text: str) -> None:
+    """Edge. Create the TMPDIR a launchd agent's plist sets, at install: launchd has no ExecStartPre, which a systemd
+    unit makes it with before each start. A failure is left to Python's tempfile, which then falls back to /tmp."""
+    found = unit_tmpdir.effective_tmpdir(plist_text)
+    if found is not None:
+        with contextlib.suppress(OSError):
+            Path(found[0]).mkdir(mode=0o700, parents=True, exist_ok=True)
 
 
 def _chair_unit_inputs(label: str | None, env_file: str | None, profile_path: Path) -> _ChairUnitInputs | _ChairUnitRefusal:
@@ -323,6 +345,7 @@ def _chair_unit_inputs(label: str | None, env_file: str | None, profile_path: Pa
         "--profile": os.path.abspath(profile_path),
         **({"--environment-file": env_file} if env_file is not None else {}),
         "PATH": unit_path_value,
+        "TMPDIR": _unit_tmpdir(profile),
     }
     unsafe = chair_service.unsafe_values(values)
     if unsafe:
@@ -335,7 +358,8 @@ def _chair_unit_inputs(label: str | None, env_file: str | None, profile_path: Pa
         return _ChairUnitRefusal(
             f"chair service: {env_file} has export lines ({numbers}) that EnvironmentFile= may skip; pass --environment-file with NAME=value lines"
         )
-    return _ChairUnitInputs(values["cox"], values["workspace_dir"], values["--profile"], unit_path_value, env_file)
+    return _ChairUnitInputs(values["cox"], values["workspace_dir"], values["--profile"], unit_path_value, env_file,
+                            values["TMPDIR"])
 
 
 def _chair_unit_text(label: str, interval: int | str, env_file: str | None, profile_path: Path) -> str | _ChairUnitRefusal:
@@ -344,7 +368,7 @@ def _chair_unit_text(label: str, interval: int | str, env_file: str | None, prof
     if isinstance(resolved, _ChairUnitRefusal):
         return resolved
     return chair_service.unit_text(
-        resolved.cox, resolved.workspace_dir, label, interval, env_file, resolved.profile, resolved.path,
+        resolved.cox, resolved.workspace_dir, label, interval, env_file, resolved.profile, resolved.path, resolved.tmpdir,
     )
 
 
@@ -358,7 +382,8 @@ def _lander_unit_text(a: argparse.Namespace, ws: Path) -> str | None:
     if isinstance(resolved, _ChairUnitRefusal):
         print(resolved.message)
         return None
-    return lander_cli.unit_text(resolved.cox, str(ws), int(a.interval), resolved.profile, resolved.path, env_file)
+    return lander_cli.unit_text(resolved.cox, str(ws), int(a.interval), resolved.profile, resolved.path, env_file,
+                                resolved.tmpdir)
 
 
 def _chair_service_install(a: argparse.Namespace, path: Path) -> int:
