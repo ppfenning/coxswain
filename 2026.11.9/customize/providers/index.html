@@ -6836,7 +6836,12 @@ value, for one release, so use <code>operator_only</code> in anything new.</p>
 <p>The shipped profile, <code>src/cartridges/providers/claude-code.yaml</code>, is
 commented key by key: <code>tiers</code>, <code>classes</code>, <code>effort</code>, <code>budget_usd</code>,
 <code>role_budget_usd</code>, <code>role_ceiling_usd</code>, <code>tier_overrides</code>, <code>defaults</code> and
-<code>tools</code>. Copy it and change what your team needs. <a href="../../install/providers/">Install:
+<code>tools</code>. Copy it and change what your team needs.</p>
+<p>One key it leaves at its default: <code>first_output_s</code>, how long a streamed
+node call (every lane's) may print nothing before it fails as a call that
+never started: a <code>command</code> that hangs instead of running claude shows up
+as a quick, explained failure, not a silent hour. It is 600 seconds
+unless set; <code>0</code> turns the bound off. <a href="../../install/providers/">Install:
 Providers</a> lists the providers and their status.</p>
 
 
