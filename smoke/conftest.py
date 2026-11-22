@@ -33,6 +33,10 @@ import pytest
 from devtools import tree_imports
 from smoke import gh_replay, plan
 
+# Under COX_SMOKE_REQUIRED every skip fails the run, an import skip at collection too (smoke/required.py); a
+# conftest's hooks are found by name, so importing them here is what turns them on.
+from smoke.required import pytest_make_collect_report, pytest_runtest_makereport  # noqa: F401
+
 ROOT = Path(__file__).resolve().parents[1]
 # This tree's source roots go ahead of the venv, whose editable install may point at another checkout, and the suite
 # refuses to load if agent_tools, harness, runner, graphs or core resolve outside this tree (`devtools.tree_imports`;

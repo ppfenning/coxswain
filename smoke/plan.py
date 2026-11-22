@@ -148,6 +148,26 @@ def is_required(value: str | None) -> bool:
     return bool(value) and value.strip().lower() not in {"0", "false", "no"}
 
 
+# The skips a required run still lets stand, by their exact reason, each with why it is a real platform limit and not
+# a missing prerequisite. Every other skip fails a required run (`skip_refusal`), including a module's
+# `pytest.importorskip` at collection, so a smoke job cannot pass with files that never ran.
+ALLOWED_SKIPS: dict[str, str] = {
+    "the queue units are systemd or launchd only": (
+        "the chair's queue units are systemd or launchd units, so on any other OS there is nothing to install or prove"
+    ),
+}
+
+
+def skip_refusal(message: str, *, required: bool) -> str | None:
+    """Why a skip whose pytest message is `message` (`Skipped: <reason>`, or an import skip's `could not import ...`)
+    fails the run, or None when it may stand: the run is not required, or the reason is in `ALLOWED_SKIPS`."""
+    reason = message.removeprefix("Skipped: ").strip()
+    if not required or reason in ALLOWED_SKIPS:
+        return None
+    return (f"skipped under {REQUIRED_ENV}, which turns every skip outside smoke/plan.py ALLOWED_SKIPS into a failure:"
+            f" {reason}")
+
+
 def unavailable(reason: str, *, required: bool) -> Skip | Fail:
     """A missing prerequisite: a failure when the run requires the suite, else a skip that names it."""
     return Fail(reason) if required else Skip(reason)
