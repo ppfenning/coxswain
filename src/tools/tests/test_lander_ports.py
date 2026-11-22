@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_tools import lander_ports
+from agent_tools import lander, lander_ports
 from core import landing_record as lr
 from harness import landing_ops, store_work_state
 
@@ -140,6 +140,40 @@ def test_a_gate_runs_its_checks_in_the_tree_and_an_unresolved_cartridge_fails_it
     assert lander_ports.run_gate(tmp_path, tmp_path, "level", landing, "ValueError: no such team") == (
         False, "cartridge checks unavailable (ValueError: no such team)",
     )
+
+
+def test_the_phase_gate_env_is_the_lanes_the_repos_venv_first_its_own_tmpdir_and_the_stated_worker_count() -> None:
+    environ = {"PATH": "/usr/bin", "HOME": "/h"}
+    env = lander_ports.phase_gate_env(environ, Path("/r"), Path("/t/gate"), 8)
+    assert env == {"PATH": "/r/.venv/bin:/usr/bin", "HOME": "/h", "TMPDIR": "/t/gate"}, "no capacity: no worker count"
+    assert environ == {"PATH": "/usr/bin", "HOME": "/h"}, "the caller's environment is never changed"
+    capped = lander_ports.phase_gate_env({**environ, "COX_LANE_CAPACITY": "2"}, Path("/r"), Path("/t/gate"), 8)
+    assert capped["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "4" and capped["PATH"] == "/r/.venv/bin:/usr/bin"
+
+
+def test_every_lander_gate_runs_under_the_repos_venv(tmp_path: Path) -> None:
+    """E1: a bare command of the phase section resolves to the repository's `.venv/bin`, and the tree gets the venv
+    linked, as the lane's phase worktree does. The old model's `level` and `ticket` gates run under it too."""
+    repo, tree = tmp_path / "repo", tmp_path / "tree"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
+                    "--allow-empty", "-m", "init"], check=True)
+    subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "--detach", str(tree)], check=True)
+    tool = repo / ".venv" / "bin" / "repo-only-tool"
+    tool.parent.mkdir(parents=True)
+    tool.write_text(f'#!/bin/sh\necho "$TMPDIR" > {tmp_path / "seen"}\n', encoding="utf-8")
+    tool.chmod(0o755)
+    (tree / ".agent-checks").write_text("# level: phase\nrepo-only-tool && test -L .venv && test -d \"$TMPDIR\"\n")
+    assert lander_ports.run_gate(repo, tree, lander.PHASE_GATE, {}, None) == (True, "")
+    assert (tree / ".venv").resolve() == (repo / ".venv").resolve()
+    seen = Path((tmp_path / "seen").read_text(encoding="utf-8").strip())
+    assert seen.name.startswith("lander-tmp-") and not seen.exists(), "the checks' TMPDIR is its own, removed after"
+    landing = {"level_checks": [{"name": "tool", "cmd": "repo-only-tool"}],
+               "ticket_checks": [{"name": "tool", "cmd": "repo-only-tool"}]}
+    for gate in ("level", "ticket"):
+        (tree / ".venv").unlink()
+        assert lander_ports.run_gate(repo, tree, gate, landing, None) == (True, ""), gate
+        assert (tree / ".venv").is_symlink(), gate
 
 
 def test_a_phase_has_one_open_rectify_task_and_a_new_one_takes_the_first_free_id() -> None:

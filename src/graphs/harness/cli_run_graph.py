@@ -41,7 +41,7 @@ from harness.checks import all_passed, checks_evidence, run_checks
 from harness.escalate import escalate_self_modification
 from harness.gate import apply_decisions, auto_apply, gate
 from harness.lane_pytest_tmp import lane_scratch_dir, lane_tmp_env, run_scratch_root
-from harness.lane_workers import LANE_CAPACITY_VAR, check_env, lane_workers_from
+from harness.lane_workers import stated_check_env
 from harness.lanes import resolve_max_parallel
 from harness.phase import run_phase
 from harness.registry import GraphSpec
@@ -365,8 +365,7 @@ def _lifecycle_worktree(args: argparse.Namespace, cartridge: Mapping[str, Any], 
 
 def _checks_env(environ: Mapping[str, str], cores: int) -> dict[str, str] | None:
     """`check_env` over the capacity COX_LANE_CAPACITY states; None unless `lane_workers_from` accepts it."""
-    stated = lane_workers_from(environ, cores) is not None
-    return check_env(environ, cores, int(environ[LANE_CAPACITY_VAR]) if stated else None)
+    return stated_check_env(environ, cores)
 
 
 def _run_worktree_checks(
@@ -836,6 +835,10 @@ def _run_phase_lane(
         goal=(initiative_review.initiative_goal(initiative) if phase == initiative_review.QUEUE_PHASE
               else phase_goal(initiative, phase)),
         stop_new_children=lambda: phase_lane.terminate_groups(_child_pids(pgrep=_pgrep_children), groups_only=True),
+        # A lane still at its work `LOST_EXIT_S` after it lost its claim kills the children that lead groups of their
+        # own (checks, agents, pushes; never its own git in the shared checkout) and exits (`run_lane`).
+        kill_children=lambda: phase_lane.terminate_groups(_child_pids(pgrep=_pgrep_children), groups_only=True,
+                                                           sig=signal.SIGKILL),
     )
     print(f"phase-lane {run_id}: {claim.initiative}/{claim.phase} exit {code}")
     return code

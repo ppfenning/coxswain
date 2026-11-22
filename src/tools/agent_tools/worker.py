@@ -27,7 +27,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from agent_tools import lane_prereqs
+from agent_tools import lane_prereqs, machine_refusal
 from harness import initiative_review, phase_pick
 
 if TYPE_CHECKING:
@@ -114,6 +114,22 @@ def launch_label(loop_record: Mapping[str, object] | None, own: str) -> str:
 def refused(returncode: int, output: str) -> bool:
     """Whether a launch that exited `returncode` was refused by a gate (`REFUSALS`) rather than failing."""
     return returncode == 2 and any(marker in output for marker in REFUSALS)
+
+
+def launch_verdict(returncode: int, output: str, attempts: int,
+                   prior: str = "") -> tuple[phase_pick.Verdict, machine_refusal.Refusal | None]:
+    """The nack for a launch that exited before its lane started, and the refusal of this machine's that caused it, if
+    one did. This machine's refusal (`machine_refusal.of`: a dirty or missing checkout, a guard of the machine's)
+    gives the claim back at once with its attempt refunded, `machine_refusal.REFUNDS` times an episode (counted on the
+    claim's `prior` reason; past them it counts), and the worker sets the repository aside; a gate's
+    (`refused`) gives it back refunded after the backoff; anything else is a failed launch, a counted attempt."""
+    last = next((line for line in reversed(output.splitlines()) if line.strip()), "")
+    found = machine_refusal.of(returncode, output)
+    if found is not None:
+        return machine_refusal.verdict(found, attempts, prior), found
+    if refused(returncode, output):
+        return phase_pick.refusal(f"the launch was refused: {last}", attempts), None
+    return phase_pick.verdict([], attempts, launch_error=f"the launch exited {returncode}: {last}"), None
 
 
 def attempts_of(claim: Claim) -> int:
@@ -374,6 +390,7 @@ class Ports:
     monotonic: Callable[[], float]
     sleep: Callable[[float], None]
     log: Callable[[str], None]
+    set_aside: Callable[[Claim, machine_refusal.Refusal], None]  # stop advertising the claim's repo; tell the chair once
     timings: phase_pick.Timings = phase_pick.DEFAULT_TIMINGS  # the lease it claims on and the heartbeat and stop it keeps
 
 
@@ -383,8 +400,9 @@ def settle(ports: Ports, leases: Leases, claim: Claim, verdict: phase_pick.Verdi
     if leases.take(claim) is None:
         ports.log(f"worker: {key_of(claim)} is no longer held; nothing written")
         return
-    if verdict.kind == "retry":  # any retry keeps the episode's lost-lane refund count (`phase_pick.carry_refunds`)
-        verdict = replace(verdict, reason=phase_pick.carry_refunds(str(claim.row.get("reason") or ""), verdict.reason))
+    if verdict.kind == "retry":  # any retry keeps the episode's refund counts: lost lanes', machines' refusals'
+        prior = str(claim.row.get("reason") or "")
+        verdict = replace(verdict, reason=phase_pick.carry_refunds(prior, machine_refusal.carry_refunds(prior, verdict.reason)))
         done = ports.release(claim, verdict.reason, verdict.wait_s, verdict.refund)
         said = f"released for a retry in {verdict.wait_s}s{' (no attempt counted)' if verdict.refund else ''}: {verdict.reason}"
     else:
@@ -395,7 +413,8 @@ def settle(ports: Ports, leases: Leases, claim: Claim, verdict: phase_pick.Verdi
 
 def reap(ports: Ports, leases: Leases) -> None:
     """Drop each claim the heartbeat thread gave up on once its run is stopped (until then it still fills a lane);
-    move each spawned launch on to its run or settle it (a gate's refusal costs no attempt); settle each run that
+    move each spawned launch on to its run or settle it (`launch_verdict`: a refusal of the gates' or of this machine's
+    costs no attempt, and this machine's sets the claim's repository aside); settle each run that
     ended, from what the store holds for its phase; and stop a live lane whose progress mark has stood still for
     `phase_pick.LANE_STALL_S` (`phase_pick.lane_stalled`), a hung lane under this live worker, and give its claim back
     as a counted attempt."""
@@ -410,12 +429,10 @@ def reap(ports: Ports, leases: Leases) -> None:
             if isinstance(found, Running):
                 leases.set_run(claim, found)
             elif found is not None:
-                code, output = found
-                last = next((line for line in reversed(output.splitlines()) if line.strip()), "")
-                if refused(code, output):
-                    settle(ports, leases, claim, phase_pick.refusal(f"the launch was refused: {last}", attempts_of(claim)))
-                else:
-                    settle(ports, leases, claim, phase_pick.verdict([], attempts_of(claim), launch_error=f"the launch exited {code}: {last}"))
+                launch, refusal = launch_verdict(*found, attempts_of(claim), str(claim.row.get("reason") or ""))
+                if refusal is not None:  # before the claim goes back, so this worker's next pass cannot take it again
+                    ports.set_aside(claim, refusal)
+                settle(ports, leases, claim, launch)
         elif isinstance(held.run, Running) and not ports.alive(held.run):
             settle(ports, leases, claim, lane_verdict(claim, ports.lane_facts(claim, held.run.run_id)))
         elif isinstance(held.run, Running):

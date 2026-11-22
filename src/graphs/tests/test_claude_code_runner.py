@@ -557,6 +557,20 @@ def test_a_clean_scratch_with_an_applicable_reported_patch_is_recovered_and_mark
     assert runner.calls[-1]["files_touched"] == ["f.txt"]
 
 
+def test_a_builder_in_a_scratch_with_the_shared_venv_has_it_first_on_path_and_uv_never_syncs_it(tmp_path, repo) -> None:
+    """E1, 2026-11-21: a builder's `uv run pytest` synced the linked venv to its scratch, and once the scratch was gone
+    every check on the machine failed its imports."""
+    (repo / ".venv" / "bin").mkdir(parents=True)
+    script = _reporting_claude(tmp_path, F_PATCH)
+    seen = tmp_path / "env.txt"
+    script.write_text(script.read_text(encoding="utf-8").replace(
+        "#!/bin/sh\n", f'#!/bin/sh\nprintf "%s\\n%s" "$UV_NO_SYNC" "${{PATH%%:*}}" > {seen}\n', 1), encoding="utf-8")
+    ClaudeCodeRunner(PROFILE, claude_bin=str(script), cwd=tmp_path, repo_dir=repo).run(role="build", schema=SCHEMA, prompt="go")
+    no_sync, first = seen.read_text(encoding="utf-8").splitlines()
+    assert no_sync == "1"
+    assert first == str((repo / ".venv" / "bin").resolve())
+
+
 def test_run_verify_returns_a_row_per_command_and_names_a_timeout_instead_of_raising(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("runner.claude_code_runner._VERIFY_TIMEOUT_S", 0.2)
     rows = _run_verify(tmp_path, ["echo one", "false"])

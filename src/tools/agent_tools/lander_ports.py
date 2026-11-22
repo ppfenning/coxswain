@@ -262,20 +262,58 @@ def fetch_branch(repo: Path, branch: str) -> str | None:
     return None
 
 
+def phase_gate_env(environ: Mapping[str, str], repo: Path, tmp: Path, cores: int) -> dict[str, str]:
+    """Pure. The environment the lane's phase smoke runs in, for the lander's run of the same gate: `<repo>/.venv/bin`
+    first on PATH, as `cox route launch` puts the shared checkout's on a lane's (`route_status.child_env`), TMPDIR at
+    `tmp` (`lane_tmp_env`), and the lane's xdist worker count when COX_LANE_CAPACITY states a capacity
+    (`lane_workers.stated_check_env`). Without the venv first, a bare `pytest` is whichever one the lander's own PATH
+    finds (E1, 2026-11-21: a standalone tool's, with no `yaml`, so the merged tree's conftest did not import)."""
+    from agent_tools.route_status import child_env
+    from harness.lane_pytest_tmp import lane_tmp_env
+    from harness.lane_workers import stated_check_env
+
+    env = {**child_env(environ, repo=str(repo)), **lane_tmp_env(tmp)}
+    return stated_check_env(env, cores) or env
+
+
+def _run_phase_gate(repo: Path, tree: Path, checks: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
+    """Edge. The phase gate's checks in the lander's scratch `tree`, as the lane runs its smoke: the tree's `.venv`
+    linked to the repo's (`link_venv`, for `uv run` and `.venv/bin/...` lines) and `phase_gate_env` over this process's
+    environment. The checks' TMPDIR is a directory of its own under the system temp directory, as a lane's is
+    (`epic_branches.run_scratch`), removed once they finish: what a smoke installs never outlives the gate."""
+    import shutil
+    import tempfile
+
+    from harness.checks import run_checks
+    from harness.worktree import link_venv
+
+    link_venv(repo, tree)
+    tmp = Path(tempfile.mkdtemp(prefix="lander-tmp-"))
+    try:
+        return run_checks(tree, checks, env=phase_gate_env(os.environ, repo, tmp, os.cpu_count() or 1))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def run_gate(repo: Path, tree: Path, gate: str, landing: Mapping[str, object], error: str | None) -> tuple[bool, str]:
     """Edge. Run one gate's checks in `tree`. A cartridge that does not resolve fails the gate: it would run fewer checks.
 
     `lander.PHASE_GATE` is the new model's level gate: the cartridge's `level_checks`, then the `# level: phase`
-    section of the tree's own `.agent-checks` (L2). Every other gate reads the cartridge's list alone, as before."""
+    section of the tree's own `.agent-checks` (L2), run in the lane's environment (`_run_phase_gate`). Every other gate
+    reads the cartridge's list alone and runs in this process's environment, under the repo's venv as every gate is:
+    the tree's `.venv` linked to it (`link_venv`), so `run_checks` puts its bin first and uv never syncs it."""
     from harness.check_gate import gate_checks, tree_gate_checks
     from harness.checks import run_checks
+    from harness.worktree import link_venv
 
     if error:
         return False, f"cartridge checks unavailable ({error})"
     checks = tree_gate_checks(landing, "level", tree) if gate == lander.PHASE_GATE else gate_checks(landing, gate)
     if not checks:
         return True, ""
-    results = run_checks(tree, checks)
+    if gate != lander.PHASE_GATE:
+        link_venv(repo, tree)
+    results = _run_phase_gate(repo, tree, checks) if gate == lander.PHASE_GATE else run_checks(tree, checks)
     failed = [r for r in results if not r.get("passed")]
     if not failed:
         return True, ""

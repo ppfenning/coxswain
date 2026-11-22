@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypedDict
 
-from agent_tools import lander, lander_ports, lander_release, unit_env
+from agent_tools import lander, lander_ports, lander_release, unit_env, unit_tmpdir
 from core import landing_record as lr
 from core.jsontypes import is_mapping
 
@@ -30,8 +30,9 @@ def unit_path(home: Path) -> Path:
 
 
 def unit_text(cox: str, workspace_dir: str, interval: int, profile: str | None = None, path: str | None = None,
-              environment_file: str | None = None) -> str:
-    """Pure. The lander's user unit, the chair unit's sibling. `EnvironmentFile=-` keeps a missing file from failing it."""
+              environment_file: str | None = None, tmpdir: str | None = None) -> str:
+    """Pure. The lander's user unit, the chair unit's sibling. `EnvironmentFile=-` keeps a missing file from failing it.
+    `tmpdir` is the TMPDIR its phase gates and smokes get (`unit_tmpdir`), last in [Service] as the chair's."""
     profile_args = f" --profile {profile}" if profile is not None else ""
     lines = [
         "[Unit]",
@@ -44,6 +45,7 @@ def unit_text(cox: str, workspace_dir: str, interval: int, profile: str | None =
         *([unit_env.environment_file_line(environment_file)] if environment_file is not None else []),
         "Restart=on-failure",
         "RestartSec=30",
+        *unit_tmpdir.service_lines(tmpdir),
         "",
         "[Install]",
         "WantedBy=default.target",

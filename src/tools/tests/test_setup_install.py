@@ -413,6 +413,17 @@ def test_a_darwin_plan_writes_the_launchd_plist_and_no_systemd_step():
     assert ".service" not in render_plan(steps)
 
 
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_the_chair_service_gets_the_tmpdir_and_launchd_gets_it_made_first(platform: str):
+    steps = _plan(platform=platform, home="/home/user", cox_path="/opt/bin/cox", chair_tmpdir="/var/tmp/coxswain-u")
+    writes, _prints = _chair_steps(steps)
+    assert "/var/tmp/coxswain-u" in writes[0]["text"]
+    made = [s for s in steps if s["op"] == "mkdir" and s["path"] == "/var/tmp/coxswain-u"]
+    assert len(made) == (platform == "darwin")  # a systemd unit makes it itself, before each start
+    if made:
+        assert steps.index(made[0]) < steps.index(writes[0])
+
+
 def test_a_plan_without_a_cox_path_skips_the_chair_service_and_says_why():
     steps = _plan(platform="linux", home="/home/user")
     assert _chair_steps(steps) == ([], [])
