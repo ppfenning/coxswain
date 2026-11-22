@@ -1,4 +1,4 @@
-"""H9 (docs/hardening.md): no source module exceeds 2,000 lines.
+"""H9 (docs/hardening.md): no module in a package under src/, or in devtools, exceeds 2,000 lines.
 
 A ratchet while the split lands: the modules still over the limit are listed with their length now, and may only
 shrink. A listed module that is split below the limit leaves the list in the same change; any other module over the

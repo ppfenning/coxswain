@@ -162,3 +162,11 @@ def test_unreadable_facts_leave_the_refusal_unchanged(repo, monkeypatch):
     monkeypatch.setattr(cli, "_open_prs_for", lambda _repo, _branch, _forge=None: "forge down")
     decision = {**cli._land_resume(repo, _STEP, None)}
     assert cli._land_leftover(repo, _STEP, decision, None) == decision
+
+
+def test_a_leftover_of_a_branch_that_merged_main_is_not_recreated_while_a_worktree_holds_it(repo, tmp_path):
+    """The `repo` here has a task branch that merged main, so the guard reached is `_leftover_gate_facts`'s, not the one
+    `test_cli_land_leftover` covers on a plain branch."""
+    _git(repo, "worktree", "add", "-q", str(tmp_path / "wt"), _PR)
+    decision = cli._land_resume(repo, _STEP, None)
+    assert cli._land_leftover(repo, _STEP, decision, None) == decision

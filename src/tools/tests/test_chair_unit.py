@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
 from pathlib import Path
+
+import pytest
 
 from agent_tools.chair_unit import PathObservation, effective_path, read_chair_path
 
@@ -48,6 +51,11 @@ def test_quoted_form() -> None:
 def test_last_assignment_in_a_file_wins() -> None:
     text = "Environment=PATH=/first\nEnvironment=FOO=x\nEnvironment=PATH=/second\n"
     assert effective_path(text, ()) == PathObservation("/second", "coxswain-chair.service")
+
+
+def test_observation_is_frozen() -> None:
+    with pytest.raises(FrozenInstanceError):
+        PathObservation("/a", "b").path = "/c"  # type: ignore[misc]
 
 
 def test_read_chair_path_over_directory(tmp_path: Path) -> None:
