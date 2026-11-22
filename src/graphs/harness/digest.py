@@ -58,30 +58,31 @@ def _line_counts(repo: Path, files: list[str]) -> dict[str, int]:
     return counts
 
 
+def symbols_from_rg(out: str) -> dict[str, list[str]]:
+    """Pure. file -> ["name:line", ...] from ripgrep's `path:lineno:matched text` lines; a line of any other shape is skipped."""
+    found: dict[str, list[str]] = defaultdict(list)
+    for line in out.splitlines():
+        parts = line.split(":", 2)
+        if len(parts) != 3:
+            continue
+        path, lineno, text = parts
+        declared = re.sub(r"^\W*(?:async\s+|export\s+|pub\s+)*(?:def|class|function|func|fn)\s+(?:\([^)]*\)\s*)?", "", text.strip())
+        name = re.sub(r"[\s(].*$", "", declared)
+        if name:
+            found[path].append(f"{name}:{lineno}")
+    return dict(found)
+
+
 def _symbols(repo: Path, files: list[str]) -> dict[str, list[str]]:
-    """file -> ["name:line", ...] via one ripgrep pass. Empty when rg is absent."""
+    """Edge. One ripgrep pass over the indexable `files`, read by `symbols_from_rg`. Empty when rg is absent."""
     if not shutil.which("rg"):
         return {}
     targets = [f for f in files if not _SKIP_SYMBOLS.search(f)]
     if not targets:
         return {}
-    argv = ["rg", "--no-heading", "--line-number", "--only-matching", "--no-messages", "-o"]
-    for pattern in _SYMBOL_PATTERNS:
-        argv += ["-e", pattern]
-    argv += ["--", *targets]
-    out = _run(argv, repo)
-    found: dict[str, list[str]] = defaultdict(list)
-    for line in out.splitlines():
-        # path:lineno:matched text
-        parts = line.split(":", 2)
-        if len(parts) != 3:
-            continue
-        path, lineno, text = parts
-        name = re.sub(r"^\W*(?:async\s+|export\s+|pub\s+)*(?:def|class|function|func|fn)\s+", "", text.strip())
-        name = re.sub(r"[\s(].*$", "", name)
-        if name:
-            found[path].append(f"{name}:{lineno}")
-    return dict(found)
+    patterns = [arg for pattern in _SYMBOL_PATTERNS for arg in ("-e", pattern)]
+    argv = ["rg", "--no-heading", "--line-number", "--only-matching", "--no-messages", "-o", *patterns, "--", *targets]
+    return symbols_from_rg(_run(argv, repo))
 
 
 def build_digest(repo: Path | str, *, max_chars: int = MAX_DIGEST_CHARS) -> str:
