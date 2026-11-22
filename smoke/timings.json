@@ -1,6 +1,6 @@
 {
 "smoke/test_artifacts_store.py": 43.5,
-"smoke/test_cartridge_writers_keep_comments.py": 7.7,
+"smoke/test_cartridge_writers_keep_comments.py": 3.2,
 "smoke/test_chair_actions_window.py": 12.3,
 "smoke/test_chair_approved_not_on_phase_branch.py": 1.4,
 "smoke/test_chair_decompose_once.py": 21.6,

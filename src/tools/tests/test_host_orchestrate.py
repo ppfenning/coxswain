@@ -4,7 +4,7 @@ import argparse
 
 import yaml
 
-from agent_tools import cli
+from agent_tools import cli, host_cmd, store_cli
 from tests.comment_helpers import _comments, _edits
 
 CARTRIDGE = "policy:\n  dispatch:\n    max_in_flight: 2\n"
@@ -83,15 +83,29 @@ COMMENTED = (
 THREE_HOSTS = ["chair", "host-a", "host-b"]
 
 
-def _commented(tmp_path, monkeypatch, host_names, text=COMMENTED):
-    """`_setup`, then the cartridge text replaced by `text`."""
-    profile, cartridge = _setup(tmp_path, monkeypatch, host_names)
+def _commented(tmp_path, host_names, text=COMMENTED):
+    """A profile and a commented team cartridge in `tmp_path`, with `host_names` added to a real hosts table."""
+    (tmp_path / "ws").mkdir()
+    cartridge_dir = tmp_path / "cartridges" / "example-team"
+    cartridge_dir.mkdir(parents=True)
+    cartridge = cartridge_dir / "cartridge.yaml"
     cartridge.write_text(text, encoding="utf-8")
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(
+        f"workspace_dir: {tmp_path / 'ws'}\nteam: example-team\ncartridges_dir: {tmp_path / 'cartridges'}\n",
+        encoding="utf-8",
+    )
+    runs_dir = tmp_path / "ws" / "runs"
+    runs_dir.mkdir()
+    runner = store_cli.runner(runs_dir)
+    for name in host_names:
+        code, output = runner(host_cmd.add_argv(name, f"{name}.invalid", 4, 1, "", "test"))
+        assert code == 0, output
     return profile, cartridge
 
 
-def test_on_keeps_comments_and_other_keys_through_its_handler(tmp_path, monkeypatch):
-    profile, cartridge = _commented(tmp_path, monkeypatch, THREE_HOSTS)
+def test_on_keeps_comments_and_other_keys_through_its_handler(tmp_path):
+    profile, cartridge = _commented(tmp_path, THREE_HOSTS)
     assert cartridge.read_text(encoding="utf-8") == COMMENTED
     assert cli._host_orchestrate(_args(profile, "on")) == 0
     text = cartridge.read_text(encoding="utf-8")
@@ -104,9 +118,9 @@ def test_on_keeps_comments_and_other_keys_through_its_handler(tmp_path, monkeypa
     assert data["name"] == "example-team"
 
 
-def test_off_keeps_comments_and_other_keys_through_its_handler(tmp_path, monkeypatch):
+def test_off_keeps_comments_and_other_keys_through_its_handler(tmp_path):
     before = COMMENTED.replace("    max_in_flight: 2", "    local_lanes: decompose\n    max_in_flight: 2")
-    profile, cartridge = _commented(tmp_path, monkeypatch, THREE_HOSTS, before)
+    profile, cartridge = _commented(tmp_path, THREE_HOSTS, before)
     assert cli._host_orchestrate(_args(profile, "off")) == 0
     text = cartridge.read_text(encoding="utf-8")
     assert _edits(before, text) == [("replace", ["    local_lanes: decompose"], ["    local_lanes: any"])]
