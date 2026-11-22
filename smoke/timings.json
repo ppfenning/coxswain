@@ -37,6 +37,7 @@
 "smoke/test_lander_empty.py": 5.4,
 "smoke/test_lander_lanes.py": 32.2,
 "smoke/test_lander_models.py": 10.1,
+"smoke/test_lander_phase_gate_env.py": 3.0,
 "smoke/test_lander_push.py": 10.2,
 "smoke/test_lander_record_auto.py": 22.8,
 "smoke/test_lander_unreadable_record.py": 8.5,
