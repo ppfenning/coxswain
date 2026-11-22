@@ -6705,6 +6705,17 @@ Coxswain is in beta — versions may change between releases
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#the-units-temp-directory" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The units' temp directory
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#check-the-schedule-on-a-macos-host" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6999,6 +7010,19 @@ the same interval, and prints the <code>launchctl bootstrap</code> line that loa
 The agent stores no secret. At each launch it reads the env file described
 below, so a new token takes effect on the next run without a reinstall. The
 plist is written with mode 0600.</p>
+<h4 id="the-units-temp-directory">The units' temp directory</h4>
+<p>The chair, queue-worker and lander units set <code>TMPDIR</code> for the lanes, smokes
+and suites they run. The default is <code>/var/tmp/coxswain-&lt;user&gt;</code>, which is on
+disk; <code>/tmp</code> can be RAM, or a tmpfs with a user quota. A systemd unit creates
+the directory before each start (<code>ExecStartPre=-mkdir</code>). To use another
+directory, set it in the profile and let the upgrade rewrite the units:</p>
+<div class="highlight"><pre><span></span><code>cox<span class="w"> </span>settings<span class="w"> </span><span class="nb">set</span><span class="w"> </span>profile<span class="w"> </span>lane_tmpdir<span class="w"> </span>/srv/scratch/coxswain
+cox<span class="w"> </span>upgrade<span class="w">                      </span><span class="c1"># rewrites TMPDIR in each installed unit, then daemon-reload</span>
+</code></pre></div>
+<p><code>cox setup doctor</code> has a <code>lane TMPDIR</code> row for each installed unit. The row
+warns when that unit's TMPDIR, including one set by a drop-in, is on a tmpfs
+or on a disk with a user quota under about 20 GB. The warning names the unit
+and the fix.</p>
 <h4 id="check-the-schedule-on-a-macos-host">Check the schedule on a macOS host</h4>
 <p>The test suite cannot run launchd, so check a macOS host by hand after you
 install or change the schedule:</p>
