@@ -52,6 +52,7 @@
 "smoke/test_phase_reopen.py": 22.6,
 "smoke/test_phase_review.py": 37.6,
 "smoke/test_release_deploy.py": 0.4,
+"smoke/test_runs_clean_scope.py": 7.9,
 "smoke/test_session_databases.py": 12.9,
 "smoke/test_store_additive_newer.py": 3.2,
 "smoke/test_store_backup_pg_dump.py": 0.7,
