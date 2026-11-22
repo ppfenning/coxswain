@@ -769,12 +769,12 @@ def _runs_clean(a: argparse.Namespace) -> int:
     if runs_dir is None:
         print(f"clean: {reason}")
         return 2
-    records = {f.stem: json.loads(f.read_text(encoding="utf-8")) for f in (runs_dir / a.run_id / "tasks").glob("*/*.json")}
-    landed = {task for task, r in records.items() if r.get("landed")}
-    dropped = {task for task, r in records.items() if r.get("status") == "dropped"}
-    reasons = {task: r.get("reason", "unlanded") for task, r in records.items()}
+    records = cleanup.run_records(runs_dir / a.run_id / "tasks")
+    landed = {str(r["task"]) for r in records if r.get("landed")}
+    dropped = {str(r["task"]) for r in records if r.get("status") == "dropped"}
+    reasons = {str(r["task"]): r.get("reason", "unlanded") for r in records}
     p = cleanup.plan_cleanup(run_id=a.run_id, worktrees=cleanup.git_worktrees(repo), branches=cleanup.git_branches(repo), worktree_root=a.worktree_root,
-                             live=cleanup.live_owner(runs_dir, a.run_id))
+                             records=records, live=cleanup.live_owner(runs_dir, a.run_id))
     for line in cleanup.apply_cleanup(repo, p, dry_run=not a.apply, landed=landed, dropped=dropped, reasons=reasons, force=a.force):
         print(line)
     if not a.apply:
