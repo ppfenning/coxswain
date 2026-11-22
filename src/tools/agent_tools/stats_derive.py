@@ -187,7 +187,7 @@ def session_id_of(trace: Sequence[Mapping[str, Any]]) -> str | None:
 def call_cost(previous_reported: float, reported: float, resumed: bool) -> float:
     """A resumed call's own cost is the rise in the session total; a fall means the session restarted.
 
-    A copy of graphs' runner/claude_code_runner.py `call_cost`, because tools does not import graphs.
+    A copy of graphs' runner/claude_cost.py `call_cost`, because tools does not import graphs.
     tests/test_stats_derive.py runs both on one grid, so a change to the runner's copy fails this suite."""
     return reported if not resumed or reported < previous_reported else reported - previous_reported
 

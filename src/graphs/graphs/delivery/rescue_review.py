@@ -20,17 +20,14 @@ from typing import Any
 
 from graphs._contract import proposal, require, require_cartridge, review_tier
 from graphs._spec import GraphSpec, Need
-from graphs.delivery.lifecycle_propose import (
-    _change_facts,
-    _file_chunks,
+from graphs.delivery.lifecycle_patch import _change_facts, _file_chunks, patch_parses
+from graphs.delivery.lifecycle_propose import _infra_result, _ticket_text
+from graphs.delivery.lifecycle_review import (
     _handoff,
     _handoff_critique,
-    _infra_result,
     _NodeFailure,
     _patch_truncated_review,
     _review_round,
-    _ticket_text,
-    patch_parses,
     round_summary,
 )
 from runner.protocol import NodeRunner

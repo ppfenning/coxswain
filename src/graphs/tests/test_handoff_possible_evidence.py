@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from graphs.delivery.lifecycle_propose import _handoff, impossible_evidence
+from graphs.delivery.lifecycle_review import _handoff, impossible_evidence
 from runner import ScriptedRunner
 
 _PYTEST = ["pytest", "python -m pytest"]

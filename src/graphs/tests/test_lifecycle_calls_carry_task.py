@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from graphs.delivery import lifecycle_propose
+from graphs.delivery import lifecycle_propose, lifecycle_review
 from runner import ScriptedRunner
 
 TICKET = "T-1"
@@ -113,5 +113,5 @@ def test_a_reviewer_retry_after_a_placeholder_carries_the_ticket_id_too(
 def test_review_entry_reviews_a_bare_diff_and_names_no_ticket(role) -> None:
     """The default keeps review_entry, which has no ticket, exactly as it was."""
     spy = Spy({role: APPROVE if role == "review_charter" else {"verdict": "approve", "objections": [], "strongest_objection": "none"}})
-    lifecycle_propose._reviewer_answer(spy, role=role, schema={}, context=[], prompt="p")
+    lifecycle_review._reviewer_answer(spy, role=role, schema={}, context=[], prompt="p")
     assert spy.kwargs[0].get("task") is None

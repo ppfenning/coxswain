@@ -23,7 +23,7 @@ from harness import courier_adapter
 from harness.epic import run_epic
 from harness.store_migrate import open_store
 from harness.store_write import Store
-from runner.claude_code_runner import files_touched_from_patch
+from runner.claude_scratch import files_touched_from_patch
 from runner.protocol import RunnerError
 
 SHA = "sha-fixture"

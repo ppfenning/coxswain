@@ -26,7 +26,7 @@ from uuid import uuid4
 
 from graphs._contract import require, require_cartridge
 from graphs.delivery import review_entry
-from graphs.delivery.lifecycle_propose import BUILD_SCHEMA
+from graphs.delivery.lifecycle_schemas import BUILD_SCHEMA
 from harness.checks import all_passed, checks_evidence, run_checks
 from harness.worktree import apply_patch, create_worktree
 from runner.protocol import NodeRunner

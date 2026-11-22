@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from runner.claude_code_runner import _DIFF_CMD
+from runner.claude_scratch import _DIFF_CMD
 from runner.openai_compatible_runner import OpenAICompatibleRunner, OpenAICompatibleToolLoopAdapter
 from runner.protocol import BudgetStop
 from runner.tool_loop import TOOLS, ToolCall, _CheckClock, _execute

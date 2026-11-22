@@ -22,7 +22,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from graphs.delivery.lifecycle_propose import _critique, _handoff_critique
+from graphs.delivery.lifecycle_review import _critique, _handoff_critique
 from harness.store_steps import FAULT_OUTCOMES, TAIL_KEPT_CHECKS
 
 HEADING = "## Your last attempt was refused"

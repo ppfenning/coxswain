@@ -34,7 +34,8 @@ from typing import Any
 
 from graphs._contract import require, require_cartridge, review_tier
 from graphs._spec import GraphSpec, Need
-from graphs.delivery.lifecycle_propose import _change_facts, _file_chunks, _NodeFailure, _review_round, patch_parses
+from graphs.delivery.lifecycle_patch import _change_facts, _file_chunks, patch_parses
+from graphs.delivery.lifecycle_review import _NodeFailure, _review_round
 from runner.protocol import NodeRunner
 
 __all__ = ["GRAPH_NAME", "SPEC", "run"]

@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 import runner.claude_code_runner as ccr
+import runner.claude_stream as claude_stream
 from runner.claude_code_runner import ClaudeCodeRunner, _NodeTimeout
 
 PROFILE = {
@@ -88,6 +89,7 @@ def test_a_timeout_kills_a_tool_that_holds_the_pipes_open(tmp_path: Path) -> Non
 @pytest.mark.skipif(shutil.which("setsid") is None, reason="setsid is Linux-only")
 def test_a_tool_that_left_the_group_cannot_hold_the_call_open(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(ccr, "_REAP_SECONDS", 1)
+    monkeypatch.setattr(claude_stream, "_REAP_SECONDS", 1)
     script, pidfile = _stand_in(tmp_path, "setsid sleep 600")
     runner = ClaudeCodeRunner(PROFILE, claude_bin=str(script), cwd=tmp_path, timeout=2)
 

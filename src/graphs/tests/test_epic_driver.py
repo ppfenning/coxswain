@@ -62,7 +62,7 @@ from harness.store_lease import acquire, release
 from harness.store_migrate import open_store
 from harness.store_pause import clear_paused, is_paused, set_paused
 from harness.store_write import Store, ledger_row
-from runner.claude_code_runner import files_touched_from_patch
+from runner.claude_scratch import files_touched_from_patch
 from runner.protocol import BudgetStop, LimitStop, RunnerError
 
 SHA = "sha-fixture"

@@ -40,7 +40,7 @@ def built_in_tree(tree: Path, role: str, answer: Mapping[str, Any]) -> dict[str,
     """Edge. `answer` with its patch applied in a scratch worktree of `tree` at its HEAD and read back from it, as the
     Claude Code runner computes a build's patch; RunnerError, named as that runner names it, when it does not apply."""
     from harness.worktree import registry_lock  # here, not at the top: harness imports the runners
-    from runner.claude_code_runner import reconcile_patch
+    from runner.claude_scratch import reconcile_patch
 
     parent = Path(tempfile.mkdtemp(prefix="scripted-build-"))
     scratch = parent / "tree"

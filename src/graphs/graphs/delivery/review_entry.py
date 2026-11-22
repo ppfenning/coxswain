@@ -23,14 +23,8 @@ from uuid import uuid4
 
 from graphs._contract import require, require_cartridge
 from graphs._spec import GraphSpec, Need
-from graphs.delivery.lifecycle_propose import (
-    ADVERSARY_SCHEMA,
-    ARBITRATE_SCHEMA,
-    REVIEW_SCHEMA,
-    _abstained_adversary,
-    _abstained_review,
-    _reviewer_answer,
-)
+from graphs.delivery.lifecycle_review import _abstained_adversary, _abstained_review, _reviewer_answer
+from graphs.delivery.lifecycle_schemas import ADVERSARY_SCHEMA, ARBITRATE_SCHEMA, REVIEW_SCHEMA
 from harness.check_gate import _common_dir
 from harness.check_reuse import run_checks_reusing
 from harness.checks import all_passed, checks_evidence
