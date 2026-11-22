@@ -23,9 +23,20 @@ from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
 
-from agent_tools import bounded_run, chair, epic, lane_prereqs, repo_path, route, run_store, unit_children, worker
+from agent_tools import (
+    bounded_run,
+    chair,
+    epic,
+    lane_prereqs,
+    machine_refusal,
+    repo_path,
+    route,
+    run_store,
+    unit_children,
+    worker,
+)
 from agent_tools.chair_read_run_id import next_run_id, taken_names
-from harness import initiative_review, phase_pick, review_loop, store_phases, worker_identity
+from harness import courier_adapter, initiative_review, phase_pick, review_loop, store_phases, worker_identity
 from harness.store_dialect import Connection, Json
 from harness.store_phases import Claim
 
@@ -58,6 +69,19 @@ def doctor_rows() -> list[dict[str, object]]:
 def _checkouts(repos: Sequence[str], home: str) -> list[str]:
     """Edge. The repositories, of those named, that have a git checkout on this machine."""
     return [r for r in repos if (Path(repo_path.expand(r, home)) / ".git").exists()]
+
+
+def _checkout_clean(repo: str, home: str) -> bool:
+    """Edge. Whether `repo`'s checkout here exists and `git status` reads it clean, as a launch requires."""
+    path = Path(repo_path.expand(repo, home))
+    if not (path / ".git").exists():
+        return False
+    try:
+        done = bounded_run.completed(["git", "status", "--porcelain"], cwd=path, timeout=_PROBE_TIMEOUT_S,
+                                     capture_output=True, text=True)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0 and not done.stdout.strip()
 
 
 class Store:
@@ -210,6 +234,7 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
     probed_at = [0.0]
     launchers: dict[int, subprocess.Popen[bytes]] = {}
     launchers_lock = threading.Lock()  # the main loop polls a launch while the heartbeat thread may stop it
+    aside: dict[str, machine_refusal.SetAside] = {}  # repositories this machine refused to launch: the main loop's
 
     def caps() -> list[str]:
         if taken:
@@ -219,7 +244,9 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
             probed[:], probed_at[0] = [doctor_rows()], now
         rows = probed[0]
         queued = [str(r.get("repo") or "") for r in store.call(store_phases.list_rows) if r.get("state") != "finished"]
-        found = sorted({*worker.capabilities(detected(), declared, rows), *worker.repo_tokens(queued, _checkouts(queued, home))})
+        readmit()
+        present = machine_refusal.advertised(_checkouts(queued, home), aside)
+        found = sorted({*worker.capabilities(detected(), declared, rows), *worker.repo_tokens(queued, present)})
         if found != registered or not written:  # the first pass registers, whatever it advertises
             doctor_json: Json = {"lane": [{"check": str(r.get("check")), "ok": r.get("ok") is True} for r in rows]}
             done = store.call(lambda c: store_phases.register(c, name, found, capacity(), "up", version, doctor_json,
@@ -228,6 +255,35 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
             registered[:], written[:] = found, [True]
             log(f"worker: {name} advertises {', '.join(found) or 'nothing'}")
         return found
+
+    def readmit() -> None:
+        """Advertise again each repository set aside whose cause has gone (`machine_refusal.cleared`)."""
+        now = time.monotonic()
+        for repo, entry in list(aside.items()):
+            clean = _checkout_clean(repo, home) if entry.refusal.kind == "checkout" else None
+            if machine_refusal.cleared(entry, clean, now):
+                del aside[repo]
+                log(f"worker: {name} advertises repo:{machine_refusal.repo_name(repo)} again: "
+                    + ("its checkout reads clean" if clean else f"{int(machine_refusal.RETRY_S)}s have passed"))
+
+    def set_aside(claim: Claim, refusal: machine_refusal.Refusal) -> None:
+        """Stop advertising the claim's repository on this machine, and tell the chair once an episode for each reason
+        (`machine_refusal.tell`, from the claim's reason as the store held it): best effort, as
+        `epic_branches.tell_diverged` is, since a courier that fails leaves the phase row's reason, which says the same."""
+        repo = str(claim.row.get("repo") or "")
+        if not repo:
+            log(f"worker: {worker.key_of(claim)} names no repository to set aside: {refusal.reason}")
+            return
+        now_aside = machine_refusal.set_aside(aside, repo, refusal, time.monotonic())
+        aside.clear()
+        aside.update(now_aside)
+        prior = str(claim.row.get("reason") or "")
+        log(f"worker: {name} stops advertising repo:{machine_refusal.repo_name(repo)} ({refusal.kind}): {refusal.reason}")
+        if machine_refusal.tell(prior, refusal):
+            counted = machine_refusal.refunds_of(prior) >= machine_refusal.REFUNDS
+            note = machine_refusal.chair_note(name, claim.initiative, claim.phase, aside[repo], counted)
+            told = courier_adapter.send(f"coxswain://initiative/{claim.initiative}", "chair", note)
+            log(f"worker: the chair {'was' if told else 'could not be'} told: {note}")
 
     def capacity() -> int:
         from harness.store_hosts import host_list
@@ -434,6 +490,7 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
         monotonic=time.monotonic,
         sleep=time.sleep,
         log=log,
+        set_aside=set_aside,
         timings=timings,
     )
     return ports, store
