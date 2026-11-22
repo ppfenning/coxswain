@@ -81,6 +81,7 @@ ALLOWED_UNTIMED = {
     ("tools/agent_tools/store_switch.py", "default_copy_store"): "a whole-store copy a person runs; it scales with data",
     ("graphs/harness/checks.py", "_serial_rerun_passes"): "Popen waited with communicate(timeout=limit)",
     ("graphs/harness/serial_tests.py", "pytest_sessionfinish"): "pytest's own serial pass, bounded by the suite",
+    ("cartridges/core/bounded_proc.py", "completed_in_group"): "Popen whose communicate(timeout=limit) bounds it; its group is killed past it",
 }
 
 

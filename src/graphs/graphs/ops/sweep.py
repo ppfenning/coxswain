@@ -23,7 +23,7 @@ from tempfile import TemporaryDirectory
 from typing import Any
 from uuid import uuid4
 
-from core.bounded_proc import GIT_TIMEOUT_SECONDS, STEP_TIMEOUT_SECONDS, completed
+from core.bounded_proc import GIT_TIMEOUT_SECONDS, STEP_TIMEOUT_SECONDS, completed_in_group
 from graphs._contract import require, require_cartridge
 from graphs.delivery import review_entry
 from graphs.delivery.lifecycle_schemas import BUILD_SCHEMA
@@ -113,7 +113,7 @@ def sweep_apply(cartridge: Mapping[str, Any], runner: NodeRunner, repo: str, pla
             return {"applied": False, "diff": "", "error": worktree_detail}
 
         if kind == "script":
-            proc = completed(["sh", "-c", body], timeout=STEP_TIMEOUT_SECONDS, cwd=worktree, capture_output=True, text=True)
+            proc = completed_in_group(["sh", "-c", body], timeout=STEP_TIMEOUT_SECONDS, cwd=worktree, capture_output=True, text=True)
             if proc.returncode != 0:
                 return {"applied": False, "diff": "", "error": (proc.stderr or proc.stdout).strip()}
         elif kind == "build":
@@ -132,7 +132,7 @@ def sweep_apply(cartridge: Mapping[str, Any], runner: NodeRunner, repo: str, pla
         else:
             return {"applied": False, "diff": "", "error": f"unknown application.kind {kind!r}"}
 
-        diff = completed(["git", "diff"], timeout=GIT_TIMEOUT_SECONDS, cwd=worktree, capture_output=True, text=True).stdout
+        diff = completed_in_group(["git", "diff"], timeout=GIT_TIMEOUT_SECONDS, cwd=worktree, capture_output=True, text=True).stdout
         postcondition = [
             {"pattern": pattern, "matches": _grep_matches(worktree, pattern, plan.get("exceptions") or [])}
             for pattern in plan.get("postcondition") or []

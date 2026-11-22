@@ -63,3 +63,6 @@ def test_cache_writes_and_reads_are_priced_beside_uncached_input():
     quoted = {"m": {"input": 10.0, "output": 50.0, "cache_write": 20.0, "cache_read": 0.5}}
     assert price_call(quoted, "m", 0, 0, 1_000_000, 1_000_000) == pytest.approx(20.5)
     assert price_call(rates, "m", 1_000_000, 1_000_000) == pytest.approx(60.0)
+    # the family read price when the profile quotes none: 0.05x on Opus 5.5, 0.025x on Fable 5.2
+    assert price_call({"claude-opus-5-5": {"input": 4.0, "output": 20.0}}, "claude-opus-5-5", 0, 0, 0, 1_000_000) == pytest.approx(0.2)
+    assert price_call({"claude-fable-5-2": {"input": 8.0, "output": 40.0}}, "claude-fable-5-2", 0, 0, 0, 1_000_000) == pytest.approx(0.2)

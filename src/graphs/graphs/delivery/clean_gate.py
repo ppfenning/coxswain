@@ -15,7 +15,7 @@ from tempfile import TemporaryDirectory
 from typing import Any, Literal
 from uuid import uuid4
 
-from core.bounded_proc import GIT_TIMEOUT_SECONDS, completed
+from core.bounded_proc import GIT_TIMEOUT_SECONDS, completed_in_group
 
 _CLEAN_SCRIPT = ".github/check_clean.py"
 _REQUIRE_NAMES = "--require-names"
@@ -130,4 +130,4 @@ def clean_gate_outcome(
             return None, "skipped" if any(r.get("exit_code") == 2 for r in results) else "ran"
         finally:
             remove_worktree(repo, worktree)
-            completed(["git", "-C", str(repo), "branch", "-D", branch], timeout=GIT_TIMEOUT_SECONDS, capture_output=True, text=True)
+            completed_in_group(["git", "-C", str(repo), "branch", "-D", branch], timeout=GIT_TIMEOUT_SECONDS, capture_output=True, text=True)

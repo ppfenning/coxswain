@@ -14,7 +14,7 @@ from tempfile import TemporaryDirectory
 from typing import Any, NamedTuple
 from uuid import uuid4
 
-from core.bounded_proc import GIT_TIMEOUT_SECONDS, completed
+from core.bounded_proc import GIT_TIMEOUT_SECONDS, completed_in_group
 from graphs.delivery.checkpoint import (
     CheckpointSignals,
     Decision,
@@ -183,7 +183,7 @@ def _checkpoint_checks_pass(patch: str, checks: Sequence[Mapping[str, Any]], rep
             return applied and all_passed(run_checks(worktree, checks))
         finally:
             remove_worktree(repo, worktree)
-            completed(["git", "-C", str(repo), "branch", "-D", branch], timeout=GIT_TIMEOUT_SECONDS, capture_output=True, text=True)
+            completed_in_group(["git", "-C", str(repo), "branch", "-D", branch], timeout=GIT_TIMEOUT_SECONDS, capture_output=True, text=True)
 
 
 def _append_checkpoint_ledger(ctx: _CheckpointContext, signals: CheckpointSignals, decision: Decision) -> None:
