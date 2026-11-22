@@ -84,7 +84,7 @@ def _qu_inputs(a: argparse.Namespace) -> UnitInputs | str:
     if isinstance(resolved, _ChairUnitRefusal):
         return resolved.message
     return chair_queue_units.UnitInputs(resolved.cox, resolved.workspace_dir, label, resolved.profile, resolved.path,
-                                        resolved.env_file)
+                                        resolved.env_file, resolved.tmpdir)
 
 
 def _qu_queued(a: argparse.Namespace) -> frozenset[str] | str:
@@ -129,9 +129,11 @@ def _qu_install(a: argparse.Namespace, platform: str, home: Path, uid: int, run:
             print(f"would write {path}" if path in changed else f"unchanged {path}")
         print("\n".join(f"would run: {shlex.join(step.argv)}" for step in steps))
         return 0
-    from agent_tools.cli_chair_service import _write_private
+    from agent_tools.cli_chair_service import _make_agent_tmpdir, _write_private
 
     for path, text in files:
+        if platform == "darwin":
+            _make_agent_tmpdir(text)
         if path in changed:
             _write_private(path, text)
             print(f"wrote {path}")
