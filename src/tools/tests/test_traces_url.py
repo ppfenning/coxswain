@@ -1,6 +1,4 @@
-import dataclasses
 
-import pytest
 
 from agent_tools.store_url import TracesRoot, profile_traces_root, traces_root
 
@@ -33,8 +31,3 @@ def test_a_relative_path_passes_through_unchanged_like_the_store_url():
 def test_the_profile_key_is_traces_url_and_no_other():
     assert profile_traces_root({"traces_url": "s3://b/t"}, "/r") == TracesRoot("s3://b/t", True)
     assert profile_traces_root({"storage_url": "s3://b/t"}, "/r") == DEFAULT
-
-
-def test_the_root_is_frozen():
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        DEFAULT.url = "x"

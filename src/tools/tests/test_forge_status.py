@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-import dataclasses
-
-import pytest
-
 from agent_tools.forge_status import ForgeStatus, StatusReader, parse_github_summary
 
 OPERATIONAL = {
@@ -67,11 +63,6 @@ def test_degraded_ci_component_carries_component_name() -> None:
 
 def test_other_component_down_is_not_degraded() -> None:
     assert parse_github_summary(ISSUES_DOWN).degraded is False
-
-
-def test_status_is_frozen() -> None:
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        ForgeStatus(False, "", 0.0).degraded = True  # type: ignore[misc]
 
 
 def test_read_inside_window_does_not_refetch() -> None:

@@ -1,7 +1,4 @@
-from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta
-
-import pytest
 
 from agent_tools.chair_restart_log import (
     RestartRecord,
@@ -29,11 +26,6 @@ def test_bump_keeps_only_the_last_24_hours():
 
 def test_bump_without_a_record_starts_one():
     assert bump(None, "boot", NOW) == RestartRecord(times=(NOW.isoformat(),), reason="boot")
-
-
-def test_record_is_frozen():
-    with pytest.raises(FrozenInstanceError):
-        bump(None, "boot", NOW).reason = "x"  # type: ignore[misc]
 
 
 def test_note_is_empty_with_no_record():

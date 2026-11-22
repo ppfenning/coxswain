@@ -1,4 +1,4 @@
-"""H9 (docs/hardening.md): no module in agent_tools or the harness exceeds 2,000 lines.
+"""H9 (docs/hardening.md): no module in a package under src/, or in devtools, exceeds 2,000 lines.
 
 A ratchet while the split lands: the modules still over the limit are listed with their length now, and may only
 shrink. A listed module that is split below the limit leaves the list in the same change; any other module over the
@@ -8,11 +8,20 @@ limit fails, so a new monolith is caught the day it crosses the line.
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-PACKAGES = ("src/tools/agent_tools", "src/graphs/harness")
+PACKAGES = (
+    "src/tools/agent_tools",
+    "src/graphs/harness",
+    "src/graphs/graphs",
+    "src/graphs/runner",
+    "src/cartridges/core",
+    "devtools",
+)
 LIMIT = 2000
 
 # The modules over LIMIT, each at most this many lines. Empty when H9 is done.
 OVER_LIMIT: dict[str, int] = {
+    "src/graphs/graphs/delivery/lifecycle_propose.py": 2680,
+    "devtools/cli.py": 2015,
 }
 
 

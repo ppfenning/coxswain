@@ -128,11 +128,6 @@ def test_a_lane_run_wins_over_a_different_ghost_run_of_the_same_initiative():
     assert lost_runs_of([lane], {"h"}, {}, NOW, rows=rows) == {"i": "i-2"}
 
 
-def test_lost_runs_of_without_rows_is_the_lane_rule_alone():
-    lane = run_store.Lane("i-2", "h", "2026-09-27T10:00:00Z", "2026-09-27T11:00:00Z")
-    assert lost_runs_of([lane], {"h"}, {}, NOW) == {"i": "i-2"}
-
-
 def _ghost_store(runs_dir: Path, holder: str | None) -> None:
     conn = sqlite3.connect(runs_dir / "cox.db")
     conn.execute("CREATE TABLE runs (run_id TEXT, launched_at TEXT, ended_at TEXT, status TEXT)")

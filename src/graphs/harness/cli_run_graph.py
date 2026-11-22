@@ -364,7 +364,7 @@ def _lifecycle_worktree(args: argparse.Namespace, cartridge: Mapping[str, Any], 
 
 
 def _checks_env(environ: Mapping[str, str], cores: int) -> dict[str, str] | None:
-    """`check_env` over the capacity COX_LANE_CAPACITY states; None unless `lane_workers_from` accepts it."""
+    """`check_env` over the capacity COX_LANE_CAPACITY states; None unless `stated_check_env` accepts it."""
     return stated_check_env(environ, cores)
 
 

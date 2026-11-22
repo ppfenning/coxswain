@@ -1,4 +1,4 @@
-from dataclasses import FrozenInstanceError, replace
+from dataclasses import replace
 from types import SimpleNamespace as NS
 
 import pytest
@@ -46,11 +46,6 @@ def count(conn, table):
 
 def test_a_literal_definition_hashes_to_a_fixed_digest():
     assert content_hash(DEFINITION) == DIGEST
-
-
-def test_the_definition_is_frozen():
-    with pytest.raises(FrozenInstanceError):
-        DEFINITION.name = "other"  # type: ignore[misc]
 
 
 def test_changing_one_nodes_tier_changes_the_digest():

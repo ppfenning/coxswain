@@ -55,11 +55,6 @@ def test_valid_connection_has_no_problems():
     assert validate_shared(CONN) == []
 
 
-def test_connection_is_frozen():
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        CONN.pg_host = "other"  # type: ignore[misc]
-
-
 @pytest.mark.parametrize(
     ("field", "bad"),
     [

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from harness.digest import build_digest
+from harness.digest import build_digest, symbols_from_rg
 
 
 @pytest.fixture
@@ -51,3 +51,26 @@ def test_it_is_bounded_and_the_file_map_survives(repo) -> None:
 
 def test_a_non_repository_yields_nothing(tmp_path) -> None:
     assert build_digest(tmp_path) == ""
+
+
+def test_rg_lines_become_names_with_line_numbers_per_file() -> None:
+    out = "\n".join(
+        [
+            "pkg/mod.py:3:class Thing",
+            "pkg/mod.py:10:async def fetch",
+            "web/app.ts:4:export async function load",
+            "run.sh:2:main() {",
+            "lib.rs:7:    pub fn parse",
+            "srv.go:9:func (s *Server) Serve",
+            "a line that is not rg output",
+            "pkg/mod.py:12:",
+        ]
+    )
+    assert symbols_from_rg(out) == {
+        "pkg/mod.py": ["Thing:3", "fetch:10"],
+        "web/app.ts": ["load:4"],
+        "run.sh": ["main:2"],
+        "lib.rs": ["parse:7"],
+        "srv.go": ["Serve:9"],
+    }
+    assert symbols_from_rg("") == {}

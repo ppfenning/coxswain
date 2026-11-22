@@ -14,7 +14,7 @@ from core import workstore
 from core.manifest import gate_diff
 from runner.protocol import Capability, ProviderProfile, RunnerError, resolve_profile
 
-__all__ = ["APPLY_SCHEMA", "apply_arm_for", "apply_decisions", "auto_apply", "gate", "workstore_route"]
+__all__ = ["APPLY_SCHEMA", "apply_arm_for", "apply_decisions", "auto_apply", "decision_for", "gate", "workstore_route"]
 
 # What an apply arm must report back. Small on purpose: the arm says whether it
 # landed the write and names what it touched, and nothing else — a verbose arm
@@ -204,6 +204,12 @@ def auto_apply(
     return bool(result.get("applied")), str(result.get("detail", ""))
 
 
+def decision_for(answer: str) -> tuple[str, bool]:
+    """Pure. `(decision, edited)` for an answer at the gate: its first letter decides, `a` approves, `e` approves with
+    edits, and anything else, an empty answer included, refuses."""
+    return {"a": ("approved", False), "e": ("approved", True)}.get(answer[:1], ("refused", False))
+
+
 def gate(proposals: list[dict[str, Any]], *, assume: str | None) -> tuple[list[tuple[dict[str, Any], str, bool]], float]:
     """Present each proposal and capture a decision. Nothing applies without one.
 
@@ -232,12 +238,7 @@ def gate(proposals: list[dict[str, Any]], *, assume: str | None) -> tuple[list[t
         else:
             answer = input("  [a]pprove / approve with [e]dits / [r]efuse ? ").strip().lower() or "r"
 
-        decision, edited = {
-            "a": ("approved", False),
-            "e": ("approved", True),
-            "r": ("refused", False),
-        }.get(answer[:1], ("refused", False))
-        decisions.append((item, decision, edited))
+        decisions.append((item, *decision_for(answer)))
 
     minutes = (datetime.now(UTC) - started).total_seconds() / 60
     return decisions, round(minutes, 2)

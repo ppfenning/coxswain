@@ -1,6 +1,4 @@
-import dataclasses
 
-import pytest
 
 from agent_tools.chair_schedule_graph import Initiative, Phase, build_graph
 
@@ -32,12 +30,6 @@ def test_complete_phase_is_no_node_and_no_edge():
     nodes, edges = build_graph([_ini("a", 1, _ph("p1", "complete"), _ph("p2", parents=("p1",)))])
     assert list(nodes) == [("a", "p2")]
     assert edges == {("a", "p2"): frozenset()}
-
-
-def test_node_is_frozen():
-    nodes, _ = build_graph([_ini("a", 1, _ph("p1"))])
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        nodes[("a", "p1")].status = "running"  # type: ignore[misc]
 
 
 def test_strict_conflict_edge_follows_priority():

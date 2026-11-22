@@ -1,5 +1,4 @@
 import argparse
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -19,12 +18,12 @@ def _insert(conn, table, row):
 
 def test_off_never_invokes_select_tier_and_returns_the_floor(monkeypatch, capsys):
     monkeypatch.setattr(cli, "_router_policy_for", lambda a, role: _policy("off"))
-    selected = MagicMock()
-    monkeypatch.setattr(router, "select_tier", selected)
+    calls: list[tuple] = []
+    monkeypatch.setattr(router, "select_tier", lambda *args: calls.append(args))
     rc = cli.main(["router", "select", "--role", "build", "--json"])
     out = capsys.readouterr().out
     assert rc == 0
-    selected.assert_not_called()
+    assert calls == []
     assert '"effective_tier": "standard"' in out
 
 

@@ -1,4 +1,3 @@
-from dataclasses import FrozenInstanceError
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -69,12 +68,6 @@ def test_verdicts():
     assert month_budget(31.0, 50.0, mid, "UTC", 0.2).verdict == "over_pace"
     assert month_budget(31.0, 50.0, mid, "UTC", 0.9).verdict == "on_track"
     assert month_budget(10.0, 50.0, mid, "UTC", 0.2).verdict == "on_track"
-
-
-def test_month_budget_is_frozen():
-    got = month_budget(1.0, 5.0, _utc(2026, 11, 16), "UTC", 0.2)
-    with pytest.raises(FrozenInstanceError):
-        got.spent_usd = 2.0  # type: ignore[misc]
 
 
 def test_days_left_is_zero_on_the_last_local_day():

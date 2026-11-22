@@ -1,4 +1,6 @@
 """The lease keeper: the pure rules, and the keeper over a real store."""
+import threading
+
 import pytest
 
 from harness import lease_keeper, store_lease
@@ -47,19 +49,31 @@ def test_a_lapsed_lease_is_not_revived(conn):
 
 
 def test_the_thread_keeps_the_lease_until_stopped(conn):
-    import time
-    from datetime import UTC, datetime
+    """On the test's own clock: the lease outlives its two seconds only because the keeper's thread renewed it on each."""
+    second = [0]
+    beats = threading.Semaphore(0)
 
-    def wall() -> str:
-        return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    def at(n: int) -> str:
+        return f"2026-11-21T10:00:{n:02d}Z"
 
-    held = store_lease.acquire(conn, "b", "me", wall(), 2)
-    keeper = lease_keeper.Keeper(conn, "b", "me", int(held.epoch or 0), ttl=2, clock=wall, interval=0.2).start()
+    def clock() -> str:
+        beats.release()
+        return at(second[0])
+
+    def two_beats() -> None:
+        while beats.acquire(blocking=False):
+            pass
+        # Two, since the first of them may have read the clock before it moved.
+        assert beats.acquire(timeout=10) and beats.acquire(timeout=10), "the keeper's thread stopped renewing"
+
+    held = store_lease.acquire(conn, "b", "me", at(0), 2)
+    keeper = lease_keeper.Keeper(conn, "b", "me", int(held.epoch or 0), ttl=2, clock=clock, interval=0.01).start()
     try:
-        time.sleep(3)
-        assert not store_lease.acquire(conn, "b", "other", wall(), 2).ok
+        for now in range(1, 6):
+            second[0] = now
+            two_beats()
+        assert not store_lease.acquire(conn, "b", "other", at(5), 2).ok
         assert not keeper.lost.is_set()
     finally:
         keeper.stop()
-    time.sleep(2.5)
-    assert store_lease.acquire(conn, "b", "other", wall(), 2).ok, "once stopped, the lease lapses on its own"
+    assert store_lease.acquire(conn, "b", "other", at(8), 2).ok, "once stopped, the lease lapses on its own"

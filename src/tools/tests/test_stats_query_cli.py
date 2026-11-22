@@ -327,64 +327,28 @@ def _write_full_provider(tmp_path, *, role_budget_usd="", tier_overrides="", def
     return routing
 
 
-def test_cli_stats_bounds_role_budget_usd_wins_over_tier_maps(tmp_path, capsys):
+@pytest.mark.parametrize(
+    ("budget_role", "override_role", "default_role", "ceiling"),
+    [
+        pytest.param("build", "build", "build", 9.0, id="role_budget_usd_wins_over_tier_maps"),
+        pytest.param("other_role", "build", "build", 0.15, id="tier_overrides_resolves_the_tier_then_budget_usd"),
+        pytest.param("other_role", "other_role", "build", 0.80, id="defaults_resolves_the_tier_when_no_override"),
+        pytest.param("other_role", "other_role", "other_role", 0.35, id="role_in_no_map_falls_back_to_standard"),
+    ],
+)
+def test_cli_stats_bounds_ceiling_precedence(tmp_path, capsys, budget_role, override_role, default_role, ceiling):
     db = tmp_path / "stats.db"
     _seed_bounds(db)
     routing = _write_full_provider(
         tmp_path,
-        role_budget_usd="  build: 9.0\n",
-        tier_overrides="  build: cheap\n",
-        defaults="  build: deep\n",
+        role_budget_usd=f"  {budget_role}: 9.0\n",
+        tier_overrides=f"  {override_role}: cheap\n",
+        defaults=f"  {default_role}: deep\n",
     )
     code = main(["stats", "bounds", "--db", str(db), "--json", "--profile", str(routing)])
     [row] = json.loads(capsys.readouterr().out)
     assert code == 0
-    assert row["ceiling"] == 9.0
-
-
-def test_cli_stats_bounds_tier_overrides_resolves_the_tier_then_budget_usd(tmp_path, capsys):
-    db = tmp_path / "stats.db"
-    _seed_bounds(db)
-    routing = _write_full_provider(
-        tmp_path,
-        role_budget_usd="  other_role: 9.0\n",
-        tier_overrides="  build: cheap\n",
-        defaults="  build: deep\n",
-    )
-    code = main(["stats", "bounds", "--db", str(db), "--json", "--profile", str(routing)])
-    [row] = json.loads(capsys.readouterr().out)
-    assert code == 0
-    assert row["ceiling"] == 0.15
-
-
-def test_cli_stats_bounds_defaults_resolves_the_tier_when_no_override(tmp_path, capsys):
-    db = tmp_path / "stats.db"
-    _seed_bounds(db)
-    routing = _write_full_provider(
-        tmp_path,
-        role_budget_usd="  other_role: 9.0\n",
-        tier_overrides="  other_role: cheap\n",
-        defaults="  build: deep\n",
-    )
-    code = main(["stats", "bounds", "--db", str(db), "--json", "--profile", str(routing)])
-    [row] = json.loads(capsys.readouterr().out)
-    assert code == 0
-    assert row["ceiling"] == 0.80
-
-
-def test_cli_stats_bounds_role_in_no_map_falls_back_to_standard(tmp_path, capsys):
-    db = tmp_path / "stats.db"
-    _seed_bounds(db)
-    routing = _write_full_provider(
-        tmp_path,
-        role_budget_usd="  other_role: 9.0\n",
-        tier_overrides="  other_role: cheap\n",
-        defaults="  other_role: deep\n",
-    )
-    code = main(["stats", "bounds", "--db", str(db), "--json", "--profile", str(routing)])
-    [row] = json.loads(capsys.readouterr().out)
-    assert code == 0
-    assert row["ceiling"] == 0.35
+    assert row["ceiling"] == ceiling
 
 
 def test_cli_stats_bounds_default_invocation_resolves_a_real_ceiling_via_agent_tools_profile(tmp_path, capsys, monkeypatch):

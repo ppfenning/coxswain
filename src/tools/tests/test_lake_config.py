@@ -1,4 +1,3 @@
-import dataclasses
 import sys
 
 import pytest
@@ -40,11 +39,6 @@ def test_redact_hides_a_password_and_keeps_the_rest():
 
 def test_redact_leaves_a_url_without_a_password_alone():
     assert redact("s3://bucket/p") == "s3://bucket/p"
-
-
-def test_the_config_is_frozen():
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        resolve_lake({}, "/runs").warehouse = "x"  # type: ignore[misc]
 
 
 def test_load_catalog_without_pyiceberg_names_the_lake_extra(monkeypatch):

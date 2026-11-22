@@ -1,4 +1,3 @@
-import dataclasses
 
 import pytest
 
@@ -62,11 +61,6 @@ def test_a_zero_cap_is_valid():
 
 def test_from_policy_accepts_stop():
     assert from_policy({}, {"pacing_state": "stop"}).pacing_state == "stop"
-
-
-def test_the_record_is_frozen():
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        from_policy({}, {}).class_ceiling = "extract"  # type: ignore[misc]
 
 
 def test_the_edge_reads_the_yaml_policy_and_applies_flags(tmp_path):

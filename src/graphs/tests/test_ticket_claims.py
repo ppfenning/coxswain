@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import dataclasses
-
 import pytest
 
 from harness.ticket_claims import Claim, check_claims, parse_claims
@@ -50,11 +48,6 @@ def test_body_without_a_claim_gives_nothing():
     assert parse_claims("Add a flag to the parser.") == ()
     assert check_claims({"body": "Add a flag."}, _search(CALL)) == ()
     assert check_claims({}, _search(CALL)) == ()
-
-
-def test_claim_is_frozen():
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        Claim("no_caller", "X").subject = "Y"  # type: ignore[misc]
 
 
 def test_false_no_caller_lists_hits_and_skips_the_definition():

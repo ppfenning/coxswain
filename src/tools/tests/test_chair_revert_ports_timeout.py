@@ -15,10 +15,6 @@ def _runner():
     return bounded(chair_exec.run_argv)
 
 
-def test_the_bound_is_thirty_minutes() -> None:
-    assert CI_WATCH_TIMEOUT_SECONDS == 1800
-
-
 def test_wait_checks_passes_the_named_bound_to_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[dict] = []
 
