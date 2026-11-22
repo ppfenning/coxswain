@@ -239,8 +239,13 @@ def _absolutise_context(raw: Mapping[str, object], directory: Path) -> list[str]
     return [str((directory / str(entry)).resolve()) for entry in cast("Sequence[object]", entries)]
 
 
-def _merge(parent: Mapping[str, object], child: Mapping[str, object]) -> dict[str, object]:
-    """Deep-merge child over parent. `context` concatenates; other lists replace.
+def _merge(
+    parent: Mapping[str, object], child: Mapping[str, object], *, top_level: bool = True
+) -> dict[str, object]:
+    """Deep-merge child over parent. Top-level `context` concatenates; other lists replace.
+
+    Only a layer's own `context` is a list of pack paths. A nested `context`,
+    such as a seat's string under `crew`, replaces like any other value.
 
     A list that is not `context` is a value, not a tree — a team that names its
     board sections means those sections, not the base's plus its own.
@@ -253,10 +258,10 @@ def _merge(parent: Mapping[str, object], child: Mapping[str, object]) -> dict[st
     """
     merged = dict(parent)
     for key, value in child.items():
-        if key == "context":
+        if top_level and key == "context":
             merged[key] = [*cast("Sequence[object]", parent.get(key, [])), *cast("Sequence[object]", value)]
         elif is_mapping(value) and is_mapping(parent_value := parent.get(key)):
-            merged[key] = _merge(parent_value, value)
+            merged[key] = _merge(parent_value, value, top_level=False)
         else:
             merged[key] = value
     return merged
