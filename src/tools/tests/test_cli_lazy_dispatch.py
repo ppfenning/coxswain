@@ -45,7 +45,8 @@ def test_every_real_row_names_its_handler_as_a_module_function_path() -> None:
     assert handlers  # every command row resolves to a handler; the count is not pinned, so adding a command breaks nothing
     outside = [h.target for h in handlers if not h.target.startswith("agent_tools.cli:")]
     assert all(isinstance(h, cli._LazyHandler) for h in handlers)
-    assert outside == ["agent_tools.store_fill:main"]  # the one handler whose edge lives in its own module
+    # the handlers whose edge lives in their own module
+    assert sorted(outside) == ["agent_tools.inbox_cli:handler", "agent_tools.store_fill:main"]
     assert cli.RUNS_COMMANDS[0].handler == "agent_tools.cli:_runs_usage"
 
 
