@@ -104,10 +104,17 @@ def _commented(tmp_path, host_names, text=COMMENTED):
     return profile, cartridge
 
 
-def test_on_keeps_comments_and_other_keys_through_its_handler(tmp_path):
+def _main(profile, mode: str, monkeypatch) -> int:
+    """Run `cox host orchestrate <mode>` through argument parsing and the command table.
+    The command takes no --profile flag, so the profile arrives by AGENT_TOOLS_PROFILE."""
+    monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(profile))
+    return cli.main(["host", "orchestrate", mode])
+
+
+def test_on_keeps_comments_and_other_keys_through_cli_main(tmp_path, monkeypatch):
     profile, cartridge = _commented(tmp_path, THREE_HOSTS)
     assert cartridge.read_text(encoding="utf-8") == COMMENTED
-    assert cli._host_orchestrate(_args(profile, "on")) == 0
+    assert _main(profile, "on", monkeypatch) == 0
     text = cartridge.read_text(encoding="utf-8")
     assert _edits(COMMENTED, text) == [("insert", [], ["    local_lanes: decompose"])]
     assert _comments(text) == _comments(COMMENTED)
@@ -118,10 +125,10 @@ def test_on_keeps_comments_and_other_keys_through_its_handler(tmp_path):
     assert data["name"] == "example-team"
 
 
-def test_off_keeps_comments_and_other_keys_through_its_handler(tmp_path):
+def test_off_keeps_comments_and_other_keys_through_cli_main(tmp_path, monkeypatch):
     before = COMMENTED.replace("    max_in_flight: 2", "    local_lanes: decompose\n    max_in_flight: 2")
     profile, cartridge = _commented(tmp_path, THREE_HOSTS, before)
-    assert cli._host_orchestrate(_args(profile, "off")) == 0
+    assert _main(profile, "off", monkeypatch) == 0
     text = cartridge.read_text(encoding="utf-8")
     assert _edits(before, text) == [("replace", ["    local_lanes: decompose"], ["    local_lanes: any"])]
     assert _comments(text) == _comments(COMMENTED)
