@@ -336,8 +336,8 @@ def status_entries(runs: list, summaries: dict) -> list:
 
 
 def child_env(
-    environ: dict, *, harness_bin: str = "", repo: str = "", trace_dir: str = "", chair_model: str = "",
-) -> dict:
+    environ: Mapping[str, str], *, harness_bin: str = "", repo: str = "", trace_dir: str = "", chair_model: str = "",
+) -> dict[str, str]:
     """The harness child's environment, spec §4: `environ` with
     `<repo>/.venv/bin` and `harness_bin` (the folder of the harness python) prepended to `PATH`
     when given, in that order. Every other key is untouched; `environ`

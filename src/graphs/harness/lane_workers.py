@@ -40,3 +40,8 @@ def check_env(environ: Mapping[str, str], cores: int, capacity: int | None) -> d
     if capacity is None or capacity < 1:
         return None
     return {**environ, **workers_env(environ, lane_workers(cores, capacity))}
+
+
+def stated_check_env(environ: Mapping[str, str], cores: int) -> dict[str, str] | None:
+    """`check_env` over the capacity LANE_CAPACITY_VAR states in `environ`; None when it states no valid one."""
+    return check_env(environ, cores, _positive_int(environ.get(LANE_CAPACITY_VAR)))
