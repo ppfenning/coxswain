@@ -9,7 +9,7 @@ import shutil
 import tempfile
 import threading
 import uuid
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import NamedTuple
 
@@ -22,6 +22,7 @@ __all__ = [
     "create_worktree",
     "keep_worktree",
     "link_venv",
+    "linked_venv_bin",
     "normalise_patch",
     "prune_registrations",
     "read_lock",
@@ -30,6 +31,7 @@ __all__ = [
     "release_stale_holders",
     "remove_worktree",
     "reset_worktree",
+    "shared_venv_env",
     "stale_holders",
     "sync_env",
 ]
@@ -386,6 +388,36 @@ def link_venv(repo: Path, worktree: Path) -> bool:
         exclude.write_text("\n".join([*lines, "/.venv"]) + "\n", encoding="utf-8")
     link.symlink_to(venv.resolve())
     return True
+
+
+# uv's own switch (`uv run --no-sync`): run in the environment as it is, never lock or sync it first.
+UV_NO_SYNC_VAR = "UV_NO_SYNC"
+
+
+def linked_venv_bin(worktree: Path) -> Path | None:
+    """Edge. The bin of the shared venv `<worktree>/.venv` links to (`link_venv`), resolved; None when it is no link."""
+    link = Path(worktree) / ".venv"
+    return (link / "bin").resolve() if link.is_symlink() and (link / "bin").is_dir() else None
+
+
+def shared_venv_env(
+    environ: Mapping[str, str], venv_bin: Path | None, resolve: Callable[[str], str] = lambda p: p
+) -> dict[str, str]:
+    """Pure given `resolve` (the edge passes `os.path.realpath`). The environment a command runs in inside a tree whose
+    `.venv` is the shared checkout's (`link_venv`): `UV_NO_SYNC_VAR` set, so a `uv run` there uses the venv as it is,
+    and `venv_bin` first on PATH. A PATH whose first entry already is that venv (`resolve` says so), as `cox route
+    launch` makes a lane's, stays exactly as it is; otherwise the bin goes first and every other entry for it is
+    dropped. Without UV_NO_SYNC uv syncs the linked venv to the tree it runs in: the checkout's editable install is
+    rewritten to point into that tree, and once the tree is removed every check, smoke and gate on the machine fails
+    its imports (E1, 2026-11-21: a builder's `uv run pytest` in its scratch, then "No module named 'agent_tools'" on
+    every later task). With no `venv_bin`, `environ` as it is."""
+    if venv_bin is None:
+        return dict(environ)
+    target = resolve(str(venv_bin))
+    entries = [p for p in environ.get("PATH", "").split(os.pathsep) if p]
+    if not (entries and resolve(entries[0]) == target):
+        entries = [str(venv_bin), *(p for p in entries if resolve(p) != target)]
+    return {**environ, "PATH": os.pathsep.join(entries), UV_NO_SYNC_VAR: "1"}
 
 
 def prune_registrations(repo: Path) -> tuple[bool, str]:
