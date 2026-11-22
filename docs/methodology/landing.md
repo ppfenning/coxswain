@@ -513,4 +513,8 @@ branches a finished run left behind. Without `--apply` it shows what it
 would delete. It cleans up runs that finished (landed, abandoned or
 superseded), so a workspace doesn't accumulate disposable state that nobody is going to look at
 again. It never touches a run still in flight or a branch a pull request
-still points at.
+still points at. It deletes only the run's own branches: its
+`agents/<run>/...` namespace and the `epic/<initiative>/<phase>--<task>`
+merge targets its task records name, the initiative being the record's or
+the run id's without its `-<n>`. Another initiative's branches are never in
+its plan, and `--force` only force-deletes the run's own.
