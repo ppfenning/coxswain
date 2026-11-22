@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from agent_tools import tmpdir_check
 from agent_tools.tmpdir_check import UnitTmpdir
 
@@ -81,7 +83,56 @@ def test_the_doctor_reads_each_installed_unit_and_its_drop_in_against_this_machi
     (units / "coxswain-lander.service.d").mkdir(parents=True)
     (units / "coxswain-lander.service").write_text("[Service]\nExecStart=/c lander run\n")
     (units / "coxswain-lander.service.d/tmpdir.conf").write_text(f"[Service]\nEnvironment=TMPDIR={tmp_path}\n")
-    [row] = cli_doctor._doctor_tmpdir_rows({})
+    # This machine's own units are never asked what they run with: the test's units are not running.
+    [row] = cli_doctor._doctor_tmpdir_rows({}, running=lambda _unit: None)
     assert row["check"] == "lane TMPDIR" and row["ok"]
     assert row["detail"].startswith("not checked") or (
         row["detail"].startswith(f"coxswain-lander.service: {tmp_path}") and "tmpdir.conf" in row["detail"])
+
+
+def test_each_queue_instance_reads_its_templates_drop_ins_and_then_its_own(tmp_path, monkeypatch):
+    from agent_tools import cli_doctor
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    units = tmp_path / ".config/systemd/user"
+    for d in ("coxswain-chair@.service.d", "coxswain-chair@launch.service.d"):
+        (units / d).mkdir(parents=True)
+    (units / "coxswain-chair@.service").write_text("[Service]\nExecStart=/c chair worker --kind %i\n")
+    (units / "coxswain-chair@.service.d/tmpdir.conf").write_text("[Service]\nEnvironment=TMPDIR=/var/tmp/all\n")
+    (units / "coxswain-chair@launch.service.d/tmpdir.conf").write_text("[Service]\nEnvironment=TMPDIR=/var/tmp/one\n")
+    found = {name: drop_ins for name, _text, drop_ins in cli_doctor._doctor_tmpdir_units(tmp_path)}
+    assert set(found) == {f"coxswain-chair@{k}.service" for k in ("housekeeping", "watch", "quarantine", "decompose", "launch")}
+    assert found["coxswain-chair@launch.service"] == [("tmpdir.conf", "[Service]\nEnvironment=TMPDIR=/var/tmp/one\n")]
+    assert found["coxswain-chair@watch.service"] == [("tmpdir.conf", "[Service]\nEnvironment=TMPDIR=/var/tmp/all\n")]
+
+
+def test_a_running_process_started_with_another_tmpdir_warns_until_it_restarts():
+    [row] = tmpdir_check.rows([UnitTmpdir("coxswain-lander.service", DEFAULT, DEFAULT, "unit", running="/tmp")],
+                              MOUNTS, DEFAULT)
+    assert row.get("warn") and "the running process has TMPDIR /tmp: the unit's takes effect on its next restart" in (
+        row["detail"])
+    assert row["detail"].endswith("fix: `systemctl --user restart coxswain-lander.service`")
+    [same] = tmpdir_check.rows([UnitTmpdir("u", DEFAULT, DEFAULT, "unit", running=DEFAULT)], MOUNTS, DEFAULT)
+    assert "warn" not in same
+
+
+def test_a_processs_environ_gives_its_tmpdir_and_tmp_without_one():
+    from pathlib import Path
+
+    assert tmpdir_check.environ_tmpdir(Path("/proc/self/environ").read_bytes()) == os.environ.get("TMPDIR", "/tmp")
+    assert tmpdir_check.environ_tmpdir(b"A=1\0TMPDIR=/var/tmp/x\0B=2\0") == "/var/tmp/x"
+    assert tmpdir_check.environ_tmpdir(b"A=1\0") == "/tmp"
+
+
+def test_a_refused_lane_tmpdir_is_a_warning_row_before_the_units():
+    out = tmpdir_check.rows([], MOUNTS, DEFAULT, refused="lane_tmpdir 'x' is not an absolute path")
+    assert out[0] == {"check": "lane TMPDIR", "ok": True, "warn": True,
+                      "detail": "lane_tmpdir 'x' is not an absolute path; fix the profile, then run `cox upgrade`"}
+    assert len(out) == 2
+
+
+def test_a_unit_that_is_not_running_has_no_running_tmpdir():
+    from agent_tools import cli_doctor
+
+    assert cli_doctor._running_tmpdir("coxswain-no-such-unit.service") is None
+    assert cli_doctor._running_tmpdir("coxswain-chair.plist") is None

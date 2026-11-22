@@ -292,15 +292,26 @@ class _ChairUnitInputs:
     tmpdir: str | None = None  # the units' TMPDIR (`unit_tmpdir`)
 
 
-def _unit_tmpdir(profile: Mapping[str, object]) -> str:
-    """Edge. The TMPDIR this machine's units set: the profile's `lane_tmpdir`, else one under /var/tmp for this user."""
+def _unit_tmpdir(profile: Mapping[str, object]) -> tuple[str, str | None]:
+    """Edge. The TMPDIR this machine's units set and, when the profile's `lane_tmpdir` was refused, why
+    (`unit_tmpdir.tmpdir_choice`): the profile's value when it passes, else one under /var/tmp for this user."""
     import getpass
 
     try:
         user = getpass.getuser()
     except (OSError, KeyError):
         user = ""
-    return unit_tmpdir.tmpdir_for(profile, user)
+    return unit_tmpdir.tmpdir_choice(profile, user)
+
+
+def _profile_tmpdir(profile_path: Path) -> tuple[str, str | None]:
+    """Edge. `_unit_tmpdir` over the profile at `profile_path`; one that is missing or does not parse names none."""
+    text = _read_text_or_none(profile_path)
+    try:
+        profile = route.parse_profile(text) if text is not None else {}
+    except route.ProfileError:
+        profile = {}
+    return _unit_tmpdir(profile)
 
 
 def _make_agent_tmpdir(plist_text: str) -> None:
@@ -313,7 +324,8 @@ def _make_agent_tmpdir(plist_text: str) -> None:
 
 
 def _chair_unit_inputs(label: str | None, env_file: str | None, profile_path: Path) -> _ChairUnitInputs | _ChairUnitRefusal:
-    """Edge-light. Resolves cox, the profile, PATH and the env file, or says why not; writes and prints nothing.
+    """Edge-light. Resolves cox, the profile, PATH, the env file and TMPDIR, or says why not; writes
+    nothing, and prints only a warning to stderr when the profile's `lane_tmpdir` was refused for the default.
     A `label` of None means the unit has none, so there is no label to check."""
     cox = shutil.which("cox")
     if cox is None:
@@ -345,8 +357,10 @@ def _chair_unit_inputs(label: str | None, env_file: str | None, profile_path: Pa
         "--profile": os.path.abspath(profile_path),
         **({"--environment-file": env_file} if env_file is not None else {}),
         "PATH": unit_path_value,
-        "TMPDIR": _unit_tmpdir(profile),
     }
+    tmpdir, refused = _unit_tmpdir(profile)
+    if refused is not None:  # the unit still installs, with the default: say so, as the upgrade and the doctor do
+        print(f"chair service: warning: {refused}", file=sys.stderr)
     unsafe = chair_service.unsafe_values(values)
     if unsafe:
         return _ChairUnitRefusal(
@@ -359,7 +373,7 @@ def _chair_unit_inputs(label: str | None, env_file: str | None, profile_path: Pa
             f"chair service: {env_file} has export lines ({numbers}) that EnvironmentFile= may skip; pass --environment-file with NAME=value lines"
         )
     return _ChairUnitInputs(values["cox"], values["workspace_dir"], values["--profile"], unit_path_value, env_file,
-                            values["TMPDIR"])
+                            tmpdir)
 
 
 def _chair_unit_text(label: str, interval: int | str, env_file: str | None, profile_path: Path) -> str | _ChairUnitRefusal:

@@ -14,28 +14,63 @@ the units installed before it (`chair_service.with_kill_mode`).
 from __future__ import annotations
 
 import re
+import shlex
 from collections.abc import Mapping, Sequence
 from functools import reduce
 from xml.sax.saxutils import escape, unescape
+
+from agent_tools.unit_env import unsafe_values
 
 PROFILE_KEY = "lane_tmpdir"
 DEFAULT_TEMPLATE = "/var/tmp/coxswain-{user}"
 SYSTEM_DEFAULT = "/tmp"  # what Python's tempfile uses when a unit sets no TMPDIR
 
-_TMPDIR_LINE = re.compile(r"^Environment=\"?TMPDIR=([^\"\n]*)\"?[ \t]*$", re.MULTILINE)
+_ENVIRONMENT = "Environment="
+_NEVER = re.compile(r"(?!)")  # matches nothing: `with_tmpdir` has taken every TMPDIR assignment out already
 _MKDIR_LINE = re.compile(r"^ExecStartPre=-?mkdir -p -m 0700 .*$\n?", re.MULTILINE)
-_TMPDIR_REMOVE = re.compile(r"^Environment=\"?TMPDIR=[^\n]*\n?", re.MULTILINE)
 _SERVICE = re.compile(r"^\[Service\][ \t]*$", re.MULTILINE)
 _PROFILE_ARG = re.compile(r"^ExecStart=.*?\s--profile\s+(\S+)", re.MULTILINE)
 _PLIST_TMPDIR = re.compile(r"<key>TMPDIR</key>\s*<string>([^<]*)</string>")
 
 
-def tmpdir_for(profile: Mapping[str, object], user: str) -> str:
-    """The units' TMPDIR: the profile's `lane_tmpdir` when it names one, else `/var/tmp/coxswain-<user>`."""
+def tmpdir_choice(profile: Mapping[str, object], user: str) -> tuple[str, str | None]:
+    """Pure. The units' TMPDIR and, when the profile's `lane_tmpdir` was refused, why. The one check of the value:
+    it must be an absolute path systemd reads as written (`unit_env.unsafe_values`: no space to split it in two, no
+    `%` or `$` to expand). A refused or absent value gives `/var/tmp/coxswain-<user>`."""
+    default = DEFAULT_TEMPLATE.format(user=user or "operator")
     named = profile.get(PROFILE_KEY)
-    if isinstance(named, str) and named.strip():
-        return named.strip().rstrip("/") or "/"
-    return DEFAULT_TEMPLATE.format(user=user or "operator")
+    if not isinstance(named, str) or not named.strip():
+        return default, None
+    value = named.strip().rstrip("/") or "/"
+    if not value.startswith("/"):
+        return default, f"lane_tmpdir {value!r} is not an absolute path; the units use {default}"
+    if unsafe_values({PROFILE_KEY: value}):
+        return default, (f"lane_tmpdir {value!r} has a character systemd would split or expand (use only letters, "
+                         f"digits and . _ @ + : , / = -); the units use {default}")
+    return value, None
+
+
+def _assignments(body: str) -> list[str]:
+    """The `NAME=value` assignments of one Environment= line's value, its double or single quotes taken off."""
+    try:
+        return shlex.split(body)
+    except ValueError:
+        return body.split()
+
+
+def _quoted(assignment: str) -> str:
+    return f'"{assignment}"' if any(c in assignment for c in " \t'\"\\") else assignment
+
+
+def _without_tmpdir(line: str) -> str | None:
+    """One line with its TMPDIR assignments taken out: the line as it is when it has none, None when TMPDIR was all it
+    set, else the line with only the other assignments."""
+    if not line.startswith(_ENVIRONMENT):
+        return line
+    kept = [a for a in _assignments(line[len(_ENVIRONMENT):]) if not a.startswith("TMPDIR=")]
+    if len(kept) == len(_assignments(line[len(_ENVIRONMENT):])):
+        return line
+    return f"{_ENVIRONMENT}{' '.join(map(_quoted, kept))}" if kept else None
 
 
 def tmpdir_line(tmpdir: str) -> str:
@@ -75,15 +110,18 @@ def with_tmpdir(text: str, tmpdir: str) -> str:
     text with no [Service] section comes back unchanged."""
     if not _SERVICE.search(text):
         return text
-    bare = _MKDIR_LINE.sub("", _TMPDIR_REMOVE.sub("", text))
-    return set_service_line(bare, _TMPDIR_LINE, "\n".join(service_lines(tmpdir)))
+    kept = (_without_tmpdir(line) for line in _MKDIR_LINE.sub("", text).split("\n"))
+    bare = "\n".join(line for line in kept if line is not None)
+    return set_service_line(bare, _NEVER, "\n".join(service_lines(tmpdir)))
 
 
 def _tmpdir_in(text: str | None) -> str | None:
+    """The last TMPDIR one file sets: an assignment on any Environment= line (several may share one), else a plist's."""
     if text is None:
         return None
-    found = [m.group(1).strip() for m in _TMPDIR_LINE.finditer(text)] or [
-        unescape(m.group(1)).strip() for m in _PLIST_TMPDIR.finditer(text)]
+    found = [a[len("TMPDIR="):].strip() for line in text.splitlines() if line.startswith(_ENVIRONMENT)
+             for a in _assignments(line[len(_ENVIRONMENT):]) if a.startswith("TMPDIR=")]
+    found = found or [unescape(m.group(1)).strip() for m in _PLIST_TMPDIR.finditer(text)]
     return found[-1] if found else None
 
 

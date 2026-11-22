@@ -258,7 +258,10 @@ def chair_service_steps(
             cox_path, workspace, CHAIR_LABEL, CHAIR_INTERVAL, path, profile_file,
             env_file or unit_env.env_file_path(home), tmpdir)
         activate = f"launchctl bootstrap gui/$(id -u) {target}"
+    # launchd has no ExecStartPre to make the agent's TMPDIR before each start, as a systemd unit does: make it here.
+    made = [{"op": "mkdir", "path": tmpdir, "why": "create the chair agent's TMPDIR"}] if tmpdir and platform == "darwin" else []
     return [
+        *made,
         {"op": "write", "path": target, "text": text, "why": "start the chair service with the machine"},
         {"op": "print", "text": f"start the chair service with:\n{activate}"},
     ]

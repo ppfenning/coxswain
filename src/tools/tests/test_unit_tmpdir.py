@@ -20,9 +20,9 @@ def _rendered() -> dict[str, str]:
 
 
 def test_the_default_is_per_user_under_var_tmp_and_the_profile_overrides_it():
-    assert unit_tmpdir.tmpdir_for({}, "alice") == TMP
-    assert unit_tmpdir.tmpdir_for({"lane_tmpdir": " /srv/scratch/ "}, "alice") == "/srv/scratch"
-    assert unit_tmpdir.tmpdir_for({"lane_tmpdir": ""}, "") == "/var/tmp/coxswain-operator"
+    assert unit_tmpdir.tmpdir_choice({}, "alice")[0] == TMP
+    assert unit_tmpdir.tmpdir_choice({"lane_tmpdir": " /srv/scratch/ "}, "alice")[0] == "/srv/scratch"
+    assert unit_tmpdir.tmpdir_choice({"lane_tmpdir": ""}, "")[0] == "/var/tmp/coxswain-operator"
 
 
 def test_every_unit_that_runs_lane_work_sets_tmpdir_and_makes_it_before_each_start():
@@ -74,3 +74,21 @@ def test_the_launchd_agents_carry_tmpdir_in_their_environment():
 def test_the_profile_a_unit_pins_is_read_from_its_exec_start():
     assert unit_tmpdir.profile_arg(_rendered()["lander"]) == "/srv/p.yaml"
     assert unit_tmpdir.profile_arg("[Service]\nExecStart=/c chair run\n") is None
+
+
+def test_a_lane_tmpdir_systemd_would_split_expand_or_read_relative_is_refused_for_the_default():
+    for bad in ("/srv/my scratch", "/srv/%h/tmp", "/srv/$USER", "scratch/cox", "~/scratch"):
+        tmpdir, refused = unit_tmpdir.tmpdir_choice({"lane_tmpdir": bad}, "alice")
+        assert tmpdir == TMP and refused is not None and repr(bad) in refused and TMP in refused, bad
+    assert unit_tmpdir.tmpdir_choice({"lane_tmpdir": "/srv/scratch"}, "alice") == ("/srv/scratch", None)
+    assert unit_tmpdir.tmpdir_choice({}, "alice") == (TMP, None)
+
+
+def test_only_the_tmpdir_assignment_leaves_a_line_that_sets_others_too():
+    unit = '[Service]\nEnvironment=FOO=1 TMPDIR=/tmp "BAR=a b"\nEnvironment=TMPDIR=/old\nExecStart=/c lander run\n'
+    assert unit_tmpdir.effective_tmpdir(unit) == ("/old", "unit")
+    once = unit_tmpdir.with_tmpdir(unit, TMP)
+    assert once == f'[Service]\nEnvironment=FOO=1 "BAR=a b"\nExecStart=/c lander run\n{LINES}'
+    assert unit_tmpdir.with_tmpdir(once, TMP) == once
+    other = "[Service]\nEnvironment=FOO=1 BAR=2\n"
+    assert unit_tmpdir.with_tmpdir(other, TMP) == f"{other}{LINES}"

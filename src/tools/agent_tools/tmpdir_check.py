@@ -32,12 +32,22 @@ class Mount:
 @dataclass(frozen=True)
 class UnitTmpdir:
     """One installed unit's TMPDIR: `tmpdir` as it reads, `resolved` with symlinks followed (the edge's realpath), and
-    `source` the file that set it: "unit", a drop-in's name, or None when nothing sets it (Python then uses /tmp)."""
+    `source` the file that set it: "unit", a drop-in's name, or None when nothing sets it (Python then uses /tmp).
+    `running` is the TMPDIR the unit's running process was started with (`environ_tmpdir`), None when it is not running
+    or could not be read: a unit file changed since its start takes effect only at its next restart."""
 
     unit: str
     tmpdir: str
     resolved: str
     source: str | None
+    running: str | None = None
+
+
+def environ_tmpdir(environ: bytes) -> str:
+    """Pure. The TMPDIR in a process's `/proc/<pid>/environ` (NUL-separated `NAME=value`), else /tmp, which Python's
+    tempfile then uses."""
+    values = [item[len(b"TMPDIR="):] for item in environ.split(b"\0") if item.startswith(b"TMPDIR=")]
+    return values[-1].decode(errors="replace") if values else "/tmp"
 
 
 def _unescape(field: str) -> str:
@@ -111,22 +121,32 @@ def _fix(seen: UnitTmpdir, default: str) -> str:
     return f"change or remove the drop-in {seen.source}, which overrides the unit's TMPDIR"
 
 
-def rows(units: Sequence[UnitTmpdir], mounts: Sequence[Mount] | None, default: str) -> list[dict]:
-    """Pure. One row per installed unit, a warning naming the unit and its fix when its TMPDIR is unfit (`finding`);
-    one passing row when no unit is installed or no mount facts were read (a platform without mountinfo). `default` is
-    the TMPDIR `cox upgrade` would set."""
+def rows(units: Sequence[UnitTmpdir], mounts: Sequence[Mount] | None, default: str,
+         refused: str | None = None) -> list[dict]:
+    """Pure. One row per installed unit, a warning naming the unit and its fix when its TMPDIR is unfit (`finding`) or
+    its running process was started with another one (the file takes effect at the next restart); one passing row when
+    no unit is installed or no mount facts were read (a platform without mountinfo). `default` is the TMPDIR
+    `cox upgrade` would set; `refused`, why the profile's `lane_tmpdir` was refused for it, is a warning row first."""
+    head = [{"check": CHECK, "ok": True, "warn": True, "detail": f"{refused}; fix the profile, then run `cox upgrade`"}
+            ] if refused is not None else []
     if not units:
-        return [{"check": CHECK, "ok": True, "detail": "no unit installed"}]
+        return [*head, {"check": CHECK, "ok": True, "detail": "no unit installed"}]
     if mounts is None:
-        return [{"check": CHECK, "ok": True, "detail": "not checked: no mount table to read"}]
-    out = []
+        return [*head, {"check": CHECK, "ok": True, "detail": "not checked: no mount table to read"}]
+    out = head
     for seen in units:
         mount = mount_of(seen.resolved, mounts)
         why = finding(seen.tmpdir, mount) if mount is not None else None
         origin = "no TMPDIR set, so /tmp" if seen.source is None else f"TMPDIR from {seen.source}"
-        if why is None:
+        pending = seen.running is not None and seen.running != seen.tmpdir
+        if why is None and not pending:
             out.append({"check": CHECK, "ok": True, "detail": f"{seen.unit}: {seen.tmpdir} ({origin})"})
-        else:
-            out.append({"check": CHECK, "ok": True, "warn": True,
-                        "detail": f"{seen.unit}: {why} ({origin}); fix: {_fix(seen, default)}"})
+            continue
+        found = [f"{why} ({origin})" if why is not None else f"{seen.tmpdir} ({origin})"]
+        fixes = [_fix(seen, default)] if why is not None else []
+        if pending:
+            found.append(f"the running process has TMPDIR {seen.running}: the unit's takes effect on its next restart")
+            fixes.append(f"`systemctl --user restart {seen.unit}`")
+        out.append({"check": CHECK, "ok": True, "warn": True,
+                    "detail": f"{seen.unit}: {'; '.join(found)}; fix: {', then '.join(fixes)}"})
     return out

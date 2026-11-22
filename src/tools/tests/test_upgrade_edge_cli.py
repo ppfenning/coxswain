@@ -18,7 +18,7 @@ MANIFEST = f'[coxswain]\nversion = "2026.11.8"\nrepo = "{SLUG}"\n\n[providers.cl
 BASE_LISTING = "src/graphs/harness/store_ddl_0001.py\nsrc/graphs/harness/store_ddl_0002.py\nsrc/graphs/harness/cli.py\n"
 COX = "/opt/example/bin/cox"
 DOCTOR = ["cox", "setup", "doctor", "--json"]
-DEFAULT_TMPDIR = unit_tmpdir.tmpdir_for({}, getpass.getuser())  # what a unit pinning no profile is given
+DEFAULT_TMPDIR = unit_tmpdir.tmpdir_choice({}, getpass.getuser())[0]  # what a unit pinning no profile is given
 CURRENT_UNIT = "[Service]\nExecStart=/c chair run\nKillMode=process\n" + "".join(
     f"{line}\n" for line in unit_tmpdir.service_lines(DEFAULT_TMPDIR))
 LEGACY_UNIT = "[Service]\nExecStart=/c chair run\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n"
@@ -180,6 +180,25 @@ def test_an_upgrade_gives_every_unit_the_tmpdir_its_pinned_profile_names_and_a_s
     assert (_units(tmp_path) / "coxswain-lander.service").read_text() == lander
     assert (_units(tmp_path) / "coxswain-chair.service").read_text() == chair
     assert "set TMPDIR" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("bad", ["/srv/my scratch", "/srv/%h/tmp", "scratch/relative"])
+def test_an_upgrade_refuses_a_lane_tmpdir_systemd_would_misread_writes_the_default_and_says_so(
+    world: World, tmp_path: Path, capsys, bad: str
+):
+    profile = tmp_path / "lander-profile.yaml"
+    profile.write_text(f"team: example\nlane_tmpdir: {bad}\n")
+    legacy = LEGACY_UNIT.replace("chair run", f"lander run --interval 30 --profile {profile}")
+    (_units(tmp_path) / "coxswain-lander.service").write_text(legacy)
+    assert _upgrade(tmp_path) == 0
+    lander = (_units(tmp_path) / "coxswain-lander.service").read_text()
+    assert f"Environment=TMPDIR={DEFAULT_TMPDIR}\nExecStartPre=-mkdir -p -m 0700 {DEFAULT_TMPDIR}\n" in lander
+    assert bad not in lander
+    out = capsys.readouterr().out
+    assert f"edge: warning: lane_tmpdir {bad!r}" in out and "(coxswain-lander.service)" in out
+    assert _upgrade(tmp_path) == 0  # still refused, still said, nothing more written
+    assert f"edge: warning: lane_tmpdir {bad!r}" in capsys.readouterr().out
+    assert (_units(tmp_path) / "coxswain-lander.service").read_text() == lander
 
 
 def test_a_failed_reload_restarts_nothing_so_no_land_in_flight_is_killed(world: World, tmp_path: Path, capsys):

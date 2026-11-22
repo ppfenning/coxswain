@@ -23,7 +23,12 @@ from pathlib import Path
 import yaml
 
 from agent_tools import smoke_warm
-from agent_tools.cli_chair_service import _chair_default_environment_file, _unit_tmpdir, _write_private
+from agent_tools.cli_chair_service import (
+    _chair_default_environment_file,
+    _profile_tmpdir,
+    _unit_tmpdir,
+    _write_private,
+)
 from agent_tools.cli_common import _profile_path, _read_text_or_none
 from agent_tools.cli_host import _run_ssh
 from agent_tools.cli_install import _load_lazy_modules, _migrate_kind, _schema_versions
@@ -594,38 +599,75 @@ def _doctor_running_install_rows(profile: dict | None) -> list[dict]:
     return [doctor.running_install_row(checkout, sys.executable, doctor.editable_source(record))]
 
 
-def _doctor_tmpdir_units(home: Path) -> list[tuple[str, str, list[tuple[str, str]]]]:
-    """Edge. Each installed unit that runs lane work, as (name, text, its `*.conf` drop-ins as (name, text)): the
-    chair's tick unit, the queue workers' template and the lander's on systemd; the chair's and the queue workers'
-    agents on launchd."""
-    from agent_tools import chair_queue_units, chair_service, lander_cli
-
-    paths = [chair_service.unit_path(home), chair_queue_units.template_path(home), lander_cli.unit_path(home),
-             chair_service.chair_plist_path(home),
-             *(chair_queue_units.plist_path(home, kind) for kind in chair_queue_units.QUEUE_KINDS)]
-    found = []
-    for path in paths:
-        text = _read_text_or_none(path)
-        if text is None:
-            continue
-        drop_dir = path.with_name(path.name + ".d")
-        drop_ins = [(conf.name, conf.read_text(encoding="utf-8")) for conf in sorted(drop_dir.glob("*.conf"))]
-        found.append((path.name, text, drop_ins))
+def _drop_ins(unit_dir: Path, *names: str) -> dict[str, str]:
+    """Edge. The `*.conf` drop-ins of the units `names`, by file name; a later name's file wins a name both have, as
+    systemd lets an instance's `<name>@<kind>.service.d` override its template's `<name>@.service.d`."""
+    found: dict[str, str] = {}
+    for name in names:
+        for conf in sorted((unit_dir / f"{name}.d").glob("*.conf")):
+            text = _read_text_or_none(conf)
+            if text is not None:
+                found[conf.name] = text
     return found
 
 
-def _doctor_tmpdir_rows(profile: dict | None) -> list[dict]:
-    """Edge. The `lane TMPDIR` rows (`tmpdir_check.rows`) over the installed units and this machine's mount table."""
+def _doctor_tmpdir_units(home: Path) -> list[tuple[str, str, list[tuple[str, str]]]]:
+    """Edge. Each installed unit that runs lane work, as (name, text, its `*.conf` drop-ins as (name, text)): the
+    chair's tick unit, each queue worker's instance of the template (its template's and its own drop-ins) and the
+    lander's on systemd; the chair's and the queue workers' agents on launchd."""
+    from agent_tools import chair_queue_units, chair_service, lander_cli
+
+    template = chair_queue_units.template_path(home)
+    template_text = _read_text_or_none(template)
+    units: list[tuple[str, Path | None, str | None]] = [
+        (chair_service.UNIT_NAME, chair_service.unit_path(home), None),
+        *((chair_queue_units.instance_name(kind), None, template_text) for kind in chair_queue_units.QUEUE_KINDS),
+        (lander_cli.UNIT_NAME, lander_cli.unit_path(home), None),
+        (chair_service.CHAIR_PLIST_NAME, chair_service.chair_plist_path(home), None),
+        *((f"{chair_queue_units.plist_label(k)}.plist", chair_queue_units.plist_path(home, k), None)
+          for k in chair_queue_units.QUEUE_KINDS),
+    ]
+    found = []
+    for name, path, given in units:
+        text = given if path is None else _read_text_or_none(path)
+        if text is None:
+            continue
+        dirs = (template.name, name) if path is None else (name,)
+        found.append((name, text, sorted(_drop_ins(template.parent, *dirs).items())))
+    return found
+
+
+def _running_tmpdir(unit: str) -> str | None:
+    """Edge. The TMPDIR the running main process of systemd user unit `unit` has (`tmpdir_check.environ_tmpdir`);
+    None when the unit is not running, is not a systemd unit, or its process cannot be read."""
+    if not unit.endswith(".service") or shutil.which("systemctl") is None:
+        return None
+    try:
+        done = subprocess.run(["systemctl", "--user", "show", "-p", "MainPID", "--value", unit],
+                              capture_output=True, text=True, timeout=10)
+        pid = int(done.stdout.strip() or 0)
+        environ = Path(f"/proc/{pid}/environ").read_bytes() if pid > 0 else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    from agent_tools import tmpdir_check
+
+    return tmpdir_check.environ_tmpdir(environ) if environ is not None else None
+
+
+def _doctor_tmpdir_rows(profile: dict | None, running=_running_tmpdir) -> list[dict]:
+    """Edge. The `lane TMPDIR` rows (`tmpdir_check.rows`) over the installed units, what each running one was started
+    with (`running`, a unit name to its process's TMPDIR or None), and this machine's mount table."""
     from agent_tools import tmpdir_check, unit_tmpdir
 
     seen = []
     for name, text, drop_ins in _doctor_tmpdir_units(Path.home()):
         effective = unit_tmpdir.effective_tmpdir(text, drop_ins)
         tmpdir, source = effective if effective is not None else (unit_tmpdir.SYSTEM_DEFAULT, None)
-        seen.append(tmpdir_check.UnitTmpdir(name, tmpdir, os.path.realpath(tmpdir), source))
+        seen.append(tmpdir_check.UnitTmpdir(name, tmpdir, os.path.realpath(tmpdir), source, running(name)))
     table = _read_text_or_none(Path("/proc/self/mountinfo"))
     mounts = tmpdir_check.parse_mountinfo(table) if table else None
-    return tmpdir_check.rows(seen, mounts, _unit_tmpdir(profile or {}))
+    default, refused = _unit_tmpdir(profile or {})
+    return tmpdir_check.rows(seen, mounts, default, refused)
 
 
 def _doctor_extras_rows() -> list[dict]:
@@ -907,7 +949,7 @@ def _install_facts(a: argparse.Namespace) -> dict:
         "chair_service_exists": service_file is not None and service_file.exists(),
         "chair_env_file": chair_env_file,
         "chair_env_exports": tuple(chair_service.export_lines(chair_env_text or "")),
-        "chair_tmpdir": None if a.root else _unit_tmpdir({}),
+        "chair_tmpdir": None if a.root else _profile_tmpdir(Path(profile_file))[0],
     }
 
 

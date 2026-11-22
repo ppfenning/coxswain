@@ -533,19 +533,15 @@ def _edge_units() -> list[str]:
     return [*files, *queue_unit_names(home)]
 
 
-def _edge_unit_tmpdir(unit_text: str) -> str:
-    """Edge. The TMPDIR a unit should set: `lane_tmpdir` from the profile its ExecStart pins, else the default. A
-    profile that is missing or does not parse gives the default, as a profile with no `lane_tmpdir` does."""
+def _edge_unit_tmpdir(unit_text: str) -> tuple[str, str | None]:
+    """Edge. The TMPDIR a unit should set, and why the profile's value was refused if it was: `lane_tmpdir` from the
+    profile its ExecStart pins, checked by `unit_tmpdir.tmpdir_choice`, else the default. A profile that is missing or
+    does not parse gives the default, as a profile with no `lane_tmpdir` does."""
     from agent_tools import unit_tmpdir
-    from agent_tools.cli_chair_service import _unit_tmpdir
+    from agent_tools.cli_chair_service import _profile_tmpdir, _unit_tmpdir
 
     named = unit_tmpdir.profile_arg(unit_text)
-    text = _read_text_or_none(Path(named)) if named else None
-    try:
-        profile = route.parse_profile(text) if text is not None else {}
-    except route.ProfileError:
-        profile = {}
-    return _unit_tmpdir(profile)
+    return _profile_tmpdir(Path(named)) if named else _unit_tmpdir({})
 
 
 def _edge_refresh_units() -> str | None:
@@ -560,14 +556,16 @@ def _edge_refresh_units() -> str | None:
     from agent_tools.cli_chair_units import queue_unit_names
 
     home = Path.home()
-    killed, tmp_set = [], []
+    killed, tmp_set, refusals = [], [], {}
     chair_units = (chair_service.unit_path(home), chair_queue_units.template_path(home))
     present = [path for path in (*chair_units, lander_cli.unit_path(home)) if path.exists()]
     for path in present:
         text = _read_text_or_none(path)
         if text is None:
             continue
-        tmpdir = _edge_unit_tmpdir(text)
+        tmpdir, refused = _edge_unit_tmpdir(text)
+        if refused is not None:
+            refusals.setdefault(refused, []).append(path.name)
         with_kill = chair_service.with_kill_mode(text) if path in chair_units else text
         refreshed = unit_tmpdir.with_tmpdir(with_kill, tmpdir)
         if refreshed == text:
@@ -578,6 +576,8 @@ def _edge_refresh_units() -> str | None:
             return f"could not refresh {path}: {exc}"
         killed += [path.name] * (with_kill != text)
         tmp_set += [f"{path.name} ({tmpdir})"] * (refreshed != with_kill)
+    for refused, names in refusals.items():
+        print(f"edge: warning: {refused} ({', '.join(names)})")
     if killed:
         print(f"edge: set {chair_service.KILL_MODE_LINE} in {', '.join(killed)}")
     if tmp_set:

@@ -188,6 +188,14 @@ def test_install_sets_the_profiles_lane_tmpdir_and_the_lander_install_does_too(h
         assert "Environment=TMPDIR=/srv/scratch/cox\nExecStartPre=-mkdir -p -m 0700 /srv/scratch/cox\n" in path.read_text()
 
 
+def test_install_refuses_a_lane_tmpdir_systemd_would_split_writes_the_default_and_warns(home: Path, capsys) -> None:
+    (home / "profile.yaml").write_text("workspace_dir: /ws\nlane_tmpdir: /srv/my scratch\n")
+    assert _service("--install", "--profile", str(home / "profile.yaml")) == 0
+    text = chair_service.unit_path(home).read_text()
+    assert "my scratch" not in text and "Environment=TMPDIR=/var/tmp/coxswain-" in text
+    assert "chair service: warning: lane_tmpdir '/srv/my scratch'" in capsys.readouterr().err
+
+
 def test_status_prints_what_install_wrote(home: Path, capsys) -> None:
     _service("--install", "--profile", str(home / "profile.yaml"))
     capsys.readouterr()
