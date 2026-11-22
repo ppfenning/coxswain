@@ -65,14 +65,25 @@ def test_merge_keeps_a_child_seat_context_string_when_the_parent_has_none() -> N
     assert _merge(parent, child)["crew"]["builder"] == {"enabled": True, "context": "writes"}
 
 
-def test_merge_concatenates_top_level_context_base_first_and_replaces_a_nested_list() -> None:
-    assert _merge({"context": ["a", "b"]}, {"context": ["c"]})["context"] == ["a", "b", "c"]
+def test_load_keeps_a_child_seat_context_string_whole_over_a_parent_that_holds_the_seat(
+    cartridges: Path, skill_index
+) -> None:
+    for team, context in (("base", "reads"), ("acme", "writes")):
+        path = cartridges / team / "cartridge.yaml"
+        config = yaml.safe_load(path.read_text(encoding="utf-8"))
+        path.write_text(yaml.safe_dump({**config, "crew": {"builder": {"context": context}}}), encoding="utf-8")
+    resolved = load("acme", cartridges, skill_index=skill_index)
+    assert resolved["crew"]["builder"]["context"] == "writes"
+
+
+def test_merge_replaces_a_nested_seat_context_list() -> None:
     nested = _merge({"crew": {"builder": {"context": ["a"]}}}, {"crew": {"builder": {"context": ["c"]}}})
     assert nested["crew"]["builder"]["context"] == ["c"]
 
 
-@pytest.mark.parametrize("team", ["local-comfort0", "local-comfort1"])
-def test_shipped_teams_extending_local_have_no_character_list_seat_context(team: str) -> None:
+# Guards the shipped files against regression; the load test above is the proof of the fix.
+@pytest.mark.parametrize("team", ["local", "local-comfort0", "local-comfort1"])
+def test_shipped_cartridges_resolve_no_character_list_seat_context(team: str) -> None:
     resolved = load(team, REPO / "cartridges", skill_index=index_from_roots([REPO / "skills-plugins"]))
     for seat, entry in resolved["crew"].items():
         if isinstance(entry, dict) and "context" in entry:
