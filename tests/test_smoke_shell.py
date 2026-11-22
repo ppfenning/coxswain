@@ -82,18 +82,20 @@ def _ignore(folder: str, names: list[str]) -> set[str]:
 
 
 def test_the_conftest_refuses_a_tree_whose_path_fix_no_longer_covers_harness_and_core(tmp_path: Path) -> None:
-    """The guard pinned: a copy of this tree whose conftest puts only src/tools ahead (the fix as it first was), with a
-    stale checkout ahead of it on the path that holds real, importable copies of `harness` and `core`. Every import
-    succeeds, so only the guard can refuse it, and it must, naming the package and this tree's src/ folder."""
+    """The guard pinned: a copy of this tree whose path fix (`devtools.tree_imports`) puts only src/tools ahead (the
+    fix as it first was), with a stale checkout ahead of it on the path that holds real, importable copies of `harness`
+    and `core`. Every import succeeds, so only the guard can refuse it, and it must, naming the package and this tree's
+    src/ folder."""
     tree, stale = tmp_path / "tree", tmp_path / "stale-checkout"
     shutil.copytree(ROOT / "src" / "tools" / "agent_tools", tree / "src" / "tools" / "agent_tools", ignore=_ignore)
     shutil.copytree(ROOT / "smoke", tree / "smoke", ignore=lambda folder, names: {n for n in names if n.startswith("test_")})
+    shutil.copytree(ROOT / "devtools", tree / "devtools", ignore=_ignore)
     shutil.copytree(ROOT / "src" / "graphs" / "harness", stale / "harness", ignore=_ignore)
     shutil.copytree(ROOT / "src" / "cartridges" / "core", stale / "core", ignore=_ignore)
-    conftest = tree / "smoke" / "conftest.py"
-    fix = 'for name in ("tools", "graphs", "cartridges")]'
-    assert fix in conftest.read_text(encoding="utf-8")
-    conftest.write_text(conftest.read_text(encoding="utf-8").replace(fix, 'for name in ("tools",)]'), encoding="utf-8")
+    fixer = tree / "devtools" / "tree_imports.py"
+    fix = 'SOURCE_ROOTS = ("tools", "graphs", "cartridges")'
+    assert fix in fixer.read_text(encoding="utf-8")
+    fixer.write_text(fixer.read_text(encoding="utf-8").replace(fix, 'SOURCE_ROOTS = ("tools",)'), encoding="utf-8")
     env = {**os.environ, "PYTHONPATH": str(stale)}
     done = subprocess.run([sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider", "smoke"],
                           cwd=tree, env=env, capture_output=True, text=True, timeout=120)
