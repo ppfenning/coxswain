@@ -53,6 +53,9 @@ from typing import IO, TYPE_CHECKING, Any
 
 from runner.claude_token import TOKEN_ENV, read_token, token_path
 from runner.decision_log import REASON_SEPARATOR, CallDecision, RouterDecision, joined_reasons, to_row
+from runner.node_timeout import NodeTimeout as _NodeTimeout
+from runner.node_timeout import first_output_bound, first_output_s, no_first_output, started
+from runner.node_timeout import trace_cost as _trace_cost
 from runner.protocol import BudgetStop, Capability, LimitStop, NodeResult, RunnerError
 from runner.tier_resolution import CLASSES, TIERS, Hints, Resolution, clamp_to_chair, resolve, to_class, to_tier
 
@@ -524,10 +527,6 @@ def self_reported_commands(data: Mapping[str, Any]) -> list[dict[str, str]]:
     return [{"command": str(item), "source": "self_report"} for item in reported if item]
 
 
-class _NodeTimeout(RunnerError):
-    """A node's subprocess outlived its timeout. A RunnerError, so every existing handler still matches."""
-
-
 # How long to wait for pipes to drain after the group is killed.
 _REAP_SECONDS = 5
 
@@ -664,27 +663,6 @@ def _close_pipes(proc: subprocess.Popen[str]) -> None:
     for pipe in (proc.stdin, proc.stdout, proc.stderr):
         if pipe is not None:
             pipe.close()
-
-
-def _trace_cost(path: Path) -> float | None:
-    """`total_cost_usd` of the last result event in a trace file; None when there is no such file or event.
-
-    Wrong belief: a timed-out node leaves a trace. `_payload` writes the file only after the CLI
-    returns, so on a real timeout there is usually none and the row's cost stays null.
-    """
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return None
-    costs: list[float] = []
-    for line in lines:
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(event, dict) and event.get("type") == "result" and event.get("total_cost_usd") is not None:
-            costs.append(float(event["total_cost_usd"]))
-    return costs[-1] if costs else None
 
 
 def _call_fields(
@@ -957,6 +935,7 @@ class ClaudeCodeRunner:
         self.repo_dir: Path | None = Path(repo_dir).expanduser().resolve() if repo_dir else None
         self.claude_bin = claude_bin or str(self.profile.get("command") or "claude")
         self.timeout = timeout
+        self.first_output_s = first_output_s(self.profile.get("first_output_s"))  # `node_timeout`: 0 for no bound
         self.extra_system = extra_system
         # One row per node: what it cost and how many turns it took. Read by
         # whoever wants to know what a run spent; never by a graph.
@@ -1544,9 +1523,10 @@ class ClaudeCodeRunner:
             with suppress(OSError):
                 trace.parent.mkdir(parents=True, exist_ok=True)
                 trace.write_text("", encoding="utf-8")
-        gate, done = threading.Lock(), threading.Event()
+        gate, done, first = threading.Lock(), threading.Event(), threading.Event()
 
         def on_line(line: str) -> None:
+            first.set()
             if trace is None:
                 return
             with suppress(OSError), trace.open("a", encoding="utf-8") as fh:
@@ -1560,8 +1540,15 @@ class ClaudeCodeRunner:
         streams = _Streams(proc, prompt, on_line)
         try:
             try:
-                out, err = streams.collect(self.timeout)
+                began = time.monotonic()  # the whole call's bound counts from here, its first-output wait included
+                bound = first_output_bound(self.first_output_s, self.trace_dir is not None, self.timeout)
+                if not started(first, proc.poll, bound):
+                    _kill_and_reap(proc, streams)
+                    raise _NodeTimeout(why := no_first_output(role, bound or 0, self.claude_bin), ledger_error=why)
+                out, err = streams.collect(max(self.timeout - (time.monotonic() - began), 0.0))
                 _close_pipes(proc)
+            except _NodeTimeout:
+                raise
             except subprocess.TimeoutExpired as exc:
                 _kill_and_reap(proc, streams)
                 raise _NodeTimeout(f"node '{role}' did not finish within {self.timeout}s") from exc
@@ -1587,7 +1574,7 @@ class ClaudeCodeRunner:
     def _ledger_timeout(
         self, *, call_id: str, role: str, tier: str, model: str, tools: Sequence[str], task: str | None,
         budget_usd: float | None, checkpoint_fractions: tuple[float, ...] | None, checkpoint_source: str,
-        retry_extra: Mapping[str, Any],
+        retry_extra: Mapping[str, Any], error: str = "",
     ) -> None:
         """Ledger a timed-out node as a failed call, in the one row shape every other failure path uses."""
         trace = self._take_trace(role) if self.trace_dir else None
@@ -1607,7 +1594,7 @@ class ClaudeCodeRunner:
                 ),
                 "id": call_id, **retry_extra,
             },
-            ok=False, error=f"node timeout after {self.timeout}s",
+            ok=False, error=error or f"node timeout after {self.timeout}s",
         )
 
     def _verify_rows(self, scratch: Path, task: str | None, patch: str, stdout: str | None) -> list[dict[str, str]]:
@@ -1723,8 +1710,8 @@ class ClaudeCodeRunner:
                         checkpoint_fractions=resolved_fractions, checkpoint_index=state.get("checkpoint_index", 0),
                         thread=thread, attempt=attempt, task=task,
                     )
-                except _NodeTimeout:
-                    ledger_timeout()
+                except _NodeTimeout as exc:
+                    ledger_timeout(error=exc.ledger_error)
                     raise
                 if role in _PATCH_ROLES and state.get("scratch"):
                     has_scratch = True
@@ -1739,8 +1726,8 @@ class ClaudeCodeRunner:
                             packs=packs, scratch=scratch, patches=True, session=(), budget_usd=budget_usd,
                             effort=effort, checkpoint_fractions=resolved_fractions, attempt=attempt, task=task,
                         )
-                    except _NodeTimeout:
-                        ledger_timeout()
+                    except _NodeTimeout as exc:
+                        ledger_timeout(error=exc.ledger_error)
                         raise
                     if role in _PATCH_ROLES and scratch:
                         has_scratch = True

@@ -533,31 +533,58 @@ def _edge_units() -> list[str]:
     return [*files, *queue_unit_names(home)]
 
 
+def _edge_unit_tmpdir(unit_text: str) -> tuple[str, str | None]:
+    """Edge. The TMPDIR a unit should set, and why the profile's value was refused if it was: `lane_tmpdir` from the
+    profile its ExecStart pins, checked by `unit_tmpdir.tmpdir_choice`, else the default. A profile that is missing or
+    does not parse gives the default, as a profile with no `lane_tmpdir` does."""
+    from agent_tools import unit_tmpdir
+    from agent_tools.cli_chair_service import _profile_tmpdir, _unit_tmpdir
+
+    named = unit_tmpdir.profile_arg(unit_text)
+    return _profile_tmpdir(Path(named)) if named else _unit_tmpdir({})
+
+
 def _edge_refresh_units() -> str | None:
-    """Edge. Give the chair's unit files on this machine, the tick's and the queue workers' template, the setting this
-    version writes (`chair_service.with_kill_mode`), and daemon-reload when one changed. A unit installed before
-    `KillMode=process` kept the default, control-group, under which a restart kills every land in flight; and
-    `cox chair service --install` is not run again on an upgrade. Only that line is touched, so the rest of the file
-    stays whatever it was installed with. None when nothing changed or the reload worked, else why not."""
-    from agent_tools import chair_queue_units
+    """Edge. Give the units on this machine the settings this version writes, and daemon-reload when one changed:
+    `KillMode=process` in the chair's, the tick's and the queue workers' template (`chair_service.with_kill_mode`), and
+    TMPDIR in those and the lander's (`unit_tmpdir.with_tmpdir`). A unit installed before `KillMode=process` kept the
+    default, control-group, under which a restart kills every land in flight; one installed before TMPDIR sent every
+    lane's scratch and suite to /tmp, RAM or a quota'd tmpfs on some hosts (E1, 2026-11-21). `cox chair service
+    --install` is not run again on an upgrade, and only those lines are touched, so the rest of the file stays whatever
+    it was installed with. None when nothing changed or the reload worked, else why not."""
+    from agent_tools import chair_queue_units, lander_cli, unit_tmpdir
     from agent_tools.cli_chair_units import queue_unit_names
 
     home = Path.home()
-    changed = []
-    present = [path for path in (chair_service.unit_path(home), chair_queue_units.template_path(home)) if path.exists()]
+    killed, tmp_set, refusals = [], [], {}
+    chair_units = (chair_service.unit_path(home), chair_queue_units.template_path(home))
+    present = [path for path in (*chair_units, lander_cli.unit_path(home)) if path.exists()]
     for path in present:
         text = _read_text_or_none(path)
-        refreshed = chair_service.with_kill_mode(text) if text is not None else None
-        if refreshed is None or refreshed == text:
+        if text is None:
+            continue
+        tmpdir, refused = _edge_unit_tmpdir(text)
+        if refused is not None:
+            refusals.setdefault(refused, []).append(path.name)
+        with_kill = chair_service.with_kill_mode(text) if path in chair_units else text
+        refreshed = unit_tmpdir.with_tmpdir(with_kill, tmpdir)
+        if refreshed == text:
             continue
         try:
             path.write_text(refreshed, encoding="utf-8")
         except OSError as exc:
-            return f"could not set {chair_service.KILL_MODE_LINE} in {path}: {exc}"
-        changed.append(path.name)
-    if changed:
-        print(f"edge: set {chair_service.KILL_MODE_LINE} in {', '.join(changed)}")
-    elif not _edge_reload_pending([chair_service.UNIT_NAME] * chair_service.unit_path(home).exists() + queue_unit_names(home)):
+            return f"could not refresh {path}: {exc}"
+        killed += [path.name] * (with_kill != text)
+        tmp_set += [f"{path.name} ({tmpdir})"] * (refreshed != with_kill)
+    for refused, names in refusals.items():
+        print(f"edge: warning: {refused} ({', '.join(names)})")
+    if killed:
+        print(f"edge: set {chair_service.KILL_MODE_LINE} in {', '.join(killed)}")
+    if tmp_set:
+        print(f"edge: set TMPDIR in {', '.join(tmp_set)}")
+    lander_unit = [lander_cli.UNIT_NAME] * lander_cli.unit_path(home).exists()
+    if not (killed or tmp_set) and not _edge_reload_pending(
+            [chair_service.UNIT_NAME] * chair_service.unit_path(home).exists() + lander_unit + queue_unit_names(home)):
         return None
     code, out = _edge_run(["systemctl", "--user", "daemon-reload"])
     return None if code == 0 else f"systemctl --user daemon-reload exited {code}: {out.strip()}"
