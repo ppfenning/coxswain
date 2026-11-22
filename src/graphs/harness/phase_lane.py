@@ -46,7 +46,9 @@ A worker claims a phase (`store_phases.claim_next`) and starts this lane under t
 (`store_phases.put_steps_fenced`: one transaction, under a share lock on the claim row), so a lane that lost its claim
 writes no row, ever. The lane stops itself, its agents and checks with it (their process groups), once its claim is
 lost or its lease is within its margin of lapsing (`phase_pick.margin_of`: a quarter of the claim's own lease, 15 s of
-the default 60 s): by then its worker has gone the 45 s it may go without a heartbeat. A push follows a claim check
+the default 60 s): by then its worker has gone the 45 s it may go without a heartbeat. A lane still running
+`LOST_EXIT_S` after that (a child deaf to TERM, a model call that never returns) kills its children and exits
+(`run_lane`), so no lane runs on with nobody's claim under it. A push follows a claim check
 that found at least that margin and is bounded to `lane_rollup.REMOTE_TIMEOUT_S` (8 s), and the margin holds that
 check's own bound (`phase_pick.CHECK_CALL_S`) and that push with slack to spare (`phase_pick.MARGIN_FLOOR_S`), so a
 lane that keeps running cannot push once its lease has lapsed. The fence's check is bounded on the client's side
@@ -139,6 +141,7 @@ __all__ = [
     "EXIT_BUILT",
     "EXIT_FAILED",
     "EXIT_LOST",
+    "LOST_EXIT_S",
     "PHASE_REVIEW",
     "Fence",
     "LaneClaim",
@@ -148,6 +151,7 @@ __all__ = [
     "exit_code",
     "lane_url",
     "lanes_of",
+    "lost_overdue",
     "lost_path",
     "missing_rollups",
     "phase_tasks",
@@ -157,6 +161,7 @@ __all__ = [
     "task_dag",
     "terminate_groups",
     "threads_for",
+    "watch_lost",
     "write_beat",
     "write_lost",
 ]
@@ -165,6 +170,10 @@ EXIT_BUILT = 0  # every task rolled up, or nothing was left to build
 EXIT_FAILED = 1  # a task failed, or the lane could not start
 EXIT_LOST = 5  # the claim was lost: nothing more was written or pushed (3 and 4 are the epic's paused and awaiting-land)
 WATCH_S = 2.0  # how often the fence reads the claim
+# How long a lane that lost its claim may take to wind down (its children TERMed, its threads ending) before it kills
+# them and exits there and then (`lost_overdue`): a child that ignores TERM, or a model call that never returns, must
+# not keep a lane running with nobody's claim under it.
+LOST_EXIT_S = 30.0
 PHASE_REVIEW = "phase-review"  # the graph a review round runs (`graphs.delivery.phase_review`)
 _SKIPPED = frozenset({"dropped", "done"})
 
@@ -212,6 +221,12 @@ def exit_code(lost: bool, failed: Sequence[str], smoke_passed: bool = True) -> i
     """Pure. The lane's exit: lost beats failed (a task, or the review loop: a smoke, a review that decided nothing, a
     revision that did not roll up) beats built (the loop reached a round that finished the phase)."""
     return EXIT_LOST if lost else EXIT_FAILED if failed or not smoke_passed else EXIT_BUILT
+
+
+def lost_overdue(lost_at: float | None, now: float, grace_s: float = LOST_EXIT_S) -> bool:
+    """Pure. Whether a lane that lost its claim at `lost_at` (its own monotonic clock; None while it holds it) has had
+    its `grace_s` to wind down, and so kills its children and exits now."""
+    return lost_at is not None and now - lost_at >= grace_s
 
 
 def smoke_due(failed: Mapping[str, str], stopping: bool) -> bool:
@@ -294,6 +309,7 @@ class Fence:
         self._seen: tuple[float, int, int] | None = None
         self.lost = threading.Event()
         self.why = ""
+        self.lost_at: float | None = None  # this process's monotonic clock when the claim was lost
         self._thread: threading.Thread | None = None
 
     def _bounded(self) -> Connection:
@@ -363,6 +379,7 @@ class Fence:
             if self.lost.is_set():
                 return
             self.why = why
+            self.lost_at = self._monotonic()
             self.lost.set()
         self._log(f"lane: stopping: {why}")
         self._on_lost()
@@ -1269,10 +1286,29 @@ def _sweep_dead_clones(ctx: Ctx) -> list[str]:
                 os.close(fd)
 
 
+def watch_lost(fence: Fence, ended: threading.Event, overdue: Callable[[], None], grace_s: float = LOST_EXIT_S,
+               monotonic: Callable[[], float] = time.monotonic) -> threading.Thread:
+    """Edge. A thread of its own that runs `overdue` once the fence lost its claim `grace_s` ago (`lost_overdue`) and
+    `ended` is still not set; it leaves once `ended` is set. Started, and returned."""
+    poll = min(WATCH_S, max(grace_s / 4, 0.05))
+
+    def loop() -> None:
+        while not ended.wait(poll):
+            if lost_overdue(fence.lost_at, monotonic(), grace_s):
+                overdue()
+                return
+
+    thread = threading.Thread(target=loop, name="lane-lost-exit", daemon=True)
+    thread.start()
+    return thread
+
+
 def run_lane(ctx: Ctx, claim: LaneClaim, conn: Connection, open_conn: Callable[[], Connection],
              items: Sequence[Mapping[str, Any]], base: str, log: Callable[[str], None],
              stop_children: Callable[[], None], goal: str = "",
-             stop_new_children: Callable[[], None] | None = None) -> int:
+             stop_new_children: Callable[[], None] | None = None,
+             kill_children: Callable[[], None] | None = None,
+             exit_now: Callable[[int], None] = os._exit, lost_exit_s: float = LOST_EXIT_S) -> int:
     """Edge. Run the claimed phase as the module docstring says, its review judging it against `goal`; the exit code
     (`EXIT_*`). On every way out the run's worktrees, its own clone (under `<worktree_root>/<run>`, with the private
     refs it fetched), any private refs in the shared checkout, and its progress mark are removed. Once the claim is
@@ -1281,7 +1317,13 @@ def run_lane(ctx: Ctx, claim: LaneClaim, conn: Connection, open_conn: Callable[[
     every connection the lane opened, and any open still in flight (`open_within`), so nothing of the lane's waits on
     it; every later open fails at once. A lane that ends with its claim lost says so, and why, in its lost mark
     (`lost_path`), and whether any check read its lease first, which the worker reads to give back the attempt of a
-    claim it still holds (`phase_pick.lost_refund`)."""
+    claim it still holds (`phase_pick.lost_refund`).
+
+    A lane that lost its claim and has not ended `lost_exit_s` later (a child that ignores TERM, a model call that
+    never returns, a thread waiting on either) does not run on as nobody's: `kill_children` (`stop_children` when not
+    given) kills every child it has, it writes its lost mark, and `exit_now(EXIT_LOST)` ends the process there and
+    then, with nothing more written. What it leaves behind (its worktrees, its clone) the next lane on this machine
+    sweeps (`_sweep_dead_clones`, `lane_rollup.sweep`)."""
     mark = beat_path(ctx.runs_dir, ctx.run_id)
     opened: list[Connection] = [conn]
     opened_lock = threading.Lock()
@@ -1309,6 +1351,18 @@ def run_lane(ctx: Ctx, claim: LaneClaim, conn: Connection, open_conn: Callable[[
                   on_silent=abandon_all)
     phase_worktree = ctx.worktree_root / ctx.run_id / claim.phase / "_phase"
     lane_ctx = ctx
+    ended = threading.Event()
+
+    def overdue() -> None:
+        log(f"lane: the claim was lost {lost_exit_s:.0f}s ago ({fence.why}) and the lane has not ended; killing its "
+            f"children and exiting {EXIT_LOST}")
+        try:
+            (kill_children or stop_children)()
+        finally:
+            write_lost(lost_path(ctx.runs_dir, ctx.run_id), fence.why, log, checked=fence.checked)
+            exit_now(EXIT_LOST)
+
+    watch_lost(fence, ended, overdue, lost_exit_s)
     held = _hold_run_lock(ctx)  # before the clone exists, so no sweep ever sees this run's clone unlocked
     try:
         if not fence.check():
@@ -1334,6 +1388,7 @@ def run_lane(ctx: Ctx, claim: LaneClaim, conn: Connection, open_conn: Callable[[
         lane_rollup.drop_refs(ctx.repo, ctx.run_id)
         mark.unlink(missing_ok=True)
         os.close(held)  # last: the folder it proved live is gone
+        ended.set()
 
 
 def _run(ctx: Ctx, claim: LaneClaim, conn: Connection, fence: Fence, items: Sequence[Mapping[str, Any]], base: str,
@@ -1423,12 +1478,12 @@ def write_beat(path: Path, count: int) -> None:
     os.replace(part, path)
 
 
-def terminate_groups(pids: Sequence[int], groups_only: bool = False) -> None:
+def terminate_groups(pids: Sequence[int], groups_only: bool = False, sig: int = signal.SIGTERM) -> None:
     """Edge. TERM each of the lane's children and, for one that leads a process group of its own (a check runs in a
     session of its own), its whole group, so a shell's grandchildren stop too and nothing holds a pipe open. A child
     in the lane's own group is signalled alone: the lane's group is never signalled. With `groups_only`, only the
     children that lead a group of their own (the checks, the agents, a push), never one in the lane's group (a task
-    thread's git, cleaning up the shared checkout)."""
+    thread's git, cleaning up the shared checkout). `sig` is SIGKILL for a lane past its `LOST_EXIT_S`."""
     for pid in pids:
         if groups_only:
             try:
@@ -1437,10 +1492,10 @@ def terminate_groups(pids: Sequence[int], groups_only: bool = False) -> None:
             except ProcessLookupError:
                 continue
         try:
-            os.killpg(pid, signal.SIGTERM)
+            os.killpg(pid, sig)
         except (ProcessLookupError, PermissionError):
             with contextlib.suppress(ProcessLookupError):
-                os.kill(pid, signal.SIGTERM)
+                os.kill(pid, sig)
 
 
 def lanes_of(environ: Mapping[str, str]) -> int:

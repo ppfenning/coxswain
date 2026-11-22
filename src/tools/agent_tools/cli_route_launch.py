@@ -44,6 +44,7 @@ from agent_tools.cli_lazy import (
     lane_python,
     lane_toolchain,
     launch_place,
+    machine_refusal,
     queue_export,
     queue_rows,
     remote_argv,
@@ -137,6 +138,13 @@ def _decompose_repo_refusal(a: argparse.Namespace) -> str | None:
     return None if text is None else route.missing_repo_refusal(idea_path.stem, route.parse_frontmatter(text)[0])
 
 
+def _machine_refused(lane_worker: str | None, kind: machine_refusal.Kind, reason: str) -> None:
+    """Edge. After a refusal of this machine's, not the phase's, a worker's launch (`--lane-worker`) prints the marked
+    line its worker reads (`machine_refusal.of`): the claim goes back with no attempt spent, for another machine."""
+    if lane_worker is not None:
+        print(machine_refusal.marked(kind, reason))
+
+
 def lane_capacity_env(env: Mapping[str, str], capacity: int) -> dict[str, str]:
     """A copy of `env` carrying `COX_LANE_CAPACITY=<capacity>`; a value already set, even empty, is kept."""
     return {"COX_LANE_CAPACITY": str(capacity), **env}
@@ -185,10 +193,12 @@ def _route_launch(a: argparse.Namespace) -> int:
         return 2
     host, host_rc = _lane_host_or_refuse(a, profile)
     if host_rc is not None:
+        _machine_refused(lane_worker, "machine", "this machine has no lane free for it")
         return host_rc
     harness_dir = profile.get("harness_dir", "")
     venv_rc = _harness_ready_or_refuse(harness_dir)
     if venv_rc is not None:
+        _machine_refused(lane_worker, "machine", f"the harness venv is missing at {harness_dir}")
         return venv_rc
     runs_dir = Path(profile["workspace_dir"]).expanduser() / "runs"
     launch_dir = _initiative_path(runs_dir, a.initiative) if a.graph in ("epic", "rescue") else None
@@ -304,9 +314,11 @@ def _route_launch(a: argparse.Namespace) -> int:
             )
         except (OSError, subprocess.CalledProcessError) as exc:
             print(f"routing: cannot read git status for {repo}: {exc}")
+            _machine_refused(lane_worker, "checkout", f"cannot read git status for {repo}: {exc}")
             return 2
         if status.stdout.strip():
             print(f"routing: {repo} has uncommitted changes:\n{status.stdout}")
+            _machine_refused(lane_worker, "checkout", f"{repo} has uncommitted changes: {status.stdout}")
             return 2
         prefix = initiative_dir.name if phase is None else route.phase_run_prefix(initiative_dir.name, phase)
         already = _refuse_if_already_running(runs_dir, prefix)
@@ -498,6 +510,7 @@ def _route_launch(a: argparse.Namespace) -> int:
     if isinstance(lane, lane_python.LaneRefusal):
         print(f"routing: {lane.message}")
         _print_held_claim_hint(a, runs_dir, lock_before)
+        _machine_refused(lane_worker, "machine", lane.message)
         return 2
     local_tools = _repo_check_tools(env_repo).found if env_repo else ()
     local_refusal = _toolchain_refusal(
@@ -506,6 +519,7 @@ def _route_launch(a: argparse.Namespace) -> int:
     if local_refusal is not None:
         print(f"routing: {local_refusal}")
         _print_held_claim_hint(a, runs_dir, lock_before)
+        _machine_refused(lane_worker, "machine", local_refusal)
         return 2
     # `lane.path` puts the lane interpreter's folder first, so child_env's prefixes (spec §4: the repository venv
     # bin, then the harness bin) land ahead of it and the interpreter's folder precedes the caller's own entries.
