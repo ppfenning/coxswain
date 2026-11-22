@@ -7,10 +7,10 @@ task's surfaces, and which of those are a builder's scratch files to drop from t
 from __future__ import annotations
 
 import re
-import subprocess
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
+from core.bounded_proc import GIT_TIMEOUT_SECONDS, completed_in_group
 from graphs.delivery.snapshot_surfaces import drop_pending_snapshots, is_surface_snapshot
 from runner.tier_resolution import Hints
 
@@ -286,9 +286,9 @@ def _is_tracked(repo_dir: str | None, path: str) -> bool:
     """
     if not repo_dir:
         return True
-    result = subprocess.run(
+    result = completed_in_group(
         ["git", "-C", repo_dir, "ls-files", "--error-unmatch", path],
-        capture_output=True, text=True,
+        timeout=GIT_TIMEOUT_SECONDS, capture_output=True, text=True,
     )
     return result.returncode == 0
 

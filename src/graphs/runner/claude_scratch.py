@@ -16,6 +16,7 @@ import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+from core.bounded_proc import GIT_SLOW_TIMEOUT_SECONDS, GIT_TIMEOUT_SECONDS, completed_in_group
 from runner.claude_token import TOKEN_ENV, read_token, token_path
 from runner.protocol import RunnerError
 
@@ -23,6 +24,11 @@ _VERIFY_TIMEOUT_S = 120
 _VERIFY_TOTAL_S = 300
 _VERIFY_TAIL_LINES = 40
 _DIFF_CMD = "git add -A && git diff --cached --binary --full-index"
+# The git calls whose work scales with the tree (staging and diffing it, checking it out, `worktree add` and
+# `remove`) take git's slow bound: on a large repository on a slow disk a checkout outlasts the one-object bound by
+# far. A `worktree add` holds the machine-wide registry lock while it runs, so this is also how long one hung add can
+# hold every other scratch on the machine: minutes, never forever.
+SCRATCH_GIT_TIMEOUT_S = GIT_SLOW_TIMEOUT_SECONDS
 
 
 def child_env(environ: Mapping[str, str], bash: str | None, token: str | None = None) -> dict[str, str]:
@@ -42,7 +48,7 @@ def _capture_diff(scratch: Path) -> str:
     had already built rather than just an apology.
     """
     try:
-        proc = subprocess.run(_DIFF_CMD, shell=True, capture_output=True, text=True, cwd=scratch)
+        proc = completed_in_group(_DIFF_CMD, timeout=SCRATCH_GIT_TIMEOUT_S, shell=True, capture_output=True, text=True, cwd=scratch)
     except OSError:
         return ""
     return proc.stdout if proc.returncode == 0 else ""
@@ -84,7 +90,7 @@ def apply_reported_patch(scratch: Path, patch: str) -> bool:
     text = patch if patch.endswith("\n") else patch + "\n"
     try:
         for args in (["--check"], []):
-            proc = subprocess.run(["git", "apply", *args], input=text, capture_output=True, text=True, cwd=scratch)
+            proc = completed_in_group(["git", "apply", *args], timeout=GIT_TIMEOUT_SECONDS, input=text, capture_output=True, text=True, cwd=scratch)
             if proc.returncode != 0:
                 return False
     except OSError:
@@ -117,7 +123,7 @@ def _run_verify(scratch: Path, commands: Sequence[str]) -> list[dict[str, str]]:
 def _snapshot(scratch: Path) -> str | None:
     """The scratch's index as a tree id, or None: what `_capture_diff` just staged, before a verify command can touch it."""
     try:
-        proc = subprocess.run("git write-tree", shell=True, capture_output=True, text=True, cwd=scratch)
+        proc = completed_in_group(["git", "write-tree"], timeout=GIT_TIMEOUT_SECONDS, capture_output=True, text=True, cwd=scratch)
     except OSError:
         return None
     return proc.stdout.strip() or None if proc.returncode == 0 else None
@@ -127,9 +133,17 @@ def _restore(scratch: Path, tree: str | None) -> bool:
     """Put the scratch back to `tree`: index, tracked files and untracked files. False when it could not."""
     if not tree:
         return False
-    cmd = f"git read-tree {tree} && git checkout-index -a -f && git clean -fdq"
+    # Each step bounded and in order, stopping at the first that fails, as `&&` did; the checkout rewrites every file.
+    steps = (
+        (["git", "read-tree", tree], GIT_TIMEOUT_SECONDS),
+        (["git", "checkout-index", "-a", "-f"], SCRATCH_GIT_TIMEOUT_S),
+        (["git", "clean", "-fdq"], SCRATCH_GIT_TIMEOUT_S),
+    )
     try:
-        return subprocess.run(cmd, shell=True, capture_output=True, text=True, cwd=scratch).returncode == 0
+        return all(
+            completed_in_group(step, timeout=bound, capture_output=True, text=True, cwd=scratch).returncode == 0
+            for step, bound in steps
+        )
     except OSError:
         return False
 
@@ -179,32 +193,52 @@ def agent_env(scratch: Path | None) -> dict[str, str]:
     return shared_venv_env(env, linked_venv_bin(scratch) if scratch is not None else None, os.path.realpath)
 
 
-def make_scratch(repo_dir: Path, role: str) -> tuple[Path, Path]:
-    """Edge. A detached worktree of `repo_dir` at HEAD for `role`, its venv linked: (the temp parent, the tree)."""
+def make_scratch(repo_dir: Path, role: str, timeout: float = SCRATCH_GIT_TIMEOUT_S) -> tuple[Path, Path]:
+    """Edge. A detached worktree of `repo_dir` at HEAD for `role`, its venv linked: (the temp parent, the tree).
+
+    The `worktree add` is bounded by `timeout`: a git stuck on a stale lock fails this scratch and releases the
+    registry lock rather than holding every other scratch on the machine.
+    """
     parent = Path(tempfile.mkdtemp(prefix="agent-graphs-build-"))
     scratch = parent / "tree"
     from harness.worktree import link_venv, registry_lock  # here, not at the top: harness imports this module
 
     with registry_lock(repo_dir):
-        proc = subprocess.run(
+        proc = completed_in_group(
             ["git", "-C", str(repo_dir), "worktree", "add", "--detach", str(scratch), "HEAD"],
-            capture_output=True, text=True,
+            timeout=timeout, capture_output=True, text=True,
         )
+        if proc.returncode != 0:
+            # Still under the lock: a failed or killed add can leave its registration behind, locked "initializing",
+            # and `prune` skips a locked entry for good.
+            _forget_worktree(repo_dir, parent, scratch, timeout)
     if proc.returncode != 0:
-        shutil.rmtree(parent, ignore_errors=True)
         raise RunnerError(f"could not create a scratch worktree for '{role}': {(proc.stderr or '').strip()[:300]}")
 
     link_venv(Path(repo_dir), scratch)
     return parent, scratch
 
 
-def drop_scratch(repo_dir: Path, parent: Path, scratch: Path) -> None:
-    """Edge. Remove the scratch worktree from `repo_dir`'s registry and delete its temp parent."""
+def _forget_worktree(repo_dir: Path, parent: Path, scratch: Path, timeout: float) -> None:
+    """Edge, under the caller's registry lock. Remove a half-made worktree, its files and its registration, never raising.
+
+    `remove --force --force` takes a worktree even when it is locked; when the add died before the tree was usable
+    that can fail, so the files go, the entry is unlocked and `prune` drops a registration whose tree is gone.
+    """
+    git = ["git", "-C", str(repo_dir), "worktree"]
+    completed_in_group([*git, "remove", "--force", "--force", str(scratch)], timeout=timeout, capture_output=True, text=True)
+    shutil.rmtree(parent, ignore_errors=True)
+    completed_in_group([*git, "unlock", str(scratch)], timeout=GIT_TIMEOUT_SECONDS, capture_output=True, text=True)
+    completed_in_group([*git, "prune"], timeout=GIT_TIMEOUT_SECONDS, capture_output=True, text=True)
+
+
+def drop_scratch(repo_dir: Path, parent: Path, scratch: Path, timeout: float = SCRATCH_GIT_TIMEOUT_S) -> None:
+    """Edge. Remove the scratch worktree from `repo_dir`'s registry, bounded by `timeout`, and delete its temp parent."""
     from harness.worktree import registry_lock  # here, not at the top: harness imports this module
 
     with registry_lock(repo_dir):
-        subprocess.run(
+        completed_in_group(
             ["git", "-C", str(repo_dir), "worktree", "remove", "--force", str(scratch)],
-            capture_output=True, text=True,
+            timeout=timeout, capture_output=True, text=True,
         )
     shutil.rmtree(parent, ignore_errors=True)

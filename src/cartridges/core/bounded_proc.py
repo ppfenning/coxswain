@@ -8,9 +8,11 @@ package keeps clear of `harness/__init__.py`'s imports, so this lives in `core`,
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from typing import Any, cast
 
 # One value for every `gh` call in both packages.
@@ -85,17 +87,66 @@ def completed(argv: Sequence[str] | str, timeout: float | None = None, **kwargs:
         # cast: with **kwargs pyright cannot pick one of run's overloads, and the result is whatever the kwargs make it.
         return cast("subprocess.CompletedProcess[Any]", subprocess.run(argv if isinstance(argv, str) else words, timeout=limit, **kwargs))
     except subprocess.TimeoutExpired as expired:
-        line = timeout_line(words, limit)
-        text = _is_text(kwargs)
-        stdout_piped = bool(kwargs.get("capture_output")) or kwargs.get("stdout") is subprocess.PIPE
-        stderr_piped = bool(kwargs.get("capture_output")) or kwargs.get("stderr") is subprocess.PIPE
-        merged = kwargs.get("stderr") is subprocess.STDOUT
-        suffix = f"\n{line}" if merged else ""
-        partial = _partial(expired.output, text)
-        out = (partial + suffix if isinstance(partial, str) else partial + suffix.encode()) if stdout_piped else None
-        err = (line if text else line.encode()) if stderr_piped else None
-        if not stderr_piped and not (merged and stdout_piped):
-            print(line, file=sys.stderr)
-        if kwargs.get("check"):
-            raise subprocess.CalledProcessError(TIMEOUT_RETURNCODE, argv, out, err) from None
-        return subprocess.CompletedProcess(argv, TIMEOUT_RETURNCODE, out, err)
+        return _timed_out(argv, words, limit, expired.output, kwargs)
+
+
+def _timed_out(
+    argv: Sequence[str] | str, words: Sequence[str], limit: float, raw: str | bytes | None, kwargs: Mapping[str, Any]
+) -> subprocess.CompletedProcess[Any]:
+    """The exit-124 result `completed` and `completed_in_group` return for a call that ran out of time."""
+    line = timeout_line(words, limit)
+    text = _is_text(kwargs)
+    stdout_piped = bool(kwargs.get("capture_output")) or kwargs.get("stdout") is subprocess.PIPE
+    stderr_piped = bool(kwargs.get("capture_output")) or kwargs.get("stderr") is subprocess.PIPE
+    merged = kwargs.get("stderr") is subprocess.STDOUT
+    suffix = f"\n{line}" if merged else ""
+    partial = _partial(raw, text)
+    out = (partial + suffix if isinstance(partial, str) else partial + suffix.encode()) if stdout_piped else None
+    err = (line if text else line.encode()) if stderr_piped else None
+    if not stderr_piped and not (merged and stdout_piped):
+        print(line, file=sys.stderr)
+    if kwargs.get("check"):
+        raise subprocess.CalledProcessError(TIMEOUT_RETURNCODE, argv, out, err) from None
+    return subprocess.CompletedProcess(argv, TIMEOUT_RETURNCODE, out, err)
+
+
+# How long a killed group's pipes may take to reach EOF before they are left behind.
+_REAP_SECONDS = 5
+
+
+def completed_in_group(argv: Sequence[str] | str, timeout: float | None = None, **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+    """Edge. `completed`, with the child leading a process group of its own and a timeout killing the whole group.
+
+    `subprocess.run`'s timeout kills only the direct child: a `git worktree add` killed that way leaves its own child
+    (`git reset --hard`, a filter, a hook) running and holding the index lock, and a `sh -c` leaves its command. Here
+    every process the call started goes with it. The drain after the kill is bounded, since a grandchild that left the
+    group (`setsid`) survives it and could hold the pipes open.
+    """
+    words = _words(argv)
+    limit = default_timeout(words, os.environ) if timeout is None else timeout
+    options = dict(kwargs)
+    check = bool(options.pop("check", False))
+    stdin_text = options.pop("input", None)
+    if options.pop("capture_output", False):
+        options["stdout"] = options["stderr"] = subprocess.PIPE
+    if stdin_text is not None:
+        options["stdin"] = subprocess.PIPE
+    command = argv if isinstance(argv, str) else words
+    with subprocess.Popen(command, start_new_session=True, **options) as proc:
+        try:
+            out, err = proc.communicate(stdin_text, timeout=limit)
+        except subprocess.TimeoutExpired as expired:
+            with suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            partial = expired.output
+            with suppress(subprocess.TimeoutExpired):
+                partial, _ = proc.communicate(timeout=_REAP_SECONDS)
+            for pipe in (proc.stdin, proc.stdout, proc.stderr):
+                if pipe is not None:
+                    pipe.close()
+            proc.wait()
+            return _timed_out(argv, words, limit, partial, kwargs)
+    result = subprocess.CompletedProcess(argv, proc.returncode, out, err)
+    if check:
+        result.check_returncode()
+    return result

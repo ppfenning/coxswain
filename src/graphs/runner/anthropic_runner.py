@@ -171,6 +171,62 @@ def _decision(
     )
 
 
+# Prompt caching (ephemeral, the 5-minute TTL). Render order is tools, then system, then messages, so a breakpoint on
+# the system block caches the tool definitions and the system prompt together, and one on the last block of the newest
+# message caches the whole conversation so far for the next turn. Two of the four breakpoints a request may carry; an
+# earlier turn's marker is not kept, the next request moves it to its own last block. A prefix under the model's
+# minimum is simply not cached, never an error.
+_EPHEMERAL = {"type": "ephemeral"}
+
+
+def cached_system(system: str) -> list[dict[str, Any]] | None:
+    """The system prompt as one text block carrying a cache breakpoint; None for an empty prompt."""
+    return [{"type": "text", "text": system, "cache_control": dict(_EPHEMERAL)}] if system else None
+
+
+def with_last_breakpoint(messages: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """`messages` with a cache breakpoint on the last content block of the last message, and on no other block.
+
+    Pure: the input is not mutated, so a history the caller keeps carries no marker into the next turn. A string
+    content becomes one text block, the only form a breakpoint can sit on.
+    """
+    if not messages:
+        return []
+    *head, last = messages
+    content = last["content"]
+    blocks = [{"type": "text", "text": content}] if isinstance(content, str) else [dict(b) for b in content]
+    if blocks:
+        blocks[-1] = {**blocks[-1], "cache_control": dict(_EPHEMERAL)}
+    return [*(dict(m) for m in head), {**last, "content": blocks}]
+
+
+def cache_tokens(usage: Any) -> tuple[int, int]:
+    """(cache write, cache read) input tokens a Messages API `usage` reports; 0 for each one absent."""
+    return (
+        getattr(usage, "cache_creation_input_tokens", 0) or 0,
+        getattr(usage, "cache_read_input_tokens", 0) or 0,
+    )
+
+
+def node_request(
+    model: str, max_tokens: int, system: str, prompt: str, effort: str, schema: Mapping[str, Any]
+) -> dict[str, Any]:
+    """The Messages API request body for one structured-output node call. Pure.
+
+    A cache breakpoint on the system block only: the prompt is unique to this call, so a breakpoint after it would
+    pay the cache-write premium on bytes no later request reads, while the skill and context packs in the system
+    prompt are what the next call of the same role sends again.
+    """
+    return {
+        "model": model,
+        "max_tokens": max_tokens,
+        "system": cached_system(system),
+        "messages": [{"role": "user", "content": prompt}],
+        "thinking": {"type": "adaptive"},
+        "output_config": {"effort": effort, "format": {"type": "json_schema", "schema": dict(schema)}},
+    }
+
+
 def _wire_message(message: Mapping[str, Any]) -> dict[str, Any]:
     """One tool_loop message as one Messages API message; a tool result is a user turn of `tool_result` blocks."""
     if message["role"] == "assistant":
@@ -199,13 +255,17 @@ def _merge_results(acc: list[dict[str, Any]], message: dict[str, Any]) -> list[d
 
 
 def _to_anthropic(messages: Sequence[Mapping[str, Any]], tools: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """The `system`, `messages` and `tools` request fields for a tool_loop message list and tool set."""
+    """The `system`, `messages` and `tools` request fields for a tool_loop message list and tool set.
+
+    Each turn's request carries a cache breakpoint on the system block and on its own last message block, so the next
+    turn reads every earlier one from the cache instead of buying it again at the input price.
+    """
     head = messages[0]
     schema = head.get("schema")
     system = "\n\n".join(part for part in (head["content"], schema_instruction(dict(schema)) if schema else "") if part)
     return {
-        "system": system or None,
-        "messages": reduce(_merge_results, map(_wire_message, messages[1:]), []),
+        "system": cached_system(system),
+        "messages": with_last_breakpoint(reduce(_merge_results, map(_wire_message, messages[1:]), [])),
         "tools": [
             {"name": t["name"], "description": t["description"], "input_schema": t["parameters"]} for t in tools
         ],
@@ -243,9 +303,10 @@ class AnthropicToolLoopAdapter:
         raw = getattr(response, "usage", None)
         input_tokens = getattr(raw, "input_tokens", 0) or 0
         output_tokens = getattr(raw, "output_tokens", 0) or 0
-        cost = price_call(self._prices, billed, input_tokens, output_tokens)
+        cached = cache_tokens(raw)
+        cost = price_call(self._prices, billed, input_tokens, output_tokens, *cached)
         if cost is None:
-            cost = price_call(self._prices, self._model, input_tokens, output_tokens)
+            cost = price_call(self._prices, self._model, input_tokens, output_tokens, *cached)
         usage = {"input_tokens": input_tokens, "output_tokens": output_tokens, **({} if cost is None else {"cost_usd": cost})}
         self.billed = {k: self.billed.get(k, 0) + usage.get(k, 0) for k in {*self.billed, *usage}}
         if getattr(response, "stop_reason", None) == "refusal":
@@ -538,15 +599,7 @@ class AnthropicRunner:
             return result
         try:
             response = self._client.messages.create(
-                model=model_id,
-                max_tokens=request_max_tokens,
-                system=system or None,
-                messages=[{"role": "user", "content": prompt}],
-                thinking={"type": "adaptive"},
-                output_config={
-                    "effort": effort_used,
-                    "format": {"type": "json_schema", "schema": dict(schema)},
-                },
+                **node_request(model_id, request_max_tokens, system, prompt, effort_used, schema)
             )
         except Exception as exc:
             # Rate limit (429) and overloaded (529) are limits, not failures; anything else is a call that did not complete.
@@ -560,9 +613,10 @@ class AnthropicRunner:
         usage = getattr(response, "usage", None)
         input_tokens = getattr(usage, "input_tokens", 0) or 0
         output_tokens = getattr(usage, "output_tokens", 0) or 0
-        cost_usd = price_call(profile_prices, billed_model, input_tokens, output_tokens)
+        cached = cache_tokens(usage)
+        cost_usd = price_call(profile_prices, billed_model, input_tokens, output_tokens, *cached)
         if cost_usd is None:
-            cost_usd = price_call(profile_prices, model_id, input_tokens, output_tokens)
+            cost_usd = price_call(profile_prices, model_id, input_tokens, output_tokens, *cached)
         spent_usd = spent_before + (cost_usd or 0.0)
         if thread is not None:
             self._thread_spend[thread] = spent_usd
