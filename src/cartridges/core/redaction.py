@@ -3,7 +3,10 @@
 The harness scrubs artifacts with these, so they live below both the harness and the tools.
 `agent_tools.forgejo_api.redact` and `agent_tools.store_switch.display` (over `lake_config.redact`) still have
 their own copies, and
-`test_redaction` checks that those copies agree with these until the tools import them from here.
+`test_redaction_copies` checks that those copies agree with these until the tools import them from here.
+
+Debt (F3 follow-up, #1341): this is a second copy, not a re-export. The owners of `forgejo_api`, `store_switch` and
+`lake_config` replace their definitions with imports from here, and `test_redaction_copies` goes with them.
 """
 
 from __future__ import annotations

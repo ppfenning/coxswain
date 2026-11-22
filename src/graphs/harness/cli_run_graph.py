@@ -1191,17 +1191,16 @@ def _run_graph(
 
     # Settled straight after the arms, before the patch, manifest and ledger work, so the window in which a
     # task file exists and its row does not is as short as the run can make it. The closing line waits for the end.
-    closing, missing = (
-        _settle_decompose(
+    closing, missing, unfiled = "", 0, 0
+    if graph_name == _DECOMPOSE_GRAPH_NAME:
+        # A decompose without its ports was refused before the graph ran; one here would leave files with no rows.
+        assert ports is not None, "a decompose reached its settle without the tools' ports"
+        closing, missing = _settle_decompose(
             proposals, diffs, auto_applied,
             cartridge=cartridge, graph_args=graph_args, runner=runner, runs_dir=Path(args.runs_dir), ports=ports,
-        )
-        if graph_name == _DECOMPOSE_GRAPH_NAME and ports is not None
-        else ("", 0)
-    )  # fmt: skip
-    unfiled = 0
-    approved = approved_task_ids(proposals, diffs, auto_applied) if graph_name == _DECOMPOSE_GRAPH_NAME else ()
-    if ports is not None and approved and not missing:
+        )  # fmt: skip
+    if graph_name == _DECOMPOSE_GRAPH_NAME and not missing and approved_task_ids(proposals, diffs, auto_applied):
+        assert ports is not None, "a decompose reached its follow-ups without the tools' ports"
         root = Path(getattr(runner, "cwd", None) or Path.cwd())
         unfiled = _file_decompose_follow_ups(
             result,

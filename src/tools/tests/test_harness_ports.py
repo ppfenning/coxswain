@@ -1,5 +1,9 @@
 """`harness_ports.withdraw_tasks`: a file goes only after its store row is dropped, and a whole withdrawal declines
-the initiative through `draft_apply`, falling back to row by row when that is refused."""
+the initiative through `draft_apply`, falling back to row by row when that is refused.
+
+Debt (#1341): these monkeypatch `run_store`, `store_cli` and `draft_apply`, as they did in graphs' `test_cli.py`.
+They should run against a real store (the `store_conn` fixture) instead.
+"""
 
 from __future__ import annotations
 

@@ -13,6 +13,7 @@ from datetime import date as date_type
 from pathlib import Path
 from typing import Any
 
+from graphs.delivery.initiative_decompose import GRAPH_NAME as DECOMPOSE_GRAPH_NAME
 from harness.cli_launch import _launch, _stop_children_until_quiet, _terminate_children
 from harness.cli_run_graph import DEFAULT_POOL_KEEP
 from harness.decompose_ports import DecomposePorts
@@ -226,6 +227,15 @@ def _refuse_phase_outside_epic(parser: argparse.ArgumentParser, args: argparse.N
         parser.error("--phase applies to the epic and phase-lane graphs only")
 
 
+def _refuse_decompose_without_ports(
+    parser: argparse.ArgumentParser, specs: dict[str, GraphSpec], args: argparse.Namespace, ports: DecomposePorts | None
+) -> None:
+    """A decompose files its tasks through the tools' ports; without them it refuses here, before a run or lease opens."""
+    spec = specs.get(args.graph)
+    if ports is None and spec is not None and spec.graph_name == DECOMPOSE_GRAPH_NAME:
+        parser.error("decompose needs the tools' store and route calls; start it through shell.py")
+
+
 def _expand_repo(args: argparse.Namespace) -> argparse.Namespace:
     """A copy of `args` whose `repo`, when given, has a leading tilde expanded to the home directory."""
     if not args.repo:
@@ -240,6 +250,7 @@ def _main(argv: list[str] | None, ports: DecomposePorts | None = None) -> int:
     parser = _build_parser(specs)
     parsed = parser.parse_args(argv)
     _refuse_phase_outside_epic(parser, parsed)
+    _refuse_decompose_without_ports(parser, specs, parsed, ports)
     args = _expand_repo(parsed)
     # A rescue's stdout is its JSON report and nothing else, since its caller parses all of it.
     # Every other line the launch prints, the usage totals included, goes to stderr instead.
