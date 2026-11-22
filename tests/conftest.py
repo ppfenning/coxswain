@@ -1,9 +1,16 @@
 import os
+from pathlib import Path
 
 import pytest
 
-from devtools import cli
-from harness import extras_tests
+from devtools import tree_imports
+
+# A lane's task worktree links the shared venv, whose editable install maps the packages to the main checkout: this
+# tree's src/ goes first, or the suite refuses to load, so a change that breaks them cannot pass here unseen.
+tree_imports.use_this_tree(Path(__file__).resolve().parents[1])
+
+from devtools import cli  # noqa: E402
+from harness import extras_tests  # noqa: E402
 
 # sqlite is the suites' stand-in for the one real store, Postgres. Outside the suites it does not open.
 os.environ.setdefault("COXSWAIN_STORE_DOUBLE", "sqlite")
