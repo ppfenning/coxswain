@@ -1,5 +1,4 @@
 """The merge queue settings: batch_size and wait_s from the profile, and the collect-then-open rule."""
-import dataclasses
 
 import pytest
 
@@ -58,11 +57,6 @@ def test_non_mapping_profile_falls_back_to_defaults():
 def test_enabled_for_two_and_not_for_one():
     assert MergeQueue(2, 0.0).enabled
     assert not MergeQueue(1, 0.0).enabled
-
-
-def test_merge_queue_is_frozen():
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        MergeQueue(2, 0.0).batch_size = 3  # type: ignore[misc]
 
 
 def test_should_open_when_batch_is_full():

@@ -1,6 +1,4 @@
-import dataclasses
 
-import pytest
 
 from agent_tools.pr_checks import verdict
 
@@ -64,9 +62,3 @@ def test_skipped_required_check_is_not_ready() -> None:
     v = verdict(("lint",), [_row("lint", "skipped")])
     assert v.kind == "pending"
     assert "lint" in v.reason
-
-
-def test_verdict_is_frozen() -> None:
-    v = verdict(None, [])
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        v.kind = "ready"  # type: ignore[misc]

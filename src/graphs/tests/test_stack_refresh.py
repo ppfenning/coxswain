@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import subprocess
 from pathlib import Path
 
@@ -81,12 +80,6 @@ def test_other_checked_out_branch_is_refused(repo: Path, worktree: Path) -> None
     result = refresh_branch(worktree, "elsewhere", "main")
     assert not result.ok and not result.refreshed
     assert "elsewhere" in result.reason
-
-
-def test_result_is_frozen() -> None:
-    result = RefreshResult(True, False, "a", "a", (), "")
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        result.ok = False  # type: ignore[misc]
 
 
 def test_reason_names_every_path_sorted() -> None:

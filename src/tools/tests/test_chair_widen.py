@@ -1,3 +1,5 @@
+import pytest
+
 from agent_tools.chair_widen import _paths, classify_handoff
 
 SURFACES = ["src/ui/regatta.rs", "src/input.rs (new)"]
@@ -13,28 +15,17 @@ def test_pub_crate_ask_gives_pub_crate() -> None:
     assert classify_handoff(reason, SURFACES) == [("src/app.rs", "pub(crate)")]
 
 
-def test_design_question_gives_none() -> None:
-    reason = "src/app.rs needs an accessor, should we add one?"
-    assert classify_handoff(reason, SURFACES) is None
-
-
-def test_three_outside_files_gives_none() -> None:
-    reason = "I need an accessor in src/a.rs. A getter in src/b.rs. A flag in src/c.rs."
-    assert classify_handoff(reason, SURFACES) is None
-
-
-def test_only_surface_files_gives_none() -> None:
-    reason = "src/input.rs needs a new constant and src/ui/regatta.rs a flag."
-    assert classify_handoff(reason, SURFACES) is None
-
-
-def test_new_file_ask_gives_none() -> None:
-    reason = "I need a new file src/frame.rs with a constant."
-    assert classify_handoff(reason, SURFACES) is None
-
-
-def test_unsmall_ask_sends_whole_handoff_to_none() -> None:
-    reason = "src/app.rs needs an accessor. src/feed.rs needs its parser rewritten."
+@pytest.mark.parametrize(
+    "reason",
+    [
+        pytest.param("src/app.rs needs an accessor, should we add one?", id="design_question"),
+        pytest.param("I need an accessor in src/a.rs. A getter in src/b.rs. A flag in src/c.rs.", id="three_outside_files"),
+        pytest.param("src/input.rs needs a new constant and src/ui/regatta.rs a flag.", id="only_surface_files"),
+        pytest.param("I need a new file src/frame.rs with a constant.", id="new_file_ask"),
+        pytest.param("src/app.rs needs an accessor. src/feed.rs needs its parser rewritten.", id="one_unsmall_ask"),
+    ],
+)
+def test_a_handoff_that_is_not_a_small_widening_gives_none(reason: str) -> None:
     assert classify_handoff(reason, SURFACES) is None
 
 

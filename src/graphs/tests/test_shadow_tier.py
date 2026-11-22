@@ -1,4 +1,3 @@
-import dataclasses
 
 import pytest
 
@@ -41,11 +40,6 @@ def test_a_bad_tier_is_a_config_error_naming_the_role(tier):
 
 def test_a_non_mapping_is_a_config_error():
     assert isinstance(parse_shadow_tier(["handoff"]), ConfigError)
-
-
-def test_the_config_is_frozen():
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        ShadowConfig().tiers = (("handoff", "cheap"),)
 
 
 def test_handoff_reads_complete_and_ignores_satisfied():

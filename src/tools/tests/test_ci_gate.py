@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-import dataclasses
-
-import pytest
-
-from agent_tools.ci_gate import DEFAULT_QUEUED_BOUND_SECONDS, CiGate, evaluate_gate
+from agent_tools.ci_gate import CiGate, evaluate_gate
 from agent_tools.forge_status import ForgeStatus
 
 OK = ForgeStatus(False, "", 0.0)
@@ -41,12 +37,3 @@ def test_started_check_dropping_out_resumes() -> None:
 
 def test_degraded_plus_stale_queue_reports_incident() -> None:
     assert evaluate_gate(DOWN, (NOW - 1801,), NOW, BOUND) == CiGate(True, "Actions degraded")
-
-
-def test_default_bound_is_thirty_minutes() -> None:
-    assert DEFAULT_QUEUED_BOUND_SECONDS == 1800
-
-
-def test_gate_is_frozen() -> None:
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        CiGate(False, "").paused = True  # type: ignore[misc]

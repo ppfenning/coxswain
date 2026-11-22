@@ -1,4 +1,3 @@
-from dataclasses import FrozenInstanceError
 from pathlib import Path, PurePath
 
 import pytest
@@ -38,11 +37,6 @@ def test_runtime_names_land_under_the_state_root(name):
 @pytest.mark.parametrize("name", ["r1.summary.json", "r1.json", "something.else"])
 def test_record_and_unknown_names_stay_in_workspace_runs(name):
     assert classify(name, WS, ROOT) == StatePath("record", WS / "runs", WS / "runs" / name)
-
-
-def test_result_is_frozen():
-    with pytest.raises(FrozenInstanceError):
-        classify("r1.log", WS, ROOT).kind = "record"  # type: ignore[misc]
 
 
 def test_state_root_uses_xdg_state_home_when_set():

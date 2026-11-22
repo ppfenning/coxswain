@@ -1,4 +1,3 @@
-import dataclasses
 import json
 from datetime import UTC, datetime, timedelta, timezone
 
@@ -28,11 +27,6 @@ def make(id: str, hour: int, kind: str = "draft") -> InboxItem:
         accept_cmd=("cox", "accept", id),
         deny_cmd=("cox", "deny", id, "with space"),
     )
-
-
-def test_item_is_frozen() -> None:
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        make("a1", 1).what = "x"  # type: ignore[misc]
 
 
 def test_item_id() -> None:

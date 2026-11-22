@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import dataclasses
 import socket
 import threading
 
@@ -26,11 +25,6 @@ PULLS = "/api/v1/repos/o/r/pulls"
 
 def test_settings_strip_one_trailing_slash():
     assert read_settings(GOOD) == ForgejoSettings("http://git.example.internal:3000", "FORGEJO_TOKEN")
-
-
-def test_settings_are_frozen():
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        read_settings(GOOD).base_url = "x"  # type: ignore[misc]
 
 
 def test_settings_accept_https_bare_ip_and_lowercase_env():

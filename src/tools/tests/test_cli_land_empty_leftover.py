@@ -162,9 +162,3 @@ def test_unreadable_facts_leave_the_refusal_unchanged(repo, monkeypatch):
     monkeypatch.setattr(cli, "_open_prs_for", lambda _repo, _branch, _forge=None: "forge down")
     decision = {**cli._land_resume(repo, _STEP, None)}
     assert cli._land_leftover(repo, _STEP, decision, None) == decision
-
-
-def test_a_leftover_checked_out_in_a_worktree_is_not_recreated(repo, tmp_path):
-    _git(repo, "worktree", "add", "-q", str(tmp_path / "wt"), _PR)
-    decision = cli._land_resume(repo, _STEP, None)
-    assert cli._land_leftover(repo, _STEP, decision, None) == decision

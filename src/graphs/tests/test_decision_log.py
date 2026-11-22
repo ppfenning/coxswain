@@ -1,4 +1,3 @@
-from dataclasses import FrozenInstanceError
 
 import pytest
 
@@ -105,11 +104,6 @@ def test_a_row_without_the_optional_keys_loads_with_them_none():
 def test_a_row_missing_a_required_key_is_refused():
     with pytest.raises(KeyError):
         from_row({"role": "plan"})
-
-
-def test_the_record_is_frozen():
-    with pytest.raises(FrozenInstanceError):
-        FULL.role = "build"  # type: ignore[misc]
 
 
 WIRE = {

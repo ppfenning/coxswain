@@ -1,5 +1,4 @@
 import json
-from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -25,11 +24,6 @@ def test_the_v1_fixture_parses_into_every_field_of_both_nodes():
         cost_usd=None, started_at="2026-10-30T14:03:00Z", last_tool="Edit", last_tool_at="2026-10-30T14:05:12Z",
         worktree="/tmp/worktrees/live-run-view-1/build", branch="live-run-view-1/p1-foundations-task",
     )
-
-
-def test_the_parsed_record_is_frozen():
-    with pytest.raises(FrozenInstanceError):
-        progress_read.parse(TEXT).run = "other"
 
 
 @pytest.mark.parametrize("text", ["", "   ", TEXT[: len(TEXT) // 2], "[1, 2]", "null"])

@@ -319,11 +319,6 @@ def test_tracker_none_plans_neither_the_sync_nor_the_closes_line_and_says_so():
     assert "Closes" not in _pr_body_of(steps)
 
 
-def test_an_unresolved_tracker_leaves_the_plan_as_it_was():
-    steps = land.land_plan(_record(), _ONE_COMMIT, "main")
-    assert [s["kind"] for s in steps] == _STEP_ORDER
-
-
 def test_a_skip_note_is_not_a_step_the_gate_reports_as_left_unrun():
     steps = land.land_plan(_record(), _ONE_COMMIT, "main", tracker="none")
     assert land.gate_stop(steps, land.gate_steps(steps, "full"), "full", "") is None

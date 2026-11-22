@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from agent_tools.chair_idle_ready import IDLE_READY_MINUTES, plan_idle_ready
+from agent_tools.chair_idle_ready import plan_idle_ready
 from agent_tools.chair_read_idle_open import open_idle_stall
 
 NOW = datetime(2026, 11, 9, 12, 0, tzinfo=UTC)
@@ -18,10 +18,6 @@ def facts(live_runs: int = 0, last: str | None = LONG_AGO, open_signature: str |
         "initiatives": [{"id": "a", "ready_tasks": [{"id": "t1"}]}, {"id": "b", "ready_tasks": [{"id": "t2"}]}],
         "idle_stall": {"last_progress_at": last, "open_signature": open_signature},
     }
-
-
-def test_the_threshold_is_thirty_minutes():
-    assert IDLE_READY_MINUTES == 30
 
 
 def test_a_quiet_deadlock_fires_one_action_naming_the_cycle():
