@@ -83,8 +83,10 @@ COMMENTED = (
 THREE_HOSTS = ["chair", "host-a", "host-b"]
 
 
-def _commented(tmp_path, host_names, text=COMMENTED):
-    """A profile and a commented team cartridge in `tmp_path`, with `host_names` added to a real hosts table."""
+def _commented(tmp_path, host_names, monkeypatch, text=COMMENTED):
+    """A profile and a commented team cartridge in `tmp_path`, with `host_names` added to a real hosts table.
+    The profile is exported as AGENT_TOOLS_PROFILE before the rows are written, so the rows land in the store
+    under tmp_path/ws/runs that `cox host orchestrate` reads, whatever the autouse `_no_host_profile` fixture does."""
     (tmp_path / "ws").mkdir()
     cartridge_dir = tmp_path / "cartridges" / "example-team"
     cartridge_dir.mkdir(parents=True)
@@ -95,6 +97,7 @@ def _commented(tmp_path, host_names, text=COMMENTED):
         f"workspace_dir: {tmp_path / 'ws'}\nteam: example-team\ncartridges_dir: {tmp_path / 'cartridges'}\n",
         encoding="utf-8",
     )
+    monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(profile))
     runs_dir = tmp_path / "ws" / "runs"
     runs_dir.mkdir()
     runner = store_cli.runner(runs_dir)
@@ -104,17 +107,16 @@ def _commented(tmp_path, host_names, text=COMMENTED):
     return profile, cartridge
 
 
-def _main(profile, mode: str, monkeypatch) -> int:
+def _main(mode: str) -> int:
     """Run `cox host orchestrate <mode>` through argument parsing and the command table.
-    The command takes no --profile flag, so the profile arrives by AGENT_TOOLS_PROFILE."""
-    monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(profile))
+    The profile is the AGENT_TOOLS_PROFILE that `_commented` exported."""
     return cli.main(["host", "orchestrate", mode])
 
 
 def test_on_keeps_comments_and_other_keys_through_cli_main(tmp_path, monkeypatch):
-    profile, cartridge = _commented(tmp_path, THREE_HOSTS)
+    _, cartridge = _commented(tmp_path, THREE_HOSTS, monkeypatch)
     assert cartridge.read_text(encoding="utf-8") == COMMENTED
-    assert _main(profile, "on", monkeypatch) == 0
+    assert _main("on") == 0
     text = cartridge.read_text(encoding="utf-8")
     assert _edits(COMMENTED, text) == [("insert", [], ["    local_lanes: decompose"])]
     assert _comments(text) == _comments(COMMENTED)
@@ -127,8 +129,8 @@ def test_on_keeps_comments_and_other_keys_through_cli_main(tmp_path, monkeypatch
 
 def test_off_keeps_comments_and_other_keys_through_cli_main(tmp_path, monkeypatch):
     before = COMMENTED.replace("    max_in_flight: 2", "    local_lanes: decompose\n    max_in_flight: 2")
-    profile, cartridge = _commented(tmp_path, THREE_HOSTS, before)
-    assert _main(profile, "off", monkeypatch) == 0
+    _, cartridge = _commented(tmp_path, THREE_HOSTS, monkeypatch, before)
+    assert _main("off") == 0
     text = cartridge.read_text(encoding="utf-8")
     assert _edits(before, text) == [("replace", ["    local_lanes: decompose"], ["    local_lanes: any"])]
     assert _comments(text) == _comments(COMMENTED)
