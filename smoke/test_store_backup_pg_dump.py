@@ -11,7 +11,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 NOW = "2026-11-20T00:00:00Z"
 
@@ -71,10 +71,10 @@ behind.close()
 open_store(at, {now!r}).close()
 """
 
-# Records the argv pg_dump was handed and whether its environment held a password, then runs the real pg_dump on it.
+# Records the argv pg_dump was handed and the password its environment held, then runs the real pg_dump on it.
 RECORDING_PG_DUMP = """#!/bin/sh
 printf '%s\\n' "$@" > "{argv}"
-[ -n "$PGPASSWORD" ] && echo set > "{env}"
+printf '%s' "$PGPASSWORD" > "{env}"
 exec "{real}" "$@"
 """
 
@@ -90,6 +90,7 @@ def test_the_backup_dump_succeeds_with_no_password_in_pg_dumps_argv(sandbox, tmp
     (shim / "pg_dump").chmod(0o755)
     backups = tmp_path / "backups"
     env = {**sandbox.env, "COX_STORE_BACKUP_DIR": str(backups), "PATH": f"{shim}{os.pathsep}{sandbox.env['PATH']}"}
+    env.pop("PGPASSWORD", None)  # only the URL's own password may reach pg_dump
     done = subprocess.run([str(sandbox.install.python), "-c", OPEN_BEHIND.format(now=NOW), sandbox.store_url],
                           env=env, cwd=sandbox.home, capture_output=True, text=True, timeout=300)
     assert done.returncode == 0, done.stderr
@@ -98,6 +99,6 @@ def test_the_backup_dump_succeeds_with_no_password_in_pg_dumps_argv(sandbox, tmp
     assert urlsplit(argv[1].removeprefix("--dbname=")).password is None
     # the bare password ("smoke") is also in the database name and the shim's path, so look for it where a URL puts it
     assert not any(f":{password}@" in a or "password=" in a for a in argv)
-    assert env_file.read_text(encoding="utf-8").strip() == "set"  # the password reached pg_dump another way
+    assert env_file.read_text(encoding="utf-8") == unquote(password)  # the URL's password, through the environment
     dumps = list(backups.iterdir())
     assert len(dumps) == 1 and dumps[0].read_bytes()[:5] == b"PGDMP"

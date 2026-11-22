@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 from agent_tools.route_sync import (
     IssueError,
     Item,
@@ -27,9 +29,9 @@ def test_a_new_item_plans_create_add_five_sets_and_a_writeback_in_order():
                       "project_set", "project_set", "project_set", "writeback"]
     assert steps[0] == {"kind": "issue_create", "repo": "acme/widgets", "title": "Fix the thing",
                           "body": "Some body.\n\n<!-- coxswain:item item-1 -->", "label": "coxswain",
-                          "item_id": "item-1"}
+                          "item_id": "item-1", "marker": "item-1"}
     assert steps[1] == {"kind": "project_add", "issue": None}
-    assert steps[-1] == {"kind": "writeback", "item_id": "item-1", "issue": None}
+    assert steps[-1] == {"kind": "writeback", "item_id": "item-1", "issue": None, "marker": "item-1"}
 
 
 def test_two_fresh_items_keep_their_steps_grouped_per_item():
@@ -80,11 +82,39 @@ def test_an_issue_body_differing_only_by_its_item_marker_plans_no_edit():
     assert plan([item], {"acme/widgets#12": marked}, project_items, "github-projects") == []
 
 
-def test_marked_body_carries_one_marker_and_unmarked_takes_it_back_off():
+def test_marked_body_ends_with_one_marker_and_unmarked_gives_the_body_back_exactly():
     assert marked_body("i-1", "") == "<!-- coxswain:item i-1 -->"
-    twice = marked_body("i-1", marked_body("i-1", "Body."))
-    assert twice == "Body.\n\n<!-- coxswain:item i-1 -->"
-    assert unmarked(twice) == "Body."
+    assert marked_body("i-1", "Body.") == "Body.\n\n<!-- coxswain:item i-1 -->"
+    for body in ("", "Body.", "Body.\n", "a\n\n\nb\n\n", "<!-- coxswain:item other -->", "x\n<!-- coxswain:item o -->"):
+        assert unmarked(marked_body("i-1", body)) == body
+        assert unmarked(marked_body("i-1", body) + "\n") == body  # a trailing newline the forge adds is no drift
+
+
+QUOTING = "Quote it like this:\n<!-- coxswain:item task:other/t1 -->\nor at the end:\n<!-- coxswain:item task:other/t1 -->"
+
+
+def test_a_body_that_quotes_a_marker_keeps_it_claims_only_its_own_item_and_is_not_re_edited():
+    item = _item(id="t2", marker_key="task:mine/t2", body=QUOTING)
+    (create,) = [s for s in plan([item], {}, {}, "github-projects") if s["kind"] == "issue_create"]
+    assert unmarked(create["body"]) == QUOTING
+    assert marked_issues([{"number": 7, "body": create["body"]}]) == {"task:mine/t2": "7"}
+    on_file = {"7": {"title": item.title, "body": create["body"]}}
+    project_items = {"7": {"State": "Ready", "Phase": "core", "Run": "run-7", "Cost": "$1.50", "Gate": "tests"}}
+    assert plan([replace(item, issue="7")], on_file, project_items, "github-projects") == []
+
+
+def test_a_marker_quoted_anywhere_but_the_last_line_marks_nothing():
+    assert marked_issues([{"number": 3, "body": "<!-- coxswain:item task:a/t1 -->\nthen more text"}]) == {}
+    assert unmarked("<!-- coxswain:item task:a/t1 -->\nthen more text") == "<!-- coxswain:item task:a/t1 -->\nthen more text"
+
+
+def test_two_tasks_of_one_id_in_two_initiatives_carry_two_markers():
+    a = _item(id="t1", marker_key="task:alpha/t1")
+    b = _item(id="t1", marker_key="task:beta/t1")
+    creates = [s for s in plan([a, b], {}, {}, "github-projects") if s["kind"] == "issue_create"]
+    assert [c["marker"] for c in creates] == ["task:alpha/t1", "task:beta/t1"]
+    assert marked_issues([{"number": n, "body": c["body"]} for n, c in zip((5, 6), creates, strict=True)]) == {
+        "task:alpha/t1": "5", "task:beta/t1": "6"}
 
 
 def test_marked_issues_maps_each_item_to_its_lowest_marked_issue():

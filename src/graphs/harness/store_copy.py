@@ -3,9 +3,9 @@
     COX_STORE_COPY_SRC_URL=... COX_STORE_COPY_DST_URL=... python -m harness.store_copy [--json]
     python -m harness.store_copy SRC_URL DST_URL [--json]
 
-The URLs are read from the environment first (`SRC_URL_ENV`, `DST_URL_ENV`): an argv is readable by every user on
-the host through `ps`, an environment only by its owner, so a URL holding a password belongs there. A URL given on the
-command line is still taken, for a store without a password.
+A URL holding a password belongs in the environment (`SRC_URL_ENV`, `DST_URL_ENV`): an argv is readable by every user
+on the host through `ps`, an environment only by its owner. A URL given on the command line wins over the variable,
+for a store without a password.
 
 Both sides are opened with `open_store_exact`, so the destination is migrated first, and a side newer than this
 code is refused: the copy carries only the tables and columns this code knows, so a newer store's would be dropped. Rows
@@ -160,9 +160,9 @@ DST_URL_ENV = "COX_STORE_COPY_DST_URL"
 
 
 def copy_urls(src_arg: str | None, dst_arg: str | None, environ: Mapping[str, str]) -> tuple[str, str] | None:
-    """Pure. The (source, target) URLs: each from the environment if set there, else from the command line; None
-    when either is missing from both."""
-    src, dst = environ.get(SRC_URL_ENV) or src_arg, environ.get(DST_URL_ENV) or dst_arg
+    """Pure. The (source, target) URLs: each from the command line when given there, else from the environment; None
+    when either is missing from both. An explicit argument always wins over an inherited variable."""
+    src, dst = src_arg or environ.get(SRC_URL_ENV), dst_arg or environ.get(DST_URL_ENV)
     return (src, dst) if src and dst else None
 
 

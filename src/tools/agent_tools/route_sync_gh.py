@@ -189,21 +189,31 @@ def _initiative_issue(root: Path, initiative: str) -> str | None:
 def _item(fields: dict, body: str, stem: str, *, state: str, phase: str, run_id: str,
           cost: float, gate: str, repo: str, parent: str | None = None,
           parent_issue: str | None = None, initiative: bool = False,
-          release: str | None = None, repo_error: str = "", landed_pr: str = "") -> route_sync.Item:
+          release: str | None = None, repo_error: str = "", landed_pr: str = "",
+          marker_key: str = "") -> route_sync.Item:
     return route_sync.Item(
         id=fields.get("id", stem), title=fields.get("title", stem), body=body, repo=repo,
         state=state, phase=phase, run=run_id, cost_usd=cost, gate=gate, issue=fields.get("issue"),
         parent=parent, parent_issue=parent_issue, initiative=initiative,
         release=route_sync.parse_release(body) if release is None else release, repo_error=repo_error,
-        landed_pr=landed_pr,
+        landed_pr=landed_pr, marker_key=marker_key,
     )
+
+
+def item_file_key(path: Path, fields: Mapping[str, object]) -> str:
+    """Pure. The marker key of the item in the file at `path`: `task:<initiative>/<id>` for a task, `intake:<id>` for
+    an intake item, the initiative's own id for its `initiative.md`. Unique where a task id is not."""
+    if path.name == "initiative.md":
+        return _initiative_id(path.parent.name)
+    own = str(fields.get("id") or path.stem)
+    return f"intake:{own}" if path.parent.name == "intake" else f"task:{path.parts[-3]}/{own}"
 
 
 def _intake_item(path: Path, resolve: Resolver) -> route_sync.Item:
     fields, body = route.parse_frontmatter(path.read_text())
     repo, repo_error = resolve(fields.get("repo", ""))
     return _item(fields, body, path.stem, state="intake", phase="", run_id="", cost=0.0,
-                 gate="", repo=repo, repo_error=repo_error)
+                 gate="", repo=repo, repo_error=repo_error, marker_key=item_file_key(path, fields))
 
 
 def _landed_of(text: str) -> object:
@@ -235,7 +245,8 @@ def _work_item(root: Path, path: Path, landing: dict[str, str], costs: dict[str,
                  repo=repo, repo_error=repo_error,
                  parent=_initiative_id(initiative) if has_parent else None,
                  parent_issue=_initiative_issue(root, initiative),
-                 landed_pr=route_sync.landed_pr_of(_landed_of(path.read_text())))
+                 landed_pr=route_sync.landed_pr_of(_landed_of(path.read_text())),
+                 marker_key=item_file_key(path, fields))
 
 
 def _initiative_state(task_states: list[str]) -> str:
@@ -435,15 +446,20 @@ def create_project(run, owner: str, name: str = "Coxswain"):
     return True, int(json.loads(result.stdout)["number"])
 
 
-def _find_item_file(root: Path, item_id: str):
+def _find_item_file(root: Path, item_id: str, key: str | None = None):
+    """The file whose `item_file_key` is `key`, else the first whose id is `item_id` (an item built without a file
+    key). The key tells apart two initiatives' tasks of one id, which the id alone would write into the first found."""
     candidates = list((root / "intake").glob("*.md")) if (root / "intake").is_dir() else []
     candidates += list(root.glob("work/*/*/*.md")) + list(root.glob("work/*/initiative.md"))
+    by_id = None
     for path in candidates:
         fields, _ = route.parse_frontmatter(path.read_text())
-        own_id = _initiative_id(path.parent.name) if path.name == "initiative.md" else fields.get("id", path.stem)
-        if own_id == item_id:
+        if key and item_file_key(path, fields) == key:
             return path
-    return None
+        own_id = _initiative_id(path.parent.name) if path.name == "initiative.md" else fields.get("id", path.stem)
+        if by_id is None and own_id == item_id:
+            by_id = path
+    return by_id
 
 
 def _rewrite_issue_line(text: str, issue: str) -> str:
@@ -496,7 +512,7 @@ def _store_issue(root: Path, path: Path, text: str) -> bool:
     return run_store.upsert_row(runs_dir, {"initiative": named["initiative"], "task_id": named["task_id"], "extra": extra})
 
 
-def _writeback(root: Path, item_id: str, issue: str) -> None:
+def _writeback(root: Path, item_id: str, issue: str, key: str | None = None) -> None:
     """Write the issue line into the item's file, then into its store row. Only once the store holds it too is the
     file recorded as the workspace's export baseline: an issue the store lacks would be dropped by the next export,
     so that file is left for the export guard to hold and report instead."""
@@ -504,7 +520,7 @@ def _writeback(root: Path, item_id: str, issue: str) -> None:
 
     if not issue:
         return
-    path = _find_item_file(root, item_id)
+    path = _find_item_file(root, item_id, key)
     if path is None:
         return
     text = _rewrite_issue_line(path.read_text(), issue)
@@ -645,7 +661,8 @@ def _execute_step(step: dict, run, ctx: dict) -> tuple[bool, str]:
         ok, marked = _marked_issues(run, ctx, step["repo"])
         if not ok:
             return False, marked
-        issue = marked.get(step["item_id"], "")
+        marker = step.get("marker") or step["item_id"]
+        issue = marked.get(marker, "")
         if not issue:
             result = run(["gh", "issue", "create", "--repo", step["repo"], "--title", step["title"],
                           "--body", step["body"], "--label", step["label"]], capture_output=True, text=True)
@@ -654,12 +671,12 @@ def _execute_step(step: dict, run, ctx: dict) -> tuple[bool, str]:
             issue = result.stdout.strip().rsplit("/", 1)[-1]
             if not issue:
                 return False, "gh issue create returned no issue url"
-            marked[step["item_id"]] = issue
+            marked[marker] = issue
         ctx["just_created"] = {"issue": issue, "repo": step["repo"]}
         ctx["issue_by_item"][step["item_id"]] = issue
         # Recorded at once, so a later failed step cannot leave the issue unknown and a rerun duplicate it. A crash
         # before this line leaves the issue marked with the item (`route_sync.marked_body`): the lookup above finds it.
-        _writeback(ctx["root"], step["item_id"], issue)
+        _writeback(ctx["root"], step["item_id"], issue, step.get("marker"))
         return True, issue
     if kind == "issue_edit":
         repo = _step_repo(step["issue"], ctx)
@@ -731,7 +748,7 @@ def _execute_step(step: dict, run, ctx: dict) -> tuple[bool, str]:
         issue = _resolved_issue(step, ctx)
         if not issue:
             return False, "no issue to write back"
-        _writeback(ctx["root"], step["item_id"], issue)
+        _writeback(ctx["root"], step["item_id"], issue, step.get("marker"))
         return True, issue
     return False, f"unknown step kind {kind!r}"
 

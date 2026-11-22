@@ -330,6 +330,34 @@ def test_a_rerun_after_a_crash_between_create_and_writeback_adopts_the_marked_is
     assert "issue: 9" in task.read_text().splitlines()
 
 
+def test_two_same_id_tasks_in_two_initiatives_of_one_repo_each_get_and_record_their_own_issue(tmp_path):
+    # alpha's t1 was created as #9 before a crash; beta's t1 has no issue. Neither may take the other's.
+    for initiative in ("alpha", "beta"):
+        _write(tmp_path / "work" / initiative / "initiative.md", f"---\ntitle: {initiative}\nrepo: acme/w\n---\n")
+        _write(tmp_path / "work" / initiative / "build" / "t1.md", "---\nid: t1\ntitle: Same\nstate: ready\n---\nbody\n")
+    items = [route_sync_gh._work_item(tmp_path, tmp_path / "work" / i / "build" / "t1.md", {}, {}, lambda r: ("acme/w", ""))
+             for i in ("alpha", "beta")]
+    assert [i.marker_key for i in items] == ["task:alpha/t1", "task:beta/t1"]
+    steps = [s for s in route_sync.plan(items, {}, {}, "github-projects") if s["kind"] in ("issue_create", "writeback")]
+    on_file = [{"number": 9, "body": steps[0]["body"]}]
+    calls = []
+
+    def run(argv, **kw):
+        calls.append(argv)
+        if argv[:3] == ["gh", "issue", "list"]:
+            return _Result(stdout=json.dumps(on_file))
+        if argv[:3] == ["gh", "issue", "create"]:
+            return _Result(stdout="https://github.com/acme/w/issues/10")
+        return _Result(returncode=1, stderr="no other call is expected")
+
+    log = route_sync_gh.execute(steps, run, "acme/7", tmp_path)
+    assert [(k, ok, d) for k, ok, d in log] == [("issue_create", True, "9"), ("writeback", True, "9"),
+                                                 ("issue_create", True, "10"), ("writeback", True, "10")]
+    assert [c[:3] for c in calls] == [["gh", "issue", "list"], ["gh", "issue", "create"]]
+    for initiative, issue in (("alpha", "9"), ("beta", "10")):
+        assert f"issue: {issue}" in (tmp_path / "work" / initiative / "build" / "t1.md").read_text().splitlines()
+
+
 def test_cli_dry_run_prints_the_rendered_steps_and_exits_0(tmp_path, capsys, monkeypatch):
     _mirror(tmp_path)
     _write(tmp_path / "intake" / "2026-09-05-fresh.md",

@@ -393,9 +393,10 @@ def test_safe_url_keeps_only_scheme_and_path():
     assert sc._safe_url("sqlite:////tmp/x.db") == "sqlite:////tmp/x.db"
 
 
-def test_copy_urls_prefer_the_environment_and_need_both():
+def test_copy_urls_take_the_command_line_over_the_environment_and_need_both():
     env = {sc.SRC_URL_ENV: "postgresql://a:pw@h/s", sc.DST_URL_ENV: "postgresql://b:pw@h/t"}
     assert sc.copy_urls(None, None, env) == ("postgresql://a:pw@h/s", "postgresql://b:pw@h/t")
+    assert sc.copy_urls("sqlite:///x", None, env) == ("sqlite:///x", "postgresql://b:pw@h/t")
     assert sc.copy_urls("sqlite:///x", "sqlite:///y", {}) == ("sqlite:///x", "sqlite:///y")
     assert sc.copy_urls("sqlite:///x", None, {}) is None
     assert sc.copy_urls(None, None, {sc.SRC_URL_ENV: "sqlite:///x"}) is None

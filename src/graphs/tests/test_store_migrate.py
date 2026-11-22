@@ -712,11 +712,16 @@ def test_a_newer_build_that_migrates_non_additively_while_this_one_migrates_is_r
         ("postgresql://cox@h/store?password=s3cret-pw&options=-c%20search_path%3Dx",
          "postgresql://cox@h/store?options=-c%20search_path%3Dx", "s3cret-pw"),
         ("postgresql://h/store", "postgresql://h/store", None),
+        ("postgresql://cox:pw@/store?host=/var/run/postgresql", "postgresql://cox@/store?host=/var/run/postgresql", "pw"),
+        ("postgresql:///store?host=/var/run/postgresql&password=pw", "postgresql:///store?host=/var/run/postgresql", "pw"),
+        ("postgresql://cox:pw@%2Fvar%2Frun%2Fpostgresql/store", "postgresql://cox@%2Fvar%2Frun%2Fpostgresql/store", "pw"),
+        ("postgres+psycopg://cox:pw@h:5432/store", "postgres://cox@h:5432/store", "pw"),
     ],
-    ids=["userinfo", "encoded-driver-tag-ipv6", "query", "none"],
+    ids=["userinfo", "encoded-driver-tag-ipv6", "query", "none", "socket-query-host", "socket-no-user",
+         "socket-encoded-host", "postgres-driver-tag"],
 )
 def test_pg_dump_command_keeps_the_password_out_of_argv_and_in_pgpassword(url, dbname, password, tmp_path):
     argv, env = store_migrate.pg_dump_command(url, tmp_path / "x.dump")
     assert argv == ["pg_dump", "-Fc", f"--dbname={dbname}", "-f", str(tmp_path / "x.dump")]
     assert env == ({"PGPASSWORD": password} if password else {})
-    assert not any("s3cret" in a or "p@ss" in a or "p%40ss" in a for a in argv)
+    assert not any("s3cret" in a or "p@ss" in a or "p%40ss" in a or ":pw@" in a or "password=" in a for a in argv)
