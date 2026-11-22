@@ -69,7 +69,7 @@ def test_a_tool_use_block_becomes_a_tool_call_the_loop_executes(tmp_path):
     )
     assert steps[0].tool_calls == [ToolCall("tu_1", "read_file", {"path": "a.txt"})]
     assert client.calls[1]["messages"][-1]["content"] == [
-        {"type": "tool_result", "tool_use_id": "tu_1", "content": "hello\n", "is_error": False}
+        {"type": "tool_result", "tool_use_id": "tu_1", "content": "hello\n", "is_error": False, "cache_control": {"type": "ephemeral"}}
     ]
     assert client.calls[2]["messages"][-1]["content"][0]["is_error"] is True
 
@@ -131,9 +131,9 @@ def test_tool_results_for_one_turn_share_one_user_message():
         {"role": "tool", "tool_call_id": "2", "content": "boom", "is_error": True},
     ]
     request = _to_anthropic(messages, [{"name": "n", "description": "d", "parameters": {"type": "object"}}])
-    assert request["system"] == "sys"
+    assert request["system"] == [{"type": "text", "text": "sys", "cache_control": {"type": "ephemeral"}}]
     assert request["tools"] == [{"name": "n", "description": "d", "input_schema": {"type": "object"}}]
     assert request["messages"][2]["content"] == [
         {"type": "tool_result", "tool_use_id": "1", "content": "a.txt", "is_error": False},
-        {"type": "tool_result", "tool_use_id": "2", "content": "boom", "is_error": True},
+        {"type": "tool_result", "tool_use_id": "2", "content": "boom", "is_error": True, "cache_control": {"type": "ephemeral"}},
     ]

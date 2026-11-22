@@ -7,7 +7,6 @@ and the tier each call asks for: a ticket's `tier:` map, the one escalation, and
 from __future__ import annotations
 
 import json
-import subprocess
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,6 +14,7 @@ from tempfile import TemporaryDirectory
 from typing import Any, NamedTuple
 from uuid import uuid4
 
+from core.bounded_proc import GIT_TIMEOUT_SECONDS, completed
 from graphs.delivery.checkpoint import (
     CheckpointSignals,
     Decision,
@@ -183,7 +183,7 @@ def _checkpoint_checks_pass(patch: str, checks: Sequence[Mapping[str, Any]], rep
             return applied and all_passed(run_checks(worktree, checks))
         finally:
             remove_worktree(repo, worktree)
-            subprocess.run(["git", "-C", str(repo), "branch", "-D", branch], capture_output=True, text=True)
+            completed(["git", "-C", str(repo), "branch", "-D", branch], timeout=GIT_TIMEOUT_SECONDS, capture_output=True, text=True)
 
 
 def _append_checkpoint_ledger(ctx: _CheckpointContext, signals: CheckpointSignals, decision: Decision) -> None:
