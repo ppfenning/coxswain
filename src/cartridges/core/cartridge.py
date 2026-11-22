@@ -982,7 +982,7 @@ def _init_main(argv: Sequence[str]) -> int:
     )
     parser.add_argument("--extends", default="local", choices=("base", "local"), help="parent cartridge (default: local)")
     parser.add_argument("--dry-run", action="store_true", help="print the plan; write nothing")
-    parser.add_argument("--force", action="store_true", help="replace an existing symlink or overwrite an existing file")
+    parser.add_argument("--force", action="store_true", help="replace an existing symlink, or overwrite an existing cartridge.yaml and lose its values and comments")
     args = parser.parse_args(argv)
 
     try:

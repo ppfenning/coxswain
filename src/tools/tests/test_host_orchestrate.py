@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import argparse
 
+import yaml
+
 from agent_tools import cli
+from tests.comment_helpers import _comments, _edits
 
 CARTRIDGE = "policy:\n  dispatch:\n    max_in_flight: 2\n"
 REFUSAL = "orchestration needs another active lane host"
@@ -66,3 +69,50 @@ def test_no_argument_prints_the_configured_mode_and_availability_on_a_three_host
     capsys.readouterr()
     assert cli._host_orchestrate(_args(profile, None)) == 0
     assert capsys.readouterr().out == "chair: orchestrating (available)\n"
+
+
+COMMENTED = (
+    "# Team cartridge for example-team.\n"
+    "name: example-team\n"
+    "policy:\n"
+    "  dispatch:\n"
+    "    # Cap on lanes in flight.\n"
+    "    max_in_flight: 2  # keep small\n"
+    "other: kept\n"
+)
+THREE_HOSTS = ["chair", "host-a", "host-b"]
+
+
+def _commented(tmp_path, monkeypatch, host_names, text=COMMENTED):
+    """`_setup`, then the cartridge text replaced by `text`."""
+    profile, cartridge = _setup(tmp_path, monkeypatch, host_names)
+    cartridge.write_text(text, encoding="utf-8")
+    return profile, cartridge
+
+
+def test_on_keeps_comments_and_other_keys_through_its_handler(tmp_path, monkeypatch):
+    profile, cartridge = _commented(tmp_path, monkeypatch, THREE_HOSTS)
+    assert cartridge.read_text(encoding="utf-8") == COMMENTED
+    assert cli._host_orchestrate(_args(profile, "on")) == 0
+    text = cartridge.read_text(encoding="utf-8")
+    assert _edits(COMMENTED, text) == [("insert", [], ["    local_lanes: decompose"])]
+    assert _comments(text) == _comments(COMMENTED)
+    data = yaml.safe_load(text)
+    assert data["policy"]["dispatch"]["local_lanes"] == "decompose"
+    assert data["policy"]["dispatch"]["max_in_flight"] == 2
+    assert data["other"] == "kept"
+    assert data["name"] == "example-team"
+
+
+def test_off_keeps_comments_and_other_keys_through_its_handler(tmp_path, monkeypatch):
+    before = COMMENTED.replace("    max_in_flight: 2", "    local_lanes: decompose\n    max_in_flight: 2")
+    profile, cartridge = _commented(tmp_path, monkeypatch, THREE_HOSTS, before)
+    assert cli._host_orchestrate(_args(profile, "off")) == 0
+    text = cartridge.read_text(encoding="utf-8")
+    assert _edits(before, text) == [("replace", ["    local_lanes: decompose"], ["    local_lanes: any"])]
+    assert _comments(text) == _comments(COMMENTED)
+    data = yaml.safe_load(text)
+    assert data["policy"]["dispatch"]["local_lanes"] == "any"
+    assert data["policy"]["dispatch"]["max_in_flight"] == 2
+    assert data["other"] == "kept"
+    assert data["name"] == "example-team"
