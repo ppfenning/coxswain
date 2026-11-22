@@ -69,6 +69,9 @@ def test_route_requeue_gives_a_declined_initiatives_intake_back_to_the_queue(san
     assert "requeue: intake ship queued, initiative ship dropped" in out, out
     assert not (sandbox.workspace / "work/ship/initiative.md").exists()
     assert "initiative" not in _state(sandbox.workspace / "intake/ship.md")
+    rows = {r.get("kind"): r for r in sandbox.store_rows() if r["task_id"] == "ship"}
+    assert rows["intake"]["state"] == "queued" and "initiative" not in (rows["intake"].get("extra") or {}), rows
+    assert rows["initiative"]["state"] == "dropped", rows
     again = _ok(sandbox.cox("route", "requeue", "ship"))
     assert "already requeued" in again, again
 
