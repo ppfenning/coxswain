@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import os
@@ -18,8 +19,10 @@ from typing import ClassVar
 import pytest
 
 import harness.cli as cli
+from agent_tools.harness_ports import decompose_ports
 from graphs.delivery.initiative_decompose import GRAPH_NAME as DECOMPOSE_GRAPH_NAME
 from graphs.delivery.initiative_decompose import _item_action
+from harness.decompose_ports import DecomposePorts
 from harness.invoke import Invocation, invoke_graphs
 from runner.scripted import ScriptedRunner
 
@@ -933,7 +936,7 @@ _DECOMPOSE_ITEM = {
 }
 
 
-def _decompose_run(tmp_path: Path, *, target: Path, task: str | None = None) -> int:
+def _decompose_run(tmp_path: Path, *, target: Path, task: str | None = None, ports: DecomposePorts | None = None) -> int:
     """One `item_create` proposal, approved at the gate, applied through the code `workstore` arm.
 
     `target` already existing makes the arm refuse (`applied=False`); a `target`
@@ -981,11 +984,17 @@ def _decompose_run(tmp_path: Path, *, target: Path, task: str | None = None) -> 
         },
         runner=ScriptedRunner({}),
         run_id="r1",
+        ports=ports or decompose_ports(),
     )
 
 
 def _decompose_tasks_run(
-    tmp_path: Path, store, tasks: dict[str, Path], needs: dict[str, list[str]] | None = None
+    tmp_path: Path,
+    store,
+    tasks: dict[str, Path],
+    needs: dict[str, list[str]] | None = None,
+    *,
+    ports: DecomposePorts | None = None,
 ) -> int:
     """One approved `item_create` per task, each applied by the code `workstore` arm to the path given, with a real store.
 
@@ -1034,11 +1043,12 @@ def _decompose_tasks_run(
         runner=ScriptedRunner({}),
         run_id="r1",
         store=store,
+        ports=ports or decompose_ports(),
     )
 
 
-def _filing_in_memory(monkeypatch, *, fail: str | None = None) -> list[dict]:
-    """An in-memory queue behind the cli's writer and reader, built with the real `parse_item` codec.
+def _filing_in_memory(*, fail: str | None = None) -> tuple[list[dict], DecomposePorts]:
+    """An in-memory queue behind the decompose ports' writer and reader, built with the real `parse_item` codec.
 
     `fail` names a task whose write raises. The real `route file` writer is run in
     `test_decompose_outcome.py`; these tests are about the run's bookkeeping and exit code.
@@ -1061,10 +1071,13 @@ def _filing_in_memory(monkeypatch, *, fail: str | None = None) -> list[dict]:
             (root / rel).unlink(missing_ok=True)
         return list(rels)
 
-    monkeypatch.setattr(cli, "_write_filed_task", write)
-    monkeypatch.setattr(cli, "_withdraw_filed_tasks", withdraw)
-    monkeypatch.setattr(cli, "_read_filed_rows", lambda runs_dir, initiative: [r for r in rows if r["initiative"] == initiative])
-    return rows
+    ports = dataclasses.replace(
+        decompose_ports(),
+        write_task=write,
+        withdraw_tasks=withdraw,
+        read_tasks=lambda runs_dir, initiative: [r for r in rows if r["initiative"] == initiative],
+    )
+    return rows, ports
 
 
 def test_a_decompose_with_three_approved_creates_leaves_three_store_rows_and_three_files(
@@ -1074,10 +1087,10 @@ def test_a_decompose_with_three_approved_creates_leaves_three_store_rows_and_thr
 
     monkeypatch.chdir(tmp_path)
     store = Store(store_conn)
-    rows = _filing_in_memory(monkeypatch)
+    rows, ports = _filing_in_memory()
     tasks = {t: tmp_path / "work" / "p1" / f"{t}.md" for t in ("t1", "t2", "t3")}
 
-    assert _decompose_tasks_run(tmp_path, store, tasks) == 0
+    assert _decompose_tasks_run(tmp_path, store, tasks, ports=ports) == 0
 
     assert sorted(r["task_id"] for r in rows) == ["t1", "t2", "t3"]
     assert all(path.exists() for path in tasks.values())
@@ -1092,10 +1105,10 @@ def test_a_decompose_create_whose_store_write_fails_is_named_in_the_closing_line
 
     monkeypatch.chdir(tmp_path)
     store = Store(store_conn)
-    _filing_in_memory(monkeypatch, fail="t2")
+    _, ports = _filing_in_memory(fail="t2")
     tasks = {t: tmp_path / "work" / "p1" / f"{t}.md" for t in ("t1", "t2", "t3")}
 
-    assert _decompose_tasks_run(tmp_path, store, tasks) == 1
+    assert _decompose_tasks_run(tmp_path, store, tasks, ports=ports) == 1
 
     err = capsys.readouterr().err
     assert "decompose: 0 task(s) written, 1 missing: t2" in err
@@ -1108,10 +1121,10 @@ def test_a_decompose_with_one_failed_write_withdraws_the_other_tasks_so_no_needs
     from harness.store_write import Store
 
     monkeypatch.chdir(tmp_path)
-    rows = _filing_in_memory(monkeypatch, fail="t1")
+    rows, ports = _filing_in_memory(fail="t1")
     tasks = {t: tmp_path / "work" / "p1" / f"{t}.md" for t in ("t1", "t2", "t3")}
 
-    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks, needs={"t2": ["t1"], "t3": ["t1"]}) == 1
+    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks, needs={"t2": ["t1"], "t3": ["t1"]}, ports=ports) == 1
 
     err = capsys.readouterr().err
     assert "decompose: missing t1; withdrew t1, t2, t3" in err
@@ -1127,13 +1140,13 @@ def test_a_decompose_keeps_a_task_already_in_the_store_when_another_task_fails(
     from harness.store_write import Store
 
     monkeypatch.chdir(tmp_path)
-    rows = _filing_in_memory(monkeypatch, fail="t2")
+    rows, ports = _filing_in_memory(fail="t2")
     tasks = {t: tmp_path / "work" / "p1" / f"{t}.md" for t in ("t1", "t2", "t3")}
     tasks["t1"].parent.mkdir(parents=True)
     tasks["t1"].write_text("---\nstate: started\ntitle: Old\n---\nbody\n", encoding="utf-8")
     rows.append(parse_item("task", (tmp_path.name, "p1", "t1.md"), tasks["t1"].read_text(encoding="utf-8")))
 
-    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks, needs={"t3": ["t1"]}) == 1
+    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks, needs={"t3": ["t1"]}, ports=ports) == 1
 
     err = capsys.readouterr().err
     assert "decompose: missing t2; withdrew t2, t3" in err
@@ -1149,8 +1162,8 @@ def test_a_decompose_write_that_fails_once_is_retried_and_leaves_every_task_writ
     from harness.store_write import Store
 
     monkeypatch.chdir(tmp_path)
-    rows = _filing_in_memory(monkeypatch)
-    real_write = cli._write_filed_task
+    rows, ports = _filing_in_memory()
+    real_write = ports.write_task
     calls: list[str] = []
 
     def flaky(runs_dir, path, parts, text) -> int:
@@ -1159,10 +1172,10 @@ def test_a_decompose_write_that_fails_once_is_retried_and_leaves_every_task_writ
             raise RuntimeError("store down")
         return real_write(runs_dir, path, parts, text)
 
-    monkeypatch.setattr(cli, "_write_filed_task", flaky)
+    ports = dataclasses.replace(ports, write_task=flaky)
     tasks = {t: tmp_path / "work" / "p1" / f"{t}.md" for t in ("t1", "t2", "t3")}
 
-    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks) == 0
+    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks, ports=ports) == 0
 
     captured = capsys.readouterr()
     assert calls.count("t2") == 2
@@ -1177,8 +1190,8 @@ def test_a_decompose_task_that_fails_twice_is_swept_from_its_dependent_and_named
     from harness.store_write import Store
 
     monkeypatch.chdir(tmp_path)
-    rows = _filing_in_memory(monkeypatch, fail="t2")
-    real_withdraw = cli._withdraw_filed_tasks
+    rows, ports = _filing_in_memory(fail="t2")
+    real_withdraw = ports.withdraw_tasks
     calls: list[list[str]] = []
 
     def refuse_t3_once(runs_dir, root, initiative, rels, whole) -> list[str]:
@@ -1186,10 +1199,10 @@ def test_a_decompose_task_that_fails_twice_is_swept_from_its_dependent_and_named
         allowed = [rel for rel in rels if len(calls) > 1 or Path(rel).stem != "t3"]
         return real_withdraw(runs_dir, root, initiative, allowed, whole)
 
-    monkeypatch.setattr(cli, "_withdraw_filed_tasks", refuse_t3_once)
+    ports = dataclasses.replace(ports, withdraw_tasks=refuse_t3_once)
     tasks = {t: tmp_path / "work" / "p1" / f"{t}.md" for t in ("t1", "t2", "t3")}
 
-    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks, needs={"t3": ["t2"]}) == 1
+    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks, needs={"t3": ["t2"]}, ports=ports) == 1
 
     err = capsys.readouterr().err
     assert len(calls) == 2 and [Path(rel).stem for rel in calls[1]] == ["t3"]
@@ -1205,13 +1218,13 @@ def test_a_decompose_dependent_sweep_keeps_a_task_already_in_the_store_and_names
     from harness.store_write import Store
 
     monkeypatch.chdir(tmp_path)
-    rows = _filing_in_memory(monkeypatch, fail="t2")
+    rows, ports = _filing_in_memory(fail="t2")
     tasks = {t: tmp_path / "work" / "p1" / f"{t}.md" for t in ("t1", "t2")}
     tasks["t1"].parent.mkdir(parents=True)
     tasks["t1"].write_text("---\nstate: started\ntitle: Old\n---\nbody\n", encoding="utf-8")
     rows.append({**parse_item("task", (tmp_path.name, "p1", "t1.md"), tasks["t1"].read_text(encoding="utf-8")), "needs": ["t2"]})
 
-    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks, needs={"t1": ["t2"]}) == 1
+    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks, needs={"t1": ["t2"]}, ports=ports) == 1
 
     err = capsys.readouterr().err
     assert [r["task_id"] for r in rows] == ["t1"]
@@ -1227,13 +1240,13 @@ def test_a_decompose_dependent_sweep_names_a_stored_task_that_needs_a_withdrawn_
     from harness.store_write import Store
 
     monkeypatch.chdir(tmp_path)
-    rows = _filing_in_memory(monkeypatch, fail="t2")
+    rows, ports = _filing_in_memory(fail="t2")
     tasks = {t: tmp_path / "work" / "p1" / f"{t}.md" for t in ("t1", "t2", "t3")}
     tasks["t1"].parent.mkdir(parents=True)
     tasks["t1"].write_text("---\nstate: started\n---\nbody\n", encoding="utf-8")
     rows.append({**parse_item("task", (tmp_path.name, "p1", "t1.md"), tasks["t1"].read_text(encoding="utf-8")), "needs": ["t3"]})
 
-    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks) == 1
+    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks, ports=ports) == 1
 
     err = capsys.readouterr().err
     assert [r["task_id"] for r in rows] == ["t1"]
@@ -1246,8 +1259,8 @@ def test_a_decompose_retry_that_raises_after_a_first_try_left_its_row_says_so_an
     from harness.store_write import Store
 
     monkeypatch.chdir(tmp_path)
-    rows = _filing_in_memory(monkeypatch)
-    real_write = cli._write_filed_task
+    rows, ports = _filing_in_memory()
+    real_write = ports.write_task
     calls: list[str] = []
 
     def row_then_failure(runs_dir, path, parts, text) -> int:
@@ -1257,10 +1270,10 @@ def test_a_decompose_retry_that_raises_after_a_first_try_left_its_row_says_so_an
             return 1
         raise RuntimeError("duplicate row")
 
-    monkeypatch.setattr(cli, "_write_filed_task", row_then_failure)
+    ports = dataclasses.replace(ports, write_task=row_then_failure)
     tasks = {"t1": tmp_path / "work" / "p1" / "t1.md"}
 
-    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks) == 1
+    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks, ports=ports) == 1
 
     err = capsys.readouterr().err
     assert "decompose: t1 is in the store but its file write failed (exit 1)" in err
@@ -1294,14 +1307,14 @@ def test_a_decompose_retry_writes_a_withdrawn_task_afresh_instead_of_keeping_its
     from harness.store_write import Store
 
     monkeypatch.chdir(tmp_path)
-    rows = _filing_in_memory(monkeypatch)
+    rows, ports = _filing_in_memory()
     tasks = {"t1": tmp_path / "work" / "p1" / "t1.md"}
     tasks["t1"].parent.mkdir(parents=True)
     tasks["t1"].write_text("---\nstate: dropped\n---\nbody\n", encoding="utf-8")
     rows.append(parse_item("task", (tmp_path.name, "p1", "t1.md"), tasks["t1"].read_text(encoding="utf-8")))
     tasks["t1"].unlink()
 
-    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks) == 0
+    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks, ports=ports) == 0
 
     captured = capsys.readouterr()
     assert "its row is kept" not in captured.err
@@ -1309,26 +1322,9 @@ def test_a_decompose_retry_writes_a_withdrawn_task_afresh_instead_of_keeping_its
     assert [r["state"] for r in rows] == ["dropped", "ready"]
 
 
-def test_the_default_withdrawal_keeps_the_file_when_the_store_does_not_drop_the_row(
-    tmp_path, monkeypatch, capsys
-) -> None:
-    from agent_tools import run_store, store_cli
-
-    rel = "work/demo/p1/t1.md"
-    (tmp_path / rel).parent.mkdir(parents=True)
-    (tmp_path / rel).write_text("x", encoding="utf-8")
-    monkeypatch.setattr(run_store, "work_items", lambda runs_dir, initiative=None: [{"task_id": "t1"}])
-    monkeypatch.setattr(store_cli, "set_state", lambda *a, **k: store_cli.Failed(1, "down"))
-
-    assert cli._withdraw_filed_tasks(tmp_path / "runs", tmp_path, "demo", [rel], False) == []
-
-    assert (tmp_path / rel).exists()
-    assert "decompose: t1 not withdrawn" in capsys.readouterr().err
-
-
 def _whole_flag_passed(tmp_path: Path, monkeypatch, *, initiative_created: bool) -> bool:
     """The `whole` argument `_settle_decompose` hands the withdraw callable when t2 is missing and t1 is new."""
-    _filing_in_memory(monkeypatch)
+    _, ports = _filing_in_memory()
     names = ["t1", "t2", *(["initiative"] if initiative_created else [])]
     proposals = [{"kind": "item_create", "target": n, "evidence": [{"check": "phase", "output": "p1"}]} for n in names]
     diffs = [{"kind": "item_create", "target": n, "decision": "approved"} for n in names]
@@ -1348,7 +1344,7 @@ def _whole_flag_passed(tmp_path: Path, monkeypatch, *, initiative_created: bool)
         graph_args={"initiative_id": "demo"},
         runner=SimpleNamespace(cwd=tmp_path),
         runs_dir=tmp_path / "runs",
-        withdraw=spy,
+        ports=dataclasses.replace(ports, withdraw_tasks=spy),
     )
     assert [rels for rels, _ in calls] == [["work/demo/p1/t1.md", "work/demo/p1/t2.md"]]
     return calls[0][1]
@@ -1368,60 +1364,6 @@ def test_settle_decompose_withdraws_task_by_task_when_the_initiative_was_not_cre
     assert _whole_flag_passed(tmp_path, monkeypatch, initiative_created=False) is False
 
 
-def test_the_whole_withdrawal_declines_the_initiative_through_draft_apply_and_deletes_the_files(
-    tmp_path, monkeypatch
-) -> None:
-    from agent_tools import draft_apply, run_store
-
-    rels = ["work/demo/p1/t1.md", "work/demo/p1/t2.md"]
-    (tmp_path / "work" / "demo" / "p1").mkdir(parents=True)
-    for rel in rels:
-        (tmp_path / rel).write_text("x", encoding="utf-8")
-    seen: list[tuple] = []
-    monkeypatch.setattr(
-        draft_apply, "remove", lambda work_dir, initiative, *rest: seen.append((work_dir, initiative)) or 0
-    )
-    monkeypatch.setattr(run_store, "work_items", lambda runs_dir, initiative=None: [])
-
-    assert cli._withdraw_filed_tasks(tmp_path / "runs", tmp_path, "demo", rels, True) == rels
-
-    assert seen == [(tmp_path / "work", "demo")]
-    assert not any((tmp_path / rel).exists() for rel in rels)
-
-
-def test_a_refused_whole_withdrawal_falls_back_to_dropping_each_row(tmp_path, monkeypatch) -> None:
-    from agent_tools import draft_apply, run_store, store_cli
-
-    rel = "work/demo/p1/t1.md"
-    (tmp_path / rel).parent.mkdir(parents=True)
-    (tmp_path / rel).write_text("x", encoding="utf-8")
-    dropped: list[str] = []
-    monkeypatch.setattr(draft_apply, "remove", lambda *a, **k: 2)
-    monkeypatch.setattr(run_store, "work_items", lambda runs_dir, initiative=None: [{"task_id": "t1"}])
-    monkeypatch.setattr(
-        store_cli, "set_state", lambda runs_dir, init, task, *a: dropped.append(task) or store_cli.StateSet({})
-    )
-
-    assert cli._withdraw_filed_tasks(tmp_path / "runs", tmp_path, "demo", [rel], True) == [rel]
-
-    assert dropped == ["t1"]
-    assert not (tmp_path / rel).exists()
-
-
-def test_the_default_withdrawal_drops_the_row_then_deletes_the_file(tmp_path, monkeypatch) -> None:
-    from agent_tools import run_store, store_cli
-
-    rel = "work/demo/p1/t1.md"
-    (tmp_path / rel).parent.mkdir(parents=True)
-    (tmp_path / rel).write_text("x", encoding="utf-8")
-    monkeypatch.setattr(run_store, "work_items", lambda runs_dir, initiative=None: [{"task_id": "t1"}])
-    monkeypatch.setattr(store_cli, "set_state", lambda *a, **k: store_cli.StateSet({}))
-
-    assert cli._withdraw_filed_tasks(tmp_path / "runs", tmp_path, "demo", [rel], False) == [rel]
-
-    assert not (tmp_path / rel).exists()
-
-
 def test_a_decompose_create_whose_file_is_not_written_logs_the_arms_detail_and_exits_1(
     tmp_path, store_conn, monkeypatch, capsys
 ) -> None:
@@ -1429,10 +1371,10 @@ def test_a_decompose_create_whose_file_is_not_written_logs_the_arms_detail_and_e
 
     monkeypatch.chdir(tmp_path)
     store = Store(store_conn)
-    _filing_in_memory(monkeypatch)
+    _, ports = _filing_in_memory()
     tasks = {"t1": tmp_path / "work" / "p1" / "t1.md", "t2": tmp_path / "elsewhere" / "t2.md"}
 
-    assert _decompose_tasks_run(tmp_path, store, tasks) == 1
+    assert _decompose_tasks_run(tmp_path, store, tasks, ports=ports) == 1
 
     err = capsys.readouterr().err
     assert "decompose: 0 task(s) written, 1 missing: t2" in err
@@ -1444,9 +1386,9 @@ def test_a_decompose_run_whose_applied_task_is_not_where_the_plan_said_names_it_
     tmp_path, monkeypatch, capsys
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    _filing_in_memory(monkeypatch)
+    _, ports = _filing_in_memory()
 
-    assert _decompose_run(tmp_path, target=tmp_path / "t9-new.md", task="t9-new") == 1
+    assert _decompose_run(tmp_path, target=tmp_path / "t9-new.md", task="t9-new", ports=ports) == 1
 
     assert "decompose: 0 task(s) written, 1 missing: t9-new" in capsys.readouterr().err
 
@@ -1455,9 +1397,9 @@ def test_a_decompose_run_whose_applied_task_is_where_the_plan_said_prints_the_cl
     tmp_path, monkeypatch, capsys
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    _filing_in_memory(monkeypatch)
+    _, ports = _filing_in_memory()
 
-    assert _decompose_run(tmp_path, target=tmp_path / "work" / "p1" / "t9-new.md", task="t9-new") == 0
+    assert _decompose_run(tmp_path, target=tmp_path / "work" / "p1" / "t9-new.md", task="t9-new", ports=ports) == 0
 
     assert "decompose: 1 task(s) written, 0 missing:" in capsys.readouterr().out
 
@@ -1479,7 +1421,9 @@ class _PlainWriteArm(ScriptedRunner):
         return {"applied": True, "detail": f"wrote {self.path}"}
 
 
-def _model_arm_decompose_run(tmp_path: Path, arm: _PlainWriteArm, *, routed: bool) -> int:
+def _model_arm_decompose_run(
+    tmp_path: Path, arm: _PlainWriteArm, *, routed: bool, ports: DecomposePorts | None = None
+) -> int:
     """One task of phase `p1`, approved at the gate and applied by the model arm, with or without a `planned` landing."""
     profile = tmp_path / "profile.yaml"
     profile.write_text("provider: test\n", encoding="utf-8")
@@ -1515,6 +1459,7 @@ def _model_arm_decompose_run(tmp_path: Path, arm: _PlainWriteArm, *, routed: boo
         },
         runner=arm,
         run_id="r1",
+        ports=ports or decompose_ports(),
     )
 
 
@@ -1522,11 +1467,11 @@ def test_a_decompose_creates_the_phase_directory_before_a_model_arm_writes_into_
     tmp_path, monkeypatch, capsys
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    _filing_in_memory(monkeypatch)
+    _, ports = _filing_in_memory()
     task = tmp_path / "work" / "p1" / "t1.md"
     assert not task.parent.exists()
 
-    assert _model_arm_decompose_run(tmp_path, _PlainWriteArm(task), routed=True) == 0
+    assert _model_arm_decompose_run(tmp_path, _PlainWriteArm(task), routed=True, ports=ports) == 0
 
     assert "decompose: 1 task(s) written, 0 missing:" in capsys.readouterr().out
     assert task.exists()
@@ -1535,10 +1480,10 @@ def test_a_decompose_creates_the_phase_directory_before_a_model_arm_writes_into_
 
 def test_a_decompose_with_no_planned_landing_creates_no_phase_directory(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.chdir(tmp_path)
-    _filing_in_memory(monkeypatch)
+    _, ports = _filing_in_memory()
     task = tmp_path / "t1.md"
 
-    assert _model_arm_decompose_run(tmp_path, _PlainWriteArm(task), routed=False) == 1
+    assert _model_arm_decompose_run(tmp_path, _PlainWriteArm(task), routed=False, ports=ports) == 1
 
     assert "decompose: cannot place 1 approved task(s)" in capsys.readouterr().err
     assert not (tmp_path / "work").exists()
@@ -1549,21 +1494,21 @@ def test_a_decompose_run_with_an_approved_but_unapplied_item_create_returns_1_an
     tmp_path, monkeypatch, capsys
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    _filing_in_memory(monkeypatch)
+    _, ports = _filing_in_memory()
     existing = tmp_path / "t9-new.md"
     existing.write_text("already here", encoding="utf-8")
 
-    assert _decompose_run(tmp_path, target=existing, task="t9-new") == 1
+    assert _decompose_run(tmp_path, target=existing, task="t9-new", ports=ports) == 1
 
     assert "decompose failed: no task item_create was executed: skipped" in capsys.readouterr().err
 
 
 def test_a_decompose_run_with_an_applied_item_create_returns_0(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.chdir(tmp_path)
-    _filing_in_memory(monkeypatch)
+    _, ports = _filing_in_memory()
     new_task = tmp_path / "work" / "p1" / "t9-new.md"
 
-    assert _decompose_run(tmp_path, target=new_task, task="t9-new") == 0
+    assert _decompose_run(tmp_path, target=new_task, task="t9-new", ports=ports) == 0
 
     assert new_task.exists()
     assert "decompose failed" not in capsys.readouterr().err
@@ -1575,11 +1520,11 @@ def test_a_decompose_run_on_a_cartridge_that_routes_no_landing_reports_the_appro
     from harness.store_write import Store
 
     monkeypatch.chdir(tmp_path)
-    _filing_in_memory(monkeypatch)
+    _, ports = _filing_in_memory()
     monkeypatch.setattr(cli, "landing_for", lambda cartridge, state: (_ for _ in ()).throw(cli.ContractViolation("no planned landing")))
     tasks = {"t1": tmp_path / "work" / "p1" / "t1.md"}
 
-    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks) == 1
+    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks, ports=ports) == 1
 
     err = capsys.readouterr().err
     assert "decompose: cannot place 1 approved task(s): no planned landing" in err
@@ -1592,11 +1537,11 @@ def test_a_decompose_whose_creates_the_policy_auto_applies_is_settled_and_counte
     from harness.store_write import Store
 
     monkeypatch.chdir(tmp_path)
-    rows = _filing_in_memory(monkeypatch)
+    rows, ports = _filing_in_memory()
     monkeypatch.setattr(cli, "split_by_policy", lambda proposals, **_: (list(proposals), []))
     tasks = {t: tmp_path / "work" / "p1" / f"{t}.md" for t in ("t1", "t2", "t3")}
 
-    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks) == 0
+    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks, ports=ports) == 0
 
     assert sorted(r["task_id"] for r in rows) == ["t1", "t2", "t3"]
     assert all(path.exists() for path in tasks.values())
@@ -1609,11 +1554,11 @@ def test_an_auto_applied_create_whose_write_fails_is_named_and_the_run_exits_1(
     from harness.store_write import Store
 
     monkeypatch.chdir(tmp_path)
-    _filing_in_memory(monkeypatch, fail="t2")
+    _, ports = _filing_in_memory(fail="t2")
     monkeypatch.setattr(cli, "split_by_policy", lambda proposals, **_: (list(proposals), []))
     tasks = {t: tmp_path / "work" / "p1" / f"{t}.md" for t in ("t1", "t2")}
 
-    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks) == 1
+    assert _decompose_tasks_run(tmp_path, Store(store_conn), tasks, ports=ports) == 1
 
     assert "decompose: 0 task(s) written, 1 missing: t2" in capsys.readouterr().err
 

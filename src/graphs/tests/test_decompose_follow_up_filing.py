@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import importlib
 import re
 import subprocess
@@ -10,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_tools import route, run_store
+from agent_tools import harness_ports, route, run_store
 from agent_tools.queue_rows import parse_item
 from graphs.delivery import initiative_decompose
 from harness import cli
@@ -75,15 +76,16 @@ def world(tmp_path, monkeypatch, store_conn):
 
     monkeypatch.setattr(importlib.import_module("harness.gate"), "auto_apply", apply)
     monkeypatch.chdir(workspace)
-    monkeypatch.setattr(cli, "_write_filed_task", write)
-    monkeypatch.setattr(
-        cli, "_read_filed_rows", lambda runs_dir, initiative: [r for r in rows if r["initiative"] == initiative]
+    ports = dataclasses.replace(
+        harness_ports.decompose_ports(),
+        write_task=write,
+        read_tasks=lambda runs_dir, initiative: [r for r in rows if r["initiative"] == initiative],
     )
     monkeypatch.setattr(run_store, "upsert_row", lambda runs_dir, row: True)
     store = Store(store_conn)
     store.record_run({"run_id": "r1", "ts": "2026-11-06T00:00:00Z", "principal": "initiative-decompose"})
     return SimpleNamespace(
-        tmp=tmp_path, workspace=workspace, a=repo_a, b=repo_b, profile=profile, store=store, rows=rows
+        tmp=tmp_path, workspace=workspace, a=repo_a, b=repo_b, profile=profile, store=store, rows=rows, ports=ports
     )
 
 
@@ -123,6 +125,7 @@ def _decompose(world, monkeypatch, plan: dict) -> int:
         runner=runner,
         run_id="r1",
         store=world.store,
+        ports=world.ports,
     )
 
 
@@ -172,6 +175,7 @@ def test_repo_trees_skips_the_target_a_non_checkout_and_a_non_string() -> None:
         Path("/r/ws"),
         "/r/a",
         home="/h",
+        resolve=harness_ports.resolve_repo,
         is_checkout=lambda p: str(p) in ("/r/a", "/r/b"),
         listing=lambda repo: listing.get(repo, []),
     )
@@ -179,8 +183,9 @@ def test_repo_trees_skips_the_target_a_non_checkout_and_a_non_string() -> None:
 
 
 def test_a_profile_without_a_repo_map_passes_nothing(tmp_path) -> None:
-    assert cli._decompose_repo_trees({}, tmp_path, None) == {}
-    assert cli._decompose_repo_trees({"repo_map": "oops"}, tmp_path, None) == {}
+    ports = harness_ports.decompose_ports()
+    assert cli._decompose_repo_trees({}, tmp_path, None, ports) == {}
+    assert cli._decompose_repo_trees({"repo_map": "oops"}, tmp_path, None, ports) == {}
 
 
 def test_a_layout_follow_up_is_filed_as_an_intake_waiting_on_the_initiative(tmp_path) -> None:

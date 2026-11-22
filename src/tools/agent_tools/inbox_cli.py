@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -13,7 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, tzinfo
 from pathlib import Path
 
-from agent_tools import commands, route
+from agent_tools import route
 from agent_tools.inbox import (
     Ambiguous,
     Found,
@@ -30,6 +29,7 @@ from agent_tools.inbox_drafts import drafts_to_items, load_draft_records
 from agent_tools.inbox_needs_chair import load_needs_chair_records, needs_chair_to_items
 from agent_tools.inbox_prs import load_pr_records, pr_errors, prs_to_items
 from agent_tools.inbox_refused import load_refused_rows, refused_to_items
+from core import bounded_proc
 
 Records = Callable[[], Sequence[Mapping]]
 
@@ -114,7 +114,7 @@ def run_inbox(
 
 
 def argv_of(a: argparse.Namespace) -> list[str]:
-    """The `run_inbox` argv for a namespace parsed by INBOX_GROUP."""
+    """The `run_inbox` argv for a namespace parsed by `cli.INBOX_GROUP`."""
     return [*([a.action] if a.action else []), *([a.id] if a.id else []), *(["--json"] if a.json else [])]
 
 
@@ -136,9 +136,10 @@ class LocalTime(tzinfo):
 
 
 def subprocess_runner(argv: Sequence[str]) -> int:
-    """Edge. Run with the terminal attached; a missing program is 127 and a child killed by signal N is 128+N."""
+    """Edge. Run with the terminal attached, under `bounded_proc`'s bound for the program (`gh` 120 s, else the step
+    bound), which is 124 when it fires; a missing program is 127 and a child killed by signal N is 128+N."""
     try:
-        code = subprocess.run(list(argv)).returncode
+        code = bounded_proc.completed(list(argv)).returncode
     except OSError as exc:
         print(f"cox inbox: cannot run {argv[0]}: {exc}", file=sys.stderr)
         return 127
@@ -173,20 +174,3 @@ def main(argv: Sequence[str]) -> int:
 
 def handler(a: argparse.Namespace) -> int:
     return main(argv_of(a))
-
-
-# A leaf group: build_parser gives a group with rows a bare-help default, which would swallow `cox inbox`.
-# Registration is one line in cli.py, outside this task's surfaces:
-#   commands.build_parser([], [inbox_cli.INBOX_GROUP], sub)
-INBOX_GROUP = commands.Group(
-    name="inbox",
-    help="everything waiting on a person: drafts, approvals and PRs",
-    description="List what waits on a person, oldest first, or run one item's accept or deny command by id.",
-    epilog="examples:\n  cox inbox\n  cox inbox --json\n  cox inbox accept 1a2b3c4d\n  cox inbox deny 1a2b",
-    args=(
-        commands.Arg(("action",), {"nargs": "?", "choices": ("accept", "deny")}),
-        commands.Arg(("id",), {"nargs": "?"}),
-        commands.Arg(("--json",), {"action": "store_true"}),
-    ),
-    fn=handler,
-)

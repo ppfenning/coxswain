@@ -35,6 +35,7 @@ from harness.cli_run_graph import (
     _run_graph,
     read_provider_profile,
 )
+from harness.decompose_ports import DecomposePorts
 from harness.digest import build_digest
 from harness.lane_workers import lane_workers_from
 from harness.registry import GraphSpec
@@ -483,7 +484,12 @@ def _progress_observer(
 
 
 def _launch(
-    specs: dict[str, GraphSpec], parser: argparse.ArgumentParser, args: argparse.Namespace, *, report_out: TextIO
+    specs: dict[str, GraphSpec],
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+    *,
+    report_out: TextIO,
+    ports: DecomposePorts | None = None,
 ) -> int:
     if not args.skills_root and not args.unverified_skills:
         parser.error("pass --skills-root at least once, or --unverified-skills to skip the check explicitly")
@@ -645,6 +651,7 @@ def _launch(
             store=store,
             epoch=epoch,
             lease_name=name,
+            ports=ports,
         )
         status = _EXIT_RUN_STATUS.get(code, "failed")
         return code

@@ -38,6 +38,7 @@ from graphs.delivery.initiative_decompose import (
 from harness.artifacts import artifacts_root
 from harness.autonomy import split_by_policy
 from harness.checks import all_passed, checks_evidence, run_checks
+from harness.decompose_ports import DecomposePorts
 from harness.escalate import escalate_self_modification
 from harness.gate import apply_decisions, auto_apply, gate
 from harness.lane_pytest_tmp import lane_scratch_dir, lane_tmp_env, run_scratch_root
@@ -388,49 +389,6 @@ def _run_worktree_checks(
         shutil.rmtree(root, ignore_errors=True)
 
 
-def _write_filed_task(runs_dir: Path, path: Path, parts: tuple[str, ...], text: str) -> int:
-    """Edge: `route file`'s own writer. The store row first, the file second, then the export baseline."""
-    from agent_tools import route  # imported here: the harness stays importable without the tools package
-
-    return route.write_filed_item(runs_dir, path, "task", parts, text)
-
-
-def _read_filed_rows(runs_dir: Path, initiative: str) -> list[dict[str, Any]]:
-    """Edge: the queue rows `route edit` would see, read by the same path `route file` writes them through."""
-    from agent_tools import run_store  # imported here: the harness stays importable without the tools package
-
-    return run_store.read_queue(runs_dir, initiative)
-
-
-def _withdraw_filed_tasks(runs_dir: Path, root: Path, initiative: str, rels: Sequence[str], whole: bool) -> list[str]:
-    """Edge: the `rels` actually withdrawn; a file goes only after its store row is dropped, else it is named and kept."""
-    # imported here: the harness stays importable without the tools package
-    from agent_tools import draft_apply, run_store, store_cli
-
-    if whole and rels:
-        store = draft_apply.Store(
-            "store",
-            lambda name: run_store.work_items(runs_dir, name),
-            lambda name, task, state, by, expected: store_cli.set_state(runs_dir, name, task, state, by, expected),
-        )
-        work_dir = root / Path(rels[0]).parent.parent.parent
-        if draft_apply.remove(work_dir, initiative, "decompose left a task missing", "decompose", store) == 0:
-            for rel in rels:
-                (root / rel).unlink(missing_ok=True)
-            return list(rels)
-    stored = {r["task_id"] for r in run_store.work_items(runs_dir, initiative)}
-    done: list[str] = []
-    for rel in rels:
-        task = Path(rel).stem
-        result = store_cli.set_state(runs_dir, initiative, task, "dropped", "decompose") if task in stored else None
-        if task in stored and not isinstance(result, store_cli.StateSet):
-            print(f"decompose: {task} not withdrawn: its store row was not dropped ({result})", file=sys.stderr)
-            continue
-        (root / rel).unlink(missing_ok=True)
-        done.append(rel)
-    return done
-
-
 def _decompose_phase_dirs(
     proposals: Sequence[Mapping[str, Any]], cartridge: Mapping[str, Any], initiative_id: str | None
 ) -> list[str]:
@@ -454,21 +412,20 @@ def _repo_trees(
     target: str | None,
     *,
     home: str,
+    resolve: Callable[[str, Path, Callable[[Path], bool], str], str | None],
     is_checkout: Callable[[Path], bool],
     listing: Callable[[str], Sequence[Mapping[str, str]]],
 ) -> dict[str, list[str]]:
     """Repository path to its tracked paths for each `repo_map` value that is a checkout other than `target`.
 
-    A value resolves as `route.resolve_repo` does, a bare name against the workspace's parent directory."""
-    from agent_tools import route  # imported here: the harness stays importable without the tools package
-
+    `resolve` is `route.resolve_repo`: a bare name resolves against the workspace's parent directory, None is refused."""
     own = Path(target).expanduser().resolve() if target else None
     trees: dict[str, list[str]] = {}
     for value in repo_map.values():
         if not isinstance(value, str):
             continue
-        path = route.resolve_repo(value, workspace.parent, is_checkout, home)
-        if isinstance(path, route.RepoRefused) or not is_checkout(Path(path).expanduser()):
+        path = resolve(value, workspace.parent, is_checkout, home)
+        if path is None or not is_checkout(Path(path).expanduser()):
             continue
         if own is not None and Path(path).expanduser().resolve() == own:
             continue
@@ -476,32 +433,41 @@ def _repo_trees(
     return trees
 
 
-def _decompose_repo_trees(profile: Mapping[str, Any], workspace: Path, target: str | None) -> dict[str, list[str]]:
+def _decompose_repo_trees(
+    profile: Mapping[str, Any], workspace: Path, target: str | None, ports: DecomposePorts
+) -> dict[str, list[str]]:
     """Edge: `_repo_trees` over the profile's `repo_map`; empty when the profile has none."""
-    from agent_tools import route  # imported here: the harness stays importable without the tools package
     from graphs.delivery.initiative_decompose import repo_listing
 
     repo_map = profile.get("repo_map")
     if not isinstance(repo_map, Mapping):
         return {}
     return _repo_trees(
-        repo_map, workspace, target, home=str(Path.home()), is_checkout=route.is_git_checkout, listing=repo_listing
+        repo_map,
+        workspace,
+        target,
+        home=str(Path.home()),
+        resolve=ports.resolve_repo,
+        is_checkout=ports.is_checkout,
+        listing=repo_listing,
     )
 
 
 def _file_decompose_follow_ups(
-    result: Mapping[str, Any], *, initiative: str, workspace: Path, runs_dir: Path, date: str
+    result: Mapping[str, Any],
+    *,
+    initiative: str,
+    workspace: Path,
+    runs_dir: Path,
+    date: str,
+    file_follow_up: Callable[..., str | None],
 ) -> int:
     """Edge: file each follow-up as an intake waiting on `initiative`; the count whose write failed.
 
     The queue treats a landed initiative's id as met, so `initiative` is the id the intake waits on."""
-    from agent_tools import follow_up_intake  # imported here: the harness stays importable without the tools package
-
     failed = 0
     for follow_up in result.get("follow_ups") or []:
-        rel = follow_up_intake.file_follow_up(
-            runs_dir, workspace, follow_up, after=initiative, date=date, home=str(Path.home())
-        )
+        rel = file_follow_up(runs_dir, workspace, follow_up, after=initiative, date=date, home=str(Path.home()))
         if rel is None:
             print(f"decompose: follow-up for {follow_up['repo']} was not filed", file=sys.stderr)
             failed += 1
@@ -519,7 +485,7 @@ def _settle_decompose(
     graph_args: Mapping[str, Any],
     runner: Any,
     runs_dir: Path,
-    withdraw: Callable[[Path, Path, str, Sequence[str], bool], Sequence[str]] | None = None,
+    ports: DecomposePorts,
 ) -> tuple[str, int]:
     """Edge: settle every task `item_create` that was cleared, gated or auto-applied. `(closing line, missing count)`.
 
@@ -542,16 +508,16 @@ def _settle_decompose(
 
     # a dropped row is a withdrawn task, so a retry writes it afresh
     def live(rd: Path, name: str) -> list[dict[str, Any]]:
-        return [r for r in _read_filed_rows(rd, name) if r.get("state") != "dropped"]
+        return [r for r in ports.read_tasks(rd, name) if r.get("state") != "dropped"]
 
     before_rows = live(runs_dir, initiative)
     before = {r["task_id"] for r in before_rows}
     in_store, on_disk = _settle_decompose_tasks(
-        expected, root=root, runs_dir=runs_dir, initiative=initiative, read=live
+        expected, root=root, runs_dir=runs_dir, initiative=initiative, write=ports.write_task, read=live
     )
     missing = sorted(task for task in expected if task not in in_store or task not in on_disk)
     gone = withdrawal(expected, before, missing)
-    withdraw_fn = withdraw or _withdraw_filed_tasks
+    withdraw_fn = ports.withdraw_tasks
     withdrawn: set[str] = set()
     if gone:
         # whole only when this run's own initiative item_create cleared and no task row existed before it
@@ -652,8 +618,8 @@ def _settle_decompose_tasks(
     root: Path,
     runs_dir: Path,
     initiative: str,
-    write: Callable[[Path, Path, tuple[str, ...], str], int] | None = None,
-    read: Callable[[Path, str], Sequence[Mapping[str, Any]]] | None = None,
+    write: Callable[[Path, Path, tuple[str, ...], str], int],
+    read: Callable[[Path, str], Sequence[Mapping[str, Any]]],
 ) -> tuple[set[str], set[str]]:
     """Edge: `(in_store, on_disk)` for the cleared tasks, after each file goes through `route file`'s writer.
 
@@ -666,8 +632,6 @@ def _settle_decompose_tasks(
     its row, so a re-decompose never resets started work. A task not in the store, or not on disk, is tried
     once more; one still missing after the second try gets a stderr line for each failed try.
     """
-    write = write or _write_filed_task
-    read = read or _read_filed_rows
     on_disk: set[str] = set()
     in_store: set[str] = set()
     kept = {r["task_id"]: r for r in read(runs_dir, initiative)}
@@ -855,6 +819,7 @@ def _run_graph(
     store: Store | None = None,
     epoch: int | None = None,
     lease_name: str | None = None,
+    ports: DecomposePorts | None = None,
 ) -> int:
     if args.graph == "phase-lane":
         return _run_phase_lane(parser=parser, args=args, cartridge=cartridge, runner=runner, specs=specs,
@@ -1102,10 +1067,13 @@ def _run_graph(
         if getattr(args, "repo", None):
             graph_args.setdefault("checkout", str(Path(args.repo).expanduser()))  # the readable repo the seats get
         if graph_name == _DECOMPOSE_GRAPH_NAME:
+            if ports is None:
+                parser.error("decompose needs the tools' store and route calls; start it through shell.py")
             trees = _decompose_repo_trees(
                 read_provider_profile(args.provider_profile) if getattr(args, "provider_profile", None) else {},
                 Path(getattr(runner, "cwd", None) or Path.cwd()),
                 graph_args.get("checkout"),
+                ports,
             )
             if trees:
                 graph_args["repo_trees"] = trees
@@ -1223,16 +1191,16 @@ def _run_graph(
 
     # Settled straight after the arms, before the patch, manifest and ledger work, so the window in which a
     # task file exists and its row does not is as short as the run can make it. The closing line waits for the end.
-    closing, missing = (
-        _settle_decompose(
+    closing, missing, unfiled = "", 0, 0
+    if graph_name == _DECOMPOSE_GRAPH_NAME:
+        # A decompose without its ports was refused before the graph ran; one here would leave files with no rows.
+        assert ports is not None, "a decompose reached its settle without the tools' ports"
+        closing, missing = _settle_decompose(
             proposals, diffs, auto_applied,
-            cartridge=cartridge, graph_args=graph_args, runner=runner, runs_dir=Path(args.runs_dir),
-        )
-        if graph_name == _DECOMPOSE_GRAPH_NAME
-        else ("", 0)
-    )  # fmt: skip
-    unfiled = 0
+            cartridge=cartridge, graph_args=graph_args, runner=runner, runs_dir=Path(args.runs_dir), ports=ports,
+        )  # fmt: skip
     if graph_name == _DECOMPOSE_GRAPH_NAME and not missing and approved_task_ids(proposals, diffs, auto_applied):
+        assert ports is not None, "a decompose reached its follow-ups without the tools' ports"
         root = Path(getattr(runner, "cwd", None) or Path.cwd())
         unfiled = _file_decompose_follow_ups(
             result,
@@ -1240,6 +1208,7 @@ def _run_graph(
             workspace=root,
             runs_dir=Path(args.runs_dir),
             date=args.date,
+            file_follow_up=ports.file_follow_up,
         )
 
     # A build patch is applied only after the gate approved the work it belongs

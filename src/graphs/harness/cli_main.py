@@ -13,8 +13,10 @@ from datetime import date as date_type
 from pathlib import Path
 from typing import Any
 
+from graphs.delivery.initiative_decompose import GRAPH_NAME as DECOMPOSE_GRAPH_NAME
 from harness.cli_launch import _launch, _stop_children_until_quiet, _terminate_children
 from harness.cli_run_graph import DEFAULT_POOL_KEEP
+from harness.decompose_ports import DecomposePorts
 from harness.registry import GraphSpec, discover
 from harness.termination import mark_terminating
 
@@ -200,15 +202,16 @@ def _exit_on_sigterm(signum: int, frame: object) -> None:
     raise SystemExit(143)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, ports: DecomposePorts | None = None) -> int:
+    """`ports` are the tools' store and route calls a decompose makes; `shell.py`, the composition root, passes them."""
     # Python's default SIGTERM action is to die without running any `finally`,
     # which would leave the run's `ended_at` unset. Only the main thread may
     # install a handler; the previous one is put back on every way out.
     if threading.current_thread() is not threading.main_thread():
-        return _main(argv)
+        return _main(argv, ports)
     previous = signal.signal(signal.SIGTERM, _exit_on_sigterm)
     try:
-        return _main(argv)
+        return _main(argv, ports)
     except SystemExit as exc:
         # `ended_at` is already stamped; interpreter exit would otherwise wait on fan-out workers.
         if exc.code == 143:
@@ -224,6 +227,15 @@ def _refuse_phase_outside_epic(parser: argparse.ArgumentParser, args: argparse.N
         parser.error("--phase applies to the epic and phase-lane graphs only")
 
 
+def _refuse_decompose_without_ports(
+    parser: argparse.ArgumentParser, specs: dict[str, GraphSpec], args: argparse.Namespace, ports: DecomposePorts | None
+) -> None:
+    """A decompose files its tasks through the tools' ports; without them it refuses here, before a run or lease opens."""
+    spec = specs.get(args.graph)
+    if ports is None and spec is not None and spec.graph_name == DECOMPOSE_GRAPH_NAME:
+        parser.error("decompose needs the tools' store and route calls; start it through shell.py")
+
+
 def _expand_repo(args: argparse.Namespace) -> argparse.Namespace:
     """A copy of `args` whose `repo`, when given, has a leading tilde expanded to the home directory."""
     if not args.repo:
@@ -233,15 +245,16 @@ def _expand_repo(args: argparse.Namespace) -> argparse.Namespace:
     return expanded
 
 
-def _main(argv: list[str] | None) -> int:
+def _main(argv: list[str] | None, ports: DecomposePorts | None = None) -> int:
     specs = discover()
     parser = _build_parser(specs)
     parsed = parser.parse_args(argv)
     _refuse_phase_outside_epic(parser, parsed)
+    _refuse_decompose_without_ports(parser, specs, parsed, ports)
     args = _expand_repo(parsed)
     # A rescue's stdout is its JSON report and nothing else, since its caller parses all of it.
     # Every other line the launch prints, the usage totals included, goes to stderr instead.
     report_out = sys.stdout
     quiet = contextlib.redirect_stdout(sys.stderr) if args.graph == "rescue" else contextlib.nullcontext()
     with quiet:
-        return _launch(specs, parser, args, report_out=report_out)
+        return _launch(specs, parser, args, report_out=report_out, ports=ports)

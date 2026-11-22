@@ -1,4 +1,3 @@
-import argparse
 import json
 import sys
 import time
@@ -6,15 +5,13 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
-from agent_tools.commands import build_parser
+from agent_tools import cli
 from agent_tools.inbox import item_id
 from agent_tools.inbox_cli import (
-    INBOX_GROUP,
     USAGE,
     LocalTime,
     argv_of,
     gather,
-    handler,
     run_inbox,
     subprocess_runner,
 )
@@ -267,9 +264,8 @@ def test_subprocess_runner_reports_exit_codes():
     assert subprocess_runner(["/nonexistent/cox-inbox-missing"]) == 127
 
 
-def test_inbox_group_parses_to_run_inbox_argv():
-    group = build_parser([], [INBOX_GROUP], argparse.ArgumentParser(prog="cox").add_subparsers())["inbox"]
-    assert [argv_of(group.parse_args(a)) for a in ([], ["--json"], ["accept", "1a2b"], ["deny", "9f"])] == [
+def test_cox_inbox_parses_to_run_inbox_argv():
+    parser = cli.build_parser()
+    assert [argv_of(parser.parse_args(["inbox", *a])) for a in ([], ["--json"], ["accept", "1a2b"], ["deny", "9f"])] == [
         [], ["--json"], ["accept", "1a2b"], ["deny", "9f"]
     ]
-    assert group.parse_args([]).fn is handler

@@ -42,7 +42,7 @@ follow from today's model:
 **Secrets.** Checks inherit the lane's environment, so a check log or a transcript may print a token, a password or
 a store URL. Before upload, `scrub` replaces two things with `***` in every source but the patch. The first is the value of every environment
 variable whose name holds TOKEN, SECRET, PASSWORD, PASSWD or KEY (`secret_values`), in each of the forms
-`forgejo_api.redact` knows. The second is the userinfo, and any password in the query (`store_switch.display`), of
+`core.redaction.redact` knows. The second is the userinfo, and any password in the query (`core.redaction.display`), of
 every URL in the text. That is a floor, not a guarantee, so the bucket must be private to the fleet and reached with
 credentials scoped to it. An item whose bytes the scrub changed carries `scrubbed: true` in `artifacts_json`, so a
 reader knows the stored copy is not the bytes the step saw. A failed check's row keeps the end of its output for the
@@ -85,6 +85,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from core.redaction import display, redact
 from harness.store_dialect import Connection, JsonObject, json_load
 from harness.store_types import StepRow
 from harness.traces_url import redact_url, resolve_traces_root
@@ -226,16 +227,12 @@ def secret_values(env: Mapping[str, str]) -> tuple[str, ...]:
 
 
 def _url_scrubbed(match: re.Match[str]) -> str:
-    from agent_tools.store_switch import display  # the tools package: imported on use, as land_claims does
-
     return display(_USERINFO.sub(r"\1***@", match.group(0)))
 
 
 def scrub(text: str, secrets: Sequence[str]) -> str:
-    """Pure. `text` with each secret, in every form `forgejo_api.redact` replaces, then the userinfo and any query
+    """Pure. `text` with each secret, in every form `core.redaction.redact` replaces, then the userinfo and any query
     password of every URL, replaced by `***`."""
-    from agent_tools.forgejo_api import redact  # the tools package: imported on use, as land_claims does
-
     for secret in sorted({s for s in secrets if len(s) >= _SECRET_MIN}, key=len, reverse=True):
         text = redact(text, secret)
     return _URL.sub(_url_scrubbed, text)

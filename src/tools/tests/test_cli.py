@@ -308,7 +308,7 @@ MOVED = "moved: run `uv run --frozen python -m devtools <command> ...` from the 
 ])
 def test_cox_dev_and_cox_release_print_the_devtools_pointer_and_exit_two(argv, capsys):
     assert cli.main(argv) == 2
-    assert capsys.readouterr().out == MOVED + "\n"
+    assert capsys.readouterr().out.startswith(MOVED)  # `cox release` adds where an upgrade runs
 
 
 _STORE_RUN = "x-9"

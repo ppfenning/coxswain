@@ -112,7 +112,6 @@ def __getattr__(name: str) -> Any:
 # Names the code kept here calls, defined in a part: each imports its part on the first call.
 _launcher = _LazyHandler("agent_tools.cli_launcher:_launcher")
 _refresh_board_files = _LazyHandler("agent_tools.cli_common:_refresh_board_files")
-_release = _LazyHandler("agent_tools.cli_install:_release")
 _route_status = _LazyHandler("agent_tools.cli_route:_route_status")
 _setup_tui = _LazyHandler("agent_tools.cli_views:_setup_tui")
 _store_refusal = _LazyHandler("agent_tools.cli_common:_store_refusal")
@@ -457,6 +456,20 @@ UPGRADE_GROUP = commands.Group(
     fn="agent_tools.cli:_upgrade",
 )
 
+# Leaf group: no rows, so a bare `cox inbox` lists instead of printing a group's help.
+INBOX_GROUP = commands.Group(
+    name="inbox",
+    help="everything waiting on a person: drafts, approvals, PRs, needs-chair rows and refused lands",
+    description="List what waits on a person, oldest first, or run one item's accept or deny command by id.",
+    epilog="examples:\n  cox inbox\n  cox inbox --json\n  cox inbox accept 1a2b3c4d\n  cox inbox deny 1a2b",
+    args=(
+        commands.Arg(("action",), {"nargs": "?", "choices": ("accept", "deny")}),
+        commands.Arg(("id",), {"nargs": "?"}),
+        commands.Arg(("--json",), {"action": "store_true"}),
+    ),
+    fn="agent_tools.inbox_cli:handler",
+)
+
 HOME_GROUP = commands.Group(
     name="home", help="the live dashboard: runs, leader, backlog", description="", epilog="",
     args=(commands.Arg(("--profile",)),), fn="agent_tools.cli:_home",
@@ -734,7 +747,14 @@ def _dev_moved(a: argparse.Namespace) -> int:
     return 2
 
 
-_RELEASE_HELP = "deploy a release to every host: not available yet (the other old release commands moved to the checkout)"
+def _release_moved(a: argparse.Namespace) -> int:
+    print(_RELEASE_MOVED)
+    return 2
+
+
+# `cox release deploy` deployed nothing (#1229) and is gone, with its unwired per-host core. `cox release` stays only
+# as `cox dev` does, a pointer for muscle memory.
+_RELEASE_MOVED = f"{_DEV_MOVED}; to put a release on a host, run `cox upgrade` on that host"
 
 
 def version_line(version: str) -> str:
@@ -833,6 +853,9 @@ def build_parser() -> argparse.ArgumentParser:
     group, rows = _table_entry("mcp")
     commands.build_parser(rows, [group], sub)
 
+    group, rows = _table_entry("inbox")
+    commands.build_parser(rows, [group], sub)
+
     group, rows = _table_entry("install")
     commands.build_parser(rows, [group], sub)
 
@@ -857,13 +880,11 @@ def build_parser() -> argparse.ArgumentParser:
     dev.add_argument("rest", nargs=argparse.REMAINDER)
     dev.set_defaults(fn=_dev_moved)
 
-    release_p = sub.add_parser("release", help=_RELEASE_HELP,
-                               description=f"cox release deploy VERSION is not available yet: its host-by-host edge was never built.\n"
-                                           f"Other release commands: {_DEV_MOVED}",
-                               formatter_class=argparse.RawDescriptionHelpFormatter)
-    # `deploy` is read from `rest` by `_release`; the old maintainer subcommands and flags land there too and print the pointer
+    release_p = sub.add_parser("release", help="moved: release commands run from the coxswain checkout",
+                               description=_RELEASE_MOVED)
+    # swallow every subcommand and flag the old group took, `deploy` included, so the pointer prints instead
     release_p.add_argument("rest", nargs=argparse.REMAINDER)
-    release_p.set_defaults(fn=_release)
+    release_p.set_defaults(fn=_release_moved)
 
     group, rows = _table_entry("home")
     commands.build_parser(rows, [group], sub)
@@ -1444,6 +1465,7 @@ COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = _dispatch_t
     (RUNS_GROUP, RUNS_COMMANDS),
     (COURIER_GROUP, COURIER_COMMANDS),
     (MCP_GROUP, []),
+    (INBOX_GROUP, []),
     (VERSIONS_GROUP, []),
     (CONSOLE_GROUP, []),
     (DASH_GROUP, []),

@@ -83,6 +83,7 @@ cox courier send REF --to TO --note NOTE [--profile PROFILE] [--event EVENT] [--
 cox courier inbox [--label LABEL] [--profile PROFILE] [--topic TOPIC] [--event EVENT] [--consumer CONSUMER] [--wake]   list this label's unacknowledged bus entries
 cox courier ack ID [--profile PROFILE] [--consumer CONSUMER]   acknowledge one bus entry by id
 cox mcp [serve] [--http HOST:PORT] [--token-file PATH] [--label LABEL] [--profile PROFILE]   serve the chair's tools to MCP clients
+cox inbox [accept|deny] [ID] [--json]   everything waiting on a person: drafts, approvals, PRs, needs-chair rows and refused lands
 cox versions [--root ROOT] [--home HOME] [--manifest MANIFEST]   component versions against the manifest
 cox console [--runs-dir RUNS_DIR] [--work-dir WORK_DIR] [--interval INTERVAL] [--once] [--profile PROFILE]   one screen of hosts, drafts, lanes and the chair; keys run cox commands after a y/n
 cox dash [--runs-dir RUNS_DIR] [--work-dir WORK_DIR] [--feed] [--once] [--interval INTERVAL] [--detail KIND]   a versioned JSON snapshot of the workspace: --feed streams it, --once prints one, --detail drills into one kind
