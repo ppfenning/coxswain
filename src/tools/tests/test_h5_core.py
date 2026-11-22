@@ -76,7 +76,6 @@ ALLOWED_UNTIMED = {
     ("tools/agent_tools/cli_courier.py", "_spawn"): "a detached child in its own session, never waited on",
     ("tools/agent_tools/cli_chair.py", "_spawn_detached"): "a detached land process, which bounds itself",
     ("tools/agent_tools/worker_ports.py", "launch"): "the phase launch, spawned and polled; the worker's stop path ends it",
-    ("tools/agent_tools/inbox_cli.py", "subprocess_runner"): "a command a person runs with the terminal attached",
     ("tools/agent_tools/plan.py", "serve"): "a long-lived local server and a browser, both detached",
     ("tools/agent_tools/store_switch.py", "default_copy_store"): "a whole-store copy a person runs; it scales with data",
     ("graphs/harness/checks.py", "_serial_rerun_passes"): "Popen waited with communicate(timeout=limit)",

@@ -14,7 +14,7 @@ import tomllib
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
-from agent_tools.cli import _LAZY_MODULES, _dev_moved
+from agent_tools.cli import _LAZY_MODULES
 from agent_tools.cli_chair_service import (
     _chair_service_environment_file,
     _chair_unit_inputs,
@@ -931,28 +931,3 @@ def _versions(a: argparse.Namespace) -> int:
     if edge is not None:
         print(upgrade_edge.record_line(edge))
     return 0
-
-
-RELEASE_DEPLOY_UNAVAILABLE = (
-    "cox release deploy: not available. Its host-by-host edge (agent_tools.release_deploy_edge) was never built, so this"
-    " machine cannot upgrade the others yet; run `cox upgrade` on each host instead."
-)
-
-
-def _release_deploy(a: argparse.Namespace) -> int:
-    """`release deploy VERSION` refuses with exit 2 and says why. The command shipped (#900) wired to an edge module
-    that never landed, so it raised ImportError; the per-host core, release_deploy.py, waits for that edge."""
-    print(RELEASE_DEPLOY_UNAVAILABLE, file=sys.stderr)
-    return 2
-
-
-def _release(a: argparse.Namespace) -> int:
-    """`release deploy VERSION` deploys; every other `release ...` is an old maintainer command and gets the moved pointer.
-    `rest` is the unparsed remainder, so an old subcommand or flag never meets argparse's invalid-choice error."""
-    if a.rest[:1] != ["deploy"]:
-        return _dev_moved(a)
-    deploy_p = argparse.ArgumentParser(prog="cox release deploy", description="upgrade every host to VERSION and verify each")
-    deploy_p.add_argument("version", metavar="VERSION", help="the release tag, e.g. 2026.11.6")
-    deploy_p.add_argument("--profile", help="the profile whose run store holds the hosts")
-    parsed = deploy_p.parse_args(a.rest[1:])
-    return _release_deploy(argparse.Namespace(profile=parsed.profile or getattr(a, "launcher_profile", None), version=parsed.version))

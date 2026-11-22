@@ -27,12 +27,13 @@ import time
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import PurePath
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any
 
-from agent_tools import readme_commands
 from agent_tools.card_commits import card_commit_steps
 from agent_tools.card_pr import card_pr_steps
 from agent_tools.chair_plan_land import fetch_action
+from core.generated_files import GENERATED_FILES as GENERATED_FILES
+from core.generated_files import GeneratedFile as GeneratedFile
 from core.landing import (
     ACCEPTED_LAND_AT,
     DEFAULT_LAND_AT,
@@ -1719,31 +1720,6 @@ def resolve_add_add_conflicts(text: str) -> str | None:
             return None
         resolved.append("".join(ours if ours == theirs else ours + theirs))
     return "".join(resolved)
-
-
-class GeneratedFile(NamedTuple):
-    """How to regenerate one file: the directory to run in, the `python` arguments that rewrite the file given
-    its path as a last argument, and the markers around the span the generator owns."""
-
-    cwd: str
-    command: tuple[str, ...]
-    begin: str
-    end: str
-    sources: tuple[str, ...] = ()
-
-
-# Files a cherry-pick conflict may be resolved by regenerating, each repo-relative path mapped to its generator.
-# Declared, not guessed from names: the README's generator is `python -m agent_tools.readme_commands`, the one
-# `test_readme_commands` compares the README against.
-GENERATED_FILES: dict[str, GeneratedFile] = {
-    "src/tools/README.md": GeneratedFile(
-        "src/tools",
-        ("-m", "agent_tools.readme_commands", "--readme"),
-        readme_commands.BEGIN,
-        readme_commands.END,
-        ("src/tools/agent_tools/cli.py", "src/tools/agent_tools/readme_commands.py"),
-    ),
-}
 
 
 def generated_conflict_only(conflicted: Sequence[str]) -> bool:

@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
+from core.frontmatter import split as split_frontmatter
+
 if TYPE_CHECKING:
     from graphs.delivery.ticket_lint import IdeaHeal
 
@@ -34,10 +36,8 @@ def launch_reach_heal(body: str, frontmatter: Mapping[str, Any]) -> IdeaHeal:
 
 def launch_text_heal(text: str) -> IdeaHeal:
     """The heal a launched decompose runs on an intake file's whole text."""
-    from graphs.delivery.initiative_decompose import _split_frontmatter  # lazy: same venv
-
-    frontmatter, body = _split_frontmatter(text)
-    return launch_reach_heal(body, frontmatter)
+    meta, body = split_frontmatter(text)
+    return launch_reach_heal(body, meta)
 
 
 def reach_refusal(
@@ -60,7 +60,5 @@ def launch_reach_refusal(body: str, frontmatter: Mapping[str, Any]) -> str | Non
 def launch_text_refusal(text: str) -> str | None:
     """The refusal a launched decompose would raise for an intake file's whole text."""
     # The decompose's own splitter, so the two read frontmatter alike; `route.parse_frontmatter` does not (it keeps quotes).
-    from graphs.delivery.initiative_decompose import _split_frontmatter  # lazy: same venv
-
-    frontmatter, body = _split_frontmatter(text)
-    return launch_reach_refusal(body, frontmatter)
+    meta, body = split_frontmatter(text)
+    return launch_reach_refusal(body, meta)

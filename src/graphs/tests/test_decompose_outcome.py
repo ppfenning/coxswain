@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from agent_tools.harness_ports import decompose_ports
 from agent_tools.queue_rows import parse_item
 from graphs._contract import ContractViolation
 from graphs.delivery import initiative_decompose
@@ -57,7 +58,14 @@ def exit_code(store: Store | None, run, monkeypatch) -> int:
     spec = SimpleNamespace(graph_name=GRAPH_NAME, run=lambda graph_args, runner: run())
     args = SimpleNamespace(graph=GRAPH_NAME, date="2026-10-06")
     return cli._run_graph(
-        specs={GRAPH_NAME: spec}, parser=None, args=args, cartridge={}, runner=None, run_id="r1", store=store
+        specs={GRAPH_NAME: spec},
+        parser=None,
+        args=args,
+        cartridge={},
+        runner=None,
+        run_id="r1",
+        store=store,
+        ports=decompose_ports(),
     )
 
 
@@ -283,7 +291,10 @@ def test_the_real_route_file_writer_and_reader_agree_on_a_file_backed_store(tmp_
     expected = expected_for("t1", "t2", "t3")
     for task, rel in expected.items():
         task_file(tmp_path, rel, task)
-    in_store, on_disk = cli._settle_decompose_tasks(expected, root=tmp_path, runs_dir=runs_dir, initiative="demo")
+    ports = decompose_ports()
+    in_store, on_disk = cli._settle_decompose_tasks(
+        expected, root=tmp_path, runs_dir=runs_dir, initiative="demo", write=ports.write_task, read=ports.read_tasks
+    )
     assert (in_store, on_disk) == ({"t1", "t2", "t3"}, {"t1", "t2", "t3"})
     assert sorted(r["task_id"] for r in run_store.read_queue(runs_dir, "demo")) == ["t1", "t2", "t3"]
     assert capsys.readouterr().err == ""

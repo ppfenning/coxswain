@@ -3,6 +3,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agent_tools import land_repo_lease, store_cli
+from core.task_lease import TASK_LEASE_PREFIX as TASK_LEASE_PREFIX
+from core.task_lease import parse_task_lease_name as parse_task_lease_name
+from core.task_lease import task_lease_name as task_lease_name
 
 
 @dataclass(frozen=True)
@@ -25,22 +28,6 @@ class Unavailable:
 
 
 LeaseCall = Callable[..., store_cli.LeaseResult]
-
-TASK_LEASE_PREFIX = "land:task:"
-
-
-def task_lease_name(initiative: str, task: str) -> str:
-    """The lease name of a task land that says which initiative it belongs to; `parse_task_lease_name` reverses it."""
-    return f"{TASK_LEASE_PREFIX}{initiative}/{task}"
-
-
-def parse_task_lease_name(name: str) -> tuple[str, str] | None:
-    """(initiative, task) for a `task_lease_name`; None for a bare `land:<task>`, a phase land, or a repo lease."""
-    if not name.startswith(TASK_LEASE_PREFIX):
-        return None
-    initiative, slash, task = name.removeprefix(TASK_LEASE_PREFIX).partition("/")
-    return (initiative, task) if slash and initiative and task else None
-
 
 def _reason(result: store_cli.LeaseResult) -> str:
     if isinstance(result, store_cli.LeaseError):

@@ -15,6 +15,7 @@ from typing import Any
 
 from harness.cli_launch import _launch, _stop_children_until_quiet, _terminate_children
 from harness.cli_run_graph import DEFAULT_POOL_KEEP
+from harness.decompose_ports import DecomposePorts
 from harness.registry import GraphSpec, discover
 from harness.termination import mark_terminating
 
@@ -200,15 +201,16 @@ def _exit_on_sigterm(signum: int, frame: object) -> None:
     raise SystemExit(143)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, ports: DecomposePorts | None = None) -> int:
+    """`ports` are the tools' store and route calls a decompose makes; `shell.py`, the composition root, passes them."""
     # Python's default SIGTERM action is to die without running any `finally`,
     # which would leave the run's `ended_at` unset. Only the main thread may
     # install a handler; the previous one is put back on every way out.
     if threading.current_thread() is not threading.main_thread():
-        return _main(argv)
+        return _main(argv, ports)
     previous = signal.signal(signal.SIGTERM, _exit_on_sigterm)
     try:
-        return _main(argv)
+        return _main(argv, ports)
     except SystemExit as exc:
         # `ended_at` is already stamped; interpreter exit would otherwise wait on fan-out workers.
         if exc.code == 143:
@@ -233,7 +235,7 @@ def _expand_repo(args: argparse.Namespace) -> argparse.Namespace:
     return expanded
 
 
-def _main(argv: list[str] | None) -> int:
+def _main(argv: list[str] | None, ports: DecomposePorts | None) -> int:
     specs = discover()
     parser = _build_parser(specs)
     parsed = parser.parse_args(argv)
@@ -244,4 +246,4 @@ def _main(argv: list[str] | None) -> int:
     report_out = sys.stdout
     quiet = contextlib.redirect_stdout(sys.stderr) if args.graph == "rescue" else contextlib.nullcontext()
     with quiet:
-        return _launch(specs, parser, args, report_out=report_out)
+        return _launch(specs, parser, args, report_out=report_out, ports=ports)

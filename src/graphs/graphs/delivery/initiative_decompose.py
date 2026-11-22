@@ -30,6 +30,8 @@ from typing import Any
 
 import yaml
 
+from core.frontmatter import split as split_frontmatter
+from core.generated_files import GENERATED_FILES
 from graphs._contract import ContractViolation, epic_shape, landing_for, proposal, require, require_cartridge
 from graphs.delivery.decompose_layout import check_layout, heal_layout, unlisted_artifacts
 from graphs.delivery.decompose_order import order_cross_phase_surfaces, order_shared_surfaces
@@ -454,18 +456,9 @@ def with_named_artifacts(task: Mapping[str, Any], tree: Sequence[Mapping[str, An
     )
 
 
-def _declared_generated_files() -> Mapping[str, Any]:
-    """Edge: the tools package's declaration of generated files; empty when that package is not installed."""
-    try:
-        from agent_tools.land import GENERATED_FILES  # imported here: the graphs package stays importable without it
-    except ImportError:
-        return {}
-    return GENERATED_FILES
-
-
 def with_generated_files(task: Mapping[str, Any], generated: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
     """Adds each declared generated file whose generator source is a surface; the body never names it, by design."""
-    declared = _declared_generated_files() if generated is None else generated
+    declared = GENERATED_FILES if generated is None else generated
     surfaces = [str(s) for s in task.get("surfaces") or []]
     listed = {s.removesuffix(_NEW) for s in surfaces}
     added = [
@@ -575,24 +568,6 @@ def _rewrite_correction(problems: Sequence[Problem], grants: Sequence[str]) -> s
         + "\n\n"
         + _grant_sentence(grants)
     )
-
-
-def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
-    """The leading `---` block of `text` as a mapping, and the text after it.
-
-    No opening line, or no closing line, is no block: `({}, text)`. A block that is not
-    YAML, or not a mapping, still comes off the body and gives `{}`."""
-    lines = text.splitlines()
-    if not lines or lines[0].strip() != "---":
-        return {}, text
-    close = next((i for i, line in enumerate(lines) if i and line.strip() == "---"), None)
-    if close is None:
-        return {}, text
-    try:
-        loaded = yaml.safe_load("\n".join(lines[1:close]))
-    except yaml.YAMLError:
-        loaded = None
-    return (loaded if isinstance(loaded, dict) else {}), "\n".join(lines[close + 1 :])
 
 
 def _frontmatter_block(text: str) -> str:
@@ -1120,7 +1095,7 @@ def run(args: Mapping[str, Any], runner: NodeRunner) -> dict[str, Any]:
     repo_name = str(args.get("repo") or "")
 
     # A path the idea itself puts outside the repo is rewritten and noted; only an idea with nothing else is refused, before any model call.
-    idea_frontmatter, idea_body = _split_frontmatter(str(idea))
+    idea_frontmatter, idea_body = split_frontmatter(str(idea))
     reach_allow = _reach_allow(args, idea_frontmatter)
     # An empty allow-list is lint_tickets' own default, so it is left unpassed.
     allow_kwargs = {"reach_allow": reach_allow} if reach_allow else {}

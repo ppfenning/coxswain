@@ -56,7 +56,7 @@ API's enums; a lane check imports only its worktree's code (a test proves it wit
 **Status.** `harness.store_api` is the typed store API: `*_on` functions over an open connection, which
 `harness.store_cli` wraps, and url-level functions that `agent_tools` calls in process (`store_cli`, `run_store`).
 Its values are frozen dataclasses and TypedDicts; `WorkState` is the one enum and `core.workstore.STATES` must equal
-it. The chair's remedies, which `cox inbox` accept and deny run, are `cox route edit <task> --initiative <initiative> --state <state>`, so a task id repeated across initiatives moves the right ticket. What stays a
+it. The chair's drop, retry and re-ground remedies, which `cox inbox accept` and `cox inbox deny` run, are `cox route edit <task> --initiative <initiative> --state <state>`, so a task id repeated across initiatives moves the right ticket; a carry is `cox runs land`. What stays a
 command line, and why: the `cox runs recover --reopen` hint prints `-m harness.store_cli set-state` for a person, and
 `store_switch` copies a store with `-m harness.store_copy`, which needs the sqlite double set in its own environment.
 The chair's trace prune (`-m harness.store_backfill_traces prune`) still runs as a child of the profile's harness
