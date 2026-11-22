@@ -752,8 +752,8 @@ def _release_moved(a: argparse.Namespace) -> int:
     return 2
 
 
-# `cox release` deployed nothing (#1229): its one subcommand refused. It stays only as `cox dev` does, a pointer for
-# muscle memory; `agent_tools.release_deploy` is the per-host core a future fleet deploy would call.
+# `cox release deploy` deployed nothing (#1229) and is gone, with its unwired per-host core. `cox release` stays only
+# as `cox dev` does, a pointer for muscle memory.
 _RELEASE_MOVED = f"{_DEV_MOVED}; to put a release on a host, run `cox upgrade` on that host"
 
 

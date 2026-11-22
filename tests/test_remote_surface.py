@@ -20,7 +20,7 @@ SCANNED = ("src/tools/agent_tools", "src/graphs/harness", "src/graphs/graphs", "
 RETIRING = frozenset({"cli_runs_fetch", "chair_login_check", "chair_read_remote_unfetched"})
 
 # Importers outside the retirement list, with the remote modules each imports today. Only shrinks.
-# remote_argv is the shared ssh argv builder: release_deploy, host_cmd and the lane prereq checks use it for things
+# remote_argv is the shared ssh argv builder: host_cmd, the installer and the lane prereq checks use it for things
 # E4 keeps, so E4 must move it out from under `remote_*` rather than delete it.
 EXISTING: dict[str, frozenset[str]] = {
     "chair_exec_edge": frozenset({"remote_argv", "remote_fetch"}),
@@ -42,7 +42,6 @@ EXISTING: dict[str, frozenset[str]] = {
     "lane_checkout_sync": frozenset({"remote_argv", "remote_fetch"}),
     "lane_prereqs": frozenset({"remote_argv"}),
     "lane_toolchain": frozenset({"remote_argv"}),
-    "release_deploy": frozenset({"remote_argv"}),
     "runs_stop": frozenset({"remote_argv", "remote_lane"}),
 }
 

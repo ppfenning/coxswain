@@ -112,10 +112,6 @@ _EVERY_STATE = [
 ]
 
 
-def test_deploy_targets_keep_exactly_active_and_deploy_only_rows_in_name_order():
-    assert host_cmd.deploy_targets(_EVERY_STATE) == [HOST_A, _EVERY_STATE[0]]
-
-
 def test_a_deploy_only_row_is_never_a_lane_host():
     assert host_cmd.host_rows_to_lane_hosts(_EVERY_STATE) == (LaneHost("host-a", "host-a", ""),)
 
