@@ -151,10 +151,9 @@ def test_the_phase_gate_env_is_the_lanes_the_repos_venv_first_its_own_tmpdir_and
     assert capped["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "4" and capped["PATH"] == "/r/.venv/bin:/usr/bin"
 
 
-def test_the_phase_gate_runs_under_the_repos_venv_and_the_old_models_gates_do_not(tmp_path: Path) -> None:
+def test_every_lander_gate_runs_under_the_repos_venv(tmp_path: Path) -> None:
     """E1: a bare command of the phase section resolves to the repository's `.venv/bin`, and the tree gets the venv
-    linked, as the lane's phase worktree does. The `level` and `ticket` gates run in this process's environment as
-    before, so the same command is not found there."""
+    linked, as the lane's phase worktree does. The old model's `level` and `ticket` gates run under it too."""
     repo, tree = tmp_path / "repo", tmp_path / "tree"
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
@@ -172,8 +171,9 @@ def test_the_phase_gate_runs_under_the_repos_venv_and_the_old_models_gates_do_no
     landing = {"level_checks": [{"name": "tool", "cmd": "repo-only-tool"}],
                "ticket_checks": [{"name": "tool", "cmd": "repo-only-tool"}]}
     for gate in ("level", "ticket"):
-        passed, output = lander_ports.run_gate(repo, tree, gate, landing, None)
-        assert passed is False and "tool: repo-only-tool" in output, (gate, output)
+        (tree / ".venv").unlink()
+        assert lander_ports.run_gate(repo, tree, gate, landing, None) == (True, ""), gate
+        assert (tree / ".venv").is_symlink(), gate
 
 
 def test_a_phase_has_one_open_rectify_task_and_a_new_one_takes_the_first_free_id() -> None:

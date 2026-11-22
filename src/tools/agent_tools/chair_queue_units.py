@@ -35,6 +35,7 @@ from agent_tools.chair_service import (
     program_arguments,
 )
 from agent_tools.unit_env import environment_file_line
+from agent_tools.unit_tmpdir import service_lines
 
 __all__ = [
     "PLIST_LABEL_PREFIX",
@@ -71,6 +72,7 @@ class UnitInputs:
     profile: str
     path: str
     env_file: str | None
+    tmpdir: str | None = None  # the TMPDIR the worker's lanes and checks get (`unit_tmpdir`)
 
 
 @dataclass(frozen=True)
@@ -124,6 +126,7 @@ def template_text(inputs: UnitInputs) -> str:
         "Restart=always",
         KILL_MODE_LINE,
         "RestartSec=30",
+        *service_lines(inputs.tmpdir),
         "",
         "[Install]",
         "WantedBy=default.target",
@@ -152,7 +155,7 @@ def plist_text(inputs: UnitInputs, kind: str) -> str:
         "  <true/>",
         "  <key>WorkingDirectory</key>",
         f"  <string>{escape(inputs.workspace_dir)}</string>",
-        *environment_variable_lines(inputs.path),
+        *environment_variable_lines(inputs.path, inputs.tmpdir),
         "</dict>",
         "</plist>",
     ]

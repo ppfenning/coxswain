@@ -227,6 +227,24 @@ The agent stores no secret. At each launch it reads the env file described
 below, so a new token takes effect on the next run without a reinstall. The
 plist is written with mode 0600.
 
+#### The units' temp directory
+
+The chair, queue-worker and lander units set `TMPDIR` for the lanes, smokes
+and suites they run. The default is `/var/tmp/coxswain-<user>`, which is on
+disk; `/tmp` can be RAM, or a tmpfs with a user quota. A systemd unit creates
+the directory before each start (`ExecStartPre=-mkdir`). To use another
+directory, set it in the profile and let the upgrade rewrite the units:
+
+```sh
+cox settings set profile lane_tmpdir /srv/scratch/coxswain
+cox upgrade                      # rewrites TMPDIR in each installed unit, then daemon-reload
+```
+
+`cox setup doctor` has a `lane TMPDIR` row for each installed unit. The row
+warns when that unit's TMPDIR, including one set by a drop-in, is on a tmpfs
+or on a disk with a user quota under about 20 GB. The warning names the unit
+and the fix.
+
 #### Check the schedule on a macOS host
 
 The test suite cannot run launchd, so check a macOS host by hand after you

@@ -47,6 +47,7 @@ _KNOWN_KEYS = {
     "operator",  # the human the courier and decisions address; settings_model.operator_name, "operator" when absent
     "serial_files",  # `[path, ...]` the steer rule never lets two initiatives share; an entry ending in `/` covers a directory
     "intake_stage",  # `draft` or `ready`: the stage a session files an intake at when the caller names none
+    "lane_tmpdir",  # the TMPDIR the chair, queue and lander units give their lanes; unit_tmpdir.DEFAULT_TEMPLATE when absent
     "upgrade_channel",  # `stable` (default: release tags) or `edge` (the newest green commit on main); cox upgrade reads it
     "intake_map",  # JSON: the `PullMap` label names a pull maps onto an intake's stage, priority, epic and target release
 }

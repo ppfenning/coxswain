@@ -300,15 +300,19 @@ def run_gate(repo: Path, tree: Path, gate: str, landing: Mapping[str, object], e
 
     `lander.PHASE_GATE` is the new model's level gate: the cartridge's `level_checks`, then the `# level: phase`
     section of the tree's own `.agent-checks` (L2), run in the lane's environment (`_run_phase_gate`). Every other gate
-    reads the cartridge's list alone and runs in this process's environment, as before."""
+    reads the cartridge's list alone and runs in this process's environment, under the repo's venv as every gate is:
+    the tree's `.venv` linked to it (`link_venv`), so `run_checks` puts its bin first and uv never syncs it."""
     from harness.check_gate import gate_checks, tree_gate_checks
     from harness.checks import run_checks
+    from harness.worktree import link_venv
 
     if error:
         return False, f"cartridge checks unavailable ({error})"
     checks = tree_gate_checks(landing, "level", tree) if gate == lander.PHASE_GATE else gate_checks(landing, gate)
     if not checks:
         return True, ""
+    if gate != lander.PHASE_GATE:
+        link_venv(repo, tree)
     results = _run_phase_gate(repo, tree, checks) if gate == lander.PHASE_GATE else run_checks(tree, checks)
     failed = [r for r in results if not r.get("passed")]
     if not failed:

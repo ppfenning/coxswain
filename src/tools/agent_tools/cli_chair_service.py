@@ -20,6 +20,7 @@ import uuid
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
+from agent_tools import unit_tmpdir
 from agent_tools.cli import _CHAIR_RUN_INTERVAL, build_parser
 from agent_tools.cli_chair import _chair_once_exit, _chair_run_deps, _chair_unwired_sources
 from agent_tools.cli_common import _profile_path, _read_text_or_none
@@ -288,10 +289,43 @@ class _ChairUnitInputs:
     profile: str
     path: str
     env_file: str | None
+    tmpdir: str | None = None  # the units' TMPDIR (`unit_tmpdir`)
+
+
+def _unit_tmpdir(profile: Mapping[str, object]) -> tuple[str, str | None]:
+    """Edge. The TMPDIR this machine's units set and, when the profile's `lane_tmpdir` was refused, why
+    (`unit_tmpdir.tmpdir_choice`): the profile's value when it passes, else one under /var/tmp for this user."""
+    import getpass
+
+    try:
+        user = getpass.getuser()
+    except (OSError, KeyError):
+        user = ""
+    return unit_tmpdir.tmpdir_choice(profile, user)
+
+
+def _profile_tmpdir(profile_path: Path) -> tuple[str, str | None]:
+    """Edge. `_unit_tmpdir` over the profile at `profile_path`; one that is missing or does not parse names none."""
+    text = _read_text_or_none(profile_path)
+    try:
+        profile = route.parse_profile(text) if text is not None else {}
+    except route.ProfileError:
+        profile = {}
+    return _unit_tmpdir(profile)
+
+
+def _make_agent_tmpdir(plist_text: str) -> None:
+    """Edge. Create the TMPDIR a launchd agent's plist sets, at install: launchd has no ExecStartPre, which a systemd
+    unit makes it with before each start. A failure is left to Python's tempfile, which then falls back to /tmp."""
+    found = unit_tmpdir.effective_tmpdir(plist_text)
+    if found is not None:
+        with contextlib.suppress(OSError):
+            Path(found[0]).mkdir(mode=0o700, parents=True, exist_ok=True)
 
 
 def _chair_unit_inputs(label: str | None, env_file: str | None, profile_path: Path) -> _ChairUnitInputs | _ChairUnitRefusal:
-    """Edge-light. Resolves cox, the profile, PATH and the env file, or says why not; writes and prints nothing.
+    """Edge-light. Resolves cox, the profile, PATH, the env file and TMPDIR, or says why not; writes
+    nothing, and prints only a warning to stderr when the profile's `lane_tmpdir` was refused for the default.
     A `label` of None means the unit has none, so there is no label to check."""
     cox = shutil.which("cox")
     if cox is None:
@@ -324,6 +358,9 @@ def _chair_unit_inputs(label: str | None, env_file: str | None, profile_path: Pa
         **({"--environment-file": env_file} if env_file is not None else {}),
         "PATH": unit_path_value,
     }
+    tmpdir, refused = _unit_tmpdir(profile)
+    if refused is not None:  # the unit still installs, with the default: say so, as the upgrade and the doctor do
+        print(f"chair service: warning: {refused}", file=sys.stderr)
     unsafe = chair_service.unsafe_values(values)
     if unsafe:
         return _ChairUnitRefusal(
@@ -335,7 +372,8 @@ def _chair_unit_inputs(label: str | None, env_file: str | None, profile_path: Pa
         return _ChairUnitRefusal(
             f"chair service: {env_file} has export lines ({numbers}) that EnvironmentFile= may skip; pass --environment-file with NAME=value lines"
         )
-    return _ChairUnitInputs(values["cox"], values["workspace_dir"], values["--profile"], unit_path_value, env_file)
+    return _ChairUnitInputs(values["cox"], values["workspace_dir"], values["--profile"], unit_path_value, env_file,
+                            tmpdir)
 
 
 def _chair_unit_text(label: str, interval: int | str, env_file: str | None, profile_path: Path) -> str | _ChairUnitRefusal:
@@ -344,7 +382,7 @@ def _chair_unit_text(label: str, interval: int | str, env_file: str | None, prof
     if isinstance(resolved, _ChairUnitRefusal):
         return resolved
     return chair_service.unit_text(
-        resolved.cox, resolved.workspace_dir, label, interval, env_file, resolved.profile, resolved.path,
+        resolved.cox, resolved.workspace_dir, label, interval, env_file, resolved.profile, resolved.path, resolved.tmpdir,
     )
 
 
@@ -358,7 +396,8 @@ def _lander_unit_text(a: argparse.Namespace, ws: Path) -> str | None:
     if isinstance(resolved, _ChairUnitRefusal):
         print(resolved.message)
         return None
-    return lander_cli.unit_text(resolved.cox, str(ws), int(a.interval), resolved.profile, resolved.path, env_file)
+    return lander_cli.unit_text(resolved.cox, str(ws), int(a.interval), resolved.profile, resolved.path, env_file,
+                                resolved.tmpdir)
 
 
 def _chair_service_install(a: argparse.Namespace, path: Path) -> int:

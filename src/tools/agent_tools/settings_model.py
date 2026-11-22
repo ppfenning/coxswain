@@ -32,7 +32,7 @@ Keys by section, in section order:
 - profile files: profile `team`, `cartridges_dir`, `skills_roots`,
   `provider_profile`, `harness_dir`, `workspace_dir`, `assume`, `router`,
   `forge`, `tracker`, `umbrella_dir`, `umbrella_clone_dir`, `ids`, `operator`,
-  `store.mode`, `upgrade_channel`.
+  `store.mode`, `upgrade_channel`, `lane_tmpdir`.
 
 unknown: `lane_hosts` is not in the parsed profile dict, so no row carries it.
 `landing_areas.checks`, `context`, `sources` and `repo_map` are not scalar
@@ -68,6 +68,10 @@ BUDGET_TIMEZONE_DESCRIPTION = (
     "The default is applied by the readers, not by the profile parser"
 )
 
+LANE_TMPDIR_DESCRIPTION = (
+    "the TMPDIR the chair, queue-worker and lander units give their lanes, smokes and suites; "
+    "/var/tmp/coxswain-<user> when unset. cox upgrade writes it into the installed units"
+)
 UPGRADE_CHANNEL_DESCRIPTION = (
     "what cox upgrade moves this machine to: stable, the newest release tag (the default), or edge, "
     "the newest commit on main whose CI passed"
@@ -135,6 +139,7 @@ REGISTRY: tuple[Setting, ...] = (
     Setting("profile", "store.mode", "profile files", PROFILE_FILE, "store.mode", description=STORE_MODE_DESCRIPTION),
     Setting("profile", "upgrade_channel", "profile files", PROFILE_FILE, "upgrade_channel",
             description=UPGRADE_CHANNEL_DESCRIPTION),
+    Setting("profile", "lane_tmpdir", "profile files", PROFILE_FILE, "lane_tmpdir", description=LANE_TMPDIR_DESCRIPTION),
 )
 
 
