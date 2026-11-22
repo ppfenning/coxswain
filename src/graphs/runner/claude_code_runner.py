@@ -1134,6 +1134,14 @@ class ClaudeCodeRunner:
                 raise RunnerError(f"cannot read context pack {path}: {exc}") from exc
         return "\n\n".join(chunks)
 
+    @staticmethod
+    def _agent_env(scratch: Path | None) -> dict[str, str]:
+        """Edge. `child_env`, under a scratch's linked shared venv with uv never syncing it (`shared_venv_env`)."""
+        from harness.worktree import linked_venv_bin, shared_venv_env  # here: harness imports this module
+
+        env = child_env(os.environ, shutil.which("bash"), read_token(token_path(str(Path.home()))))
+        return shared_venv_env(env, linked_venv_bin(scratch) if scratch is not None else None)
+
     def _make_scratch(self, role: str) -> tuple[Path, Path]:
         parent = Path(tempfile.mkdtemp(prefix="agent-graphs-build-"))
         scratch = parent / "tree"
@@ -1524,7 +1532,7 @@ class ClaudeCodeRunner:
                 # A thread keeps one working directory for its whole life: the
                 # CLI files sessions by directory, and a resume looks there.
                 cwd=scratch or self.cwd,
-                env=child_env(os.environ, shutil.which("bash"), read_token(token_path(str(Path.home())))),
+                env=self._agent_env(scratch),
                 start_new_session=True,
             )
         except FileNotFoundError as exc:

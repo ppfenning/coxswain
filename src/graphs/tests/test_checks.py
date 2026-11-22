@@ -47,7 +47,7 @@ from harness.checks import (
     run_checks,
 )
 from harness.runners import _DelegatingFastPath
-from harness.worktree import apply_patch, create_worktree, link_venv
+from harness.worktree import apply_patch, create_worktree, link_venv, shared_venv_env
 from runner.claude_code_runner import ClaudeCodeRunner
 
 
@@ -739,6 +739,49 @@ def test_link_venv_links_the_land_worktree_and_git_add_all_stages_nothing(tmp_pa
     _run(["git", "add", "-A"], cwd=worktree)
     status = subprocess.run(["git", "status", "--porcelain"], cwd=worktree, capture_output=True, text=True)
     assert status.stdout == ""
+
+
+def _pytest_launcher(path: Path, importable: Path | None = None) -> None:
+    """A `pytest` on disk: this interpreter's pytest, with `importable` on its import path when given."""
+    lines = ["#!/bin/sh"]
+    if importable is not None:
+        lines.append(f"export PYTHONPATH={shlex.quote(str(importable))}")
+    lines.append(f'exec {shlex.quote(sys.executable)} -m pytest -p no:cacheprovider "$@"')
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    path.chmod(0o755)
+
+
+def test_a_task_check_runs_under_the_shared_venv_linked_into_its_worktree_not_the_first_pytest_on_path(tmp_path) -> None:
+    """E1, 2026-11-21: a task's root-suite check failed its conftest's imports. The worktree's linked venv is the one
+    its checks run under, whichever `pytest` the process's PATH finds first, and no `uv run` there may sync it."""
+    repo = _init_repo(tmp_path / "repo")
+    site, bin_dir = repo / ".venv" / "site", repo / ".venv" / "bin"
+    site.mkdir(parents=True)
+    bin_dir.mkdir()
+    (site / "only_in_the_venv.py").write_text("", encoding="utf-8")
+    _pytest_launcher(bin_dir / "pytest", site)
+    worktree = tmp_path / "wt"
+    create_worktree(repo, worktree, branch="agents/run-1")
+    assert link_venv(repo, worktree)
+    (worktree / "conftest.py").write_text("import only_in_the_venv\n", encoding="utf-8")
+    (worktree / "test_a.py").write_text("def test_a():\n    pass\n", encoding="utf-8")
+    impostor = tmp_path / "impostor"
+    impostor.mkdir()
+    _pytest_launcher(impostor / "pytest")
+    env = {k: v for k, v in os.environ.items() if k != "UV_NO_SYNC"}
+    env["PATH"] = os.pathsep.join([str(impostor), env.get("PATH", "")])
+    results = run_checks(worktree, [{"name": "tests", "cmd": "pytest -q"},
+                                    {"name": "no sync", "cmd": 'test "$UV_NO_SYNC" = 1'}], env=env)
+    assert [(r["name"], r["passed"]) for r in results] == [("tests", True), ("no sync", True)], results[0]["output_tail"]
+
+
+def test_shared_venv_env_puts_the_venv_first_once_and_is_the_environment_itself_without_one() -> None:
+    bin_dir = Path("/r/.venv/bin")
+    environ = {"PATH": os.pathsep.join(["/u", str(bin_dir), "/v"]), "K": "x"}
+    once = shared_venv_env(environ, bin_dir)
+    assert once == {"PATH": os.pathsep.join([str(bin_dir), "/u", "/v"]), "K": "x", "UV_NO_SYNC": "1"}
+    assert shared_venv_env(once, bin_dir) == once
+    assert shared_venv_env(environ, None) == environ
 
 
 def test_create_worktree_existing_branch_fails_with_gits_message(tmp_path) -> None:

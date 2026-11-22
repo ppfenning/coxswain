@@ -27,6 +27,7 @@ from typing import Any
 from graphs.delivery.clean_gate import clean_checks, clean_refusal
 from harness.check_scope import TOUCHED_ONLY
 from harness.lane_workers import XDIST_VAR
+from harness.worktree import linked_venv_bin, shared_venv_env
 
 __all__ = [
     "HARNESS_FAULT_PREFIX",
@@ -507,8 +508,13 @@ def run_checks(
     gap wearing the shape of one. A command that never finishes is treated as a
     failure with no exit code — a check that hangs forever is not "still
     pending", it is a check that did not pass. `env` is the child's whole
-    environment; None inherits this process's.
+    environment; None inherits this process's. In a worktree whose `.venv` is linked to the shared checkout's
+    (`link_venv`), that venv's `bin` goes first on PATH and uv never syncs it (`shared_venv_env`): every check a lane
+    runs, task, phase or suite, and every lander gate gets this one environment, whatever launched the process.
     """
+    venv_bin = linked_venv_bin(worktree)
+    if venv_bin is not None:
+        env = shared_venv_env(os.environ if env is None else env, venv_bin)
     results: list[dict[str, Any]] = []
     workers = _workers_field(env)
     for number, check in enumerate(checks, 1):

@@ -9,7 +9,7 @@ import shutil
 import tempfile
 import threading
 import uuid
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import NamedTuple
 
@@ -22,6 +22,7 @@ __all__ = [
     "create_worktree",
     "keep_worktree",
     "link_venv",
+    "linked_venv_bin",
     "normalise_patch",
     "prune_registrations",
     "read_lock",
@@ -30,6 +31,7 @@ __all__ = [
     "release_stale_holders",
     "remove_worktree",
     "reset_worktree",
+    "shared_venv_env",
     "stale_holders",
     "sync_env",
 ]
@@ -386,6 +388,30 @@ def link_venv(repo: Path, worktree: Path) -> bool:
         exclude.write_text("\n".join([*lines, "/.venv"]) + "\n", encoding="utf-8")
     link.symlink_to(venv.resolve())
     return True
+
+
+# uv's own switch (`uv run --no-sync`): run in the environment as it is, never lock or sync it first.
+UV_NO_SYNC_VAR = "UV_NO_SYNC"
+
+
+def linked_venv_bin(worktree: Path) -> Path | None:
+    """Edge. `<worktree>/.venv/bin` when the worktree's `.venv` is a link to a shared one (`link_venv`), else None."""
+    link = Path(worktree) / ".venv"
+    return link / "bin" if link.is_symlink() and (link / "bin").is_dir() else None
+
+
+def shared_venv_env(environ: Mapping[str, str], venv_bin: Path | None) -> dict[str, str]:
+    """Pure. The environment a command runs in inside a tree whose `.venv` is the shared checkout's (`link_venv`):
+    `venv_bin` first on PATH, once, and `UV_NO_SYNC_VAR` set, so a `uv run` there uses the venv as it is. Without it
+    uv syncs the linked venv to the tree it runs in: the checkout's editable install is rewritten to point into that
+    tree, and once the tree is removed every check, smoke and gate on the machine fails its imports (E1, 2026-11-21:
+    a builder's `uv run pytest` in its scratch, then "No module named 'agent_tools'" on every later task). With no
+    `venv_bin`, `environ` as it is."""
+    if venv_bin is None:
+        return dict(environ)
+    first = str(venv_bin)
+    rest = [p for p in environ.get("PATH", "").split(os.pathsep) if p and p != first]
+    return {**environ, "PATH": os.pathsep.join([first, *rest]), UV_NO_SYNC_VAR: "1"}
 
 
 def prune_registrations(repo: Path) -> tuple[bool, str]:
