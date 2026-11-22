@@ -18,6 +18,7 @@ from agent_tools.unit_env import (
 from agent_tools.unit_env import export_lines as export_lines
 from agent_tools.unit_env import unit_environment_file as unit_environment_file
 from agent_tools.unit_env import unsafe_values as unsafe_values
+from agent_tools.unit_tmpdir import plist_lines, service_lines, set_service_line
 
 UNIT_NAME = "coxswain-chair.service"
 WATCHDOG_SERVICE_NAME = "coxswain-chair-watchdog.service"
@@ -44,18 +45,7 @@ def with_kill_mode(text: str) -> str:
 
     This is how a unit installed before the setting gets it (`unit_refresh`): the rest of the file, whatever the
     operator installed it with, is left as it is."""
-    if _KILL_MODE.search(text):
-        return _KILL_MODE.sub(KILL_MODE_LINE, text)
-    lines = text.splitlines(keepends=True)
-    start = next((i for i, line in enumerate(lines) if line.strip() == "[Service]"), None)
-    if start is None:
-        return text
-    end = next((i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("[")), len(lines))
-    while end > start + 1 and not lines[end - 1].strip():
-        end -= 1
-    if lines[end - 1] and not lines[end - 1].endswith("\n"):
-        lines[end - 1] += "\n"
-    return "".join([*lines[:end], KILL_MODE_LINE + "\n", *lines[end:]])
+    return set_service_line(text, _KILL_MODE, KILL_MODE_LINE)
 
 
 def unit_path[Home: PurePath](home: Home) -> Home:  # a Path in, a Path out: the edge calls .exists on the result
@@ -78,10 +68,11 @@ def path_value(cox: str, tools_bin: str, graphs_bin: str, default_path: str) -> 
 
 def unit_text(
     cox: str, workspace_dir: str, label: str, interval: int, environment_file: str | None, profile: str | None = None,
-    path: str | None = None,
+    path: str | None = None, tmpdir: str | None = None,
 ) -> str:
     """`EnvironmentFile=-` keeps a missing file from failing the unit; `path` becomes the one `Environment=PATH=` line.
-    `KillMode=process`: see `KILL_MODE_LINE`."""
+    `KillMode=process`: see `KILL_MODE_LINE`. `tmpdir` is the TMPDIR the chair's lanes get (`unit_tmpdir`), last in
+    [Service] where `unit_tmpdir.with_tmpdir` puts it, so an upgrade leaves a fresh unit as it is."""
     env_lines = [environment_file_line(environment_file)] if environment_file is not None else []
     path_lines = [f"Environment=PATH={path}"] if path is not None else []
     profile_args = f" --profile {profile}" if profile is not None else ""
@@ -98,6 +89,7 @@ def unit_text(
         KILL_MODE_LINE,
         f"RestartForceExitStatus={RESTART_EXIT_CODE}",
         "RestartSec=30",
+        *service_lines(tmpdir),
         "",
         "[Install]",
         "WantedBy=default.target",
@@ -137,11 +129,11 @@ def watchdog_timer_text(minutes: int) -> str:
     return "\n".join(lines) + "\n"
 
 
-def environment_variable_lines(path: str) -> list[str]:
-    """The EnvironmentVariables dict: PATH only. The env file's values are never copied into a plist; the agent
-    sources the file at launch (`program_arguments`)."""
+def environment_variable_lines(path: str, tmpdir: str | None = None) -> list[str]:
+    """The EnvironmentVariables dict: PATH, and TMPDIR when given (`unit_tmpdir`). The env file's values are never
+    copied into a plist; the agent sources the file at launch (`program_arguments`)."""
     return ["  <key>EnvironmentVariables</key>", "  <dict>", "    <key>PATH</key>", f"    <string>{escape(path)}</string>",
-            "  </dict>"]
+            *plist_lines(tmpdir), "  </dict>"]
 
 
 def program_arguments(environment_file: str | None, argv: list[str]) -> list[str]:
@@ -187,7 +179,7 @@ def service_file[Home: PurePath](platform: str, home: Home) -> Home | None:
 
 def chair_plist_text(
     cox: str, workspace_dir: str, label: str, interval: int, path: str, profile: str,
-    environment_file: str | None = None,
+    environment_file: str | None = None, tmpdir: str | None = None,
 ) -> str:
     """KeepAlive true restarts the chair on any exit, including RESTART_EXIT_CODE; every interpolated value is XML-escaped.
     The agent sources `environment_file` at each launch."""
@@ -210,7 +202,7 @@ def chair_plist_text(
         "  <true/>",
         "  <key>WorkingDirectory</key>",
         f"  <string>{escape(workspace_dir)}</string>",
-        *environment_variable_lines(path),
+        *environment_variable_lines(path, tmpdir),
         "</dict>",
         "</plist>",
     ]

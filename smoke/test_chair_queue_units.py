@@ -102,6 +102,8 @@ def _watchdog_up(install, env: dict[str, str], home: Path, root: Path) -> None:
 def test_install_twice_then_roll_back_in_a_sandboxed_home(machine, sandbox):
     install = sandbox.install
     home, base, profile, env, root = machine
+    lane_tmp = root / "lane-tmp"  # the profile's lane_tmpdir, which every worker's unit sets as TMPDIR
+    base = f"{base}lane_tmpdir: {lane_tmp}\n"
     tick = _tick_unit(home)
     tick.parent.mkdir(parents=True, exist_ok=True)
     tick.write_text("the tick's unit, as `cox chair service --install` left it\n", encoding="utf-8")
@@ -129,11 +131,14 @@ def test_install_twice_then_roll_back_in_a_sandboxed_home(machine, sandbox):
             agent = plistlib.loads(_files(home)[KINDS.index(kind)].read_bytes())
             assert agent["Label"] == f"coxswain-chair-{kind}"
             assert agent["ProgramArguments"][-7:] == ["worker", "--kind", kind, "--label", "chair", "--profile", str(profile)]
+            assert agent["EnvironmentVariables"]["TMPDIR"] == str(lane_tmp)
+        assert lane_tmp.is_dir()  # launchd has no ExecStartPre: the install made it
         assert f"launchctl bootout gui/{uid}/coxswain-chair" in calls and f"launchctl disable gui/{uid}/coxswain-chair" in calls
         assert sorted((root / "loaded").read_text().split()) == sorted([*(f"coxswain-chair-{k}" for k in KINDS), "coxswain-chair-watchdog"])
     else:
         text = _files(home)[0].read_text(encoding="utf-8")
         assert f"ExecStart={install.cox} chair worker --kind %i --label chair --profile {profile}" in text
+        assert f"Environment=TMPDIR={lane_tmp}\nExecStartPre=-mkdir -p -m 0700 {lane_tmp}\n" in text
         instances = " ".join(f"coxswain-chair@{k}.service" for k in KINDS)
         assert calls == ["systemctl --user is-active coxswain-chair-watchdog.timer",
                          "systemctl --user disable --now coxswain-chair.service", "systemctl --user daemon-reload",
