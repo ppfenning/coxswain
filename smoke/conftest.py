@@ -33,6 +33,10 @@ import pytest
 from devtools import tree_imports
 from smoke import gh_replay, plan
 
+# Under COX_SMOKE_REQUIRED every skip fails the run, an import skip at collection too (smoke/required.py); a
+# conftest's hooks are found by name, so importing them here is what turns them on.
+from smoke.required import pytest_make_collect_report, pytest_runtest_makereport  # noqa: F401
+
 ROOT = Path(__file__).resolve().parents[1]
 # This tree's source roots go ahead of the venv, whose editable install may point at another checkout, and the suite
 # refuses to load if agent_tools, harness, runner, graphs or core resolve outside this tree (`devtools.tree_imports`;
@@ -42,9 +46,6 @@ tree_imports.use_this_tree(ROOT)
 # One reader of a Forgejo branch answer, shared with the code under test: the forge's own parser, imported from this
 # tree (not from whatever checkout the runner's venv installed), since the fixtures poll the same endpoint it does.
 from agent_tools.forge_forgejo import parse_branch_tip  # noqa: E402
-# Under COX_SMOKE_REQUIRED every skip fails the run, an import skip at collection too (smoke/required.py); a
-# conftest's hooks are found by name, so importing them here is what turns them on.
-from smoke.required import pytest_make_collect_report, pytest_runtest_makereport  # noqa: E402, F401
 
 # The harness backs a store up with `pg_dump` before it migrates one that holds something (`harness.store_migrate`,
 # `should_back_up`); a fresh smoke database is not backed up, but test_store_backup_pg_dump.py migrates one that is.
