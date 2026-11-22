@@ -447,19 +447,21 @@ def create_project(run, owner: str, name: str = "Coxswain"):
 
 
 def _find_item_file(root: Path, item_id: str, key: str | None = None):
-    """The file whose `item_file_key` is `key`, else the first whose id is `item_id` (an item built without a file
-    key). The key tells apart two initiatives' tasks of one id, which the id alone would write into the first found."""
+    """With `key`, the one file whose `item_file_key` is `key`, or None: never another initiative's task of the same
+    id, which would be handed this item's issue. Without one (an item built with no file key), the first whose id
+    is `item_id`."""
     candidates = list((root / "intake").glob("*.md")) if (root / "intake").is_dir() else []
     candidates += list(root.glob("work/*/*/*.md")) + list(root.glob("work/*/initiative.md"))
-    by_id = None
     for path in candidates:
         fields, _ = route.parse_frontmatter(path.read_text())
-        if key and item_file_key(path, fields) == key:
-            return path
+        if key:
+            if item_file_key(path, fields) == key:
+                return path
+            continue
         own_id = _initiative_id(path.parent.name) if path.name == "initiative.md" else fields.get("id", path.stem)
-        if by_id is None and own_id == item_id:
-            by_id = path
-    return by_id
+        if own_id == item_id:
+            return path
+    return None
 
 
 def _rewrite_issue_line(text: str, issue: str) -> str:
@@ -676,7 +678,7 @@ def _execute_step(step: dict, run, ctx: dict) -> tuple[bool, str]:
         ctx["issue_by_item"][step["item_id"]] = issue
         # Recorded at once, so a later failed step cannot leave the issue unknown and a rerun duplicate it. A crash
         # before this line leaves the issue marked with the item (`route_sync.marked_body`): the lookup above finds it.
-        _writeback(ctx["root"], step["item_id"], issue, step.get("marker"))
+        _writeback(ctx["root"], step["item_id"], issue, step.get("marker") or None)
         return True, issue
     if kind == "issue_edit":
         repo = _step_repo(step["issue"], ctx)
@@ -748,7 +750,7 @@ def _execute_step(step: dict, run, ctx: dict) -> tuple[bool, str]:
         issue = _resolved_issue(step, ctx)
         if not issue:
             return False, "no issue to write back"
-        _writeback(ctx["root"], step["item_id"], issue, step.get("marker"))
+        _writeback(ctx["root"], step["item_id"], issue, step.get("marker") or None)
         return True, issue
     return False, f"unknown step kind {kind!r}"
 

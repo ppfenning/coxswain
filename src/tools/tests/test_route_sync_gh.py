@@ -357,6 +357,14 @@ def test_two_same_id_tasks_in_two_initiatives_of_one_repo_each_get_and_record_th
     for initiative, issue in (("alpha", "9"), ("beta", "10")):
         assert f"issue: {issue}" in (tmp_path / "work" / initiative / "build" / "t1.md").read_text().splitlines()
 
+    # alpha's file is gone: its write-back finds no file, and never hands #9 to beta's task of the same id.
+    (tmp_path / "work" / "alpha" / "build" / "t1.md").unlink()
+    beta = tmp_path / "work" / "beta" / "build" / "t1.md"
+    assert route_sync_gh._find_item_file(tmp_path, "t1", "task:alpha/t1") is None
+    assert route_sync_gh._find_item_file(tmp_path, "t1", "task:beta/t1") == beta
+    route_sync_gh.execute([{**steps[1], "issue": "9"}], run, "acme/7", tmp_path)
+    assert "issue: 10" in beta.read_text().splitlines() and "issue: 9" not in beta.read_text().splitlines()
+
 
 def test_cli_dry_run_prints_the_rendered_steps_and_exits_0(tmp_path, capsys, monkeypatch):
     _mirror(tmp_path)

@@ -29,9 +29,9 @@ def test_a_new_item_plans_create_add_five_sets_and_a_writeback_in_order():
                       "project_set", "project_set", "project_set", "writeback"]
     assert steps[0] == {"kind": "issue_create", "repo": "acme/widgets", "title": "Fix the thing",
                           "body": "Some body.\n\n<!-- coxswain:item item-1 -->", "label": "coxswain",
-                          "item_id": "item-1", "marker": "item-1"}
+                          "item_id": "item-1", "marker": ""}
     assert steps[1] == {"kind": "project_add", "issue": None}
-    assert steps[-1] == {"kind": "writeback", "item_id": "item-1", "issue": None, "marker": "item-1"}
+    assert steps[-1] == {"kind": "writeback", "item_id": "item-1", "issue": None, "marker": ""}
 
 
 def test_two_fresh_items_keep_their_steps_grouped_per_item():

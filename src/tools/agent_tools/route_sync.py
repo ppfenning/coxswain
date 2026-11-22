@@ -295,7 +295,7 @@ def _issue_steps(item: Item, issues: dict) -> tuple[list[dict], str | None]:
     if item.issue is None:
         step = {"kind": "issue_create", "repo": item.repo, "title": item.title,
                  "body": marked_body(item_key(item), item.body), "label": _LABEL, "item_id": item.id,
-                 "marker": item_key(item)}
+                 "marker": item.marker_key}
         return [step], None
     stored = issues.get(item.issue)
     if stored is not None and (stored.get("title") != item.title or unmarked(stored.get("body") or "") != item.body):
@@ -353,7 +353,7 @@ def _item_steps(item: Item, issues: dict, project_items: dict, planned_ids: froz
         return [{"kind": "refuse", "item_id": item.id, "detail": "no repository resolves for this item"}]
     issue_steps, key = _issue_steps(item, issues)
     project_steps = [] if wanted is None else _project_steps(key, wanted, project_items)
-    writeback = ([{"kind": "writeback", "item_id": item.id, "issue": key, "marker": item_key(item)}]
+    writeback = ([{"kind": "writeback", "item_id": item.id, "issue": key, "marker": item.marker_key}]
                  if item.issue is None else [])
     return (issue_steps + project_steps + writeback + _milestone_steps(item, key)
             + _link_steps(item, key, planned_ids) + _close_steps(item, issues))
