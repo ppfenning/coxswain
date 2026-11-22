@@ -10,7 +10,7 @@ what it says and folds the outcome back in (`beaten`, `passed`, `idled`, `lost`)
 
 - **One per kind.** A worker acts only while it holds the kind lease, on the store's clock. A second copy is refused
   and stands by, trying again once per beat (never sooner), so it takes over within one lease time to live of the first
-  one stopping. A lease check that fails, or does not answer within `call_timeout`, counts as not held.
+  one stopping. A lease check that fails, or does not answer within `CALL_TIMEOUT_SECONDS`, counts as not held.
 - **Settle.** A worker that has just taken the lease waits `settle` seconds before its first pass, past the window in
   which a tick that read the leases before the take could still be performing that kind.
 - **The setting decides.** A worker plans only a kind the profile's `chair.queues` lists, and lets the lease go when

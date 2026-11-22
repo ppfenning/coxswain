@@ -2,7 +2,7 @@
 that keep them running (C6). The cutover's check (§5.4 step 5) reads it.
 
 Pure: the rows come in, the lines go out. Every age is on the store's clock, as the leases are; the edge
-(`cli_chair_status`) reads the rows, the store's clock and the units' states.
+(`cli_chair_units`) reads the rows, the store's clock and the units' states.
 
 There is no `chair_queue` table (C3 to C5 re-derive each pass from the store's rows), so a queue has no depth and no
 oldest item to show; the status says so rather than print a zero that would read as an empty queue.

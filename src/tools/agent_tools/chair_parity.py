@@ -14,7 +14,7 @@ compared by kind and count, as C5's smoke test (`smoke/test_chair_queue_parity.p
 segment names each action, and a worker's pass line counts them. The `needs_chair` lines are set aside on both sides:
 the listed tick raises one `queue_unowned` per kind, since no worker runs during the comparison.
 
-Pure: this module parses the outputs and judges them; the edge (`cli_chair_parity`) runs the commands.
+Pure: this module parses the outputs and judges them; the edge (`cli_chair_units`) runs the commands.
 """
 
 from __future__ import annotations
