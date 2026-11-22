@@ -59,3 +59,22 @@ def test_settings_set_and_host_orchestrate_keep_comments_and_init_refuses_to_rep
     assert init.returncode != 0, init.stdout + init.stderr
     assert "already exists" in init.stderr, init.stderr
     assert path.read_bytes() == before
+
+    helped = subprocess.run(
+        [str(sandbox.install.bin / "cartridge"), "init", "--help"],
+        env=sandbox.env, cwd=sandbox.home, capture_output=True, text=True, timeout=120, check=False,
+    )
+    assert helped.returncode == 0, helped.stderr
+    assert "lose its values and comments" in " ".join(helped.stdout.split()), helped.stdout
+
+    # last, because it destroys the fixture
+    forced = subprocess.run(
+        [str(sandbox.install.bin / "cartridge"), "init", "smoke", "--cartridges-dir", str(cartridges), "--force"],
+        env=sandbox.env, cwd=sandbox.home, capture_output=True, text=True, timeout=120, check=False,
+    )
+    _ok(forced, "init --force")
+    replaced = path.read_text(encoding="utf-8")
+    lines = replaced.splitlines()
+    assert COMMENTS[0] not in lines and "other: kept" not in lines, replaced
+    keys = [line for line in lines if not line.startswith(("#", "description:"))]
+    assert keys == ["team: smoke", "extends: local", "version: 1"], replaced
