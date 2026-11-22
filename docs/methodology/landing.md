@@ -348,6 +348,16 @@ its parent. The layers of a stack are initiative pull requests, never phases.
 cannot be found goes back to ready, the branch is kept or cut, and every built phase is merged. Nothing is deleted, and
 an initiative that has a record is skipped, so it is safe to run twice.
 
+A phase-model initiative (`lane_model: phase`) needs no adopt. It has no epic run to make its record, so the lander
+makes it, through adopt's own path, on its first pass after the chair queues one of its phases. The record is stamped
+`lane_model: phase`, its branch is pushed so the lanes cut their phases from it, and the pass's sweep queues any phase
+already built. The lander never does unasked what only adopt should do: when adopting would send an approved task back
+to ready or carry a commit onto its phase branch, it makes no record and tells the chair once to run
+`cox lander adopt --apply` after checking the work. An initiative it cannot read, or that adopt skips (its repository
+is not on this machine, say), is left alone the same way: the chair is told once, the rest of the pass goes on, and it
+is tried again hourly. Either writer inserts the record only where none is, so an adopt racing the lander keeps its
+record.
+
 ### At task
 
 `task` is unchanged: each merged task opens its own pull request against the target branch, phases stack on their

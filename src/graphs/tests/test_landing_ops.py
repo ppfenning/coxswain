@@ -47,6 +47,29 @@ def test_the_record_is_made_once_with_the_branch_cut_at_the_parent_and_the_paren
     assert (again["branch"], again["parent"], again["base_sha"]) == ("init/i", "main", base)
 
 
+def test_a_first_record_is_inserted_only_where_no_row_is_so_a_racing_writers_phase_is_never_wiped(
+        store_url, repo, tmp_path):  # noqa: F811
+    """The lander's pass and an operator's `cox lander adopt --apply` making one initiative's first record at once,
+    each on its own connection to one store: the second insert finds the row and keeps it, queued phase and all."""
+    url = f"sqlite:///{tmp_path / 'store.db'}" if store_url.startswith("sqlite") else store_url  # one store, shared
+    first, other = connect(url), connect(url)
+    try:
+        migrate(first, T0, default_modules())
+        base = run(repo, "rev-parse", "main")
+        fresh = lr.new_record("i", repo=str(repo), branch="init/i", parent="main", base_sha=base, now=T0,
+                              lane_model="phase")
+        assert ls.insert_record(first, {**fresh, "adopted": True})
+        ls.put_record(first, lr.with_phase(ls.get_record(first, "i"), "p1", T1, state="queued"))
+        assert not ls.insert_record(other, fresh), "the second writer inserts nothing"
+        again, why = ops.start_record(other, repo, initiative="i", branch="init/i", parent="main", parent_ref="main",
+                                      now=T9, lane_model="phase")
+        kept = ls.get_record(first, "i")
+    finally:
+        first.close()
+        other.close()
+    assert why == "" and again == kept and kept["adopted"] is True and kept["phases"]["p1"]["state"] == "queued"
+
+
 def test_a_built_phase_merges_and_the_record_the_queue_and_the_branch_agree(conn, repo):  # noqa: F811
     start(conn, repo)
     p1_tip = build(repo, "p1")
