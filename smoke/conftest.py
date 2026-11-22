@@ -10,7 +10,6 @@ Run it from the repository root: `pytest -q -rs smoke`.
 from __future__ import annotations
 
 import hashlib
-import importlib
 import json
 import os
 import re
@@ -31,23 +30,18 @@ from urllib.parse import quote
 
 import pytest
 
+from devtools import tree_imports
 from smoke import gh_replay, plan
 
 ROOT = Path(__file__).resolve().parents[1]
-# This tree's source roots, ahead of the venv, in src/tools/pytest.ini's order: an editable install in the runner's venv
-# may point at an older checkout, and `agent_tools` imports `core` and `harness`, so all three must come from here.
+# This tree's source roots go ahead of the venv, whose editable install may point at another checkout, and the suite
+# refuses to load if agent_tools, harness, runner, graphs or core resolve outside this tree (`devtools.tree_imports`;
+# tests/test_smoke_shell.py rebuilds the stale checkout that once shadowed `core` and `harness`).
 # Subprocesses need no PYTHONPATH: every child runs the `install` venv's python, built from this tree, with install.env.
-sys.path[:0] = [str(ROOT / "src" / name) for name in ("tools", "graphs", "cartridges")]
+tree_imports.use_this_tree(ROOT)
 # One reader of a Forgejo branch answer, shared with the code under test: the forge's own parser, imported from this
 # tree (not from whatever checkout the runner's venv installed), since the fixtures poll the same endpoint it does.
 from agent_tools.forge_forgejo import parse_branch_tip  # noqa: E402
-
-# The suite's own imports come from this tree, or it does not load (tests/test_smoke_shell.py rebuilds the stale
-# checkout that once shadowed `core` and `harness` while only src/tools was put ahead).
-for _package, _folder in {"agent_tools": "tools", "harness": "graphs", "core": "cartridges"}.items():
-    _found = Path(importlib.import_module(_package).__file__).resolve()
-    if not _found.is_relative_to(ROOT / "src" / _folder):
-        raise RuntimeError(f"{_package} imported from {_found}, not from this tree's src/{_folder}")
 
 # The harness backs a store up with `pg_dump` before it migrates one that holds something (`harness.store_migrate`,
 # `should_back_up`); a fresh smoke database is not backed up, but test_store_backup_pg_dump.py migrates one that is.
