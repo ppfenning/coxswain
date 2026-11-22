@@ -235,7 +235,10 @@ facts:
 - **CI.** The `smoke` and `smoke (forge)` jobs each have a Postgres service (the pinned image). `smoke` runs
   `-m "not forge"` and `smoke (forge)` runs `-m forge`, which starts the Forgejo container with the runner's docker.
   Both set `COX_SMOKE_POSTGRES_URL` to the service and `COX_SMOKE_REQUIRED=1`, so a missing `uv`, Postgres or docker
-  fails the job instead of skipping it. `smoke` is three parallel jobs, `smoke (1/3)` to `smoke (3/3)`, each with
+  fails the job instead of skipping it. Under that flag every skip fails the run (`smoke/required.py`): a test's
+  skip, a `skipif` mark, and a module's `pytest.importorskip` at collection, so a job whose environment lost
+  `psycopg` cannot pass with its files unrun. Only a reason in `plan.ALLOWED_SKIPS`, a real platform limit with its
+  why, still stands. `smoke` is three parallel jobs, `smoke (1/3)` to `smoke (3/3)`, each with
   `COX_SMOKE_SHARD=<k>/3`. The conftest keeps the files `plan.shard_files` puts in shard k: whole files, heaviest
   first onto the lightest shard, so each file lands in exactly one shard and each shard installs `cox` once. A file
   weighs its seconds in `smoke/timings.json`; a file with none recorded weighs its test functions at the recorded mean

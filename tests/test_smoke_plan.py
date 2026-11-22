@@ -19,6 +19,19 @@ def test_a_missing_prerequisite_skips_unless_the_run_requires_the_suite():
     assert plan.unavailable("no docker", required=True) == plan.Fail("no docker")
 
 
+def test_a_skip_fails_a_required_run_unless_its_reason_is_allowed():
+    allowed = next(iter(plan.ALLOWED_SKIPS))
+    imported = "could not import 'psycopg': No module named 'psycopg'"
+    assert plan.skip_refusal(imported, required=False) is None
+    assert imported in plan.skip_refusal(imported, required=True)
+    assert "no gh on PATH" in plan.skip_refusal("Skipped: no gh on PATH", required=True)
+    assert plan.skip_refusal(f"Skipped: {allowed}", required=True) is None
+
+
+def test_every_allowed_skip_says_why():
+    assert plan.ALLOWED_SKIPS and all(why.strip() for why in plan.ALLOWED_SKIPS.values())
+
+
 def test_an_environment_url_on_loopback_is_used_as_is():
     url = "postgresql://postgres:pw@127.0.0.1:5432/postgres"
     assert plan.postgres_source(url, None, False, required=True) == plan.UseUrl(url)
