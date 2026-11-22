@@ -116,15 +116,17 @@ def refused(returncode: int, output: str) -> bool:
     return returncode == 2 and any(marker in output for marker in REFUSALS)
 
 
-def launch_verdict(returncode: int, output: str, attempts: int) -> tuple[phase_pick.Verdict, machine_refusal.Refusal | None]:
+def launch_verdict(returncode: int, output: str, attempts: int,
+                   prior: str = "") -> tuple[phase_pick.Verdict, machine_refusal.Refusal | None]:
     """The nack for a launch that exited before its lane started, and the refusal of this machine's that caused it, if
     one did. This machine's refusal (`machine_refusal.of`: a dirty or missing checkout, a guard of the machine's)
-    gives the claim back at once with its attempt refunded, and the worker sets the repository aside; a gate's
+    gives the claim back at once with its attempt refunded, `machine_refusal.REFUNDS` times an episode (counted on the
+    claim's `prior` reason; past them it counts), and the worker sets the repository aside; a gate's
     (`refused`) gives it back refunded after the backoff; anything else is a failed launch, a counted attempt."""
     last = next((line for line in reversed(output.splitlines()) if line.strip()), "")
     found = machine_refusal.of(returncode, output)
     if found is not None:
-        return machine_refusal.verdict(found, attempts), found
+        return machine_refusal.verdict(found, attempts, prior), found
     if refused(returncode, output):
         return phase_pick.refusal(f"the launch was refused: {last}", attempts), None
     return phase_pick.verdict([], attempts, launch_error=f"the launch exited {returncode}: {last}"), None
@@ -398,8 +400,9 @@ def settle(ports: Ports, leases: Leases, claim: Claim, verdict: phase_pick.Verdi
     if leases.take(claim) is None:
         ports.log(f"worker: {key_of(claim)} is no longer held; nothing written")
         return
-    if verdict.kind == "retry":  # any retry keeps the episode's lost-lane refund count (`phase_pick.carry_refunds`)
-        verdict = replace(verdict, reason=phase_pick.carry_refunds(str(claim.row.get("reason") or ""), verdict.reason))
+    if verdict.kind == "retry":  # any retry keeps the episode's refund counts: lost lanes', machines' refusals'
+        prior = str(claim.row.get("reason") or "")
+        verdict = replace(verdict, reason=phase_pick.carry_refunds(prior, machine_refusal.carry_refunds(prior, verdict.reason)))
         done = ports.release(claim, verdict.reason, verdict.wait_s, verdict.refund)
         said = f"released for a retry in {verdict.wait_s}s{' (no attempt counted)' if verdict.refund else ''}: {verdict.reason}"
     else:
@@ -426,7 +429,7 @@ def reap(ports: Ports, leases: Leases) -> None:
             if isinstance(found, Running):
                 leases.set_run(claim, found)
             elif found is not None:
-                launch, refusal = launch_verdict(*found, attempts_of(claim))
+                launch, refusal = launch_verdict(*found, attempts_of(claim), str(claim.row.get("reason") or ""))
                 if refusal is not None:  # before the claim goes back, so this worker's next pass cannot take it again
                     ports.set_aside(claim, refusal)
                 settle(ports, leases, claim, launch)

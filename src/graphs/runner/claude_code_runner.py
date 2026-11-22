@@ -1532,11 +1532,12 @@ class ClaudeCodeRunner:
         streams = _Streams(proc, prompt, on_line)
         try:
             try:
+                began = time.monotonic()  # the whole call's bound counts from here, its first-output wait included
                 bound = first_output_bound(self.first_output_s, self.trace_dir is not None, self.timeout)
                 if not started(first, proc.poll, bound):
                     _kill_and_reap(proc, streams)
                     raise _NodeTimeout(why := no_first_output(role, bound or 0, self.claude_bin), ledger_error=why)
-                out, err = streams.collect(self.timeout)
+                out, err = streams.collect(max(self.timeout - (time.monotonic() - began), 0.0))
                 _close_pipes(proc)
             except _NodeTimeout:
                 raise

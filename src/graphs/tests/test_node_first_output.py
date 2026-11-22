@@ -77,3 +77,13 @@ def test_a_call_that_printed_its_init_runs_on_to_its_whole_timeout(tmp_path: Pat
                               trace_dir=tmp_path / "trace")
     with pytest.raises(_NodeTimeout, match="did not finish within 3s"):
         runner.run(role="plan", schema=SCHEMA, prompt="go")
+
+
+def test_the_whole_call_s_bound_counts_from_its_start_the_first_output_wait_included(tmp_path: Path):
+    script = _claude(tmp_path, f"sleep 2\necho '{INIT}'\nsleep 600")
+    runner = ClaudeCodeRunner({**PROFILE, "first_output_s": 3}, claude_bin=str(script), cwd=tmp_path, timeout=4,
+                              trace_dir=tmp_path / "trace")
+    began = time.monotonic()
+    with pytest.raises(_NodeTimeout, match="did not finish within 4s"):
+        runner.run(role="plan", schema=SCHEMA, prompt="go")
+    assert time.monotonic() - began < 5.5  # 4 s and the reap, not 2 s of waiting and then 4 more

@@ -267,18 +267,21 @@ def build(ws: Path, *, name: str, declared: Sequence[str], lanes: int | None, ve
                     + ("its checkout reads clean" if clean else f"{int(machine_refusal.RETRY_S)}s have passed"))
 
     def set_aside(claim: Claim, refusal: machine_refusal.Refusal) -> None:
-        """Stop advertising the claim's repository on this machine; the first time, tell the chair (best effort, as
-        `epic_branches.tell_diverged` does: a courier that fails leaves the phase row's reason, which says the same)."""
+        """Stop advertising the claim's repository on this machine, and tell the chair once an episode for each reason
+        (`machine_refusal.tell`, from the claim's reason as the store held it): best effort, as
+        `epic_branches.tell_diverged` is, since a courier that fails leaves the phase row's reason, which says the same."""
         repo = str(claim.row.get("repo") or "")
         if not repo:
             log(f"worker: {worker.key_of(claim)} names no repository to set aside: {refusal.reason}")
             return
-        now_aside, news = machine_refusal.set_aside(aside, repo, refusal, time.monotonic())
+        now_aside = machine_refusal.set_aside(aside, repo, refusal, time.monotonic())
         aside.clear()
         aside.update(now_aside)
+        prior = str(claim.row.get("reason") or "")
         log(f"worker: {name} stops advertising repo:{machine_refusal.repo_name(repo)} ({refusal.kind}): {refusal.reason}")
-        if news:
-            note = machine_refusal.chair_note(name, claim.initiative, claim.phase, aside[repo])
+        if machine_refusal.tell(prior, refusal):
+            counted = machine_refusal.refunds_of(prior) >= machine_refusal.REFUNDS
+            note = machine_refusal.chair_note(name, claim.initiative, claim.phase, aside[repo], counted)
             told = courier_adapter.send(f"coxswain://initiative/{claim.initiative}", "chair", note)
             log(f"worker: the chair {'was' if told else 'could not be'} told: {note}")
 

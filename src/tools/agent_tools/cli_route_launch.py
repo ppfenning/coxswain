@@ -192,8 +192,7 @@ def _route_launch(a: argparse.Namespace) -> int:
         print(repo_refusal)
         return 2
     host, host_rc = _lane_host_or_refuse(a, profile)
-    if host_rc is not None:
-        _machine_refused(lane_worker, "machine", "this machine has no lane free for it")
+    if host_rc is not None:  # a worker's capacity refusal is marked where it is made (`_place_or_refuse`)
         return host_rc
     harness_dir = profile.get("harness_dir", "")
     venv_rc = _harness_ready_or_refuse(harness_dir)
@@ -819,8 +818,12 @@ def _place_or_refuse(
         )
     if isinstance(placed, launch_place.Refusal):
         print("routing: no host has room; pass --force to launch on this machine anyway" if forced_local else "routing: no host has room")
-        for line in launch_place.format_refusal(placed):
+        lines = launch_place.format_refusal(placed)
+        for line in lines:
             print(line)
+        if forced_local:  # this machine is full: a worker's claim goes back for another (`machine_refusal`)
+            _machine_refused(getattr(a, "lane_worker", None), "machine",
+                             "; ".join(["this machine has no lane free", *lines]))
         return None, 2
     print(f"placed on {placed.host} ({placed.in_use}/{placed.capacity})")
     if placed.host == local:

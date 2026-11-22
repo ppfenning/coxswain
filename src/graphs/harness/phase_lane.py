@@ -145,6 +145,7 @@ __all__ = [
     "PHASE_REVIEW",
     "Fence",
     "LaneClaim",
+    "LostWatch",
     "TaskCtx",
     "base_candidates",
     "beat_path",
@@ -161,7 +162,6 @@ __all__ = [
     "task_dag",
     "terminate_groups",
     "threads_for",
-    "watch_lost",
     "write_beat",
     "write_lost",
 ]
@@ -1286,21 +1286,32 @@ def _sweep_dead_clones(ctx: Ctx) -> list[str]:
                 os.close(fd)
 
 
-def watch_lost(fence: Fence, ended: threading.Event, overdue: Callable[[], None], grace_s: float = LOST_EXIT_S,
-               monotonic: Callable[[], float] = time.monotonic) -> threading.Thread:
-    """Edge. A thread of its own that runs `overdue` once the fence lost its claim `grace_s` ago (`lost_overdue`) and
-    `ended` is still not set; it leaves once `ended` is set. Started, and returned."""
-    poll = min(WATCH_S, max(grace_s / 4, 0.05))
+class LostWatch:
+    """Edge. A thread of its own that runs `overdue` once the fence lost its claim `grace_s` ago (`lost_overdue`),
+    unless it was disarmed first. The lane disarms it as its own cleanup starts (`run_lane`'s `finally`): what is stuck
+    is the work, never the cleanup, and a cleanup killed in the shared checkout would leave its git `*.lock` behind.
+    Disarming and `overdue` take one lock, so once `disarm` returns `overdue` never starts."""
 
-    def loop() -> None:
-        while not ended.wait(poll):
-            if lost_overdue(fence.lost_at, monotonic(), grace_s):
-                overdue()
+    def __init__(self, fence: Fence, overdue: Callable[[], None], grace_s: float = LOST_EXIT_S,
+                 monotonic: Callable[[], float] = time.monotonic) -> None:
+        self._fence, self._overdue, self._grace_s, self._monotonic = fence, overdue, grace_s, monotonic
+        self._lock = threading.Lock()
+        self._disarmed = threading.Event()
+        self.thread = threading.Thread(target=self._loop, name="lane-lost-exit", daemon=True)
+        self.thread.start()
+
+    def _loop(self) -> None:
+        poll = min(WATCH_S, max(self._grace_s / 4, 0.05))
+        while not self._disarmed.wait(poll):
+            if lost_overdue(self._fence.lost_at, self._monotonic(), self._grace_s):
+                with self._lock:
+                    if not self._disarmed.is_set():
+                        self._overdue()
                 return
 
-    thread = threading.Thread(target=loop, name="lane-lost-exit", daemon=True)
-    thread.start()
-    return thread
+    def disarm(self) -> None:
+        with self._lock:
+            self._disarmed.set()
 
 
 def run_lane(ctx: Ctx, claim: LaneClaim, conn: Connection, open_conn: Callable[[], Connection],
@@ -1319,11 +1330,13 @@ def run_lane(ctx: Ctx, claim: LaneClaim, conn: Connection, open_conn: Callable[[
     (`lost_path`), and whether any check read its lease first, which the worker reads to give back the attempt of a
     claim it still holds (`phase_pick.lost_refund`).
 
-    A lane that lost its claim and has not ended `lost_exit_s` later (a child that ignores TERM, a model call that
-    never returns, a thread waiting on either) does not run on as nobody's: `kill_children` (`stop_children` when not
-    given) kills every child it has, it writes its lost mark, and `exit_now(EXIT_LOST)` ends the process there and
-    then, with nothing more written. What it leaves behind (its worktrees, its clone) the next lane on this machine
-    sweeps (`_sweep_dead_clones`, `lane_rollup.sweep`)."""
+    A lane that lost its claim and is still at its work `lost_exit_s` later (a child that ignores TERM, a model call
+    that never returns, a thread waiting on either) does not run on as nobody's: `kill_children` (`stop_children` when
+    not given) kills its children that lead groups of their own (never its own git in the shared checkout), it
+    writes its lost mark, and `exit_now(EXIT_LOST)` ends the process there and then, with nothing more written. What
+    it leaves behind (its worktrees, its clone) the next lane on this machine sweeps (`_sweep_dead_clones`,
+    `lane_rollup.sweep`). The watch is disarmed as the lane's own cleanup starts (`LostWatch.disarm`), so a slow
+    cleanup is never killed."""
     mark = beat_path(ctx.runs_dir, ctx.run_id)
     opened: list[Connection] = [conn]
     opened_lock = threading.Lock()
@@ -1351,8 +1364,6 @@ def run_lane(ctx: Ctx, claim: LaneClaim, conn: Connection, open_conn: Callable[[
                   on_silent=abandon_all)
     phase_worktree = ctx.worktree_root / ctx.run_id / claim.phase / "_phase"
     lane_ctx = ctx
-    ended = threading.Event()
-
     def overdue() -> None:
         log(f"lane: the claim was lost {lost_exit_s:.0f}s ago ({fence.why}) and the lane has not ended; killing its "
             f"children and exiting {EXIT_LOST}")
@@ -1362,7 +1373,7 @@ def run_lane(ctx: Ctx, claim: LaneClaim, conn: Connection, open_conn: Callable[[
             write_lost(lost_path(ctx.runs_dir, ctx.run_id), fence.why, log, checked=fence.checked)
             exit_now(EXIT_LOST)
 
-    watch_lost(fence, ended, overdue, lost_exit_s)
+    watch = LostWatch(fence, overdue, lost_exit_s)
     held = _hold_run_lock(ctx)  # before the clone exists, so no sweep ever sees this run's clone unlocked
     try:
         if not fence.check():
@@ -1378,6 +1389,7 @@ def run_lane(ctx: Ctx, claim: LaneClaim, conn: Connection, open_conn: Callable[[
         return _run(lane_ctx, claim, conn, fence, items, base, log, phase_worktree, open_tracked,
                     ctx if lane_ctx is not ctx else None, goal)
     finally:
+        watch.disarm()  # first: the cleanup below, in the shared checkout too, is never killed
         fence.stop()
         if fence.lost.is_set():
             write_lost(lost_path(ctx.runs_dir, ctx.run_id), fence.why, log, checked=fence.checked)
@@ -1388,7 +1400,6 @@ def run_lane(ctx: Ctx, claim: LaneClaim, conn: Connection, open_conn: Callable[[
         lane_rollup.drop_refs(ctx.repo, ctx.run_id)
         mark.unlink(missing_ok=True)
         os.close(held)  # last: the folder it proved live is gone
-        ended.set()
 
 
 def _run(ctx: Ctx, claim: LaneClaim, conn: Connection, fence: Fence, items: Sequence[Mapping[str, Any]], base: str,
