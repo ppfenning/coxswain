@@ -50,6 +50,7 @@ class Item:
     repo_named: str = ""  # the `repo:` value as written, kept when it does not resolve
     repo_error: str = ""  # why `repo` is empty when the item named one that does not resolve; a sync refuses with it
     landed_pr: str = ""  # the PR number a landed task records in `landed`, "" when none
+    marker_key: str = ""  # unique per item, unlike a task id; `item_key` falls back to the id when empty
 
     def __post_init__(self) -> None:
         # Frozen dataclass: the one write is the normalised issue, so every reader sees the bare number.
@@ -114,6 +115,53 @@ def landed_pr_of(value: object) -> str:
 
 CHECKLIST_OPEN = "<!-- coxswain:tasks -->"
 CHECKLIST_CLOSE = "<!-- /coxswain:tasks -->"
+
+
+# Every issue the sync creates ends with its item's key on a hidden last line, so an issue whose number never reached
+# the item's file (a crash between `gh issue create` and the write-back) is found again instead of created twice. Only
+# the last line counts: a body that quotes a marker anywhere else keeps the text and claims nothing.
+_MARKER_LINE = re.compile(r"<!-- coxswain:item (.+) -->")
+
+
+def item_key(item: Item) -> str:
+    """Pure. The key an item's marker carries: unique per item, where a task id alone is not (two initiatives may
+    each hold a task `t1`). `marker_key` when the edge set one, else the id."""
+    return item.marker_key or item.id
+
+
+def item_marker(key: str) -> str:
+    return f"<!-- coxswain:item {key} -->"
+
+
+def _split_marker(body: str) -> tuple[str, str | None]:
+    """Pure. `body` without a marker on its last line, and that marker's key; `(body, None)` when the last line is
+    not one. The inverse of `marked_body`: `_split_marker(marked_body(k, b)) == (b, k)` for every `b`."""
+    head, sep, last = body.rstrip().rpartition("\n")
+    found = _MARKER_LINE.fullmatch(last)
+    if found is None:
+        return body, None
+    return (head.removesuffix("\n") if sep else ""), found.group(1)
+
+
+def marked_body(key: str, body: str) -> str:
+    """Pure. `body` as the issue carries it: unchanged, then a blank line and the item's marker as its last line."""
+    return f"{body}\n\n{item_marker(key)}" if body else item_marker(key)
+
+
+def unmarked(body: str) -> str:
+    """Pure. An issue body without its last-line marker: what the work item itself holds."""
+    return _split_marker(body)[0]
+
+
+def marked_issues(rows: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """Pure. Item key to issue number for every row (`number`, `body`) whose body ends with an item marker. Two
+    issues marked for one item resolve to the lower number, the one created first."""
+    found: dict[str, str] = {}
+    for row in sorted(rows, key=lambda r: int(r.get("number") or 0), reverse=True):
+        key = _split_marker(str(row.get("body") or ""))[1]
+        if key is not None:
+            found[key] = str(row["number"])
+    return found
 
 
 def checklist_line(task: Item) -> str:
@@ -239,18 +287,20 @@ def _fields(item: Item) -> dict | None:
 
 def _issue_steps(item: Item, issues: dict) -> tuple[list[dict], str | None]:
     """`issue_create` with no issue key, `issue_edit` when the labelled issue
-    on file has drifted, no step when `item.issue` is not in `issues` (it
+    on file has drifted (its item marker aside, `marked_body`), no step when `item.issue` is not in `issues` (it
     lost the `coxswain` label, or is gone — nothing on file to edit against).
     The paired key is the item's own issue key, or `None` for a fresh item —
     not a work-store id standing in for one — that the edge fills in once
     `issue_create` runs."""
     if item.issue is None:
         step = {"kind": "issue_create", "repo": item.repo, "title": item.title,
-                 "body": item.body, "label": _LABEL, "item_id": item.id}
+                 "body": marked_body(item_key(item), item.body), "label": _LABEL, "item_id": item.id,
+                 "marker": item.marker_key}
         return [step], None
     stored = issues.get(item.issue)
-    if stored is not None and (stored.get("title") != item.title or stored.get("body") != item.body):
-        return [{"kind": "issue_edit", "issue": item.issue, "title": item.title, "body": item.body}], item.issue
+    if stored is not None and (stored.get("title") != item.title or unmarked(stored.get("body") or "") != item.body):
+        return [{"kind": "issue_edit", "issue": item.issue, "title": item.title,
+                 "body": marked_body(item_key(item), item.body)}], item.issue
     return [], item.issue
 
 
@@ -303,7 +353,8 @@ def _item_steps(item: Item, issues: dict, project_items: dict, planned_ids: froz
         return [{"kind": "refuse", "item_id": item.id, "detail": "no repository resolves for this item"}]
     issue_steps, key = _issue_steps(item, issues)
     project_steps = [] if wanted is None else _project_steps(key, wanted, project_items)
-    writeback = [{"kind": "writeback", "item_id": item.id, "issue": key}] if item.issue is None else []
+    writeback = ([{"kind": "writeback", "item_id": item.id, "issue": key, "marker": item.marker_key}]
+                 if item.issue is None else [])
     return (issue_steps + project_steps + writeback + _milestone_steps(item, key)
             + _link_steps(item, key, planned_ids) + _close_steps(item, issues))
 

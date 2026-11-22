@@ -28,7 +28,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from types import ModuleType
 from typing import cast
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 import harness
 from harness.store_dialect import Connection, Dialect, connect
@@ -459,17 +459,54 @@ def exempt_from_bounds(dialect: Dialect) -> tuple[str, ...]:
     return ("SET LOCAL statement_timeout = 0", f"SET LOCAL lock_timeout = {MIGRATION_LOCK_TIMEOUT_MS}")
 
 
+def _without_password(query: str) -> tuple[str, str | None]:
+    """Pure. `query` with its `password` parameter dropped, and that parameter's decoded value. The other parameters
+    stay byte for byte: libpq percent-decodes them itself, so re-encoding one could change what it reads."""
+    kept: list[str] = []
+    found: str | None = None
+    for item in (query.split("&") if query else []):
+        key, _, value = item.partition("=")
+        if unquote(key) == "password":
+            found = unquote(value)
+        else:
+            kept.append(item)
+    return "&".join(kept), found
+
+
+def pg_dump_command(url: str, dest: Path) -> tuple[list[str], dict[str, str]]:
+    """Pure. The `pg_dump -Fc` argv for the store at `url`, and the variables to add to its environment.
+
+    The password, from the URL's userinfo or its `password` parameter, goes only into `PGPASSWORD`: argv is readable
+    by every user on the host through `ps` and `/proc/<pid>/cmdline`, a process's environment only by its owner. User,
+    host, port, database and the other parameters stay in the argv's `--dbname`. A `+driver` tag (`postgresql+psycopg`,
+    `postgres+psycopg`), which libpq does not know, is dropped. The string is put back together by hand, `//` always
+    kept: `urlunsplit` drops it when the host is empty, and libpq refuses `postgresql:/store?host=/var/run/...`."""
+    parts = urlsplit(url)
+    scheme = parts.scheme.partition("+")[0]
+    userinfo, at, hostport = parts.netloc.rpartition("@")
+    user, colon, encoded = userinfo.partition(":")
+    query, query_password = _without_password(parts.query)
+    password = unquote(encoded) if colon else query_password
+    netloc = f"{user}@{hostport}" if at and user else hostport
+    dbname = f"{scheme}://{netloc}{parts.path}" + (f"?{query}" if query else "") + (
+        f"#{parts.fragment}" if parts.fragment else ""
+    )
+    argv = ["pg_dump", "-Fc", f"--dbname={dbname}", "-f", str(dest)]
+    return argv, ({"PGPASSWORD": password} if password else {})
+
+
 def _pg_dump(url: str, dest: Path, safe_url: str) -> None:
-    """`pg_dump -Fc` the store at `url` into `dest`. Never puts `url` or the process's own output in a message."""
+    """`pg_dump -Fc` the store at `url` into `dest`, its password in the child's environment, never in its argv
+    (`pg_dump_command`). Never puts `url` or the process's own output in a message."""
     if shutil.which("pg_dump") is None:
         raise MigrationError(
             f"pg_dump is not on PATH; cannot back up {safe_url} before migrating. "
             f"Install pg_dump, or set {_WITHOUT_BACKUP}=1 to migrate without a backup."
         )
+    argv, extra_env = pg_dump_command(url, dest)
     try:
         result = subprocess.run(
-            ["pg_dump", "-Fc", f"--dbname={url}", "-f", str(dest)], capture_output=True, check=False,
-            timeout=PG_DUMP_TIMEOUT_S,
+            argv, capture_output=True, check=False, timeout=PG_DUMP_TIMEOUT_S, env={**os.environ, **extra_env},
         )
     except subprocess.TimeoutExpired:
         raise MigrationError(

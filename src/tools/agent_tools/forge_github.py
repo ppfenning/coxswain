@@ -220,6 +220,15 @@ def merge_verdict(exit_code: int, cli_text: str, pr: dict | None) -> tuple[bool,
     return False, cli_text
 
 
+def merge_exit(done: subprocess.CompletedProcess | ForgeError) -> tuple[int, str]:
+    """Pure. The (exit code, text) `merge_verdict` judges a `gh pr merge` by. A run that overran its bound
+    (`ForgeError`) reads as exit 1 with the timeout message: gh may have merged on the server and hung in its local
+    cleanup, so the server's state, not the timeout, decides."""
+    if isinstance(done, ForgeError):
+        return 1, str(done)
+    return done.returncode, done.stdout.strip() or done.stderr.strip()
+
+
 def _branch_pr_state(repo: Path, branch: str) -> dict:
     """Edge. `{"state", "merged_at"}` of the PR whose head is `branch`; unknown when the forge cannot say.
     `gh pr view` may not resolve a branch the forge already deleted, so the listing of every PR of that head is the fallback."""
@@ -256,18 +265,20 @@ def merge(repo: Path, step: dict) -> tuple[bool, str]:
 
     gh's own `--delete-branch` is not used: its local cleanup needs a current branch and fails on a detached
     HEAD after the server merged, so the head is deleted through the API instead, unless `step["delete_branch"]`
-    is false; a step that omits the key deletes, as `--delete-branch` always did. A non-zero gh exit is judged by the PR's server state (`merge_verdict`). Once the PR has merged,
+    is false; a step that omits the key deletes, as `--delete-branch` always did. A non-zero gh exit, or a gh that overran its bound, is judged by the PR's server state (`merge_verdict`). Once the PR has merged,
     a failed branch delete or local update is reported in the detail and the result stays ok.
     """
     flag = merge_flag(step)
     if flag is None:
         return False, f"unknown merge method: {step['method']!r}"
     try:
-        r = _run(["gh", "pr", "merge", step["branch"], flag, *match_head(step)], timeout=WRITE_TIMEOUT_S, cwd=repo)
-    except ForgeError as exc:
-        return False, str(exc)
-    text = r.stdout.strip() or r.stderr.strip()
-    ok, merged = merge_verdict(r.returncode, text, None if r.returncode == 0 else _branch_pr_state(repo, step["branch"]))
+        done: subprocess.CompletedProcess | ForgeError = _run(
+            ["gh", "pr", "merge", step["branch"], flag, *match_head(step)], timeout=WRITE_TIMEOUT_S, cwd=repo,
+        )
+    except ForgeError as exc:  # gh overran its bound, perhaps after the server merged: the server's state decides
+        done = exc
+    code, text = merge_exit(done)
+    ok, merged = merge_verdict(code, text, None if code == 0 else _branch_pr_state(repo, step["branch"]))
     if not ok:
         return False, merged
     deleted = []

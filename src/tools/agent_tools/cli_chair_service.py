@@ -147,7 +147,11 @@ def _chair_worker(a: argparse.Namespace) -> int:
 
     def record_store(argv: list[str]) -> tuple[int, str]:
         """An action's row, fenced on the kind lease. The effect has already run when its row is written, so a lease
-        lost in between does not drop the row: it is written unfenced and marked `late` (`store_chair_lease.late`)."""
+        lost in between does not drop the row: it is written unfenced and marked `late` (`store_chair_lease.late`).
+
+        A fenced insert that overran its bound may still commit on its daemon thread after the late row is written.
+        Both rows carry one `CHAIR_ACTION_KEY` (ts, holder, kind, target; `late` changes only the reason) and both
+        inserts skip an existing key, so whichever commits second adds nothing: one action, one row."""
         epoch = held.epoch
         action = json.loads(argv[-1])
         kept = epoch is not None and on_store(
