@@ -235,7 +235,7 @@ def _expand_repo(args: argparse.Namespace) -> argparse.Namespace:
     return expanded
 
 
-def _main(argv: list[str] | None, ports: DecomposePorts | None) -> int:
+def _main(argv: list[str] | None, ports: DecomposePorts | None = None) -> int:
     specs = discover()
     parser = _build_parser(specs)
     parsed = parser.parse_args(argv)

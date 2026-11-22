@@ -16,7 +16,7 @@ def test_the_parsed_repo_of_an_epic_invocation_is_the_path_under_home(monkeypatc
     monkeypatch.setenv("HOME", str(tmp_path))
     seen = {}
 
-    def fake_launch(specs, parser, args, *, report_out):
+    def fake_launch(specs, parser, args, *, report_out, ports=None):
         seen["repo"] = args.repo
         return 0
 
