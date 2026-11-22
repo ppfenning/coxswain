@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from graphs.delivery import lifecycle_propose
-from graphs.delivery.lifecycle_propose import review_depth
+from graphs.delivery.lifecycle_review import review_depth
 from runner import ScriptedRunner
 from runner.decision_log import CallDecision
 from runner.system_one import Answer, Choice, FastPathRunner, RoleSetting

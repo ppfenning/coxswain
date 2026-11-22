@@ -9,7 +9,7 @@ import pytest
 
 from runner import anthropic_runner
 from runner.anthropic_runner import AnthropicRunner, AnthropicToolLoopAdapter, _to_anthropic
-from runner.claude_code_runner import _DIFF_CMD
+from runner.claude_scratch import _DIFF_CMD
 from runner.protocol import LimitStop, RunnerError
 from runner.tool_loop import ToolCall, run_tool_loop
 

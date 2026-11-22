@@ -19,7 +19,7 @@ from harness import epic as epic_module
 from harness import store_queue
 from harness.store_migrate import open_store
 from harness.store_write import Store
-from runner.claude_code_runner import files_touched_from_patch
+from runner.claude_scratch import files_touched_from_patch
 from runner.protocol import RunnerError
 from tests.test_epic_driver import (  # noqa: F401 -- cart and repo are fixtures
     SPECS,

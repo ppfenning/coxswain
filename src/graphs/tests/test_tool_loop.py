@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from runner.claude_code_runner import _DIFF_CMD
+from runner.claude_scratch import _DIFF_CMD
 from runner.protocol import BudgetStop
 from runner.tool_loop import (
     TOOLS,

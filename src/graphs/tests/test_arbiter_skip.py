@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from graphs.delivery import lifecycle_propose
-from graphs.delivery.lifecycle_propose import ARBITER_SKIPPED, should_skip_arbiter
+from graphs.delivery.lifecycle_review import ARBITER_SKIPPED, should_skip_arbiter
 from runner import ScriptedRunner
 
 APPROVE = {"verdict": "approve", "findings": [], "rationale": "matches the charter"}

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from graphs.delivery import lifecycle_propose
-from graphs.delivery.lifecycle_propose import round_summary
+from graphs.delivery import lifecycle_propose, lifecycle_review
+from graphs.delivery.lifecycle_review import round_summary
 from runner import ScriptedRunner
 
 REVISE = {
@@ -15,7 +15,7 @@ APPROVE = {"verdict": "approve", "findings": [], "rationale": "matches the chart
 
 
 def test_a_handoff_critique_summarises_as_a_handoff_round_with_no_objections() -> None:
-    review, adversary, arbitration, verdict, _, _ = lifecycle_propose._handoff_critique(
+    review, adversary, arbitration, verdict, _, _ = lifecycle_review._handoff_critique(
         {"complete": False, "missing": ["a pytest run"], "brief": "supply it"}
     )
     assert round_summary(1, "handoff", review, adversary, arbitration, verdict) == {
@@ -93,7 +93,7 @@ def _run(cartridge, scripted):
 
 
 def test_a_clean_critique_is_a_revise_with_one_clean_check_finding() -> None:
-    assert lifecycle_propose._clean_critique(HIT_LINE) == {
+    assert lifecycle_review._clean_critique(HIT_LINE) == {
         "verdict": "revise",
         "findings": [{"charter_principle": "clean check", "detail": HIT_LINE, "file": ""}],
         "rationale": "clean_check",

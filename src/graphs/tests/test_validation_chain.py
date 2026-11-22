@@ -15,7 +15,7 @@ from unittest.mock import ANY
 import pytest
 
 from graphs._contract import ContractViolation, review_tier
-from graphs.delivery import lifecycle_propose
+from graphs.delivery import lifecycle_checkpoints, lifecycle_propose
 from runner import ScriptedRunner
 from runner.protocol import BudgetStop, RunnerError
 
@@ -467,7 +467,7 @@ def test_the_continuation_cap_recommends_a_split(cart, plan_response) -> None:
     assert "src/a.py" in message
     assert "src/other.py" in message
     continuation_calls = [c for c in scripted.calls if "Continue from exactly where you stopped" in c["prompt"]]
-    assert len(continuation_calls) == lifecycle_propose.CONTINUATIONS_MAX
+    assert len(continuation_calls) == lifecycle_checkpoints.CONTINUATIONS_MAX
 
 
 # ── the checkpoint go/no-go: resume, re-scope, re-ground, or split ──────────
@@ -481,7 +481,7 @@ def _checkpoint_stop(patch: str, *, checkpoint_index: int, num_turns: int = 5, s
     )
 
 
-LAST_CHECKPOINT = len(lifecycle_propose.CHECKPOINT_FRACTIONS) - 1
+LAST_CHECKPOINT = len(lifecycle_checkpoints.CHECKPOINT_FRACTIONS) - 1
 
 
 def _ledger_lines(runs_dir: Path, run_id: str = "r") -> list[dict]:

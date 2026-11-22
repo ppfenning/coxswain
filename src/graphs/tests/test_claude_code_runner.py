@@ -26,25 +26,23 @@ from harness.store_write import Store
 from harness.worktree import apply_patch as apply_harness_patch
 from runner import RunnerError
 from runner.claude_code_runner import (
-    _DIFF_CMD,
     ClaudeCodeRunner,
     _alt_model_for,
     _init_facts,
     _parse_version,
-    _run_verify,
     _trace_cost,
     _version_violations,
+    is_safeguard_refusal,
+)
+from runner.claude_cost import call_cost, call_summary, next_spent, self_reported_commands, trace_commands
+from runner.claude_scratch import (
+    _DIFF_CMD,
+    _run_verify,
     apply_reported_patch,
-    call_cost,
-    call_summary,
     child_env,
     files_touched_from_patch,
-    is_safeguard_refusal,
-    next_spent,
     reconcile_patch,
     redirect_paths,
-    self_reported_commands,
-    trace_commands,
 )
 from runner.decision_log import RouterDecision, to_row
 from runner.protocol import BudgetStop, Capability, LimitStop, ProviderProfile, resolve_profile
@@ -572,7 +570,7 @@ def test_a_builder_in_a_scratch_with_the_shared_venv_has_it_first_on_path_and_uv
 
 
 def test_run_verify_returns_a_row_per_command_and_names_a_timeout_instead_of_raising(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr("runner.claude_code_runner._VERIFY_TIMEOUT_S", 0.2)
+    monkeypatch.setattr("runner.claude_scratch._VERIFY_TIMEOUT_S", 0.2)
     rows = _run_verify(tmp_path, ["echo one", "false"])
     assert rows[0] == {"command": "echo one", "output": "one\n(exit 0)", "source": "harness_verify"}
     assert rows[1]["output"].endswith("(exit 1)") and rows[1]["source"] == "harness_verify"
@@ -582,7 +580,7 @@ def test_run_verify_returns_a_row_per_command_and_names_a_timeout_instead_of_rai
 
 
 def test_run_verify_skips_commands_once_the_total_budget_is_spent(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr("runner.claude_code_runner._VERIFY_TOTAL_S", 0.3)
+    monkeypatch.setattr("runner.claude_scratch._VERIFY_TOTAL_S", 0.3)
     rows = _run_verify(tmp_path, ["sleep 5", "echo never"])
     assert rows[0]["output"].startswith("timed out after 0.")
     assert rows[1] == {"command": "echo never", "output": "skipped: the 0.3s verify budget is spent", "source": "harness_verify"}
@@ -1007,7 +1005,7 @@ def test_the_reader_handles_a_pipe_numbered_past_the_select_ceiling() -> None:
     import resource
     import threading
 
-    from runner.claude_code_runner import _pump
+    from runner.claude_stream import _pump
 
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
     if hard != resource.RLIM_INFINITY and hard < 1200:

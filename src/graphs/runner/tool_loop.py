@@ -22,13 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from runner.claude_code_runner import (
-    _VERIFY_TAIL_LINES,
-    _VERIFY_TIMEOUT_S,
-    _VERIFY_TOTAL_S,
-    _capture_diff,
-    reconcile_patch,
-)
+from runner.claude_scratch import _VERIFY_TAIL_LINES, _VERIFY_TIMEOUT_S, _VERIFY_TOTAL_S, _capture_diff, reconcile_patch
 from runner.protocol import BudgetStop
 
 COST_KEY = "cost_usd"

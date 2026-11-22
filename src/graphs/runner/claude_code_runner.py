@@ -27,31 +27,49 @@ to change rather than whatever the repository happens to have checked out.
 
 from __future__ import annotations
 
-import codecs
-import io
 import json
 import logging
 import os
 import random
 import re
-import selectors
-import shutil
-import signal
 import subprocess
-import sys
-import tempfile
 import threading
 import time
 import uuid
-from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any
 
-from runner.claude_token import TOKEN_ENV, read_token, token_path
+from runner.claude_cost import (
+    _call_fields,
+    _checkpoint_target,
+    _effective_limit,
+    _load_bounds,
+    _trace_path,
+    call_summary,
+    next_spent,
+    self_reported_commands,
+    thread_priced,
+    trace_commands,
+)
+from runner.claude_scratch import (
+    _DIFF_CMD,
+    _capture_diff,
+    _restore,
+    _run_verify,
+    _snapshot,
+    agent_env,
+    drop_scratch,
+    files_touched_from_patch,
+    make_scratch,
+    reconcile_patch,
+    recover_diff,
+    redirect_paths,
+)
+from runner.claude_stream import _REAP_SECONDS, _close_pipes, _json_object, _kill_and_reap, _kill_group, _Streams
 from runner.decision_log import REASON_SEPARATOR, CallDecision, RouterDecision, joined_reasons, to_row
 from runner.node_timeout import NodeTimeout as _NodeTimeout
 from runner.node_timeout import first_output_bound, first_output_s, no_first_output, started
@@ -130,11 +148,6 @@ def _gate_checks_paragraph(task: list[str], gates: dict[str, list[str]]) -> str:
     )
 
 
-_VERIFY_TIMEOUT_S = 120
-_VERIFY_TOTAL_S = 300
-_VERIFY_TAIL_LINES = 40
-
-_DIFF_CMD = "git add -A && git diff --cached --binary --full-index"
 # Checks led by one of these also run as `python -m <tool>`; builders reach for that form.
 _PY_TOOLS = frozenset({"pytest", "ruff"})
 _PLAIN_PATH = re.compile(r"[\w./-]+")  # no space, quote or glob: the only paths a `git -C` prefix rule may name
@@ -146,152 +159,6 @@ CHAIR_MODEL_ENV = "COXSWAIN_CHAIR_MODEL"
 def _chair_model(environ: Mapping[str, str]) -> str | None:
     """The chair model alias in `environ`; an absent or blank value is None."""
     return environ.get(CHAIR_MODEL_ENV, "").strip() or None
-
-
-def child_env(environ: Mapping[str, str], bash: str | None, token: str | None = None) -> dict[str, str]:
-    """Claude Code's Bash tool runs in $SHELL, and zsh fails an unquoted glob such as `--include=*.py`.
-
-    A given `token` replaces whatever `environ` holds under TOKEN_ENV.
-    """
-    with_shell = {**environ, "SHELL": bash} if bash is not None else dict(environ)
-    return {**with_shell, TOKEN_ENV: token} if token is not None else with_shell
-
-
-def _capture_diff(scratch: Path) -> str:
-    """The scratch's half-written change, or "" — never a raise.
-
-    A `BudgetStop` on a threaded role leaves the scratch behind for the next
-    phase to resume into; this is what lets the stopped node hand over what it
-    had already built rather than just an apology.
-    """
-    try:
-        proc = subprocess.run(_DIFF_CMD, shell=True, capture_output=True, text=True, cwd=scratch)
-    except OSError:
-        return ""
-    return proc.stdout if proc.returncode == 0 else ""
-
-
-def reconcile_patch(reported: str, computed: str) -> tuple[str, str | None]:
-    """The scratch's own diff over the model's account of it, or a named failure.
-
-    A reported patch beside an empty scratch means the edits landed somewhere else.
-    """
-    if computed:
-        return computed, None
-    return ("", "patch_outside_scratch") if reported.strip() else ("", "patch_empty")
-
-
-def redirect_paths(text: str, repo_dir: Path, scratch: Path) -> str:
-    """`text` with every path under `repo_dir` moved to the same path under `scratch`."""
-    pattern = r"(?<![\w.\-])" + re.escape(str(repo_dir)) + r"(?![\w\-]|\.\w)"
-    return re.sub(pattern, lambda _: str(scratch), text)
-
-
-def reported_patch(stdout: str) -> str:
-    """The `patch` a finished, non-error result reports, or "" — read without side effects."""
-    for line in (*reversed(stdout.splitlines()), stdout):
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(event, dict) and ("structured_output" in event or event.get("type") == "result"):
-            out = event.get("structured_output")
-            if event.get("is_error") or not isinstance(out, dict):
-                return ""
-            return str(out.get("patch") or "")
-    return ""
-
-
-def apply_reported_patch(scratch: Path, patch: str) -> bool:
-    """Apply `patch` in `scratch` if `git apply --check` accepts it whole; never raises."""
-    text = patch if patch.endswith("\n") else patch + "\n"
-    try:
-        for args in (["--check"], []):
-            proc = subprocess.run(["git", "apply", *args], input=text, capture_output=True, text=True, cwd=scratch)
-            if proc.returncode != 0:
-                return False
-    except OSError:
-        return False
-    return True
-
-
-def _run_verify(scratch: Path, commands: Sequence[str]) -> list[dict[str, str]]:
-    """Run each `verify:` command in the scratch: one row per command, never a raise."""
-    rows: list[dict[str, str]] = []
-    deadline = time.monotonic() + _VERIFY_TOTAL_S
-    for cmd in commands:
-        timeout = min(_VERIFY_TIMEOUT_S, deadline - time.monotonic())
-        if timeout <= 0:
-            output = f"skipped: the {_VERIFY_TOTAL_S}s verify budget is spent"
-            rows.append({"command": cmd, "output": output, "source": "harness_verify"})
-            continue
-        try:
-            proc = subprocess.run(cmd, shell=True, cwd=scratch, capture_output=True, text=True, timeout=timeout)
-            tail = "\n".join(((proc.stdout or "") + (proc.stderr or "")).splitlines()[-_VERIFY_TAIL_LINES:])
-            output = f"{tail}\n(exit {proc.returncode})"
-        except subprocess.TimeoutExpired:
-            output = f"timed out after {timeout:g}s"
-        except OSError as exc:
-            output = f"could not start: {exc}"
-        rows.append({"command": cmd, "output": output, "source": "harness_verify"})
-    return rows
-
-
-def _snapshot(scratch: Path) -> str | None:
-    """The scratch's index as a tree id, or None: what `_capture_diff` just staged, before a verify command can touch it."""
-    try:
-        proc = subprocess.run("git write-tree", shell=True, capture_output=True, text=True, cwd=scratch)
-    except OSError:
-        return None
-    return proc.stdout.strip() or None if proc.returncode == 0 else None
-
-
-def _restore(scratch: Path, tree: str | None) -> bool:
-    """Put the scratch back to `tree`: index, tracked files and untracked files. False when it could not."""
-    if not tree:
-        return False
-    cmd = f"git read-tree {tree} && git checkout-index -a -f && git clean -fdq"
-    try:
-        return subprocess.run(cmd, shell=True, capture_output=True, text=True, cwd=scratch).returncode == 0
-    except OSError:
-        return False
-
-
-def recover_diff(scratch: Path, computed: str, stdout: str) -> tuple[str, str]:
-    """The scratch diff and its source: a clean scratch falls back to an applicable reported patch."""
-    if computed:
-        return computed, "computed"
-    reported = reported_patch(stdout)
-    if reported.strip() and apply_reported_patch(scratch, reported):
-        recomputed = _capture_diff(scratch)
-        if recomputed:
-            return recomputed, "reported"
-    return computed, "computed"
-
-
-def _unprefixed(token: str) -> str:
-    """Strip the one-letter path prefix git puts on a `+++`/`---` token — `a/`, `b/`, or (under `diff.mnemonicPrefix`) `c/`, `i/`, `w/`, `o/`."""
-    _, sep, rest = token.partition("/")
-    return rest if sep else token
-
-
-def files_touched_from_patch(patch: str) -> list[str]:
-    """The paths a patch changes, read from its own '+++'/'---' headers — never asked.
-
-    `+++ b/<path>` names every add or modify; a deletion has `+++ /dev/null` and
-    is named by `--- a/<path>` instead. Pure: no git invoked, no filesystem touched.
-    """
-    seen: list[str] = []
-    minus_token = ""
-    for line in patch.splitlines():
-        if line.startswith("--- "):
-            minus_token = line[4:]
-        elif line.startswith("+++ "):
-            plus_token = line[4:]
-            path = _unprefixed(minus_token if plus_token == "/dev/null" else plus_token)
-            if path and path not in seen:
-                seen.append(path)
-    return seen
 
 
 # Errors that are about the CALL, not about the work. The provider's own
@@ -384,359 +251,6 @@ def _alt_model_for(tiers: Mapping[str, Any], tier: str, model: str) -> str:
     names = [str(b) for b in bindings]
     idx = names.index(model) if model in names else -1
     return names[(idx + 1) % len(names)]
-
-
-def next_spent(reported_usd: float) -> float:
-    """The CLI's `total_cost_usd` is the session's running total, so it replaces the spend and never adds."""
-    return reported_usd
-
-
-def call_cost(previous_reported: float, reported: float, resumed: bool) -> float:
-    """A resumed call's own cost is the rise in the session total; a fall means the session restarted."""
-    return reported if not resumed or reported < previous_reported else reported - previous_reported
-
-
-def thread_priced(previous_reported: float, reported: Any, resumed: bool) -> tuple[dict[str, float], float]:
-    """A threaded call's `cost_usd` override and the session's new last total; a missing total overrides nothing."""
-    return (
-        ({}, previous_reported)
-        if reported is None
-        else ({"cost_usd": call_cost(previous_reported, float(reported), resumed)}, float(reported))
-    )
-
-
-def _tool_result_text(content: Any) -> str:
-    """A tool result's own text, however the CLI shaped it."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "".join(
-            str(block.get("text") or "") for block in content if isinstance(block, Mapping) and block.get("type") == "text"
-        )
-    return ""
-
-
-def trace_commands(trace: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
-    """Every Bash call the trace shows was run, paired with its own tool result, in order.
-
-    Matched by `tool_use_id`, since parallel tool calls in one assistant turn
-    do not resolve in the order they were issued. Pure: reads `trace`, never
-    mutates it, touches nothing on disk.
-    """
-    pending: dict[str, str] = {}
-    commands: list[dict[str, str]] = []
-    for event in trace:
-        if not isinstance(event, Mapping):
-            continue
-        message = event.get("message")
-        content = message.get("content") if isinstance(message, Mapping) else None
-        if event.get("type") == "assistant":
-            for block in content or []:
-                if isinstance(block, Mapping) and block.get("type") == "tool_use" and block.get("name") == "Bash":
-                    tool_input = block.get("input")
-                    command = tool_input.get("command") if isinstance(tool_input, Mapping) else None
-                    tool_id = block.get("id")
-                    if command and tool_id:
-                        pending[tool_id] = str(command)
-        elif event.get("type") == "user":
-            for block in content or []:
-                if isinstance(block, Mapping) and block.get("type") == "tool_result" and block.get("tool_use_id") in pending:
-                    commands.append({
-                        "command": pending.pop(block["tool_use_id"]),
-                        "output": _tool_result_text(block.get("content")),
-                        "source": "trace",
-                    })
-    return commands
-
-
-_DENIED_TEXT_LIMIT = 300
-_TARGET_KEYS = ("file_path", "path", "pattern", "url", "command")
-
-
-def _content_blocks(events: Sequence[Mapping[str, Any]], event_type: str, block_type: str) -> list[Mapping[str, Any]]:
-    """Content blocks of `block_type` from events of `event_type`, in trace order."""
-    return [
-        block
-        for event in events
-        if isinstance(event, Mapping) and event.get("type") == event_type and isinstance(event.get("message"), Mapping)
-        for block in event["message"].get("content") or []
-        if isinstance(block, Mapping) and block.get("type") == block_type
-    ]
-
-
-def _call_target(name: Any, tool_input: Any) -> str:
-    """What a call acted on: the command for Bash, else the first identifying input field, else ''."""
-    fields = tool_input if isinstance(tool_input, Mapping) else {}
-    keys = ("command",) if name == "Bash" else _TARGET_KEYS
-    return next((str(fields[key]) for key in keys if fields.get(key)), "")[:_DENIED_TEXT_LIMIT]
-
-
-def _denied_calls(events: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
-    """Calls whose tool result is an error not starting "Exit code " (that is a Bash command that ran and failed), in call order.
-
-    Paired by `tool_use_id`. Pure: reads `events`, never mutates them.
-    """
-    denials = {
-        block.get("tool_use_id"): text
-        for block in _content_blocks(events, "user", "tool_result")
-        if block.get("is_error") is True
-        for text in [_tool_result_text(block.get("content"))]
-        if not text.startswith("Exit code ")
-    }
-    return [
-        {
-            "tool": str(block.get("name")),
-            "target": _call_target(block.get("name"), block.get("input")),
-            "message": denials[block["id"]][:_DENIED_TEXT_LIMIT],
-        }
-        for block in _content_blocks(events, "assistant", "tool_use")
-        if block.get("id") in denials
-    ]
-
-
-def call_summary(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """Tool counts, the ten most-read basenames, whole-file reads (a Read with no `limit`), the result's subtype and error flag, and the denied calls."""
-    blocks = [
-        block
-        for event in events
-        if isinstance(event, Mapping) and event.get("type") == "assistant" and isinstance(event.get("message"), Mapping)
-        for block in event["message"].get("content") or []
-        if isinstance(block, Mapping) and block.get("type") == "tool_use"
-    ]
-    reads = [
-        block["input"] if isinstance(block.get("input"), Mapping) else {}
-        for block in blocks
-        if block.get("name") == "Read"
-    ]
-    result = next((e for e in events if isinstance(e, Mapping) and e.get("type") == "result"), {})
-    return {
-        "tool_uses": dict(Counter(str(block.get("name")) for block in blocks)),
-        "reads": dict(Counter(str(r.get("file_path") or "").rsplit("/", 1)[-1] for r in reads).most_common(10)),
-        "whole_file_reads": sum(1 for r in reads if r.get("limit") is None),
-        "result": result.get("subtype"),
-        "is_error": bool(result.get("is_error")),
-        "denied": _denied_calls(events),
-    }
-
-
-def self_reported_commands(data: Mapping[str, Any]) -> list[dict[str, str]]:
-    """The model's own account of what it ran — kept only when no trace exists to derive it."""
-    reported = data.get("commands_run")
-    if not isinstance(reported, list):
-        return []
-    return [{"command": str(item), "source": "self_report"} for item in reported if item]
-
-
-# How long to wait for pipes to drain after the group is killed.
-_REAP_SECONDS = 5
-
-
-def _kill_group(proc: subprocess.Popen[str]) -> None:
-    """SIGKILL claude's whole process group; the group is gone already when the lookup fails."""
-    with suppress(ProcessLookupError):
-        os.killpg(proc.pid, signal.SIGKILL)
-
-
-def _trace_path(trace_dir: Path, role: str, n: int) -> Path:
-    return trace_dir / f"{role}-{n}.jsonl"
-
-
-def _json_object(line: str) -> dict[str, Any] | None:
-    try:
-        event = json.loads(line)
-    except json.JSONDecodeError:
-        return None
-    return event if isinstance(event, dict) else None
-
-
-# How often a reader looks up from a quiet pipe to see whether it was told to stop.
-_POLL_SECONDS = 0.1
-
-
-def _pump(pipe: IO[str], stop: threading.Event, parts: list[str], on_line: Callable[[str], None] | None = None) -> None:
-    """Read `pipe` to EOF a line at a time; a read error raises, it is never taken for EOF.
-
-    Imperative edge code: `parts` and the pending tail are mutated on purpose. Wrong belief: closing a
-    pipe wakes its reader, so this polls the raw fd and leaves on `stop`. `select.select` is out: it
-    raises ValueError on any fd of 1024 or more.
-    """
-    fd = pipe.fileno()
-    decoder = io.IncrementalNewlineDecoder(codecs.getincrementaldecoder(pipe.encoding or "utf-8")(errors="replace"), translate=True)
-    pending = ""
-    with selectors.DefaultSelector() as ready:
-        ready.register(fd, selectors.EVENT_READ)
-        while not stop.is_set():
-            if not ready.select(_POLL_SECONDS):
-                continue
-            data = os.read(fd, 65536)
-            *whole, pending = (pending + decoder.decode(data, final=not data)).split("\n")
-            lines = [f"{line}\n" for line in whole] + ([pending] if not data and pending else [])
-            parts.extend(lines)
-            for line in lines:
-                if on_line is not None:
-                    try:
-                        on_line(line)
-                    except Exception:
-                        _log.debug("stream line handler failed", exc_info=True)
-            if not data:
-                return
-
-
-def _feed(pipe: IO[str], prompt: str) -> None:
-    """Write the prompt to claude's stdin and close it. A claude that stopped reading is not an error."""
-    with suppress(OSError, ValueError):
-        data, fd = prompt.encode(pipe.encoding or "utf-8"), pipe.fileno()
-        while data:
-            data = data[os.write(fd, data):]
-    with suppress(OSError, ValueError):
-        pipe.close()
-
-
-class _Streams:
-    """claude's three pipes, serviced by daemon threads so stdout is read while the node runs, not once it ends."""
-
-    def __init__(self, proc: subprocess.Popen[str], prompt: str, on_line: Callable[[str], None] | None) -> None:
-        self.proc = proc
-        self._stop = threading.Event()
-        self._out: list[str] = []
-        self._err: list[str] = []
-        self._failures: list[str] = []
-        assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
-        self._threads = [
-            threading.Thread(target=self._read, args=(proc.stdout, self._out, on_line), daemon=True),
-            threading.Thread(target=self._read, args=(proc.stderr, self._err), daemon=True),
-            threading.Thread(target=_feed, args=(proc.stdin, prompt), daemon=True),
-        ]
-        for thread in self._threads:
-            thread.start()
-
-    def _read(self, pipe: IO[str], parts: list[str], on_line: Callable[[str], None] | None = None) -> None:
-        try:
-            _pump(pipe, self._stop, parts, on_line)
-        except (OSError, ValueError) as exc:
-            if not self._stop.is_set():
-                _log.warning("reading claude's output failed: %s", exc)
-                self._failures.append(f"{type(exc).__name__}: {exc}")
-
-    def collect(self, timeout: float | None) -> tuple[str, str]:
-        """Wait for claude to exit and both pipes to reach EOF, as `communicate` did, inside one `timeout`."""
-        deadline = None if timeout is None else time.monotonic() + timeout
-
-        def left() -> float | None:
-            return None if deadline is None else max(0.0, deadline - time.monotonic())
-
-        self.proc.wait(timeout=left())
-        for thread in self._threads:
-            thread.join(left())
-            if thread.is_alive():
-                raise subprocess.TimeoutExpired(self.proc.args, timeout)
-        if self._failures:
-            raise RunnerError(f"reading claude's output failed: {'; '.join(self._failures)}")
-        return "".join(self._out), "".join(self._err)
-
-    def stop(self, drain: float = 0.0) -> None:
-        """Give the readers `drain` seconds to reach EOF, then tell them to leave."""
-        deadline = time.monotonic() + drain
-        for thread in self._threads:
-            thread.join(max(0.0, deadline - time.monotonic()))
-        self._stop.set()
-        for thread in self._threads:
-            thread.join(_POLL_SECONDS * 5)
-
-
-def _kill_and_reap(proc: subprocess.Popen[str], streams: _Streams) -> None:
-    """Kill a timed-out claude's group and reap it without waiting on pipes forever.
-
-    Wrong belief: killing claude closes its pipes. A tool it started keeps them
-    open, so the drain is bounded and the pipes are closed by hand if it times out.
-    """
-    _kill_group(proc)
-    deadline = time.monotonic() + _REAP_SECONDS
-    with suppress(subprocess.TimeoutExpired):
-        proc.wait(timeout=_REAP_SECONDS)
-    streams.stop(drain=max(0.0, deadline - time.monotonic()))
-    _close_pipes(proc)
-    proc.wait()
-
-
-def _close_pipes(proc: subprocess.Popen[str]) -> None:
-    for pipe in (proc.stdin, proc.stdout, proc.stderr):
-        if pipe is not None:
-            pipe.close()
-
-
-def _call_fields(
-    role: str,
-    tier: str,
-    model: str,
-    tools: Sequence[str],
-    payload: Mapping[str, Any],
-    task_id: str | None = None,
-    *,
-    ceiling_usd: float | None = None,
-    ceiling_source: str = "profile",
-    hard_ceiling_usd: float | None = None,
-    checkpoint_fractions: tuple[float, ...] | None = None,
-    checkpoint_source: str = "default",
-) -> dict[str, Any]:
-    """The one shape a call is recorded in — success or failure alike."""
-    usage = payload.get("usage") if isinstance(payload.get("usage"), Mapping) else {}
-    return {
-        "role": role,
-        "task_id": task_id,
-        "tier": tier,
-        "model": model,
-        "tools": list(tools),
-        "cost_usd": payload.get("total_cost_usd"),
-        "ceiling_usd": ceiling_usd,
-        "ceiling_source": ceiling_source,
-        **({"hard_ceiling_usd": hard_ceiling_usd} if hard_ceiling_usd is not None else {}),
-        "checkpoint_fractions": list(checkpoint_fractions) if checkpoint_fractions else None,
-        "checkpoint_source": checkpoint_source,
-        "turns": payload.get("num_turns"),
-        "duration_ms": payload.get("duration_ms"),
-        # Split, not summed: a cache read costs a tenth of a fresh token,
-        # and "4.6M input" meant nothing until the price revealed that most
-        # of it was cached. Now the record says so itself.
-        "input_tokens": int(usage.get("input_tokens") or 0),
-        "cache_read_tokens": int(usage.get("cache_read_input_tokens") or 0),
-        "cache_creation_tokens": int(usage.get("cache_creation_input_tokens") or 0),
-        "input_total": sum(
-            int(usage.get(k) or 0)
-            for k in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
-        ),
-        "output_tokens": int(usage.get("output_tokens") or 0),
-        **({"trace": payload["trace"]} if payload.get("trace") else {}),
-        **({"commands_run": payload["commands_run"]} if "commands_run" in payload else {}),
-        **({"summary": payload["summary"]} if "summary" in payload else {}),
-    }
-
-
-def _load_bounds(path: Path) -> dict[tuple[str, str], Mapping[str, Any]] | None:
-    """Rows from `cox stats bounds --write`, keyed by (role, model). None when unreadable."""
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        print(f"warning: cost bounds file unreadable ({path}): {exc}", file=sys.stderr)
-        return None
-    rows = raw.get("rows") if isinstance(raw, Mapping) else None
-    if not isinstance(rows, list):
-        return {}
-    return {(str(r.get("role")), str(r.get("model"))): r for r in rows if isinstance(r, Mapping)}
-
-
-def _effective_limit(shape_ceiling: float | None, node_cap: float | None) -> tuple[float | None, bool]:
-    """min(shape, cap) per cost-bounds.md §6 rule 2. True when the cap is the binding number."""
-    if node_cap is None:
-        return shape_ceiling, False
-    if shape_ceiling is None or node_cap < shape_ceiling:
-        return node_cap, True
-    return shape_ceiling, False
-
-
-def _checkpoint_target(fractions: tuple[float, ...] | None, index: int, guide: float | None) -> float | None:
-    """fractions[index] times the guide, as an absolute session total; None with no fractions left or no guide."""
-    return fractions[index] * guide if fractions and guide is not None and index < len(fractions) else None
 
 
 def _init_facts(init: object) -> tuple[str | None, str | None]:
@@ -1115,38 +629,13 @@ class ClaudeCodeRunner:
 
     @staticmethod
     def _agent_env(scratch: Path | None) -> dict[str, str]:
-        """Edge. `child_env`, under a scratch's linked shared venv with uv never syncing it (`shared_venv_env`)."""
-        from harness.worktree import linked_venv_bin, shared_venv_env  # here: harness imports this module
-
-        env = child_env(os.environ, shutil.which("bash"), read_token(token_path(str(Path.home()))))
-        return shared_venv_env(env, linked_venv_bin(scratch) if scratch is not None else None, os.path.realpath)
+        return agent_env(scratch)
 
     def _make_scratch(self, role: str) -> tuple[Path, Path]:
-        parent = Path(tempfile.mkdtemp(prefix="agent-graphs-build-"))
-        scratch = parent / "tree"
-        from harness.worktree import link_venv, registry_lock  # here, not at the top: harness imports this module
-
-        with registry_lock(self.repo_dir):
-            proc = subprocess.run(
-                ["git", "-C", str(self.repo_dir), "worktree", "add", "--detach", str(scratch), "HEAD"],
-                capture_output=True, text=True,
-            )
-        if proc.returncode != 0:
-            shutil.rmtree(parent, ignore_errors=True)
-            raise RunnerError(f"could not create a scratch worktree for '{role}': {(proc.stderr or '').strip()[:300]}")
-
-        link_venv(Path(self.repo_dir), scratch)
-        return parent, scratch
+        return make_scratch(self.repo_dir, role)
 
     def _drop_scratch(self, parent: Path, scratch: Path) -> None:
-        from harness.worktree import registry_lock  # here, not at the top: harness imports this module
-
-        with registry_lock(self.repo_dir):
-            subprocess.run(
-                ["git", "-C", str(self.repo_dir), "worktree", "remove", "--force", str(scratch)],
-                capture_output=True, text=True,
-            )
-        shutil.rmtree(parent, ignore_errors=True)
+        drop_scratch(self.repo_dir, parent, scratch)
 
     def _thread(self, name: str, role: str) -> dict[str, Any]:
         """The thread's state, created on first use: a session id and, given a repository, a scratch."""

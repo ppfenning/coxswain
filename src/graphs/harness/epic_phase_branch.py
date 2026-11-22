@@ -14,7 +14,7 @@ from harness.epic_types import PhaseRecord, Quarantine, as_list, as_mapping
 from harness.phase_remote import push_branch
 from harness.stack_refresh import guarded_refresh, refresh_record
 from harness.worktree import create_worktree, prune_registrations, registry_lock, release_stale_holders, remove_worktree
-from runner.claude_code_runner import files_touched_from_patch
+from runner.claude_scratch import files_touched_from_patch
 
 
 def publish_branch(ctx: Ctx, branch: str) -> str | None:

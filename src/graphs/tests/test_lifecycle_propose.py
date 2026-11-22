@@ -9,9 +9,15 @@ from unittest.mock import ANY
 import pytest
 
 from graphs._contract import ContractViolation
-from graphs.delivery import lifecycle_propose
+from graphs.delivery import (
+    lifecycle_checkpoints,
+    lifecycle_patch,
+    lifecycle_propose,
+    lifecycle_review,
+    lifecycle_schemas,
+)
 from runner import ScriptedRunner
-from runner.claude_code_runner import _capture_diff
+from runner.claude_scratch import _capture_diff
 from runner.tier_resolution import Hints
 
 
@@ -96,16 +102,16 @@ BARE_HUNK_PATCH = "@@ -1,1 +1,1 @@\n line\n"
 
 
 def test_patch_parses_accepts_a_complete_two_hunk_patch() -> None:
-    assert lifecycle_propose.patch_parses(TWO_HUNK_PATCH) is None
+    assert lifecycle_patch.patch_parses(TWO_HUNK_PATCH) is None
 
 
 def test_patch_parses_names_the_file_and_hunk_cut_short() -> None:
-    reason = lifecycle_propose.patch_parses(CUT_MID_HUNK_PATCH)
+    reason = lifecycle_patch.patch_parses(CUT_MID_HUNK_PATCH)
     assert reason == "the patch was cut off at src/a.py hunk 2; emit the complete patch"
 
 
 def test_patch_parses_accepts_a_bare_hunk_list_with_no_diff_header() -> None:
-    assert lifecycle_propose.patch_parses(BARE_HUNK_PATCH) is None
+    assert lifecycle_patch.patch_parses(BARE_HUNK_PATCH) is None
 
 
 def test_a_truncated_patch_is_retried_once_and_a_second_truncation_is_recorded(
@@ -149,7 +155,7 @@ def test_contract_commands_match_by_shape_not_bytes() -> None:
     and the builder ran `pytest -q tests/test_cos.py 2>&1 | tail -15`; another
     chained `ruff check . --fix … && ruff check . 2>&1 | tail -20`. Both are the
     contract's commands, and a valid build was quarantined for them."""
-    m = lifecycle_propose._contract_command_matches
+    m = lifecycle_patch._contract_command_matches
     assert m("pytest -q <your test file> 2>&1 | tail -15", "pytest -q tests/test_cos.py 2>&1 | tail -15")
     assert m("ruff check .", "ruff check . --fix 2>&1 | tail -20 && ruff check . 2>&1 | tail -20")
     assert m("pytest -q 2>&1 | tail -3", "pytest  -q 2>&1  | tail -3")
@@ -629,26 +635,26 @@ def test_a_surface_marked_new_still_covers_the_partial_work_it_names() -> None:
     partial patch touched `agent_tools/schema.py` and the surface read
     `agent_tools/schema.py (new)` — the marker is not part of the path."""
     stop = lifecycle_propose.BudgetStop(role="build", thread="t", spent_usd=1.16, detail="ceiling", session="s1", partial_patch="--- a/agent_tools/schema.py\n+++ b/agent_tools/schema.py\n+x\n")
-    ok, why = lifecycle_propose._continue_ok(stop, surfaces=["agent_tools/schema.py (new)", "README.md"], continuations=0)
+    ok, why = lifecycle_checkpoints._continue_ok(stop, surfaces=["agent_tools/schema.py (new)", "README.md"], continuations=0)
     assert "outside the task's surfaces" not in why
 
 
 def test_a_test_file_is_never_outside_the_surfaces() -> None:
     touched = ["agent_tools/route.py", "tests/test_route.py", "tests/fixtures/help/runs/runs-pause.txt"]
-    assert lifecycle_propose._files_outside_surfaces(touched, ["agent_tools/route.py"]) == []
+    assert lifecycle_patch._files_outside_surfaces(touched, ["agent_tools/route.py"]) == []
 
 
 def test_a_snapshot_naming_no_module_is_outside_the_surfaces() -> None:
-    assert lifecycle_propose._files_outside_surfaces(["src/ui/snapshots/a.snap"], ["src/ui/regatta.rs"]) == ["src/ui/snapshots/a.snap"]
+    assert lifecycle_patch._files_outside_surfaces(["src/ui/snapshots/a.snap"], ["src/ui/regatta.rs"]) == ["src/ui/snapshots/a.snap"]
 
 
 def test_a_surface_modules_snapshot_is_inside_and_its_pending_copy_is_not_reported() -> None:
     snap = "src/ui/snapshots/coxtop__ui__regatta__tests__x.snap"
-    assert lifecycle_propose._files_outside_surfaces([snap, snap + ".new"], ["src/ui/regatta.rs"]) == []
+    assert lifecycle_patch._files_outside_surfaces([snap, snap + ".new"], ["src/ui/regatta.rs"]) == []
 
 
 def test_a_surface_ending_in_a_slash_covers_the_files_under_it() -> None:
-    assert lifecycle_propose._files_outside_surfaces(["docs/a.md", "src/b.rs"], ["docs/ (new)"]) == ["src/b.rs"]
+    assert lifecycle_patch._files_outside_surfaces(["docs/a.md", "src/b.rs"], ["docs/ (new)"]) == ["src/b.rs"]
 
 
 def test_the_same_objection_raised_again_stops_the_loop(
@@ -979,7 +985,7 @@ def test_a_pick_does_not_require_the_arbiter_to_write_a_plan(
     cartridge, plan_response, build_response, review_response
 ) -> None:
     """A plan emitted alongside a pick is a plan nobody reads."""
-    assert "plan" not in lifecycle_propose.PLAN_CHOICE_SCHEMA["required"]
+    assert "plan" not in lifecycle_schemas.PLAN_CHOICE_SCHEMA["required"]
     scripted = runner(
         plan_response, build_response, review_response,
         plan_alternative=PLAN_B, plan_arbitrate={"chosen": "second", "reasoning": "b's steps are checkable", "price": "a second file"},
@@ -1017,16 +1023,16 @@ INCIDENT_LITERAL = {
 
 
 def test_review_is_placeholder_catches_the_literal_incident() -> None:
-    assert lifecycle_propose.review_is_placeholder(INCIDENT_LITERAL) is True
+    assert lifecycle_review.review_is_placeholder(INCIDENT_LITERAL) is True
 
 
 def test_review_is_placeholder_leaves_a_real_revise_alone() -> None:
-    assert lifecycle_propose.review_is_placeholder(REVISE) is False
+    assert lifecycle_review.review_is_placeholder(REVISE) is False
 
 
 def test_review_is_placeholder_leaves_an_empty_findings_approve_alone() -> None:
     approve = {"verdict": "approve", "findings": [], "rationale": "matches the charter"}
-    assert lifecycle_propose.review_is_placeholder(approve) is False
+    assert lifecycle_review.review_is_placeholder(approve) is False
 
 
 def test_review_is_placeholder_leaves_a_real_finding_about_placeholder_code_alone() -> None:
@@ -1036,14 +1042,14 @@ def test_review_is_placeholder_leaves_a_real_finding_about_placeholder_code_alon
         "findings": [{"detail": "the patch leaves a placeholder function with no test", "charter_principle": "tests", "file": "a.py"}],
         "rationale": "the handler is unimplemented",
     }
-    assert lifecycle_propose.review_is_placeholder(real_finding) is False
+    assert lifecycle_review.review_is_placeholder(real_finding) is False
 
 
 def test_review_is_placeholder_leaves_an_adversary_approve_with_nothing_to_object_to_alone() -> None:
     """ADVERSARY_SCHEMA has no `rationale`; an empty `strongest_objection` on an
     approve is a clean approval, not a placeholder."""
     approve = {"verdict": "approve", "objections": [], "strongest_objection": ""}
-    assert lifecycle_propose.review_is_placeholder(approve) is False
+    assert lifecycle_review.review_is_placeholder(approve) is False
 
 
 def test_an_abstained_reviewers_placeholder_never_reaches_the_next_build_prompt(
@@ -1127,11 +1133,11 @@ def declared(scripted, role):
 
 
 def test_hints_count_files_and_lines_from_the_patch_and_leave_the_rest_unknown() -> None:
-    assert lifecycle_propose._hints(HEADERED_PATCH, attempt=2, judgment="high") == Hints(
+    assert lifecycle_patch._hints(HEADERED_PATCH, attempt=2, judgment="high") == Hints(
         judgment="high", files_changed=2, lines_changed=5, attempt=2
     )
-    assert lifecycle_propose._hints("--- a/x\n+++ b/x\n-a\n+b\n") == Hints(lines_changed=2)
-    assert lifecycle_propose._hints("") == Hints()
+    assert lifecycle_patch._hints("--- a/x\n+++ b/x\n-a\n+b\n") == Hints(lines_changed=2)
+    assert lifecycle_patch._hints("") == Hints()
 
 
 def test_the_plan_adversary_declares_high_judgment_and_no_tier(
@@ -1211,8 +1217,8 @@ def test_under_a_runaway_ceiling_a_build_resumes_past_the_continuation_count_unt
     patch = "--- a/x.py\n+++ b/x.py\n+x\n"
     under = lifecycle_propose.BudgetStop(role="build", thread="t", spent_usd=4.2, detail="ceiling", session="s1", partial_patch=patch)
     over = lifecycle_propose.BudgetStop(role="build", thread="t", spent_usd=6.0, detail="ceiling", session="s1", partial_patch=patch)
-    go, _ = lifecycle_propose._continue_ok(under, surfaces=["x.py"], continuations=5, hard_ceiling=6.0)
-    stop, why = lifecycle_propose._continue_ok(over, surfaces=["x.py"], continuations=5, hard_ceiling=6.0)
+    go, _ = lifecycle_checkpoints._continue_ok(under, surfaces=["x.py"], continuations=5, hard_ceiling=6.0)
+    stop, why = lifecycle_checkpoints._continue_ok(over, surfaces=["x.py"], continuations=5, hard_ceiling=6.0)
     assert (go, stop, why.startswith("the $6.00 runaway ceiling was reached")) == (True, False, True)
 
 
@@ -1229,8 +1235,8 @@ def _git_repo_with_tracked_debug_py(tmp_path):
     return repo
 
 
-def _checkpoint_ctx(tmp_path, repo, run_id: str) -> lifecycle_propose._CheckpointContext:
-    return lifecycle_propose._CheckpointContext(
+def _checkpoint_ctx(tmp_path, repo, run_id: str) -> lifecycle_checkpoints._CheckpointContext:
+    return lifecycle_checkpoints._CheckpointContext(
         checks=(), repo_dir=str(repo), role_budget_usd={}, tier_budget_usd={},
         runs_dir=tmp_path, run_id=run_id, task="TICKET-1",
     )
@@ -1253,7 +1259,7 @@ def test_an_untracked_scratch_probe_outside_surfaces_is_dropped_not_flagged(tmp_
     wrote and never committed is scratch, not a surface violation."""
     repo = _git_repo_with_tracked_debug_py(tmp_path)
     patch = "--- a/README.md\n+++ b/README.md\n+x\n--- a/_debug_probe.py\n+++ b/_debug_probe.py\n+y\n"
-    lifecycle_propose._checkpoint_call(
+    lifecycle_checkpoints._checkpoint_call(
         _checkpoint_stop(patch), surfaces=["README.md"], ctx=_checkpoint_ctx(tmp_path, repo, "run-1"),
         guide_usd=1.0, previous_patch=None,
     )
@@ -1264,7 +1270,7 @@ def test_an_untracked_scratch_probe_outside_surfaces_is_dropped_not_flagged(tmp_
 def test_an_untracked_non_scratch_file_outside_surfaces_still_flags(tmp_path) -> None:
     repo = _git_repo_with_tracked_debug_py(tmp_path)
     patch = "--- a/README.md\n+++ b/README.md\n+x\n--- a/docs/new.md\n+++ b/docs/new.md\n+y\n"
-    lifecycle_propose._checkpoint_call(
+    lifecycle_checkpoints._checkpoint_call(
         _checkpoint_stop(patch), surfaces=["README.md"], ctx=_checkpoint_ctx(tmp_path, repo, "run-2"),
         guide_usd=1.0, previous_patch=None,
     )
@@ -1275,7 +1281,7 @@ def test_an_untracked_non_scratch_file_outside_surfaces_still_flags(tmp_path) ->
 def test_a_tracked_file_named_like_scratch_still_flags_because_it_is_tracked(tmp_path) -> None:
     repo = _git_repo_with_tracked_debug_py(tmp_path)
     patch = "--- a/README.md\n+++ b/README.md\n+x\n--- a/debug.py\n+++ b/debug.py\n+y\n"
-    lifecycle_propose._checkpoint_call(
+    lifecycle_checkpoints._checkpoint_call(
         _checkpoint_stop(patch), surfaces=["README.md"], ctx=_checkpoint_ctx(tmp_path, repo, "run-3"),
         guide_usd=1.0, previous_patch=None,
     )
@@ -1297,7 +1303,7 @@ def test_touched_paths_names_a_deleted_file_by_its_old_path_not_dev_null():
         "+++ b/agent_tools/cli.py\n"
         "@@ -1 +1 @@\n-a\n+b\n"
     )
-    assert lifecycle_propose._touched_paths(patch) == ["agent_tools/home_screen.py", "agent_tools/cli.py"]
+    assert lifecycle_patch._touched_paths(patch) == ["agent_tools/home_screen.py", "agent_tools/cli.py"]
 
 
 def test_patch_sections_keys_a_deleted_file_by_its_old_path():
@@ -1314,7 +1320,7 @@ def test_patch_sections_keys_a_deleted_file_by_its_old_path():
         "+++ i/tests/test_y.py\n"
         "@@ -1 +1 @@\n-b\n+c\n"
     )
-    assert list(lifecycle_propose._patch_sections(patch)) == ["agent_tools/x.py", "tests/test_y.py"]
+    assert list(lifecycle_patch._patch_sections(patch)) == ["agent_tools/x.py", "tests/test_y.py"]
 
 
 _EMPTY_NEW = (
@@ -1334,18 +1340,18 @@ _FULL_NEW = (
 
 def test_header_only_new_file_is_keyed_by_its_path_in_both_functions():
     """An empty new file has no `+++` line; 2026-11: aim-slack's scaffold task was quarantined as build_output_invalid."""
-    sections = lifecycle_propose._patch_sections(_EMPTY_NEW)
+    sections = lifecycle_patch._patch_sections(_EMPTY_NEW)
     assert list(sections) == ["pkg/__init__.py"]
     assert "new file mode 100644" in sections["pkg/__init__.py"]
-    assert lifecycle_propose._touched_paths(_EMPTY_NEW) == ["pkg/__init__.py"]
+    assert lifecycle_patch._touched_paths(_EMPTY_NEW) == ["pkg/__init__.py"]
     prefixed = _EMPTY_NEW.replace("a/pkg", "c/pkg").replace("b/pkg", "i/pkg")
-    assert list(lifecycle_propose._patch_sections(prefixed)) == ["pkg/__init__.py"]
+    assert list(lifecycle_patch._patch_sections(prefixed)) == ["pkg/__init__.py"]
 
 
 def test_mixed_empty_and_non_empty_new_files_are_listed_once_each():
     patch = _EMPTY_NEW + _FULL_NEW
-    assert list(lifecycle_propose._patch_sections(patch)) == ["pkg/__init__.py", "pkg/mod.py"]
-    assert lifecycle_propose._touched_paths(patch) == ["pkg/__init__.py", "pkg/mod.py"]
+    assert list(lifecycle_patch._patch_sections(patch)) == ["pkg/__init__.py", "pkg/mod.py"]
+    assert lifecycle_patch._touched_paths(patch) == ["pkg/__init__.py", "pkg/mod.py"]
 
 
 def test_a_pure_rename_block_names_no_file():
@@ -1354,13 +1360,13 @@ def test_a_pure_rename_block_names_no_file():
         "diff --git a/tools/app.py b/tools/app2.py\nsimilarity index 100%\n"
         "rename from tools/app.py\nrename to tools/app2.py\n"
     )
-    assert lifecycle_propose._patch_sections(rename) == {}
-    assert lifecycle_propose._touched_paths(rename) == []
+    assert lifecycle_patch._patch_sections(rename) == {}
+    assert lifecycle_patch._touched_paths(rename) == []
 
 
 def test_build_output_valid_accepts_a_mixed_empty_and_non_empty_patch():
     build = {"patch": _EMPTY_NEW + _FULL_NEW, "files_touched": ["pkg/__init__.py", "pkg/mod.py"], "commands_run": []}
-    assert lifecycle_propose._build_output_valid(build, "") is None
+    assert lifecycle_patch._build_output_valid(build, "") is None
 
 
 def test_build_output_valid_accepts_the_runner_captured_patch_of_an_empty_file(tmp_path):
@@ -1376,4 +1382,4 @@ def test_build_output_valid_accepts_the_runner_captured_patch_of_an_empty_file(t
     (tmp_path / "full.py").write_text("x = 1\n")
     patch = _capture_diff(tmp_path)
     build = {"patch": patch, "files_touched": ["empty.py", "full.py"], "commands_run": []}
-    assert lifecycle_propose._build_output_valid(build, "") is None
+    assert lifecycle_patch._build_output_valid(build, "") is None

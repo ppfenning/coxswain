@@ -26,7 +26,7 @@ def test_call_cost_is_the_reported_total_unless_resumed_and_the_total_rose():
 
 def test_call_cost_matches_the_runners_copy_on_every_rule():
     """tools does not import graphs, so the runner's `call_cost` is read as source and run beside this one."""
-    runner = Path(__file__).resolve().parents[2] / "graphs" / "runner" / "claude_code_runner.py"
+    runner = Path(__file__).resolve().parents[2] / "graphs" / "runner" / "claude_cost.py"
     if not runner.exists():
         pytest.skip("graphs is not checked out beside tools")
     fn = next(n for n in ast.parse(runner.read_text()).body if isinstance(n, ast.FunctionDef) and n.name == "call_cost")
