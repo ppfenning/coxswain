@@ -514,7 +514,7 @@ def run_checks(
     """
     venv_bin = linked_venv_bin(worktree)
     if venv_bin is not None:
-        env = shared_venv_env(os.environ if env is None else env, venv_bin)
+        env = shared_venv_env(os.environ if env is None else env, venv_bin, os.path.realpath)
     results: list[dict[str, Any]] = []
     workers = _workers_field(env)
     for number, check in enumerate(checks, 1):

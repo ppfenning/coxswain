@@ -395,23 +395,29 @@ UV_NO_SYNC_VAR = "UV_NO_SYNC"
 
 
 def linked_venv_bin(worktree: Path) -> Path | None:
-    """Edge. `<worktree>/.venv/bin` when the worktree's `.venv` is a link to a shared one (`link_venv`), else None."""
+    """Edge. The bin of the shared venv `<worktree>/.venv` links to (`link_venv`), resolved; None when it is no link."""
     link = Path(worktree) / ".venv"
-    return link / "bin" if link.is_symlink() and (link / "bin").is_dir() else None
+    return (link / "bin").resolve() if link.is_symlink() and (link / "bin").is_dir() else None
 
 
-def shared_venv_env(environ: Mapping[str, str], venv_bin: Path | None) -> dict[str, str]:
-    """Pure. The environment a command runs in inside a tree whose `.venv` is the shared checkout's (`link_venv`):
-    `venv_bin` first on PATH, once, and `UV_NO_SYNC_VAR` set, so a `uv run` there uses the venv as it is. Without it
-    uv syncs the linked venv to the tree it runs in: the checkout's editable install is rewritten to point into that
-    tree, and once the tree is removed every check, smoke and gate on the machine fails its imports (E1, 2026-11-21:
-    a builder's `uv run pytest` in its scratch, then "No module named 'agent_tools'" on every later task). With no
-    `venv_bin`, `environ` as it is."""
+def shared_venv_env(
+    environ: Mapping[str, str], venv_bin: Path | None, resolve: Callable[[str], str] = lambda p: p
+) -> dict[str, str]:
+    """Pure given `resolve` (the edge passes `os.path.realpath`). The environment a command runs in inside a tree whose
+    `.venv` is the shared checkout's (`link_venv`): `UV_NO_SYNC_VAR` set, so a `uv run` there uses the venv as it is,
+    and `venv_bin` first on PATH. A PATH whose first entry already is that venv (`resolve` says so), as `cox route
+    launch` makes a lane's, stays exactly as it is; otherwise the bin goes first and every other entry for it is
+    dropped. Without UV_NO_SYNC uv syncs the linked venv to the tree it runs in: the checkout's editable install is
+    rewritten to point into that tree, and once the tree is removed every check, smoke and gate on the machine fails
+    its imports (E1, 2026-11-21: a builder's `uv run pytest` in its scratch, then "No module named 'agent_tools'" on
+    every later task). With no `venv_bin`, `environ` as it is."""
     if venv_bin is None:
         return dict(environ)
-    first = str(venv_bin)
-    rest = [p for p in environ.get("PATH", "").split(os.pathsep) if p and p != first]
-    return {**environ, "PATH": os.pathsep.join([first, *rest]), UV_NO_SYNC_VAR: "1"}
+    target = resolve(str(venv_bin))
+    entries = [p for p in environ.get("PATH", "").split(os.pathsep) if p]
+    if not (entries and resolve(entries[0]) == target):
+        entries = [str(venv_bin), *(p for p in entries if resolve(p) != target)]
+    return {**environ, "PATH": os.pathsep.join(entries), UV_NO_SYNC_VAR: "1"}
 
 
 def prune_registrations(repo: Path) -> tuple[bool, str]:

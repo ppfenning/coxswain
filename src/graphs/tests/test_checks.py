@@ -775,8 +775,11 @@ def test_a_task_check_runs_under_the_shared_venv_linked_into_its_worktree_not_th
     assert [(r["name"], r["passed"]) for r in results] == [("tests", True), ("no sync", True)], results[0]["output_tail"]
 
 
-def test_shared_venv_env_puts_the_venv_first_once_and_is_the_environment_itself_without_one() -> None:
+def test_shared_venv_env_leaves_a_path_already_led_by_the_venv_and_puts_it_first_once_otherwise() -> None:
     bin_dir = Path("/r/.venv/bin")
+    led = {"PATH": os.pathsep.join(["/link/.venv/bin", "/u"]), "K": "x"}
+    same = {"/link/.venv/bin": str(bin_dir)}.get
+    assert shared_venv_env(led, bin_dir, lambda p: same(p, p)) == {**led, "UV_NO_SYNC": "1"}
     environ = {"PATH": os.pathsep.join(["/u", str(bin_dir), "/v"]), "K": "x"}
     once = shared_venv_env(environ, bin_dir)
     assert once == {"PATH": os.pathsep.join([str(bin_dir), "/u", "/v"]), "K": "x", "UV_NO_SYNC": "1"}

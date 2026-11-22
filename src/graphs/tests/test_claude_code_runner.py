@@ -568,7 +568,7 @@ def test_a_builder_in_a_scratch_with_the_shared_venv_has_it_first_on_path_and_uv
     ClaudeCodeRunner(PROFILE, claude_bin=str(script), cwd=tmp_path, repo_dir=repo).run(role="build", schema=SCHEMA, prompt="go")
     no_sync, first = seen.read_text(encoding="utf-8").splitlines()
     assert no_sync == "1"
-    assert first.endswith("/tree/.venv/bin")
+    assert first == str((repo / ".venv" / "bin").resolve())
 
 
 def test_run_verify_returns_a_row_per_command_and_names_a_timeout_instead_of_raising(tmp_path, monkeypatch) -> None:

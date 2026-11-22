@@ -1140,7 +1140,7 @@ class ClaudeCodeRunner:
         from harness.worktree import linked_venv_bin, shared_venv_env  # here: harness imports this module
 
         env = child_env(os.environ, shutil.which("bash"), read_token(token_path(str(Path.home()))))
-        return shared_venv_env(env, linked_venv_bin(scratch) if scratch is not None else None)
+        return shared_venv_env(env, linked_venv_bin(scratch) if scratch is not None else None, os.path.realpath)
 
     def _make_scratch(self, role: str) -> tuple[Path, Path]:
         parent = Path(tempfile.mkdtemp(prefix="agent-graphs-build-"))
