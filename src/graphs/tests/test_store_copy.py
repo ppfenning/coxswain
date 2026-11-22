@@ -393,6 +393,24 @@ def test_safe_url_keeps_only_scheme_and_path():
     assert sc._safe_url("sqlite:////tmp/x.db") == "sqlite:////tmp/x.db"
 
 
+def test_copy_urls_prefer_the_environment_and_need_both():
+    env = {sc.SRC_URL_ENV: "postgresql://a:pw@h/s", sc.DST_URL_ENV: "postgresql://b:pw@h/t"}
+    assert sc.copy_urls(None, None, env) == ("postgresql://a:pw@h/s", "postgresql://b:pw@h/t")
+    assert sc.copy_urls("sqlite:///x", "sqlite:///y", {}) == ("sqlite:///x", "sqlite:///y")
+    assert sc.copy_urls("sqlite:///x", None, {}) is None
+    assert sc.copy_urls(None, None, {sc.SRC_URL_ENV: "sqlite:///x"}) is None
+
+
+def test_main_copies_with_both_urls_in_the_environment_and_none_in_argv(src_url, dst_url, capsys):
+    assert sc.main(["--json"], {sc.SRC_URL_ENV: src_url, sc.DST_URL_ENV: dst_url}) == 0
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+
+
+def test_main_without_both_urls_exits_two(capsys):
+    assert sc.main(["--json"], {}) == 2
+    assert sc.SRC_URL_ENV in capsys.readouterr().err
+
+
 def test_a_password_never_reaches_output_even_when_the_copy_fails(src_url, capsys):
     assert sc.main([src_url, "postgresql://user:hunter2@127.0.0.1:1/store"]) == 2
     seen = capsys.readouterr()

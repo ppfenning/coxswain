@@ -65,3 +65,22 @@ def test_a_row_whose_lease_was_lost_after_its_effect_ran_is_kept_and_marked_late
     body = row[2] if isinstance(row[2], dict) else json.loads(row[2])
     assert row[0] == "done" and body["late"] is True
     assert row[1] == "late, the kind lease was lost after the effect ran: swept"
+
+
+def test_a_late_row_has_the_key_of_the_fenced_row_it_stands_in_for():
+    from harness.store_cli import CHAIR_ACTION_KEY, action_row
+
+    fenced, late = action_row("chair-a", _ACTION), action_row("chair-a", kl.late(_ACTION))
+    assert [late[k] for k in CHAIR_ACTION_KEY] == [fenced[k] for k in CHAIR_ACTION_KEY]
+
+
+def test_a_fenced_insert_that_commits_after_its_late_row_adds_no_second_row(store_conn):
+    # The fence's bounded call overran, the late row was written, then the fenced insert committed on its thread.
+    assert kl.acquire(store_conn, NAME, "a", 60) == 1
+    kl.record_late(store_conn, "chair-a", _ACTION)
+    assert kl.record_fenced(store_conn, NAME, "a", 1, "chair-a", _ACTION) is True
+    assert [tuple(r) for r in store_conn.query_all("SELECT reason FROM chair_actions")] == [
+        ("late, the kind lease was lost after the effect ran: swept",)
+    ]
+    kl.record_late(store_conn, "chair-a", _ACTION)  # and the other order: a late row after the fenced one
+    assert len(_rows(store_conn)) == 1

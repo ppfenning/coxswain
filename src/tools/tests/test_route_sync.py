@@ -1,4 +1,15 @@
-from agent_tools.route_sync import IssueError, Item, _fields, parse_issue, plan, render, run_id_of
+from agent_tools.route_sync import (
+    IssueError,
+    Item,
+    _fields,
+    marked_body,
+    marked_issues,
+    parse_issue,
+    plan,
+    render,
+    run_id_of,
+    unmarked,
+)
 
 
 def _item(**over):
@@ -15,7 +26,8 @@ def test_a_new_item_plans_create_add_five_sets_and_a_writeback_in_order():
     assert kinds == ["issue_create", "project_add", "project_set", "project_set",
                       "project_set", "project_set", "project_set", "writeback"]
     assert steps[0] == {"kind": "issue_create", "repo": "acme/widgets", "title": "Fix the thing",
-                          "body": "Some body.", "label": "coxswain", "item_id": "item-1"}
+                          "body": "Some body.\n\n<!-- coxswain:item item-1 -->", "label": "coxswain",
+                          "item_id": "item-1"}
     assert steps[1] == {"kind": "project_add", "issue": None}
     assert steps[-1] == {"kind": "writeback", "item_id": "item-1", "issue": None}
 
@@ -57,7 +69,28 @@ def test_a_changed_body_plans_one_issue_edit():
                                           "Cost": "$1.50", "Gate": "tests"}}
     steps = plan([item], issues, project_items, "github-projects")
     assert steps == [{"kind": "issue_edit", "issue": "acme/widgets#12", "title": "Fix the thing",
-                        "body": "A new body."}]
+                        "body": "A new body.\n\n<!-- coxswain:item item-1 -->"}]
+
+
+def test_an_issue_body_differing_only_by_its_item_marker_plans_no_edit():
+    item = _item(issue="acme/widgets#12")
+    marked = {"title": "Fix the thing", "body": marked_body("item-1", "Some body.")}
+    project_items = {"acme/widgets#12": {"State": "Ready", "Phase": "core", "Run": "run-7",
+                                          "Cost": "$1.50", "Gate": "tests"}}
+    assert plan([item], {"acme/widgets#12": marked}, project_items, "github-projects") == []
+
+
+def test_marked_body_carries_one_marker_and_unmarked_takes_it_back_off():
+    assert marked_body("i-1", "") == "<!-- coxswain:item i-1 -->"
+    twice = marked_body("i-1", marked_body("i-1", "Body."))
+    assert twice == "Body.\n\n<!-- coxswain:item i-1 -->"
+    assert unmarked(twice) == "Body."
+
+
+def test_marked_issues_maps_each_item_to_its_lowest_marked_issue():
+    rows = [{"number": 14, "body": marked_body("i-1", "B")}, {"number": 9, "body": marked_body("i-1", "B")},
+            {"number": 3, "body": "no marker"}, {"number": 5, "body": marked_body("i-2", "")}]
+    assert marked_issues(rows) == {"i-1": "9", "i-2": "5"}
 
 
 def test_an_issue_missing_from_the_labelled_map_plans_no_issue_edit():

@@ -1,6 +1,11 @@
 """Copy every table's rows from one store to another, idempotently, and check the counts.
 
+    COX_STORE_COPY_SRC_URL=... COX_STORE_COPY_DST_URL=... python -m harness.store_copy [--json]
     python -m harness.store_copy SRC_URL DST_URL [--json]
+
+The URLs are read from the environment first (`SRC_URL_ENV`, `DST_URL_ENV`): an argv is readable by every user on
+the host through `ps`, an environment only by its owner, so a URL holding a password belongs there. A URL given on the
+command line is still taken, for a store without a password.
 
 Both sides are opened with `open_store_exact`, so the destination is migrated first, and a side newer than this
 code is refused: the copy carries only the tables and columns this code knows, so a newer store's would be dropped. Rows
@@ -14,8 +19,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import cast
 from urllib.parse import urlsplit
@@ -149,6 +155,17 @@ def _safe_url(url: str) -> str:
     return f"{parts.scheme}://{parts.path}"
 
 
+SRC_URL_ENV = "COX_STORE_COPY_SRC_URL"
+DST_URL_ENV = "COX_STORE_COPY_DST_URL"
+
+
+def copy_urls(src_arg: str | None, dst_arg: str | None, environ: Mapping[str, str]) -> tuple[str, str] | None:
+    """Pure. The (source, target) URLs: each from the environment if set there, else from the command line; None
+    when either is missing from both."""
+    src, dst = environ.get(SRC_URL_ENV) or src_arg, environ.get(DST_URL_ENV) or dst_arg
+    return (src, dst) if src and dst else None
+
+
 def _count(conn: Connection, table: str) -> int:
     row = conn.query_one(f"SELECT COUNT(*) FROM {table}")
     return 0 if row is None else int(cast(int, row[0]))
@@ -209,16 +226,21 @@ def _lines(report: dict[str, dict[str, int]]) -> list[str]:
     ]
 
 
-def main(argv: Sequence[str]) -> int:
+def main(argv: Sequence[str], environ: Mapping[str, str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m harness.store_copy", description=cast(str, __doc__).split("\n")[0])
-    ap.add_argument("src_url")
-    ap.add_argument("dst_url")
+    ap.add_argument("src_url", nargs="?", help=f"the source store, if {SRC_URL_ENV} is not set")
+    ap.add_argument("dst_url", nargs="?", help=f"the target store, if {DST_URL_ENV} is not set")
     ap.add_argument("--json", action="store_true", help="print one JSON object instead of a line per table")
     args = ap.parse_args(argv)
-    src, dst = _safe_url(args.src_url), _safe_url(args.dst_url)
+    urls = copy_urls(args.src_url, args.dst_url, os.environ if environ is None else environ)
+    if urls is None:
+        print(f"error: name both stores, in {SRC_URL_ENV} and {DST_URL_ENV} or as SRC_URL DST_URL", file=sys.stderr)
+        return 2
+    src_url, dst_url = urls
+    src, dst = _safe_url(src_url), _safe_url(dst_url)
     now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
-        report, short = copy(args.src_url, args.dst_url, now), {}
+        report, short = copy(src_url, dst_url, now), {}
     except CopyCheckFailed as failed:
         report, short = failed.report, failed.short
     except NotExactVersion as exc:  # names the role and the versions, never a URL

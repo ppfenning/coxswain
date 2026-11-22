@@ -259,10 +259,11 @@ def test_execute_resolves_real_node_ids_and_writes_back_the_new_issue(tmp_path):
     assert [(kind, ok) for kind, ok, _ in log] == [
         ("issue_create", True), ("project_add", True), ("project_set", True), ("project_set", True), ("writeback", True),
     ]
-    graphql_call = calls[4]
+    assert calls[2][:3] == ["gh", "issue", "list"]  # the marker lookup, before the create
+    graphql_call = calls[5]
     assert graphql_call == ["gh", "api", "graphql", "-f", f"query={route_sync_gh._STATE_MUTATION}",
                              "-f", "project=PVT_1", "-f", "item=PVTI_9", "-f", "field=PVTSSF_1", "-f", "option=OPT_ready"]
-    item_edit_call = calls[5]
+    item_edit_call = calls[6]
     assert item_edit_call == ["gh", "project", "item-edit", "--id", "PVTI_9", "--project-id", "PVT_1",
                                "--field-id", "PVTF_2", "--text", "build"]
     after = (tmp_path / "work" / "init1" / "build" / "task1.md").read_text()
@@ -294,7 +295,7 @@ def test_a_refuse_step_calls_no_gh_and_does_not_stop_the_rest_of_the_run():
 
     def run(argv, **kw):
         calls.append(argv)
-        return _Result(stdout="https://github.com/acme/widgets/issues/1")
+        return _Result(stdout="[]" if argv[:3] == ["gh", "issue", "list"] else "https://github.com/acme/widgets/issues/1")
 
     steps = [
         {"kind": "refuse", "item_id": "bad", "detail": "unknown state: 'weird'"},
@@ -303,7 +304,30 @@ def test_a_refuse_step_calls_no_gh_and_does_not_stop_the_rest_of_the_run():
     log = route_sync_gh.execute(steps, run, "acme/7", "/tmp/unused")
     assert log[0] == ("refuse", False, "unknown state: 'weird'")
     assert log[1][0] == "issue_create" and log[1][1] is True
-    assert calls == [["gh", "issue", "create", "--repo", "acme/widgets", "--title", "T", "--body", "B", "--label", "coxswain"]]
+    assert calls[1:] == [["gh", "issue", "create", "--repo", "acme/widgets", "--title", "T", "--body", "B", "--label", "coxswain"]]
+    assert calls[0][:3] == ["gh", "issue", "list"]
+
+
+def test_a_rerun_after_a_crash_between_create_and_writeback_adopts_the_marked_issue(tmp_path):
+    # The first sync created #9 and died before recording it: the item's file has no issue line, the issue is on file.
+    task = tmp_path / "work" / "init1" / "build" / "task1.md"
+    _write(task, "---\ntitle: Do the thing\nstate: ready\n---\nbody\n")
+    item = route_sync.Item(id="task1", title="Do the thing", body="body", repo="acme/widgets", state="ready",
+                           phase="build", run="", cost_usd=0.0, gate="", issue=None)
+    steps = [s for s in route_sync.plan([item], {}, {}, "github-projects") if s["kind"] in ("issue_create", "writeback")]
+    on_file = [{"number": 9, "body": steps[0]["body"]}, {"number": 4, "body": route_sync.marked_body("other", "x")}]
+    calls = []
+
+    def run(argv, **kw):
+        calls.append(argv)
+        if argv[:3] == ["gh", "issue", "list"]:
+            return _Result(stdout=json.dumps(on_file))
+        return _Result(returncode=1, stderr="no other call is expected")
+
+    log = route_sync_gh.execute(steps, run, "acme/7", tmp_path)
+    assert log == [("issue_create", True, "9"), ("writeback", True, "9")]
+    assert [c[:3] for c in calls] == [["gh", "issue", "list"]]  # listed, never created
+    assert "issue: 9" in task.read_text().splitlines()
 
 
 def test_cli_dry_run_prints_the_rendered_steps_and_exits_0(tmp_path, capsys, monkeypatch):

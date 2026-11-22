@@ -116,6 +116,36 @@ CHECKLIST_OPEN = "<!-- coxswain:tasks -->"
 CHECKLIST_CLOSE = "<!-- /coxswain:tasks -->"
 
 
+# Every issue the sync creates carries its item's id in this hidden line, so an issue whose number never reached the
+# item's file (a crash between `gh issue create` and the write-back) is found again instead of created twice.
+_ITEM_MARKER = re.compile(r"\n*<!-- coxswain:item (\S+) -->")
+
+
+def item_marker(item_id: str) -> str:
+    return f"<!-- coxswain:item {item_id} -->"
+
+
+def marked_body(item_id: str, body: str) -> str:
+    """Pure. `body` as the issue carries it: without any marker it held, then its item's marker on the last line."""
+    bare = unmarked(body)
+    return f"{bare}\n\n{item_marker(item_id)}" if bare.strip() else item_marker(item_id)
+
+
+def unmarked(body: str) -> str:
+    """Pure. `body` without the item marker, what the work item itself holds."""
+    return _ITEM_MARKER.sub("", body)
+
+
+def marked_issues(rows: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """Pure. Item id to issue number for every row (`number`, `body`) whose body carries an item marker. Two issues
+    marked for one item resolve to the lower number, the one created first."""
+    found: dict[str, str] = {}
+    for row in sorted(rows, key=lambda r: int(r.get("number") or 0), reverse=True):
+        for item_id in _ITEM_MARKER.findall(str(row.get("body") or "")):
+            found[item_id] = str(row["number"])
+    return found
+
+
 def checklist_line(task: Item) -> str:
     """`- [x] <title>: done, PR #12`; the box is ticked only for a done task."""
     pr = f", PR #{task.landed_pr}" if task.landed_pr else ""
@@ -239,18 +269,19 @@ def _fields(item: Item) -> dict | None:
 
 def _issue_steps(item: Item, issues: dict) -> tuple[list[dict], str | None]:
     """`issue_create` with no issue key, `issue_edit` when the labelled issue
-    on file has drifted, no step when `item.issue` is not in `issues` (it
+    on file has drifted (its item marker aside, `marked_body`), no step when `item.issue` is not in `issues` (it
     lost the `coxswain` label, or is gone — nothing on file to edit against).
     The paired key is the item's own issue key, or `None` for a fresh item —
     not a work-store id standing in for one — that the edge fills in once
     `issue_create` runs."""
     if item.issue is None:
         step = {"kind": "issue_create", "repo": item.repo, "title": item.title,
-                 "body": item.body, "label": _LABEL, "item_id": item.id}
+                 "body": marked_body(item.id, item.body), "label": _LABEL, "item_id": item.id}
         return [step], None
     stored = issues.get(item.issue)
-    if stored is not None and (stored.get("title") != item.title or stored.get("body") != item.body):
-        return [{"kind": "issue_edit", "issue": item.issue, "title": item.title, "body": item.body}], item.issue
+    if stored is not None and (stored.get("title") != item.title or unmarked(stored.get("body") or "") != item.body):
+        return [{"kind": "issue_edit", "issue": item.issue, "title": item.title,
+                 "body": marked_body(item.id, item.body)}], item.issue
     return [], item.issue
 
 

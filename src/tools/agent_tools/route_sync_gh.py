@@ -619,22 +619,46 @@ def _add_release_options(run, project: str, meta: tuple, steps: list[dict]):
     return _project_meta(run, project)
 
 
+def _marked_issues(run, ctx: dict, repo: str) -> tuple[bool, dict[str, str] | str]:
+    """Edge. Item id to issue number for the `coxswain`-labelled issues of `repo` that carry an item marker, read once
+    per `execute` and kept in `ctx`, so a run that creates many issues lists each repo once."""
+    cache = ctx.setdefault("marked", {})
+    if repo not in cache:
+        listed = run(["gh", "issue", "list", "--repo", repo, "--label", _LABEL, "--state", "all",
+                      "--json", "number,body", "--limit", _LIMIT], capture_output=True, text=True)
+        if listed.returncode != 0:
+            return False, listed.stderr.strip() or listed.stdout.strip()
+        try:
+            rows = json.loads(listed.stdout or "[]")
+        except ValueError:
+            return False, f"unreadable gh issue list output for {repo}; nothing was created"
+        cache[repo] = route_sync.marked_issues(rows if isinstance(rows, list) else [])
+    return True, cache[repo]
+
+
 def _execute_step(step: dict, run, ctx: dict) -> tuple[bool, str]:
     """One step through `gh`, `(ok, detail)` — `land.py`'s own edge shape."""
     kind = step["kind"]
     if kind == "refuse":
         return False, step["detail"]
     if kind == "issue_create":
-        result = run(["gh", "issue", "create", "--repo", step["repo"], "--title", step["title"],
-                      "--body", step["body"], "--label", step["label"]], capture_output=True, text=True)
-        if result.returncode != 0:
-            return False, result.stderr.strip() or result.stdout.strip()
-        issue = result.stdout.strip().rsplit("/", 1)[-1]
+        ok, marked = _marked_issues(run, ctx, step["repo"])
+        if not ok:
+            return False, marked
+        issue = marked.get(step["item_id"], "")
         if not issue:
-            return False, "gh issue create returned no issue url"
+            result = run(["gh", "issue", "create", "--repo", step["repo"], "--title", step["title"],
+                          "--body", step["body"], "--label", step["label"]], capture_output=True, text=True)
+            if result.returncode != 0:
+                return False, result.stderr.strip() or result.stdout.strip()
+            issue = result.stdout.strip().rsplit("/", 1)[-1]
+            if not issue:
+                return False, "gh issue create returned no issue url"
+            marked[step["item_id"]] = issue
         ctx["just_created"] = {"issue": issue, "repo": step["repo"]}
         ctx["issue_by_item"][step["item_id"]] = issue
-        # Recorded at once, so a later failed step cannot leave the issue unknown and a rerun duplicate it.
+        # Recorded at once, so a later failed step cannot leave the issue unknown and a rerun duplicate it. A crash
+        # before this line leaves the issue marked with the item (`route_sync.marked_body`): the lookup above finds it.
         _writeback(ctx["root"], step["item_id"], issue)
         return True, issue
     if kind == "issue_edit":

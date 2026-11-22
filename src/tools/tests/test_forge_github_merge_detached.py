@@ -2,9 +2,11 @@
 
 2026-11-02: PRs 535, 536 and 537 merged, gh printed the detached-HEAD message and exited 1, and the land stopped.
 """
+import subprocess
 from types import SimpleNamespace
 
 from agent_tools import cli, forge_github
+from agent_tools.forge import ForgeError
 
 DETACHED = "could not determine current branch: failed to run git: not on any branch"
 MERGED = '{"mergedAt":"2026-11-02T04:12:00Z","state":"MERGED"}'
@@ -15,6 +17,7 @@ VIEW = ["gh", "pr", "view", "pr/i--p", "--json", "state,mergedAt"]
 LIST = ["gh", "pr", "list", "--head", "pr/i--p", "--state", "all", "--json", "number,state"]
 DELETE = ["gh", "api", "-X", "DELETE", "repos/{owner}/{repo}/git/refs/heads/pr/i--p"]
 NOT_ON_A_BRANCH = (128, "fatal: ref HEAD is not a symbolic ref")
+TIMED_OUT = "gh pr merge pr/i--p --squash timed out after 120s"
 
 
 def _gh(monkeypatch, answers):
@@ -36,6 +39,19 @@ def test_merge_verdict_prefers_the_server_state_over_the_exit_code():
     assert forge_github.merge_verdict(1, DETACHED, {"state": "open"}) == (False, DETACHED)
     assert forge_github.merge_verdict(1, DETACHED, {"state": "unknown"}) == (False, DETACHED)
     assert forge_github.merge_verdict(1, "", {"state": "merged"}) == (True, "warning: gh exited non-zero after the PR merged")
+
+
+def test_a_merge_that_timed_out_is_judged_by_the_server_state_not_reported_failed():
+    code, text = forge_github.merge_exit(ForgeError(TIMED_OUT))
+    assert (code, text) == (1, TIMED_OUT)
+    assert forge_github.merge_verdict(code, text, {"state": "merged", "merged_at": None}) == (True, f"warning: {TIMED_OUT}")
+    assert forge_github.merge_verdict(code, text, {"state": "open", "merged_at": None}) == (False, TIMED_OUT)
+    assert forge_github.merge_verdict(code, text, {"state": "unknown", "merged_at": None}) == (False, TIMED_OUT)
+
+
+def test_merge_exit_reads_a_finished_run_by_its_code_and_first_non_empty_stream():
+    assert forge_github.merge_exit(subprocess.CompletedProcess([], 0, " merged \n", "")) == (0, "merged")
+    assert forge_github.merge_exit(subprocess.CompletedProcess([], 1, "", DETACHED)) == (1, DETACHED)
 
 
 def test_a_merged_pr_after_the_detached_head_exit_succeeds_with_the_warning(monkeypatch, tmp_path):

@@ -115,27 +115,37 @@ def parse_counts(stdout: str) -> dict[str, int]:
     return table_rows or {m.group(1): int(m.group(2)) for line in lines if (m := _COUNT_LINE.match(line))}
 
 
-def copy_env(environ: Mapping[str, str]) -> dict[str, str]:
+# Where `harness.store_copy` reads its URLs: the environment, readable only by its owner, never the argv `ps` shows.
+COPY_SRC_URL_ENV = "COX_STORE_COPY_SRC_URL"
+COPY_DST_URL_ENV = "COX_STORE_COPY_DST_URL"
+
+
+def copy_env(environ: Mapping[str, str], source_url: str, target_url: str) -> dict[str, str]:
     """Pure. The environment `harness.store_copy` runs in: `environ` with the sqlite double allowed, so the legacy
     store opens, and never the suites' `COX_SQLITE_SYNC_OFF` opt-in: that store holds real rows, so a commit to it (a
-    migration `open_store_exact` applies) syncs to disk."""
+    migration `open_store_exact` applies) syncs to disk. The two URLs ride here, not in argv."""
     kept = {k: v for k, v in environ.items() if k != "COX_SQLITE_SYNC_OFF"}
-    return {**kept, "COXSWAIN_STORE_DOUBLE": "sqlite"}
+    return {**kept, "COXSWAIN_STORE_DOUBLE": "sqlite", COPY_SRC_URL_ENV: source_url, COPY_DST_URL_ENV: target_url}
+
+
+def copy_argv(python: str) -> list[str]:
+    """Pure. The `harness.store_copy` command line: no URL, since `copy_env` carries both."""
+    return [python, "-m", "harness.store_copy", "--json"]
 
 
 def default_copy_store(source_url: str, target_url: str) -> dict[str, int]:
-    """Edge. Run `python -m harness.store_copy --json SOURCE TARGET` and return its per-table counts.
+    """Edge. Run `python -m harness.store_copy --json`, the URLs in its environment, and return its per-table counts.
 
     That copy is idempotent and refuses to drop anything, so re-running a half-finished switch is safe.
     This function keeps that property: it only calls it, and never drops, deletes or truncates."""
     # The one place outside the test suites that may open a sqlite store: reading an old one, once, to carry its
     # rows into Postgres. The harness refuses sqlite everywhere else.
     done = subprocess.run(
-        [sys.executable, "-m", "harness.store_copy", "--json", source_url, target_url],
+        copy_argv(sys.executable),
         capture_output=True,
         text=True,
         check=False,
-        env=copy_env(os.environ),
+        env=copy_env(os.environ, source_url, target_url),
     )
     if done.returncode != 0:
         tail = (done.stderr or done.stdout).strip().splitlines()[-1:] or ["no output"]
